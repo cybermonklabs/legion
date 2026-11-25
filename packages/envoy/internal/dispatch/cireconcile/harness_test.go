@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -30,9 +31,10 @@ import (
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
-// The repository every test below reconciles. The row is what repo_projects holds, lower-cased
-// as every mapping is stored; gitHubOwner and gitHubName are what GitHub itself answers with, in
-// its own casing, and every record and every settlement is keyed by those rather than the row's.
+// The repository every test below reconciles. The row is what a project's default repository or
+// an issue's own holds, lower-cased as both are stored; gitHubOwner and gitHubName are what GitHub
+// itself answers with, in its own casing, and every record and every settlement is keyed by those
+// rather than the row's.
 const (
 	rowRepository    = "acme/widgets"
 	gitHubOwner      = "Acme"
@@ -81,6 +83,20 @@ type harness struct {
 	// reviewer is the review App's id this test's listener and pass were built with, which
 	// startListener needs for the webhook handler it mounts.
 	reviewer string
+	// verdict is the verdict App's id this test's listener was built with, "" for none:
+	// startListener gives it to the webhook handler, as cmd/listener does.
+	verdict string
+	// issues counts the issues issueInRepository has recorded, so each one it records has a key
+	// and a number of its own without its caller passing them.
+	issues int
+	// verify says startListener opens the listener's store with ENVOY_CI_VERIFY on
+	// (cistore.WithVerify), so its summary loop publishes only after a verify pass answers.
+	verify bool
+	// loopLogs is what the listener's summary loop logged.
+	loopLogs *syncBuffer
+	// defaults counts the projects seedProjectDefault has made, so each one it makes has a key of
+	// its own.
+	defaults int
 }
 
 // newHarness is the whole stack with the listener already running, which every test wants but
@@ -90,6 +106,25 @@ func newHarness(t *testing.T, reviewer string) *harness {
 	h := newHarnessBeforeTheListener(t, reviewer)
 	h.startListener()
 	return h
+}
+
+// newVerifyHarness is newHarness with the listener's ENVOY_CI_VERIFY on. GitHub answers a
+// repository's installation and identity under any casing of its name, and a verify request names
+// the repository as GitHub spells it, where a pass reads it under its lower-cased row;
+// the stand-in answers only the names it was given, so it is given GitHub's spelling too.
+func newVerifyHarness(t *testing.T, reviewer string) *harness {
+	t.Helper()
+	h := newHarnessBeforeTheListener(t, reviewer)
+	h.verify = true
+	h.github.setRepository(gitHubRepository, gitHubRepository, repositoryID)
+	h.startListener()
+	return h
+}
+
+// verifyPass runs one pass of the verify loop (Reconciler.Verify).
+func (h *harness) verifyPass() {
+	h.t.Helper()
+	h.reconciler.Verify(h.ctx)
 }
 
 // newHarnessBeforeTheListener is the stack with no CI bucket: NATS is up, so a pass runs, but
@@ -144,11 +179,11 @@ func openWriter(client *bus.Client) func() (Writer, error) {
 	}
 }
 
-// holdWriteUntilTheBoundFalls makes the nth check-run write of this harness's passes wait until
-// the pass making it has run out of its own bound. It is a CI bucket slower to answer than the
-// pass has left, which is the one thing that can take a pass past its bound in the middle of a
-// page its query answered whole: those heads cost no request of their own, so nothing else
-// about them can be slow.
+// holdWriteUntilTheBoundFalls makes the nth check-run write of this harness's passes, each the
+// runs of one head, wait until the pass making it has run out of its own bound. It is a CI bucket
+// slower to answer than the pass has left, which is the one thing that can take a pass past its
+// bound in the middle of a page its query answered whole: those heads cost no request of their
+// own, so nothing else about them can be slow.
 //
 // The count is the harness's rather than one pass's, so the pass after the one that was held
 // writes every head of its own without waiting.
@@ -168,16 +203,16 @@ func (h *harness) holdWriteUntilTheBoundFalls(nth int) {
 	}
 }
 
-// holdingWriter is the CI record writer with hold run before each check run it is given
+// holdingWriter is the CI record writer with hold run before each write of a head's check runs
 // (holdWriteUntilTheBoundFalls).
 type holdingWriter struct {
 	Writer
 	hold func(ctx context.Context)
 }
 
-func (w *holdingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+func (w *holdingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
 	w.hold(ctx)
-	return w.Writer.Record(ctx, observation)
+	return w.Writer.RecordRuns(ctx, observations)
 }
 
 // startListener opens the listener's own store, which makes the bucket and watches it, and its
@@ -185,7 +220,7 @@ func (w *holdingWriter) Record(ctx context.Context, observation contracts.CIObse
 // to make this listener settle, and a record alone does not prove that.
 func (h *harness) startListener() {
 	h.t.Helper()
-	listener, err := cistore.Open(h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithVerify(h.verify))
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}
@@ -196,10 +231,11 @@ func (h *harness) startListener() {
 	}
 	loop, endLoop := context.WithCancel(h.ctx)
 	h.t.Cleanup(endLoop)
+	h.loopLogs = &syncBuffer{}
 	cistore.StartSummaryLoop(loop, listener, h.bus, 100*time.Millisecond, 20*time.Millisecond,
-		metrics.New().NewGauge("held", ""), logging.New("loop"))
+		metrics.New().NewGauge("held", ""), logging.NewWithWriter("loop", h.loopLogs))
 	h.listener = listener
-	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, listener)
+	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.verdict, h.bus, listener, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 }
 
 // replica is a second Reconciler standing for the other Dispatch process of a deployment: a
@@ -219,34 +255,69 @@ func (h *harness) replica() *Reconciler {
 	}
 }
 
-// mapRepository maps one repository to a project of its own, as Settings → Repositories does.
-func (h *harness) mapRepository(repository string) {
+// seedProjectDefault gives repository a project of its own whose default repository it is, as
+// PUT /api/v1/projects/{key}/default-repository sets it. A project has one default repository,
+// so each repository a test covers this way takes a project of its own.
+func (h *harness) seedProjectDefault(repository string) {
+	h.t.Helper()
+	h.defaults++
+	key := fmt.Sprintf("CIR%d", h.defaults)
+	if _, err := h.pool.Exec(h.ctx, `
+		insert into projects (key, name, default_assignee, default_repo) values ($1, 'CI reconcile', 'alice', $2)
+	`, key, repository); err != nil {
+		h.t.Fatalf("make %s the default repository of project %s: %v", repository, key, err)
+	}
+}
+
+// seedRenamePair records that the repository called repository was renamed to the full
+// `owner/name` renamedTo, as a repo_projects row with a renamed_to: that table is the one place
+// Dispatch holds a rename, and a person declared it, since GitHub answers 404 for the
+// installation of the name the repository was renamed away from. The harness's Reconciler then
+// takes the pairs read after the seed, as a boot reads them (store.ReadRepoRenames). The pair
+// covers no repository: a test that wants the old name read names it by a project's default
+// repository or an issue's own, as a row the boot's rename pass missed does.
+func (h *harness) seedRenamePair(repository, renamedTo string) {
+	h.t.Helper()
+	h.seedProject()
+	if _, err := h.pool.Exec(h.ctx, `
+		insert into repo_projects (repo, project, created_by, renamed_to)
+		values ($1, 'CIR', '{"kind":"system","id":"test"}'::jsonb, $2)
+	`, repository, renamedTo); err != nil {
+		h.t.Fatalf("record that %s is called %s today: %v", repository, renamedTo, err)
+	}
+	pairs, err := store.ReadRepoRenames(h.ctx, h.pool)
+	if err != nil {
+		h.t.Fatalf("read the rename pairs: %v", err)
+	}
+	h.reconciler.Renames = refs.NewRenames(pairs)
+}
+
+// seedProject makes the project CIR, which holds the issues issueInRepository records and the
+// rename pairs seedRenamePair records. It names no default repository, so no repository is
+// covered through it. It does nothing where the project is made already.
+func (h *harness) seedProject() {
 	h.t.Helper()
 	if _, err := h.pool.Exec(h.ctx, `
 		insert into projects (key, name, default_assignee) values ('CIR', 'CI reconcile', 'alice') on conflict (key) do nothing
 	`); err != nil {
 		h.t.Fatalf("seed the project: %v", err)
 	}
-	if _, err := h.pool.Exec(h.ctx, `
-		insert into repo_projects (repo, project, created_by)
-		values ($1, 'CIR', '{"kind":"system","id":"test"}'::jsonb)
-		on conflict (repo) do nothing
-	`, repository); err != nil {
-		h.t.Fatalf("map %s to a project: %v", repository, err)
-	}
 }
 
-// mapRenamedRepository maps one repository and records the full `owner/name` it is called today,
-// as Settings → Repositories does for a renamed repository: repo_projects.renamed_to is the one
-// place Dispatch holds a rename, and an operator declares it, since GitHub answers 404 for the
-// installation of the name the repository was renamed away from.
-func (h *harness) mapRenamedRepository(repository, renamedTo string) {
+// issueInRepository records one issue naming repository as its own, as an issue write does: an
+// issue's repository is any `owner/name`, and no project's default has to name it
+// (api/issue_repo.go, migration 20261112004945_issue_repo_needs_no_mapping). The issue is of the
+// project CIR, which names no default repository (seedProject).
+func (h *harness) issueInRepository(repository string) {
 	h.t.Helper()
-	h.mapRepository(repository)
+	h.seedProject()
+	h.issues++
+	key := fmt.Sprintf("CIR-%d", h.issues)
 	if _, err := h.pool.Exec(h.ctx, `
-		update repo_projects set renamed_to = $2 where repo = $1
-	`, repository, renamedTo); err != nil {
-		h.t.Fatalf("record that %s is called %s today: %v", repository, renamedTo, err)
+		insert into issues (key, project_key, number, title, created_by, rank, repo)
+		values ($1, 'CIR', $2, 'A head of its own', '{"kind":"system","id":"test"}'::jsonb, 'U', $3)
+	`, key, h.issues, repository); err != nil {
+		h.t.Fatalf("record %s in %s: %v", key, repository, err)
 	}
 }
 
@@ -257,7 +328,7 @@ func (h *harness) listHead() {
 	h.github.setPullRequests(gitHubRepository, fakePull{number: 7, sha: headSHA})
 }
 
-// listHeads makes the stand-in answer with these open pull requests of the mapped repository,
+// listHeads makes the stand-in answer with these open pull requests of the harness's repository,
 // as listHead does for the one head most tests reconcile. The pass reads a repository's heads
 // in pull request number order whatever order they are given in here, which is what a test of
 // the cursor reads back out of the stand-in's own log of the requests it was sent.
@@ -373,7 +444,7 @@ func (h *harness) record() (state cistore.State, revision uint64, ok bool) {
 	return state, entry.Revision(), true
 }
 
-// recordOf is the record of any head of the mapped repository, and nil when the bucket holds
+// recordOf is the record of any head of the harness's repository, and nil when the bucket holds
 // none: record answers for the one head most tests reconcile, and a test of the cursor reads
 // heads the pass reached at other pages.
 func (h *harness) recordOf(pull fakePull, number int64) *cistore.State {
@@ -413,8 +484,18 @@ func (h *harness) recordAt(repository string, number int64, sha string) (*cistor
 	return &state, entry.Revision()
 }
 
-// post sends the listener's real webhook handler one GitHub event, as GitHub sends it.
+// post sends the listener's real webhook handler one GitHub event, as GitHub sends it, and fails
+// the test unless the handler answers 200.
 func (h *harness) post(event, body, delivery string) {
+	h.t.Helper()
+	if code, answer := h.serve(event, body, delivery); code != http.StatusOK {
+		h.t.Fatalf("the webhook answered %d: %s", code, answer)
+	}
+}
+
+// serve sends the listener's real webhook handler one GitHub event, as GitHub sends it, and
+// answers the status and body the handler answered.
+func (h *harness) serve(event, body, delivery string) (int, string) {
 	h.t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(body))
 	request.Header.Set("X-GitHub-Delivery", delivery)
@@ -424,9 +505,7 @@ func (h *harness) post(event, body, delivery string) {
 	request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	recorder := httptest.NewRecorder()
 	h.webhook.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		h.t.Fatalf("the webhook answered %d: %s", recorder.Code, recorder.Body.String())
-	}
+	return recorder.Code, recorder.Body.String()
 }
 
 // lines is the fields of every line the pass logged under msg, oldest first.

@@ -41,6 +41,7 @@ import (
 // record read really precedes the entry write. Before this listener read the consumer again after
 // that write, the session was answered 200 with no consumer at all.
 func TestARegistrationRacedByAnotherListenersDeleteKeepsItsConsumer(t *testing.T) {
+	t.Parallel()
 	registering := newSessionConsumerReapRig(t)
 	deleting := newSessionConsumerReapRig(t)
 	const sessionID = "ses_two_listeners"
@@ -98,6 +99,7 @@ func TestARegistrationRacedByAnotherListenersDeleteKeepsItsConsumer(t *testing.T
 // writes the record back from inside the delete, before the repair reads the bucket again
 // (raceTheDeleteWithARegistration).
 func TestARestoredConsumerDoesNotOfferTheAckedFramesAgain(t *testing.T) {
+	t.Parallel()
 	rig := newRelayRig(t)
 	sessionID := "ses_acked_" + id.New()
 	agent := contracts.LegacyAgentSubject(sessionID)
@@ -179,11 +181,12 @@ const sessionEntryWriteDelay = 400 * time.Millisecond
 // landed between that read and the delete is made from inside the delete, a round trip away
 // (raceTheDeleteWithARegistration).
 func TestASessionThatRacesADeleteThroughItsEntryWriteIsOfferedNothingItAcked(t *testing.T) {
+	t.Parallel()
 	rig := newRelayRig(t)
 	sessionID := "ses_entry_write_race_" + id.New()
 	agent := contracts.LegacyAgentSubject(sessionID)
 	hub := testnats.StartProxy(t, rig.url, testnats.ProxyLatency(sessionEntryWriteDelay))
-	slow, err := session.OpenSessionRegistry(testnats.Connect(t, hub.URL()), session.WithSessionReplicas(1))
+	slow, err := session.OpenSessionRegistry(t.Context(), testnats.Connect(t, hub.URL()), session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry the entry write that races the delete is made through: %v", err)
 	}
@@ -270,6 +273,7 @@ func TestASessionThatRacesADeleteThroughItsEntryWriteIsOfferedNothingItAcked(t *
 // the delete restore from the bucket. That delete therefore finds no record, restores nothing,
 // and the only repair left is the registration's own.
 func TestARegistrationsOwnRepairDoesNotOfferTheAckedFramesAgain(t *testing.T) {
+	t.Parallel()
 	registering := newRelayRig(t)
 	deleting := newSessionConsumerRig(t)
 	sessionID := "ses_register_repair_" + id.New()
@@ -350,6 +354,7 @@ func TestARegistrationsOwnRepairDoesNotOfferTheAckedFramesAgain(t *testing.T) {
 // after its consumer call and before its row, and leaves that window once the delete waits for
 // the lock, where the lock holds it until the registration's pass is done.
 func TestADeleteThatRacesARegistrationLeavesTheConsumerWithTheTopicItAnswered(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_delete_row_lock"
 	const followed = "notifications.dispatch.issue.DELLOCK.>"
@@ -398,6 +403,7 @@ func TestADeleteThatRacesARegistrationLeavesTheConsumerWithTheTopicItAnswered(t 
 // write is made from inside the delete, between its read of the bucket's leader, which finds no
 // record, and the repair that reads the bucket again (raceTheDeleteWithARegistration).
 func TestADeleteRestoresTheConsumerOfASessionItsCacheHasNoRecordOf(t *testing.T) {
+	t.Parallel()
 	registering := newSessionConsumerRig(t)
 	deleting := newSessionConsumerRig(t)
 	const sessionID = "ses_cache_behind"
@@ -467,6 +473,7 @@ func TestADeleteRestoresTheConsumerOfASessionItsCacheHasNoRecordOf(t *testing.T)
 // its read of the bucket's leader and the repair that reads the bucket again
 // (raceTheDeleteWithARegistration).
 func TestADeleteRestoresTheConsumerWithTheTopicItsCacheHasNotHeardOf(t *testing.T) {
+	t.Parallel()
 	registering := newSessionConsumerRig(t)
 	deleting := newSessionConsumerRig(t)
 	const sessionID = "ses_topics_behind"
@@ -540,6 +547,7 @@ func TestADeleteRestoresTheConsumerWithTheTopicItsCacheHasNotHeardOf(t *testing.
 // that record back from inside the delete, between its read of the bucket's leader and the
 // repair after it (raceTheDeleteWithARegistration).
 func TestARegistrationsOwnRepairGivesBackTheTopicAnotherListenersRestoreLeftOut(t *testing.T) {
+	t.Parallel()
 	registering := newSessionConsumerRig(t)
 	deleting := newSessionConsumerRig(t)
 	const sessionID = "ses_confirm_filter"

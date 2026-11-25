@@ -43,6 +43,14 @@ const phaseEntryMigration = 20261111225552
 // beside the phase entry and the upgrade under test applies them.
 const olderReleasesNewestMigration = 20261112180548
 
+// appliedWithTheFixture are the migrations above olderReleasesNewestMigration that preEntryStore
+// applies with the fixture's own rather than withholding them for the upgrade under test: the tree
+// is recorded through this release's PutIssue, so each migration that adds a column PutIssue
+// writes must stand before the tree is seeded. Each adds a column of issues, which no statement of
+// the phase entry reads or writes, so it changes nothing the upgrade under test reads.
+// 20261124060500_issue_priority adds issues.priority.
+var appliedWithTheFixture = []int{20261124060500}
+
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
 // read on is the tester (phase.RoleFor).
@@ -63,8 +71,8 @@ const (
 // newest; that is harmless here, since it adds pull_requests.state_read_at and the phase entry
 // touches no pull_requests column. Neither column is one any statement of the phase entry reads
 // or writes. Every version above that release's newest (olderReleasesNewestMigration) is withheld
-// with the phase entry, so Store.Migrate, which decides each migration on its own row, applies
-// the phase entry and those.
+// with the phase entry, but those appliedWithTheFixture names, so Store.Migrate, which decides
+// each migration on its own row, applies the phase entry and those it withheld.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
@@ -85,10 +93,10 @@ func preEntryStore(t *testing.T) *store.Store {
 	}
 	widened := false
 	for _, migration := range all {
-		if migration.Version == phaseEntryMigration || migration.Version > olderReleasesNewestMigration {
+		if migration.Version == phaseEntryMigration || migration.Version > olderReleasesNewestMigration && !slices.Contains(appliedWithTheFixture, migration.Version) {
 			continue
 		}
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 				return err
 			}
@@ -107,8 +115,9 @@ func preEntryStore(t *testing.T) *store.Store {
 	return st
 }
 
-// migrationsAbove is how many embedded migrations carry a version above version: beside the
-// phase entry, what preEntryStore withheld, and so what the upgrade under test applies.
+// migrationsAbove is how many embedded migrations carry a version above version, less those
+// appliedWithTheFixture names: beside the phase entry, what preEntryStore withheld, and so what
+// the upgrade under test applies.
 func migrationsAbove(t *testing.T, version int) int {
 	t.Helper()
 	all, err := migrations.All()
@@ -117,7 +126,7 @@ func migrationsAbove(t *testing.T, version int) int {
 	}
 	withheld := 0
 	for _, migration := range all {
-		if migration.Version > version {
+		if migration.Version > version && !slices.Contains(appliedWithTheFixture, migration.Version) {
 			withheld++
 		}
 	}
@@ -140,7 +149,7 @@ func migrationsAbove(t *testing.T, version int) int {
 // which is what decides everything below: a claim at or above its row's entry is holding that
 // entry's work. wantTask is the task the sweep must send, empty where it must send nothing, and
 // wantResume says the task is the line the daemon composes for a worker already in its phase
-// (workflow.ResumePhaseTask), which the fixture can only build once the issue record stands.
+// (workflow's Engine.ResumeTask), which the fixture can only build once the issue record stands.
 type upgradeShape struct {
 	key           string
 	title         string
@@ -184,8 +193,8 @@ type upgradeShape struct {
 //     the sweep sends that entry's work. Its completion is accepted besides, where the release
 //     before this one refused it for an assignment it was never given.
 //  4. A claim an operator suspended is sent nothing whatever entry it stands on: `legion claims
-//     stop` stopped that worker, and only the operator's own resume starts it again
-//     (supervise.Claim.RuleHolds, supervise.SuspendedByOperator).
+//     suspend` suspended that worker, and an operator's suspension holds against every rule of
+//     the daemon's (supervise.Claim.RuleHolds, supervise.SuspendedByOperator).
 //  5. A claim the idle release suspended (supervise.SuspendedByReleased) that was never given its
 //     entry is behind like any other: no wake is armed for work it was never given, so the sweep
 //     sends that entry's work, and the start it writes is the one the outbox resumes the released
@@ -201,8 +210,8 @@ type upgradeShape struct {
 //     the stamp the row would deliver with no entry, the claim would stand at 0 under a row at
 //     entry 1, and that sweep would hand the work a second time to a worker already doing it.
 //     The three roles the sweep does send are sent the line the daemon composes for a worker
-//     already in its phase (workflow.ResumePhaseTask), since the release before this one recorded
-//     no task of the entry it was handed.
+//     already in its phase (workflow's Engine.ResumeTask), since the release before this one
+//     recorded no task of the entry it was handed.
 //  8. A claim that confirmed its phase's assignment and whose issue still owes a start carrying
 //     that same token is the retry of a phase the role never left: the release before this one
 //     wrote such a start — its own restart, and the slot repair that went through it
@@ -257,6 +266,7 @@ type upgradeShape struct {
 // role level at zero is owed nothing — which is all workflow.OwedEntry answers and all admit's
 // owedEntryRoles selects.
 func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preEntryStore(t)
 	pool := st.Pool()
@@ -315,7 +325,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 		tokens[shape.key] = token
 	}
 
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -481,7 +491,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	engine := workflow.New(records, workflow.Config{Project: upgradeProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(records, engine, len(shapes), upgradeProject, log)
-	w := &workflowRuntime{pool: pool, records: record.NewStore(), admission: admission,
+	w := &workflowRuntime{pool: pool, records: record.NewStore(), engine: engine, admission: admission,
 		handlers: []intake.Handler{engine, admission}, dispatchProject: upgradeProject, bootID: "test-boot",
 		log: log, entrySweep: 10 * time.Millisecond}
 	swept := func() (n int) {
@@ -517,7 +527,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 
 	for i, shape := range shapes {
 		if shape.wantResume {
-			shapes[i].wantTask = workflow.ResumePhaseTask(issues[shape.key])
+			shapes[i].wantTask = resumeTaskOf(t, pool, engine, shape.key)
 			continue
 		}
 		shapes[i].wantTask = shape.owedTask

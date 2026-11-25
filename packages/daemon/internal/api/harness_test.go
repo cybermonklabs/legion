@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -59,6 +61,8 @@ type stillClock struct{}
 func (stillClock) Now() time.Time { return time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC) }
 
 func (stillClock) AfterFunc(time.Duration, func()) supervise.Cancel { return stopped{} }
+
+func (stillClock) At(time.Time, func()) supervise.Cancel { return stopped{} }
 
 func (stillClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
@@ -192,6 +196,28 @@ type harness struct {
 	// handoffs is the Dispatch a completion route's harness reads handoff records from
 	// (newHandoffHarness), which writeHandoff fills; nil for a harness serving no completion.
 	handoffs *statusRecorder
+	// serverLog is every line the server's own logger wrote (Options.Log), as text.
+	serverLog *lockedLog
+}
+
+// lockedLog is a text log a handler writes while a test reads it.
+type lockedLog struct {
+	testlog.Buffer
+}
+
+// lines is every line of the log that holds each of parts.
+func (l *lockedLog) lines(parts ...string) []string {
+	var matched []string
+	for _, line := range strings.Split(l.String(), "\n") {
+		hit := line != ""
+		for _, part := range parts {
+			hit = hit && strings.Contains(line, part)
+		}
+		if hit {
+			matched = append(matched, line)
+		}
+	}
+	return matched
 }
 
 func newHarness(t *testing.T) *harness {
@@ -233,7 +259,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 			// The daemon's own wiring: a tree a workflow issue backs does not close here.
 			TreeClosable: func(ctx context.Context, c supervise.Claim) (bool, error) {
 				var issue *record.Issue
-				if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+				if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 					var err error
 					issue, err = record.NewStore().Issue(ctx, tx, c.Tree)
 					return err
@@ -251,6 +277,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 	reported, reportedContextErr := &[]capabilities.Report{}, &[]error{}
 	roleHolders, roleHoldersErr := &[]supervise.Claim{}, new(error)
 	rounds := &PodUpdateRounds{}
+	serverLog := &lockedLog{}
 	h := &harness{
 		t: t, ctx: ctx, store: st, runtime: rt, conns: conns, tokens: tokens, supervisor: sup,
 		readied:            readied,
@@ -259,10 +286,12 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 		roleHolders:        roleHolders,
 		roleHoldersErr:     roleHoldersErr,
 		podUpdateRounds:    rounds,
+		serverLog:          serverLog,
 	}
 	server := NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
-		Supervisor: sup, BootTokens: tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: st, Log: quiet,
+		Supervisor: sup, BootTokens: tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: st,
+		Log:  slog.New(slog.NewTextHandler(serverLog, nil)),
 		Pool: st.Pool(), Record: record.NewStore(), Releaser: rt, Trees: st, ReleaseRecords: st, ClaimActivity: st,
 		PluginRelaunchable: relaunchable,
 		ClaimReady:         func(c supervise.Claim) { *readied = append(*readied, c) },
@@ -400,7 +429,7 @@ func (h *harness) stored(token claim.Token) supervise.Claim {
 // recordIssue writes a workflow issue, as admission would have.
 func (h *harness) recordIssue(issue record.Issue) {
 	h.t.Helper()
-	if err := h.store.Tx(h.ctx, func(tx pgx.Tx) error { return record.NewStore().PutIssue(h.ctx, tx, issue) }); err != nil {
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error { return record.NewStore().PutIssue(h.ctx, tx, issue) }); err != nil {
 		h.t.Fatalf("record issue %s: %v", issue.Key, err)
 	}
 }
@@ -535,7 +564,7 @@ func (h *harness) openTree(t *testing.T, project, tree string) {
 	if err != nil {
 		t.Fatalf("project token of %s: %v", project, err)
 	}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, token, tree, treelifecycle.AuthorityWorkflow)
 		return err
 	}); err != nil {

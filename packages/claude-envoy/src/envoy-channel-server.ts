@@ -1,5 +1,6 @@
 import { type Stats, unwatchFile, watchFile } from "node:fs"
 import { rm } from "node:fs/promises"
+import { setImmediate as nextTurn } from "node:timers/promises"
 import {
   DELIVERY_CAPABILITIES,
   type DeliveryCapability,
@@ -15,9 +16,9 @@ import {
   type ConsumerGapNotice,
   createConsumerDelivery,
   gapNoticeText,
+  inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
-  registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery"
 import {
   createDeliveryDedupe,
@@ -35,7 +36,7 @@ import {
   failureNoticeFields,
 } from "@legion/envoy-client/delivery-ledger"
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
-import { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
 import {
@@ -43,9 +44,10 @@ import {
   REGISTRATION_SETTLE_MS,
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings"
-import { messageFor } from "@legion/envoy-client/errors"
+import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors"
+import type { RelayOutage } from "@legion/envoy-client/listener-relay"
 import { machineID } from "@legion/envoy-client/machine"
-import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
+import { refusedTopicsNoticeText, registerWithRelay } from "@legion/envoy-client/relay-registration"
 import {
   type SessionConfigFile,
   sessionConfigFile,
@@ -62,6 +64,8 @@ import {
 import {
   EnvoyToolOperation,
   envoyToolSpecs,
+  keyTakenDetails,
+  keyTakenText,
   publishConfirmationText,
   publishResultDetails,
   sendConfirmationText,
@@ -82,7 +86,6 @@ import {
   roleHeldBy,
   type SubscribeResult,
 } from "@legion/envoy-client/transport"
-import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { findPushedBranchHead, paneHandoffReport } from "@legion/pi-shared/handoff-record"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
@@ -95,6 +98,16 @@ import { name as packageName, version as packageVersion } from "../package.json"
 }
 import { type AgentStreamRunner, startAgentStream } from "./agent-stream-runner"
 import {
+  admittingMoves,
+  channelReopener,
+  closeUnstartedConnection,
+  dialChannelInbound,
+  type ReopenConnection,
+  type ReopenedConnection,
+  START_STOPPING,
+  sessionAdmission,
+} from "./channel-connection"
+import {
   type ChannelConnection,
   type ChannelTopicSubscription,
   type ChannelTopics,
@@ -103,12 +116,13 @@ import {
 } from "./channel-topics"
 import { claudeProjectDirectory, claudeSessionId, configuredValue } from "./claude-session"
 import { inboundOffChannelSession, serveEnvoyOff } from "./envoy-off"
-import { installedPluginVersion } from "./installed-build"
+import { channelConnectionName, installedPluginVersion } from "./installed-build"
 import {
   endPane,
   type LegionClaim,
   legionPane,
   logLegion,
+  paneDaemonClient,
   startLegionClaim,
   stopPane,
 } from "./legion-claim"
@@ -175,11 +189,12 @@ const HANDOFF_POLL_MS = 250
 /** How long a handoff waits for NATS to confirm the new direct subject before retrying. */
 const HANDOFF_FLUSH_TIMEOUT_MS = 10_000
 
-/** `promise`, or a rejection naming `what` once `ms` pass. */
+/** `promise`, or a rejection naming `what` once `ms` pass. Its text is this server's own, so a
+ *  NATS failure line prints it whole (`LoggableError`). */
 async function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const expired = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms)
+    timer = setTimeout(() => reject(new LoggableError(`${what} timed out after ${ms} ms`)), ms)
   })
   try {
     return await Promise.race([promise, expired])
@@ -352,6 +367,37 @@ export interface ChannelSessionOptions {
   readonly configFile: SessionConfigFile
   /** How long a handoff waits for NATS to confirm the new direct subject before it retries. */
   readonly handoffFlushTimeoutMs?: number
+  /**
+   * Moves the NATS connection to the broker token of the id now bound and returns once the
+   * connection is back, admitted with it (`followNatsCredential`), where the connection presents
+   * the session's broker token; absent otherwise. A handoff runs it before the new id's relay
+   * subject is subscribed: the auth service grants a session's token that session's subjects
+   * alone. A failed move leaves the relay closed and the next registration retries it.
+   */
+  readonly followSession?: () => Promise<void>
+  /** Has a refused trade of the connection's own told the session's outage report: the relay
+   *  socket's (`ListenerRelay.reportOutagesTo`); absent for NATS. */
+  readonly reportOutagesTo?: (outage: RelayOutage) => void
+  /**
+   * Told each `/clear` this session adopts from the handoff file, as it moves from `previous` to
+   * `next` (`adoptHandoff`), before the new id registers: what else the server keeps under the
+   * session's id moves with it. The live view does (`AgentStreamRunner.sessionAdopted`), since the
+   * mod's own report of a `/clear` can come before the view listens for one.
+   */
+  readonly adopted?: (previous: string, next: string) => void
+  /**
+   * Opens a new NATS connection once the one the session holds closed for good while it runs:
+   * nats.js gives up on a repeated authorization refusal under an nkey seed or no credential, and
+   * a `close()` ends one too. The server dials as its start did (`dialChannelNats`) until a dial
+   * opens one or the server stops; `failed` is handed each dial's error meanwhile, which the
+   * session's refused registration names. Rejects once the server stops, and with a dial that
+   * failed for good, which the session dials again at its next heartbeat. Omitted, a connection
+   * closed for good stays closed, and the session is told it receives nothing.
+   */
+  readonly reopen?: ReopenConnection
+  /** Ends a start still waiting for its connection to come back (`flushThroughRedials`): the
+   *  process is stopping. */
+  readonly startSignal?: AbortSignal
   /** How long a deregistration waits for a registration already on the wire (default
    *  `REGISTRATION_SETTLE_MS`), past which the DELETE goes out anyway. The shutdown path spends
    *  at most `SHUTDOWN_SETTLE_MS` of it, over both of its waits. */
@@ -398,6 +444,11 @@ export interface ChannelSessionOptions {
    * or `source` for a bundle outside its plugin cache).
    */
   readonly pluginVersion: string
+  /**
+   * The package every registration names: `@sjawhar/claude-envoy` under Claude Code, and
+   * `@sjawhar/codex-envoy` under Codex, the package each host's sessions update.
+   */
+  readonly pluginName: string
 }
 
 // The shared tool contract builds schemas from each host's Zod API. Claude's
@@ -462,10 +513,12 @@ export async function postDispatchReply(
   delivery: DispatchDelivery,
   result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean },
 ): Promise<void> {
-  const config = sessionDispatchSettings(configFile, process.env, {
-    cwd: identity.directory,
-    session: () => identity.id,
-  }).dispatch
+  const config = (
+    await sessionDispatchSettings(configFile, process.env, {
+      cwd: identity.directory,
+      session: () => identity.id,
+    })
+  ).dispatch
   if (!config.enabled) throw new Error(config.error ?? config.notice)
   await postDeliveryReply(config, identity.id, delivery, result)
 }
@@ -522,6 +575,13 @@ export function createChannelDelivery(input: {
     if (envelope === undefined) return
     const eventId = envelope.event_id
     if (eventId !== undefined && inbox.some((entry) => entry.event_id === eventId)) return
+    // A payload the card could not lay out is shown as the text its sender sent: said here, for
+    // the message the inbox lists the first time, so a copy Envoy sends again says nothing new.
+    if (rendered.payloadShownAsText !== undefined) {
+      process.stderr.write(
+        `envoy-channel: message ${eventId ?? "unknown"}'s payload is shown as its text; the card could not lay it out (${rendered.payloadShownAsText})\n`,
+      )
+    }
     inbox.unshift({
       event_id: eventId ?? "unknown",
       at: inboundTimestamp(envelope.issued_at),
@@ -555,7 +615,9 @@ export function createChannelDelivery(input: {
       if (rendered.skip) return tail.then(() => false)
       // A targeted Dispatch delivery the shared renderer could not validate is
       // never shown to the model: it is answered on Dispatch when it names a
-      // message, and dropped with a log line when it does not.
+      // message, and dropped with a log line when it does not. A report Dispatch
+      // made and gave no copy of its answer for (`DispatchWriteLandedError`)
+      // answered the attempt, and its line says it landed.
       if (rendered.rejectedDelivery !== undefined) {
         const rejected = rendered.rejectedDelivery
         process.stderr.write(
@@ -567,7 +629,9 @@ export function createChannelDelivery(input: {
           () => false,
           (error: unknown) => {
             process.stderr.write(
-              `envoy-channel: could not report the rejected delivery to Dispatch — ${messageFor(error)}\n`,
+              error instanceof DispatchWriteLandedError
+                ? `envoy-channel: the report of the rejected delivery landed on Dispatch, which gave no copy of its answer — ${error.message}\n`
+                : `envoy-channel: could not report the rejected delivery to Dispatch — ${messageFor(error)}\n`,
             )
             return false
           },
@@ -616,6 +680,121 @@ export function createChannelDelivery(input: {
   }
 }
 
+/** How long the startup flush waits before asking again after a redial rejected it, and how often
+ *  it looks whether the connection was closed for good meanwhile. */
+const REDIAL_FLUSH_RETRY_MS = 250
+
+/** Why a start that `flushThroughRedials` ended did not come up: its connection closed for good,
+ *  where nothing could replace it. */
+const START_CLOSED = "the NATS connection closed before its subscriptions reached the server"
+
+/** Why a session holds no live NATS connection: the error it closed with, and the last dial of a
+ *  new one that failed. */
+interface LostConnection {
+  readonly closeError: unknown
+  dialError: unknown
+}
+
+/**
+ * Why a session holds no live NATS connection, as a log and a notice may print it
+ * (`natsFailureReason`): the error its connection closed with, else the last dial of a new one
+ * that failed, else this plugin's own words for a close that named no error (a `close()`).
+ */
+function lostConnectionReason(lost: LostConnection): string {
+  const why = lost.closeError ?? lost.dialError
+  return why === undefined ? "it closed and named no error" : natsFailureReason(why)
+}
+
+/** A start's flush that the connection's close for good ended, with the flush error that showed
+ *  the close where one did (`flushThroughRedials`). */
+interface ClosedBeforeFlush {
+  readonly error: unknown
+}
+
+/** Why a start without a way to replace its connection ended: it closed for good before the
+ *  session's subscriptions reached the server. Named as a log may print it (`natsFailureReason`),
+ *  with no cause, which an error printed whole would print with it. */
+function closedStart(closed: ClosedBeforeFlush): Error {
+  return closed.error === undefined
+    ? new Error(START_CLOSED)
+    : new Error(`${START_CLOSED}: ${natsFailureReason(closed.error)}`)
+}
+
+/** How long the start waits for nats.js to settle a closed connection's `closed()`. */
+const CLOSE_ERROR_WAIT_MS = 1_000
+
+/**
+ * The error a connection closed for good closed with (nats.js's `closed()`), if any: nats.js marks
+ * the connection closed a moment before it settles `closed()`, so the read is bounded, and a
+ * connection that settles nothing in that time is taken to have closed naming no error.
+ */
+async function closeErrorOf(connection: ChannelConnection): Promise<unknown> {
+  const waited = Promise.withResolvers<undefined>()
+  const timer = setTimeout(() => waited.resolve(undefined), CLOSE_ERROR_WAIT_MS)
+  try {
+    return await Promise.race([
+      connection.closed().then(
+        (error) => error,
+        (error: unknown) => error,
+      ),
+      waited.promise,
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Flushes `connection`, asking again while the connection redials: nats.js rejects every pending
+ * flush with DISCONNECT each time it redials (`protocol.js`'s `prepare`), and a hub that is
+ * restarting, or whose auth service is away, as a channel server starts is a hub it reconnects to,
+ * not one that fails the session's start. Resolves undefined once a flush reached the server. The
+ * start ends the moment `signal` aborts (the process is stopping), with `START_STOPPING`. A
+ * connection that closes for good meanwhile is answered with `ClosedBeforeFlush`, for the start to
+ * replace — before an attempt, while a flush is pending, and during the wait to ask again — since
+ * nats.js's close leaves a pending flush unsettled, so only watching the connection sees it.
+ */
+async function flushThroughRedials(
+  connection: ChannelConnection,
+  signal: AbortSignal | undefined,
+): Promise<ClosedBeforeFlush | undefined> {
+  const ended = Promise.withResolvers<"stopping" | "closed">()
+  const check = (): void => {
+    if (signal?.aborted === true) ended.resolve("stopping")
+    else if (connection.isClosed()) ended.resolve("closed")
+  }
+  const watch = setInterval(check, REDIAL_FLUSH_RETRY_MS)
+  signal?.addEventListener("abort", check)
+  try {
+    for (;;) {
+      check()
+      const attempt = connection.flush().then(
+        () => ({ flushed: true as const }),
+        (error: unknown) => ({ flushed: false as const, error }),
+      )
+      const outcome = await Promise.race([attempt, ended.promise])
+      if (outcome === "stopping") throw new Error(START_STOPPING)
+      if (outcome === "closed") return { error: undefined }
+      if (outcome.flushed) {
+        if (signal?.aborted === true) throw new Error(START_STOPPING)
+        return undefined
+      }
+      check()
+      if (signal?.aborted === true) throw new Error(START_STOPPING)
+      if (connection.isClosed()) return { error: outcome.error }
+      const waited = await Promise.race([
+        Bun.sleep(REDIAL_FLUSH_RETRY_MS).then(() => "asked again" as const),
+        ended.promise,
+      ])
+      if (waited === "stopping") throw new Error(START_STOPPING)
+      if (waited === "closed") return { error: outcome.error }
+    }
+  } finally {
+    clearInterval(watch)
+    signal?.removeEventListener("abort", check)
+  }
+}
+
 /**
  * Begin the session's relay subscription before advertising the route to Envoy. The channel
  * server holds the listener's relay subject for the session's own durable consumer, which is
@@ -625,6 +804,23 @@ export function createChannelDelivery(input: {
 export async function startChannelSession(options: ChannelSessionOptions): Promise<ChannelSession> {
   const { identity } = options
   let directSubject = legacyAgentSubject(identity.id)
+  /** The NATS connection the session holds now, and the credential move that goes with it: the
+   *  start's, until it closes for good and `options.reopen` opens another (`connectionClosed`). */
+  let connection = options.connection
+  let followSession = options.followSession
+  /**
+   * Why the session holds no live connection, while it holds none: the error its connection
+   * closed with, and the last dial of a new one that failed. Its registrations go out with no
+   * relay meanwhile, naming why (`relayMissing`).
+   */
+  let connectionLost: LostConnection | undefined
+  /** Whether a new connection is being dialed or set up now (`reopenConnection`): one at a time. */
+  let reopening = false
+  /** The connections whose close for good the session has taken up (`connectionClosed`), and
+   *  those it watches (`watchConnection`): each once, whether the start found the connection
+   *  closed, its watch did, or a reopen opened it while the session was still starting. */
+  const lostConnections = new WeakSet<ChannelConnection>()
+  const watchedConnections = new WeakSet<ChannelConnection>()
   /**
    * What this session does with a person's direct messages, for the id now bound: the record is
    * kept per session id (`./user-turn-state`), so a `/clear` builds another one. Undefined until
@@ -728,6 +924,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   /** The writer of the bound id's state file (`replayStateWriter`), set by `restoreDelivery`. */
   let stateWriter: ReplayStateWriter | undefined
 
+  /** A handoff's relay still needs its new credential and delivery state before registration. */
+  let handoffDeliveryPending = false
+
   /**
    * What this session was already shown, and the notice naming a frame it could not be shown
    * (`@legion/envoy-client/delivery-ledger`), with its state in the session id's file.
@@ -820,7 +1019,15 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     readonly delivery: ConsumerDelivery
     /** The id's state file, which also holds the relay's snapshot. */
     readonly state: ReplayStateWriter
+    /** Undefined while the session holds no live connection (`connectionLost`), and once the
+     *  subscription ended with an error of its own (`stopped`). */
     subscription: ChannelTopicSubscription | undefined
+    /**
+     * The error the relay subscription ended with on a live connection: the server refused it, say.
+     * Until the heartbeat takes the subject again (`resubscribeRelay`), the session holds no relay
+     * subject, and its registration is refused naming why (`relayMissing`).
+     */
+    stopped: { readonly error: unknown } | undefined
   }
   let relay: Relay | undefined
 
@@ -888,9 +1095,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   /**
    * A new relay for session `sessionID`, its snapshot `restored` (before any `setFollowed`), its
    * subject subscribed at once; another id's relay is closed first. Its epoch begins as it is
-   * made, on this process's one NATS connection; a reconnect begins another (`renewRelayEpoch`).
-   * Every later change of its snapshot goes into the id's state file: after a frame is written,
-   * after the followed topics change, and after a registration answer moves the stream.
+   * made, on the session's NATS connection; a reconnect begins another (`renewRelayEpoch`), and so
+   * does a new connection in place of one closed for good (`connectionClosed`). Every later
+   * change of its snapshot goes into the id's state file: after a frame is written, after the
+   * followed topics change, and after a registration answer moves the stream.
    */
   const openRelay = (
     sessionID: string,
@@ -910,7 +1118,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
           )
         },
       },
-      publish: (reply, body) => options.connection.publish(reply, encoder.encode(body)),
+      // The connection held as the answer goes out: one that replaced a connection closed for
+      // good answers what the closed one could not.
+      publish: (reply, body) => connection.publish(reply, encoder.encode(body)),
       persist: (snapshot) => {
         if (relay !== owner) return false
         state.consumer(snapshot).catch((error: unknown) => {
@@ -927,14 +1137,40 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       delivery: consumer,
       state,
       subscription: undefined,
+      stopped: undefined,
     }
     relay = owner
-    const subscription = options.connection.subscribe(consumer.subject)
+    subscribeRelay(owner)
+  }
+
+  /**
+   * Subscribes `owner`'s subject on the connection held now, each message to the relay. On a
+   * connection closed for good, which nats.js refuses a subscribe on, it subscribes nothing: the
+   * subject is taken on the connection that replaces it (`reopenFor`), as it is for a connection
+   * lost after the subscribe. Throws where the connection cannot take a subscription otherwise (it
+   * is draining).
+   */
+  const subscribeRelay = (owner: Relay): void => {
+    if (connection.isClosed()) {
+      owner.subscription = undefined
+      return
+    }
+    const subscription = connection.subscribe(owner.delivery.subject)
     owner.subscription = subscription
+    owner.stopped = undefined
     void pumpRelay(owner, subscription)
   }
 
-  /** Each relay message goes to the relay, which answers `received` at once and queues it. */
+  /**
+   * Each relay message goes to the relay, which answers `received` at once and queues it. A
+   * subscription nats.js ends with an error of its own (a refusal from the server) leaves the
+   * session with no relay subject while its connection stays up: nothing else takes it again, and a
+   * registration that asked for it would be answered with a consumer relayed to nobody. So the
+   * error is kept (`Relay.stopped`), the session registers at once with no relay, which tells it
+   * once that it receives nothing and names why, and the next heartbeat takes the subject again
+   * (`resubscribeRelay`). A subscription that ends with no error is one this process unsubscribed
+   * or whose connection closed, which `closeRelay` and `connectionClosed` see to.
+   */
   const pumpRelay = async (owner: Relay, subscription: ChannelTopicSubscription): Promise<void> => {
     try {
       for await (const message of subscription) {
@@ -942,9 +1178,61 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       }
     } catch (error) {
       process.stderr.write(
-        `envoy-channel: the relay subscription of ${owner.sessionID} stopped — ${messageFor(error)}\n`,
+        `envoy-channel: the relay subscription of ${owner.sessionID} stopped — ${natsFailureReason(error)}\n`,
       )
+      if (owner.subscription !== subscription) return
+      owner.subscription = undefined
+      owner.stopped = { error }
+      if (shuttingDown || relay !== owner) return
+      serialized(register).catch(() => {
+        registrationFailed = true
+      })
     }
+  }
+
+  /**
+   * Takes the relay subject again after its subscription ended with an error of its own, while the
+   * connection is up: before each heartbeat's registration. The subscription counts as taken only
+   * once the server has answered a flush behind it, since nats-server refuses a subscription as it
+   * reads it, before that answer: a refusal ends the subscription before the flush returns, and
+   * then the registration still goes out with no relay. A flush that is rejected (the connection
+   * redials, and sends the subscription again after it) or that times out says nothing of whether
+   * the server will take it, so the subscription is given up, the error it ended with is kept, and
+   * the next heartbeat tries again: until a flush confirms it, no registration asks the listener to
+   * relay to it and the session is not told it receives again. Once it is confirmed a new epoch
+   * begins, so the listener restarts the relay at its ack floor.
+   */
+  const resubscribeRelay = async (): Promise<void> => {
+    const owner = relay
+    const previous = owner?.stopped
+    if (owner === undefined || previous === undefined || owner.sessionID !== identity.id) return
+    if (connectionLost !== undefined || connection.isClosed()) return
+    try {
+      subscribeRelay(owner)
+    } catch (error) {
+      owner.stopped = { error }
+      return
+    }
+    const taken = owner.subscription
+    const confirmed = await withTimeout(
+      connection.flush(),
+      options.handoffFlushTimeoutMs ?? HANDOFF_FLUSH_TIMEOUT_MS,
+      "flushing NATS",
+    ).then(
+      () => true,
+      () => false,
+    )
+    // nats.js ends a refused subscription as it reads the server's refusal, before the flush's
+    // answer; the pump sees the end a turn of the event loop later.
+    await nextTurn()
+    if (relay !== owner || owner.subscription !== taken) return
+    if (!confirmed) {
+      taken?.unsubscribe()
+      owner.subscription = undefined
+      owner.stopped = previous
+      return
+    }
+    owner.delivery.beginEpoch()
   }
 
   /**
@@ -986,7 +1274,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
 
   // Nothing is subscribed per topic: this holds the followed set a registration carries, and
   // the one NATS subscription this process makes is the relay's (`openRelay`).
-  const followedTopics: ChannelTopics = createChannelTopics(options.connection)
+  const followedTopics: ChannelTopics = createChannelTopics(() => connection)
 
   /**
    * Drops removed topics from the followed set and the registry entry, its failure reported
@@ -1043,18 +1331,38 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * and receives nothing. The session still runs, and the heartbeat registers again every tick
    * until one is accepted; the reason is the listener's own, one of those
    * `ErrorWireSchema.reason` lists (`@legion/envoy-client`'s `transport.ts`), which the error
-   * carries in its message and which `inboundUnavailableNoticeText` words for every host.
+   * carries in its message and which `inboundUnavailableNoticeText` words for every host. The
+   * accepted registration that ends the outage is said too, or the session would read itself as
+   * deaf after it recovered. Neither is said once shutdown has begun: a registration still on the
+   * wire as the session leaves is no outage of a running session.
    */
-  const inboundOutage = inboundUnavailable((why) => {
-    process.stderr.write(
-      `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`,
-    )
-    delivery.notice(inboundUnavailableNoticeText(why)).catch((noticeError: unknown) => {
+  const inboundOutage = inboundUnavailable(
+    (why) => {
+      if (shuttingDown) return
       process.stderr.write(
-        `envoy-channel: the session could not be told that it receives nothing — ${messageFor(noticeError)}\n`,
+        `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`,
       )
-    })
-  })
+      delivery.notice(inboundUnavailableNoticeText(why)).catch((noticeError: unknown) => {
+        process.stderr.write(
+          `envoy-channel: the session could not be told that it receives nothing — ${messageFor(noticeError)}\n`,
+        )
+      })
+    },
+    () => {
+      if (shuttingDown) return
+      process.stderr.write(
+        "envoy-channel: this session receives again: its registration was accepted\n",
+      )
+      delivery.notice(inboundRestoredNoticeText()).catch((noticeError: unknown) => {
+        process.stderr.write(
+          `envoy-channel: the session could not be told that it receives again — ${messageFor(noticeError)}\n`,
+        )
+      })
+    },
+  )
+  // A relay socket's refused trade is this session's outage too, told once with its
+  // registrations', which only a registration the listener accepted ends.
+  options.reportOutagesTo?.(inboundOutage)
 
   /** The title last stamped, so a heartbeat stamps nothing new. */
   let stampedTitle: { readonly sessionID: string; readonly title: string } | undefined
@@ -1070,6 +1378,31 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * (`takeDeliveryAnswer`).
    */
   const register = async (): Promise<void> => {
+    // Nothing registers once shutdown has begun: a registration queued before it would find the
+    // relay closed, be refused and tell the leaving session an outage, and one the chain still
+    // holds past the shutdown's bounded wait would land after the DELETE and write the record back.
+    if (shuttingDown) return
+    // With no live connection the handoff's relay waits for the connection that replaces it: its
+    // credential cannot move, and its subject cannot be subscribed (`connectionClosed`).
+    if (handoffDeliveryPending && connectionLost === undefined) {
+      await followSession?.()
+      if (shuttingDown) return
+      // A refused subscription is closed by nats.js, not restored by its next reconnect, so no
+      // new relay opens until the connection has been admitted as this session.
+      await restoreDelivery()
+      handoffDeliveryPending = false
+      // Confirm the new relay before asking the listener to deliver to it. A stalled flush is
+      // bounded; the listener retries a frame that reached no subscriber.
+      await withTimeout(
+        connection.flush(),
+        options.handoffFlushTimeoutMs ?? HANDOFF_FLUSH_TIMEOUT_MS,
+        "flushing NATS",
+      ).catch((error: unknown) => {
+        process.stderr.write(
+          `envoy-channel: could not confirm the relay subscription of ${identity.id} — ${natsFailureReason(error)}\n`,
+        )
+      })
+    }
     const title = options.title?.(identity.id) ?? ""
     if (
       options.stampTitle !== undefined &&
@@ -1091,11 +1424,23 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       }
     }
     const sessionID = identity.id
-    const asking = relay?.sessionID === sessionID ? relay : undefined
+    // While no connection is live, or the relay's subscription ended with an error of its own, the
+    // session holds no relay subject, and the refusal names why.
+    const lost = connectionLost
+    const stopped = relay?.stopped
+    // The subscription's own error, in the words Oh My Pi names it in (`Relay.missing`).
+    const relayMissing =
+      lost !== undefined
+        ? lostConnectionReason(lost)
+        : stopped === undefined
+          ? undefined
+          : natsFailureReason(stopped.error)
+    const asking = relayMissing === undefined && relay?.sessionID === sessionID ? relay : undefined
     await registerWithRelay({
       relay: asking?.delivery,
+      ...(relayMissing === undefined ? {} : { relayMissing }),
       ownAgentSubject: directSubject,
-      followed: followedTopics.topics(),
+      followed: () => followedTopics.topics(),
       roles: heldRole === undefined ? [] : [heldRole],
       outage: inboundOutage,
       send: (topics, deliveryRequest) => {
@@ -1109,7 +1454,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
           driving: false,
           selfSubscribed: true,
           clientInstanceID: options.clientInstanceID,
-          plugin: { name: packageName, version: options.pluginVersion },
+          plugin: { name: options.pluginName, version: options.pluginVersion },
           delivery: deliveryRequest,
         })
         // Held as a promise that settles either way, so a deregistration waits for the call to
@@ -1130,6 +1475,27 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       answered: (result) => {
         if (asking !== undefined) takeDeliveryAnswer(sessionID, asking, result)
       },
+      // An edge listener refused these topics for the projects of the session's token: they stop
+      // being followed, here and in the ledger, so no later registration carries them and a
+      // restart does not follow them again, and the session is told which, once, where it is told
+      // an outage, whichever path registered. A session this process has since left keeps its own.
+      drop: (topics, reason) => {
+        if (identity.id !== sessionID) return
+        for (const topic of topics) userTopics.delete(topic)
+        followedTopics.unfollow(topics)
+        ledger.followedChanged().catch((error: unknown) => {
+          process.stderr.write(
+            `envoy-channel: the topics the listener refused stay in the delivery state until it is written next — ${messageFor(error)}\n`,
+          )
+        })
+        if (shuttingDown) return
+        delivery.notice(refusedTopicsNoticeText(topics, reason)).catch((noticeError: unknown) => {
+          process.stderr.write(
+            `envoy-channel: the session could not be told which topics the listener refused — ${messageFor(noticeError)}\n`,
+          )
+        })
+      },
+      log: (line) => process.stderr.write(`envoy-channel: ${line}\n`),
     })
   }
 
@@ -1348,6 +1714,16 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * old one leaves the topic list before the first registration under it. Runs
    * only inside `serialized`.
    *
+   * A `/clear` waits while the connection is closed for good and not yet replaced and set up
+   * (`connectionLost`, which the replacement's own step in the chain clears, `reopenFor`): until
+   * then the new id's relay can be neither moved to its credential nor subscribed, so the new id's
+   * registration would be refused after the identity had already moved, and the handoff would end
+   * there, half done and never reported. A heartbeat queued in the chain can run after the
+   * replacement has connected and before that set-up. The check follows the read of the handoff
+   * file: the connection can close for good, and its replacement connect, while that read is
+   * awaited, and only a check after it sees the loss. The next heartbeat after the set-up adopts
+   * the `/clear`.
+   *
    * The deregistration of the old id carries this process's client instance id, so the listener
    * removes that entry only while it is still this instance's: a later process that resumed the
    * old session id and registered it keeps its registration, and this handoff takes nothing
@@ -1357,6 +1733,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     if (handoffFile === undefined) return
     const next = await readSessionHandoff(handoffFile)
     if (next === undefined || next === identity.id) return
+    if (connectionLost !== undefined) return
     const previous = identity.id
     const previousSubject = directSubject
     const nextSubject = legacyAgentSubject(next)
@@ -1365,7 +1742,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // Bounded: this runs inside the registry chain, and a flush on a stalled NATS
       // connection never settles, which would hold every later write and shutdown.
       await withTimeout(
-        options.connection.flush(),
+        connection.flush(),
         options.handoffFlushTimeoutMs ?? HANDOFF_FLUSH_TIMEOUT_MS,
         "flushing NATS",
       )
@@ -1381,36 +1758,24 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       throw error
     }
     identity.set(next)
+    options.adopted?.(previous, next)
     // The last call for the old id has been made (its deregistration above; the role moves to
     // the new id under the new id's own credential, `restoreRole`), so the key pair and
     // renewing token it traded under go with it rather than renewing for the life of this
     // process, which `/clear` would otherwise add one of per session.
     forgetBrokerSession(previous)
     directSubject = nextSubject
+    // The old relay closes before moving credentials. Registration retries a failed move,
+    // even though the identity already names the new session, and only then opens its relay.
+    closeRelay()
+    handoffDeliveryPending = true
     // `unfollow` only takes the subject out of the topic list a registration carries: nothing is
     // subscribed per topic, so there is nothing to drain and nothing to wait for.
     followedTopics.unfollow([previousSubject])
-    // The new id's delivery state: none after a `/clear`, which starts afresh as a new session
-    // does, so nothing published before it existed comes back. Until it is loaded, the ledger
-    // records nothing. Loading it closes the old id's relay (its unanswered frames `nak`) and
-    // subscribes the new id's relay subject.
-    await restoreDelivery()
     // The new id takes a record of its own: an attempt the old id handled is the old id's, and
     // the rows of a conversation a `/clear` ended name nothing in the new one.
     await restoreTurns()
     roleTransferFrom ??= previous
-    // The new relay subject reaches the server before the registration that asks for it. Not
-    // fatal: a relayed frame nobody answers pauses the relay, which sends again after its backoff
-    // and at the registration below.
-    await withTimeout(
-      options.connection.flush(),
-      options.handoffFlushTimeoutMs ?? HANDOFF_FLUSH_TIMEOUT_MS,
-      "flushing NATS",
-    ).catch((error: unknown) => {
-      process.stderr.write(
-        `envoy-channel: could not confirm the relay subscription of ${next} — ${messageFor(error)}\n`,
-      )
-    })
     await register()
     await transferRole()
     process.stderr.write(`envoy: session id changed ${previous} -> ${next}; re-registered\n`)
@@ -1521,17 +1886,27 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     dropRetry = undefined
   }
   const heartbeat = async (fromRetry = false): Promise<void> => {
-    if (shuttingDown || heartbeatInFlight) return
+    if (shuttingDown) return
+    // A session left with no connection, its last dial failed for good, dials again each tick.
+    reopenConnection()
+    if (heartbeatInFlight) return
     heartbeatInFlight = true
     try {
       await serialized(async () => {
         await adoptHandoff()
+        // A relay subscription that ended with an error of its own is taken again first, so this
+        // registration asks for it.
+        await resubscribeRelay()
         try {
           await register()
         } catch (error) {
           registrationFailed = true
           throw error
         }
+        // A body the chain held while shutdown began writes no role: `register` returned without
+        // registering, and a role write the chain still holds past the shutdown's bounded wait
+        // would land after the DELETE.
+        if (shuttingDown) return
         await reassertRole(registrationFailed)
         await transferRole()
         await syncRegisteredInterests()
@@ -1591,7 +1966,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   // The session's delivery record comes first, so a redelivery of a frame it was shown before is
   // dropped against it. The topics it followed come back with it: a session the listener reaped
   // (ten minutes after it stopped) still follows them, and its consumer still holds them. Its
-  // relay comes with it too, restored and subscribed before the first registration asks for it.
+  // relay comes with it too, restored and subscribed before the first registration asks for it;
+  // on a connection already closed for good it is subscribed on the one that replaces it
+  // (`subscribeRelay`), as the flush below finds.
   const remembered = await restoreDelivery()
   // What this session has already done with the messages Dispatch sent it, before any frame can
   // arrive: an attempt a process before this one spent must not be spent again.
@@ -1611,7 +1988,22 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       `envoy-channel: could not read the registered interests (${messageFor(error)}); the next heartbeat retries\n`,
     )
   })
-  await options.connection.flush()
+  // The subscriptions reach the server before the first registration routes anything to them,
+  // through any redial the connection is making as the session starts.
+  const closedBeforeFlush = await flushThroughRedials(connection, options.startSignal)
+  if (closedBeforeFlush !== undefined) {
+    // A session with no way to replace its connection cannot start without it.
+    if (options.reopen === undefined) throw closedStart(closedBeforeFlush)
+    // Neither Claude Code nor Codex starts a channel server again, so failing the start here would
+    // leave the session without Envoy for its life: the start goes on, and the connection is
+    // replaced as one lost while the session runs is (`connectionClosed`). The first registration
+    // below is refused naming why, which tells the session once that it receives nothing, and the
+    // new connection's tells it that it receives again. A stop asked for meanwhile still ends the
+    // start as a stop: a close the server makes itself dials nothing.
+    const closeError = await closeErrorOf(connection)
+    if (options.startSignal?.aborted === true) throw new Error(START_STOPPING)
+    connectionClosed(connection, closeError ?? closedBeforeFlush.error)
+  }
   await serialized(async () => {
     // Best-effort, as the interests read above is: a listener that refuses this registration
     // because it can give the session no consumer (`inboundOutage` tells the session
@@ -1698,21 +2090,137 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     watchFile(handoffFile, { interval: HANDOFF_POLL_MS }, handoffFileChanged)
     requestHeartbeat()
   }
-  // nats.js resubscribes by itself after a reconnect; what was published while it was away is in
-  // the stream, and the relay restarts at its ack floor on the new epoch's registration. The
-  // status events end when the connection closes.
-  void (async () => {
+  /**
+   * The session's connection closed for good, and not by its shutdown: nats.js gave up on it (a
+   * repeated authorization refusal under an nkey seed or no credential), or something closed it,
+   * while the session ran or before its start's subscriptions reached the server. Until a new
+   * connection is live the session holds no relay subject, so its registration is refused naming
+   * why (`relayMissing`), and the session is told once that it receives nothing; a new connection
+   * is dialed at once (`reopenConnection`). A function declaration: the start calls it before the
+   * session's watch of its connection begins.
+   */
+  function connectionClosed(closed: ChannelConnection, closeError: unknown): void {
+    if (shuttingDown || closed !== connection || lostConnections.has(closed)) return
+    lostConnections.add(closed)
+    connectionLost = { closeError, dialError: undefined }
+    // Ended with its connection: nothing is relayed until a new one takes the subject again.
+    if (relay !== undefined) relay.subscription = undefined
+    process.stderr.write(
+      `envoy-channel: the NATS connection closed for good (${lostConnectionReason(connectionLost)}); ${options.reopen === undefined ? "nothing dials a new one" : "dialing a new one"}\n`,
+    )
+    // Refused now rather than at the next heartbeat, since the session receives nothing from this
+    // moment: the refusal is told by the outage (`inboundOutage`), once.
+    serialized(register).catch(() => {
+      registrationFailed = true
+    })
+    reopenConnection()
+  }
+
+  /**
+   * Dials a new connection in place of the one lost, unless one is being dialed or set up: at the
+   * loss, and at every heartbeat while the session holds none, so a dial that failed for good (an
+   * authorization refusal under an nkey seed or no credential, which no redial cures) is dialed
+   * again a heartbeat later. A connection lost again while its replacement was set up is dialed
+   * for at once. A function declaration: the first heartbeat can run before the start returns.
+   */
+  function reopenConnection(): void {
+    const lost = connectionLost
+    const reopen = options.reopen
+    if (lost === undefined || reopen === undefined || reopening || shuttingDown) return
+    reopening = true
+    void reopenFor(lost, reopen).finally(() => {
+      reopening = false
+      if (connectionLost !== undefined && connectionLost !== lost) reopenConnection()
+    })
+  }
+
+  /**
+   * `options.reopen` dials until a connection opens or the server stops, each failed dial's error
+   * kept as why the session holds no relay subject. On the connection it opens the relay's subject
+   * is subscribed again and a new epoch begins, so the listener restarts the relay at its ack
+   * floor, and the registration it accepts tells the session it receives again. A dial that
+   * failed for good is said once per failure, and the next heartbeat dials again.
+   */
+  async function reopenFor(lost: LostConnection, reopen: ReopenConnection): Promise<void> {
+    let reopened: ReopenedConnection
     try {
-      for await (const status of options.connection.status()) {
-        if (status.type !== "reconnect") continue
-        renewRelayEpoch()
-      }
+      reopened = await reopen((dialError) => {
+        lost.dialError = dialError
+      })
     } catch (error) {
+      if (shuttingDown || options.startSignal?.aborted === true) return
+      lost.dialError = error
       process.stderr.write(
-        `envoy-channel: the NATS connection's status reader failed — ${messageFor(error)}\n`,
+        `envoy-channel: gave up opening a new NATS connection (${natsFailureReason(error)}); dialing again at the next heartbeat\n`,
       )
+      return
     }
-  })()
+    const live = reopened.connection
+    if (shuttingDown) {
+      // The server stopped as the dial opened it: nothing will use this connection.
+      void live.close().catch(() => undefined)
+      return
+    }
+    connection = live
+    followSession = reopened.followSession
+    reopened.reportOutagesTo?.(inboundOutage)
+    // A handoff that waits for its relay opens it on this connection as it registers.
+    if (relay !== undefined && !handoffDeliveryPending) subscribeRelay(relay)
+    watchConnection(live)
+    await serialized(async () => {
+      // The subscription reaches the server before the registration routes anything to it. A
+      // stalled flush is bounded; the listener retries a frame that reached no subscriber.
+      await withTimeout(
+        live.flush(),
+        options.handoffFlushTimeoutMs ?? HANDOFF_FLUSH_TIMEOUT_MS,
+        "flushing NATS",
+      ).catch((error: unknown) => {
+        process.stderr.write(
+          `envoy-channel: could not confirm the relay subscription on the new NATS connection — ${natsFailureReason(error)}\n`,
+        )
+      })
+      // Closed for good again meanwhile: that close is the one the session is told of now.
+      if (shuttingDown || live !== connection || live.isClosed()) return
+      connectionLost = undefined
+      relay?.delivery.beginEpoch()
+      await register()
+    }).catch((error: unknown) => {
+      registrationFailed = true
+      process.stderr.write(
+        `envoy-channel: could not register on the new NATS connection (${messageFor(error)}); the next heartbeat retries\n`,
+      )
+    })
+  }
+
+  /**
+   * Follows `watched`, the connection the session holds. nats.js resubscribes by itself after a
+   * reconnect; what was published while it was away is in the stream, and the relay restarts at
+   * its ack floor on the new epoch's registration. nats.js 2.29.3 never ends a connection's status
+   * readers, even after it closes, so this reader stays parked on a closed connection; the close
+   * is read from `closed()`, and a close for good is `connectionClosed`'s.
+   */
+  function watchConnection(watched: ChannelConnection): void {
+    // A reopen during the start watches its connection before the start's own watch begins.
+    if (watchedConnections.has(watched)) return
+    watchedConnections.add(watched)
+    void (async () => {
+      try {
+        for await (const status of watched.status()) {
+          if (status.type !== "reconnect") continue
+          renewRelayEpoch()
+        }
+      } catch (error) {
+        process.stderr.write(
+          `envoy-channel: the NATS connection's status reader failed — ${natsFailureReason(error)}\n`,
+        )
+      }
+    })()
+    void watched.closed().then(
+      (closeError) => connectionClosed(watched, closeError),
+      (closeError: unknown) => connectionClosed(watched, closeError),
+    )
+  }
+  watchConnection(connection)
 
   return {
     delivery,
@@ -1734,7 +2242,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         followedTopics.follow(topic)
         fresh.push(topic)
       }
-      await options.connection.flush()
+      // With no live connection there is nothing to flush, and the registration below is refused
+      // naming why (`connectionClosed`).
+      if (!connection.isClosed()) await connection.flush()
       await serialized(register)
       if (fresh.length > 0) {
         // Recorded at once, so a restart follows the topic again; the relay takes frames stored
@@ -1772,8 +2282,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       return turns?.messageOf(row)
     },
     async rememberRole(role) {
-      heldRole = role
-      await writeRoleRecord(roleStateFile(options.stateDirectory, identity.id), role)
+      await serialized(async () => {
+        heldRole = role
+        await writeRoleRecord(roleStateFile(options.stateDirectory, identity.id), role)
+      })
     },
     async shutdown() {
       if (shuttingDown) return
@@ -1839,6 +2351,9 @@ export async function executeEnvoyTool(
         ...(args.idempotency_key === undefined ? {} : { idempotencyKey: args.idempotency_key }),
         ...toMessageMetadata(args),
       })
+      if (result.keyTaken !== undefined) {
+        return { message: keyTakenText(result, "envoy_send"), ...keyTakenDetails(result) }
+      }
       return {
         message: sendConfirmationText(result),
         event_id: result.envelope.event_id,
@@ -1863,6 +2378,9 @@ export async function executeEnvoyTool(
       // plugin uses (`publishConfirmationText`). This server always names its own session as the
       // source, so the listener sends that session a message for a kept copy no session took,
       // unless it drops the copy more than an hour late, and the line says so.
+      if (result.keyTaken !== undefined) {
+        return { message: keyTakenText(result, "envoy_publish"), ...keyTakenDetails(result) }
+      }
       return {
         message: publishConfirmationText(result, { senderNamed: true }),
         event_id: result.envelope.event_id,
@@ -1962,7 +2480,7 @@ function pluginStateDirectory(): string {
  * notifications (`./legion-inbox`). */
 export async function runEnvoyChannelServer(): Promise<void> {
   const directory = projectDirectory()
-  const pane = legionPane(process.env)
+  const pane = await legionPane(process.env)
   // The session's envoy.json, by Claude Code's rule (`$CLAUDE_CONFIG_DIR/envoy.json` when that is
   // set), worked out once as the server starts; Dispatch's URL and token are re-read from it on each
   // use, so a file that moved its server takes effect without a restart.
@@ -1970,7 +2488,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The session this server drives, read at every broker trade: Claude Code mints a new id on
   // /clear and `identity` is set to it, so a token this session presents names this session.
   const currentSessionId = (): string => identity.id
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: directory,
     session: currentSessionId,
   })
@@ -2067,8 +2585,11 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // at a time, and a restart is a new instance with a new id.
   const clientInstanceID = newClientInstanceID()
   let runtime: ChannelToolRuntime | undefined
+  // What the start waits on, for a tool call it answers before the session is up: a start under
+  // NATS_AUTH=broker waits for the session's token for as long as the server lives.
+  let starting = "it reads its settings"
   let claim: LegionClaim | undefined
-  const daemon = pane === undefined ? undefined : createLegionDaemonClient(pane.daemonUrl)
+  const daemon = pane === undefined ? undefined : paneDaemonClient(pane.daemonUrl)
   // INFRA-220: the phase reminder's Claude Code host (`./legion-phase-hook`), which Claude Code's
   // own hooks drive through the `legion_phase_hook` tool. It is started here, beside the claim it
   // gates on, and restores this session's record as it starts, before any hook can be answered.
@@ -2104,7 +2625,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
           claim: () => claim?.capability(),
           booted: claimBooted.promise,
           firstTurnStarted: () => reportFirstTurn?.(),
-          readState: (signal) => daemon.state({ signal }),
+          readRecord: (issue, signal) => daemon.record(issue, { signal }),
           reportActivity: (input) => daemon.activity(input),
           inbox: inbox === undefined ? undefined : (text) => inbox.notification({ content: text }),
           publish: client.publish,
@@ -2144,8 +2665,20 @@ export async function runEnvoyChannelServer(): Promise<void> {
       else if (op === "ready_for_update") phaseHook?.updateAnswered()
       return mcpResult(answer)
     }
-    if (runtime === undefined) throw new Error("Envoy channel server is still starting")
-    return mcpResult(await executeEnvoyTool(runtime, request.params.name, request.params.arguments))
+    if (runtime === undefined)
+      throw new Error(`Envoy channel server is still starting: ${starting}`)
+    try {
+      return mcpResult(
+        await executeEnvoyTool(runtime, request.params.name, request.params.arguments),
+      )
+    } catch (error) {
+      // A tool that ran and failed answers a tool result with `isError`, which the model reads as
+      // the tool's answer: the listener's own sentence, a refusal for this session's sending rate
+      // among them. A tool this server does not have stays the JSON-RPC error it always was, since
+      // MCP lists an unknown tool among the protocol's errors, not a tool's.
+      if (error instanceof UnsupportedEnvoyToolError) throw error
+      return { content: [{ type: "text", text: messageFor(error) }], isError: true }
+    }
   })
   // INFRA-1026: the link to this session's Claude Code mod, bound below once the MCP transport is
   // up. It is this process's own socket, closed with the server. `linked` resolves with it for
@@ -2204,10 +2737,16 @@ export async function runEnvoyChannelServer(): Promise<void> {
   const stopped = Promise.withResolvers<void>()
   let stopping = false
   let session: ChannelSession | undefined
+  // Stops the keeper of the connection's broker token, where it presents one. Declared before
+  // `stop`, which may run on a signal before the connection is dialled.
+  let stopNatsKeeper = (): void => {}
   const stop = (): void => {
     if (stopping) return
     stopping = true
     booting.abort()
+    // The token keeper stops before the session drains its connection: a renewal it ran on a
+    // draining connection would be refused and warned about as a failure, at an ordinary stop.
+    stopNatsKeeper()
     // A reminder waiting on a 15-minute WAITING wait holds no shutting-down server open.
     phaseHook?.stop()
     void modLink?.close().catch(() => undefined)
@@ -2230,7 +2769,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // awaited: the transport is already reading stdin, and an await here would let the client's
   // first tool call arrive before the session below exists. A session whose link cannot bind
   // runs exactly as it does today, the mod finding nothing and staying silent.
-  void startModLink({
+  // Kept, so a start that fails still waits for the bind and closes what it bound (the `finally`
+  // below): a link bound after the failure would otherwise hold its socket for a dead session.
+  const linking = startModLink({
     // The id Claude Code gave this process, which is what the mod reads as `$.session.id()`;
     // the ENVOY_SESSION_ID override names an Envoy identity, never a Claude Code session.
     sessionId: claudeSessionId({ CLAUDE_CODE_SESSION_ID: process.env["CLAUDE_CODE_SESSION_ID"] }),
@@ -2257,14 +2798,14 @@ export async function runEnvoyChannelServer(): Promise<void> {
    */
   const router = (state: UserTurnState): UserTurnRouter => {
     const options: UserTurnRouterOptions = {
-      dispatch: (ms) => {
+      dispatch: async (ms) => {
         const active = activeDispatchSettings(
-          sessionDispatchSettings(configFile, process.env, { cwd: directory }).dispatch,
+          (await sessionDispatchSettings(configFile, process.env, { cwd: directory })).dispatch,
         )
         return active === null
           ? undefined
           : new DispatchClient(active.url, active.credential, fetch, {
-              signal: AbortSignal.timeout(ms),
+              deadlineMs: ms,
             })
       },
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
@@ -2294,14 +2835,63 @@ export async function runEnvoyChannelServer(): Promise<void> {
       stampOnce(() => identity.id)
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off })
     } else {
-      connection = await connect(
-        natsConnectionOptions({
-          servers: inbound.natsUrls,
-          name: `claude-envoy-channel-${identity.id}`,
-          seed: inbound.natsSeed,
-        }),
+      starting =
+        "relaySetting" in inbound
+          ? "it opens the listener's relay socket for this session, and its stderr says why an open failed"
+          : inbound.natsCredential.kind === "broker"
+            ? "it waits for this session's broker token, and its stderr says what each trade came to"
+            : "it connects to NATS"
+      const natsName = channelConnectionName(
+        `claude-envoy-channel-${identity.id}`,
+        bundlePath,
+        packageName,
       )
-      session = await startChannelSession({
+      const dialled = await dialChannelInbound(
+        inbound,
+        envoy.url,
+        currentSessionId,
+        natsName,
+        (text, dialError) => {
+          // A redial's warning names what the start waits on; the token keeper warns through the
+          // same channel once the connection is up, and names nothing the start waits on.
+          if (dialError !== undefined) starting = text
+          process.stderr.write(`envoy-channel: ${text}\n`)
+        },
+        connect,
+        booting.signal,
+      ).catch((error: unknown) => {
+        // A stop asked for while the token or the dial was awaited, as in the start below.
+        if (stopping) return undefined
+        throw error
+      })
+      if (dialled === undefined) return
+      connection = dialled.connection
+      stopNatsKeeper = dialled.stop
+      starting = "it registers this session with Envoy"
+      // Which id the connection is admitted as, where its broker token admits one session at a
+      // time: the dial's, then each `/clear`'s once its move lands. The live view takes a new id's
+      // control subject only then (`AgentStreamOptions.admitted`).
+      const admission =
+        dialled.followSession === undefined ? undefined : sessionAdmission(identity.id)
+      const admitting = admittingMoves(admission, identity)
+      const followSession = admitting(dialled.followSession)
+      const reopen = channelReopener({
+        inbound,
+        listenerUrl: envoy.url,
+        session: currentSessionId,
+        name: natsName,
+        signal: booting.signal,
+        swapKeeper: (stop) => {
+          stopNatsKeeper()
+          stopNatsKeeper = stop
+        },
+        admitting,
+        useConnection: (next) => {
+          connection = next
+          agentStream?.useConnection(next)
+        },
+      })
+      const started = await startChannelSession({
         identity,
         connection,
         notifier,
@@ -2314,21 +2904,39 @@ export async function runEnvoyChannelServer(): Promise<void> {
         clientInstanceID,
         title,
         pluginVersion: installedPluginVersion(bundlePath) ?? "source",
+        pluginName: packageName,
         ...(stamping ? { stampTitle } : {}),
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
+        ...(followSession === undefined ? {} : { followSession }),
+        ...(dialled.reportOutagesTo === undefined
+          ? {}
+          : { reportOutagesTo: dialled.reportOutagesTo }),
+        // The live view follows a `/clear` the mod reported before it began listening.
+        adopted: (previous, next) => agentStream?.sessionAdopted(previous, next),
+        reopen,
+        startSignal: booting.signal,
+      }).catch((error: unknown) => {
+        // A stop asked for while the session was still starting (its connection waiting on the
+        // hub) ends the start, and is no failure: the process ends as an asked-for stop does.
+        if (stopping) return undefined
+        throw error
       })
+      if (started === undefined) return
+      session = started
       // INFRA-1026: the Agents page's live view, once this session's mod has a link to bind to.
       // It needs the bus as well as the link, so it starts here rather than beside the bind; a
-      // session whose link never binds never starts one, and runs as it did before.
-      const bus = connection
+      // session whose link never binds never starts one, and runs as it did before. The bus is
+      // the connection held as the link binds: a reopen may have replaced the start's.
       const live = session
       void linked.promise.then((link) => {
-        if (stopping) return
+        if (stopping || connection === undefined) return
         agentStream = startAgentStream({
-          connection: bus,
+          connection,
+          liveView: dialled.liveView,
           // Only a Claude-minted id follows `/clear`; the override names a fixed identity.
           followsSessionId: configuredValue(overrideSessionId) === undefined,
+          ...(admission === undefined ? {} : { admitted: (id: string) => admission.admitted(id) }),
           // A pane is the session whose person messages go to the bridge's inbox, which is the
           // same signal the router reads (`inPane`): a pane holds a daemon claim only where a
           // daemon started it, and the row the bridge seeds is there either way.
@@ -2397,10 +3005,16 @@ export async function runEnvoyChannelServer(): Promise<void> {
     if (stopping) await session.shutdown()
     await stopped.promise
   } finally {
+    // A start that failed ends here as an asked-for stop does: every part it started stops, a
+    // session it registered deregisters, and a mod link still binding is closed once bound
+    // (`stopping` makes the bind close it), so no socket outlives the session. A stop already
+    // under way makes `stop` a no-op.
+    stop()
+    await stopped.promise
+    await linking
     await modLink?.close().catch(() => undefined)
     if (session === undefined && connection !== undefined) {
-      await connection.drain().catch(() => undefined)
-      await connection.close().catch(() => undefined)
+      await closeUnstartedConnection(connection)
     }
     // Release stdin so the process can exit once the session is deregistered,
     // even when the parent has not closed its end yet.

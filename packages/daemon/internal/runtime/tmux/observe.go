@@ -92,6 +92,12 @@ func (r *Runtime) sweep(ctx context.Context, out chan<- runtime.Observation) boo
 // charged nothing. Without the key such a locator is an error naming its claim and the key, and
 // nothing is reaped (paneOf).
 //
+// An orphan's age is its window's last activity, which tmux gives floored to the whole second,
+// measured against the runtime's clock read after the listing that gave it. A moment read before
+// the listing can fall in an earlier second than the activity listed — output the pane wrote
+// while the listing ran — and then an orphan of any age reads as younger than a grace of 0; read
+// after, it is never earlier than the activity, so grace 0 reaps every orphan a listing shows.
+//
 // A listing with nothing behind it (no server, no session) reaps nothing; a listing that failed
 // otherwise is an error, as is a kill that failed for a reason other than its target being gone,
 // after every other candidate has been tried.
@@ -122,7 +128,6 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 		knownWindows[entry.locator.Tmux.Window] = true
 		knownPanes[entry.locator.Tmux.Pane] = true
 	}
-	now := r.now()
 	var failures []error
 
 	windows, err := r.run(ctx, listOwnedWindowsArgv(r.socket, r.socket))
@@ -130,9 +135,10 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 		return err
 	}
 	if windows.exitCode != 0 && !targetAbsent(windows) {
-		return fmt.Errorf("reconcile orphans: list-windows exited %d%s", windows.exitCode, failure(windows))
+		return fmt.Errorf("reconcile orphans: list-windows%s", exited(windows))
 	}
 	if windows.exitCode == 0 {
+		now := r.now()
 		for _, window := range readUnknownWindows(windows.stdout, r.socket, knownWindows) {
 			if now.Sub(window.activity) < grace {
 				continue
@@ -149,9 +155,10 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 		return err
 	}
 	if panes.exitCode != 0 && !targetAbsent(panes) {
-		return errors.Join(append(failures, fmt.Errorf("reconcile orphans: list-panes exited %d%s", panes.exitCode, failure(panes)))...)
+		return errors.Join(append(failures, fmt.Errorf("reconcile orphans: list-panes%s", exited(panes)))...)
 	}
 	if panes.exitCode == 0 {
+		now := r.now()
 		for _, pane := range readUnknownPanes(panes.stdout, r.socket, knownPanes) {
 			if now.Sub(pane.activity) < grace {
 				continue
@@ -171,8 +178,8 @@ func (r *Runtime) kill(ctx context.Context, argv []string, target string) error 
 	if err != nil {
 		return err
 	}
-	if res.exitCode != 0 && !paneGoneStderr.MatchString(res.stderr) && !strings.Contains(res.stderr, "can't find window") {
-		return fmt.Errorf("reconcile orphans: %s %s exited %d%s", verb(argv), target, res.exitCode, failure(res))
+	if res.exitCode != 0 && !paneGoneStderr.MatchString(res.stderr) && !windowGoneStderr.MatchString(res.stderr) {
+		return fmt.Errorf("reconcile orphans: %s %s%s", verb(argv), target, exited(res))
 	}
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A send or publish the stream refused because it holds its byte limit (bus.ErrStreamFull) was
@@ -24,6 +25,7 @@ import (
 // What it does not prove: that the server's refusal arrives as bus.ErrStreamFull. That is
 // internal/bus's own ground (streamFull), and here the error is built as streamFull builds it.
 func TestAFullStreamIsAnsweredAsFullNotAsABusThatDidNotAnswer(t *testing.T) {
+	t.Parallel()
 	subject := contracts.RoleTopicPrefix + "reviewer"
 	full := fmt.Errorf("%w: %w", bus.ErrStreamFull,
 		&nats.APIError{Code: http.StatusServiceUnavailable, ErrorCode: 10077, Description: "maximum bytes exceeded"})
@@ -56,7 +58,7 @@ func TestAFullStreamIsAnsweredAsFullNotAsABusThatDidNotAnswer(t *testing.T) {
 				if got := recorder.Header().Get("Retry-After"); got == "" {
 					t.Fatalf("Retry-After is unset, want one: the same send is taken once the stream has room")
 				}
-				var refusal apiError
+				var refusal listenerwire.APIError
 				if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 					t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 				}

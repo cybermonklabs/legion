@@ -9,6 +9,8 @@ import type {
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { conversationItemId } from "../issue/pins";
+import { type DeletablePost, postDeletion } from "../refs/post-marks";
+import type { ListedReplies, ListedReply } from "./composer-model";
 import {
   type DeliveryOutcome,
   deliveryMode,
@@ -309,6 +311,25 @@ export function buildConversations({
   return conversations.sort(
     (left, right) => compareTimestamps(right.at, left.at) || left.id.localeCompare(right.id)
   );
+}
+
+/** Every message `messages` holds, replies with their roots, and every comment of `comments`, by
+ *  id, each as it stands - deleted by its author, or standing: the replies a composer's host lists
+ *  (`ListedReplies`), whatever a filter, a fold or a Clear shows of them, since the host's own
+ *  controls reach the Reply of each. */
+export function listedReplies(
+  messages: readonly MessageRead[],
+  comments: readonly ({ readonly id: string } & DeletablePost)[] = []
+): ListedReplies {
+  const listed = new Map<string, ListedReply>();
+  const list = (post: { readonly id: string } & DeletablePost) =>
+    listed.set(post.id, postDeletion(post) === null ? "standing" : "deleted");
+  for (const comment of comments) list(comment);
+  for (const { message, replies } of messages) {
+    list(message);
+    for (const reply of replies ?? []) list(reply);
+  }
+  return listed;
 }
 
 /** Whether `conversation` belongs in the bucket `filter` names: an ask is closed once it is

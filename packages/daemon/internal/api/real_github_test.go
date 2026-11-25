@@ -1,5 +1,7 @@
 package api
 
+//ci:reads scripts/e2e/lib/github-apps.sh runGitHubAppsLib runs it in bash, and realGitHubApps and TestLiveProofAppsReadTheLib read it
+
 import (
 	"bytes"
 	"encoding/json"
@@ -42,22 +44,22 @@ func TestRealGitHubCredentialSurface(t *testing.T) {
 	h := newHarness(t)
 	tokens := appauth.New(apps, appauth.Options{})
 	h.handler = NewServer("127.0.0.1", 0, Options{
-		Steps:              config.DesignGateRootIssues.Steps(),
-		Supervisor:         h.supervisor,
-		BootTokens:         h.tokens,
-		Project:            testProject,
-		Tokens:             tokens,
-		GitHubRepositories: func() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion")} },
-		Grants:             credential.New(nil),
-		Pool:               h.store.Pool(),
-		Record:             record.NewStore(),
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor,
+		BootTokens: h.tokens,
+		Project:    testProject,
+		Tokens:     tokens,
+		Served:     servesOneOf(ghrepo.MustParse("sjawhar/legion")),
+		Grants:     credential.New(nil),
+		Pool:       h.store.Pool(),
+		Record:     record.NewStore(),
 	}).Handler
 	gh := realGh(t)
 
 	// The implement App's lease, rendered as the role's gh files, is whose login the real gh
 	// reports. The review App is not minted here: realGitHubApps reads the implement role alone.
 	role := appauth.Implement
-	lease, err := tokens.Token(h.ctx, role, ghrepo.MustParse("sjawhar/legion-smoke"))
+	lease, err := tokens.Token(h.ctx, role, "sjawhar")
 	if err != nil {
 		t.Fatalf("mint the %s App's lease: %v", role, err)
 	}
@@ -269,8 +271,8 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		t.Errorf("with no input the implement App is %s/%s, want the lib's default %s/%s",
 			implement.id, implement.secret, defaults["implement_app_id"], defaults["implement_app_secret"])
 	}
-	if !strings.HasPrefix(implement.tokenCommand, "agent-secrets "+implement.secret+" --ttl 12h --reason=legion-live-proof-github-app-token ") {
-		t.Errorf("the implement App's token command reads %q, want `agent-secrets %s --ttl 12h --reason=… -- …`", implement.tokenCommand, implement.secret)
+	if want := "P=" + implement.secret + "${LEGION_GITHUB_READ_ONLY:+_READ}; agent-secrets \"$P\" --ttl 12h --reason=legion-live-proof-github-app-token "; !strings.HasPrefix(implement.tokenCommand, want) {
+		t.Errorf("the implement App's token command reads %q, want `%s… -- …`", implement.tokenCommand, want)
 	}
 
 	implement, err = liveProofImplementApp(with(
@@ -282,38 +284,37 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 	if got := []string{implement.id, implement.secret}; !slices.Equal(got, []string{"101", "EXAMPLE_IMPLEMENT_APP"}) {
 		t.Errorf("with every input set the App is %v, want the inputs", got)
 	}
-	// The token command is what the daemon runs, so it must ask the broker for the input's secret,
-	// narrowed to the owner and to read-only exactly when the daemon's environment asks for each
-	// (appauth.TokenCommandOwner, appauth.TokenCommandReadOnly), and print the release as the
-	// broker hands it over. The rows that set a repository list test the live harness command's
-	// own mapping of LEGION_GITHUB_REPOS to --github-repo, which the daemon no longer feeds: it
-	// tells a token command no repository (INFRA-2543). A stand-in `agent-secrets` records its
-	// arguments and puts a release in the command's environment as the real one does.
+	// The token command is what the daemon runs, so it must ask the broker for the input's
+	// profile, or its read profile when the daemon's environment asks for read-only
+	// (appauth.TokenCommandReadOnly), narrowed with --target to the owner exactly when it names
+	// one (appauth.TokenCommandOwner), and print the release as the broker hands it over. It names
+	// no repository: the daemon asks for no narrowing by repository. A stand-in `agent-secrets`
+	// records its arguments and puts a release in the command's environment under the name it was
+	// asked for, as the real one does.
 	stub := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stub, "agent-secrets"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$STUB_ARGS\"\nname=$1\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexport \"$name=$STUB_VALUE\"\nexec \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	release := `{"installations":{"acme":{"installation_id":1,"token":"ghs_stub","expires_at":"2026-11-03T13:00:00Z"}}}`
-	secret := "EXAMPLE_IMPLEMENT_APP"
+	const flags = " --ttl 12h --reason=legion-live-proof-github-app-token"
 	for _, ask := range []struct {
-		owner, repos, readOnly, args string
+		owner, readOnly, args string
 	}{
-		{"", "", "", secret + " --ttl 12h --reason=legion-live-proof-github-app-token -- sh -c printf %s \"$" + secret + "\""},
-		{"acme", "", "", secret + " --ttl 12h --reason=legion-live-proof-github-app-token --github-owner acme -- sh -c printf %s \"$" + secret + "\""},
-		{"acme", "legion", "", secret + " --ttl 12h --reason=legion-live-proof-github-app-token --github-owner acme --github-repo legion -- sh -c printf %s \"$" + secret + "\""},
-		{"acme", "legion nats-server", "1", secret + " --ttl 12h --reason=legion-live-proof-github-app-token --github-owner acme --github-repo legion --github-repo nats-server --github-read-only -- sh -c printf %s \"$" + secret + "\""},
-		{"acme", "", "1", secret + " --ttl 12h --reason=legion-live-proof-github-app-token --github-owner acme --github-read-only -- sh -c printf %s \"$" + secret + "\""},
+		{"", "", "EXAMPLE_IMPLEMENT_APP" + flags + " -- printenv EXAMPLE_IMPLEMENT_APP"},
+		{"acme", "", "EXAMPLE_IMPLEMENT_APP" + flags + " --target acme -- printenv EXAMPLE_IMPLEMENT_APP"},
+		{"acme", "1", "EXAMPLE_IMPLEMENT_APP_READ" + flags + " --target acme -- printenv EXAMPLE_IMPLEMENT_APP_READ"},
 	} {
 		args := filepath.Join(t.TempDir(), "args")
 		run := exec.Command("sh", "-c", implement.tokenCommand)
 		run.Env = append(with(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"), "STUB_VALUE="+release, "STUB_ARGS="+args,
-			"LEGION_GITHUB_OWNER="+ask.owner, "LEGION_GITHUB_REPOS="+ask.repos, "LEGION_GITHUB_READ_ONLY="+ask.readOnly)
+			"LEGION_GITHUB_OWNER="+ask.owner, "LEGION_GITHUB_READ_ONLY="+ask.readOnly)
+		// printenv ends the value with a newline, which the daemon's parseRelease trims.
 		got, err := run.Output()
-		if err != nil || string(got) != release {
-			t.Errorf("the implement App's token command for owner %q repositories %q read-only %q printed %q (err %v), want the release", ask.owner, ask.repos, ask.readOnly, got, err)
+		if err != nil || string(got) != release+"\n" {
+			t.Errorf("the implement App's token command for owner %q read-only %q printed %q (err %v), want the release", ask.owner, ask.readOnly, got, err)
 		}
 		if seen, _ := os.ReadFile(args); strings.TrimSpace(string(seen)) != ask.args {
-			t.Errorf("the implement App's token command for owner %q repositories %q read-only %q ran agent-secrets %q, want %q", ask.owner, ask.repos, ask.readOnly, strings.TrimSpace(string(seen)), ask.args)
+			t.Errorf("the implement App's token command for owner %q read-only %q ran agent-secrets %q, want %q", ask.owner, ask.readOnly, strings.TrimSpace(string(seen)), ask.args)
 		}
 	}
 

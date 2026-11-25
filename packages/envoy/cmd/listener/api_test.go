@@ -1,5 +1,8 @@
 package main
 
+//ci:reads packages/contracts/fixtures/dispatch-targeted-delivery.json TestDispatchClientSendUsesListenerWireContract and TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload and TestDispatchClientSendFrameModeIsGuardedEndToEnd
+//ci:reads packages/contracts/fixtures/envoy-session-no-interests.json readNoInterestRecordFixture
+
 import (
 	"bytes"
 	"context"
@@ -30,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 type fakeStreamInfo struct {
@@ -72,6 +76,7 @@ func (f stalledStreamInfo) StreamInfo(_ string, opts ...nats.JSOpt) (*nats.Strea
 }
 
 func TestSendHandler_StampsSenderAndReturnsRecipient(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_source": nil,
@@ -151,6 +156,7 @@ func TestSendHandler_StampsSenderAndReturnsRecipient(t *testing.T) {
 // listener's real send handler on the same JSON boundary. In particular, payload
 // is an opaque JSON string on this HTTP API, rather than an embedded JSON value.
 func TestDispatchClientSendUsesListenerWireContract(t *testing.T) {
+	t.Parallel()
 	publisher := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -215,6 +221,7 @@ func TestDispatchClientSendUsesListenerWireContract(t *testing.T) {
 // hint that disagrees with the frame -- are closed by construction because the hint does not
 // exist to omit or disagree: only the frame's own mode is ever read.
 func TestSendHandlerRefusesTargetThatDoesNotAdvertiseFrameMode(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -267,6 +274,7 @@ func TestSendHandlerRefusesTargetThatDoesNotAdvertiseFrameMode(t *testing.T) {
 // AmbiguousDeliveryFrames): presence of that key is a claim of a targeted send, and an
 // unreadable claim is refused, never defaulted open the way genuine absence is here.
 func TestSendHandlerAllowsAdvertisedFrameModeAndUntaggedSends(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -319,6 +327,7 @@ func TestSendHandlerAllowsAdvertisedFrameModeAndUntaggedSends(t *testing.T) {
 // attacker could hide an unadvertised real mode ("btw", exact key) behind an advertised decoy in
 // the wrong-cased key ("aside", sibling key).
 func TestSendHandlerRefusesUnreadableOrAmbiguousDeliveryFrames(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -372,6 +381,7 @@ func TestSendHandlerRefusesUnreadableOrAmbiguousDeliveryFrames(t *testing.T) {
 // both checks and reach the receiver, so the mode itself is refused, as the Dispatch server's
 // own `validDelivery` refuses it.
 func TestSendHandlerRefusesAModeThatIsNotADeliveryMode(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -407,9 +417,11 @@ func TestSendHandlerRefusesAModeThatIsNotADeliveryMode(t *testing.T) {
 }
 
 // TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload proves the guard
-// checks messageEnvelope's effective payload, not only the optional HTTP
-// payload field. A long structured message becomes the receiver's payload.
+// checks the envelope's effective payload (contracts.MessageEnvelope), not only
+// the optional HTTP payload field. A long structured message becomes the
+// receiver's payload.
 func TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -452,6 +464,7 @@ func TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload(t *testing.T) {
 // wire-contract test uses (delivery.mode "btw"), through the real listener handler -- not a
 // synthetic minimal payload -- so the parsing is proven against production shape.
 func TestDispatchClientSendFrameModeIsGuardedEndToEnd(t *testing.T) {
+	t.Parallel()
 	publisher := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -492,6 +505,7 @@ func mustJSONString(t *testing.T, value string) string {
 }
 
 func TestMessageHandlersRejectInvalidEnums(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -561,6 +575,7 @@ func TestMessageHandlersRejectInvalidEnums(t *testing.T) {
 }
 
 func TestMessageHandlersRejectBlankMessage(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -608,6 +623,7 @@ func TestMessageHandlersRejectBlankMessage(t *testing.T) {
 // of the copy's hour as kept_until, and for a lapsed holder that holder, its state and when it was
 // last seen, as the 404 names them. Neither releases a lapsed holder's claim.
 func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
+	t.Parallel()
 	type roleError struct {
 		Error         string `json:"error"`
 		Reason        string `json:"reason"`
@@ -670,7 +686,7 @@ func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
 				return httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil)
 			},
 			handler: func(d *listenerDeps) http.Handler {
-				return roleGetHandler(d)
+				return roleGetHandler(d, logging.New("test"))
 			},
 		},
 	}
@@ -768,6 +784,7 @@ func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
 }
 
 func TestRoleHolderLapsedResponseDoesNotInventLastSeen(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if _, err := registry.SetRole("ses_lapsed", "test-machine", "reviewer", false); err != nil {
@@ -776,7 +793,7 @@ func TestRoleHolderLapsedResponseDoesNotInventLastSeen(t *testing.T) {
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
 
 	recorder := httptest.NewRecorder()
-	roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil))
+	roleGetHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil))
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -805,12 +822,12 @@ func trailingListeners(t *testing.T) (claimant, observer *listenerDeps) {
 	client := setupPublishTestClient(t)
 	open := func(name string) *listenerDeps {
 		t.Helper()
-		registry, err := store.Open(client.Conn, store.WithReplicas(1))
+		registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 		if err != nil {
 			t.Fatalf("open the %s's interest registry: %v", name, err)
 		}
 		waitForRegistry(t, registry)
-		sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+		sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 		if err != nil {
 			t.Fatalf("open the %s's session registry: %v", name, err)
 		}
@@ -885,6 +902,7 @@ func ageRoleClaim(t *testing.T, d *listenerDeps, role string, age time.Duration)
 // outbox counts the stream's ack as its delivery, so its messages are reported delivered when
 // nobody delivered them.
 func TestARoleClaimWritesTheServingPortOutOfTheClaimantsEntry(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_ported_claimant"
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put(sessionID, session.SessionEntry{Port: 8080, MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -925,10 +943,11 @@ func TestARoleClaimWritesTheServingPortOutOfTheClaimantsEntry(t *testing.T) {
 // can register as: an id outside nats.go's key alphabet, which an earlier build or a direct
 // bucket write can leave in a claim.
 func TestARoleLookupWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testing.T) {
+	t.Parallel()
 	claimant, observer := trailingListeners(t)
 	lookup := func(role string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		roleGetHandler(observer).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+		roleGetHandler(observer, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 		return recorder
 	}
 
@@ -974,6 +993,7 @@ func TestARoleLookupWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testing.
 // registered is gone only from this listener's trailing cache, not from the session bucket: the soft
 // claim is refused, naming the live holder.
 func TestASoftClaimWhoseSessionCacheTrailsTheBucketLeavesALiveHolderItsRole(t *testing.T) {
+	t.Parallel()
 	claimant, observer := trailingListeners(t)
 	claimRole(t, claimant, "ses_live_holder", "contested")
 	if err := observer.sessions.Put("ses_resumer", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -994,6 +1014,7 @@ func TestASoftClaimWhoseSessionCacheTrailsTheBucketLeavesALiveHolderItsRole(t *t
 // claim only when the session bucket has lost the holder, not when this listener's trailing cache has
 // yet to see it.
 func TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testing.T) {
+	t.Parallel()
 	claimant, observer := trailingListeners(t)
 	claimRole(t, claimant, "ses_fresh_holder", "fresh-claim")
 	claimRole(t, claimant, "ses_gone_holder", "lapsed-claim")
@@ -1023,6 +1044,7 @@ func TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testin
 // before it removes anything, keeps the interest of a session the bucket holds, and removes the
 // interest of one the bucket has lost.
 func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInterest(t *testing.T) {
+	t.Parallel()
 	claimant, observer := trailingListeners(t)
 	interests, err := claimant.client.JS().KeyValue(bus.InterestBucket)
 	if err != nil {
@@ -1073,7 +1095,8 @@ func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInte
 }
 
 // stalledReadKV is a session bucket whose writes land and whose reads never answer, like a bucket
-// the listener can write through but whose direct get has stopped answering.
+// the listener can write through but whose direct get and stream message get have stopped
+// answering: a leader read (bus.LeaderReads) waits until its context ends.
 type stalledReadKV struct {
 	nats.KeyValue
 	released <-chan struct{}
@@ -1082,6 +1105,15 @@ type stalledReadKV struct {
 func (kv stalledReadKV) Get(string) (nats.KeyValueEntry, error) {
 	<-kv.released
 	return nil, errors.New("the session bucket's read never answered")
+}
+
+func (kv stalledReadKV) NewestFromLeader(ctx context.Context, _ string) (nats.KeyValueEntry, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-kv.released:
+		return nil, errors.New("the session bucket's leader read never answered")
+	}
 }
 
 // swapSessionBucket puts the handle sessions' (stopped) watcher hands out behind what wrap
@@ -1096,11 +1128,20 @@ func (kv stalledReadKV) Get(string) (nats.KeyValueEntry, error) {
 // the swap (review 5911599468 of cybermonklabs/legion#4087 made that interleaving with a delay).
 func swapSessionBucket(t *testing.T, sessions *session.SessionRegistry, wrap func(nats.KeyValue) nats.KeyValue) {
 	t.Helper()
+	swapSessionHandle(t, sessions, func(old bus.KeyValue) bus.KeyValue {
+		return bus.NewKeyValue(wrap(old.Legacy()), old.WatchHandle(), old.Streams())
+	})
+}
+
+// swapSessionHandle is swapSessionBucket for a test that replaces more than the legacy handle: the
+// jetstream context the bucket's stream is read through (bus.KeyValue.Streams), which the stream
+// leader's reads take, among them.
+func swapSessionHandle(t *testing.T, sessions *session.SessionRegistry, swap func(bus.KeyValue) bus.KeyValue) {
+	t.Helper()
 	registry := reflect.ValueOf(sessions).Elem()
 	field := registry.FieldByName("watcher")
 	watcher := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
-	old := watcher.Interface().(*kvwatch.Watcher).KV()
-	swapped := bus.NewKeyValue(wrap(old.Legacy()), old.WatchHandle(), old.Streams())
+	swapped := swap(watcher.Interface().(*kvwatch.Watcher).KV())
 	replacement := reflect.ValueOf(kvwatch.New("session registry", swapped, discardingCache{}))
 	// The cast below trusts the field's type, so the type is checked first: a sync.Mutex there
 	// would compile, and RWMutex.Lock would write past it into the next field.
@@ -1153,7 +1194,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		stallSessionReads(t, observer.sessions)
 		started := time.Now()
 		recorder := httptest.NewRecorder()
-		roleGetHandler(observer).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/unread", nil))
+		roleGetHandler(observer, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/unread", nil))
 		if elapsed := time.Since(started); recorder.Code != http.StatusServiceUnavailable || elapsed > bound {
 			t.Fatalf("GET /v1/roles/unread while the session bucket cannot be read: status %d %s after %s, want 503 within %s", recorder.Code, recorder.Body.String(), elapsed, bound)
 		}
@@ -1183,7 +1224,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		harness := newListenerDeliveryHarness(t)
 		claimant := &listenerDeps{client: harness.client, registry: harness.registry, delivery: &harness.config}
 		var err error
-		if claimant.sessions, err = session.OpenSessionRegistry(harness.client.Conn, session.WithSessionReplicas(1)); err != nil {
+		if claimant.sessions, err = session.OpenSessionRegistry(t.Context(), harness.client.Conn, session.WithSessionReplicas(1)); err != nil {
 			t.Fatalf("open the claimant's session registry: %v", err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1241,6 +1282,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 }
 
 func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_holder", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -1354,7 +1396,7 @@ func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
 		}
 		waitForKeptRoleMessage(t, client, "reviewer", kept.EventID)
 		roleRecorder := httptest.NewRecorder()
-		roleGetHandler(state).ServeHTTP(roleRecorder, httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil))
+		roleGetHandler(state, logging.New("test")).ServeHTTP(roleRecorder, httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil))
 		if roleRecorder.Code != http.StatusNotFound {
 			t.Fatalf("role lookup status = %d, want 404; body = %s", roleRecorder.Code, roleRecorder.Body.String())
 		}
@@ -1365,6 +1407,7 @@ func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
 }
 
 func TestRoleGetHandlerReturnsLiveHolder(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_holder", session.SessionEntry{MachineID: "test-machine", Host: "example-host-a", SelfSubscribed: true}); err != nil {
@@ -1421,21 +1464,20 @@ func TestRoleGetHandlerReturnsLiveHolder(t *testing.T) {
 // ends its liveness and the registry's clock ends the grace window, so no step waits on a real TTL
 // and none can lose a race with one.
 func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	const (
 		sessionID  = "ses_role_restart"
 		role       = "restart-survivor"
 		sessionTTL = time.Minute
 	)
-	firstRegistry, err := store.Open(client.Conn, store.WithReplicas(1))
+	firstRegistry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open first role registry: %v", err)
 	}
-	firstSessions, err := session.OpenSessionRegistry(
-		client.Conn,
+	firstSessions, err := session.OpenSessionRegistry(t.Context(), client.Conn,
 		session.WithSessionReplicas(1),
-		session.WithSessionTTL(sessionTTL),
-	)
+		session.WithSessionTTL(sessionTTL))
 	if err != nil {
 		t.Fatalf("open first session registry: %v", err)
 	}
@@ -1467,11 +1509,11 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 	var elapsed atomic.Int64
 	opened := time.Now()
 	clock := func() time.Time { return opened.Add(time.Duration(elapsed.Load())) }
-	restoredRegistry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock))
+	restoredRegistry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1), store.WithClock(clock))
 	if err != nil {
 		t.Fatalf("restore role registry: %v", err)
 	}
-	restoredSessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	restoredSessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("restore session registry: %v", err)
 	}
@@ -1483,7 +1525,7 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 	restoredState := &listenerDeps{client: client, registry: restoredRegistry, sessions: restoredSessions}
 	get := func() *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		roleGetHandler(restoredState).ServeHTTP(
+		roleGetHandler(restoredState, logging.New("test")).ServeHTTP(
 			recorder,
 			httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil),
 		)
@@ -1531,6 +1573,7 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 }
 
 func TestRoleSetHandlerSoftClaim(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	for _, id := range []string{"ses_live", "ses_resumer", "ses_heir"} {
@@ -1882,6 +1925,7 @@ func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
 }
 
 func TestSubscribeHandlerWarnsWhenGitHubRepositoryIsUnwired(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	inspector := &fakeStreamInfo{info: &nats.StreamInfo{}}
@@ -1926,6 +1970,7 @@ func TestSubscribeHandlerWarnsWhenGitHubRepositoryIsUnwired(t *testing.T) {
 }
 
 func TestSubscribeHandlerWarnsWhenGitHubWiringLookupFails(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	inspector := &fakeStreamInfo{err: errors.New("nats unavailable")}
@@ -1963,6 +2008,7 @@ func TestSubscribeHandlerWarnsWhenGitHubWiringLookupFails(t *testing.T) {
 // interest row once: the first creates it, and each later call answers with that stored row,
 // updated_at included, without a write. The session row is still written on every call.
 func TestSubscribeHandlerWritesAnUnchangedInterestOnce(t *testing.T) {
+	t.Parallel()
 	const calls = 5
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}
@@ -2028,6 +2074,7 @@ func TestSubscribeHandlerWritesAnUnchangedInterestOnce(t *testing.T) {
 }
 
 func TestUnwiredRepositoryWarningSkipsWildcardRepositorySegment(t *testing.T) {
+	t.Parallel()
 	inspector := &fakeStreamInfo{info: &nats.StreamInfo{}}
 	deps := &listenerDeps{streamName: "notifications", streamInfo: inspector}
 	if warning := unwiredRepositoryWarning(context.Background(), deps, "notifications.github.*.example-repo.pr.>", logging.New("test")); warning != "" {
@@ -2064,6 +2111,7 @@ func subscribeWarnings(t *testing.T, state *listenerDeps, topics ...string) []st
 // those is warned. Another pull request's family does not reach this one, and neither does a
 // subject that only starts the same way (`pr.70` is not `pr.7`).
 func TestSubscribeHandlerWarnsWhenAPullRequestSubscriptionCarriesOnlyItsLifecycle(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	inspector := &fakeStreamInfo{info: &nats.StreamInfo{State: nats.StreamState{Subjects: map[string]uint64{"notifications.github.example-org.example-repo.pr.1": 1}}}}
@@ -2106,6 +2154,7 @@ func TestSubscribeHandlerWarnsWhenAPullRequestSubscriptionCarriesOnlyItsLifecycl
 // the kinds rather than suggesting a name that receives nothing either. A row per kind and
 // wildcard holds that no published kind is mistaken for either.
 func TestSubscribeHandlerWarnsWhenAGitHubTopicSpellsARepositoryWithADot(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	inspector := &fakeStreamInfo{info: &nats.StreamInfo{State: nats.StreamState{Subjects: map[string]uint64{"notifications.github.example-org.example-repo.pr.1": 1}}}}
@@ -2148,6 +2197,7 @@ func TestSubscribeHandlerWarnsWhenAGitHubTopicSpellsARepositoryWithADot(t *testi
 }
 
 func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	lookup := stalledStreamInfo{deadlines: make(chan time.Duration, 1), release: make(chan struct{})}
@@ -2206,8 +2256,9 @@ func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
 }
 
 func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
@@ -2215,7 +2266,8 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session registry connection: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(routeClient.Conn, session.WithSessionReplicas(1))
+	t.Cleanup(routeClient.Close)
+	sessions, err := session.OpenSessionRegistry(t.Context(), routeClient.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -2237,7 +2289,7 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503; body = %s", recorder.Code, recorder.Body.String())
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
@@ -2250,6 +2302,7 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 }
 
 func TestUnsubscribeRequiresSessionIDAndReturnsRemovedTopics(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_subscriber": {"notifications.github.example-org.example-repo.pr.>"},
@@ -2286,6 +2339,7 @@ func TestUnsubscribeRequiresSessionIDAndReturnsRemovedTopics(t *testing.T) {
 // of the process it names (client_instance_id): the claim here names that very process, so the
 // role is free for its next holder.
 func TestUnsubscribeAllReleasesTheRoleClaimsOfTheProcessThatAsked(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	const (
@@ -2321,6 +2375,7 @@ func TestUnsubscribeAllReleasesTheRoleClaimsOfTheProcessThatAsked(t *testing.T) 
 }
 
 func TestSessionsHandlerFiltersAndReportsRoles(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_match": nil,
 		"ses_other": nil,
@@ -2336,7 +2391,7 @@ func TestSessionsHandlerFiltersAndReportsRoles(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/v1/sessions?dir=example&title=Release", nil)
-	sessionsHandler(registry, sessions).ServeHTTP(recorder, request)
+	sessionsHandler(registry, sessions, nil).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
@@ -2365,6 +2420,7 @@ func TestSessionsHandlerFiltersAndReportsRoles(t *testing.T) {
 // handle its registration: a session whose plugin sent "host" shows that, and a session whose
 // plugin predates the field falls back to machine_id instead of an empty string.
 func TestSessionsHandlerReportsHostWithFallbackToMachineID(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_reported", session.SessionEntry{SelfSubscribed: true, MachineID: "example-listener", Host: "example-host-a"}); err != nil {
 		t.Fatalf("put reported-host session: %v", err)
@@ -2374,7 +2430,7 @@ func TestSessionsHandlerReportsHostWithFallbackToMachineID(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -2422,6 +2478,7 @@ func exampleTmuxPlace() *session.TmuxPlace {
 // off a session that does not: a cluster whose sessions run outside tmux pays no bytes per row,
 // and a reader can tell "no pane" from a pane whose members happen to be empty.
 func TestSessionsHandlerAnswersTheTmuxPlaceAndOmitsItForASessionOutsideTmux(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_paned", session.SessionEntry{SelfSubscribed: true, MachineID: "example-listener", TmuxPlace: exampleTmuxPlace()}); err != nil {
 		t.Fatalf("put the session sitting in a pane: %v", err)
@@ -2431,7 +2488,7 @@ func TestSessionsHandlerAnswersTheTmuxPlaceAndOmitsItForASessionOutsideTmux(t *t
 	}
 
 	recorder := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -2467,8 +2524,9 @@ func TestSessionsHandlerAnswersTheTmuxPlaceAndOmitsItForASessionOutsideTmux(t *t
 // place. That registration must clear the place its entry held: the entry is built fresh from
 // each body and written whole, so nothing carries the stale pane forward onto the layout.
 func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing.T) {
+	t.Parallel()
 	_, sessions := setupSessionsTest(t, nil, nil)
-	var placed subscribeBody
+	var placed listenerwire.SubscribeRequest
 	if err := json.Unmarshal([]byte(`{
 		"session_id":"ses_moved",
 		"tmux_place":{
@@ -2479,15 +2537,15 @@ func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing
 	}`), &placed); err != nil {
 		t.Fatalf("decode the registration that names a pane: %v", err)
 	}
-	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(placed, "example-listener", sessionDeliveryOutcome{})); err != nil {
+	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(placed, "example-listener", sessionDeliveryOutcome{}, nil)); err != nil {
 		t.Fatalf("store the registration that names a pane: %v", err)
 	}
 
-	var left subscribeBody
+	var left listenerwire.SubscribeRequest
 	if err := json.Unmarshal([]byte(`{"session_id":"ses_moved"}`), &left); err != nil {
 		t.Fatalf("decode the registration that names none: %v", err)
 	}
-	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(left, "example-listener", sessionDeliveryOutcome{})); err != nil {
+	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(left, "example-listener", sessionDeliveryOutcome{}, nil)); err != nil {
 		t.Fatalf("store the registration that names none: %v", err)
 	}
 
@@ -2501,6 +2559,7 @@ func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing
 }
 
 func TestSendHandler_StampsInterestSenderWithoutSessionEntry(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_source": nil,
@@ -2542,6 +2601,7 @@ func TestSendHandler_StampsInterestSenderWithoutSessionEntry(t *testing.T) {
 // but the read-through can find it. The roles come from the claims, not the record
 // (TestARoleIsHeldByTheSessionItsClaimNamesWhateverTheRecordsTopics).
 func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testing.T) {
+	t.Parallel()
 	const (
 		target = "ses_stamp_target"
 		sender = "ses_stamp_sender_the_cache_missed"
@@ -2571,7 +2631,7 @@ func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testin
 			endCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			registry.EndWatch(endCtx)
 			cancel()
-			writer, err := store.Open(setupPublishTestClient(t).Conn, store.WithReplicas(1))
+			writer, err := store.Open(t.Context(), setupPublishTestClient(t).Conn, store.WithReplicas(1))
 			if err != nil {
 				t.Fatalf("open the writing listener's registry: %v", err)
 			}
@@ -2617,6 +2677,7 @@ func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testin
 // miss, and still gives a message with no title, as a sender with no registration at all does
 // (TestSendHandler_StampsInterestSenderWithoutSessionEntry).
 func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T) {
+	t.Parallel()
 	const (
 		target   = "ses_title_stamp_target"
 		sender   = "ses_title_stamp_sender_the_cache_missed"
@@ -2652,7 +2713,7 @@ func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T)
 			endCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			sessions.EndWatch(endCtx)
 			cancel()
-			writer, err := session.OpenSessionRegistry(setupPublishTestClient(t).Conn, session.WithSessionReplicas(1))
+			writer, err := session.OpenSessionRegistry(t.Context(), setupPublishTestClient(t).Conn, session.WithSessionReplicas(1))
 			if err != nil {
 				t.Fatalf("open the writing listener's session registry: %v", err)
 			}
@@ -2696,6 +2757,7 @@ func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T)
 }
 
 func TestPublishHandler_SuppliedPayloadWins(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	state := &listenerDeps{client: client}
 	payload := `{"kind":"structured"}`
@@ -2724,6 +2786,7 @@ func TestPublishHandler_SuppliedPayloadWins(t *testing.T) {
 }
 
 func TestPublishHandlerPreservesAllOptionalMessageFields(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	state := &listenerDeps{client: client}
 	recorder := httptest.NewRecorder()
@@ -2767,6 +2830,7 @@ func TestPublishHandlerPreservesAllOptionalMessageFields(t *testing.T) {
 // reached the bus. Reading the bus is what proves the route still carries the sender's intent:
 // the answer alone is only the request read back.
 func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -2905,6 +2969,7 @@ func quotedOrAbsent(raw string) string {
 // it 413 and say how large it was against the server's max payload, rather than a 500 that reads
 // as the listener's own failure.
 func TestMessageHandlersAnswerAMessageNATSCannotTakeWholeWith413(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, map[string][]string{}, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -2943,23 +3008,24 @@ func TestMessageHandlersAnswerAMessageNATSCannotTakeWholeWith413(t *testing.T) {
 // the caller's to fix: every /v1 route that reads or writes one answers 413 or 400, as for a message
 // NATS cannot take, and the connection stays up.
 func TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx(t *testing.T) {
+	t.Parallel()
 	client, err := bus.Connect([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
 	if err := sessions.Put("ses_live", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
 		t.Fatalf("register ses_live: %v", err)
 	}
-	legionAgents, err := legionagents.Open(client.Conn, legionagents.WithReplicas(1))
+	legionAgents, err := legionagents.Open(t.Context(), client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open legion agent registry: %v", err)
 	}
@@ -3017,6 +3083,7 @@ func TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx(t *testing.T) {
 }
 
 func TestPublishHandler_DedupeKeySelection(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	state := &listenerDeps{client: client}
 	const topic = "notifications.github.example-org.example-repo.dedupe-key"
@@ -3069,6 +3136,7 @@ func TestPublishHandler_DedupeKeySelection(t *testing.T) {
 }
 
 func TestPublishHandler_RejectsDedupeKeyWithIdempotencyKey(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	state := &listenerDeps{client: client}
 	const topic = "notifications.github.example-org.example-repo.dedupe-key-conflict"
@@ -3085,7 +3153,7 @@ func TestPublishHandler_RejectsDedupeKeyWithIdempotencyKey(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
 	}
-	var response apiError
+	var response listenerwire.APIError
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatalf("decode 400 body: %v", err)
 	}
@@ -3102,6 +3170,7 @@ func TestPublishHandler_RejectsDedupeKeyWithIdempotencyKey(t *testing.T) {
 // caller who supplies one would get a 200 for a message that vanishes: no
 // forward, no exception, no log line. The prefix is reserved at the API.
 func TestPublishHandler_RejectsReservedDedupeKeyPrefix(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -3123,7 +3192,7 @@ func TestPublishHandler_RejectsReservedDedupeKeyPrefix(t *testing.T) {
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
 			}
-			var response apiError
+			var response listenerwire.APIError
 			if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 				t.Fatalf("decode 400 body: %v", err)
 			}
@@ -3142,6 +3211,7 @@ func TestPublishHandler_RejectsReservedDedupeKeyPrefix(t *testing.T) {
 // nobody, now or later, and no retry of the same topic could change that. A team topic, which
 // the stream stores, is accepted on the same route.
 func TestPublishHandlerRefusesAnUncapturedNotificationTopicByName(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -3164,7 +3234,7 @@ func TestPublishHandlerRefusesAnUncapturedNotificationTopicByName(t *testing.T) 
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
 			}
-			var response apiError
+			var response listenerwire.APIError
 			if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 				t.Fatalf("decode 400 body: %v", err)
 			}
@@ -3186,6 +3256,7 @@ func TestPublishHandlerRefusesAnUncapturedNotificationTopicByName(t *testing.T) 
 // Dispatch's outbox numbers its keys in sequence, so a key a caller chose there would make a host
 // drop the real event when it arrives. The key is still the caller's on any other source.
 func TestPublishHandler_RefusesAChosenKeyOnADispatchEnvelope(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	state := &listenerDeps{client: client}
 	const topic = "notifications.dispatch.issue.SQUAT-1.comment.created"
@@ -3207,7 +3278,7 @@ func TestPublishHandler_RefusesAChosenKeyOnADispatchEnvelope(t *testing.T) {
 	if refused.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", refused.Code, refused.Body.String())
 	}
-	var response apiError
+	var response listenerwire.APIError
 	if err := json.NewDecoder(refused.Body).Decode(&response); err != nil {
 		t.Fatalf("decode 400 body: %v", err)
 	}
@@ -3235,6 +3306,7 @@ func TestPublishHandler_RefusesAChosenKeyOnADispatchEnvelope(t *testing.T) {
 // ignores any field it does not read, so a body carrying both keys is still a
 // send keyed by its idempotency_key (LEGION-108, architect decision).
 func TestSendHandler_IgnoresDedupeKeyBesideIdempotencyKey(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -3256,6 +3328,7 @@ func TestSendHandler_IgnoresDedupeKeyBesideIdempotencyKey(t *testing.T) {
 // contracts.AgentSendDedupeKey, so a host that holds the mention drops the copy; that holds only
 // while the listener keys the mention's send by the same function, byte for byte.
 func TestSendHandler_KeysASendByAgentSendDedupeKey(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -3277,6 +3350,7 @@ func TestSendHandler_KeysASendByAgentSendDedupeKey(t *testing.T) {
 }
 
 func TestRegisterV1Routes_UnknownRouteReturnsJSONError(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	// No known route is requested, so no store is read.
 	registerV1Routes(mux, &listenerDeps{}, "test-machine", logging.New("test"))
@@ -3304,20 +3378,23 @@ func TestRegisterV1Routes_UnknownRouteReturnsJSONError(t *testing.T) {
 // JetStream duplicate, which the stream stores no second time; the answer has to say so, or
 // Dispatch records the retry as an ordinary send and the attempt history claims a delivery that
 // never happened. A send under a key its caller chose carries no MsgId, so it can never be one;
-// a key minted once for its message can.
+// a key minted once for its message can. Each send names the key-taken answer as one it reads,
+// as Dispatch's client does: a Dispatch copy names no session, so its repeat is answered with the
+// copy's ids alone (requestSender.answer), whose event_id is the first send's.
 func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
 
-	send := func(t *testing.T, body string) sendResponse {
+	send := func(t *testing.T, body string) listenerwire.SendResponse {
 		t.Helper()
 		recorder := httptest.NewRecorder()
-		sendHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(body)))
+		sendHandler(state, logging.New("test")).ServeHTTP(recorder, readingKeyTaken(httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(body))))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 		}
-		var response sendResponse
+		var response listenerwire.SendResponse
 		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 			t.Fatalf("decode send response: %v", err)
 		}
@@ -3325,15 +3402,16 @@ func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
 	}
 
 	const dispatchSend = `{"target_session":"ses_target","source":"dispatch","message":"ship it","idempotency_key":"message-dup:steer"}`
-	if first := send(t, dispatchSend); first.Duplicate {
+	first := send(t, dispatchSend)
+	if first.Duplicate {
 		t.Fatalf("first send reported a duplicate; the stream held nothing")
 	}
 	second := send(t, dispatchSend)
 	if !second.Duplicate {
 		t.Fatalf("a repeat of a landed idempotency key must answer duplicate: %+v", second)
 	}
-	if second.EventID == "" {
-		t.Fatalf("a duplicate still names the envelope this request minted: %+v", second)
+	if second.EventID != first.EventID {
+		t.Fatalf("a duplicate names event %s, want the copy the stream holds, the first send's %s: %+v", second.EventID, first.EventID, second)
 	}
 
 	// The control: a different key is not a duplicate, so the flag is not simply what every
@@ -3362,6 +3440,7 @@ func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
 	}
 }
 func TestMessageHandlersRejectPresentEmptyOptionalFields(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	deps := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -3381,7 +3460,7 @@ func TestMessageHandlersRejectPresentEmptyOptionalFields(t *testing.T) {
 			} else {
 				publishHandler(deps, logging.New("test")).ServeHTTP(rr, req)
 			}
-			var response apiError
+			var response listenerwire.APIError
 			_ = json.NewDecoder(rr.Body).Decode(&response)
 			if rr.Code != http.StatusBadRequest || len(response.Expected) != 1 || response.Expected[0] != tc.field {
 				t.Fatalf("status=%d response=%+v, want expected %q", rr.Code, response, tc.field)
@@ -3391,6 +3470,7 @@ func TestMessageHandlersRejectPresentEmptyOptionalFields(t *testing.T) {
 }
 
 func TestMessageHandlersUseFirstNonEmptyLine(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -3413,6 +3493,7 @@ func TestMessageHandlersUseFirstNonEmptyLine(t *testing.T) {
 	}
 }
 func TestSubscribeHandlerStoresAndListsCapabilities(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.New("test"))
 
@@ -3431,7 +3512,7 @@ func TestSubscribeHandlerStoresAndListsCapabilities(t *testing.T) {
 	}
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("list sessions: status=%d body=%s", list.Code, list.Body.String())
 	}
@@ -3456,6 +3537,7 @@ func TestSubscribeHandlerStoresAndListsCapabilities(t *testing.T) {
 // A registration names its plugin and that plugin's build; both reach the session list and the
 // per-session route, trimmed. A registration from a plugin predating the fields lists neither key.
 func TestSubscribeHandlerStoresAndListsThePluginAndItsVersion(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}
 	handler := subscribeHandler(state, "test-machine", logging.New("test"))
@@ -3471,7 +3553,7 @@ func TestSubscribeHandlerStoresAndListsThePluginAndItsVersion(t *testing.T) {
 	}
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("list sessions: status=%d body=%s", list.Code, list.Body.String())
 	}
@@ -3509,6 +3591,7 @@ func TestSubscribeHandlerStoresAndListsThePluginAndItsVersion(t *testing.T) {
 // always written. A row with no "delivery" key at all is then a listener older than the field,
 // which that reading must not count as a session on the core path.
 func TestSessionRoutesReportEachSessionsDeliveryMode(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{registry: registry, sessions: sessions}
 	for id, entry := range map[string]session.SessionEntry{
@@ -3527,7 +3610,7 @@ func TestSessionRoutesReportEachSessionsDeliveryMode(t *testing.T) {
 	}
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d %s, want 200", list.Code, list.Body.String())
 	}
@@ -3573,6 +3656,7 @@ func TestSessionRoutesReportEachSessionsDeliveryMode(t *testing.T) {
 // each role message for it on its agent subject, which the stream does capture (startRoleForward).
 // A team topic and a topic outside notifications. are stored as they always were.
 func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	// withRoleClaimDrain, because the last registration names a role lane, and a registration
 	// that makes its session live again hands it the kept lane of each role its row names
@@ -3642,6 +3726,7 @@ func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) 
 // that order too (subscribeRefusesTopic in @legion/envoy-client), so a caller reads one rule
 // wherever it is told.
 func TestSubscribeHandlerNamesThePrivateRuleBeforeTheUncapturedOne(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.New("test"))
 	private := func(topic, sessionID string) string {
@@ -3721,8 +3806,8 @@ type interestSubscribeAnswer struct {
 // a 200, and returns the answer.
 func subscribeInterest(t *testing.T, mux *http.ServeMux, topics []string) interestSubscribeAnswer {
 	t.Helper()
-	body, err := json.Marshal(subscribeBody{SessionID: interestSession, Topics: topics, SelfSubscribed: true,
-		Delivery: &subscribeDelivery{Consumer: true, Epoch: "e"}})
+	body, err := json.Marshal(listenerwire.SubscribeRequest{SessionID: interestSession, Topics: topics, SelfSubscribed: true,
+		Delivery: &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "e"}})
 	if err != nil {
 		t.Fatalf("marshal subscribe: %v", err)
 	}
@@ -3744,6 +3829,7 @@ func subscribeInterest(t *testing.T, mux *http.ServeMux, topics []string) intere
 // The registration is not refused whole, since a released pi-envoy registers a fork parent's agent
 // subject with the rest of what it follows.
 func TestInterestSubscribeStoresOnlyTopicsThatCannotReachAnotherSessionsInbox(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	refused := []string{"notifications.agent.>", "notifications.agent.*", other, "notifications.>"}
@@ -3781,6 +3867,7 @@ func TestInterestSubscribeStoresOnlyTopicsThatCannotReachAnotherSessionsInbox(t 
 // wildcard reaching them (notifications.envoy.>). A GitHub topic, a team topic and the session's
 // own agent subject are stored, and the answer stays 200.
 func TestInterestSubscribeLeavesOutEveryPrivateStreamSubject(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own := contracts.LegacyAgentSubject(interestSession)
 	githubTopic, teamTopic := "notifications.github.acme.widgets.pr.7.>", "notifications.team.x.>"
@@ -3824,6 +3911,7 @@ func TestInterestSubscribeLeavesOutEveryPrivateStreamSubject(t *testing.T) {
 // notifications.team.> to, so it registers that topic beside the team topic it follows, and a
 // refusal would leave it with no session consumer at all, at every heartbeat.
 func TestInterestSubscribeDropsAnUncapturedTopicAndStoresTheRest(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own := contracts.LegacyAgentSubject(interestSession)
 	const stale, team = "notifications.team", "notifications.team.deploy-squad"
@@ -3850,6 +3938,7 @@ func TestInterestSubscribeDropsAnUncapturedTopicAndStoresTheRest(t *testing.T) {
 // with the session's own agent subject stored and nothing else: the session is registered, so its
 // consumer is created and its entry written, and the warning tells it what was left out.
 func TestInterestSubscribeStoresOnlyTheAgentSubjectWhenEveryTopicIsUncaptured(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own := contracts.LegacyAgentSubject(interestSession)
 	const stale = "notifications.team"
@@ -3878,6 +3967,7 @@ func TestInterestSubscribeStoresOnlyTheAgentSubjectWhenEveryTopicIsUncaptured(t 
 // inbox and one no stream subject captures each draw their own warning, naming themselves, and
 // the topics the listener does store are stored.
 func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	const stale, team = "notifications.team", "notifications.team.deploy-squad"
@@ -3912,6 +4002,7 @@ func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *t
 // subscription of its own (INFRA-771). The lane is answered, stored and routed by the listener's
 // fan-out (Registry.Match), with the issue topic the session also follows.
 func TestInterestSubscribeStoresTheControllerLaneOfTheRoleTheSessionHolds(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own := contracts.LegacyAgentSubject(interestSession)
 	const (
@@ -3949,6 +4040,7 @@ func TestInterestSubscribeStoresTheControllerLaneOfTheRoleTheSessionHolds(t *tes
 // topics are the filter of a consumer that would otherwise hand this controller another project's
 // notices or another session's messages.
 func TestInterestSubscribeLeavesAControllerEveryPrivateSubjectButItsOwnLane(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	const (
@@ -4001,6 +4093,7 @@ func TestInterestSubscribeLeavesAControllerEveryPrivateSubjectButItsOwnLane(t *t
 // registers now, and the listener's fan-out (Registry.Match) stops handing it another session's
 // failed-delivery lane and the Legion controller's notices.
 func TestInterestSubscribeCleansAStoredRowOfTopicsReachingPrivateStreamSubjects(t *testing.T) {
+	t.Parallel()
 	const githubTopic = "notifications.github.acme.widgets.pr.7.>"
 	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	lane := bus.ExceptionTopicPrefix + other
@@ -4042,9 +4135,9 @@ func sessionEntryRoute(t *testing.T, d *listenerDeps, sessionID string) *httptes
 }
 
 // decodeSessionInfo reads the route's or the list's view of one session.
-func decodeSessionInfo(t *testing.T, recorder *httptest.ResponseRecorder) sessionInfo {
+func decodeSessionInfo(t *testing.T, recorder *httptest.ResponseRecorder) listenerwire.SessionInfo {
 	t.Helper()
-	var info sessionInfo
+	var info listenerwire.SessionInfo
 	if err := json.NewDecoder(recorder.Body).Decode(&info); err != nil {
 		t.Fatalf("decode the session entry answer: %v", err)
 	}
@@ -4056,6 +4149,7 @@ func decodeSessionInfo(t *testing.T, recorder *httptest.ResponseRecorder) sessio
 // route reads the bucket itself and answers it: anything else tells a Dispatch mention, a broadcast
 // or an issue claim that a working session is gone.
 func TestSessionEntryRouteAnswersASessionTheCacheHasNotRefilled(t *testing.T) {
+	t.Parallel()
 	claimant, observer := trailingListeners(t)
 	entry := session.SessionEntry{
 		SelfSubscribed: true,
@@ -4091,6 +4185,7 @@ func TestSessionEntryRouteAnswersASessionTheCacheHasNotRefilled(t *testing.T) {
 // than inside it, so a Dispatch reading only the prefix is unaffected. A session that is
 // registered answers itself.
 func TestSessionEntryRouteAnswers404OnlyForAGoneRecord(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_live"})
 	state := &listenerDeps{registry: registry, sessions: sessions}
 
@@ -4135,7 +4230,7 @@ func TestSessionEntryRouteAnswersServiceUnavailableWhenTheStoreReadDoesNotAnswer
 	if retryAfter := answer.Header().Get("Retry-After"); retryAfter != "1" {
 		t.Fatalf("Retry-After = %q, want \"1\"", retryAfter)
 	}
-	var body apiError
+	var body listenerwire.APIError
 	if err := json.NewDecoder(answer.Body).Decode(&body); err != nil {
 		t.Fatalf("decode the unavailable answer: %v", err)
 	}
@@ -4150,6 +4245,7 @@ func TestSessionEntryRouteAnswersServiceUnavailableWhenTheStoreReadDoesNotAnswer
 // The route and GET /v1/sessions answer one shape built one way, so a caller that reads one session
 // sees exactly the row the list would have given it, joined interests and all.
 func TestSessionEntryRouteAnswersTheSameBodyAsTheSessionsRow(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t,
 		map[string][]string{"ses_listed": nil},
 		[]string{"ses_listed"})
@@ -4157,15 +4253,15 @@ func TestSessionEntryRouteAnswersTheSameBodyAsTheSessionsRow(t *testing.T) {
 	state := &listenerDeps{registry: registry, sessions: sessions}
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d %s, want 200", list.Code, list.Body.String())
 	}
-	var rows []sessionInfo
+	var rows []listenerwire.SessionInfo
 	if err := json.NewDecoder(list.Body).Decode(&rows); err != nil {
 		t.Fatalf("decode the session list: %v", err)
 	}
-	var row sessionInfo
+	var row listenerwire.SessionInfo
 	for _, candidate := range rows {
 		if candidate.SessionID == "ses_listed" {
 			row = candidate
@@ -4195,6 +4291,7 @@ func TestSessionEntryRouteAnswersTheSameBodyAsTheSessionsRow(t *testing.T) {
 // body, because a decoded empty string cannot tell a field omitempty left out from one present and
 // empty.
 func TestSessionEntryRouteNamesTheClientInstanceThatRegistered(t *testing.T) {
+	t.Parallel()
 	const instance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{registry: registry, sessions: sessions}
@@ -4225,6 +4322,7 @@ func TestSessionEntryRouteNamesTheClientInstanceThatRegistered(t *testing.T) {
 // The route reads; every other method on it is the caller's mistake, answered as every other /v1
 // handler answers one.
 func TestSessionEntryRouteRefusesANonGETMethod(t *testing.T) {
+	t.Parallel()
 	recorder := httptest.NewRecorder()
 	sessionEntryHandler(&listenerDeps{}).ServeHTTP(recorder,
 		httptest.NewRequest(http.MethodDelete, "/v1/registry/ses_live", nil))
@@ -4249,10 +4347,10 @@ func registrationViewRoute(t *testing.T, d *listenerDeps, sessionID string) *htt
 }
 
 // decodeRegistrationView reads the answer the registration view writes, which is a shape of its
-// own (sessionRegistration) and not the full answer's row.
-func decodeRegistrationView(t *testing.T, recorder *httptest.ResponseRecorder) sessionRegistration {
+// own (listenerwire.SessionRegistration) and not the full answer's row.
+func decodeRegistrationView(t *testing.T, recorder *httptest.ResponseRecorder) listenerwire.SessionRegistration {
 	t.Helper()
-	var answer sessionRegistration
+	var answer listenerwire.SessionRegistration
 	if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
 		t.Fatalf("decode the registration view's answer: %v", err)
 	}
@@ -4267,13 +4365,13 @@ func decodeRegistrationView(t *testing.T, recorder *httptest.ResponseRecorder) s
 func registrationViewDeps(t *testing.T) *listenerDeps {
 	t.Helper()
 	client := setupPublishTestClient(t)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -4292,6 +4390,7 @@ func registrationViewDeps(t *testing.T) *listenerDeps {
 // then holds its role claim and its issue claims until the gone horizon takes them, which is the
 // delay the stop exists to remove.
 func TestSessionEntryRouteAnswersTheRegistrationViewWhileTheClaimsViewCannotAnswer(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_claims_view_refilling"
 		instance  = "9a8b7c6d5e4f3a2b9a8b7c6d5e4f3a2b"
@@ -4325,6 +4424,7 @@ func TestSessionEntryRouteAnswersTheRegistrationViewWhileTheClaimsViewCannotAnsw
 // failed, on which it sends no delete: such a session could never be clean-stopped. The
 // registration view reads no interest record, so it answers the registration the stop needs.
 func TestSessionEntryRouteAnswersTheRegistrationViewWhileTheInterestRecordCannotBeRead(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_unreadable_interest_registration"
 		instance  = "3c2b1a0f9e8d7c6b3c2b1a0f9e8d7c6b"
@@ -4363,6 +4463,7 @@ func TestSessionEntryRouteAnswersTheRegistrationViewWhileTheInterestRecordCannot
 // role's claims standing. The full answer reads the cache first, as it must for a session the
 // cache has not caught up with, and is asked here first to show that the two really differ.
 func TestSessionEntryRouteUnderTheRegistrationViewAnswersTheBucketsInstanceNotTheCachedOne(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_replaced_instance"
 		cached    = "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
@@ -4400,6 +4501,7 @@ func TestSessionEntryRouteUnderTheRegistrationViewAnswersTheBucketsInstanceNotTh
 // registration that exists is one the caller may remove whatever state it reads. Only the
 // bucket's word that it holds no record is a 404, in the words the full answer uses for it.
 func TestSessionEntryRouteUnderTheRegistrationViewAnswersEveryRecordTheBucketHolds(t *testing.T) {
+	t.Parallel()
 	const instance = "7e6d5c4b3a291807e6d5c4b3a2918070"
 	d, now := stalledSessionsRig(t)
 	stoppedAt := register(t, d, "ses_stopped", session.SessionEntry{
@@ -4443,7 +4545,7 @@ func TestSessionEntryRouteUnderTheRegistrationViewAnswersEveryRecordTheBucketHol
 		t.Fatalf("GET /v1/registry/ses_never_registered?view=registration: status %d %s, want 404",
 			missing.Code, missing.Body.String())
 	}
-	var refusal noLiveSessionRefusal
+	var refusal listenerwire.NoLiveSessionRefusal
 	if err := json.Unmarshal(missing.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", missing.Body.String(), err)
 	}
@@ -4457,13 +4559,14 @@ func TestSessionEntryRouteUnderTheRegistrationViewAnswersEveryRecordTheBucketHol
 // selector was dropped in silence would be handed the full answer it asked not to have, and
 // would read that answer's 503 as its own session's.
 func TestSessionEntryRouteRefusesAViewValueItDoesNotKnow(t *testing.T) {
+	t.Parallel()
 	recorder := httptest.NewRecorder()
 	sessionEntryHandler(&listenerDeps{}).ServeHTTP(recorder,
 		httptest.NewRequest(http.MethodGet, "/v1/registry/ses_live?view=rows", nil))
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("GET /v1/registry/ses_live?view=rows: status %d %s, want 400", recorder.Code, recorder.Body.String())
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
@@ -4478,6 +4581,7 @@ func TestSessionEntryRouteRefusesAViewValueItDoesNotKnow(t *testing.T) {
 // that carry the state). A client then reads one field from every role answer instead of
 // inferring live from the status code.
 func TestRoleAnswersNameALiveHoldersState(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "state-on-the-200"
@@ -4488,7 +4592,7 @@ func TestRoleAnswersNameALiveHoldersState(t *testing.T) {
 	d := harness.publishDeps(t)
 
 	recorder := httptest.NewRecorder()
-	roleGetHandler(d).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+	roleGetHandler(d, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/roles/%s: status %d %s, want 200", role, recorder.Code, recorder.Body.String())
 	}
@@ -4508,7 +4612,7 @@ func TestRoleAnswersNameALiveHoldersState(t *testing.T) {
 	if published.Code != http.StatusOK {
 		t.Fatalf("publish to %s: status %d %s, want 200", role, published.Code, published.Body.String())
 	}
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.Unmarshal(published.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the publish answer %s: %v", published.Body.String(), err)
 	}
@@ -4523,6 +4627,7 @@ func TestRoleAnswersNameALiveHoldersState(t *testing.T) {
 // session that stopped answering and neither is counted. The count rose for both before this
 // change, so a box's operator read the share of its traffic going to stalled sessions too high.
 func TestSendsToAnUnresponsiveRecipientAreCountedOnlyWhenStored(t *testing.T) {
+	t.Parallel()
 	d, now := stalledSessionsRig(t)
 	const target = "ses_counted_recipient"
 	register(t, d, target, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -4552,7 +4657,7 @@ func TestSendsToAnUnresponsiveRecipientAreCountedOnlyWhenStored(t *testing.T) {
 	}
 
 	stored := send(d)
-	var answer sendResponse
+	var answer listenerwire.SendResponse
 	if err := json.Unmarshal(stored.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the send answer %s: %v", stored.Body.String(), err)
 	}
@@ -4585,5 +4690,250 @@ func TestSendsToAnUnresponsiveRecipientAreCountedOnlyWhenStored(t *testing.T) {
 	}
 	if got := counted(); got != "1" {
 		t.Fatalf("envoy_sends_unresponsive_total = %s after a send the bus never took, want 1", got)
+	}
+}
+
+// noInterestRecordFixture is packages/contracts/fixtures/envoy-session-no-interests.json: the row
+// a live session with no interest record, no role claim and no capability has in GET /v1/sessions,
+// before and after the change that made that row's topics the empty list. Each row is kept as raw
+// JSON, key by key, because the spec's comparison rule reads the JSON itself: the same keys, no key
+// more and no key less, and the same JSON type for each key, so a null and an empty list differ.
+type noInterestRecordFixture struct {
+	AfterThisChange  map[string]json.RawMessage `json:"after_this_change"`
+	BeforeThisChange map[string]json.RawMessage `json:"before_this_change"`
+}
+
+// readNoInterestRecordFixture reads that fixture from the contracts package, the path every other
+// fixture in this file is read by.
+func readNoInterestRecordFixture(t *testing.T) noInterestRecordFixture {
+	t.Helper()
+	raw, err := os.ReadFile("../../../contracts/fixtures/envoy-session-no-interests.json")
+	if err != nil {
+		t.Fatalf("read the no-interest-record fixture: %v", err)
+	}
+	var fixture noInterestRecordFixture
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode the no-interest-record fixture: %v", err)
+	}
+	if len(fixture.AfterThisChange) == 0 || len(fixture.BeforeThisChange) == 0 {
+		t.Fatalf("the fixture carries no rows to compare: %+v", fixture)
+	}
+	return fixture
+}
+
+// rowSessionID is the session_id a row names.
+func rowSessionID(t *testing.T, row map[string]json.RawMessage) string {
+	t.Helper()
+	var sessionID string
+	if err := json.Unmarshal(row["session_id"], &sessionID); err != nil {
+		t.Fatalf("read a row's session_id: %v", err)
+	}
+	return sessionID
+}
+
+// seedNoInterestRecordSession registers the session the fixture's after row describes, and writes
+// no interest record for it: a session with no record is the state under test, so the entry is
+// written here rather than through setupSessionsTest's live list, which would give it that
+// helper's own machine id and directory instead of the fixture's. Every field of the entry is
+// seeded from the row, but not its state: the listener judges it when it answers, from the
+// registration time Put stamps (session.StateOf), so a session written here is live.
+func seedNoInterestRecordSession(t *testing.T, sessions *session.SessionRegistry, row map[string]json.RawMessage) string {
+	t.Helper()
+	var listed session.ListEntry
+	raw, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("re-encode the fixture row: %v", err)
+	}
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		t.Fatalf("read the fixture row's session entry fields: %v", err)
+	}
+	if err := sessions.Put(listed.SessionID, listed.SessionEntry); err != nil {
+		t.Fatalf("register %s: %v", listed.SessionID, err)
+	}
+	return listed.SessionID
+}
+
+// noInterestRecordClockKeys are the two values the listener takes from the clock, so the fixture
+// cannot state them: they are checked as integers equal to each other, never against the row.
+var noInterestRecordClockKeys = map[string]bool{"updated_at": true, "last_seen": true}
+
+// sameNoInterestRecordRowValues holds got to want key by key: the same keys, no key more and no
+// key less, and for each key outside skip the same JSON bytes, so a null and an empty list are
+// different answers. A skipped key must still be present on both sides; its value is the
+// caller's to check. gotName and wantName name the two sides in every failure it reports.
+func sameNoInterestRecordRowValues(t *testing.T, gotName, wantName string, got, want map[string]json.RawMessage, skip map[string]bool) {
+	t.Helper()
+	for key := range got {
+		if _, ok := want[key]; !ok {
+			t.Errorf("%s carries %q = %s, which %s does not state", gotName, key, got[key], wantName)
+		}
+	}
+	for key, wantValue := range want {
+		gotValue, ok := got[key]
+		if !ok {
+			t.Errorf("%s carries no %q; %s states %s", gotName, key, wantName, wantValue)
+			continue
+		}
+		if skip[key] {
+			continue
+		}
+		if gotCompact, wantCompact := compactNoInterestRecordJSON(t, gotValue), compactNoInterestRecordJSON(t, wantValue); gotCompact != wantCompact {
+			t.Errorf("%s: %q = %s, want %s", gotName, key, gotCompact, wantCompact)
+		}
+	}
+}
+
+// compareNoInterestRecordRow holds got, the listener's row decoded key by key, to want, the
+// fixture's row, by sameNoInterestRecordRowValues; the two clock keys are only required to be
+// integers equal to each other.
+func compareNoInterestRecordRow(t *testing.T, what string, got, want map[string]json.RawMessage) {
+	t.Helper()
+	sameNoInterestRecordRowValues(t, what+": the answer", "the fixture row", got, want, noInterestRecordClockKeys)
+	var updatedAt, lastSeen int64
+	if err := json.Unmarshal(got["updated_at"], &updatedAt); err != nil {
+		t.Errorf("%s: updated_at = %s, want an integer: %v", what, got["updated_at"], err)
+	}
+	if err := json.Unmarshal(got["last_seen"], &lastSeen); err != nil {
+		t.Errorf("%s: last_seen = %s, want an integer: %v", what, got["last_seen"], err)
+	}
+	if updatedAt != lastSeen {
+		t.Errorf("%s: updated_at = %d and last_seen = %d, want the one moment the session was registered",
+			what, updatedAt, lastSeen)
+	}
+}
+
+// compactNoInterestRecordJSON is one value's bytes with its formatting removed, so two values are
+// compared as JSON and not as whitespace.
+func compactNoInterestRecordJSON(t *testing.T, value json.RawMessage) string {
+	t.Helper()
+	var buffer bytes.Buffer
+	if err := json.Compact(&buffer, value); err != nil {
+		t.Fatalf("compact %s: %v", value, err)
+	}
+	return buffer.String()
+}
+
+// A session that registered and subscribed to nothing has no interest record, and its row in GET
+// /v1/sessions carries topics as the empty list, never null: a client that reads the row's topics
+// as a list iterates it without a null check. The row is read key by key, never into a
+// listenerwire.SessionInfo, which would drop a key listenerwire.SessionInfo does not name, so the
+// row could not be held to the fixture's keys.
+func TestSessionsListRowForASessionWithNoInterestRecordMatchesTheFixture(t *testing.T) {
+	t.Parallel()
+	fixture := readNoInterestRecordFixture(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	sessionID := seedNoInterestRecordSession(t, sessions, fixture.AfterThisChange)
+
+	list := httptest.NewRecorder()
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("GET /v1/sessions: status %d %s, want 200", list.Code, list.Body.String())
+	}
+	var rows []map[string]json.RawMessage
+	if err := json.Unmarshal(list.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode the session list: %v; body = %s", err, list.Body.String())
+	}
+	var row map[string]json.RawMessage
+	for _, candidate := range rows {
+		if rowSessionID(t, candidate) == sessionID {
+			row = candidate
+		}
+	}
+	if row == nil {
+		t.Fatalf("the list carries no row for %s; body = %s", sessionID, list.Body.String())
+	}
+	compareNoInterestRecordRow(t, "GET /v1/sessions", row, fixture.AfterThisChange)
+}
+
+// The per-session route and the list answer one shape built one way, so a caller holding a session
+// id reads the same row for a session with no interest record, its topics the empty list included.
+func TestSessionEntryRouteForASessionWithNoInterestRecordMatchesTheFixture(t *testing.T) {
+	t.Parallel()
+	fixture := readNoInterestRecordFixture(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	sessionID := seedNoInterestRecordSession(t, sessions, fixture.AfterThisChange)
+
+	answer := sessionEntryRoute(t, &listenerDeps{registry: registry, sessions: sessions}, sessionID)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/%s: status %d %s, want 200", sessionID, answer.Code, answer.Body.String())
+	}
+	var row map[string]json.RawMessage
+	if err := json.Unmarshal(answer.Body.Bytes(), &row); err != nil {
+		t.Fatalf("GET /v1/registry/%s: decode the answer as a JSON object: %v; body = %s",
+			sessionID, err, answer.Body.String())
+	}
+	compareNoInterestRecordRow(t, "GET /v1/registry/"+sessionID, row, fixture.AfterThisChange)
+}
+
+// The fixture states a whole row, so it can only stay whole while it names every key
+// listenerwire.SessionInfo always writes, and while the keys a fixture row may lack are the ones
+// listenerwire.SessionInfo leaves out when they are empty. The fixture's session sits in no tmux
+// pane, and its registration named no plugin, no plugin build and no client instance, so its row
+// lacks exactly those keys. The keys are read from listenerwire.SessionInfo's own fields and json
+// tags, never from a value of it: a field added to listenerwire.SessionInfo later fails this test,
+// omitempty or not, as does a field that gains or loses omitempty, so neither the fixture nor the
+// list of keys a fixture row may lack can fall behind the struct unnoticed. A value with every
+// field set cannot hold that, since a field added after the value was written is left empty in it,
+// and an omitempty one is then absent from its keys.
+func TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys(t *testing.T) {
+	t.Parallel()
+	fixture := readNoInterestRecordFixture(t)
+	alwaysWritten, leftOutWhenEmpty := map[string]bool{}, map[string]bool{}
+	infoType := reflect.TypeOf(listenerwire.SessionInfo{})
+	for i := range infoType.NumField() {
+		field := infoType.Field(i)
+		tag := field.Tag.Get("json")
+		if !field.IsExported() || tag == "-" {
+			continue
+		}
+		// An exported field with no name in its tag is written under its Go name, as encoding/json
+		// writes it, so a field added without a tag is still a key this test sees.
+		name, options, _ := strings.Cut(tag, ",")
+		if name == "" {
+			name = field.Name
+		}
+		if slices.Contains(strings.Split(options, ","), "omitempty") {
+			leftOutWhenEmpty[name] = true
+		} else {
+			alwaysWritten[name] = true
+		}
+	}
+	for key := range alwaysWritten {
+		if _, ok := fixture.AfterThisChange[key]; !ok {
+			t.Errorf("listenerwire.SessionInfo always writes %q, which the fixture row does not state; capture the fixture again", key)
+		}
+	}
+	for key := range fixture.AfterThisChange {
+		if !alwaysWritten[key] {
+			t.Errorf("the fixture row states %q, which listenerwire.SessionInfo does not always write", key)
+		}
+	}
+	mayLack := map[string]bool{"tmux_place": true, "plugin": true, "plugin_version": true, "client_instance_id": true}
+	for key := range leftOutWhenEmpty {
+		if !mayLack[key] {
+			t.Errorf("listenerwire.SessionInfo leaves %q out when it is empty, which is not a key a fixture row may lack; capture the fixture again or name it here", key)
+		}
+	}
+	for key := range mayLack {
+		if !leftOutWhenEmpty[key] {
+			t.Errorf("a fixture row may lack %q, which listenerwire.SessionInfo does not leave out when it is empty", key)
+		}
+	}
+}
+
+// The fixture's before row is what the listener used to write for this session. The after row is
+// pinned to the listener itself by the two route tests above; no Go test pins the before row to a
+// listener, so this test holds it to the after row's values and to the one difference, topics,
+// which was null and is now the empty list.
+func TestFixtureBeforeRowForASessionWithNoInterestRecordDiffersOnlyInTopics(t *testing.T) {
+	t.Parallel()
+	fixture := readNoInterestRecordFixture(t)
+	before, after := fixture.BeforeThisChange, fixture.AfterThisChange
+	sameNoInterestRecordRowValues(t, "the before row", "the after row", before, after, map[string]bool{"topics": true})
+	if got := compactNoInterestRecordJSON(t, before["topics"]); got != "null" {
+		t.Errorf("the before row's topics = %s, want null, the value the listener used to write", got)
+	}
+	if got := compactNoInterestRecordJSON(t, after["topics"]); got != "[]" {
+		t.Errorf("the after row's topics = %s, want [], the value the listener writes now", got)
 	}
 }

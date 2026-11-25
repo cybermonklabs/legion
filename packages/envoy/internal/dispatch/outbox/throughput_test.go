@@ -459,12 +459,12 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	if err := reader.Flush(); err != nil {
 		t.Fatalf("flush the holder's subscription: %v", err)
 	}
-	registry, err := envoystore.Open(reader)
+	registry, err := envoystore.Open(t.Context(), reader)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(reader)
+	sessions, err := session.OpenSessionRegistry(t.Context(), reader)
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -472,7 +472,7 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	if _, err := registry.SetRole(throughputHolder, "test-machine", "reviewer", false); err != nil {
 		t.Fatalf("claim role:reviewer: %v", err)
 	}
-	if err := sessions.Put(throughputHolder, session.SessionEntry{SelfSubscribed: true}); err != nil {
+	if err := sessions.Put(throughputHolder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register the role's holder: %v", err)
 	}
 	return rig
@@ -709,5 +709,5 @@ func runOutboxThrough(t *testing.T, database *store.Store, client *bus.Client, p
 	}
 	holders := roles.NewBuckets(client, roles.Windows{})
 	return runDeps(t, Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
-		RoleClaims: holders, Sessions: holders}, 10*time.Second)
+		RoleClaims: holders, Sessions: holders})
 }

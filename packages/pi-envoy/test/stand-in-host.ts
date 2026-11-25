@@ -6,6 +6,7 @@
 // client instance per OS process, and `test/session-pod-process.ts`, one session of a session pod
 // in an OS process of its own. A host method the extension starts to use is added here once, so
 // neither process can drift behind the suite.
+import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { MessageRenderer, PiApi } from "@legion/pi-shared/pi-types";
 import { z } from "zod";
 
@@ -165,4 +166,77 @@ export function createStandInHost(options: { readonly zod?: typeof z } = {}) {
     tools,
     userMessages,
   };
+}
+
+/**
+ * The context a script that runs one session in an OS process of its own hands `session_start`
+ * (`test/session-pod-process.ts`, `test/relay-session-process.ts`): session `sessionID`, in `cwd`,
+ * whose branch is `entries`, idle and holding no message (so the extension hands its transcript
+ * notices over, as to a real idle host), with no timers of the host's, and the UI's notices handed
+ * to `notify`.
+ */
+export function processSessionContext(options: {
+  readonly sessionID: string;
+  readonly cwd: string;
+  readonly entries: readonly unknown[];
+  readonly notify?: (message: string) => void;
+}) {
+  return {
+    cwd: options.cwd,
+    hasUI: true,
+    agent: { kind: "main" as const },
+    sessionManager: {
+      getSessionId: () => options.sessionID,
+      getSessionName: () => undefined,
+      getBranch: (): readonly unknown[] => options.entries,
+      getEntries: (): readonly unknown[] => options.entries,
+      getSessionFile: () => undefined,
+      ensureOnDisk: async (): Promise<void> => undefined,
+    },
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    setInterval: () => undefined,
+    setTimeout: () => undefined,
+    ui: {
+      notify: (message: string) => options.notify?.(message),
+      onTerminalInput: () => () => undefined,
+      getEditorText: () => "",
+    },
+  };
+}
+
+/**
+ * A listener in `globalThis.fetch` for such a script: `route` answers first where it answers at
+ * all; then every registration is accepted with the session's own consumer, a role read answers
+ * that no session holds it, and anything else answers `{}`. `route` is handed the path and the
+ * request's JSON body.
+ */
+export function standInListenerFetch(
+  route: (
+    pathname: string,
+    body: Record<string, unknown>,
+    input: Parameters<typeof fetch>[0],
+    init: RequestInit | undefined
+  ) => Response | Promise<Response> | undefined = () => undefined
+): typeof fetch {
+  return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const { pathname } = new URL(input instanceof Request ? input.url : input.toString());
+    const body: Record<string, unknown> =
+      typeof init?.body === "string" ? JSON.parse(init.body) : {};
+    const routed = await route(pathname, body, input, init);
+    if (routed !== undefined) return routed;
+    if (pathname === "/v1/interests/subscribe") {
+      return Response.json({
+        session_id: body.session_id,
+        machine_id: "test",
+        dir: body.dir,
+        topics: body.topics,
+        delivery: consumerDelivery(String(body.session_id)),
+      });
+    }
+    if (pathname.startsWith("/v1/roles/")) {
+      return Response.json({ error: "no holder" }, { status: 404 });
+    }
+    return Response.json({});
+  }) as typeof fetch;
 }

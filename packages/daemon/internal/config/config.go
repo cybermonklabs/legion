@@ -5,7 +5,7 @@
 // is refused with the message that names its replacement, worded exactly as operators have met it;
 // anything else is a typo, refused as an unknown key. One kind is not refused: a warned key
 // (warnedKeys) is accepted, changes nothing, and is kept as a Warning the daemon logs at boot and
-// `legion start --check-config` prints after its OK line. Under `runtime: kubernetes` the loader
+// `legion config check` prints after its OK line. Under `runtime: kubernetes` the loader
 // also refuses what a pod could not run with: the `runtime.kubernetes` block's own values, and the
 // keys outside it every pod needs.
 //
@@ -14,8 +14,9 @@
 // `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
-// configuration loads on a machine that has none of the files it names; `legion start
-// --check-config` then reads them as boot does (daemon.CheckStart).
+// configuration loads on a machine that has none of the files it names; `legion config check`
+// then reads them as boot does (daemon.CheckStart). The daemon reads an instructions file again
+// at each launch, so an edit of one needs no restart.
 package config
 
 import (
@@ -36,6 +37,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 )
@@ -66,9 +68,14 @@ const (
 // Config is the daemon's settled configuration: the file, the environment, and the defaults
 // resolved into the values the daemon runs on.
 type Config struct {
-	Project string
-	Port    int
-	Bind    string
+	// Revision is the commit this binary was built from (cmd/legion's revision, which the worker
+	// image and the release link in), "" for a build nothing stamped. It is not read from the file:
+	// `legion start` sets it, and the daemon names it after its NATS connection's name
+	// (natsauth.ConnectionName).
+	Revision string
+	Project  string
+	Port     int
+	Bind     string
 	// AdvertiseHost is `advertise_host`: the host every pod's shim dials the worker stream at in
 	// Bind's place, so Bind can be the unspecified address a daemon running as a pod listens on; ""
 	// (the default) has pods dial Bind. Only runtime: kubernetes accepts it, and readAdvertiseHost
@@ -136,6 +143,15 @@ type Config struct {
 	WorkerWakesPerMinute int
 	WorkerWakeBurst      int
 
+	// GitHubGraphQLShare is the share of the time this daemon's GraphQL queries of one GitHub App
+	// installation may keep GitHub at work (`github_graphql_share`, DefaultGitHubGraphQLShare
+	// when the file names none): after each query the next waits (1 - share) / share of the time
+	// it took (internal/daemon's queryGate). GitHub allows an installation 60 seconds of query
+	// processing time in 60 seconds, and every daemon that reads with the same installation
+	// spends that one allowance, so a deployment sets it near 1 divided by the number of daemons
+	// sharing the installation. It is at least MinGitHubGraphQLShare and at most 1 (readShare).
+	GitHubGraphQLShare float64
+
 	// OperatorTokenFile is the bearer the operator routes compare against, as a path; "" when
 	// the file sets none.
 	OperatorTokenFile string
@@ -169,9 +185,11 @@ type Config struct {
 	// named for itself, at the retry of a look nobody reported, or at this bound.
 	ProductionCheckBound time.Duration
 	// PodUpdateGrace is how long a pod's update round waits for its roles after it opens
-	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role ends the
-	// round before it, and no answer holds the round past it. It is a decimal number of minutes,
-	// as `worker_silence_minutes` is, so a live proof can drive the bound inside one run.
+	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role the round
+	// asks ends the round before it once no turn runs and no claim's activity report holds it
+	// (internal/daemon's roundEnd.holding), and no answer, turn or background work holds the round
+	// past it. It is a decimal number of minutes, as `worker_silence_minutes` is, so a live proof
+	// can drive the bound inside one run.
 	PodUpdateGrace time.Duration
 	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
 	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
@@ -250,6 +268,12 @@ type Config struct {
 	// records keep the name each was written under. The zero value, which answers as
 	// strings.EqualFold does, while the file configures none.
 	RepositoryRenames ghrepo.Renames
+	// LeakCheck is `leak_check`, or leakguard.RepositoryVar and leakguard.ManifestVar in the
+	// daemon's environment, which the file's members override one by one: the repository the
+	// deployment's shared public leak check is read from and the check's manifest digest
+	// (leakguard.Manifest). The zero Setting is a deployment that runs no shared leak check of its
+	// own (resolveLeakCheck).
+	LeakCheck leakguard.Setting
 	// Hooks is `hooks`: the deployment's own prompts, each put in front of named roles every
 	// Every moves back of the moves it selects. DefaultHooks() while the file names no key, and
 	// empty where it writes `hooks: []`, which runs none. A `prompt_file` is resolved against
@@ -262,7 +286,7 @@ type Config struct {
 	// about rather than refused, since the deployment that writes it releases on its own schedule
 	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
 	// `legion start` logs each before any other work this boot does with the configuration, and
-	// `legion start --check-config` prints each right after its OK line, so an operator reads the
+	// `legion config check` prints each right after its OK line, so an operator reads the
 	// same sentence either way.
 	Warnings []string
 }
@@ -278,6 +302,13 @@ const (
 	defaultWorkerWakesPerMinute = 8
 	defaultRuntimeName          = "tmux"
 	defaultEnvoyURL             = "http://127.0.0.1:9020"
+
+	// DefaultGitHubGraphQLShare is `github_graphql_share`'s default: half, so each query of an
+	// installation is followed by a pause as long as it took.
+	DefaultGitHubGraphQLShare = 0.5
+	// MinGitHubGraphQLShare is the smallest `github_graphql_share` the loader takes: one daemon in
+	// a hundred sharing an installation, a pause 99 times as long as each query.
+	MinGitHubGraphQLShare = 0.01
 
 	// maxTimerSeconds is the shipped bound on every duration key (config.ts MAX_TIMER_SECONDS):
 	// the largest whole number of seconds whose milliseconds fit a signed 32-bit timer. Go's
@@ -321,6 +352,12 @@ const (
 	// minutes of the ask, so thirty minutes is three times that answer and still inside one tick
 	// of a roll (dispatch://INFRA-2981 R2).
 	defaultPodUpdateGrace = 30 * time.Minute
+
+	// DefaultReviewRoundCap is `review_round_cap`'s default (Config.ReviewRoundCap). It is exported
+	// for a test that builds its Config by hand: the daemon API contract takes a positive cap
+	// alone (packages/contracts/src/legion-api.ts), so a pane's `legion` tool refuses every state
+	// read of a daemon whose cap is 0.
+	DefaultReviewRoundCap = 3
 )
 
 // tossedKeys are the settings that no longer exist, mapped to why. A file carrying one is refused
@@ -330,7 +367,7 @@ var tossedKeys = map[string]string{
 	"worker_cap":                 "the running-worker cap no longer exists (LEGION-208 Requirement 8)",
 	"worker_idle_retire_seconds": `an idle window retires no worker: it releases the worker's issue pod, and the key for it is runtime.kubernetes.idle_release (idle_minutes, backstop_minutes), which suspends every claim of the released pod with the source released and brings them back on the next wake (INFRA-945)`,
 	"resync_interval_seconds":    `the mirror of Dispatch and GitHub as truth, and resync's drift healing, no longer exist (LEGION-208 Design, "Ported, and tossed")`,
-	"max_recursion_depth":        "an architect spawns no worker and no sub-architect (the daemon starts every phase, and only the operator starts any other claim), so there is no spawn recursion to bound",
+	"max_recursion_depth":        "no agent starts a worker or an architect: the daemon starts every phase worker and every child's architect, one per issue, and the admission cap bounds how many issues run, so there is no spawn recursion to bound",
 }
 
 // warnedKeys are the settings that no longer exist and that a file may carry all the same, mapped
@@ -338,7 +375,7 @@ var tossedKeys = map[string]string{
 // value from it, and warns: the reviewer's rule for this loader is that a refusal must close a
 // vulnerability, and a count nothing reads closes none, so refusing a boot over it would stop a
 // deployment for a word in a file. The refusal this key would otherwise carry is the warning's
-// own text (Config.Warnings, readKeys), which boot logs and `legion start --check-config`
+// own text (Config.Warnings, readKeys), which boot logs and `legion config check`
 // prints, so the operator reads what the refusal would have said and the daemon runs.
 var warnedKeys = map[string]string{
 	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
@@ -419,6 +456,9 @@ type fileConfig struct {
 	RoleConfigFiles          map[claim.Role][]string
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
+	LeakCheck                *fileLeakCheck
+	// GitHubGraphQLShare is `github_graphql_share` (readShare).
+	GitHubGraphQLShare *float64
 	// Hooks is `hooks`, a pointer so the settle tells a file that names no key, which runs
 	// DefaultHooks(), from one that writes the empty list, which runs no hook.
 	Hooks *[]Hook
@@ -434,7 +474,7 @@ func Load(path string, env func(string) string) (Config, error) {
 
 // LoadForValidation checks a configuration without executing its App private-key commands or
 // secrets reads, and answers its Warnings as Load does. It is the Go equivalent of the shipped
-// daemon's --check-config path.
+// daemon's `legion config check` path.
 func LoadForValidation(path string, env func(string) string) (Config, error) {
 	return load(path, env, false)
 }
@@ -634,7 +674,7 @@ func (e unknownKeyError) Error() string { return fmt.Sprintf("unknown key %s.%s"
 // describedMembers returns a mapping's members by name, refusing a name it does not know or names
 // twice. A member whose value is null is left out, as an unset key. It is the one reader of a
 // mapping in the loader: group is the dotted path of one nestedKeys entry (keytable.go), whose
-// members are the names the mapping may carry, each with the line `legion config-reference --json`
+// members are the names the mapping may carry, each with the line `legion config reference --json`
 // prints for it, so every nested key the loader accepts is described. key is the path this mapping
 // was reached by, which a refusal names, and which differs from group where a project key or a
 // sequence index stands in it. A group nestedKeys does not hold panics: it is a reader naming a
@@ -663,6 +703,18 @@ func describedMembers(value *yaml.Node, key, group string) (map[string]*yaml.Nod
 	return found, nil
 }
 
+// namesKey reports whether the mapping value names the key name, whatever value follows it. It
+// reads the mapping's own keys, since describedMembers leaves out a member whose value is null, so
+// a key written with nothing after it counts as named.
+func namesKey(value *yaml.Node, name string) bool {
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value == name {
+			return true
+		}
+	}
+	return false
+}
+
 // readNatsURLs is `nats_urls`: valid URLs, in order, each once.
 func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	read, err := readStrings(value, key)
@@ -684,7 +736,7 @@ func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 // dispatchBase is `dispatch_url`: a base URL, never its clients' `/mcp` endpoint, which the clients
 // append themselves (the shipped `requireNoMcpSuffix`, config.ts). A trailing slash is gone
 // by then, so `/mcp/` is caught too. Its scheme must be http or https: anything else — a typo such
-// as `htp` — is a misconfiguration `--check-config` should catch now, rather than reaching the
+// as `htp` — is a misconfiguration `legion config check` should catch now, rather than reaching the
 // daemon's HTTP client as "unsupported protocol scheme", which the boot's readiness gate would
 // otherwise wait out forever as if Dispatch were merely unreachable (LEGION-580).
 func dispatchBase(value, key string) (string, error) {
@@ -779,8 +831,8 @@ const providerKeysShape = "provider_keys must be a mapping of the variable OMP r
 // the real gh the `legion gh` wrapper runs, and GH_TOKEN, GITHUB_TOKEN and GH_HOST set to the
 // empty string so nothing outranks the files. Each runtime's runtimeOwned holds the six and refuses
 // a provider key named for one — tmux at its construction, after boot has read every provider key
-// from secretsd, kubernetes in CheckPod — so the loader refuses it first, where `legion start
-// --check-config` sees it: the shim refuses to start over a provider key its own environment
+// from secretsd, kubernetes in CheckPod — so the loader refuses it first, where `legion config
+// check` sees it: the shim refuses to start over a provider key its own environment
 // already names, an empty value included (shim.ReadProviderEnv, LEGION-186), so such a key would
 // stop every pane.
 var paneGitHubEnv = []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH"}
@@ -903,6 +955,27 @@ func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time
 	return &duration, nil
 }
 
+// readShare is a key written as a share of a whole (`github_graphql_share`): a finite number at
+// least MinGitHubGraphQLShare and at most 1, a decimal among them, and nil for a key the file
+// writes with no value at all. A share below the floor asks for a pause no deployment needs -
+// one of 0 would wait forever after the first query, and a share of 1e-12 a pause past what a
+// time.Duration holds - and one above 1 a pause below nothing, so both are refused, as are NaN,
+// the infinities and anything that is not a number (`1/4` among them, which YAML reads as a
+// string).
+func readShare(value *yaml.Node, key string) (*float64, error) {
+	if value.Tag == "!!null" {
+		return nil, nil
+	}
+	var read float64
+	if (value.Tag != "!!int" && value.Tag != "!!float") || value.Decode(&read) != nil {
+		return nil, fmt.Errorf("%s must be a number", key)
+	}
+	if math.IsNaN(read) || math.IsInf(read, 0) || read < MinGitHubGraphQLShare || read > 1 {
+		return nil, fmt.Errorf("%s must be at least %v and at most 1", key, MinGitHubGraphQLShare)
+	}
+	return &read, nil
+}
+
 // validURL is the shipped `validateUrl` (config.ts) for the URLs this daemon dials or
 // hands out: a scheme and a host, or the key is refused.
 func validURL(value, key string) (*url.URL, error) {
@@ -973,6 +1046,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		Runtime:              Runtime{Name: defaultRuntimeName},
 		AdmissionCap:         defaultAdmissionCap,
 		WorkerWakesPerMinute: defaultWorkerWakesPerMinute,
+		GitHubGraphQLShare:   DefaultGitHubGraphQLShare,
 		EnvoyURL:             defaultEnvoyURL,
 		Gates:                Gates{Design: DesignGateRootIssues.Steps()},
 		Linger:               72 * time.Hour,
@@ -981,7 +1055,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		StalledTreeNotice:    6 * time.Hour,
 		WorkerSilence:        defaultWorkerSilence,
 		WorkerBackground:     defaultWorkerBackground,
-		ReviewRoundCap:       3,
+		ReviewRoundCap:       DefaultReviewRoundCap,
 		Warnings:             file.Warnings,
 	}
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {
@@ -1055,6 +1129,10 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, errors.New("worker_wakes_per_minute must be 0 (the pacing off) or a positive integer")
 	}
 
+	if file.GitHubGraphQLShare != nil {
+		cfg.GitHubGraphQLShare = *file.GitHubGraphQLShare
+	}
+
 	if err := resolveStage2(file, configDir, &cfg); err != nil {
 		return Config{}, err
 	}
@@ -1092,6 +1170,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, err
 	}
 	if err := checkRepositoryRenames(file, &cfg); err != nil {
+		return Config{}, err
+	}
+	if err := resolveLeakCheck(file, env, &cfg); err != nil {
 		return Config{}, err
 	}
 	if err := checkCommitIssueTrailerRenames(&cfg); err != nil {

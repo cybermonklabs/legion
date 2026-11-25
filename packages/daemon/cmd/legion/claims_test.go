@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -46,6 +47,8 @@ type stillTime struct{}
 func (stillTime) Now() time.Time { return time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC) }
 
 func (stillTime) AfterFunc(time.Duration, func()) supervise.Cancel { return neverFires{} }
+
+func (stillTime) At(time.Time, func()) supervise.Cancel { return neverFires{} }
 
 func (stillTime) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
@@ -72,6 +75,9 @@ type memoryClaims struct {
 
 	rowsMu sync.Mutex
 	rows   map[legionclaim.Token]supervise.Claim
+	// Holds holds each session name for the first claim that records it, as the store's
+	// claim_sessions table does (supervise.Store.HoldSessions).
+	supervisetest.Holds
 }
 
 func (s *memoryClaims) Machine(token legionclaim.Token) (*supervise.Machine, bool) {
@@ -122,6 +128,10 @@ func (s *memoryClaims) PutClaim(_ context.Context, c supervise.Claim) error {
 	c.BootTokenHash = slices.Clone(c.BootTokenHash)
 	s.rows[c.Token] = c
 	return nil
+}
+
+func (s *memoryClaims) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.Holds.ReleaseWith(ctx, s.PutClaim, c, holds)
 }
 
 func (s *memoryClaims) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
@@ -190,20 +200,64 @@ type seenRequest struct {
 	answer                                   []byte
 }
 
+// recordingDaemon is a daemon's HTTP handler served on a loopback port, with every request that
+// reached it recorded beside what the handler answered (serveRecorded).
+type recordingDaemon struct {
+	url  string
+	port int
+
+	mu   sync.Mutex
+	seen []seenRequest
+}
+
+// serveRecorded serves handler on a loopback port until the test ends, recording each request
+// and the handler's answer before the answer is written back.
+func serveRecorded(t *testing.T, handler http.Handler) *recordingDaemon {
+	t.Helper()
+	d := &recordingDaemon{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read the request body: %v", err)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, r)
+		d.mu.Lock()
+		d.seen = append(d.seen, seenRequest{
+			method: r.Method, path: r.URL.Path, authorization: r.Header.Get("Authorization"),
+			contentType: r.Header.Get("Content-Type"), body: body, status: recorder.Code, answer: recorder.Body.Bytes(),
+		})
+		d.mu.Unlock()
+		for name, values := range recorder.Header() {
+			w.Header()[name] = values
+		}
+		w.WriteHeader(recorder.Code)
+		_, _ = w.Write(recorder.Body.Bytes())
+	}))
+	t.Cleanup(server.Close)
+	d.url = server.URL
+	d.port = server.Listener.Addr().(*net.TCPAddr).Port
+	return d
+}
+
+// requests is every request that reached the daemon, in order.
+func (d *recordingDaemon) requests() []seenRequest {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.seen)
+}
+
 // operatorDaemon is the daemon's HTTP surface as `legion claims` reaches it: the real
 // api.NewServer over real claim machines and a fake runtime, on a loopback port, with every
 // request that reached it recorded.
 type operatorDaemon struct {
+	*recordingDaemon
 	t               *testing.T
 	runtime         *fake.Runtime
 	conns           *fake.Conns
 	claimSupervisor *memoryClaims
-	url             string
-	port            int
 	tokenFile       string
-
-	mu   sync.Mutex
-	seen []seenRequest
 }
 
 func newOperatorDaemon(t *testing.T) *operatorDaemon {
@@ -229,29 +283,7 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 	}).Handler
 
 	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read the request body: %v", err)
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, r)
-		d.mu.Lock()
-		d.seen = append(d.seen, seenRequest{
-			method: r.Method, path: r.URL.Path, authorization: r.Header.Get("Authorization"),
-			contentType: r.Header.Get("Content-Type"), body: body, status: recorder.Code, answer: recorder.Body.Bytes(),
-		})
-		d.mu.Unlock()
-		for name, values := range recorder.Header() {
-			w.Header()[name] = values
-		}
-		w.WriteHeader(recorder.Code)
-		_, _ = w.Write(recorder.Body.Bytes())
-	}))
-	t.Cleanup(server.Close)
-	d.url = server.URL
-	d.port = server.Listener.Addr().(*net.TCPAddr).Port
+	d.recordingDaemon = serveRecorded(t, handler)
 	return d
 }
 
@@ -603,6 +635,27 @@ func TestClaimsForgetSessionPostsToTheClaimRoute(t *testing.T) {
 	// refusals (supervise.Claim.PendingCause).
 	if want := "legion-legion-legion-208-architect architect LEGION-208 failed died 3 " + thisBinarysContract + " - - - -\n"; out != want {
 		t.Fatalf("forget-session stdout = %q, want %q", out, want)
+	}
+}
+
+// release-names posts to the claim's release route with no body and prints the release as one
+// line: how many names it freed and how it knew no grant follows one. The ready claim holds only
+// the names of the session it records, which the release keeps, so it frees none and says it
+// asked no broker.
+func TestClaimsReleaseNamesPostsToTheClaimRoute(t *testing.T) {
+	d := newOperatorDaemon(t)
+	d.succeed(d.spawnArgs()...)
+	d.ready(architectClaim)
+
+	out := d.succeed(append(append([]string{"release-names"}, d.reach()...), "--claim", string(architectClaim))...)
+
+	seen := d.lastOperatorRequest()
+	wantOperatorRequest(t, seen, http.MethodPost, "/legion/v1/operator/claims/"+string(architectClaim)+"/release-names")
+	if len(seen.body) != 0 {
+		t.Fatalf("release-names sent the body %q, want none", seen.body)
+	}
+	if want := string(architectClaim) + ": freed 0 names of its other sessions; " + supervise.CheckedNothing + "\n"; out != want {
+		t.Fatalf("release-names stdout = %q, want %q", out, want)
 	}
 }
 
@@ -1057,8 +1110,8 @@ func TestClaimsWithoutAKnownSubcommandIsAUsageError(t *testing.T) {
 		args []string
 		want string
 	}{
-		{nil, subcommandUsage("claims", claimsCommands)},
-		{[]string{"frobnicate"}, `legion claims: unknown subcommand "frobnicate"`},
+		{nil, "legion claims [command]"},
+		{[]string{"frobnicate"}, `legion claims: unknown command "frobnicate" for "legion claims"`},
 	} {
 		var out, errb bytes.Buffer
 		code := run(context.Background(), append([]string{"legion", "claims"}, testCase.args...), &out, &errb)

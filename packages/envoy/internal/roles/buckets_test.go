@@ -20,6 +20,18 @@ import (
 // listener writes claims and sessions through.
 func bucketsRig(t *testing.T) (*roles.Buckets, *store.Registry, *session.SessionRegistry, nats.JetStreamContext) {
 	t.Helper()
+	holders, registry, sessions, conn := bucketsRigConn(t)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	return holders, registry, sessions, js
+}
+
+// bucketsRigConn is bucketsRig with the test's own connection to the server, which the
+// registries write through.
+func bucketsRigConn(t *testing.T) (*roles.Buckets, *store.Registry, *session.SessionRegistry, *nats.Conn) {
+	t.Helper()
 	_, url := testnats.Start(t)
 	client, err := bus.Connect([]string{url})
 	if err != nil {
@@ -27,21 +39,17 @@ func bucketsRig(t *testing.T) (*roles.Buckets, *store.Registry, *session.Session
 	}
 	t.Cleanup(client.Close)
 	conn := testnats.Connect(t, url)
-	registry, err := store.Open(conn)
+	registry, err := store.Open(t.Context(), conn)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(conn, session.WithSessionTTL(2*time.Minute))
+	sessions, err := session.OpenSessionRegistry(t.Context(), conn, session.WithSessionTTL(2*time.Minute))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
 	t.Cleanup(sessions.StopWatch)
-	js, err := conn.JetStream()
-	if err != nil {
-		t.Fatalf("open JetStream: %v", err)
-	}
-	return roles.NewBuckets(client, roles.Windows{}), registry, sessions, js
+	return roles.NewBuckets(client, roles.Windows{}), registry, sessions, conn
 }
 
 // Before any bucket exists a role has no claim; once one does, Buckets reads the claim a listener
@@ -163,7 +171,7 @@ func TestBucketsJudgeAHolderByItsRegistrationAndNotTheBucketsAge(t *testing.T) {
 // whose value does not decode and one no key may name are each gone (nats.ErrKeyNotFound).
 func TestBucketsReadAHolderFromTheSessionBucket(t *testing.T) {
 	holders, _, sessions, js := bucketsRig(t)
-	if err := sessions.Put("ses_live", session.SessionEntry{SelfSubscribed: true, Title: "live"}); err != nil {
+	if err := sessions.Put("ses_live", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Title: "live"}); err != nil {
 		t.Fatalf("register the session: %v", err)
 	}
 	entry, err := holders.Holder(context.Background(), "ses_live")
@@ -191,5 +199,24 @@ func TestBucketsReadAHolderFromTheSessionBucket(t *testing.T) {
 		if _, err := holders.Holder(context.Background(), tc.session); !errors.Is(err, nats.ErrKeyNotFound) {
 			t.Fatalf("%s: Holder returned %v, want nats.ErrKeyNotFound", tc.name, err)
 		}
+	}
+}
+
+// The server copies one session's record onto another's key when a direct get of the first names
+// the second's subject as its reply subject. The copy names the first session, so Dispatch reads
+// the second as holding no record (nats.ErrKeyNotFound), and never routes a role to it on the
+// strength of the first session's registration.
+func TestBucketsReadACopyOfAnotherSessionsRecordAsNoHolder(t *testing.T) {
+	holders, _, sessions, conn := bucketsRigConn(t)
+	if err := sessions.Put("ses_source", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Title: "source"}); err != nil {
+		t.Fatalf("register the source session: %v", err)
+	}
+	testnats.ServerCopiesKey(t, conn, bus.SessionBucket, "ses_victim", bus.SessionBucket, "ses_source")
+	if entry, err := holders.Holder(context.Background(), "ses_victim"); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("Holder(ses_victim) over a copy of ses_source's record = %+v, %v; want nats.ErrKeyNotFound", entry, err)
+	}
+	// The control: the source's own record is its holder's.
+	if entry, err := holders.Holder(context.Background(), "ses_source"); err != nil || entry.Title != "source" {
+		t.Fatalf("Holder(ses_source) = %+v, %v; want its record", entry, err)
 	}
 }

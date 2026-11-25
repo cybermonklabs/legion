@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/backoff"
 )
 
 // Retry is the wait between attempts whose failure is transient: after the i-th such failure the
@@ -22,6 +24,16 @@ import (
 type Retry struct {
 	Initial, Max time.Duration
 	Attempts     int
+}
+
+// Delay is the wait after a transient failure that transients others came before: Initial,
+// doubled once for each of them while it is below Max, and at most Max.
+func (r Retry) Delay(transients int) time.Duration {
+	delay := r.Initial
+	for n := 0; n < transients && delay < r.Max; n++ {
+		delay *= 2
+	}
+	return min(delay, r.Max)
 }
 
 // Daemon is a daemon's policy (DAEMON_PROBE_RETRY, boot-probes.ts:38-51): 10 s doubling to 5
@@ -38,7 +50,8 @@ var Image = Retry{Initial: 10 * time.Second, Max: 5 * time.Minute, Attempts: 6}
 
 // Outcome is one attempt: passed, with what its OK line said of the image in Report; refused, an
 // answer no retry changes; waiting, on a condition outside the probed thing that waiting
-// resolves; or neither — transient, with the detail its retry is logged with.
+// resolves; rate-limited, by GitHub until a time; or neither — transient, with the detail its
+// retry is logged with.
 type Outcome struct {
 	Passed bool
 	// Report is set on a passed attempt alone, to what its OK line said of the image; the zero
@@ -56,17 +69,55 @@ type Outcome struct {
 	// on. Such an attempt is logged with that detail and run again after the policy's first wait,
 	// which joins the work still running, and counts against no attempt budget.
 	Pending string
-	Detail  string
+	// RateLimit is set when GitHub's rate limit refused the attempt, and says the limit as GitHub's
+	// answer gave it: its status and rate-limit headers. Such an attempt is logged with it, Until,
+	// Waited and the detail, and run again at Until, and counts against no attempt budget and grows
+	// no backoff: the limit says nothing about the probed thing. The caller decides Until, which
+	// holds the start's own bound on its waits (internal/daemon's startWaits).
+	RateLimit string
+	// Until is when a rate-limited attempt runs again; Waited is the time the start has spent in
+	// waits for GitHub's rate limit so far, this wait included. Both are zero on every other
+	// outcome.
+	Until  time.Time
+	Waited time.Duration
+	Detail string
 }
 
 // Run runs attempt until it passes, is refused, or has failed transiently retry.Attempts times,
 // logging each transient failure with the wait before the next attempt. A refusal is returned as
-// it is. A waiting outcome is logged with what it waits on and retried after retry.Max, counted
-// against neither the attempt budget nor the backoff: transient failures before and after it are
-// counted together as if it had not happened. A ctx that ends — during an attempt, whatever the
-// attempt then returned, or during a wait — ends Run with an error wrapping ctx's, and starts no
-// other attempt.
+// it is. A waiting outcome is logged with what it waits on and retried after retry.Max, and a
+// rate-limited one is logged with the limit and retried at its Until, each counted against neither
+// the attempt budget nor the backoff: transient failures before and after it are counted together
+// as if it had not happened. A ctx that ends — during an attempt, whatever the attempt then
+// returned, or during a wait — ends Run with an error wrapping ctx's, and starts no other attempt.
+// It reads and waits on the wall clock; RunOn takes another.
 func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attempt func(context.Context) Outcome) error {
+	return RunOn(ctx, WallClock{}, name, retry, log, attempt)
+}
+
+// Clock is the time RunOn reads a rate-limited attempt's wait from, and waits each wait out on.
+type Clock interface {
+	Now() time.Time
+	// Sleep waits d, or returns ctx's error once ctx ends first.
+	Sleep(ctx context.Context, d time.Duration) error
+}
+
+// WallClock is the clock Run waits on: the time of day, and a timer.
+type WallClock struct{}
+
+// Now is the time of day.
+func (WallClock) Now() time.Time { return time.Now() }
+
+// Sleep waits d on a timer, or returns ctx's error once ctx ends first (backoff.Sleep).
+func (WallClock) Sleep(ctx context.Context, d time.Duration) error {
+	return backoff.Sleep(ctx, d)
+}
+
+// RunOn is Run on clock: a rate-limited attempt's wait is its Until less clock's Now, and every
+// wait between two attempts is clock's Sleep. A caller whose Until comes from the same clock
+// (internal/daemon's startWaits) waits on one time throughout, so a test's clock that moves on by
+// each wait at once makes a wait for GitHub's reset cost it nothing.
+func RunOn(ctx context.Context, clock Clock, name string, retry Retry, log *slog.Logger, attempt func(context.Context) Outcome) error {
 	transients := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -78,6 +129,11 @@ func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attemp
 		}
 		var delay time.Duration
 		switch {
+		case outcome.RateLimit != "":
+			delay = outcome.Until.Sub(clock.Now())
+			log.Warn("boot probe waits out GitHub's rate limit; it runs again at the time GitHub names",
+				"probe", name, "until", outcome.Until.UTC().Format(time.RFC3339), "wait", ShownWait(delay),
+				"waited", ShownWait(outcome.Waited), "limit", outcome.RateLimit, "detail", outcome.Detail)
 		case outcome.Passed:
 			return nil
 		case outcome.Refusal != nil:
@@ -97,11 +153,7 @@ func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attemp
 			}
 			return errors.New(message)
 		default:
-			delay = retry.Initial
-			for n := 0; n < transients && delay < retry.Max; n++ {
-				delay *= 2
-			}
-			delay = min(delay, retry.Max)
+			delay = retry.Delay(transients)
 			transients++
 			label := strconv.Itoa(transients)
 			if retry.Attempts > 0 {
@@ -110,15 +162,16 @@ func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attemp
 			log.Warn("boot probe failed transiently; waiting to run it again",
 				"probe", name, "attempt", label, "retryIn", delay.String(), "detail", outcome.Detail)
 		}
-		wait := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			wait.Stop()
-			return abandoned(name, ctx.Err())
-		case <-wait.C:
+		if err := clock.Sleep(ctx, delay); err != nil {
+			return abandoned(name, err)
 		}
 	}
 }
+
+// ShownWait is d, a wait for GitHub's rate limit or the start's total of them, as a line or an
+// error gives it: to a tenth of a second, so a wait decided as a minute an instant before the line
+// reads 1m0s.
+func ShownWait(d time.Duration) string { return d.Round(100 * time.Millisecond).String() }
 
 func abandoned(name string, err error) error {
 	return fmt.Errorf("the %s probe was abandoned: it was stopped while it ran or waited to run again: %w", name, err)
@@ -356,4 +409,35 @@ func RoleOverlaysRefused(output string) (role, why string, ok bool) {
 		return "", "", false
 	}
 	return match[1], match[2], true
+}
+
+// NoVerdictExit is the status `legion probe-image` exits with when a check has no verdict and
+// nothing failed: a check the probe's deadline cut. It is EX_TEMPFAIL of sysexits.h, a failure a
+// later try can clear, and the probe writes a line that starts with NoVerdictPrefix to stderr
+// before it, naming each such check. The daemon's probe Sandbox reads both
+// (internal/runtime/sandbox's judge); a daemon of an earlier release reads the exit as a
+// refusal, as it reads exit 1.
+const NoVerdictExit = 75
+
+// NoVerdictPrefix begins the line `legion probe-image` prints before it exits NoVerdictExit; the
+// rest of the line names each check with no verdict, joined by "; ".
+const NoVerdictPrefix = "legion probe-image: worker probe has no verdict: "
+
+// NoVerdictLine is that line naming entries, each check with no verdict, joined by "; " with every
+// run of white space in them turned to one space, so the line carries the whole of each.
+func NoVerdictLine(entries []string) string {
+	return NoVerdictPrefix + strings.Join(strings.Fields(strings.Join(entries, "; ")), " ")
+}
+
+// noVerdict is a no-verdict line.
+var noVerdict = regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(NoVerdictPrefix) + `(.*)$`)
+
+// NoVerdict is the text after NoVerdictPrefix of the first line in output that starts with it, and
+// false when output holds none.
+func NoVerdict(output string) (string, bool) {
+	match := noVerdict.FindStringSubmatch(output)
+	if match == nil {
+		return "", false
+	}
+	return match[1], true
 }

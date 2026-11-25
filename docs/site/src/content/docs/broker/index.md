@@ -8,10 +8,11 @@ sidebar:
 
 The Secrets Broker hands agent sessions the secret values they need, one request at a time, so an
 agent never holds a long-lived API key. An agent asks for a secret by name; the broker decides from
-the secret's owner and tier whether to grant it at once, refuse it, or ask a person; and the person
-approves or denies it on the broker's own page, which their Dispatch Inbox links to, unless a
-model judge the deployment configured approves it first. A granted value reaches only the session
-that asked, in the environment of the command it runs, and every request, decision and use is
+the secret's owner and tier whether to grant it at once, refuse it, or ask someone: a person, who
+approves or denies it on the broker's own page, which their Dispatch Inbox links to, or, for a key
+its owner lets it decide, the model judge the deployment configured. A granted value reaches only
+the session that asked, in the environment of the command it runs, and every request, decision and
+use is
 recorded. That command is the agent's choice and can read the value, so approve a secret only for
 a session you would trust with the value itself. The command keeps the value in its environment
 for as long as it runs; the grant's expiry or revocation stops the session from reading the value
@@ -31,12 +32,12 @@ it.
   place for a key to leak. With the broker, an agent session holds only a signing key of its own
   that dies with the session, and fetches a value for exactly the command that needs it.
 - **A person approves what needs approval.** Each secret's owner and tier, two tags on the secret
-  itself, say who gets it automatically and who needs a person's yes. The request waits in that
+  itself, say who gets it automatically and who needs a yes. The request waits in that
   person's Dispatch Inbox, where they already work, and one click there opens its page on the
-  broker, where one more click approves it. A deployment may also run a model judge over one
-  narrow class of those requests — one secret, 15 minutes at most, a reason naming an open
-  Dispatch issue, and a secret the airlock rules let the judge decide — which the judge approves
-  or leaves for that person ([Concepts](/legion/broker/concepts/#the-model-judge)).
+  broker, where one more click approves it. A deployment may also run a model judge, which decides
+  the keys whose profiles' `proxy` blocks in the profiles file give it seconds, each against its owner's guidance, and whose refusal is final;
+  a person never sees such a request unless the judge cannot decide it
+  ([Concepts](/legion/broker/concepts/#the-model-judge)).
 - **Every grant is recorded.** Each approval rests on a signed, content-addressed record of who
   asked, for what, why, and who decided, which the broker re-verifies every time it releases a
   value.
@@ -60,50 +61,53 @@ sequenceDiagram
     Broker->>Broker: read the secret's owner and tier
     alt granted at once
         Broker-->>CLI: granted
-    else a person must approve
-        opt the request carries a GitHub App narrowing
-            Broker->>GitHub: list the App's installations, to check the account
-            GitHub-->>Broker: the installations, or none on that account
-            opt the narrowing names repositories or read access
-                Broker->>GitHub: mint the token the release would mint, to check the narrowing
-                GitHub-->>Broker: that token, or a refusal of the narrowing
-                Broker->>GitHub: revoke that token at once
-            end
-            Broker-->>CLI: a narrowing it cannot serve is refused here, before the approval request
+    else someone must decide
+        opt the request names a GitHub profile
+            Broker->>GitHub: list the App's installations, to check each account in effect
+            GitHub-->>Broker: the installations, or none on an account
+            Broker->>GitHub: mint the token the release would mint, cut to what the installation holds
+            GitHub-->>Broker: that token, or a refusal
+            Broker->>GitHub: revoke that token at once
+            Broker-->>CLI: a profile GitHub refuses, or a cut that leaves nothing, is refused here, before the approval request
         end
-        Broker-->>CLI: pending, the approver its record names, and its page on the broker
-        opt the airlock rules let the judge decide this secret
-            Broker->>Dispatch: is the issue the request's reason names open?
-            Broker->>Model: the request and that issue, as data to judge
-            Model-->>Broker: approve, or refer it to a person
+        alt every key is one whose profile's proxy block lets the judge decide
+            Broker-->>CLI: pending, held for the judge, with no page
+            CLI->>Broker: GET /v1/requests/{id}?wait=N, held while pending
+            Broker->>Dispatch: the issue and the ask the reason points at, if any
+            Broker->>Model: the request, each key's guidance, and what Dispatch holds, as data to judge
+            Model-->>Broker: grant, or deny for good
+        else a person decides
+            Broker-->>CLI: pending, the approver its record names, and its page on the broker
+            CLI->>Broker: GET /v1/requests/{id}?wait=N, held while pending
         end
-        Note over Broker,Person: a request the judge referred, or never took, waits for its approver
+        Note over Broker,Person: a request the judge could not decide goes to its approver, once
         Dispatch->>Broker: pending requests for the person signed in
         Person->>Dispatch: open the request in the Inbox
         Dispatch-->>Person: a link to the request's page on the broker
         Person->>Broker: Approve, signed in to the broker
-        CLI->>Broker: poll until granted
+        Broker-->>CLI: granted, at once, to the read it was holding
     end
     CLI->>Broker: POST /v1/grants/{id}/values
     Broker-->>CLI: the values, read fresh from the secret store
     CLI->>Agent: run ./deploy.sh with DEMO_API_KEY in its environment
 ```
 
-The GitHub step is there only for a request that carries a GitHub App narrowing, which
-`agent-secrets` sends with the request. The broker decides such a narrowing before the approval
-request, and nothing is written and nobody is asked where it refuses one. It refuses five
-things: an account the secret's `github-owners` tag does not list, a request that names no
-GitHub App secret, a name the airlock holds back, a narrowing GitHub itself refuses, and an
-account the App has no installation on. Where it reaches no verdict, for example because GitHub
-is out of reach or refuses the App itself, or because the check passes its own time bounds, the
-request waits for its approver as it did before, and the refusal comes when the grant is read
+The GitHub step is there only for a request that names a GitHub profile. The broker checks such a
+request before the approval request, and nothing is written and nobody is asked where it refuses
+one. It refuses four things with `422 PROFILE_MINT_REFUSED`: an account in effect that the App has
+no installation on, a `value: token` profile on an account where the App has more than one
+installation, a profile whose token GitHub refuses, for example for a repository the installation
+does not reach, and a cut that leaves none of the profile's permissions but `metadata`. A target
+outside the profile is refused earlier still, with `400 TARGET_REFUSED`. Where
+the check reaches no verdict, for example because GitHub is out of reach or refuses the App itself,
+or because the check passes its own time bounds, the request waits for its approver as it did
+before, and the refusal comes when the grant is read
 ([Concepts](/legion/broker/concepts/#requests-and-grants)).
 
-The judge's step is there only where a deployment configures one. It takes a narrow class of the
-requests that wait: one secret, a lifetime of 15 minutes or less that the secret's airlock rules
-entry lets the judge decide, and a signed reason naming a Dispatch issue that is not done. It
-approves such a request or leaves it for the approver, and it never denies, so a request outside
-that class, and one the model refers, waits exactly as it does today
+The judge's step is there only where a deployment configures one. It takes a request whose every
+key that needs a decision has a `judge` value in its profile's `proxy` block in the profiles file (`BROKER_PROFILES_FILE`) and no `admin` tag. It grants
+such a request or refuses it for good, and a request it cannot decide goes to the approver once;
+every other request waits for its person exactly as it does today
 ([Concepts](/legion/broker/concepts/#the-model-judge)).
 
 On a machine, `agent-secrets-helper` holds each agent session's key and signs for it. In a
@@ -129,8 +133,11 @@ its machine-login page takes a machine's code, and its Settings page lists the l
 can revoke. A person approves a secret request on the broker's own page, signed in to the broker
 itself, never through Dispatch. The broker writes nothing in Dispatch: Dispatch's server reads
 what waits on the signed-in person, and relays that person's machine-login decisions and revokes.
-The broker's one read of Dispatch is the judge's: it reads the issue a request's reason names,
-its title and status and the text of its spec document, and nothing that belongs to a person.
+The broker's reads of Dispatch are few: the judge reads the issue a request's reason names, its
+title and status, the text of its spec document and the ask the reason cites; for a Legion worker
+pod's request for a shared secret the broker reads the assignee of the issue the pod's claim
+names; and the token exchange reads a person's project access. None of them reads anything that
+belongs to a person.
 
 [Legion](/legion/legion/) runs agents. When its Kubernetes runtime is configured with the broker,
 the Legion daemon logs itself in with its own Kubernetes ServiceAccount token, which no person

@@ -28,7 +28,7 @@ func (st *settlement) documentRemoved(ctx context.Context) bool {
 	return removed
 }
 
-// readLocked is what the settlement reads once its transaction holds the document's owner row: the
+// readLocked is what the settlement reads once its transaction holds the document's owner lock: the
 // latest version, the document's cursor lock, the catch-up that brings the room's instance to the
 // document's durable head, the tree it reconciles and the rendering of that tree, and whom its
 // version credits.
@@ -65,6 +65,7 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 	if err != nil {
 		return settleDone, st.stoppedShort(err)
 	}
+	st.readHead = head
 	// The gate, before this settlement reads the document or writes anything. The room it holds
 	// must stand at that head: with two envoy-dispatch processes on one Postgres, an update the
 	// other process appended can be stored before this room's catch-up has taken it in, and

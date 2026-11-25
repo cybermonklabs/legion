@@ -24,12 +24,12 @@ func healthzRoleViewRig(t *testing.T, consumer string) (func() (int, map[string]
 	t.Helper()
 	client := setupTestNATS(t)
 	bindBoundDurable(t, client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -44,7 +44,7 @@ func healthzRoleViewRig(t *testing.T, consumer string) (func() (int, map[string]
 	}
 	var state atomic.Pointer[listenerDeps]
 	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: consumer})
-	handler := healthzHandler(&state)
+	handler := healthzHandler(&state, nil)
 	get := func() (int, map[string]any) {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -80,6 +80,7 @@ func breakRoleClaimView(t *testing.T, registry *store.Registry) {
 // repairs itself. The answer keeps the fields the healthy one carries, so a reader of the session
 // counts or the durable's backlog loses none of them while the view fills.
 func TestHealthzReportsARoleClaimViewThatCompletesNoScanDegraded(t *testing.T) {
+	t.Parallel()
 	get, registry, _ := healthzRoleViewRig(t, "listener-healthz-role-view")
 	breakRoleClaimView(t, registry)
 
@@ -103,6 +104,7 @@ func TestHealthzReportsARoleClaimViewThatCompletesNoScanDegraded(t *testing.T) {
 // so reporting that fault as the view's degraded 200 would leave a listener that receives nothing
 // in service. The view is therefore reported last, after every check that answers 503.
 func TestHealthzStillReportsALostDurableWhileTheRoleClaimViewIsIncomplete(t *testing.T) {
+	t.Parallel()
 	const consumer = "listener-healthz-role-view-durable"
 	get, registry, client := healthzRoleViewRig(t, consumer)
 	breakRoleClaimView(t, registry)

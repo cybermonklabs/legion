@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -95,9 +96,10 @@ func (r *fleetRig) awaitRounds(what string, want ...string) {
 
 // awaitRoundEnded waits for the round of issue to be gone from every claim of it, which the
 // replacement posts to each of them (endPodUpdates). It is what a test waits for before it
-// sweeps again: a sweep that read that end half landed would find the round open and complete,
-// and would ask its workers again over the claims the end has already reached, which puts the
-// round back on a claim that had left it (podupdate_test.go's awaitSwept).
+// sweeps again, so the sweep reads the claims as the end leaves them. A sweep that read that end
+// half landed reads the round as over (podUpdateEnded): it decides nothing of that round again,
+// and the issue's next round opens no sooner than the sweep after the end has landed
+// (podupdate_test.go's awaitSwept).
 func (r *fleetRig) awaitRoundEnded(issue string) {
 	r.t.Helper()
 	testwait.Eventually(r.t, "the round of "+issue+" to end on every claim of it", func() bool {
@@ -129,7 +131,7 @@ func (r *fleetRig) sweepUntilRounds(what string, want ...string) {
 
 // sweepUntilReplaced sweeps until the pod of issue has been replaced, as the single-issue rig's
 // awaitReplacement does: a sweep that reads a machine mid-decision leaves the replacement to the
-// next one (roundGroup's mask), so which sweep makes it is no part of what these tests pin. Its
+// next one (masked), so which sweep makes it is no part of what these tests pin. Its
 // first poll sweeps nothing either, for the reason sweepUntilRounds's does not sweep.
 func (r *fleetRig) sweepUntilReplaced(issue string) {
 	r.t.Helper()
@@ -150,7 +152,7 @@ func (r *fleetRig) sweepUntilReplaced(issue string) {
 
 // answer is every worker of issue answering its round, as the `legion` tool's ready_for_update
 // posts it. Each waits for its own machine to have handled what it is owed first, so the sweep
-// that follows reads the answer rather than a machine still deciding (roundGroup's mask).
+// that follows reads the answer rather than a machine still deciding (masked).
 func (r *fleetRig) answer(issue string) {
 	r.t.Helper()
 	for _, role := range r.rolesOf(issue) {
@@ -210,24 +212,26 @@ func (r *fleetRig) recordAsServed(rounds api.PodUpdateRounds) string {
 }
 
 // The cap on open rounds is a cap on how much of the fleet is held waiting at once: an issue in a
-// round has every worker of it told to push and start nothing new, so a fleet-wide drift with no
-// cap stops every worker of every issue at the first sweep. Under the cap the issues that fit go
-// first — in the order of their keys, which is the order the sweep walks them in, and which is a
-// fleet's keys as strings rather than as numbers — and an issue waits until one of them has
-// finished and freed its slot. Nothing is lost by waiting: every pod of the fleet is replaced in
-// the end, each after its own workers have pushed.
+// round has every worker of it told to do the steps of its update message (supervise.UpdateTask)
+// and start nothing new, so a fleet-wide drift with no cap stops every worker of every issue at
+// the first sweep. Under the cap the issues that fit go first — in the order of their keys, which
+// is the order the sweep walks them in, and which is a fleet's keys as strings rather than as
+// numbers — and an issue waits until one of them has finished and freed its slot. Nothing is lost
+// by waiting: every pod of the fleet is replaced in the end, each after its own workers have
+// pushed.
 func TestPodUpdateMaxOpenRounds(t *testing.T) {
-	keys := []string{"INFRA-2", "INFRA-10", "INFRA-1000", "INFRA-30", "INFRA-4"}
+	t.Parallel()
+	keys := []string{"LEGION-2", "LEGION-10", "LEGION-1000", "LEGION-30", "LEGION-4"}
 	rig := newLimitRig(t, keys...)
 	rig.s.cfg.PodUpdateMaxOpenRounds = new(2)
 
 	rig.tick()
-	rig.awaitRounds("the first sweep under a cap of two open rounds", "INFRA-10", "INFRA-1000")
+	rig.awaitRounds("the first sweep under a cap of two open rounds", "LEGION-10", "LEGION-1000")
 
 	// Nothing a later sweep reads opens a third while those two hold the slots.
 	rig.tick()
 	rig.tick()
-	rig.awaitRounds("two more sweeps with both slots held", "INFRA-10", "INFRA-1000")
+	rig.awaitRounds("two more sweeps with both slots held", "LEGION-10", "LEGION-1000")
 	if calls := rig.replacements(); len(calls) != 0 {
 		t.Fatalf("ReplacePod called %d times before a worker answered anything", len(calls))
 	}
@@ -236,11 +240,11 @@ func TestPodUpdateMaxOpenRounds(t *testing.T) {
 		answered string
 		then     []string
 	}{
-		{answered: "INFRA-10", then: []string{"INFRA-1000", "INFRA-2"}},
-		{answered: "INFRA-1000", then: []string{"INFRA-2", "INFRA-30"}},
-		{answered: "INFRA-2", then: []string{"INFRA-30", "INFRA-4"}},
-		{answered: "INFRA-30", then: []string{"INFRA-4"}},
-		{answered: "INFRA-4"},
+		{answered: "LEGION-10", then: []string{"LEGION-1000", "LEGION-2"}},
+		{answered: "LEGION-1000", then: []string{"LEGION-2", "LEGION-30"}},
+		{answered: "LEGION-2", then: []string{"LEGION-30", "LEGION-4"}},
+		{answered: "LEGION-30", then: []string{"LEGION-4"}},
+		{answered: "LEGION-4"},
 	} {
 		rig.answer(step.answered)
 		rig.sweepUntilReplaced(step.answered)
@@ -256,17 +260,18 @@ func TestPodUpdateMaxOpenRounds(t *testing.T) {
 // counts the rounds it finds rather than the ones it opened itself. Counted from its own memory
 // — which a boot empties — it would read the whole project as idle and open the cap again over
 // a fleet that is already at it, which is the one thing the cap is there to stop. And a round it
-// did not open is still none of its business to end: a worker told to push is waited for, boot or
-// no boot.
+// did not open is still none of its business to end: a worker told to do the steps of its update
+// message (supervise.UpdateTask) is waited for, boot or no boot.
 func TestPodUpdateMaxOpenRoundsRestart(t *testing.T) {
-	keys := []string{"INFRA-1", "INFRA-2", "INFRA-3", "INFRA-4"}
+	t.Parallel()
+	keys := []string{"LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4"}
 	rig := newLimitRig(t, keys...)
 	// The daemon before the restart ran under no cap and opened three rounds; the fourth issue's
 	// pod has not drifted yet, as a pod built after that change has not.
-	rig.drifts("INFRA-4")
+	rig.drifts("LEGION-4")
 
 	rig.tick()
-	rig.awaitRounds("the first daemon's sweep under no cap", "INFRA-1", "INFRA-2", "INFRA-3")
+	rig.awaitRounds("the first daemon's sweep under no cap", "LEGION-1", "LEGION-2", "LEGION-3")
 
 	next := rig.restart()
 	next.s.cfg.PodUpdateMaxOpenRounds = new(2)
@@ -276,22 +281,22 @@ func TestPodUpdateMaxOpenRoundsRestart(t *testing.T) {
 
 	next.tick()
 	next.tick()
-	next.awaitRounds("two sweeps of a daemon that booted into three open rounds", "INFRA-1", "INFRA-2", "INFRA-3")
+	next.awaitRounds("two sweeps of a daemon that booted into three open rounds", "LEGION-1", "LEGION-2", "LEGION-3")
 	if calls := next.replacements(); len(calls) != 0 {
 		t.Fatalf("ReplacePod called %d times before a worker answered: the cap ends no round it finds open", len(calls))
 	}
 
-	next.answer("INFRA-1")
-	next.sweepUntilReplaced("INFRA-1")
-	next.awaitRoundEnded("INFRA-1")
-	next.drifts("INFRA-1")
-	next.sweepUntilRounds("the first of the three was replaced, which leaves two slots held", "INFRA-2", "INFRA-3")
+	next.answer("LEGION-1")
+	next.sweepUntilReplaced("LEGION-1")
+	next.awaitRoundEnded("LEGION-1")
+	next.drifts("LEGION-1")
+	next.sweepUntilRounds("the first of the three was replaced, which leaves two slots held", "LEGION-2", "LEGION-3")
 
-	next.answer("INFRA-2")
-	next.sweepUntilReplaced("INFRA-2")
-	next.awaitRoundEnded("INFRA-2")
-	next.drifts("INFRA-2")
-	next.sweepUntilRounds("the second was replaced, which leaves fewer than two", "INFRA-3", "INFRA-4")
+	next.answer("LEGION-2")
+	next.sweepUntilReplaced("LEGION-2")
+	next.awaitRoundEnded("LEGION-2")
+	next.drifts("LEGION-2")
+	next.sweepUntilRounds("the second was replaced, which leaves fewer than two", "LEGION-3", "LEGION-4")
 }
 
 // A slot is a pod being carried, not a row in a table. An issue whose claims record no pod has
@@ -301,29 +306,30 @@ func TestPodUpdateMaxOpenRoundsRestart(t *testing.T) {
 // asked afresh when it gets one: a pod whose drift has gone away in the meantime, because an
 // operator rolled the template back, is a pod no round need stop any worker for.
 func TestPodUpdateMaxOpenRoundsPodless(t *testing.T) {
-	rig := newLimitRig(t, "INFRA-1", "INFRA-2", "INFRA-3")
+	t.Parallel()
+	rig := newLimitRig(t, "LEGION-1", "LEGION-2", "LEGION-3")
 	rig.s.cfg.PodUpdateMaxOpenRounds = new(1)
 
 	rig.tick()
-	rig.awaitRounds("the first sweep under a cap of one", "INFRA-1")
+	rig.awaitRounds("the first sweep under a cap of one", "LEGION-1")
 
 	// The claims of the one open round record no pod now, as an operator's suspension leaves
 	// them: the round stays open, and the slot it held goes to the issue behind it.
-	rig.podless("INFRA-1")
+	rig.podless("LEGION-1")
 	rig.tick()
-	rig.awaitRounds("the sweep that read the round's own issue recording no pod", "INFRA-1", "INFRA-2")
+	rig.awaitRounds("the sweep that read the round's own issue recording no pod", "LEGION-1", "LEGION-2")
 
 	// The last issue's pod is no longer drifted by the time its slot comes free, so the sweep
 	// opens nothing for it.
-	rig.drifts("INFRA-3")
-	rig.answer("INFRA-2")
-	rig.sweepUntilReplaced("INFRA-2")
-	rig.awaitRoundEnded("INFRA-2")
-	rig.drifts("INFRA-2")
+	rig.drifts("LEGION-3")
+	rig.answer("LEGION-2")
+	rig.sweepUntilReplaced("LEGION-2")
+	rig.awaitRoundEnded("LEGION-2")
+	rig.drifts("LEGION-2")
 	for range 3 {
 		rig.tick()
 	}
-	rig.awaitRounds("three sweeps with a free slot and nothing left that has drifted", "INFRA-1")
+	rig.awaitRounds("three sweeps with a free slot and nothing left that has drifted", "LEGION-1")
 }
 
 // A round over a pod its claims no longer record is a round over a pod that is gone, and it is
@@ -335,6 +341,7 @@ func TestPodUpdateMaxOpenRoundsPodless(t *testing.T) {
 // issue's claim recording its round: the sweep asks the round's roles only at a tick after the
 // one that opened it, once the claims record the round (askRound).
 func TestPodUpdateADeadRoundHoldsNoSlot(t *testing.T) {
+	t.Parallel()
 	// LEGION-483 sorts before the rig's own LEGION-484, so the walk reaches it first.
 	const waiting, waitingPod = "LEGION-483", "7d2b5e90-1c4a-4e36-b8f7-03a9c6d1e5b8"
 	rig := newPodUpdateRig(t,
@@ -369,6 +376,7 @@ func TestPodUpdateADeadRoundHoldsNoSlot(t *testing.T) {
 // flight. A round over a pod no claim records holds none, nor does a round no claim records any
 // pod for, nor a group in no round.
 func TestPodUpdateHoldsASlotOnlyForARoundItsClaimsCarry(t *testing.T) {
+	t.Parallel()
 	recording := func(role claim.Role, pod, round string) supervise.Claim {
 		token := mustClaimToken(t, podUpdateIssue, role)
 		c := supervise.Claim{Token: token, Issue: podUpdateIssue, Role: role, UpdateRound: round}
@@ -419,8 +427,9 @@ func TestPodUpdateHoldsASlotOnlyForARoundItsClaimsCarry(t *testing.T) {
 // record the round that would free it — and every issue behind it would wait on a round that
 // never opened.
 func TestPodUpdateMaxOpenRoundsChargesOnlyAnAskThatReachedAWorker(t *testing.T) {
-	workerless := "INFRA-1"
-	keys := []string{workerless, "INFRA-2", "INFRA-3", "INFRA-4", "INFRA-5"}
+	t.Parallel()
+	workerless := "LEGION-1"
+	keys := []string{workerless, "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5"}
 	issues := make([]fleetIssue, 0, len(keys))
 	for i, key := range keys {
 		issue := limitIssue(i+1, key)
@@ -463,8 +472,9 @@ func TestPodUpdateMaxOpenRoundsChargesOnlyAnAskThatReachedAWorker(t *testing.T) 
 // would hold its own slot for ever: at a cap of one, every other drifted issue of the fleet
 // would wait for the daemon to restart.
 func TestPodUpdateMaxOpenRoundsChargesNoOpeningPostedOnlyToAFailedClaim(t *testing.T) {
-	unreachable := "INFRA-1"
-	keys := []string{unreachable, "INFRA-2", "INFRA-3"}
+	t.Parallel()
+	unreachable := "LEGION-1"
+	keys := []string{unreachable, "LEGION-2", "LEGION-3"}
 	issues := make([]fleetIssue, 0, len(keys))
 	for i, key := range keys {
 		issue := limitIssue(i+1, key)
@@ -491,18 +501,18 @@ func TestPodUpdateMaxOpenRoundsChargesNoOpeningPostedOnlyToAFailedClaim(t *testi
 	rig.tick()
 	rig.wantPodUpdateRecord("the first sweep", api.PodUpdateRounds{
 		Swept: true, MaxOpenRounds: new(1),
-		InRound:                []string{"INFRA-2"},
-		WaitingOnMaxOpenRounds: []string{"INFRA-3"},
+		InRound:                []string{"LEGION-2"},
+		WaitingOnMaxOpenRounds: []string{"LEGION-3"},
 	})
-	rig.awaitRounds("the first sweep under a cap of one, walked from the issue no round can reach", "INFRA-2")
+	rig.awaitRounds("the first sweep under a cap of one, walked from the issue no round can reach", "LEGION-2")
 
 	// And the slot comes back: the issue that took it answers, its pod is replaced, and the last
 	// issue of the fleet gets the slot rather than waiting behind an opening nothing recorded.
-	rig.answer("INFRA-2")
-	rig.sweepUntilReplaced("INFRA-2")
-	rig.awaitRoundEnded("INFRA-2")
-	rig.drifts("INFRA-2")
-	rig.sweepUntilRounds("the pod of INFRA-2 was replaced and its slot freed", "INFRA-3")
+	rig.answer("LEGION-2")
+	rig.sweepUntilReplaced("LEGION-2")
+	rig.awaitRoundEnded("LEGION-2")
+	rig.drifts("LEGION-2")
+	rig.sweepUntilRounds("the pod of LEGION-2 was replaced and its slot freed", "LEGION-3")
 
 	if got := rig.claimOf(unreachable, claim.RoleArchitect).UpdateRound; got != "" {
 		t.Errorf("the failed architect records round %q, want none: no machine of a failed claim takes the round's post", got)
@@ -510,7 +520,7 @@ func TestPodUpdateMaxOpenRoundsChargesNoOpeningPostedOnlyToAFailedClaim(t *testi
 	if calls := rig.replacementsOf(rig.pods[unreachable]); len(calls) != 0 {
 		t.Errorf("the pod of the issue no round can reach was replaced %d times, want never: no round was ever opened over it", len(calls))
 	}
-	rig.replacedOnce("INFRA-2")
+	rig.replacedOnce("LEGION-2")
 }
 
 // An opening still in flight is one round, not two. The post that carries a round to a machine
@@ -528,7 +538,8 @@ func TestPodUpdateMaxOpenRoundsChargesNoOpeningPostedOnlyToAFailedClaim(t *testi
 // registered yet, which the round posts nothing to — and no claim of the issue can record the
 // round until that relaunch ends.
 func TestPodUpdateMaxOpenRoundsChargesNoSecondSlotForAnOpeningStillInFlight(t *testing.T) {
-	inFlight, second := "INFRA-1", "INFRA-2"
+	t.Parallel()
+	inFlight, second := "LEGION-1", "LEGION-2"
 	relaunching := limitIssue(1, inFlight)
 	relaunching.roles = []claim.Role{claim.RoleArchitect, claim.RoleImplementer}
 	relaunching.unregistered = []claim.Role{claim.RoleImplementer}
@@ -553,9 +564,10 @@ func TestPodUpdateMaxOpenRoundsChargesNoSecondSlotForAnOpeningStillInFlight(t *t
 		<-release
 	})
 	defer releaseMachine()
+	relaunch := store.ForConcurrentWorker(rig.ctx)
 	go func() {
 		m, _ := rig.sup.Machine(architect)
-		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+		_ = m.Handle(relaunch, supervise.RuntimeObservation{
 			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
@@ -655,9 +667,10 @@ func podChangedUnderAnOpening(t *testing.T, changed, second string) *fleetRig {
 		<-release
 	})
 	defer releaseMachine()
+	relaunch := store.ForConcurrentWorker(rig.ctx)
 	go func() {
 		m, _ := rig.sup.Machine(architect)
-		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+		_ = m.Handle(relaunch, supervise.RuntimeObservation{
 			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
@@ -713,7 +726,8 @@ func podChangedUnderAnOpening(t *testing.T, changed, second string) *fleetRig {
 // the slot for ever, and at a cap of one every other drifted issue of the project waits for the
 // daemon to restart.
 func TestPodUpdateMaxOpenRoundsFreesTheSlotOfAnOpeningWhosePodChangedToAnUndriftedOne(t *testing.T) {
-	changed, second := "INFRA-1", "INFRA-2"
+	t.Parallel()
+	changed, second := "LEGION-1", "LEGION-2"
 	rig := podChangedUnderAnOpening(t, changed, second)
 	// The pod in its place carries the template the runtime has now, as a pod built after the
 	// one change of these rigs does, so this issue has drifted from nothing.
@@ -738,7 +752,8 @@ func TestPodUpdateMaxOpenRoundsFreesTheSlotOfAnOpeningWhosePodChangedToAnUndrift
 // nothing but its own stale entry is using, which no later sweep can overwrite — and the issue
 // behind it waits with it.
 func TestPodUpdateMaxOpenRoundsFreesTheSlotOfAnOpeningWhosePodChangedToADriftedOne(t *testing.T) {
-	changed, second := "INFRA-1", "INFRA-2"
+	t.Parallel()
+	changed, second := "LEGION-1", "LEGION-2"
 	rig := podChangedUnderAnOpening(t, changed, second)
 	// Nothing is scripted here: the pod the cluster put in the place of the round's own was
 	// built before the one template change of these rigs, so it has drifted exactly as the pod
@@ -759,17 +774,42 @@ func TestPodUpdateMaxOpenRoundsFreesTheSlotOfAnOpeningWhosePodChangedToADriftedO
 	}
 }
 
+// askRowsOf is the id of every update-ask row of issue's role the outbox holds, oldest first.
+func (r *fleetRig) askRowsOf(issue string, role claim.Role) []int64 {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.ctx, `select id from outbox where kind = 'update_ask' and issue = $1 and payload->>'role' = $2 order by id`,
+		issue, string(role))
+	if err != nil {
+		r.t.Fatalf("read the update asks of %s's %s: %v", issue, role, err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			r.t.Fatalf("read an update ask of %s's %s: %v", issue, role, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		r.t.Fatalf("read the update asks of %s's %s: %v", issue, role, err)
+	}
+	return ids
+}
+
 // The per-minute limit is what paces a fleet-wide roll in time rather than in slots: with it, the
 // workers of the fleet are asked a few at a minute, so a change lands as a sequence of small
 // interruptions rather than one that stops everyone at once. It paces openings and nothing else
 // — a round already open is neither ended nor paused nor asked again by it, since a worker told
-// to push and wait must be waited for — and every pod of the fleet is replaced in the end.
+// to do the steps of its update message (supervise.UpdateTask) and wait must be waited for — and
+// every pod of the fleet is replaced in the end.
 func TestPodUpdateRoundsPerMinute(t *testing.T) {
-	keys := []string{"INFRA-1", "INFRA-2", "INFRA-3", "INFRA-4", "INFRA-5"}
+	t.Parallel()
+	keys := []string{"LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5"}
 	rig := newLimitRig(t, keys...)
 	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
 
-	asked := map[string]time.Time{}
+	asked := map[string]int64{}
 	for i := range keys {
 		if i > 0 {
 			rig.clock.advance(time.Minute)
@@ -777,28 +817,29 @@ func TestPodUpdateRoundsPerMinute(t *testing.T) {
 		rig.tick()
 		rig.awaitRounds(fmt.Sprintf("sweep %d at one round a minute", i+1), keys[:i+1]...)
 		// The sweep asks a round's roles at the tick after the one that opened it, once the
-		// claims record the round, and never again.
+		// claims record the round, and never again. No lane runs here, so each ask is the row
+		// the sweep enqueued, still queued, and the sweep asks no claim whose ask is queued.
 		for _, prev := range keys[:i] {
-			c := rig.claimOf(prev, claim.RoleArchitect)
-			if c.UpdateTaskedAt == nil {
-				t.Fatalf("%s holds the round with no ask recorded a sweep after it opened: %+v", prev, c)
+			rows := rig.askRowsOf(prev, claim.RoleArchitect)
+			if len(rows) != 1 {
+				t.Fatalf("%s holds the round with %d asks queued a sweep after it opened, want one", prev, len(rows))
 			}
-			if at, ok := asked[prev]; ok && !c.UpdateTaskedAt.Equal(at) {
-				t.Errorf("%s was asked at %v, want the first ask at %v: the limit asks no open round again", prev, c.UpdateTaskedAt, at)
+			if id, ok := asked[prev]; ok && rows[0] != id {
+				t.Errorf("%s was asked in row %d, want the first ask's row %d: the limit asks no open round again", prev, rows[0], id)
 			}
-			asked[prev] = *c.UpdateTaskedAt
+			asked[prev] = rows[0]
 		}
 	}
 	// The last key opened is asked at the sweep after its opening, as every key before it was.
 	rig.clock.advance(time.Minute)
 	rig.tick()
 	for _, key := range keys {
-		c := rig.claimOf(key, claim.RoleArchitect)
-		if c.UpdateTaskedAt == nil {
-			t.Fatalf("%s holds the round with no ask recorded a sweep after the last opening: %+v", key, c)
+		rows := rig.askRowsOf(key, claim.RoleArchitect)
+		if len(rows) != 1 {
+			t.Fatalf("%s holds the round with %d asks queued a sweep after the last opening, want one", key, len(rows))
 		}
-		if at, ok := asked[key]; ok && !c.UpdateTaskedAt.Equal(at) {
-			t.Errorf("%s was asked at %v, want the first ask at %v: the limit asks no open round again", key, c.UpdateTaskedAt, at)
+		if id, ok := asked[key]; ok && rows[0] != id {
+			t.Errorf("%s was asked in row %d, want the first ask's row %d: the limit asks no open round again", key, rows[0], id)
 		}
 	}
 
@@ -823,7 +864,7 @@ func TestPodUpdateRoundsPerMinute(t *testing.T) {
 	two.s.cfg.PodUpdateRoundsPerMinute = new(2)
 
 	two.tick()
-	two.awaitRounds("the first sweep at two rounds a minute", "INFRA-1", "INFRA-2")
+	two.awaitRounds("the first sweep at two rounds a minute", "LEGION-1", "LEGION-2")
 }
 
 // The gap the limit holds is shorter than the minute it is written in, because a sweep's own
@@ -833,29 +874,30 @@ func TestPodUpdateRoundsPerMinute(t *testing.T) {
 // enough to stop the burst it is there to stop: a sweep that ran long and the tick that follows
 // it do not open two minutes' worth of rounds between them.
 func TestPodUpdateRoundsPerMinuteJitter(t *testing.T) {
-	keys := []string{"INFRA-1", "INFRA-2", "INFRA-3", "INFRA-4", "INFRA-5"}
+	t.Parallel()
+	keys := []string{"LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5"}
 	rig := newLimitRig(t, keys...)
 	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
 
 	rig.tick()
-	rig.awaitRounds("the first sweep of a daemon that has opened nothing", "INFRA-1")
+	rig.awaitRounds("the first sweep of a daemon that has opened nothing", "LEGION-1")
 
 	rig.clock.advance(59500 * time.Millisecond)
 	rig.tick()
-	rig.awaitRounds("a sweep 59.5 seconds after the last opening", "INFRA-1", "INFRA-2")
+	rig.awaitRounds("a sweep 59.5 seconds after the last opening", "LEGION-1", "LEGION-2")
 
 	rig.clock.advance(60500 * time.Millisecond)
 	rig.tick()
-	rig.awaitRounds("a sweep 60.5 seconds after the last opening", "INFRA-1", "INFRA-2", "INFRA-3")
+	rig.awaitRounds("a sweep 60.5 seconds after the last opening", "LEGION-1", "LEGION-2", "LEGION-3")
 
 	rig.clock.advance(50500 * time.Millisecond)
 	rig.tick()
-	rig.awaitRounds("a sweep 50.5 seconds after the last opening", "INFRA-1", "INFRA-2", "INFRA-3", "INFRA-4")
+	rig.awaitRounds("a sweep 50.5 seconds after the last opening", "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4")
 
 	rig.clock.advance(50 * time.Second)
 	rig.tick()
 	rig.tick()
-	rig.awaitRounds("two sweeps 50 seconds after the last opening", "INFRA-1", "INFRA-2", "INFRA-3", "INFRA-4")
+	rig.awaitRounds("two sweeps 50 seconds after the last opening", "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4")
 }
 
 // A sweep's openings are dated from the sweep rather than from whatever its replacements took
@@ -866,14 +908,15 @@ func TestPodUpdateRoundsPerMinuteJitter(t *testing.T) {
 // key the operator set. A restarted daemon is at the other end of the same question: it has no
 // record of what the daemon before it opened, so its first sweep opens as a first sweep does.
 func TestPodUpdateRoundsPerMinuteSlowSweep(t *testing.T) {
-	keys := []string{"INFRA-1", "INFRA-2", "INFRA-3", "INFRA-4"}
+	t.Parallel()
+	keys := []string{"LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4"}
 	rig := newLimitRig(t, keys...)
 	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
 	start := rig.clock.Now()
 
 	rig.tick()
-	rig.awaitRounds("the first sweep", "INFRA-1")
-	rig.answer("INFRA-1")
+	rig.awaitRounds("the first sweep", "LEGION-1")
+	rig.answer("LEGION-1")
 
 	// The sweep a minute later has a pod to replace as well as a round to open, and the
 	// replacement waits that pod out for seventy seconds. One hold only: the sweeps after it
@@ -884,31 +927,31 @@ func TestPodUpdateRoundsPerMinuteSlowSweep(t *testing.T) {
 	})
 	rig.clock.advance(time.Minute)
 	rig.tick()
-	rig.sweepUntilReplaced("INFRA-1")
-	rig.drifts("INFRA-1")
+	rig.sweepUntilReplaced("LEGION-1")
+	rig.drifts("LEGION-1")
 	if got, want := rig.clock.Now().Sub(start), 130*time.Second; got != want {
 		t.Fatalf("the sweep's replacement held the clock for %s, want the minute to the sweep and the pod's seventy seconds, %s", got, want)
 	}
-	rig.sweepUntilRounds("the slow sweep opened one and held the rest back", "INFRA-2")
+	rig.sweepUntilRounds("the slow sweep opened one and held the rest back", "LEGION-2")
 
 	// Seventy seconds after the opening that slow sweep recorded, the next sweep opens one.
 	rig.tick()
-	rig.awaitRounds("the sweep seventy seconds after the slow sweep's opening", "INFRA-2", "INFRA-3")
+	rig.awaitRounds("the sweep seventy seconds after the slow sweep's opening", "LEGION-2", "LEGION-3")
 
 	// Fifty seconds after that opening, no sweep opens anything.
 	rig.clock.advance(50 * time.Second)
 	rig.tick()
 	rig.tick()
-	rig.awaitRounds("two sweeps fifty seconds after the last opening", "INFRA-2", "INFRA-3")
+	rig.awaitRounds("two sweeps fifty seconds after the last opening", "LEGION-2", "LEGION-3")
 
 	// A daemon that boots knows nothing of what the one before it opened, and opens one.
 	next := rig.restart()
-	for _, key := range []string{"INFRA-2", "INFRA-3", "INFRA-4"} {
+	for _, key := range []string{"LEGION-2", "LEGION-3", "LEGION-4"} {
 		next.drifts(key, limitDrift)
 	}
 
 	next.tick()
-	next.awaitRounds("the first sweep of a restarted daemon", "INFRA-2", "INFRA-3", "INFRA-4")
+	next.awaitRounds("the first sweep of a restarted daemon", "LEGION-2", "LEGION-3", "LEGION-4")
 }
 
 // The one line an operator reads for the sweep (`legion claims list`) is this record, and these
@@ -919,7 +962,8 @@ func TestPodUpdateRoundsPerMinuteSlowSweep(t *testing.T) {
 // sweep, because that is the one an operator would have to raise to free it: the limits are read
 // off the record together with the issues they are holding.
 func TestClaimsListPodUpdateLine(t *testing.T) {
-	keys := []string{"INFRA-2", "INFRA-10", "INFRA-1000", "INFRA-30", "INFRA-4"}
+	t.Parallel()
+	keys := []string{"LEGION-2", "LEGION-10", "LEGION-1000", "LEGION-30", "LEGION-4"}
 	rig := newLimitRig(t, keys...)
 	rig.s.cfg.PodUpdateMaxOpenRounds = new(2)
 	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
@@ -929,22 +973,22 @@ func TestClaimsListPodUpdateLine(t *testing.T) {
 	// The first sweep has both slots free and spends the minute's whole budget on the first issue
 	// of the walk, so every issue behind it waits on the limit a minute.
 	rig.tick()
-	rig.awaitRounds("the first sweep at two open rounds and one a minute", "INFRA-10")
+	rig.awaitRounds("the first sweep at two open rounds and one a minute", "LEGION-10")
 	rig.wantPodUpdateRecord("the first sweep", api.PodUpdateRounds{
 		Swept: true, MaxOpenRounds: new(2), RoundsPerMinute: new(1),
-		InRound:                  []string{"INFRA-10"},
-		WaitingOnRoundsPerMinute: []string{"INFRA-1000", "INFRA-2", "INFRA-30", "INFRA-4"},
+		InRound:                  []string{"LEGION-10"},
+		WaitingOnRoundsPerMinute: []string{"LEGION-1000", "LEGION-2", "LEGION-30", "LEGION-4"},
 	})
 
 	// A minute on, the budget is back and the second opening takes the last slot: from there the
 	// limit on open rounds is what holds the rest, and it is the one they are named under.
 	rig.clock.advance(time.Minute)
 	rig.tick()
-	rig.awaitRounds("a second sweep one minute later", "INFRA-10", "INFRA-1000")
+	rig.awaitRounds("a second sweep one minute later", "LEGION-10", "LEGION-1000")
 	rig.wantPodUpdateRecord("the second sweep", api.PodUpdateRounds{
 		Swept: true, MaxOpenRounds: new(2), RoundsPerMinute: new(1),
-		InRound:                []string{"INFRA-10", "INFRA-1000"},
-		WaitingOnMaxOpenRounds: []string{"INFRA-2", "INFRA-30", "INFRA-4"},
+		InRound:                []string{"LEGION-10", "LEGION-1000"},
+		WaitingOnMaxOpenRounds: []string{"LEGION-2", "LEGION-30", "LEGION-4"},
 	})
 
 	// A project that sets neither key asks for no limit, which no number says: the whole fleet is
@@ -953,6 +997,6 @@ func TestClaimsListPodUpdateLine(t *testing.T) {
 	none.tick()
 	none.awaitRounds("one sweep under neither limit", keys...)
 	none.wantPodUpdateRecord("a sweep of a project that sets neither key", api.PodUpdateRounds{
-		Swept: true, InRound: []string{"INFRA-10", "INFRA-1000", "INFRA-2", "INFRA-30", "INFRA-4"},
+		Swept: true, InRound: []string{"LEGION-10", "LEGION-1000", "LEGION-2", "LEGION-30", "LEGION-4"},
 	})
 }

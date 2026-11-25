@@ -1,5 +1,8 @@
 package main
 
+//ci:reads packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden listenerPodGoldens lists it, and TestListenerPodGracesCoverTheStopBudget reads it through readListenerPod
+//ci:reads packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden listenerPodGoldens lists it, and TestListenerPodGracesCoverTheStopBudget reads it through readListenerPod
+
 import (
 	"encoding/json"
 	"os"
@@ -31,9 +34,9 @@ var listenerPodGoldens = []struct {
 	},
 }
 
-// listenerPod is as much of a rendered pod as this test reads. Every pointer is nil when the
-// golden does not carry that field, which is a failure here rather than a zero: the shape this
-// test reads is the shape the components are required to render.
+// listenerPod is as much of a rendered pod as this package's pod tests read. Every pointer is nil
+// when the golden does not carry that field, which is a failure here rather than a zero: the shape
+// these tests read is the shape the components are required to render.
 type listenerPod struct {
 	Spec *struct {
 		TerminationGracePeriodSeconds *int `json:"terminationGracePeriodSeconds"`
@@ -46,8 +49,32 @@ type listenerPod struct {
 					} `json:"exec"`
 				} `json:"preStop"`
 			} `json:"lifecycle"`
+			StartupProbe *struct {
+				Exec *struct {
+					Command []string `json:"command"`
+				} `json:"exec"`
+			} `json:"startupProbe"`
 		} `json:"containers"`
 	} `json:"spec"`
+}
+
+// readListenerPod reads the golden at read and parses the pod it records, failing the test when
+// the golden cannot be read or parsed or carries no spec; path names the golden from the
+// repository root, for a failure read in CI.
+func readListenerPod(t *testing.T, read, path string) listenerPod {
+	t.Helper()
+	golden, err := os.ReadFile(read)
+	if err != nil {
+		t.Fatalf("read %s, a pod gcp renders for this command: %v", path, err)
+	}
+	var pod listenerPod
+	if err := json.Unmarshal(golden, &pod); err != nil {
+		t.Fatalf("parse %s as the pod JSON it records: %v", path, err)
+	}
+	if pod.Spec == nil {
+		t.Fatalf("%s carries no spec", path)
+	}
+	return pod
 }
 
 // TestListenerPodGracesCoverTheStopBudget holds the Kubernetes side of stopBudget, which nothing
@@ -64,6 +91,7 @@ type listenerPod struct {
 // t.Parallel() added to one would make the count fail rather than pass wrongly, and the count is
 // of pods actually read.
 func TestListenerPodGracesCoverTheStopBudget(t *testing.T) {
+	t.Parallel()
 	read := 0
 	for _, golden := range listenerPodGoldens {
 		t.Run(golden.container, func(t *testing.T) {
@@ -96,15 +124,8 @@ func TestListenerPodGracesCoverTheStopBudget(t *testing.T) {
 // from the repository root, for a failure read in CI.
 func readListenerPodGrace(t *testing.T, read, path, container string) (grace, wait int) {
 	t.Helper()
-	golden, err := os.ReadFile(read)
-	if err != nil {
-		t.Fatalf("read %s, a pod gcp renders for this command: %v", path, err)
-	}
-	var pod listenerPod
-	if err := json.Unmarshal(golden, &pod); err != nil {
-		t.Fatalf("parse %s as the pod JSON it records: %v", path, err)
-	}
-	if pod.Spec == nil || pod.Spec.TerminationGracePeriodSeconds == nil {
+	pod := readListenerPod(t, read, path)
+	if pod.Spec.TerminationGracePeriodSeconds == nil {
 		t.Fatalf("%s carries no spec.terminationGracePeriodSeconds; this test cannot tell whether the pod covers the stop budget", path)
 	}
 
@@ -126,7 +147,7 @@ func readListenerPodGrace(t *testing.T, read, path, container string) (grace, wa
 	if len(command) != 2 || command[0] != "sleep" {
 		t.Fatalf("the preStop hook of %s in %s is %q, not a sleep of some seconds; this test reads the wait out of a sleep", container, path, command)
 	}
-	wait, err = strconv.Atoi(command[1])
+	wait, err := strconv.Atoi(command[1])
 	if err != nil {
 		t.Fatalf("the preStop sleep of %s in %s waits %q, which is no whole number of seconds: %v", container, path, command[1], err)
 	}

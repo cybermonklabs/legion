@@ -26,7 +26,7 @@ import (
 func openKnown(t *testing.T, now func() time.Time) *KnownSessions {
 	t.Helper()
 	client := setupNATS(t)
-	known, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1), WithKnownSessionClock(now))
+	known, err := OpenKnownSessions(t.Context(), client.Conn, WithKnownSessionReplicas(1), WithKnownSessionClock(now))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}
@@ -108,17 +108,67 @@ func TestKnownSessionsTouchKeepsTheRecordAndMovesLastSeen(t *testing.T) {
 	}
 }
 
+// observedKnown is openKnown with the store's watcher feeding its cache through a holdingCache, so
+// a test can wait for the watcher to deliver back a record the store wrote through (holdApply on
+// the record's key, opened at once). Once the first read has completed it ends the store's watcher
+// and puts in its place one built as startWatch builds it, over the same bucket, with the store's
+// logger and watch options, the way holdingRegistry replaces the session registry's watcher. Unlike
+// holdingRegistry it writes the field under openMu, which every read of the known store's watcher
+// takes, and it waits until the replacement's own first read has completed, so a delivery the gate
+// meets after that is of a write the test makes.
+func observedKnown(t *testing.T, now func() time.Time) (*KnownSessions, *holdingCache) {
+	t.Helper()
+	known := openKnown(t, now)
+	previous := known.watch()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	previous.End(ctx)
+	held := &holdingCache{Cache: knownCache{known}}
+	replacement := kvwatch.New("known session store", previous.KV(), held,
+		append([]kvwatch.Option{kvwatch.WithLogger(known.log)}, known.watchOptions...)...)
+	known.openMu.Lock()
+	known.watcher = replacement
+	known.openMu.Unlock()
+	replacement.Start()
+	if err := known.WaitForCacheReady(context.Background()); err != nil {
+		t.Fatalf("the replaced watcher's first read did not complete: %v", err)
+	}
+	return known, held
+}
+
 // A record whose last_seen is past the 30-day retention answers as no record, by id and by topic,
 // before the sweep has run; the sweep then gives its memory back.
+//
+// The write puts the record in the copy at once (write-through), and the watcher delivers the same
+// revision back a moment later. The sweep's removal keeps that revision in the copy's fence, which
+// drops only older ones (kvwatch.Copy.Remove), so a delivery applied after the sweep puts the
+// record back: a sweep run before the watcher has delivered the write proves nothing about the
+// sweep. So the row sweeps once that delivery has been applied. In production a delivery can put
+// back a record the sweep took too: a later read of the bucket (a Rewatch) delivers every record
+// the bucket still holds, and the bucket can still hold a record past this store's retention. A
+// bucket that already existed keeps the TTL it was created with (openKnownBucket changes none),
+// and a listener whose clock is behind stamps a record's last_seen earlier than its write, so the
+// record is past the retention here before the bucket's TTL removes it. Get and MatchEach answer no
+// such record, and it costs its memory until the next sweep.
 func TestKnownSessionsAnswerNoRecordPastTheRetention(t *testing.T) {
 	clock := time.Now()
-	known := openKnown(t, func() time.Time { return clock })
+	known, cache := observedKnown(t, func() time.Time { return clock })
+	delivered := cache.holdApply(t, "ses_old")
+	delivered.open()
 	if err := known.RecordWithin(context.Background(), KnownSession{
 		SessionID: "ses_old",
 		Topics:    []string{"notifications.team.deploy-squad"},
 	}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
+	testwait.Eventually(t, "the watcher to deliver ses_old's write back to the copy", func() bool {
+		select {
+		case <-delivered.done:
+			return true
+		default:
+			return false
+		}
+	})
 	clock = clock.Add(KnownSessionRetention + time.Hour)
 	if _, ok := known.Get("ses_old"); ok {
 		t.Error("Get answered a record older than the retention")
@@ -210,7 +260,7 @@ func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T)
 	logged := logs.String
 
 	started := time.Now()
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		// The production schedule's first wait is a second and its cap five minutes, which a
@@ -310,7 +360,7 @@ func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
 	// whole question, and a handful of records would be filled whether it waits or not.
 	const records = 2000
 	const topic = "notifications.team.late-open"
-	filling, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -330,7 +380,7 @@ func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
 
 	// The grant goes away, as it is away on every listener started before it is applied.
 	grant.Grant(t, "nothing.this.store.uses")
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
 	if err != nil {
@@ -415,7 +465,7 @@ func TestAStoreWhoseFirstScanTimedOutOpensOnlyOnceItsRescanCompletes(t *testing.
 	client := setupNATS(t)
 	const topic = "notifications.team.timed-out-scan"
 	ids := []string{"ses_timeout_1", "ses_timeout_2", "ses_timeout_3"}
-	filling, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), client.Conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -488,7 +538,7 @@ func knownOverGrant(t *testing.T, first, longest time.Duration, extra ...KnownSe
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		withKnownSessionRetry(first, longest),
 	}, extra...)
-	known, err := OpenKnownSessions(conn, options...)
+	known, err := OpenKnownSessions(t.Context(), conn, options...)
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}
@@ -808,7 +858,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	// The records the late open is to answer once the store is repaired.
 	const topic = "notifications.team.late-open-repair"
 	held := []string{"ses_late_repair_1", "ses_late_repair_2", "ses_late_repair_3"}
-	filling, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -834,7 +884,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	grant.Grant(t, "nothing.this.store.uses")
 	logs := &lockedWriter{}
 	logged := logs.String
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond),
@@ -927,7 +977,7 @@ func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *test
 		t.Fatalf("connect as the user whose grant does not carry the bucket: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
 	if err != nil {

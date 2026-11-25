@@ -194,7 +194,7 @@ func TestLateCompletionsThroughTheRealLegionToolLive(t *testing.T) {
 }
 
 // newLateCompletionLive readies everything the panes need before the daemon boots: the real
-// Dispatch with the project, its repository mapping and the issue; the `legion` binary and the
+// Dispatch with the project, its default repository and the issue; the `legion` binary and the
 // two plugins built from this checkout; an Oh My Pi profile routed to the stand-ins; the panes'
 // jj workspace at the implementer's pushed head; GitHub's stand-in at that head; the store
 // seeded; and the daemon booted over the local runtime.
@@ -209,16 +209,11 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 			t.Fatalf("%s is not on PATH: %v", tool, err)
 		}
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/late-completion.sh")
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
 	// daemon's project is its Dispatch project, so the run's project is a short one of its own.
 	proof.cfg.Project = "LC" + randomSuffix(t)[:6]
 	proof.cfg.Projects = map[string]config.Project{proof.cfg.Project: {}}
-	// The loader's own default (config's resolve), which workflowConfig leaves at zero: a pane's
-	// tool reads GET /legion/v1/state through the daemon API contract, which takes a positive cap
-	// alone and refuses the whole state otherwise.
-	proof.cfg.ReviewRoundCap = 3
 	var err error
 	if proof.project, err = claim.ProjectToken(proof.cfg.Project); err != nil {
 		t.Fatal(err)
@@ -287,18 +282,18 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
 	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 2*time.Minute)
-	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s, issue %s; daemon at dispatch_url %s, each pane told it as DISPATCH_URL",
+	r.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s, issue %s; daemon at dispatch_url %s, each pane told it as DISPATCH_URL",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.key, r.cfg.DispatchURL)
 	return r
 }
 
-// setUpDispatch creates the run's project on Dispatch, maps liveRepo to it as its default, and
+// setUpDispatch creates the run's project on Dispatch, sets liveRepo as its default repository, and
 // creates the issue, in progress and carrying the legion label, as a running daemon leaves it.
 func (r *lateCompletionLive) setUpDispatch() {
 	t := r.t
 	t.Helper()
 	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Late completion live proof"}, http.StatusCreated, nil)
-	r.dispatch.user(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.dispatch.user(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	var created struct {
 		Key string `json:"key"`
 	}
@@ -377,7 +372,7 @@ func (r *lateCompletionLive) pushedHead() string {
 // API listener the fixture holds, the workflow's App tokens stood in for, and GitHub's stand-in.
 func (r *lateCompletionLive) overrides() overrides {
 	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Tokens,
+		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
 			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 			r.rt.conns, r.rt.stream = listener, address
 			return r.rt, nil
@@ -401,7 +396,7 @@ func (r *lateCompletionLive) seed() {
 	t.Helper()
 	ctx := context.Background()
 	listed := r.dispatch.issue(r.key)
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
 			Title: listed.Title, Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",

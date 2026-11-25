@@ -1,6 +1,7 @@
 package testbin
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -99,7 +100,11 @@ func StateModel(t *testing.T, stdout string) string {
 }
 
 // SessionFiles are the session files under a profile's sessions directory, which Oh My Pi keeps
-// in a directory named for the working directory the session ran in.
+// in a directory named for the working directory the session ran in: the regular files whose name
+// ends in `.jsonl`. On Linux the pinned build also keeps, beside each session file it has written,
+// a lock sidecar `.<session file>.lock.os` that it never removes (`#osGatePath` in
+// packages/coding-agent/src/session/session-storage.ts at the pinned tag: the lock is held on the
+// file's inode, so the file stays), and no other file of the directory is a session.
 func SessionFiles(t *testing.T, sessions string) []string {
 	t.Helper()
 	var files []string
@@ -107,7 +112,7 @@ func SessionFiles(t *testing.T, sessions string) []string {
 		if err != nil {
 			return err
 		}
-		if !entry.IsDir() {
+		if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".jsonl") {
 			files = append(files, path)
 		}
 		return nil
@@ -116,4 +121,31 @@ func SessionFiles(t *testing.T, sessions string) []string {
 	}
 	slices.Sort(files)
 	return files
+}
+
+// ModelChanges are the models a session file's model-change records name, in the order the
+// session wrote them.
+func ModelChanges(t *testing.T, sessionFile string) []string {
+	t.Helper()
+	contents, err := os.ReadFile(sessionFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var models []string
+	for _, line := range bytes.Split(contents, []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var record struct {
+			Type  string `json:"type"`
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("parse session record %q: %v", line, err)
+		}
+		if record.Type == "model_change" {
+			models = append(models, record.Model)
+		}
+	}
+	return models
 }

@@ -53,14 +53,14 @@ func newGrantGuardRig(t *testing.T) *grantGuardRig {
 	client := setupPublishTestClient(t)
 	clock := &listenerClock{now: time.Now()}
 	reads := &kvwatchtest.Waits{}
-	registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock.Now),
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1), store.WithClock(clock.Now),
 		store.WithRoleClaimWatch(kvwatch.WithAfterFunc(reads.After), kvwatch.WithNow(clock.Now)))
 	if err != nil {
 		t.Fatalf("open the listener's registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -274,7 +274,7 @@ func unreadRegistry(t *testing.T, client *bus.Client, clock *listenerClock) *sto
 	t.Helper()
 	const opens = 10
 	for range opens {
-		registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock.Now))
+		registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1), store.WithClock(clock.Now))
 		if err != nil {
 			t.Fatalf("open the restarted listener's registry: %v", err)
 		}
@@ -306,6 +306,7 @@ func unreadRegistry(t *testing.T, client *bus.Client, clock *listenerClock) *sto
 //
 // The test logs every answer and the state each case asked in.
 func TestTheGrantGuardRefusesWhileThisListenersRenewalsFailOrItsCopyIsStale(t *testing.T) {
+	t.Parallel()
 	const holder = "ses_grant_guard"
 
 	t.Run("1 a renewal of the holder's claim failed on this listener", func(t *testing.T) {
@@ -471,6 +472,7 @@ func answerFields(t *testing.T, recorder *httptest.ResponseRecorder) []string {
 // grantGuardPrefix and names the arm. The route logs the guard's refusal once, with the role, the
 // session, both processes and the arm.
 func TestTheGrantGuardAnswersARelaunchedProcessAsItsOwnSessionsStandingClaim(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_relaunched_pane"
 		role   = "guard-relaunched"
@@ -536,6 +538,7 @@ func TestTheGrantGuardAnswersARelaunchedProcessAsItsOwnSessionsStandingClaim(t *
 // record is still the stopped process's failure at the moment it was recorded; the scheduled read
 // is fired at each step, so the repair's bound is never the arm that refuses.
 func TestTheGrantGuardRefusesARelaunchedProcessOnlyUntilItsPredecessorsLastFailureAges(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_relaunched_after_a_failure"
 		role   = "guard-predecessor-failed"

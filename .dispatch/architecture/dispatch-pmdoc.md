@@ -1,9 +1,14 @@
 ---
 title: Proof document schema (pmdoc)
 parent: dispatch-server
+depends_on: [dispatch-model, dispatch-text]
 paths: [packages/envoy/internal/dispatch/pmdoc]
 ---
-Parse, render and search over the Proof document tree: the typed-block schema (`schema/blocks.json`), block-id minting and repair, and the fixtures generated from the fork's headless engine (`gen`). A leaf: it imports no other package of the server.
+Parse, render and search over the Proof document tree: the typed-block schema (`schema/blocks.json`), block-id minting and repair, and the fixtures generated from the fork's headless engine (`gen`). It imports three other packages of the server: `model`, `text` and the small byte-bounded cache `bytelru`.
+
+The display trees a read shows beside stored text (`DisplayJSON`) are kept in one cache per process (`displayCache`, a `bytelru`), bounded at `DisplayCacheBytes`, 64 MiB. Each tree is charged what it holds: its array, its key and its entry (`displayCacheEntrySize`).
+
+A whole-document upload keeps the ids of the blocks it leaves alone. `carryBlockIDs` parses the uploaded markdown over the live tree, pairs the two as `Update`'s own alignment pairs them, and gives a block of the upload the id of the live block at its paired position wherever the uploaded markdown names no id for it: every untyped block, whose id `GET /text` renders nowhere, and a typed block whose markdown names none, which is what a body an agent composed rather than read back from the document looks like. A typed block whose markdown does name an id keeps the one it names, that id being part of what the markdown wrote. For the typed pair naming no id the comparison masks the block id and the whole of that block's server state, the answer with it (`unchangedAttrs`, over `node.go`'s `attrsEqualOutsideServerStateBut`), because an upload resets a typed block's server state and the settlement writes it back from the ask row, and an agent composing a body cannot know the answer a person gave: an answered ask whose question text is unchanged must read as unchanged, or it takes a fresh id, orphans the row holding that answer and opens a second row on the same question. A block whose text changed, one the upload moved, every block a moved block passes, one whose markdown names the live block's id anywhere, and one whose live id no ask row or anchor could store each take a fresh id from `EnsureBlockIDs`, as they did before.
 
 A table row is split into cells as the browser editor splits it: a `|` after an even run of backslashes, none included, ends the cell, and one after an odd run is the cell's text, so `| a \\| b |` is the cells `a \` and `b`, and `| a \| b |` is the one cell `a | b`. Goldmark ends a cell only at a `|` with no backslash right before it, so `table.go` splits its cells where the two differ and counts every row's cells by the browser's rule.
 

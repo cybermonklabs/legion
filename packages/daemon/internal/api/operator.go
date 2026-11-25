@@ -5,14 +5,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -21,7 +19,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -46,13 +43,12 @@ type DeliverRequest struct {
 }
 
 // RetryRequest is the operator's retry, whose body is optional: a retry that sends none, as every
-// caller before this contract did, resumes the claim's recorded session. FreshSession is
-// `legion claims retry --fresh-session`, which starts the claim in a new session instead — what a
-// claim its provider refused needs, since the session those turns were refused in would be
-// refused again. It is the one effect the controller's fresh_session runs as well
-// (freshSession), and it reaches every claim of the project that is not in a turn and whose
-// launch is not in flight, where the plain retry reaches only a claim that failed and one an
-// operator stopped.
+// caller before this contract did, resumes the claim's recorded session, or a new one once
+// supervise's Machine.forgetSession has dropped it. FreshSession is `legion claims retry
+// --fresh-session`, which starts the claim in a new session instead. It is the one effect the
+// controller's fresh_session runs as well (freshSession), and it reaches every claim of the
+// project that is not in a turn and whose launch is not in flight, where the plain retry reaches
+// only a failed or retired claim (supervise's onOperatorRetry row).
 type RetryRequest struct {
 	FreshSession bool `json:"freshSession,omitempty"`
 }
@@ -62,322 +58,6 @@ type ForgetSessionRequest struct {
 	Session string `json:"session"`
 }
 
-// OperatorClaim is a claim as the operator sees it: every field of the claim record the decision
-// table files in the operator column, which these routes alone carry, and all but five of the
-// fields it files in the agents column (ClaimRecordFields, internal/api's recordfields.go). The
-// five it leaves to the agent surfaces are `servingGeneration`, `pendingCause`,
-// `providerErrorRun`, `updateReasons` and `givenEntry`, the last of which an issue's own view
-// carries and no claim's; the table's withheld column reaches no surface at all,
-// the claim's two hashes among it. Two fields stand here whole where a claim view reduces them:
-// the four counts, under `budgets` and again inside `failure`, and the pending task with its
-// text, under `pending`. Three keys below are no field of the claim record and stand on the
-// answer of the one route that writes them rather than on every claim: ForgottenSession,
-// ForgottenSessionFile and PhaseNotRestarted.
-type OperatorClaim struct {
-	Token                claim.Token `json:"token"`
-	Tree                 string      `json:"tree"`
-	Issue                string      `json:"issue"`
-	Role                 claim.Role  `json:"role"`
-	Generation           uint64      `json:"generation"`
-	State                string      `json:"state"`
-	Session              string      `json:"session"`
-	SessionFile          string      `json:"sessionFile"`
-	ForgottenSession     string      `json:"forgottenSession,omitempty"`
-	ForgottenSessionFile string      `json:"forgottenSessionFile,omitempty"`
-	// PhaseNotRestarted is what the request did to the claim that the claim itself does not
-	// record, which only the retry with `--fresh-session` sets (freshSession): the claim came
-	// back owing no task and the workflow refused that phase's restart, or this request
-	// stopped the claim and the machine refused the forget or the start that would have
-	// brought it back (notStartedAgain). It is absent everywhere else, a refused retry
-	// included, since that answer is the refusal itself and nothing of the claim changed.
-	PhaseNotRestarted string `json:"phaseNotRestarted,omitempty"`
-	// Locator is the claim's process, the runtime's nested shape; none while nothing runs.
-	Locator         *runtime.Locator `json:"locator,omitempty"`
-	Budgets         BudgetsView      `json:"budgets"`
-	UncertainStreak int              `json:"uncertainStreak"`
-	// Pending is the task the claim holds, until the turn it started ends.
-	Pending *DeliveryView `json:"pending,omitempty"`
-	// SuspendedBy is who suspended the claim while it is suspended: operator, daemon, exit,
-	// released (its idle pod was released), or unknown (a suspension recorded before migration
-	// 0038); absent otherwise. These routes are the one surface that serves it: a session parses
-	// every body it reads with the schema of its own contract, so a key an older contract does not
-	// know refuses the whole body at a plugin whose answer side predates INFRA-1048, and is dropped
-	// at every plugin after it (api.StrandedClaim).
-	SuspendedBy string `json:"suspendedBy,omitempty"`
-	// SuspensionHeld is a suspension the machine holds for the agent's turn (supervise's
-	// holdSuspension); absent when none is.
-	SuspensionHeld bool `json:"suspensionHeld,omitempty"`
-	// SuspensionHeldBy is who asked for the suspension the machine holds, absent when none is
-	// held, and Compacting is whether the claim is working because its session is being
-	// compacted rather than because a turn is. ProcessGone is whether the runtime's last report
-	// of the process this claim still records found it gone, absent for a claim whose last
-	// report found it running and for one that records no process. The three are memory only,
-	// as SuspensionHeld is: the store writes none of them, so the state route, which reads
-	// claims from the store, would serve a constant for each, and these routes, which read the
-	// live machine, are the one surface that carries them (internal/api's recordfields.go).
-	SuspensionHeldBy string `json:"suspensionHeldBy,omitempty"`
-	Compacting       bool   `json:"compacting,omitempty"`
-	ProcessGone      bool   `json:"processGone,omitempty"`
-	// PluginContract is the contract the claim's current registration declared, 0 when none
-	// recorded, always emitted.
-	PluginContract int `json:"pluginContract"`
-	// UpdateRound is the update round the claim is in, absent when none is open: the pod's drift
-	// round (`pod:<pod uid>`), shared by every claim of that pod, which is the one round this
-	// daemon opens. This claim's own plugin round (`plugin:<daemon contract>`) is an earlier
-	// daemon's, which a boot ends (internal/daemon's endPluginRounds). Once its worker has answered, the process is waiting to
-	// be replaced and the daemon holds the claim's next task. UpdateHead is the commit the worker
-	// reported as its issue branch's head at origin when it answered, absent until it answers and
-	// for a worker that reported none; it is the worker's word, which nothing verifies.
-	UpdateRound string `json:"updateRound,omitempty"`
-	UpdateHead  string `json:"updateHead,omitempty"`
-	// LastTurnStart and LastTurnEnd are when the claim's agent last began a turn and last ended
-	// one, each absent until that happens, and both absent for a claim that last ran before this
-	// release recorded them. An operator reads them to tell a worker still making progress from
-	// one wedged in a turn or idle since long before now.
-	LastTurnStart *time.Time `json:"lastTurnStart,omitempty"`
-	LastTurnEnd   *time.Time `json:"lastTurnEnd,omitempty"`
-	// LastDeathCause is why the claim's process was last found gone, LastStartFailure why its last
-	// start did not produce a running agent, and LastReady when its agent last said it could be
-	// prompted. Each is absent until it happens, and the two causes are kept apart because they
-	// answer different questions: a claim that cannot start and a claim that keeps dying are
-	// different faults. LastReady dates them — a cause older than it is one the running agent has
-	// already survived.
-	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
-	LastStartFailure string     `json:"lastStartFailure,omitempty"`
-	LastReady        *time.Time `json:"lastReady,omitempty"`
-	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord, api.StepView),
-	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
-	// These routes are the only surface a controller's record reaches: internal/projection puts
-	// the controller's claim on no issue, so no claim view of the state carries it, and `legion
-	// claims list` is where an operator reads what a stuck controller is doing.
-	Step *StepView `json:"step,omitempty"`
-	// Failure is why the claim failed: the one word the site that failed it chose, the sentence
-	// that site wrote beside it, the moment and the four counts it failed with
-	// (ClaimFailureView, FailureViewOf). It is absent for a claim the daemon holds no cause and
-	// sentence for — one that never failed, and one that has been given another run since, which
-	// is what clears the record (supervise's retry and launchNow) — and stands on a claim an
-	// operator retired after it failed, which is what lets the seat reading it say why that
-	// worker is gone.
-	Failure *ClaimFailureView `json:"failure,omitempty"`
-	// LeakCheckCause is the sentence the claim's latest launch try was refused with because the
-	// shared public leak check could not be installed in the role's pod
-	// (supervise.Claim.LeakCheckCause, ClaimView.LeakCheckCause), absent when that try started
-	// its process or failed for another reason. The controller's claim is on no claim view of the
-	// state, so these routes are where its cause is read.
-	LeakCheckCause string `json:"leakCheckCause,omitempty"`
-}
-
-// BudgetsView is the claim's retry counters (`supervise.Budgets`).
-type BudgetsView struct {
-	LaunchFailures int `json:"launchFailures"`
-	Deaths         int `json:"deaths"`
-	PromptFailures int `json:"promptFailures"`
-	PromptRetires  int `json:"promptRetires"`
-}
-
-// BudgetsViewOf is b as the claim views show it. The counters are the claim's own and are
-// always served, so this answers a value rather than a pointer, unlike StepViewOf and
-// PendingTaskViewOf: every surface that shows a claim shows its four counts, and the failure
-// record shows the four it failed with (FailureViewOf).
-func BudgetsViewOf(b supervise.Budgets) BudgetsView {
-	return BudgetsView{
-		LaunchFailures: b.LaunchFailures,
-		Deaths:         b.Deaths,
-		PromptFailures: b.PromptFailures,
-		PromptRetires:  b.PromptRetires,
-	}
-}
-
-// DeliveryView is the claim's pending task (`supervise.Delivery`): DeliveredAt is the latest
-// acknowledgement of this task's prompt, cleared when that prompt is refused, and ConfirmedAt the
-// turn a send started; each absent until it happens. SendFailures, LastSendFailureAt and
-// LastSendError stand beside them as the record of the sends that did not get that far.
-type DeliveryView struct {
-	ID   string `json:"id"`
-	Task string `json:"task"`
-	// Phase is the issue phase the task was queued for, and empty for a task of no phase — an
-	// operator's own, an architect's. It is what says whether a pending task is still the work to
-	// do, so an operator reading a claim can see it rather than infer it from the task's prose.
-	Phase       phase.Phase `json:"phase,omitempty"`
-	QueuedAt    time.Time   `json:"queuedAt"`
-	DeliveredAt *time.Time  `json:"deliveredAt,omitempty"`
-	ConfirmedAt *time.Time  `json:"confirmedAt,omitempty"`
-	// Interrupted is a task a process died in a turn of: it is sent behind the sentence saying so
-	// (`supervise.Delivery.Interrupted`). Absent for every other task.
-	Interrupted bool `json:"interrupted,omitempty"`
-	// SendFailures, LastSendFailureAt and LastSendError are how many sends of this task came
-	// back from their own send goroutine without reaching a turn, when the last of them failed
-	// and the error it failed with (`supervise.Delivery.SendFailures` and its two companions).
-	// They are a diagnosis record rather than a budget: the budget is the claim's
-	// `promptFailures` and `promptRetires`, which only a charged failure spends, while these
-	// count every send that failed there, charged or not — a send lost to the transport is
-	// charged nothing and retried for ever, and that is the stall this exists to name. A prompt
-	// the agent acknowledged and then refused is charged and read in the budget instead. A send
-	// that reaches a turn clears all three, so a pending task no send has failed for carries
-	// none of them on the wire.
-	SendFailures      int        `json:"sendFailures,omitempty"`
-	LastSendFailureAt *time.Time `json:"lastSendFailureAt,omitempty"`
-	LastSendError     string     `json:"lastSendError,omitempty"`
-}
-
-// OperatorClaims is the list route's answer, in token order, with what the daemon's last
-// pod-update sweep decided beside the claims.
-type OperatorClaims struct {
-	Claims []OperatorClaim `json:"claims"`
-	// PodUpdateRounds is the sweep's own last word, which no claim row carries: a claim shows the
-	// round it is in, and nothing on it says why the drifted issue beside it was given none. It
-	// is a pointer so that a reader can tell an answer that carries no record at all — a daemon
-	// of a release before this field — from one whose first sweep has not run, which carries the
-	// zero record and says so in `swept` (cmd/legion's podUpdateRoundsLine). The list route
-	// fills it on every answer, so only a daemon too old to know the field serves one without it.
-	PodUpdateRounds *PodUpdateRounds `json:"pod_update_rounds"`
-}
-
-// MarshalJSON keeps `claims` an array on the wire, empty rather than `null`, and
-// `pod_update_rounds` an object, the zero record rather than `null`: the field is nil only where
-// nobody filled it, and the readers on the other side of this wire take it as required
-// (packages/contracts's LegionOperatorClaimsResponse). The sweep's record normalises its own
-// lists, which this carries rather than repeats: `type wire` drops the methods of OperatorClaims
-// alone, so the field keeps its own (PodUpdateRounds.MarshalJSON).
-func (c OperatorClaims) MarshalJSON() ([]byte, error) {
-	type wire OperatorClaims
-	out := wire(c)
-	if out.Claims == nil {
-		out.Claims = []OperatorClaim{}
-	}
-	if out.PodUpdateRounds == nil {
-		out.PodUpdateRounds = &PodUpdateRounds{}
-	}
-	return json.Marshal(out)
-}
-
-// PodUpdateRounds is what this daemon's last pod-update sweep decided under the project's two
-// limits on how fast one pod template change reaches the fleet (internal/daemon's podUpdateSweep):
-// the limits as the configuration holds them, the issues that hold an open round, and the issues
-// each limit held back at that sweep. The claims alone cannot say it — a claim carries the round
-// it is in, and an issue a limit held back is posted nothing at all — so an operator reading them
-// could not tell a fleet the limits are pacing from one the daemon has stopped carrying.
-//
-// Swept is false for a daemon whose first sweep has not run, where every other field is empty and
-// states nothing. Each limit is nil for a key legion.yaml does not set, which is no limit rather
-// than a limit of none. Every list is in issue-key order.
-type PodUpdateRounds struct {
-	Swept bool `json:"swept"`
-	// MaxOpenRounds and RoundsPerMinute are `pod_update_max_open_rounds` and
-	// `pod_update_rounds_per_minute` as the configuration holds them.
-	MaxOpenRounds   *int `json:"max_open_rounds"`
-	RoundsPerMinute *int `json:"rounds_per_minute"`
-	// InRound is every issue that held one of the project's open-round slots at that sweep, the
-	// issues the sweep opened a round for among them.
-	InRound []string `json:"in_round"`
-	// WaitingOnMaxOpenRounds and WaitingOnRoundsPerMinute are the drifted issues each limit held
-	// back at that sweep. An issue both limits held back is under the limit on open rounds alone:
-	// that is the one which will still hold it back at the next sweep.
-	WaitingOnMaxOpenRounds   []string `json:"waiting_on_max_open_rounds"`
-	WaitingOnRoundsPerMinute []string `json:"waiting_on_rounds_per_minute"`
-}
-
-// MarshalJSON keeps the three lists arrays on the wire, empty rather than `null`, so a reader
-// takes a sweep that held nothing back as the empty list it is rather than as a daemon that said
-// nothing of it.
-func (r PodUpdateRounds) MarshalJSON() ([]byte, error) {
-	type wire PodUpdateRounds
-	out := wire(r)
-	for _, list := range []*[]string{&out.InRound, &out.WaitingOnMaxOpenRounds, &out.WaitingOnRoundsPerMinute} {
-		if *list == nil {
-			*list = []string{}
-		}
-	}
-	return json.Marshal(out)
-}
-
-// operatorView is one claim as every operator route answers it: the claim as the machine or the
-// store holds it, and the step record the store holds. The record is passed on its own because a
-// machine's Claim.Step is the copy it was built with and nothing writes it again (supervise's
-// putStep, store.PutClaimStep): taking it off c would let an answer carry that boot-time copy by
-// forgetting to replace it, so the caller has to say which record it serves (operatorAnswer,
-// list).
-func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
-	view := OperatorClaim{
-		Token:            c.Token,
-		Tree:             c.Tree,
-		Issue:            c.Issue,
-		Role:             c.Role,
-		Generation:       c.Generation,
-		State:            string(c.State),
-		Session:          c.Session,
-		SessionFile:      c.SessionFile,
-		Locator:          c.Locator,
-		Budgets:          BudgetsViewOf(c.Budgets),
-		UncertainStreak:  c.UncertainStreak,
-		SuspendedBy:      string(c.SuspendedBy),
-		SuspensionHeld:   c.SuspensionHeld,
-		SuspensionHeldBy: string(c.SuspensionHeldBy),
-		Compacting:       c.Compacting,
-		ProcessGone:      c.ProcessGone,
-		PluginContract:   c.PluginContract,
-		UpdateRound:      c.UpdateRound,
-		UpdateHead:       c.UpdateHead,
-		LastTurnStart:    instant(c.LastTurnStart),
-		LastTurnEnd:      instant(c.LastTurnEnd),
-		LastDeathCause:   c.LastDeathCause,
-		LastStartFailure: c.LastStartFailure,
-		LastReady:        instant(c.LastReady),
-		Step:             StepViewOf(step),
-		Failure:          FailureViewOf(c),
-		LeakCheckCause:   c.LeakCheckCause,
-	}
-	if p := c.Pending; p != nil {
-		view.Pending = &DeliveryView{
-			ID: p.ID, Task: p.Task, Phase: p.Phase, QueuedAt: p.QueuedAt,
-			DeliveredAt: instant(p.DeliveredAt), ConfirmedAt: instant(p.ConfirmedAt), Interrupted: p.Interrupted,
-			SendFailures: p.SendFailures, LastSendFailureAt: instant(p.LastSendFailureAt), LastSendError: p.LastSendError,
-		}
-	}
-	return view
-}
-
-// operatorAnswer is the answer every operator route about one claim writes: the claim its caller
-// read, with the step record read from the store. The caller passes the claim because the routes
-// do not read one alike — claimRequest reads the machine's published view, which never waits on a
-// launch that holds that machine, where every other route reads Machine.Claim and so waits out
-// the decision it has just made. The record is the fact and the machine's copy is a
-// snapshot of it: the daemon writes every step through a narrow call of its own and never reads
-// one back into the machine's claim (supervise's putStep, store.PutClaimStep), so a machine's
-// copy is the record as it stood when that machine was built — at this daemon's boot, for every
-// claim it re-adopted. These routes are the one surface a controller's record reaches and the
-// ones an operator runs on a worker that has stopped moving, so what they show has to be the
-// record the stall backstop reads rather than that snapshot, which is a call hours old, or none
-// at all, for every claim this daemon took up at boot.
-//
-// A read the store refuses answers the record absent — the `-` the listing already shows for a
-// claim in no open call — and logs the failure at Warn naming the claim and the error.
-//
-// Not a 500: the action the request reports has already landed, its decision made and its claim
-// written, so failing the request over a read beside it would read as a stop, a resume or a retry
-// that did not happen. Not the machine's own copy either: that copy is the boot-time snapshot
-// these routes exist to stop serving, and printing a call hours old as the call a worker is in
-// now is worse than printing none, because an operator reading it would take a worker that has
-// stopped moving for one still at work. An absent record says what the daemon knows: it could
-// not read what that claim's agent last did.
-func (s *server) operatorAnswer(ctx context.Context, c supervise.Claim) OperatorClaim {
-	step, err := s.supervisor.Step(ctx, c.Token)
-	if err != nil {
-		s.log.Warn("api: read the step record of an operator's claim; answering with no record",
-			"claim", c.Token, "error", err)
-		step = supervise.StepRecord{}
-	}
-	return operatorView(c, step)
-}
-
-// instant is a time that may not have happened yet: the zero time is absent on the wire.
-func instant(t time.Time) *time.Time {
-	if t.IsZero() {
-		return nil
-	}
-	return &t
-}
-
 // operator admits a request that carries the operator's bearer, compared in constant time over
 // both sides' hashes so neither the token nor its length leaks through the comparison. A daemon
 // holding no operator token admits nothing.
@@ -385,7 +65,7 @@ func (s *server) operator(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		given, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !s.operatorSet || !bearer || !secureBearerEqual(s.operatorHash, given) {
-			writeJSON(w, http.StatusForbidden, errorBody(invalidOperatorToken))
+			s.refuse(w, r, http.StatusForbidden, invalidOperatorToken)
 			return
 		}
 		next(w, r)
@@ -398,60 +78,65 @@ func secureBearerEqual(expected [sha256.Size]byte, given string) bool {
 }
 
 // spawn creates the claim — or finds it, when it exists — and posts the launch to its machine,
-// then the task, so a claim the machine will not launch is given no task either.
+// then the task, so a claim the machine will not launch is given no task either. While the project
+// is paused it creates and launches nothing (refusedWhilePaused).
 func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	var req SpawnRequest
-	if !s.readBody(w, r, &req, nil) || !requireFields(w,
+	if !s.readBody(w, r, &req, nil) || !s.requireFields(w, r,
 		field{"tree", req.Tree}, field{"issue", req.Issue}, field{"role", string(req.Role)},
 	) {
 		return
 	}
 	for _, key := range []field{{"tree", req.Tree}, {"issue", req.Issue}} {
 		if !claim.IsIssueKey(key.value) {
-			writeJSON(w, http.StatusBadRequest, errorBody(fmt.Sprintf("%s %q is not an issue key", key.name, key.value)))
+			s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("%s %q is not an issue key", key.name, key.value))
 			return
 		}
 	}
 	if !claim.IsRole(req.Role) {
-		writeJSON(w, http.StatusBadRequest, errorBody(fmt.Sprintf("role %q is not a role", req.Role)))
+		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("role %q is not a role", req.Role))
 		return
 	}
 	token, err := claim.NewToken(s.project, req.Issue, req.Role)
 	if err != nil {
-		s.operatorFailure(w, "spawn", token, err)
+		s.operatorFailure(w, r, "spawn", token, err)
 		return
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, "spawn") {
+	if s.stopped(w, r, "spawn") {
+		return
+	}
+	c := supervise.Claim{
+		Token: token, Project: s.project, Tree: req.Tree, Issue: req.Issue, Role: req.Role, State: supervise.StateQueued,
+	}
+	if s.refusedWhilePaused(w, r, "spawn", c) {
 		return
 	}
 	if req.Tree == req.Issue && req.Role == claim.RoleArchitect {
 		if _, err := s.trees.OpenOperatorTreeLifecycle(ctx, s.project, req.Tree, s.drawExperiments(req.Tree)); errors.Is(err, treelifecycle.ErrCleanupReserved) {
-			writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err)))
+			s.refuse(w, r, http.StatusConflict, fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err))
 			return
 		} else if err != nil {
-			s.operatorFailure(w, "spawn", token, err)
+			s.operatorFailure(w, r, "spawn", token, err)
 			return
 		}
 	}
-	m, created, err := s.supervisor.Create(ctx, supervise.Claim{
-		Token: token, Project: s.project, Tree: req.Tree, Issue: req.Issue, Role: req.Role, State: supervise.StateQueued,
-	}, req.Prompt)
+	m, created, err := s.supervisor.Create(ctx, c, req.Prompt)
 	if err != nil {
-		s.operatorFailure(w, "spawn", token, err)
+		s.operatorFailure(w, r, "spawn", token, err)
 		return
 	}
 	// The operator is waiting on this answer, so the wake pacing never holds this launch
 	// (supervise's reserveWake): one person's spawn is not the wave the pacing exists for, and a
 	// route that answered with a claim parked launching would read as a daemon that did nothing.
 	if err := m.Handle(ctx, supervise.RequestSpawn{Claim: token, Exempt: true}); err != nil {
-		s.operatorFailure(w, "spawn", token, err)
+		s.operatorFailure(w, r, "spawn", token, err)
 		return
 	}
 	if req.Task != "" {
 		if err := m.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: req.Task}); err != nil {
-			s.operatorFailure(w, "deliver", token, err)
+			s.operatorFailure(w, r, "deliver", token, err)
 			return
 		}
 	}
@@ -460,7 +145,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	s.operatorDone(r, token)
-	writeJSON(w, status, s.operatorAnswer(ctx, m.Claim()))
+	s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(ctx, m.Claim()))
 }
 
 // drawExperiments draws the tree-unit experiments the project declares for tree, for the open
@@ -491,7 +176,7 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 		token := claim.Token(r.PathValue("token"))
 		m, ok := s.supervisor.Machine(token)
 		if !ok {
-			writeJSON(w, http.StatusNotFound, errorBody("no claim "+string(token)))
+			s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 			return
 		}
 		ev, ok := event(w, r, m.View().Claim)
@@ -507,7 +192,7 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 			status = http.StatusAccepted
 		}
 		s.operatorDone(r, token)
-		writeJSON(w, status, s.operatorAnswer(r.Context(), m.View().Claim))
+		s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(r.Context(), m.View().Claim))
 	}
 }
 
@@ -524,7 +209,7 @@ func (s *server) claimEvent(w http.ResponseWriter, r *http.Request, m *supervise
 	case errors.Is(err, supervise.ErrSuspendHeld):
 		return true, true
 	case err != nil:
-		s.operatorFailure(w, request, token, err)
+		s.operatorFailure(w, r, request, token, err)
 		return false, false
 	}
 	return false, true
@@ -540,15 +225,20 @@ func (s *server) postClaimEvent(w http.ResponseWriter, r *http.Request, m *super
 	request string, ev supervise.Event) (posted bool, err error) {
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, request) {
+	if s.stopped(w, r, request) {
 		return false, nil
 	}
 	return true, m.Handle(ctx, ev)
 }
 
+// deliverEvent is the operator's task for a claim, which starts a turn the pause holds for every
+// claim but the controller's (refusedWhilePaused).
 func (s *server) deliverEvent(w http.ResponseWriter, r *http.Request, c supervise.Claim) (supervise.Event, bool) {
 	var req DeliverRequest
-	if !s.readBody(w, r, &req, nil) || !requireFields(w, field{"task", req.Task}) {
+	if !s.readBody(w, r, &req, nil) || !s.requireFields(w, r, field{"task", req.Task}) {
+		return nil, false
+	}
+	if s.refusedWhilePaused(w, r, "deliver", c) {
 		return nil, false
 	}
 	return supervise.RequestDeliver{Claim: c.Token, Task: req.Task}, true
@@ -558,7 +248,12 @@ func suspendEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (su
 	return supervise.RequestSuspend{Claim: c.Token, Reason: "the operator suspended it", By: supervise.SuspendedByOperator}, true
 }
 
-func resumeEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (supervise.Event, bool) {
+// resumeEvent is the operator's resume of a suspended claim, a launch the pause holds for every
+// claim but the controller's (refusedWhilePaused).
+func (s *server) resumeEvent(w http.ResponseWriter, r *http.Request, c supervise.Claim) (supervise.Event, bool) {
+	if s.refusedWhilePaused(w, r, "resume", c) {
+		return nil, false
+	}
 	return supervise.RequestResume{Claim: c.Token}, true
 }
 
@@ -589,24 +284,24 @@ func (s *server) forgetSession(w http.ResponseWriter, r *http.Request) {
 	if !s.readBody(w, r, &req, nil) {
 		return
 	}
-	if !requireFields(w, field{"session", req.Session}) {
+	if !s.requireFields(w, r, field{"session", req.Session}) {
 		return
 	}
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, errorBody("no claim "+string(token)))
+		s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 		return
 	}
 	c := m.Claim()
-	if req.Session != c.Session {
-		writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf(
-			"forget-session refused: %s records session %s; pass --session %s to start fresh", c.Token, c.Session, c.Session)))
+	if !c.HoldsSession(req.Session) {
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
+			"forget-session refused: %s records session %s; pass --session %s to start fresh", c.Token, c.Session, c.Session))
 		return
 	}
 	if !forgettable(c.State) {
-		writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf(
-			"forget-session refused: %s is %s; suspend, fail, or retire it before starting fresh", c.Token, c.State)))
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
+			"forget-session refused: %s is %s; suspend, fail, or retire it before starting fresh", c.Token, c.State))
 		return
 	}
 	if s.beforeForgetSessionHandle != nil {
@@ -614,18 +309,18 @@ func (s *server) forgetSession(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, "forget-session") {
+	if s.stopped(w, r, "forget-session") {
 		return
 	}
 	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: token, Session: req.Session}); err != nil {
-		s.operatorFailure(w, "forget-session", token, err)
+		s.operatorFailure(w, r, "forget-session", token, err)
 		return
 	}
 	s.log.Info("api: operator forgot session", "claim", token, "session", c.Session, "sessionFile", c.SessionFile)
 	s.operatorDone(r, token)
 	view := s.operatorAnswer(ctx, m.Claim())
 	view.ForgottenSession, view.ForgottenSessionFile = c.Session, c.SessionFile
-	writeJSON(w, http.StatusOK, view)
+	s.writeUnparsedAnswer(w, r, http.StatusOK, view)
 }
 
 func forgettable(state supervise.ClaimState) bool {
@@ -635,16 +330,17 @@ func forgettable(state supervise.ClaimState) bool {
 // retryClaim is the operator's `legion claims retry`: the claim's own retry (retryStart), or,
 // when the body asks for a new session (RetryRequest), the fresh session the controller's
 // fresh_session runs too (freshSession). The two differ in what they reach and in what they
-// leave behind, and nothing else answers either: a plain retry acts on a claim that failed and
-// on one an operator stopped, resuming the session it recorded, while a fresh session reaches
-// every claim of the project that is not in a turn and whose launch is not in flight, and drops
-// that session first. Only the fresh session answers the claim with a phase restart that was
-// refused named on it (OperatorClaim.PhaseNotRestarted).
+// leave behind, and nothing else answers either: a plain retry acts on a failed or retired
+// claim, resuming the session it recorded, or a new one once supervise's Machine.forgetSession
+// has dropped it, while a fresh session reaches every claim of the project that is not in a turn
+// and whose launch is not in flight, and drops that session first. Only the fresh session answers
+// the claim with a phase restart that was refused named on it
+// (OperatorClaim.PhaseNotRestarted).
 func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, errorBody("no claim "+string(token)))
+		s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 		return
 	}
 	var req RetryRequest
@@ -660,6 +356,8 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 		// it logs names the request and nothing it did (operatorDone), and freshSession logs
 		// its own Warn where it stopped the claim and did not start it.
 		status, notRestarted, _, ok = s.freshSession(w, r, m, token)
+	} else if s.refusedWhilePaused(w, r, "retry", m.View().Claim) {
+		return
 	} else {
 		status, ok = s.retryStart(w, r, m, token, false)
 	}
@@ -669,29 +367,28 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	s.operatorDone(r, token)
 	view := s.operatorAnswer(r.Context(), m.Claim())
 	view.PhaseNotRestarted = notRestarted
-	writeJSON(w, status, view)
+	s.writeUnparsedAnswer(w, r, status, view)
 }
 
-// retryStart starts a claim that is running nothing: one that failed, and one an operator
-// stopped, which retires it. It answers every refusal itself and reports the status its caller's
-// success answer takes. A phase worker is retried through its issue's phase, never on its own,
-// because a worker relaunched outside its phase is handed no task and does nothing
-// (restartWorkedPhase). Every other claim is the machine's to answer (machineRetry): an
-// architect is relaunched, from failed and from the retirement an operator's stop leaves, and a
-// phase worker whose issue works another role's phase, or that has left the workflow, is
-// relaunched on its own with whatever task it still holds. It is how an operator relaunches the
-// claims a runtime failed to launch — every failed claim in turn, with
-// `legion claims retry --failed` — once the cause is gone.
+// retryStart starts a claim that is running nothing: one that failed or retired, whatever retired
+// it. It answers every refusal itself and reports the status its caller's success answer takes.
+// Whether the retry goes through the issue's phase is restartWorkedPhase's to decide: where it
+// starts that phase again, a relaunched phase worker is handed the phase's task, since a worker
+// relaunched outside its own phase is handed none and does nothing. Every claim it does not reach,
+// an architect among them, is the machine's to answer (machineRetry), relaunched on its own with
+// whatever task it still holds. It is how an operator relaunches the claims a runtime failed to
+// launch — every failed claim in turn, with `legion claims retry --failed` — once the cause is
+// gone.
 //
-// The session is the claim's own either way: this start resumes the recorded one. A caller that
-// wants a new session forgets it before calling here (freshSession), which is also what reaches
-// a claim this start refuses.
+// The session is the claim's own either way: this start relaunches the recorded one, or a new one
+// once supervise's Machine.forgetSession has dropped it. A caller that wants a new session forgets
+// it before calling here (freshSession), which is also what reaches a claim this start refuses.
 func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool) (int, bool) {
 	c := m.Claim()
-	if failedOrRetired(c.State) {
+	if supervise.FailedOrRetired(c.State) {
 		if status, refusal, restarted := s.restartWorkedPhase(r, token, c, fresh); restarted {
 			if refusal != "" {
-				writeJSON(w, status, errorBody(refusal))
+				s.refuse(w, r, status, refusal)
 				return 0, false
 			}
 			return status, true
@@ -701,12 +398,11 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 }
 
 // restartWorkedPhase starts again the phase the claim's role works, which is what hands a
-// relaunched phase worker that phase's task. Both recoveries run it: the retry of a claim that
-// failed or an operator stopped (retryStart), and the fresh session of a phase worker that
-// comes back owing no task (freshSession). restarted is false for a claim no phase start
-// reaches — an architect, a claim whose issue works another role's phase or has left the
-// workflow, and any claim on a daemon that records no issues — and its caller starts such a
-// claim another way.
+// relaunched phase worker that phase's task. Both recoveries run it: the retry of a failed or
+// retired claim (retryStart), and the fresh session of a phase worker that comes back owing no
+// task (freshSession). restarted is false for a claim no phase start reaches — an architect, a
+// claim whose issue works another role's phase or has left the workflow, and any claim on a daemon
+// that records no issues — and its caller starts such a claim another way.
 //
 //   - an issue held for that worker's own role (Options.RoleFor of the phase it is held from) is
 //     retried as its architect's retry_or_escalate retries it (intake.RetryOrEscalate): the phase
@@ -743,7 +439,7 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 	if recorded.Phase == phase.Held {
 		fact = intake.RetryOrEscalate{Issue: c.Issue, Decision: intake.RetryDecision}
 	}
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", requestFactID("operator/retry"), fact, s.handlers...)
+	result, err := s.apply(r.Context(), "api", requestFactID("operator/retry"), fact)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: apply the operator's retry of a phase", "claim", token, "issue", c.Issue)
 		return http.StatusInternalServerError, fmt.Sprintf("could not retry %s's phase %s: %v", c.Issue, working, err), true
@@ -764,12 +460,13 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 }
 
 // machineRetry is the retry an architect or a phase worker that runs nothing gets from its own
-// machine: fresh budgets, and the session the claim records relaunched. The machine refuses it
-// for a claim in any other state, naming that state, and for the daemon's controller, naming
-// who retries it (supervise's operatorRetry). A caller that asked for a new session has
-// forgotten the recorded one before it gets here (freshSession), so the relaunch spawns rather
-// than resumes. A relaunch the machine holds for the agent's turn answers 202, as every
-// operator request on a claim answers one (claimRequest).
+// machine: fresh budgets, and the session the claim records relaunched, or a new one once
+// supervise's Machine.forgetSession has dropped it. The machine refuses it for a claim in any
+// other state, naming that state, and for the daemon's controller, naming who retries it
+// (supervise's operatorRetry). A caller that asked for a new session has forgotten the recorded one
+// before it gets here (freshSession), so the relaunch spawns rather than resumes. A relaunch the
+// machine holds for the agent's turn answers 202, as every operator request on a claim answers one
+// (claimRequest).
 func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool) (int, bool) {
 	held, ok := s.claimEvent(w, r, m, token, "retry", supervise.RequestOperatorRetry{Claim: token, FreshSession: fresh})
 	if !ok {
@@ -779,13 +476,6 @@ func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervi
 		return http.StatusAccepted, true
 	}
 	return http.StatusOK, true
-}
-
-// failedOrRetired is whether a claim's state is one the operator's retry acts on through its
-// issue's phase: the claim's process is gone and no rule of the daemon's own starts it again. A
-// claim that failed is one, and so is one an operator stopped, which retires it.
-func failedOrRetired(state supervise.ClaimState) bool {
-	return state == supervise.StateFailed || state == supervise.StateRetired
 }
 
 // forgetRecordedSession has the claim drop the session it recorded, for a caller that is
@@ -831,7 +521,7 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	root, ok := s.supervisor.Machine(token)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, errorBody("no claim "+string(token)))
+		s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 		return
 	}
 	c := root.Claim()
@@ -844,27 +534,27 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 	claims, err := s.supervisor.Claims(ctx)
 	if err != nil {
 		s.logFailure("api: read the claims of a tree the operator closes", "tree", c.Tree, "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("closed nothing: the daemon could not read the claims of tree %s", c.Tree)))
+		s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed nothing: the daemon could not read the claims of tree %s", c.Tree))
 		return
 	}
 	defer s.decisions.begin(treeOthers(claims, c.Tree, token))()
-	if s.stopped(w, "close") {
+	if s.stopped(w, r, "close") {
 		return
 	}
 	if err := root.Handle(ctx, supervise.RequestOperatorClose{Claim: token}); err != nil {
-		s.operatorFailure(w, "close", token, err)
+		s.operatorFailure(w, r, "close", token, err)
 		return
 	}
 	lifecycle, cleanup, err := s.trees.ReserveOperatorTreeCleanup(ctx, s.project, c.Tree)
 	if err != nil {
 		s.logFailure("api: reserve cleanup of an operator-closed tree", "tree", c.Tree, "error", err)
-		writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf("closed %s's root claim, but its durable tree cleanup could not be reserved: %v. Retry legion claims close once that is resolved", c.Tree, err)))
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf("closed %s's root claim, but its durable tree cleanup could not be reserved: %v. Retry legion claims close once that is resolved", c.Tree, err))
 		return
 	}
 	claims, err = s.supervisor.Claims(ctx)
 	if err != nil {
 		s.logFailure("api: read the claims of a tree the operator closed", "tree", c.Tree, "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("closed %s's root claim %s, but the daemon could not read the tree's other claims to stop them", c.Tree, token)))
+		s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's root claim %s, but the daemon could not read the tree's other claims to stop them", c.Tree, token))
 		return
 	}
 	others := treeOthers(claims, c.Tree, token)
@@ -888,19 +578,19 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(unstopped) > 0 {
-		writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("closed %s's root claim %s, but these claims of the tree were not stopped: %s. Stop each now with legion claims stop, then close again: the tree's durable cleanup waits for every claim of it",
-			c.Tree, token, strings.Join(unstopped, "; "))))
+		s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's root claim %s, but these claims of the tree were not stopped: %s. Stop each now with legion claims stop, then close again: the tree's durable cleanup waits for every claim of it",
+			c.Tree, token, strings.Join(unstopped, "; ")))
 		return
 	}
 	if cleanup {
 		if err := s.trees.CleanupReservedTree(ctx, s.project, c.Tree, lifecycle.Epoch, s.releaser); err != nil {
 			s.logFailure("api: cleanup an operator-closed tree", "tree", c.Tree, "error", err)
-			writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("closed %s's claims, but durable resource cleanup is pending: %v. Retry legion claims close after the reported cleanup error is resolved", c.Tree, err)))
+			s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's claims, but durable resource cleanup is pending: %v. Retry legion claims close after the reported cleanup error is resolved", c.Tree, err))
 			return
 		}
 	}
 	s.operatorDone(r, token)
-	writeJSON(w, http.StatusOK, s.operatorAnswer(ctx, root.Claim()))
+	s.writeUnparsedAnswer(w, r, http.StatusOK, s.operatorAnswer(ctx, root.Claim()))
 }
 
 // operatorDone logs the one Info line every operator request on a claim that succeeded writes: its
@@ -947,7 +637,7 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	claims, err := s.supervisor.Claims(r.Context())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: read the claims")
-		writeJSON(w, http.StatusInternalServerError, errorBody("the daemon could not read its claims"))
+		s.refuse(w, r, http.StatusInternalServerError, "the daemon could not read its claims")
 		return
 	}
 	sort.Slice(claims, func(i, j int) bool { return claims[i].Token < claims[j].Token })
@@ -963,18 +653,18 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	if s.podUpdateRounds != nil {
 		rounds = s.podUpdateRounds()
 	}
-	writeJSON(w, http.StatusOK, OperatorClaims{Claims: views, PodUpdateRounds: &rounds})
+	s.writeUnparsedAnswer(w, r, http.StatusOK, OperatorClaims{Claims: views, PodUpdateRounds: &rounds})
 }
 
 // operatorFailure answers an operator request its machine did not take: 409 with the machine's
 // reason when the claim's state does not allow it, and otherwise a 500 that says what failed — the
 // operator is the one who has to act on a launch the runtime refused.
-func (s *server) operatorFailure(w http.ResponseWriter, request string, token claim.Token, err error) {
+func (s *server) operatorFailure(w http.ResponseWriter, r *http.Request, request string, token claim.Token, err error) {
 	var refused *supervise.RefusedError
 	if errors.As(err, &refused) {
-		writeJSON(w, http.StatusConflict, errorBody(refused.Error()))
+		s.refuse(w, r, http.StatusConflict, refused.Error())
 		return
 	}
 	s.logFailure("api: an operator request failed", "request", request, "claim", token, "error", err)
-	writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("%s %s: %v", request, token, err)))
+	s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("%s %s: %v", request, token, err))
 }

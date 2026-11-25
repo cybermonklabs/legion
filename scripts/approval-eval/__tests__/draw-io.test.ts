@@ -5,14 +5,22 @@ import { join } from "node:path";
 import { CorpusError } from "../corpus-io";
 import { renderingCheckOf } from "../draw";
 import {
+  type BacklogRoots,
+  BUILD_CHAIN_NAMES,
+  type BuildChain,
+  chainRefusal,
   corpusDrawPath,
   corpusSlicesPath,
   type DrawRecord,
+  type DrawRule,
+  drawFactsOf,
   drawPath,
+  type FinalTestTree,
   readDraw,
   readSlices,
   rootFactsOf,
   rootReadingOf,
+  slicesOf,
   slicesPath,
 } from "../draw-io";
 
@@ -52,6 +60,33 @@ const RENDERING_CHECK = renderingCheckOf(
   "none"
 );
 
+/** The roots a draw that applied the never-decide rule recorded. */
+const ROOTS: BacklogRoots = {
+  readAt: "2026-10-01T00:00:00.000Z",
+  source: "dispatch",
+  issues: [
+    {
+      key: "INFRA-1",
+      parent: null,
+      labels: ["legion"],
+      status: "backlog",
+      primaryArtifactId: "a",
+    },
+  ],
+};
+
+/** What that draw recorded of the rule. */
+const RULE: DrawRule = {
+  model: "anthropic/claude-opus-5-5",
+  definitionSha256: "abc",
+  cache: null,
+  asked: 1,
+  cached: 0,
+  inputTokens: 10,
+  outputTokens: 5,
+  renderingCheck: RENDERING_CHECK,
+};
+
 /** A draw's record, of the fields a reader of one reads. */
 function draw(overrides: Partial<DrawRecord> = {}): DrawRecord {
   return {
@@ -74,29 +109,8 @@ function draw(overrides: Partial<DrawRecord> = {}): DrawRecord {
     postCutCases: 3,
     documentsUnread: 0,
     backlogLegionRootsRead: 1,
-    backlogLegionRoots: {
-      readAt: "2026-10-01T00:00:00.000Z",
-      source: "dispatch",
-      issues: [
-        {
-          key: "INFRA-1",
-          parent: null,
-          labels: ["legion"],
-          status: "backlog",
-          primaryArtifactId: "a",
-        },
-      ],
-    },
-    rule: {
-      model: "anthropic/claude-opus-5-5",
-      definitionSha256: "abc",
-      cache: null,
-      asked: 1,
-      cached: 0,
-      inputTokens: 10,
-      outputTokens: 5,
-      renderingCheck: RENDERING_CHECK,
-    },
+    backlogLegionRoots: ROOTS,
+    rule: RULE,
     excluded: {
       held: { total: 0, byKind: {}, cases: [] },
       undrawable: {
@@ -138,7 +152,7 @@ describe("readDraw", () => {
     expect(await readDraw(drawPath(corpus))).toEqual({
       cut: "2026-10-01T00:00:00.000Z",
       groupKey: "issue",
-      roots: draw().backlogLegionRoots.issues,
+      roots: ROOTS.issues,
     });
   });
 
@@ -156,12 +170,12 @@ describe("readDraw", () => {
 
   test("reads a draw of the shape before the rule recorded what was checked", async () => {
     const now = draw();
-    const { renderingCheck, ...older } = now.rule;
+    const { renderingCheck, ...older } = RULE;
     expect(renderingCheck).toBe(RENDERING_CHECK);
     expect(await readDraw(await written({ ...now, rule: older }))).toEqual({
       cut: "2026-10-01T00:00:00.000Z",
       groupKey: "issue",
-      roots: now.backlogLegionRoots.issues,
+      roots: ROOTS.issues,
     });
   });
 
@@ -185,7 +199,7 @@ describe("readDraw", () => {
 
   test("stops the reading where a root is no issue, or holds a fact that is no such fact", async () => {
     const root = (overrides: Record<string, unknown>): Record<string, unknown> => ({
-      ...(draw().backlogLegionRoots.issues[0] as unknown as Record<string, unknown>),
+      ...(ROOTS.issues[0] as unknown as Record<string, unknown>),
       ...overrides,
     });
     const rootsOf = (...issues: unknown[]): DrawRecord => ({
@@ -228,6 +242,215 @@ describe("readDraw", () => {
       { key: "INFRA-1", parent: null, labels: [], status: "backlog", primaryArtifactId: null },
     ]);
   });
+
+  test("reads the final test's trees, and none from a draw that recorded none", async () => {
+    const trees: FinalTestTree[] = [
+      { group: "tree:RES-0", slice: "report", cases: ["r-0-0", "r-0-1"] },
+      { group: "tree:RES-1", slice: null, cases: ["r-1-0"] },
+    ];
+    const path = await written({ ...draw(), finalTest: { reference: "claim:test", trees } });
+    expect((await readDraw(path))?.finalTestTrees).toEqual(trees);
+    // A final test recorded before its trees were, and a draw that read no reserve, carry none.
+    const before = await written({ ...draw(), finalTest: { reference: "claim:test" } });
+    expect(await readDraw(before)).not.toHaveProperty("finalTestTrees");
+    expect(await readDraw(await written({ ...draw(), finalTest: null }))).not.toHaveProperty(
+      "finalTestTrees"
+    );
+  });
+
+  test("stops the reading where a final-test tree cannot be counted", async () => {
+    const withTrees = (trees: unknown): Promise<string> =>
+      written({ ...draw(), finalTest: { reference: "claim:test", trees } });
+    const record = await written({ ...draw(), finalTest: "claim:test" });
+    await expect(readDraw(record)).rejects.toThrow(`${record} holds a finalTest that is no record`);
+    const list = await withTrees("tree:RES-0");
+    await expect(readDraw(list)).rejects.toThrow(`${list} holds finalTest trees that are no list`);
+    const group = await withTrees([{ slice: "report", cases: [] }]);
+    await expect(readDraw(group)).rejects.toThrow(`${group} finalTest tree 1 names no group`);
+    // A tree in no slice is written with a slice of null; one with no slice at all is no tree,
+    // and a claim draw puts every eligible tree in report, so one in fit is no such draw.
+    for (const slice of [undefined, "test", "fit"]) {
+      const path = await withTrees([{ group: "tree:RES-0", slice, cases: ["r-0-0"] }]);
+      await expect(readDraw(path)).rejects.toThrow(
+        `${path} finalTest tree tree:RES-0 names no slice, or another than report`
+      );
+    }
+    const cases = await withTrees([{ group: "tree:RES-0", slice: "report", cases: "r-0-0" }]);
+    await expect(readDraw(cases)).rejects.toThrow(
+      `${cases} finalTest tree tree:RES-0 holds no list of cases`
+    );
+    const twice = await withTrees([
+      { group: "tree:RES-0", slice: "report", cases: ["r-0-0"] },
+      { group: "tree:RES-1", slice: "report", cases: ["r-0-0"] },
+    ]);
+    await expect(readDraw(twice)).rejects.toThrow(
+      `${twice} names the case r-0-0 in the trees tree:RES-0 and tree:RES-1`
+    );
+    // One tree written as two, with no case in common, would count twice.
+    const split = await withTrees([
+      { group: "tree:RES-0", slice: "report", cases: ["r-0-0"] },
+      { group: "tree:RES-0", slice: "report", cases: ["r-0-1"] },
+    ]);
+    await expect(readDraw(split)).rejects.toThrow(
+      `${split} names the finalTest tree tree:RES-0 twice`
+    );
+  });
+
+  test("reads a claim draw's run, its read's reference and that it applied no rule", async () => {
+    const claimRun: BuildChain = {
+      id: "start-1",
+      snapshotSha256: "a".repeat(64),
+      corpusSha256: "b".repeat(64),
+      treesSha256: "c".repeat(64),
+    };
+    const claim = {
+      ...draw({ backlogLegionRootsRead: null, backlogLegionRoots: null, rule: null }),
+      neverDecideApplied: false,
+      claimRun,
+      finalTest: { reference: "claim:test", trees: [] },
+    };
+    const text = `${JSON.stringify(claim)}\n`;
+    const path = await written(claim);
+    const facts = await readDraw(path);
+    expect(facts).toEqual({
+      cut: "2026-10-01T00:00:00.000Z",
+      groupKey: "issue",
+      finalTestTrees: [],
+      finalTestReference: "claim:test",
+      neverDecideApplied: false,
+      claimRun,
+    });
+    // The chain read back is the one a later stage of the run holds its own to.
+    expect(chainRefusal(facts?.claimRun, claimRun, BUILD_CHAIN_NAMES)).toBeNull();
+    // The text a caller read itself gives the same facts, so its digest is of those bytes.
+    expect(drawFactsOf(text, path)).toEqual(facts ?? {});
+    // A draw that read no reserve records no claim run, and one made before either was recorded
+    // carries neither.
+    const plain = await readDraw(await written(draw({ claimRun: null })));
+    expect(plain).not.toHaveProperty("claimRun");
+    expect(plain).not.toHaveProperty("neverDecideApplied");
+  });
+
+  test("stops the reading where a claim draw's run or rule record is no such fact", async () => {
+    const whole = {
+      id: "start-1",
+      snapshotSha256: "a".repeat(64),
+      corpusSha256: "b".repeat(64),
+      treesSha256: "c".repeat(64),
+    };
+    const { treesSha256, ...noTrees } = whole;
+    expect(treesSha256).toHaveLength(64);
+    // No reply id, or a sha256 of one of the three files missing or no 64 lowercase hex digits.
+    const malformed: unknown[] = [
+      { id: "start-1" },
+      { ...whole, id: "" },
+      { ...whole, id: 7 },
+      noTrees,
+      { ...whole, snapshotSha256: "A".repeat(64) },
+      { ...whole, corpusSha256: "b".repeat(63) },
+      { ...whole, treesSha256: 7 },
+      "x",
+    ];
+    for (const claimRun of malformed) {
+      const path = await written({ ...draw(), claimRun });
+      await expect(readDraw(path)).rejects.toThrow(
+        `${path} holds a claimRun that names no reply id, or no sha256 of each of the build's`
+      );
+    }
+    const applied = await written({ ...draw(), neverDecideApplied: "no" });
+    await expect(readDraw(applied)).rejects.toThrow(
+      `${applied} holds a neverDecideApplied that is no boolean`
+    );
+    const reference = await written({ ...draw(), finalTest: { reference: 7, trees: [] } });
+    await expect(readDraw(reference)).rejects.toThrow(
+      `${reference} finalTest holds a reference that is no string`
+    );
+  });
+
+  test("stops the reading where neverDecideApplied, rule, roots and count disagree", async () => {
+    // One fact in four fields: what the draw says it applied, its rule, its roots, and how many
+    // roots it read. Each row is the applied flag, those three, and the tail of the refusal.
+    type Row = [boolean, DrawRule | null, BacklogRoots | null, number | null, string];
+    const disagreeing: Row[] = [
+      [false, RULE, ROOTS, 1, "a rule, backlog roots and a count of them read"],
+      [false, RULE, null, 1, "a rule, no backlog roots and a count of them read"],
+      [false, null, ROOTS, 1, "no rule, backlog roots and a count of them read"],
+      [true, null, ROOTS, 1, "no rule, backlog roots and a count of them read"],
+      [true, RULE, null, 1, "a rule, no backlog roots and a count of them read"],
+      [true, null, null, 1, "no rule, no backlog roots and a count of them read"],
+      [true, null, null, null, "no rule, no backlog roots and no count of them read"],
+      // Only the count disagrees: a ruled draw that records no count, and an unruled one that
+      // records one, a count of none read among them.
+      [true, RULE, ROOTS, null, "a rule, backlog roots and no count of them read"],
+      [false, null, null, 1, "no rule, no backlog roots and a count of them read"],
+      [false, null, null, 0, "no rule, no backlog roots and a count of them read"],
+    ];
+    for (const [applied, rule, roots, read, words] of disagreeing) {
+      const path = await written(
+        draw({
+          neverDecideApplied: applied,
+          rule,
+          backlogLegionRoots: roots,
+          backlogLegionRootsRead: read,
+        })
+      );
+      await expect(readDraw(path)).rejects.toThrow(CorpusError);
+      await expect(readDraw(path)).rejects.toThrow(
+        `${path} holds a neverDecideApplied of ${applied} beside ${words}`
+      );
+    }
+    // A rule or a count the record does not hold at all is none either.
+    const noRule = await written({ ...draw({ neverDecideApplied: true }), rule: undefined });
+    await expect(readDraw(noRule)).rejects.toThrow(
+      `${noRule} holds a neverDecideApplied of true beside no rule, backlog roots and a count of ` +
+        "them read"
+    );
+    const noCount = await written({
+      ...draw({ neverDecideApplied: true }),
+      backlogLegionRootsRead: undefined,
+    });
+    await expect(readDraw(noCount)).rejects.toThrow(
+      `${noCount} holds a neverDecideApplied of true beside a rule, backlog roots and no ` +
+        "count of them read"
+    );
+  });
+
+  test("reads a draw whose neverDecideApplied agrees with its rule, roots and count", async () => {
+    // A ruled draw records all three; one that read no root records a count of none.
+    expect(await readDraw(await written(draw({ neverDecideApplied: true })))).toEqual({
+      cut: "2026-10-01T00:00:00.000Z",
+      groupKey: "issue",
+      roots: ROOTS.issues,
+      neverDecideApplied: true,
+    });
+    const none = draw({
+      neverDecideApplied: true,
+      backlogLegionRootsRead: 0,
+      backlogLegionRoots: { ...ROOTS, issues: [] },
+    });
+    expect(await readDraw(await written(none))).toEqual({
+      cut: "2026-10-01T00:00:00.000Z",
+      groupKey: "issue",
+      roots: [],
+      neverDecideApplied: true,
+    });
+    // A claim draw records none of the three.
+    const unruled = draw({
+      neverDecideApplied: false,
+      rule: null,
+      backlogLegionRoots: null,
+      backlogLegionRootsRead: null,
+    });
+    expect(await readDraw(await written(unruled))).toEqual({
+      cut: "2026-10-01T00:00:00.000Z",
+      groupKey: "issue",
+      neverDecideApplied: false,
+    });
+    // A draw made before the field was recorded says nothing for the three to agree with.
+    const before = await readDraw(await written(draw({ rule: null })));
+    expect(before).not.toHaveProperty("neverDecideApplied");
+    expect(before?.roots).toEqual(ROOTS.issues);
+  });
 });
 
 describe("readSlices", () => {
@@ -268,6 +491,19 @@ describe("readSlices", () => {
       // A slice the file names no case under holds none, as a slice named empty does.
       reserve: [],
     });
+  });
+
+  test("reads the text a caller read itself as the file is read", async () => {
+    const text = JSON.stringify({ report: ["case-b"] });
+    expect(slicesOf(text, "/draw/slices.json")).toEqual({
+      fit: [],
+      report: ["case-b"],
+      anchor: [],
+      reserve: [],
+    });
+    expect(() => slicesOf("[]", "/draw/slices.json")).toThrow(
+      "/draw/slices.json is not a draw's slices"
+    );
   });
 });
 
@@ -348,10 +584,69 @@ describe("the facts a reader takes out of a draw", () => {
   });
 
   test("reads the roots a draw recorded by key", () => {
-    const facts = rootFactsOf(draw().backlogLegionRoots.issues);
+    const facts = rootFactsOf(ROOTS.issues);
     expect([...facts.keys()]).toEqual(["INFRA-1"]);
     expect(facts.get("INFRA-1")?.labels).toEqual(["legion"]);
     expect(rootFactsOf(undefined).size).toBe(0);
     expect(rootFactsOf([]).size).toBe(0);
+  });
+});
+
+/**
+ * The one comparison every stage of a claim run holds a record's chain to: the first field the
+ * names list in which the record read back is not this run's, worded as the tail of a refusal,
+ * and nothing where every such field is the same.
+ */
+describe("chainRefusal", () => {
+  const chain: BuildChain = {
+    id: "start-1",
+    snapshotSha256: "a".repeat(64),
+    corpusSha256: "b".repeat(64),
+    treesSha256: "c".repeat(64),
+  };
+  const other = "d".repeat(64);
+
+  test("finds nothing to refuse in a chain equal to this run's", () => {
+    expect(chainRefusal({ ...chain }, chain, BUILD_CHAIN_NAMES)).toBeNull();
+  });
+
+  test("names the first field that differs, in the order the chain's names list them", () => {
+    const names = Object.values(BUILD_CHAIN_NAMES);
+    expect(names).toEqual(["claim run", "snapshot.json", "corpus.jsonl", "trees.json"]);
+    const all = { id: "start-2", snapshotSha256: other, corpusSha256: other, treesSha256: other };
+    expect(chainRefusal(all, chain, BUILD_CHAIN_NAMES)).toBe(
+      "its claim run is start-2, and this run's is start-1"
+    );
+    expect(chainRefusal({ ...all, id: "start-1" }, chain, BUILD_CHAIN_NAMES)).toBe(
+      `its snapshot.json is ${other}, and this run's is ${chain.snapshotSha256}`
+    );
+    const corpus = { ...chain, corpusSha256: other, treesSha256: other };
+    expect(chainRefusal(corpus, chain, BUILD_CHAIN_NAMES)).toBe(
+      `its corpus.jsonl is ${other}, and this run's is ${chain.corpusSha256}`
+    );
+    expect(chainRefusal({ ...chain, treesSha256: other }, chain, BUILD_CHAIN_NAMES)).toBe(
+      `its trees.json is ${other}, and this run's is ${chain.treesSha256}`
+    );
+  });
+
+  test("reads a field the record does not hold, or holds as null, as of no record", () => {
+    expect(chainRefusal({ id: "start-1" }, chain, BUILD_CHAIN_NAMES)).toBe(
+      `its snapshot.json is of no record, and this run's is ${chain.snapshotSha256}`
+    );
+    expect(chainRefusal({ ...chain, treesSha256: null }, chain, BUILD_CHAIN_NAMES)).toBe(
+      `its trees.json is of no record, and this run's is ${chain.treesSha256}`
+    );
+    // What is no record at all holds no field, so its first field is of no record.
+    for (const found of [undefined, null, "start-1", [chain]]) {
+      expect(chainRefusal(found, chain, BUILD_CHAIN_NAMES)).toBe(
+        "its claim run is of no record, and this run's is start-1"
+      );
+    }
+  });
+
+  test("compares only the fields the names list", () => {
+    const files = { ...chain, snapshotSha256: other, corpusSha256: other, treesSha256: other };
+    expect(chainRefusal(files, chain, { id: "claim run" })).toBeNull();
+    expect(chainRefusal({ ...chain, read: "claim:other" }, chain, BUILD_CHAIN_NAMES)).toBeNull();
   });
 });

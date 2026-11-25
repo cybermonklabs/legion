@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/sjawhar/envoy/cipheraddr"
 )
 
 // controllerBrokerToken is the access token the stub broker mints: a value no file and no
@@ -142,7 +144,7 @@ func TestAControllerOnTheBrokerRouteIsHandedNoBearerPointer(t *testing.T) {
 		// What the client trades with, which it reads from this environment itself. The session
 		// name among them is the operator's own, for the `agent-secrets` the controller's bash
 		// runs: the controller's session acts as a session, so its Dispatch credential is traded
-		// under its own session id and under no variable (brokerclient.TradeSession).
+		// under its own session id and under no variable (cipherclient.TradeSession).
 		for name, want := range map[string]string{
 			"AGENT_SECRETS_URL":                broker.url,
 			"AGENT_SECRETS_MACHINE_IDENTITY":   "kubernetes",
@@ -276,6 +278,83 @@ func TestABrokerThatRefusesThisMachineRefusesTheStartBeforeTheMint(t *testing.T)
 	c.wantNoSecretRequest()
 	if c.launched() {
 		t.Error("Oh My Pi was launched for a controller that can write nothing to Dispatch")
+	}
+}
+
+// TestControllerStartPrintsNoPartOfTheBrokerURLCredential: AGENT_SECRETS_URL may carry a user
+// name, a password, a query or a fragment, and `legion controller start` names the broker it
+// traded at on stderr when the trade works and in its refusal when the broker refuses or does not
+// answer. Neither stream holds any part of such a credential: each names the address as
+// cipheraddr prints it, while the trade itself still goes to the address as configured, and an
+// address that carries none still prints as written.
+func TestControllerStartPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
+	const user, password, query, fragment = "demouser7q", "demopass9z-not-a-secret", "demoquery4m", "demofrag8w"
+	withUser := func(base string) string {
+		return strings.Replace(base, "://", "://"+user+":"+password+"@", 1)
+	}
+	withQuery := func(base string) string { return base + "/?sig=" + query + "#" + fragment }
+	for _, row := range []struct {
+		name string
+		// address is AGENT_SECRETS_URL, given the stub broker's own URL.
+		address func(stub string) string
+		// refusal is the stub broker's refusal, "" for one that mints.
+		refusal string
+		// code is the start's exit code; named is the text that names the broker before it.
+		code  int
+		named string
+		// trades is how many trades must reach the stub broker.
+		trades int64
+		// wordsPrint is whether the broker's own refusal words may reach stderr, which they
+		// may only beside an address the redactor prints whole.
+		wordsPrint bool
+	}{
+		{"a user name and password, the broker mints", withUser, "", 0, "is this machine's own: ", 1, false},
+		{"a query and a fragment, the broker mints", withQuery, "", 0, "is this machine's own: ", 1, false},
+		// The broker's own words print beside a clean address and not beside one carrying a
+		// credential: whoever answers for the broker can repeat that credential back in them.
+		{"all four, the broker refuses", func(stub string) string { return withQuery(withUser(stub)) },
+			"the fleet is listed with no session of its own", 1, "cannot be minted at ", 1, false},
+		{"none, the broker refuses", func(stub string) string { return stub },
+			"the fleet is listed with no session of its own", 1, "cannot be minted at ", 1, true},
+		{"all four, no broker answers", func(string) string { return withQuery(withUser("http://127.0.0.1:1")) },
+			"", 1, "cannot be minted at ", 0, false},
+		{"none, the broker mints", func(stub string) string { return stub }, "", 0, "is this machine's own: ", 1, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			d := newControllerDaemon(t)
+			c := newControllerStart(t, d, controllerOptions{dispatchBroker: true})
+			broker := newStubBroker(t, row.refusal)
+			c.provesAnIdentity(broker)
+			address := row.address(broker.url)
+			t.Setenv("AGENT_SECRETS_URL", address)
+
+			code, out, errb := c.run()
+			if code != row.code {
+				t.Fatalf("legion controller start = %d, want %d; stderr %q", code, row.code, errb)
+			}
+			if got := broker.trades.Load(); got != row.trades {
+				t.Errorf("the stub broker saw %d trades, want %d: the trade goes to the address as configured", got, row.trades)
+			}
+			shown := cipheraddr.New(address).String()
+			if address == broker.url && shown != address {
+				t.Fatalf("cipheraddr prints the clean address %q as %q", address, shown)
+			}
+			if !strings.Contains(errb, row.named+shown) {
+				t.Errorf("stderr %q does not name the broker as %q", errb, row.named+shown)
+			}
+			switch {
+			case row.refusal == "":
+			case row.wordsPrint && !strings.Contains(errb, row.refusal):
+				t.Errorf("stderr %q does not carry the broker's own words %q, which a clean address prints whole", errb, row.refusal)
+			case !row.wordsPrint && strings.Contains(errb, row.refusal):
+				t.Errorf("stderr %q carries the broker's own words %q beside an address that holds a credential", errb, row.refusal)
+			}
+			for _, part := range []string{user, password, query, fragment} {
+				if strings.Contains(out, part) || strings.Contains(errb, part) {
+					t.Errorf("legion controller start printed %q of AGENT_SECRETS_URL: stdout %q, stderr %q", part, out, errb)
+				}
+			}
+		})
 	}
 }
 

@@ -36,6 +36,7 @@ func rawJetStream(t *testing.T, url string) nats.JetStreamContext {
 // build starts, whether it names a replica count (the listener) or not (Dispatch): the older build
 // does not revert what the newer one set.
 func TestAnOwningClientLeavesAStreamANewerGenerationStampedUntouched(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
 	urls := cluster.URLs()
 	newer := nats.StreamConfig{
@@ -48,9 +49,7 @@ func TestAnOwningClientLeavesAStreamANewerGenerationStampedUntouched(t *testing.
 		Replicas:   3,
 		Metadata:   map[string]string{generationKey: strconv.Itoa(streamConfigGeneration + 1)},
 	}
-	if _, err := js.AddStream(&newer); err != nil {
-		t.Fatalf("the newer build creates the stream: %v", err)
-	}
+	cluster.CreateStream(t, newer)
 	for _, tc := range []struct {
 		name    string
 		options []ConnectOption
@@ -91,6 +90,7 @@ func TestAnOwningClientLeavesAStreamANewerGenerationStampedUntouched(t *testing.
 // which keeps a deployed subject overlapping none of its own (reconcileSubjects) and removes
 // none in the keeper (keptSubjects).
 func TestTheResumeLaneSurvivesTheBuildOfTheGenerationBefore(t *testing.T) {
+	t.Parallel()
 	resumeLane := SessionResumeSubjectPrefix + ">"
 	// Generation 2, named rather than derived from streamConfigGeneration: generation 3 is the
 	// one that added this lane, so the build without it is that row whatever the next bump does.
@@ -119,14 +119,14 @@ func TestTheResumeLaneSurvivesTheBuildOfTheGenerationBefore(t *testing.T) {
 		t.Fatalf("stream subjects = %v, want this build's stream to carry %s", stamped.Subjects, resumeLane)
 	}
 
-	subjects, err := ensureStreamWithConfig(js, &older, capsAnUnsetStream)
+	subjects, err := ensureStreamWithConfig(t.Context(), js, &older, capsAnUnsetStream, atStart)
 	if err != nil {
 		t.Fatalf("the build before this one starts: %v", err)
 	}
 	if !slices.Contains(subjects, resumeLane) {
 		t.Fatalf("the start of the build before this one leaves subjects %v, want %s among them", subjects, resumeLane)
 	}
-	if _, err := keepStream(js, &older, capsAnUnsetStream); err != nil {
+	if _, err := keepStream(t.Context(), js, &older, capsAnUnsetStream); err != nil {
 		t.Fatalf("the keeper of the build before this one: %v", err)
 	}
 	if got := deployedStream(t, js).Config.Subjects; !slices.Equal(got, stamped.Subjects) {
@@ -137,6 +137,7 @@ func TestTheResumeLaneSurvivesTheBuildOfTheGenerationBefore(t *testing.T) {
 // A stream without a generation (a build before generations) or with an older one is reconciled
 // and stamped with this build's generation.
 func TestAnOwningClientStampsItsGenerationOnAnUnstampedStream(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	js := rawJetStream(t, uri)
 	unstamped := *streamCfg
@@ -157,6 +158,7 @@ func TestAnOwningClientStampsItsGenerationOnAnUnstampedStream(t *testing.T) {
 // A stream deleted while an owning client runs is created again when the client reconnects, so a
 // stream lost while a process runs does not stay lost until the process restarts.
 func TestAStreamDeletedWhileTheClientRunsIsRecreatedOnItsReconnect(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	client, err := ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -203,6 +205,7 @@ func TestAStreamDeletedWhileTheClientRunsIsRecreatedOnItsReconnect(t *testing.T)
 // a client that owns the stream and by one that does not: the stream keeps one copy and reports
 // the repeat a duplicate.
 func TestATopicOnlyTheDeployedStreamCapturesIsPublishedThroughJetStream(t *testing.T) {
+	t.Parallel()
 	const topic = "notifications.x.y"
 	if StreamCaptures(topic) {
 		t.Fatalf("this build compiles a subject capturing %s; the test needs one it does not", topic)
@@ -269,6 +272,7 @@ func TestATopicOnlyTheDeployedStreamCapturesIsPublishedThroughJetStream(t *testi
 // subjects again every streamSubjectsRefresh, whether it owns the stream or not, and then publishes
 // a topic under the new subject through JetStream with its MsgId.
 func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
+	t.Parallel()
 	const topic = "notifications.x.y"
 	for _, tc := range []struct {
 		name    string
@@ -286,7 +290,7 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 			if _, err := js.AddStream(&current); err != nil {
 				t.Fatalf("create the stream: %v", err)
 			}
-			client, err := tc.connect([]string{uri}, withStreamSubjectsRefresh(50*time.Millisecond))
+			client, err := tc.connect([]string{uri}, WithStreamSubjectsRefresh(50*time.Millisecond))
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
@@ -336,6 +340,7 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 // topic under a subject only a newer build added then takes JetStream at once, without waiting a
 // streamSubjectsRefresh.
 func TestABackgroundClientReadsTheDeployedSubjectsAtItsFirstConnection(t *testing.T) {
+	t.Parallel()
 	const topic = "notifications.x.y"
 	for _, tc := range []struct {
 		name    string
@@ -356,7 +361,7 @@ func TestABackgroundClientReadsTheDeployedSubjectsAtItsFirstConnection(t *testin
 			}
 			srv.Stop(t)
 
-			client, err := tc.connect([]string{uri}, WithConnectInBackground(), withStreamSubjectsRefresh(time.Hour))
+			client, err := tc.connect([]string{uri}, WithConnectInBackground(), WithStreamSubjectsRefresh(time.Hour))
 			if err != nil {
 				t.Fatalf("connect while the server is down: %v", err)
 			}

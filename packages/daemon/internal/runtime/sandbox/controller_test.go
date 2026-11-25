@@ -127,9 +127,10 @@ func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
 	want := []corev1.KeyToPath{
 		{Key: GitHubHostsKey("acme"), Path: "acme/" + ghconfig.HostsFile}, {Key: GitHubConfigKey("acme"), Path: "acme/" + ghconfig.ConfigFile},
 		{Key: GitHubHostsKey("sjawhar"), Path: "sjawhar/" + ghconfig.HostsFile}, {Key: GitHubConfigKey("sjawhar"), Path: "sjawhar/" + ghconfig.ConfigFile},
+		{Key: GitHubPairsKey, Path: ghconfig.PairsFile},
 	}
 	if gh == nil || gh.SecretName != roleSecretName(s.Name, claim.RoleController) || !slices.Equal(gh.Items, want) || gh.DefaultMode == nil || *gh.DefaultMode != 0o440 {
-		t.Errorf("the controller's gh volume projects %+v, want %s's two gh files of each owner as <owner>/hosts.yml and <owner>/config.yml, read-only",
+		t.Errorf("the controller's gh volume projects %+v, want %s's two gh files of each owner as <owner>/hosts.yml and <owner>/config.yml, the bundle's pairs file in the root, read-only",
 			gh, roleSecretName(s.Name, claim.RoleController))
 	}
 	if mount := mountHolding(launcher, GHConfigDir); mount == nil || mount.Name != roleVolume(ghVolume, claim.RoleController) || mount.MountPath != GHConfigDir || !mount.ReadOnly {
@@ -160,8 +161,9 @@ func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
 // where its gh reads its own credential, how it reaches the secrets broker, like a workflow role's,
 // and the project's Slack channels, and nothing of a tree, an issue or a workspace: of the variables
 // the runtime owns (runtimeOwned), it is told exactly those every agent is told, its own marker, its
-// gh files, the broker's and its channels, so a variable the runtime comes to tell any agent fails
-// here until it is decided for the controller.
+// gh files, the broker's and its channels, and, since it resumes its recorded session, what holds
+// it to that session (OMP_SESSION_EXCLUSIVE), so a variable the runtime comes to tell any agent
+// fails here until it is decided for the controller.
 func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.T) {
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
@@ -183,7 +185,7 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 		"GH_CONFIG_DIR": GHConfigDir + "/sjawhar", "GH_TOKEN": "", "GITHUB_TOKEN": "", "GH_HOST": "",
 		"LEGION_GH_OWNERS_DIR": GHConfigDir, "LEGION_GH_PATH": opts.Tools.GH,
 		"AGENT_SECRETS_URL": opts.AgentSecrets.URL, "AGENT_SECRETS_KEY_DIR": AgentSecretsKeyDir,
-		"LEGION_SLACK_CHANNELS": "C00000000,G00000001",
+		"LEGION_SLACK_CHANNELS": "C00000000,G00000001", "OMP_SESSION_EXCLUSIVE": "1",
 	} {
 		if env[name] != want {
 			t.Errorf("%s = %q, want %q", name, env[name], want)
@@ -200,10 +202,12 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 		"AGENT_SECRETS_KEY_DIR", "AGENT_SECRETS_URL", "BUN_INSTALL_CACHE_DIR", "DISPATCH_TOKEN_FILE", "DISPATCH_URL",
 		"ENVOY_NATS_URL", "ENVOY_URL", "GH_CONFIG_DIR", "GH_HOST", "GH_TOKEN",
 		"GITHUB_TOKEN", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_KEY_3", "GIT_CONFIG_KEY_4",
-		"GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2", "GIT_CONFIG_VALUE_3", "GIT_CONFIG_VALUE_4", "GIT_TERMINAL_PROMPT", "GOCACHE", "GOMODCACHE",
+		"GIT_CONFIG_KEY_5", "GIT_CONFIG_KEY_6", "GIT_CONFIG_KEY_7", "GIT_CONFIG_KEY_8",
+		"GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2", "GIT_CONFIG_VALUE_3", "GIT_CONFIG_VALUE_4",
+		"GIT_CONFIG_VALUE_5", "GIT_CONFIG_VALUE_6", "GIT_CONFIG_VALUE_7", "GIT_CONFIG_VALUE_8", "GIT_TERMINAL_PROMPT", "GOCACHE", "GOMODCACHE",
 		"LEGION_BOOT_TOKEN_FILE", "LEGION_CONTROLLER", "LEGION_DAEMON_URL",
-		"LEGION_GENERATION", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "LEGION_PROJECT", "LEGION_ROLE", "LEGION_SLACK_CHANNELS", "LEGION_STATE_DIR",
-		"OMP_SESSION_SQL_DSN_FILE", "OMP_SESSION_STORAGE", "PATH", "PI_SHELL_PREFIX", "POD_UID", "PUBLIC_LEAK_CHECK", "TMPDIR",
+		"LEGION_GENERATION", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "LEGION_LEAK_CHECKER_MANIFEST_SHA256", "LEGION_PROJECT", "LEGION_ROLE", "LEGION_SLACK_CHANNELS", "LEGION_STATE_DIR",
+		"OMP_SESSION_EXCLUSIVE", "OMP_SESSION_SQL_DSN_FILE", "OMP_SESSION_STORAGE", "PATH", "PI_SHELL_PREFIX", "POD_UID", "PUBLIC_LEAK_CHECK", "TMPDIR",
 		"XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
 	}; !slices.Equal(told, want) {
 		t.Errorf("the controller is told the runtime's variables %v, want exactly %v", told, want)
@@ -243,8 +247,8 @@ func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
 	if secret := g.secret(secretName(name)); secret != nil {
 		t.Errorf("the controller's launch wrote the provisioning Secret %s: %v", secretName(name), secret.Data)
 	}
-	if secret := g.secret(roleSecretName(name, claim.RoleController)); secret == nil || len(secret.Data) != 2+2*len(staticDirs) || len(secret.Data[LauncherTokenFile]) == 0 {
-		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the default and the review App's gh files of each owner, and nothing else", secret)
+	if secret := g.secret(roleSecretName(name, claim.RoleController)); secret == nil || len(secret.Data) != 3+2*len(staticDirs) || len(secret.Data[LauncherTokenFile]) == 0 {
+		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the default, the bundle's renames and the review App's gh files of each owner, and nothing else", secret)
 	}
 	for _, role := range claim.Roles {
 		if g.secret(roleSecretName(name, role)) != nil {
@@ -277,8 +281,8 @@ func TestAControllerLaunchFailsWhenItsCredentialMintRefuses(t *testing.T) {
 	}
 }
 
-// A project whose repositories have no GitHub owner to mint for (runtime.ErrNoGitHubOwner: every mapped
-// repository lacks an App) still runs its controller, with gh acting as nobody, as `legion
+// A project whose repositories have no GitHub owner to mint for (runtime.ErrNoGitHubOwner: its
+// App installed on no account) still runs its controller, with gh acting as nobody, as `legion
 // controller start` does there: the launch succeeds, its role Secret holds the launcher token and
 // an empty default owner and no gh files, its gh volume is an empty directory rather than a
 // projection of the Secret (a projection with no items would project every key, the launcher
@@ -296,8 +300,8 @@ func TestAControllerWithNoOwnerRunsWithAnEmptyGhDirectory(t *testing.T) {
 	loc := g.spawn(spec)
 	name := SandboxName(controllerToken)
 	secret := g.secret(roleSecretName(name, claim.RoleController))
-	if secret == nil || len(secret.Data) != 2 || len(secret.Data[LauncherTokenFile]) == 0 {
-		t.Fatalf("the controller's role Secret holds %+v, want the launcher token and the empty default alone", secret)
+	if secret == nil || len(secret.Data) != 3 || len(secret.Data[LauncherTokenFile]) == 0 {
+		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the empty default and the empty renames alone", secret)
 	}
 	if def, ok := secret.Data[GitHubDefaultKey]; !ok || len(def) != 0 {
 		t.Fatalf("the controller's Secret records default %q (present: %t), want an empty one", def, ok)
@@ -467,6 +471,33 @@ func TestTheLauncherResolverAcceptsTheControllersLauncherOnItsOwnPodOnly(t *test
 			edit(&hello)
 			if handler, _, reason := accept(hello); handler != nil || reason == "" {
 				t.Fatalf("accepted %+v (reason %q)", hello, reason)
+			}
+		})
+	}
+}
+
+// The controller's pod takes no cache trimmer, however the deployment configured one: its
+// launcher's single-role form returns before the background block that would run one, and the
+// volume it works on is its own Sandbox's, no issue's cache (Options.VolumeTrim).
+func TestTheControllersAcceptedLauncherIsHandedNoTrimmerSettings(t *testing.T) {
+	for label, configured := range map[string]*shimwire.LauncherVolumeTrim{
+		"a deployment that runs a trimmer": {HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60},
+		"a deployment that runs none":      nil,
+	} {
+		t.Run(label, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(func(o *Options) { o.VolumeTrim = configured }))
+			loc := g.spawn(controllerSpec(t))
+			name := loc.Sandbox.Name
+			hello := shimwire.LauncherHello{
+				Token:   string(g.secret(roleSecretName(name, claim.RoleController)).Data[LauncherTokenFile]),
+				Sandbox: name, Role: string(claim.RoleController), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1",
+			}
+			handler, ack, reason := g.r.LauncherResolver()(hello)
+			if handler == nil {
+				t.Fatalf("the controller's own launcher was refused: %s", reason)
+			}
+			if ack.VolumeTrim != nil {
+				t.Fatalf("the controller's launcher was handed %+v, want none", *ack.VolumeTrim)
 			}
 		})
 	}

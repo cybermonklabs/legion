@@ -1,10 +1,9 @@
-import { hashKey, type MutationKey, useQuery } from "@tanstack/react-query";
+import { type MutationKey, useQuery } from "@tanstack/react-query";
 import {
-  type ClipboardEvent,
-  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  type Ref,
   type SyntheticEvent,
   useCallback,
   useEffect,
@@ -16,7 +15,6 @@ import {
 } from "react";
 
 import {
-  type ArtifactOwner,
   api,
   apiErrorMessage,
   isAnchorMissing,
@@ -26,7 +24,6 @@ import {
 import { issueCollaboratorsQuery } from "../../api/queries";
 import type {
   Agent,
-  AskOption,
   AskUrgency,
   IssueCollaboratorAgent,
   IssueCollaboratorLegionAgent,
@@ -69,10 +66,11 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { appendToDraft, DraftUploadStatus } from "../artifacts/ArtifactUpload";
 import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
 import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
+import { postDeletion } from "../refs/post-marks";
 import { ReferencePicker } from "../refs/ReferencePicker";
 import { composerReferences } from "../refs/routes";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -84,16 +82,32 @@ import {
   type TextEditRange,
   textareaValue,
 } from "./block-spans";
-import type {
-  AcceptedMention,
-  AnchorRefusal,
-  ComposerAnchor,
-  ComposerKind,
-  ComposerOwner,
-  ReplyTarget,
+import {
+  type AskOptionDraft,
+  type Draft,
+  emptyAskOption,
+  mentionDisplay,
+  replyPrefill,
+  seededDraft,
+  submittedAskOptions,
+} from "./composer-draft";
+import {
+  type AcceptedMention,
+  type AnchorRefusal,
+  type ComposerAnchor,
+  type ComposerKind,
+  type ComposerOwner,
+  type DraftIntake,
+  hasUnsavedInput,
+  type ListedReplies,
+  type ReplyListing,
+  type ReplyParent,
+  type ReplyTarget,
 } from "./composer-model";
-import { MODE_LABELS, plainDelivery } from "./delivery";
+import { deliveryModesOf, MODE_LABELS, noDeliveryReasons, plainDelivery } from "./delivery";
 import type { HeldSend } from "./held-sends";
+import { KeptDraftOffers } from "./KeptDraftOffers";
+import { keptAwayLine } from "./KeptReply";
 import { ReplyQuote } from "./ReplyQuote";
 import {
   carriedIdsOf,
@@ -104,21 +118,17 @@ import {
   mentionText,
   requestFor,
   type SaveCommentEdit,
+  type SentDraft,
   type SentRequest,
   saveCommentEdit,
   survivingMentions,
   unedited,
 } from "./send-request";
+import { useUnsentDrafts } from "./unsent-drafts";
 import { useAgents } from "./useAgents";
 import { useComposerSend } from "./useComposerSend";
-
-/** A draft as the composer holds it: the text, the mentions accepted in it, and, when it is a
- *  suggestion, its replacement. Mentions are offsets into that exact text. */
-interface Draft {
-  readonly body: string;
-  readonly mentions: readonly AcceptedMention[];
-  readonly replacement?: string;
-}
+import { useDraftHomes } from "./useDraftHomes";
+import { composerNameOf, mountDraft, type OfferedDraft, useKeptDrafts } from "./useKeptDrafts";
 
 interface MentionOption {
   readonly capabilities: readonly string[];
@@ -137,36 +147,6 @@ interface MentionOption {
   /** The text the mention inserts (`@Title`) and the option's accessible name: a role's name, or
    *  the session's name as `useAgentText` gives it. */
   readonly title: string;
-}
-
-interface AskOptionDraft {
-  description: string;
-  id: number;
-  label: string;
-}
-
-/** How long after the last keystroke what the reader wrote over a refusal is written back to the
- *  held send, which is what a reload restores (`write-storage.ts`). Short enough that a reader who
- *  stops typing and reloads keeps their words, long enough that a burst of typing writes once. */
-const KEEP_DRAFT_MS = 300;
-
-let nextAskOptionId = 0;
-
-function emptyAskOption(): AskOptionDraft {
-  nextAskOptionId += 1;
-  return { description: "", id: nextAskOptionId, label: "" };
-}
-
-function submittedAskOptions(options: readonly AskOptionDraft[]): AskOption[] {
-  const submitted: AskOption[] = [];
-  for (const option of options) {
-    const label = option.label.trim();
-    const description = option.description.trim();
-    if (label !== "") {
-      submitted.push(description === "" ? { label } : { description, label });
-    }
-  }
-  return submitted;
 }
 
 function roleOptions(
@@ -319,101 +299,6 @@ function mentionQuery(
   return { query: before.slice(at + 1), start: at };
 }
 
-function mentionDisplay(title: string, target: string): string {
-  const trimmed = title.trim();
-  if (trimmed !== "" && !/^(?:session|role):/i.test(trimmed) && !/[@\r\n]/.test(trimmed)) {
-    return trimmed;
-  }
-  return target.replace(":", " ");
-}
-
-/** The target a message in this channel already reaches: mentioning it says nothing. */
-function ownTarget(owner: ComposerOwner): string | null {
-  return owner.kind === "session" ? `session:${owner.sessionId}` : null;
-}
-
-/**
- * What a draft becomes under a channel's seed: the reader's prose with the records still in step
- * with it, and the channel's own mentions seeded in front of whatever is not already there. A
- * mount applies it to no draft at all; a host that changes the seed - an Agents row's issue pick,
- * or a reply that moves the message to another channel - has it applied to the live draft in
- * place, so the draft never parts from the composer, or from a send it has in flight.
- *
- * Three rules keep the text and the accepted records saying the same thing, because only the
- * records reach the wire (`survivingMentions` at send) while only the text reaches the reader:
- *
- * - A record counts only while its span is untouched (`survivingMentions`). A span the reader
- *   edited is their prose: the record goes, the text stays.
- * - The channel's own mention belongs to the channel. Entering one that seeds none - a direct
- *   message, which already reaches its session - takes the untouched record for that session out
- *   of the text with its separating space. Every other surviving record stays, so a trip back
- *   restores it.
- * - Seeding is by target, not by position: a mention this channel owes is added only when no
- *   surviving record already names it, wherever in the body that record sits.
- */
-function seededDraft(
-  seedMentions: readonly { readonly target: string; readonly title: string }[],
-  draft: Draft | undefined,
-  owner: ComposerOwner
-): { body: string; mentions: AcceptedMention[] } {
-  let body = draft?.body ?? "";
-  let records = survivingMentions(body, draft?.mentions ?? []);
-  const own = ownTarget(owner);
-  const addressed = own === null ? undefined : records.find((record) => record.target === own);
-  if (addressed !== undefined) {
-    const cut =
-      body.slice(addressed.end, addressed.end + 1) === " " ? addressed.end + 1 : addressed.end;
-    const width = cut - addressed.start;
-    body = body.slice(0, addressed.start) + body.slice(cut);
-    records = records
-      .filter((record) => record !== addressed)
-      .map((record) =>
-        record.start >= cut
-          ? { ...record, end: record.end - width, start: record.start - width }
-          : record
-      );
-  }
-  const owed = seedMentions.filter(
-    (mention) => !records.some((record) => record.target === mention.target)
-  );
-  let offset = 0;
-  const seeded = owed.map((mention) => {
-    const text = mentionDisplay(mention.title, mention.target);
-    const start = offset;
-    offset += mentionText(text).length;
-    const end = offset;
-    offset += 1;
-    return { end, start, target: mention.target, text };
-  });
-  const prefix = owed
-    .map((mention) => mentionText(mentionDisplay(mention.title, mention.target)))
-    .join(" ");
-  const shift = prefix === "" ? 0 : prefix.length + 1;
-  return {
-    body: [prefix, body].filter((part) => part !== "").join(" "),
-    mentions: [
-      ...seeded,
-      ...records.map((record) => ({
-        ...record,
-        end: record.end + shift,
-        start: record.start + shift,
-      })),
-    ],
-  };
-}
-
-export function hasUnsavedInput(
-  body: string,
-  replacement: string,
-  options: readonly Pick<AskOptionDraft, "description" | "label">[] = []
-): boolean {
-  return (
-    body.trim().length > 0 ||
-    replacement.trim().length > 0 ||
-    options.some((option) => option.label.trim().length > 0 || option.description.trim().length > 0)
-  );
-}
-
 /** Whether Send takes the draft now: nothing refuses it (`draftRefusal`, the one rule for what an
  *  empty draft is) and no save or upload it waits on is in flight. */
 export function canSubmitComposer(
@@ -473,13 +358,25 @@ function refusalMessage(
     : `Couldn't send — ${apiErrorMessage(refusal, "network error")}`;
 }
 
+/** The option rows an ask's fields show for `ask`, as a draft keeps it: its options, or one empty
+ *  row where it has none. */
+function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
+  return ask === undefined || ask.options.length === 0
+    ? [emptyAskOption()]
+    : ask.options.map((option) => ({
+        ...emptyAskOption(),
+        description: option.description ?? "",
+        label: option.label,
+      }));
+}
+
 interface MentionComposerProps {
   readonly agents?: readonly Agent[];
   readonly anchor?: ComposerAnchor;
   /** What the host says in place of the server's words when it refused this send for a mark the
    *  document no longer holds (`ANCHOR_MISSING`) and could not write that mark again: the margin's
-   *  message, kept with the mark it answers, since the composer stays mounted when a newer compose
-   *  replaces the anchor. */
+   *  message, kept with the mark it answers, since the margin holds one such message for every
+   *  compose and a kind switch moves this composer to another mark, which it says nothing about. */
   readonly anchorRefusal?: AnchorRefusal;
   /** Focuses the field once, on the first render this is true. A host that keeps the composer
    *  mounted out of sight - the margin's, under its collapsed sheet, its rail or the Pinned tab -
@@ -501,11 +398,23 @@ interface MentionComposerProps {
    *  nothing of its own to show renders neither. */
   readonly frame?: string;
   readonly edit?: { readonly body: string; readonly id: string };
+  /** Where the host hands this composer a draft the reader carried from another one with that
+   *  composer's own control: the phone thread composer's Cancel reply, whose draft goes to the
+   *  docked composer at the issue's own address (`usePhoneThread`'s `cancelReply`). */
+  readonly intake?: Ref<DraftIntake>;
   /** The channel's own mentions: seeded at mount, again by every reset (a send, Discard), and
    *  into the live draft whenever they change (`seededDraft`). */
   readonly seedMentions?: readonly { readonly target: string; readonly title: string }[];
   readonly inline?: boolean;
   readonly kind?: ComposerKind;
+  /** Which replies the host lists now, and whether each one's author deleted it
+   *  (`ListedReplies`): a draft the composer keeps for another reply is said to be kept with that
+   *  reply's Reply as its way back only while the host lists that reply standing, and is drawn
+   *  itself beside the field once the host lists it no longer or lists it deleted, with Discard
+   *  my draft, and Use it here at the owner's own address (`KeptDraftOffers`). A refusal held
+   *  for a reply the composer has left says so too, in place of naming that reply's Reply
+   *  (`useKeptDrafts`' `writtenElsewhere`). */
+  readonly listed?: ListedReplies;
   /** Names the send and the target it is held for (`useComposerSend`): a composer that mounts
    *  under a name whose send is out, or was refused, shows that send and its draft, and a host
    *  can hold its own controls - a Reply, an issue picker - while it is out (`useSending`), from
@@ -513,21 +422,52 @@ interface MentionComposerProps {
    *  starts (`SentRequest`), whatever those controls do. A composer with none names its sends
    *  after its own mount. */
   readonly mutationKey?: MutationKey;
-  /** Ends the reply. An inline reply's Cancel reply also drops its draft, and a refusal with it,
-   *  as the thread it answers closes: the reply composer that mounts when the thread opens again
-   *  would otherwise show it. */
-  readonly onCancelReply?: () => void;
+  /** What the host says in the composer, as the composer says where an upload went, drawn as the
+   *  host draws it: the Conversation's note that a phone thread reply the reader cancelled over
+   *  this composer's own draft is kept, and how to go on with it, or that reply itself once its
+   *  comment is no longer listed, or is deleted (`usePhoneThread`'s `parked`). */
+  readonly notice?: ReactNode;
+  /** Ends the reply, handed the draft the field holds as the reader ends it. Cancel reply drops
+   *  nothing itself: an inline reply's draft stays under its send name - typed, as a standing
+   *  box's does, and refused or stopped, in its held send - so the reply composer that mounts
+   *  when the thread opens again shows it, and the host decides where the reader goes. */
+  readonly onCancelReply?: (draft: SentDraft) => void;
   readonly onClose: () => void;
   readonly onSent: () => void;
   readonly owner: ComposerOwner;
+  /** How many times the reader has moved this composer's address with a control its host draws
+   *  for it - an Agents row's issue picker - counted by the host in the press that makes the
+   *  move. Such a move is the reader's own, as Cancel reply is, so the draft goes with it, and
+   *  its refusal and the files pasted into it with the draft. A change of `owner` or `replyTo`
+   *  that comes without a count is the host's move - another row, another thread, a Reply on a
+   *  message - and what the composer holds stays with the address it was made for. */
+  readonly ownMoves?: number;
   readonly replyTo?: ReplyTarget | null;
+  /** The post `replyTo` quotes, as the host's read of it stands now (`ReplyParent`), whose
+   *  deletion and edit the quote marks. `replyTo` is a copy taken when Reply was pressed, which a
+   *  held send and a kept draft keep in the tab across a reload (`held-sends.ts`,
+   *  `unsent-drafts.ts`), so the quote gives its words only while this is here: absent - where
+   *  the host's read has not answered, failed, or holds no such post - the quote names the
+   *  author alone, and never gives the words of a post deleted since. */
+  readonly replyParent?: ReplyParent;
   readonly saveEdit?: SaveCommentEdit;
   /** The reply target is this box's own standing address rather than a Reply the reader
    *  pressed: the Inbox reading column's thread box, which is the thread's permanent reply and
    *  is remounted whenever the column follows the selection onto another row. Taking a target
    *  normally takes the focus, so the reader can write at once; a standing box takes neither,
-   *  since the reader's place is the list the column follows and the next `j` belongs to it. */
+   *  since the reader's place is the list the column follows and the next `j` belongs to it. What
+   *  the reader types into a standing box and does not send is its thread's, kept under the
+   *  box's send name (`unsent-drafts.ts`), so the box drawn when the column comes back to the
+   *  thread shows it again, and a newer message the host moves the box onto leaves it in the
+   *  field rather than prefilling over it. Escape in its field leaves the draft there, since
+   *  nothing ends that reply. */
   readonly standing?: boolean;
+  /** The send of this composer's that the reader stopped, waiting aside since its host gave the
+   *  composer a newer address that carries nothing - the margin's compose at other words of the
+   *  document (`marginComposeKeptKey`) - as the host offers it with the presses that move it
+   *  (`OfferedDraft`): the composer offers it beside its own draft, saying it may have been
+   *  delivered, and Use my draft carries it here, still that send. */
+  readonly stoppedAside?: OfferedDraft;
   /** Shows the Comment / Suggest / Ask switch and hands each pick to the host, which answers
    *  through `kind` - a selected document mark is the only surface where the kind can change, and
    *  its mark has to change with it (the margin retypes it) - or returns, in the reader's words,
@@ -547,16 +487,22 @@ export function MentionComposer({
   edit,
   seedMentions = [],
   inline = false,
+  intake,
   kind = "comment",
+  listed,
   mutationKey,
+  notice,
   onCancelReply,
   onClose,
   onKindChange,
   onSent,
   owner,
+  ownMoves = 0,
+  replyParent,
   replyTo = null,
   saveEdit,
   standing = false,
+  stoppedAside,
 }: MentionComposerProps): ReactNode {
   // This composer's send, held by its target rather than by this mount (`useComposerSend`): a
   // composer that mounts where a send is out, or was refused, shows that send and its draft.
@@ -567,27 +513,23 @@ export function MentionComposer({
   });
   const registerComposer = useComposerRegistry();
   /** This composer's send by name, which is what the margin looks it up by. */
-  const composerName = mutationKey === undefined ? undefined : hashKey(mutationKey);
-  // Only the mount reads it, so it is computed once rather than on every keystroke: the held
-  // send's draft, or what the channel seeds.
-  const [initial] = useState(() => {
-    const held = outgoing.held?.draft;
-    if (held !== undefined) {
-      return {
-        ask: held.ask,
-        body: held.draft.body,
-        mentions: [...held.draft.mentions],
-        replacement: held.draft.replacement,
-      };
-    }
-    const seeded = seededDraft(seedMentions, undefined, owner);
-    return {
-      ask: undefined,
-      body: edit?.body ?? seeded.body,
-      mentions: seeded.mentions,
-      replacement: "",
-    };
-  });
+  const composerName = mutationKey === undefined ? undefined : composerNameOf(mutationKey);
+  const unsent = useUnsentDrafts();
+  // Only the mount reads it, so it is computed once rather than on every keystroke (`mountDraft`).
+  const [initial] = useState(() =>
+    mountDraft({
+      anchor,
+      composerName,
+      edit,
+      held: outgoing.held,
+      inline,
+      owner,
+      replyTo,
+      seedMentions,
+      standing,
+      unsent,
+    })
+  );
   const textarea = useRef<HTMLTextAreaElement>(null);
   const replacementTextarea = useRef<HTMLTextAreaElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -600,8 +542,13 @@ export function MentionComposer({
     { before: string; inputType: string; range: TextEditRange } | undefined
   >(undefined);
   const previousReply = useRef<string | undefined>(undefined);
-  // Whether this mount took a held send's draft, which the reply prefill must not replace.
-  const mountedHeld = useRef(outgoing.held !== undefined);
+  /** The body the last reply prefill put in the field, which a standing box tells the reader's
+   *  own words from. */
+  const prefilled = useRef<string | undefined>(undefined);
+  // Whether the field took a draft - a held send's, or one kept under the send name or for the
+  // address - which the reply prefill must not replace: at the mount, and as the composer
+  // arrives at an address that keeps one (`shown` in `useKeptDrafts`).
+  const mountedHeld = useRef(initial.taken);
   const [body, setBody] = useState(initial.body);
   const [replacement, setReplacement] = useState(initial.replacement);
   const [mentions, setMentions] = useState<AcceptedMention[]>(initial.mentions);
@@ -618,23 +565,23 @@ export function MentionComposer({
     setMentions([...draft.mentions]);
     setReplacement(draft.replacement ?? "");
   }, []);
-  const [askOptions, setAskOptions] = useState<AskOptionDraft[]>(() =>
-    initial.ask === undefined || initial.ask.options.length === 0
-      ? [emptyAskOption()]
-      : initial.ask.options.map((option) => ({
-          ...emptyAskOption(),
-          description: option.description ?? "",
-          label: option.label,
-        }))
-  );
+  const [askOptions, setAskOptions] = useState<AskOptionDraft[]>(() => askOptionRows(initial.ask));
   const [multiple, setMultiple] = useState(initial.ask?.multiple ?? false);
   const [urgency, setUrgency] = useState<AskUrgency>(initial.ask?.urgency ?? "med");
+  /** Puts an ask's options and settings in the fields that edit them, as a draft the reader takes
+   *  into the field keeps them (`AwayDraft.ask`), the way the mount puts a kept draft's there. */
+  const replaceAsk = useCallback((ask: SentRequest["ask"]) => {
+    setAskOptions(askOptionRows(ask));
+    setMultiple(ask.multiple);
+    setUrgency(ask.urgency);
+  }, []);
   const [referencePickerOpen, setReferencePickerOpen] = useState(false);
   const [autocomplete, setAutocomplete] = useState<{ query: string; start: number }>();
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   // Why the last kind pick was refused, kept with the mark it answered: the composer stays mounted
-  // when a newer compose replaces the anchor, and a refusal about the old mark says nothing about
-  // the new one. A quote anchor (a closed issue's document) has no mark.
+  // when its mark changes - the margin writes it again after the server refused the send for it -
+  // and a refusal about the old mark says nothing about the new one. A quote anchor (a closed
+  // issue's document) has no mark.
   const [kindRefusal, setKindRefusal] = useState<{ markId: string | undefined; text: string }>();
   const autocompleteOpen = autocomplete !== undefined;
   const live = useAgents(
@@ -713,14 +660,6 @@ export function MentionComposer({
     seededFor.current = seedKey;
     replaceDraft(seededDraft(seedMentions, { body, mentions }, owner));
   }, [seedKey]);
-  // An edit's body is the draft when the edit opens, and again whenever the comment it edits
-  // changes - never over the held draft a mount took.
-  const editedFrom = useRef(editBody);
-  useEffect(() => {
-    if (editBody === undefined || editedFrom.current === editBody) return;
-    editedFrom.current = editBody;
-    replaceDraft({ body: editBody, mentions: [] });
-  }, [editBody, replaceDraft]);
   // The edited comment's blocks, read when the edit opens and again whenever the comment changes,
   // then followed through every edit of the field, so Save carries each block's id. A read that
   // fails (an older server has no blocks route), or that answers the comment not indexed, leaves
@@ -765,8 +704,14 @@ export function MentionComposer({
   useEffect(() => {
     if (suppliedAgents === undefined && autocompleteOpen) void live.refetch();
   }, [autocompleteOpen, live.refetch, suppliedAgents]);
+  /** Whether a send of this composer's holds its draft: out, or refused. */
+  const holdsSend = outgoing.held !== undefined;
   useEffect(() => {
-    // A mount that took a held send's draft keeps it: the prefill is for a new reply.
+    // A mount that took a draft keeps it, and so does an arrival that put a kept draft in the
+    // field (`shown` in `useKeptDrafts`); while a send holds the field's draft - out, or refused -
+    // so does a reply the host starts then: the field is that send's draft, and a refusal's stays
+    // at the address it lives at when the host moves the composer (`elsewhere`), which the
+    // prefill of a new reply would write over. The prefill is for a new reply.
     const tookHeldDraft = mountedHeld.current;
     mountedHeld.current = false;
     if (replyTo === null) {
@@ -774,39 +719,34 @@ export function MentionComposer({
       return;
     }
     if (previousReply.current === replyTo.id) return;
+    const movedFrom = previousReply.current;
     previousReply.current = replyTo.id;
     // A standing box never takes the focus for its own target: nobody asked for it, and the
     // Inbox column mounts one for every row the reader steps onto.
     const takeFocus = () => {
       if (!standing) textarea.current?.focus();
     };
-    if (tookHeldDraft) {
+    if (tookHeldDraft || holdsSend) {
       takeFocus();
       return;
     }
-    const initial = replyTo.mentions ?? [];
-    const deduplicated = initial.filter(
-      (mention, index) =>
-        initial.findIndex((candidate) => candidate.target === mention.target) === index
-    );
-    const texts = deduplicated.map((mention) =>
-      mentionText(mentionDisplay(mention.title, mention.target))
-    );
-    const value = texts.join(" ");
-    let offset = 0;
-    replaceDraft({
-      body: value,
-      mentions: deduplicated.map((mention, index) => {
-        const text = mentionDisplay(mention.title, mention.target);
-        const start = offset;
-        offset += texts[index]?.length ?? 0;
-        const end = offset;
-        offset += 1;
-        return { end, start, target: mention.target, text };
-      }),
-    });
+    // A standing box's draft is its thread's (`unsentName` in `useKeptDrafts`), not one message's:
+    // a newer message the host moves the box onto leaves what the reader wrote in the field, where
+    // the prefill would write over it.
+    const written = previousBody.current;
+    if (
+      standing &&
+      movedFrom !== undefined &&
+      written.trim() !== "" &&
+      written !== prefilled.current
+    ) {
+      return;
+    }
+    const prefill = replyPrefill(replyTo);
+    prefilled.current = prefill.body;
+    replaceDraft(prefill);
     takeFocus();
-  }, [replaceDraft, replyTo, standing]);
+  }, [holdsSend, replaceDraft, replyTo, standing]);
 
   /** A send the server took, while this composer is mounted: the store has refreshed what it
    *  wrote. The draft is the composer's own, so it clears to what the channel it addresses now
@@ -820,52 +760,107 @@ export function MentionComposer({
   // The kind a closed issue refuses: a suggestion or an ask. Its composer only finishes a send of
   // its own.
   const refusedKind = closed && kind !== "comment";
-  // Closed to this kind or finishing, with no send out and no refusal to show: nothing of this
-  // composer is on screen.
-  const dormant = (refusedKind || finishing) && !sending && refusal === undefined;
-  /** Ends the reply; an inline reply's draft and refusal end with it (`onCancelReply`). */
+  /** How many times the reader has ended the reply here (Cancel reply, or Escape): a move of the
+   *  address with the composer's own control, which the draft goes with (`ownMoves`). */
+  const [cancels, setCancels] = useState(0);
+  /** Ends the reply, handing the host the draft as the field holds it. The draft stays where it
+   *  is kept - the field, the unsent draft under the send name, the held send - so nothing the
+   *  reader wrote goes with no word: the host moves the reader, and an own move carries the
+   *  draft's send with it (`ownMoves`). */
   const cancelReply = () => {
-    if (inline) {
-      clearDraft();
-      outgoing.discard();
-    }
-    onCancelReply?.();
+    keepNothing();
+    setCancels((count) => count + 1);
+    onCancelReply?.({ body, mentions, replacement });
   };
   // The Escape listener below reads it as it stands, so it is not re-bound each render for it.
   const cancelReplyNow = useRef(cancelReply);
   cancelReplyNow.current = cancelReply;
-  // What the reader wrote over a refusal goes back to the held send (`keep`, which a send still
-  // out ignores), so the composer that mounts next shows it - and so a reload does: a refusal's
-  // draft is the only copy of that message, and the entry it is kept in is what survives the
-  // page (`write-storage.ts`). It is written as this composer unmounts, a short wait after each
-  // keystroke, and as the page goes, which no unmount follows.
-  const keepDraft = useRef(() => {});
-  keepDraft.current = () =>
-    outgoing.keep({
-      ask: { multiple, options: submittedAskOptions(askOptions), urgency },
-      draft: { body, mentions, replacement },
+  /** An anchored composer's Close, and Escape once no suggestion list, picker or reply takes it:
+   *  over a draft the reader has not sent - typed, handed back by a refusal, or offered beside the
+   *  field (`offered`) - it raises `Discard draft?` rather than dropping what they wrote with
+   *  nothing said, and it closes at once over an empty field with nothing offered. */
+  const closeOrAsk = () => {
+    if (
+      (!hasUnsavedInput(body, replacement, askOptions) && offered === undefined) ||
+      confirmingDiscard
+    ) {
+      onClose();
+      return;
+    }
+    const active = document.activeElement;
+    lastFocusedField.current =
+      active instanceof HTMLElement && formRef.current?.contains(active) ? active : null;
+    setConfirmingDiscard(true);
+  };
+  // The Escape listener below reads it as it stands, as it reads `cancelReplyNow`, so it is not
+  // re-bound each render for it.
+  const closeOrAskNow = useRef(closeOrAsk);
+  closeOrAskNow.current = closeOrAsk;
+  /** Adds `texts` to the end of the field - the references of files that landed into the draft it
+   *  shows (`useDraftHomes`), or a reference the picker inserts - where the reader did not type
+   *  them, so their next edit is measured from here (`previousBody`). */
+  const appendToField = useCallback((texts: readonly string[]) => {
+    setBody((current) => {
+      const next = texts.reduce((text, added) => appendToDraft(text, added), current);
+      previousBody.current = next;
+      return next;
     });
-  useEffect(() => () => keepDraft.current(), []);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the draft's own fields are the trigger; the write reads them as they stand
-  useEffect(() => {
-    const write = window.setTimeout(() => keepDraft.current(), KEEP_DRAFT_MS);
-    return () => window.clearTimeout(write);
-  }, [askOptions, body, mentions, multiple, replacement, urgency]);
-  useEffect(() => {
-    const keepNow = () => keepDraft.current();
-    window.addEventListener("pagehide", keepNow);
-    return () => window.removeEventListener("pagehide", keepNow);
   }, []);
-  // The margin sends a refused margin compose again itself, once it has written the mark it is
-  // anchored to again (`reanchor` in margin-context.tsx), and that retry carries the draft the
-  // store holds. The writes above are a keystroke's wait behind what the reader has typed, so
-  // the margin asks for it first: this is what answers. A composer with no name of its own
-  // holds no send another surface can send again, so it registers nothing.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the name's hash is its identity; the key array itself is rebuilt by some hosts on every render
-  useEffect(() => {
-    if (mutationKey === undefined) return;
-    return registerComposer({ keepDraft: () => keepDraft.current(), mutationKey });
-  }, [composerName, registerComposer]);
+  const homes = useDraftHomes(owner, edit !== undefined, appendToField);
+  const { upload, uploadOwner } = homes;
+  /** The composer's own Discard as the latest render defines it (`discard`, below), which the
+   *  host's handle on the field runs (`DraftIntake.drop`). */
+  const discardNow = useRef(() => {});
+  /** How the host lists the comment or message `reply` answers (`ListedReplies`), so a kept
+   *  draft goes back by its Reply only while that post stands. */
+  const listingOf = (reply: ReplyTarget): ReplyListing =>
+    listed === undefined ? "standing" : (listed.get(reply.id) ?? "gone");
+  const {
+    awayTakes,
+    changed,
+    dropAway,
+    dropChanged,
+    dropOffered,
+    elsewhere,
+    forgetUnsent,
+    goneAway,
+    keepDraft,
+    keepNothing,
+    keptAway,
+    offered,
+    takeAway,
+    takeChanged,
+    takeOffered,
+  } = useKeptDrafts({
+    anchor,
+    composerName,
+    discard: discardNow,
+    edit,
+    field: { askOptions, body, mentions, multiple, replacement, urgency },
+    homes,
+    initial,
+    inline,
+    intake,
+    kind,
+    listingOf,
+    mountedHeld,
+    moves: ownMoves + cancels,
+    outgoing,
+    owner,
+    replaceAsk,
+    replaceDraft,
+    replyTo,
+    seedMentions,
+    standing,
+    stoppedAside,
+    unsent,
+  });
+  // Closed to this kind or finishing, with no send out, no refusal to show and no draft offered
+  // beside the field: nothing of this composer is on screen. A margin compose its closed issue
+  // refuses stays while it offers a draft (`useMarginSheet`), and shows that draft until the
+  // reader drops it.
+  const dormant =
+    (refusedKind || finishing) && !sending && refusal === undefined && offered === undefined;
   useEffect(() => {
     const form = formRef.current;
     if (form === null || dormant) return;
@@ -887,54 +882,38 @@ export function MentionComposer({
         return;
       }
       event.stopPropagation();
-      if (!hasUnsavedInput(body, replacement, askOptions) || confirmingDiscard) {
-        onClose();
-        return;
-      }
-      const active = document.activeElement;
-      lastFocusedField.current =
-        active instanceof HTMLElement && form.contains(active) ? active : null;
-      setConfirmingDiscard(true);
+      closeOrAskNow.current();
     };
     form.addEventListener("keydown", handleEscape);
     return () => form.removeEventListener("keydown", handleEscape);
   }, [
-    askOptions,
     autocomplete,
-    body,
-    confirmingDiscard,
     // A dormant composer renders no form; the one it renders when it wakes takes the listener.
     dormant,
-    onClose,
     referencePickerOpen,
-    replacement,
     replyTo,
   ]);
   // A composer fixed at the foot of the screen - the docked one below `sm`, or one a host's frame
-  // places there, as a phone thread's are - says how far up it reaches, so the shell's floating
-  // status sits above it rather than over its controls; a refusal's row grows it upward. One with
-  // neither lays out in the page.
+  // places there - is in the foot's page layer (`hooks/useFootInset.ts` lists the foot's layers
+  // and the elements in each), and the hook holds its band, its box on the screen, so the floats
+  // keep clear of its controls; a refusal's row grows it upward. One with neither lays out in the
+  // page.
   useFootInset(
     frame === undefined ? formRef : frameRef,
-    !dormant && (docked || frame !== undefined)
+    !dormant && (docked || frame !== undefined),
+    "page"
   );
-  const upload = useDraftUpload((text) => {
-    setBody((current) => {
-      const next = appendToDraft(current, text);
-      previousBody.current = next;
-      return next;
-    });
-  });
-  // Where a pasted or dropped file goes: the issue or the project document the draft is for, or,
-  // for a direct message, the agent's conversation. An edit takes no files.
-  const uploadOwner: ArtifactOwner | undefined =
-    edit !== undefined
-      ? undefined
-      : owner.kind === "issue"
-        ? { issue: owner.issueKey }
-        : owner.kind === "artifact"
-          ? { project: owner.project }
-          : { session: owner.sessionId };
+  // The margin sends a refused margin compose again itself, once it has written the mark it is
+  // anchored to again (`reanchor` in margin-context.tsx), and that retry carries the draft the
+  // store holds. The composer's own writes of it are a keystroke's wait behind what the reader has
+  // typed (`keepDraft` in `useKeptDrafts`), so the margin asks for it first: this is what answers.
+  // A composer with no name of its own holds no send another surface can send again, so it
+  // registers nothing.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the name's hash is its identity; the key array itself is rebuilt by some hosts on every render
+  useEffect(() => {
+    if (mutationKey === undefined) return;
+    return registerComposer({ keepDraft, mutationKey });
+  }, [composerName, registerComposer]);
 
   const addMention = (option: MentionOption) => {
     const current = textarea.current?.value ?? body;
@@ -1082,6 +1061,9 @@ export function MentionComposer({
       edit === undefined
         ? undefined
         : {
+            // The body the field started from, which an editor checks before it puts this edit
+            // back should it be refused (`changed`).
+            base: edit.body,
             // Worked out from the body the send carries, never from another copy of the text:
             // the field holds LF where a comment stored with CR LF had CR LF, and so do the
             // followed spans.
@@ -1153,21 +1135,38 @@ export function MentionComposer({
       ? deliveryPlan(body, inheritedDelivery)
       : { body, delivery: heldPicked };
   // A closed issue refuses a suggestion or an ask: the composer is only still here for a send of
-  // its own that is out, or its refusal, and Send says why it cannot go.
+  // its own that is out, or its refusal, and Send says why it cannot go. A post its author deleted
+  // takes no reply (`409 POST_DELETED`), and no host offers a Reply on one, so a composer answers
+  // one only where the delete came while it was open: Send says so, and Cancel reply takes the
+  // draft, and a refusal it holds, to the composer's own address, where it goes as a message that
+  // answers none. An edit waiting beside a newer body is the reader's to take back or drop before
+  // anything is saved, and so is a draft a margin compose kept for other words, before anything
+  // is sent.
+  const deletedReply =
+    replyTo === null || postDeletion(replyParent) === null
+      ? undefined
+      : `The ${replyTo.parentKind} this reply answers was deleted, so it takes no reply.` +
+        (standing ? "" : " Press Cancel reply to send it as a message that answers none.");
   const submitReason = refusedKind
     ? "This issue is closed. Reopen it to send."
-    : draftRefusal(kind, body, replacement, outbound);
+    : (deletedReply ??
+      elsewhere ??
+      (changed === undefined ? undefined : "Use your edit or discard it before you save.") ??
+      (offered === undefined ? undefined : "Use your draft or discard it before you send.") ??
+      draftRefusal(kind, body, replacement, outbound));
   const footId = useId();
   const canSubmit = canSubmitComposer(submitReason, sending, upload.pending);
   /** Sends the draft as it stands, its whole request frozen here (`sentRequest`), so nothing done
    *  after this call can change where it goes. Until the server answers, one fieldset holds every
    *  control that could change or discard the draft; the held send covers that hold in this task
-   *  before React can disable the fieldset. */
+   *  before React can disable the fieldset. From here on the held send keeps the draft, so the
+   *  unsent copy under the send name goes. */
   const send = () =>
     outgoing.send((refused) => {
       setConfirmingDiscard(false);
       setAutocomplete(undefined);
       setReferencePickerOpen(false);
+      forgetUnsent();
       return sentRequest(refused);
     });
   /** The hold on the draft from Send's own task on, before React can disable the fieldset: the
@@ -1182,16 +1181,23 @@ export function MentionComposer({
     event.preventDefault();
     if (canSubmit) send();
   };
-  /** Drops the draft and a refusal with it. Offered only while no send is out - the prompt never
-   *  shows then (`send` closes it, and Escape raises none), and a closed composer's Discard sits
-   *  beside a refusal - so the send it resets has its answer: the refusal goes with the draft it
-   *  was about. */
+  /** Drops the draft and a refusal with it, an edit waiting beside a newer body, which is the
+   *  draft the reader wrote there, and a draft offered beside the field, which Close and Escape
+   *  asked over as over the field's own (`closeOrAsk`). Offered only while no send is out - the
+   *  prompt never shows then (`send` closes it, and Escape raises none), and a closed composer's
+   *  Discard sits beside a refusal - so the send it resets has its answer: the refusal goes with
+   *  the draft it was about. A host whose `onClose` unmounts the composer draws no commit with the
+   *  empty field, so nothing is kept for this address as it goes (`keepNothing`). */
   const discard = () => {
+    keepNothing();
     clearDraft();
     outgoing.discard();
+    dropChanged();
+    dropOffered();
     setConfirmingDiscard(false);
     onClose();
   };
+  discardNow.current = discard;
   const bodyLabel =
     edit !== undefined
       ? "Edit comment"
@@ -1209,16 +1215,20 @@ export function MentionComposer({
       ? []
       : targetOptions.filter((option) => !option.capabilities.includes(outboundMode));
   const unsupported = unsupportedOptions.length > 0;
-  // Sessions that advertise no mode at all take no message in any mode: a session whose plugin
-  // cannot reach its conversation says so by advertising none.
+  // Sessions whose lists hold no delivery mode take no message in any mode: a session whose plugin
+  // cannot reach its conversation says so by advertising none, and one listing only capabilities
+  // that are no mode (`deliveryModesOf`) takes none either.
   const deaf =
-    unsupported && unsupportedOptions.every((option) => option.capabilities.length === 0);
+    unsupported &&
+    unsupportedOptions.every((option) => deliveryModesOf(option.capabilities).length === 0);
   // The plain mode, named whenever it is not Send, so the reader knows what their words become.
   const plainNotice =
     sendsPlain && plainMode !== "steer" && outboundMode === plainMode && outbound.body === body
       ? // A session that advertises no mode gets its own warning, not this line.
         targetOptions.filter(
-          (option) => option.capabilities.length > 0 && !option.capabilities.includes("steer")
+          (option) =>
+            deliveryModesOf(option.capabilities).length > 0 &&
+            !option.capabilities.includes("steer")
         )
       : [];
   // The prefixed modes a person could send in instead: only one every target refusing this mode
@@ -1252,7 +1262,7 @@ export function MentionComposer({
       {compact || anchor === undefined ? null : (
         <div className="flex items-center justify-between gap-3">
           <p className={`text-sm font-semibold ${textPrimaryOnSurface}`}>{title}</p>
-          <button className={`text-sm ${dismissButtonText}`} onClick={onClose} type="button">
+          <button className={`text-sm ${dismissButtonText}`} onClick={closeOrAsk} type="button">
             Close
           </button>
         </div>
@@ -1262,19 +1272,25 @@ export function MentionComposer({
           <ReplyQuote
             author={replyTo.actor}
             className="min-w-0 flex-1"
-            excerpt={replyTo.excerpt}
+            deleted={postDeletion(replyParent)}
+            edited={replyParent?.edited_at}
+            excerpt={replyParent === undefined ? "" : replyTo.excerpt}
             to={replyTo.to}
           />
           {/* The reply is part of the message's address, fixed once the send is out, so the
-              composer's control fieldset holds it with every other draft control. */}
-          <button
-            aria-label="Cancel reply"
-            className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-lg leading-none disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 ${textMutedOnSurfaceMuted}`}
-            onClick={cancelReply}
-            type="button"
-          >
-            ×
-          </button>
+              composer's control fieldset holds it with every other draft control. A standing
+              box's reply is the box's own address, which nothing ends, so it offers no Cancel
+              reply: the control would do nothing there, and the draft stays in the field. */}
+          {standing ? null : (
+            <button
+              aria-label="Cancel reply"
+              className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-lg leading-none disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 ${textMutedOnSurfaceMuted}`}
+              onClick={cancelReply}
+              type="button"
+            >
+              ×
+            </button>
+          )}
         </div>
       )}
       {compact || anchor === undefined ? null : (
@@ -1346,6 +1362,7 @@ export function MentionComposer({
               setConfirmingDiscard(false);
             }}
             onKeyDown={submitOnModifiedEnter}
+            readOnly={offered !== undefined}
             ref={replacementTextarea}
             value={replacement}
           />
@@ -1357,11 +1374,7 @@ export function MentionComposer({
           aria-label={bodyLabel}
           className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${inputClasses(true)} ${textPrimaryOnSurface}`}
           onChange={(event) => onBodyChange(event.target.value, event.target.selectionStart)}
-          onDrop={
-            uploadOwner === undefined
-              ? undefined
-              : (event: DragEvent<HTMLTextAreaElement>) => upload.drop(event, uploadOwner)
-          }
+          onDrop={homes.drop}
           onInput={
             inline
               ? (event: SyntheticEvent<HTMLTextAreaElement>) => {
@@ -1383,16 +1396,29 @@ export function MentionComposer({
             }
             submitOnModifiedEnter(event, { disabled: upload.pending > 0 });
           }}
-          onPaste={
-            uploadOwner === undefined
-              ? undefined
-              : (event: ClipboardEvent<HTMLTextAreaElement>) => upload.paste(event, uploadOwner)
-          }
+          onPaste={homes.paste}
+          readOnly={changed !== undefined || offered !== undefined}
           ref={bodyFieldRef}
           rows={1}
           value={body}
         />
       </label>
+      {/* A kind the closed issue refuses can send nothing, and a margin compose of that kind ends
+          once it offers nothing (`useMarginSheet`), so a draft taken into its field would go
+          with no word: it offers Discard my draft alone. */}
+      <KeptDraftOffers
+        changed={changed}
+        gone={goneAway}
+        goneTakes={awayTakes}
+        kind={kind}
+        offered={offered}
+        onDiscardChanged={discard}
+        onDropGone={dropAway}
+        onDropOffered={dropOffered}
+        onTakeChanged={takeChanged}
+        onTakeGone={takeAway}
+        onTakeOffered={refusedKind ? undefined : takeOffered}
+      />
       {activeMentions.length === 0 ? null : (
         <ul
           aria-label="Mention targets"
@@ -1461,8 +1487,7 @@ export function MentionComposer({
         <p className={`text-sm ${dangerText}`}>
           {unsupportedOptions.map((option) => option.title).join(" and ")}{" "}
           {unsupportedOptions.length > 1 ? "advertise" : "advertises"} no delivery mode, so sending
-          it records a failed attempt. A session advertises none while its plugin cannot reach its
-          conversation.
+          it records a failed attempt. {noDeliveryReasons(unsupportedOptions)}
         </p>
       ) : unsupported ? (
         <p className={`text-sm ${dangerText}`}>
@@ -1477,8 +1502,11 @@ export function MentionComposer({
                 .join(" or ")} instead.`}
         </p>
       ) : null}
+      {/* An ask's options and settings are its draft's as much as its question is, and taking an
+          offered draft puts its own back (`takeOffered`), so they wait with the read-only
+          question while the offer is out, and nothing the reader sets here is written over. */}
       {kind === "ask" ? (
-        <>
+        <fieldset className="min-w-0 space-y-3 border-0 p-0" disabled={offered !== undefined}>
           <fieldset>
             <legend className={`text-sm font-medium ${textSecondaryOnSurface}`}>Urgency</legend>
             <div className="mt-1 flex flex-wrap gap-1">
@@ -1558,7 +1586,7 @@ export function MentionComposer({
               </div>
             ))}
           </section>
-        </>
+        </fieldset>
       ) : null}
       {compact ? null : (
         <>
@@ -1586,11 +1614,7 @@ export function MentionComposer({
               issueKey={owner.issueKey}
               onClose={() => setReferencePickerOpen(false)}
               onSelect={(reference) => {
-                setBody((current) => {
-                  const next = appendToDraft(current, reference);
-                  previousBody.current = next;
-                  return next;
-                });
+                appendToField([reference]);
                 setReferencePickerOpen(false);
                 textarea.current?.focus();
               }}
@@ -1598,7 +1622,29 @@ export function MentionComposer({
           ) : null}
         </>
       )}
-      {uploadOwner === undefined ? null : <DraftUploadStatus upload={upload} />}
+      {uploadOwner === undefined ? null : (
+        // An upload refused for another owner is that owner's: its refusal shows here in words of
+        // its own, with no Retry (`pastedElsewhere`), and the status shows the rest.
+        <DraftUploadStatus showRefusal={homes.pastedElsewhere === undefined} upload={upload} />
+      )}
+      {homes.pastedElsewhere === undefined ? null : <QueryError message={homes.pastedElsewhere} />}
+      {homes.landedElsewhere.map(({ key, text }) => (
+        <p className={`text-sm ${textMutedOnSurfaceMuted}`} key={key} role="status">
+          {text}
+        </p>
+      ))}
+      {notice}
+      {/* A draft kept for another reply, or for none, while the composer answers this one: the
+          line says whose it is and the way back, so the host's move takes nothing with no word. */}
+      {keptAway.map((away) => (
+        <p
+          className={`text-sm ${textMutedOnSurfaceMuted}`}
+          key={away.replyTo?.id ?? ""}
+          role="status"
+        >
+          {keptAwayLine(away)}
+        </p>
+      ))}
       {refusal === undefined ? null : (
         <div className="flex flex-wrap items-center gap-3">
           <QueryError
@@ -1607,10 +1653,16 @@ export function MentionComposer({
             onRetry={canSubmit ? send : undefined}
             retrying={sending}
           />
-          {/* A kind the closed issue refuses takes no Retry, so the refusal's own way out is to
-              drop the draft it handed back, once the reader has it; a send the reader stopped
-              offers both ways. */}
-          {refusedKind || refusal instanceof SendStoppedError ? (
+          {/* A kind the closed issue refuses takes no Retry, and neither does a draft written for
+              another address than the composer shows, or a reply to a post deleted since, so the
+              refusal's own way out is to drop the draft it handed back, once the reader has it; a
+              send the reader stopped offers both ways, and so does an inline reply's refusal,
+              which its Cancel reply keeps for the thread rather than dropping. */}
+          {refusedKind ||
+          elsewhere !== undefined ||
+          deletedReply !== undefined ||
+          refusal instanceof SendStoppedError ||
+          inline ? (
             <button
               className={`text-sm font-medium underline ${dangerText}`}
               onClick={discard}

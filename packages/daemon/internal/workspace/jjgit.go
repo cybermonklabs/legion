@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -18,61 +17,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
-// The plumbing a release's two halves share: the shim's save of an issue workspace's unpushed work
-// (internal/shim) and the launcher's restore of it into the pod that replaces the released one
-// (internal/runtime/sandbox's launcher is the daemon's side; internal/launcher runs in the pod).
-// Both read the same jj workspace with the same git, so one copy of each answer keeps them from
-// drifting apart: a save that found the git directory one way and a restore that found it another
-// would put the work back somewhere the save never took it from.
-
-// GitDir is the git directory behind a jj workspace, read from jj's own files rather than from a
-// git that would search upward from wherever it was started: <workspace>/.jj/repo names the
-// repository (a directory in the repository's own workspace, a file holding its path in every
-// other), and <repo>/store/git_target names the git directory relative to <repo>/store. Each
-// caller wraps the error with the prefix its own component reports under.
-func GitDir(workspace string) (string, error) {
-	repo := filepath.Join(workspace, ".jj", "repo")
-	info, err := os.Stat(repo)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", repo, err)
-	}
-	if !info.IsDir() {
-		named, err := os.ReadFile(repo)
-		if err != nil {
-			return "", fmt.Errorf("read %s: %w", repo, err)
-		}
-		repo = absoluteUnder(filepath.Join(workspace, ".jj"), strings.TrimSpace(string(named)))
-	}
-	target, err := os.ReadFile(filepath.Join(repo, "store", "git_target"))
-	if err != nil {
-		return "", fmt.Errorf("read the workspace's git directory: %w", err)
-	}
-	return absoluteUnder(filepath.Join(repo, "store"), strings.TrimSpace(string(target))), nil
-}
-
-// absoluteUnder resolves path as jj writes it: absolute as it stands, relative to base otherwise.
-func absoluteUnder(base, path string) string {
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path)
-	}
-	return filepath.Clean(filepath.Join(base, path))
-}
-
-// RefUpdates is the `git update-ref --stdin` input that creates or deletes one temporary ref per
-// saved head, named prefix followed by the head's place in tips, in the order the heads were read.
-// verb is `create` or `delete`; a delete names no commit. The save and the restore each pass the
-// prefix their own refs live under, which is the only difference between them.
-func RefUpdates(verb, prefix string, tips []string) []byte {
-	var out strings.Builder
-	for index, tip := range tips {
-		out.WriteString(verb + " " + prefix + strconv.Itoa(index))
-		if verb == "create" {
-			out.WriteString(" " + tip)
-		}
-		out.WriteString("\n")
-	}
-	return []byte(out.String())
-}
+// The jj and git plumbing the shim runs over an issue workspace (internal/shim), the idle release's
+// read of the workspace's unpushed work among it: one runner, so every command of it stops the same
+// way at its budget's end and every failure names the stale git locks it hit.
 
 // OutputLines is out's non-empty lines, trimmed: what a jj or git command's output is read as,
 // and what a multi-line report is joined back from for a notice that must be one line.
@@ -86,22 +33,11 @@ func OutputLines(out string) []string {
 	return kept
 }
 
-// Starter starts cmd and answers done, which the caller calls once cmd.Wait has read cmd's exit,
-// and only when the start succeeded. The pod's launcher is its container's PID 1 and reaps every
-// exited child it does not hold, so it passes one that holds the child out of that reaper until
-// its own wait has read the exit (internal/launcher's pidGuard). nil starts cmd with cmd.Start.
-type Starter func(cmd *exec.Cmd) (done func(), err error)
-
-// startCommand is the Starter of a caller with no reaper to keep a child from: cmd.Start, and
-// nothing to do once the wait has read the exit.
-func startCommand(cmd *exec.Cmd) (func(), error) {
-	return func() {}, cmd.Start()
-}
-
 // RunCommand runs one jj or git command of the workspace within the caller's budget and returns
-// its trimmed standard output. start starts the command (Starter); nil is cmd.Start. dir is the
-// directory the command runs in, which is the workspace its -R or --git-dir names: jj searches
-// upward from the directory it runs in for the closest .jj and reads that repository's
+// its trimmed standard output. start starts the command (procgroup.Starter, never nil: the shim's
+// is procgroup.NoReaper).
+// dir is the directory the command runs in, which is the workspace its -R or --git-dir names: jj
+// searches upward from the directory it runs in for the closest .jj and reads that repository's
 // configuration before it applies -R, so a command left standing wherever the caller's process
 // stands would read a repository nobody named (docs/testing.md). stdin is fed to the command, and
 // nil is an empty standard input. started is when the caller's budget began, which a timeout's
@@ -110,14 +46,9 @@ func startCommand(cmd *exec.Cmd) (func(), error) {
 // exited on its own, procgroup.WaitDelay can hold the wait open past the budget for a child still
 // holding the command's pipes, and the command's own exit is then its answer. A command that
 // never started because an earlier one on the same budget spent it timed out too, while a command
-// the caller stopped by cancelling its context, rather than the budget ending it, reports its
-// exit, not a timeout.
-//
-// The save (internal/shim) and the restore (internal/launcher) both run here: they run the same
-// two tools over the same workspace, and a restore wedged on a stale index.lock or on a git
-// child that holds the pipe past the budget needs the same note and the same stop and wait the
-// save has.
-func RunCommand(ctx context.Context, start Starter, budget time.Duration, started time.Time, env []string, dir string, stdin []byte, args []string) (string, error) {
+// the caller stopped by cancelling its context, rather than the budget ending it, reports the
+// signal its stop sent (procgroup.Err), not a timeout.
+func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Duration, started time.Time, env []string, dir string, stdin []byte, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Env = env
 	cmd.Dir = dir
@@ -132,16 +63,9 @@ func RunCommand(ctx context.Context, start Starter, budget time.Duration, starte
 	// bound on the wait for a child that still holds the pipes once the command itself has gone
 	// (procgroup.Configure, which also answers whether that stop is what ended the command).
 	killed := procgroup.Configure(cmd)
-	if start == nil {
-		start = startCommand
-	}
-	// cmd.Run, with the start the caller chose. A start that failed leaves cmd.Process nil, as
-	// Run's own does, so a budget already spent before the start still reads as a timeout below.
-	done, err := start(cmd)
-	if err == nil {
-		err = cmd.Wait()
-		done()
-	}
+	// A start that failed leaves cmd.Process nil (procgroup.Run), so a budget already spent before
+	// the start still reads as a timeout below.
+	err := procgroup.Run(cmd, start)
 	command := strings.Join(args, " ")
 	// The budget ended the command only when that stop is what ended it (procgroup.Configure,
 	// never the deadline having passed by the time the wait returned) and the budget is what ended
@@ -151,15 +75,16 @@ func RunCommand(ctx context.Context, start Starter, budget time.Duration, starte
 	// inside the grace does.
 	timedOut := (killed() && errors.Is(ctx.Err(), context.DeadlineExceeded)) ||
 		(cmd.Process == nil && errors.Is(err, context.DeadlineExceeded))
-	if runErr := procgroup.Err(err); runErr != nil && !timedOut {
-		return "", fmt.Errorf("run %s: %w", command, runErr)
-	}
-	if !timedOut && cmd.ProcessState.ExitCode() == 0 {
+	runErr := procgroup.Err(err)
+	if runErr == nil && !timedOut && cmd.ProcessState.ExitCode() == 0 {
 		return strings.TrimSpace(stdout.String()), nil
 	}
 	report := strings.TrimSpace(stderr.String())
 	if note := StaleGitLockNote(report, time.Now()); note != "" {
 		report += "\n" + note
+	}
+	if runErr != nil && !timedOut {
+		return "", fmt.Errorf("run %s: %w", command, procgroup.Said(runErr, report))
 	}
 	if timedOut {
 		message := fmt.Sprintf("Command timed out after %s s (ran %.1f s): %s",
@@ -173,10 +98,17 @@ func RunCommand(ctx context.Context, start Starter, budget time.Duration, starte
 }
 
 // gitLockReports are the ways a git or jj failure names the lock file it could not take: jj's git
-// backend (gitoxide), and git's own lockfile API, which every git jj runs reports through.
+// backend (gitoxide), and git's own lockfile API, which every git jj runs reports through. Both
+// print the path between single quotes without escaping it, so a path may hold a quote of its own:
+// each pattern takes the path up to the first quote that the message's fixed text follows, never
+// up to the first quote alone. `.` stops at the end of the line, so an opening cut off at a line's
+// end takes nothing from the next line. That is a trade: `'([^']+)'`, which these replace, matched
+// a newline, so a lock whose path holds a newline got its note then and gets none now; a quote in a
+// path is far likelier than a newline, and only the advisory line is lost. pi-shared's
+// git-lock.ts reads the same paths.
 var gitLockReports = []*regexp.Regexp{
-	regexp.MustCompile(`The lockfile at '([^']+)' might need manual deletion`),
-	regexp.MustCompile(`Unable to create '([^']+)': File exists`),
+	regexp.MustCompile(`The lockfile at '(.+?)' might need manual deletion`),
+	regexp.MustCompile(`Unable to create '(.+?)': File exists`),
 }
 
 // staleGitLockNoteFile is the note's wording, held in a data file beside this one rather than in

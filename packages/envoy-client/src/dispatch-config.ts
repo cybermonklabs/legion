@@ -1,3 +1,5 @@
+import { BROKER_URL_VAR, IDENTITY_VAR, type ReadTrade } from "@legion/cipher-client/environment";
+import { isCleanUrl } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   type BearerSource,
@@ -27,6 +29,12 @@ import {
   type SectionOff,
 } from "./envoy-config";
 import { messageFor } from "./errors";
+import {
+  DPOP_KEY_FILE_VAR,
+  fileTokenCredential,
+  TOKEN_FILE_VAR,
+  type TokenFiles,
+} from "./file-token-credential";
 
 /** Default dispatch server base URL, matching the Go server's listen address. */
 const DEFAULT_SERVER_URL = "http://localhost:8766";
@@ -36,7 +44,14 @@ export type DispatchEnvironment = EnvoyConfigEnvironment & {
   readonly DISPATCH_TOKEN?: string | undefined;
   readonly DISPATCH_TOKEN_FILE?: string | undefined;
   readonly DISPATCH_TOKEN_BROKER?: string | undefined;
+  /** The broker route's read trade (`readTradeSetting`): `1` narrows Dispatch's credential to
+   *  reading, and the cut names the past time it reads at. */
+  readonly DISPATCH_TOKEN_BROKER_READ?: string | undefined;
+  readonly DISPATCH_TOKEN_BROKER_AS_OF?: string | undefined;
   readonly DISPATCH_PUBLIC_URL?: string | undefined;
+  /** The `dispatch` command's token files (`fileTokenCredential`), which no plugin reads. */
+  readonly DISPATCH_BROKER_TOKEN_FILE?: string | undefined;
+  readonly DISPATCH_BROKER_DPOP_KEY_FILE?: string | undefined;
 };
 
 /** Dispatch on: its URL and the credential every request presents, and `publicUrl`, Dispatch's
@@ -51,10 +66,18 @@ export interface ActiveDispatchConfig {
    * What every request presents: the bearer a variable or a file gave (`bearerCredential`), or
    * the access token the secrets broker traded this machine's identity for, or the identity of a
    * person signed in on it, presented under the `DPoP` scheme with a fresh proof of the token's
-   * key on each request (`brokerCredential`). One field, so no caller can present half of it.
+   * key on each request (`brokerCredential`), or, for the `dispatch` command, a broker token
+   * traded elsewhere that two files hold (`fileTokenCredential`). One field, so no caller can
+   * present half of it.
    */
   readonly credential: RequestCredential;
   readonly publicUrl?: string;
+  /**
+   * Set where the link base (`publicUrl`, else `url`) is not a plain http(s) URL, so every link
+   * the `dispatch` command prints is a `dispatch://` reference (`linkBaseOf`): the notice a
+   * session's start prints once, naming the setting that base came from and never its value.
+   */
+  readonly linkNotice?: string;
 }
 
 /** Dispatch on, or off with the one notice or error that says why (`SectionOff`). */
@@ -177,12 +200,26 @@ export function lostDispatchUrlNotice(
  * so, rather than presenting whatever bearer the box happens to hold. It is a deployment's word
  * about the session it launches, which `legion controller start` sets under `dispatch_token_broker`
  * so that the operator's own envoy.json cannot write Dispatch as the operator, and beside it
- * `PERSON_SIGNIN_TRADE=off` (`@legion/broker-client`'s `PERSON_TRADE_VAR`), so that route trades
+ * `PERSON_SIGNIN_TRADE=off` (`@legion/cipher-client`'s `PERSON_TRADE_VAR`), so that route trades
  * this machine's identity and never the operator's sign-in. `DISPATCH_TOKEN_BROKER` unset or blank
  * reads as off, and a value other than `1` written there is a mistake in the deployment, refused
  * rather than read as on or as off.
+ *
+ * `DISPATCH_TOKEN_BROKER_READ=1` narrows the trade of Dispatch's credential to reading, and
+ * `DISPATCH_TOKEN_BROKER_AS_OF` beside it names the cut, the past time it reads at
+ * (`readTradeSetting`). Either takes the broker route as `DISPATCH_TOKEN_BROKER=1` does and reads
+ * no bearer, so a shell that also holds `DISPATCH_TOKEN` never writes with it. They narrow
+ * Dispatch's trade alone (`brokerCredential`'s `read`): the Envoy listener and NATS refuse a
+ * read-only token and keep the session's shared client. A value either setting does not take
+ * turns Dispatch off with an error naming the setting.
+ *
+ * `DISPATCH_BROKER_TOKEN_FILE` and `DISPATCH_BROKER_DPOP_KEY_FILE` are checked before every other
+ * source (`tokenFilesTarget`): a broker token traded elsewhere and the key it is bound to, which
+ * only the `dispatch` command takes (`options.tokenFiles`). Every other caller that finds either
+ * set turns Dispatch off with an error that says so, rather than writing with another credential
+ * beside them.
  */
-export function dispatchSettings(
+export async function dispatchSettings(
   env: DispatchEnvironment,
   config: EnvoyConfig,
   options: {
@@ -190,21 +227,24 @@ export function dispatchSettings(
     /** The session a broker trade writes under (`BrokerSessionName`), for a caller that acts as
      * one. Nothing else reads it: a bearer route resolves the same whatever it says. */
     readonly session?: BrokerSessionName | undefined;
+    /** True for the `dispatch` command, the one caller that takes the token files. */
+    readonly tokenFiles?: boolean | undefined;
   } = {}
-): DispatchConfigResolution {
-  const target = dispatchTarget(env, config);
+): Promise<DispatchConfigResolution> {
+  const target = await dispatchTarget(env, config, options.tokenFiles === true);
   if (!target.enabled) return target;
-  const { url, source } = target;
+  const { url, urlSetting, source } = target;
   let credential: RequestCredential;
   try {
-    credential =
-      source.kind === "broker"
-        ? brokerCredential(env, options.session)
-        : bearerCredential(
-            source.kind === "variable"
-              ? source.token
-              : fileBearer(source, url, "DISPATCH", env, options.commands)
-          );
+    if (source.kind === "broker") credential = brokerCredential(env, options.session, source.read);
+    else if (source.kind === "files") credential = fileTokenCredential(source, url);
+    else {
+      credential = bearerCredential(
+        source.kind === "variable"
+          ? source.token
+          : await fileBearer(source, url, "DISPATCH", env, options.commands)
+      );
+    }
   } catch (error) {
     return offWithError(messageFor(error));
   }
@@ -216,30 +256,151 @@ export function dispatchSettings(
   if (publicUrl !== undefined && (publicParsed === undefined || publicParsed.port === "0")) {
     return offWithError("DISPATCH_PUBLIC_URL must be an http or https URL");
   }
+  const base = publicUrl === undefined ? url : withoutTrailingSlashes(publicUrl);
+  const linkNotice = linkNoticeFor(
+    base,
+    publicUrl === undefined ? urlSetting : "DISPATCH_PUBLIC_URL"
+  );
   return {
     enabled: true,
     url,
     credential,
     ...(publicUrl === undefined ? {} : { publicUrl: withoutTrailingSlashes(publicUrl) }),
+    ...(linkNotice === undefined ? {} : { linkNotice }),
   };
 }
 
 /**
- * The URL `dispatchSettings` resolves from `config` and the environment, without reading the token:
- * no `!` command runs, and no outcome of one is needed. Undefined when Dispatch is off before its
- * token is read: nothing names it, a file turns it off or cannot be used, `DISPATCH_URL` is no
+ * The URL `dispatchSettings` resolves from `config` and the environment, without the token's
+ * value: no `!` command runs, and no outcome of one is needed; a `DISPATCH_TOKEN_FILE` is read, as
+ * the resolution reads it, without holding the event loop. Undefined when Dispatch is off before
+ * its token is read: nothing names it, a file turns it off or cannot be used, `DISPATCH_URL` is no
  * http(s) URL, or no token source is configured. For a caller on a deadline that holds a list read
  * from one Dispatch URL and must know whether it is the configured one while the token's command
  * has not run in its process (`readSessionAnswers`' `dispatchUrl`).
  */
-export function dispatchUrl(env: DispatchEnvironment, config: EnvoyConfig): string | undefined {
-  const target = dispatchTarget(env, config);
+export async function dispatchUrl(
+  env: DispatchEnvironment,
+  config: EnvoyConfig
+): Promise<string | undefined> {
+  const target = await dispatchTarget(env, config);
   return target.enabled ? target.url : undefined;
 }
 
 /** Where Dispatch's credential comes from: a variable, a file with the server written beside it,
- * or the secrets broker, where this machine's identity, or a person's sign-in on it, is traded. */
-type TokenSource = Exclude<BearerSource, { readonly kind: "none" }> | { readonly kind: "broker" };
+ * the secrets broker, where this machine's identity, or a person's sign-in on it, is traded, with
+ * the read trade the read settings ask for, or the `dispatch` command's token files. */
+type TokenSource =
+  | Exclude<BearerSource, { readonly kind: "none" }>
+  | { readonly kind: "broker"; readonly read: ReadTrade | undefined }
+  | ({ readonly kind: "files" } & TokenFiles);
+
+/** Dispatch on, as `dispatchTarget` resolves it. */
+interface DispatchTarget {
+  readonly enabled: true;
+  readonly url: string;
+  readonly urlSetting: string;
+  readonly source: TokenSource;
+}
+
+/** The settings the token files refuse beside them: every other Dispatch credential, and every
+ *  setting that would trade at the secrets broker. */
+const BESIDE_TOKEN_FILES = [
+  "DISPATCH_TOKEN_BROKER",
+  "DISPATCH_TOKEN_BROKER_READ",
+  "DISPATCH_TOKEN_BROKER_AS_OF",
+  "DISPATCH_TOKEN",
+  "DISPATCH_TOKEN_FILE",
+  BROKER_URL_VAR,
+  IDENTITY_VAR,
+] as const;
+
+/** The clause the token files' refusals open with, naming each file whose setting `env` sets:
+ *  "X is set" or "X and Y are set", or undefined when neither is. A plugin's refusal
+ *  (`tokenFilesTarget` with `taken` false) and `dispatch login`'s (`loginCommand`) alike. */
+export function tokenFilesSet(env: DispatchEnvironment): string | undefined {
+  const set = [
+    ...(nonEmpty(env.DISPATCH_BROKER_TOKEN_FILE) === undefined ? [] : [TOKEN_FILE_VAR]),
+    ...(nonEmpty(env.DISPATCH_BROKER_DPOP_KEY_FILE) === undefined ? [] : [DPOP_KEY_FILE_VAR]),
+  ];
+  if (set.length === 0) return undefined;
+  return `${set.join(" and ")} ${set.length === 1 ? "is" : "are"} set`;
+}
+
+/** Each of `BESIDE_TOKEN_FILES` that `env` sets, as the token files' refusal names it: a Dispatch
+ *  call's (`tokenFilesTarget`) and `dispatch login`'s (`loginCommand`) alike. */
+export function settingsBesideTokenFiles(env: DispatchEnvironment): readonly string[] {
+  return BESIDE_TOKEN_FILES.filter((name) => nonEmpty(env[name]) !== undefined).map(
+    (name) => `${name} is set`
+  );
+}
+
+/**
+ * The token files as `dispatchTarget` takes them, or undefined when neither is set. A caller that
+ * does not take them (`taken` false: every plugin) is refused while either is set. The `dispatch`
+ * command is refused, with every setting named, when one of the two is set alone, when
+ * `DISPATCH_URL` is unset, or when any of `BESIDE_TOKEN_FILES` or a `dispatch.token` of the chosen
+ * file or of the checkout's file is set beside them: the token is then its only Dispatch
+ * credential, and it trades nothing. The checkout's file is read for this even with
+ * `DISPATCH_URL` set, and a `!` value is found by the field's presence and never run. A checkout's
+ * file that cannot be read is refused too, since whether it holds a token cannot be told. The
+ * URL is `DISPATCH_URL`'s alone, which must be Dispatch's public origin: Dispatch checks each
+ * proof's URL against it. `dispatch login`, which asks the broker and keeps a login in a file,
+ * refuses while either is set, before any request (`loginCommand`).
+ */
+function tokenFilesTarget(
+  env: DispatchEnvironment,
+  config: ReadEnvoyConfig,
+  taken: boolean
+): SectionOff | DispatchTarget | undefined {
+  const set = tokenFilesSet(env);
+  if (set === undefined) return undefined;
+  if (!taken) {
+    return offWithError(
+      `${set}, and only the dispatch command reads the token files: Dispatch is off here rather than written with another credential beside them`
+    );
+  }
+  const tokenFile = nonEmpty(env.DISPATCH_BROKER_TOKEN_FILE);
+  const keyFile = nonEmpty(env.DISPATCH_BROKER_DPOP_KEY_FILE);
+  const explicitUrl = nonEmpty(env.DISPATCH_URL);
+  const { checkout } = config;
+  const problems = [
+    ...(tokenFile === undefined ? [`${TOKEN_FILE_VAR} is not set`] : []),
+    ...(keyFile === undefined ? [`${DPOP_KEY_FILE_VAR} is not set`] : []),
+    ...(explicitUrl === undefined ? ["DISPATCH_URL is not set"] : []),
+    ...settingsBesideTokenFiles(env),
+    ...(config.dispatch.token === undefined ? [] : [`dispatch.token is set in ${config.path}`]),
+    ...(checkout?.kind === "valid" && checkout.dispatch.token !== undefined
+      ? [`dispatch.token is set in ${checkout.path}`]
+      : []),
+    ...(checkout?.kind === "invalid"
+      ? [`${checkout.error}, so whether it sets dispatch.token cannot be told`]
+      : []),
+  ];
+  // The three unset settings are among `problems` too; they are tested again for their types.
+  if (
+    problems.length > 0 ||
+    tokenFile === undefined ||
+    keyFile === undefined ||
+    explicitUrl === undefined
+  ) {
+    return offWithError(
+      `${TOKEN_FILE_VAR} and ${DPOP_KEY_FILE_VAR} go together, with DISPATCH_URL, as the dispatch command's only Dispatch credential: ${problems.join("; ")}`
+    );
+  }
+  if (config.dispatch.enabled === false) {
+    return offWithNotice(`${config.path} sets dispatch.enabled to false: Dispatch is off`);
+  }
+  if (httpUrl(explicitUrl) === undefined) {
+    return offWithError("DISPATCH_URL must be an http or https URL");
+  }
+  return {
+    enabled: true,
+    url: withoutTrailingSlashes(explicitUrl),
+    urlSetting: "DISPATCH_URL",
+    source: { kind: "files", tokenFile, keyFile },
+  };
+}
 
 /** `DISPATCH_TOKEN_BROKER`'s value as a question dispatchTarget can ask: true where the deployment
  * has said this session's Dispatch credential is traded at the secrets broker and nothing else,
@@ -249,20 +410,102 @@ function brokerRouteForced(env: DispatchEnvironment): boolean | SectionOff {
   const written = (env.DISPATCH_TOKEN_BROKER ?? "").trim();
   if (written === "") return false;
   if (written === "1") return true;
+  // Its value is not quoted: a token pasted into the wrong variable would be printed.
   return offWithError(
-    `DISPATCH_TOKEN_BROKER is "${written}" and takes 1: set it to 1 where this session's Dispatch credential is traded at the secrets broker (the person signed in on this machine, else the machine's own identity), and leave it unset where a bearer is read as usual`
+    "DISPATCH_TOKEN_BROKER takes 1: set it to 1 where this session's Dispatch credential is traded at the secrets broker (the person signed in on this machine, else the machine's own identity), and leave it unset where a bearer is read as usual"
   );
 }
 
-/** Dispatch as `dispatchSettings` resolves it up to its token: its URL and the token's source, or
- * off saying why. Reads a `DISPATCH_TOKEN_FILE`, never runs a `!` command. */
-function dispatchTarget(
+/** A cut as the broker takes one (`oauthwire.FormAsOf`, its `cutForm`): an RFC 3339 time with at
+ *  most six fractional digits, and `Z` or a numeric offset. */
+const CUT_FORM =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+
+/** The zero time (Go's `time.Time{}`), which the broker and every reader of a cut take for no cut
+ *  at all, so the broker refuses a cut that names it. */
+const ZERO_TIME = Date.parse("0001-01-01T00:00:00.000Z");
+
+/** Whether `text` is a cut the broker takes: {@link CUT_FORM}, naming a day its month has and a
+ *  time of day and an offset that exist, and not the zero time under any offset
+ *  ({@link ZERO_TIME}). */
+function isCut(text: string): boolean {
+  const parts = CUT_FORM.exec(text);
+  if (parts === null) return false;
+  const [year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0] = parts
+    .slice(1, 7)
+    .map((part) => Number(part ?? "0"));
+  const [zoneHour = 0, zoneMinute = 0] = parts.slice(9, 11).map((part) => Number(part ?? "0"));
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const exists =
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    zoneHour <= 23 &&
+    zoneMinute <= 59;
+  if (!exists) return false;
+  // The instant the text names, in UTC: setUTCFullYear takes a year below 100 as written, where
+  // Date.UTC would read it as one of the 1900s.
+  const offset = (parts[8] === "-" ? -1 : 1) * (zoneHour * 60 + zoneMinute);
+  const instant = new Date(0);
+  instant.setUTCFullYear(year, month - 1, day);
+  instant.setUTCHours(hour, minute - offset, second, 0);
+  return Number(parts[7] ?? "0") !== 0 || instant.getTime() !== ZERO_TIME;
+}
+
+/**
+ * The read trade `DISPATCH_TOKEN_BROKER_READ` and `DISPATCH_TOKEN_BROKER_AS_OF` ask Dispatch's
+ * credential for: undefined where neither is set, the read trade and its cut where the first is
+ * `1`, and a refusal naming the setting otherwise. `DISPATCH_TOKEN_BROKER_READ` takes `1` alone;
+ * the cut goes only beside it, and is an RFC 3339 time the broker takes ({@link isCut}). The
+ * broker refuses a cut later than the trade, which only its clock can tell. Neither value is
+ * quoted: a token pasted into the wrong variable would be printed.
+ */
+function readTradeSetting(env: DispatchEnvironment): ReadTrade | undefined | SectionOff {
+  const read = (env.DISPATCH_TOKEN_BROKER_READ ?? "").trim();
+  const cut = (env.DISPATCH_TOKEN_BROKER_AS_OF ?? "").trim();
+  if (read !== "" && read !== "1") {
+    return offWithError(
+      "DISPATCH_TOKEN_BROKER_READ takes 1: set it to 1 where this session's Dispatch credential is a broker token that only reads, and leave it unset where it writes"
+    );
+  }
+  if (read === "") {
+    if (cut === "") return undefined;
+    return offWithError(
+      "DISPATCH_TOKEN_BROKER_AS_OF names the cut a read-only token reads at, and goes only beside DISPATCH_TOKEN_BROKER_READ=1: set DISPATCH_TOKEN_BROKER_READ to 1 beside it, or unset DISPATCH_TOKEN_BROKER_AS_OF"
+    );
+  }
+  if (cut === "") return {};
+  if (!isCut(cut)) {
+    return offWithError(
+      "DISPATCH_TOKEN_BROKER_AS_OF is not an RFC 3339 time with at most six fractional digits and Z or a numeric offset, such as 1999-12-31T23:59:59Z"
+    );
+  }
+  return { asOf: cut };
+}
+
+/** Dispatch as `dispatchSettings` resolves it up to its token: its URL, the setting that URL was
+ * read from (`urlSetting`: `DISPATCH_URL`, `dispatch.serverUrl in <file>`, or Dispatch's default),
+ * and the token's source, or off saying why. The token files come first, for a caller that takes
+ * them (`tokenFiles`). Reads a `DISPATCH_TOKEN_FILE` without holding the event loop, never runs a
+ * `!` command. */
+async function dispatchTarget(
   env: DispatchEnvironment,
-  config: EnvoyConfig
-): SectionOff | { readonly enabled: true; readonly url: string; readonly source: TokenSource } {
+  config: EnvoyConfig,
+  tokenFiles = false
+): Promise<SectionOff | DispatchTarget> {
   if (config.kind === "failed") return offWithError(config.error);
-  const forced = brokerRouteForced(env);
-  if (typeof forced !== "boolean") return forced;
+  const files = tokenFilesTarget(env, config, tokenFiles);
+  if (files !== undefined) return files;
+  const brokerOnly = brokerRouteForced(env);
+  if (typeof brokerOnly !== "boolean") return brokerOnly;
+  const read = readTradeSetting(env);
+  if (read !== undefined && "enabled" in read) return read;
+  // The read settings take the broker route as DISPATCH_TOKEN_BROKER=1 does.
+  const forced = brokerOnly || read !== undefined;
   const explicitUrl = nonEmpty(env.DISPATCH_URL);
   const checkoutFile = explicitUrl === undefined ? config.checkout : null;
   if (checkoutFile?.kind === "invalid") return offWithError(checkoutFile.error);
@@ -305,7 +548,7 @@ function dispatchTarget(
       source =
         checkout !== null && checkoutServer !== undefined
           ? checkoutPair(checkout, checkoutServer)
-          : bearerSource(env, "DISPATCH", () => writtenToken(config, checkout));
+          : await bearerSource(env, "DISPATCH", () => writtenToken(config, checkout));
     } catch (error) {
       return offWithError(messageFor(error));
     }
@@ -320,11 +563,17 @@ function dispatchTarget(
     }
     if (route.traded) {
       const brokered = withoutTrailingSlashes(explicitUrl ?? own.serverUrl ?? DEFAULT_SERVER_URL);
-      return { enabled: true, url: brokered, source: { kind: "broker" } };
+      const urlSetting =
+        explicitUrl !== undefined
+          ? "DISPATCH_URL"
+          : own.serverUrl !== undefined
+            ? `dispatch.serverUrl in ${config.path}`
+            : DEFAULT_URL_SETTING;
+      return { enabled: true, url: brokered, urlSetting, source: { kind: "broker", read } };
     }
     if (forced) {
       return offWithError(
-        `DISPATCH_TOKEN_BROKER is set, so this session's Dispatch credential is traded at the secrets broker (the person signed in on this machine, else the machine's own identity), and ${route.gap}: Dispatch is off rather than written with whatever bearer this box holds`
+        `${read === undefined ? "DISPATCH_TOKEN_BROKER" : "DISPATCH_TOKEN_BROKER_READ"} is set, so this session's Dispatch credential is traded at the secrets broker (the person signed in on this machine, else the machine's own identity), and ${route.gap}: Dispatch is off rather than written with whatever bearer this box holds`
       );
     }
     return offWithError(
@@ -336,7 +585,28 @@ function dispatchTarget(
   const url = withoutTrailingSlashes(
     explicitUrl ?? (source.kind === "file" ? source.server : (own.serverUrl ?? DEFAULT_SERVER_URL))
   );
-  return { enabled: true, url, source };
+  const urlSetting =
+    explicitUrl !== undefined
+      ? "DISPATCH_URL"
+      : source.kind === "file"
+        ? `dispatch.serverUrl in ${source.path}`
+        : own.serverUrl !== undefined
+          ? `dispatch.serverUrl in ${config.path}`
+          : DEFAULT_URL_SETTING;
+  return { enabled: true, url, urlSetting, source };
+}
+
+/** What names Dispatch's default address, which no setting wrote. */
+const DEFAULT_URL_SETTING = "Dispatch's default URL";
+
+/**
+ * The start notice for links a session prints as `dispatch://` references (`linkBaseOf`), or
+ * undefined where the link base prints: `setting` names the setting the base came from, never its
+ * value, which is what cannot be printed.
+ */
+function linkNoticeFor(linkBase: string, setting: string): string | undefined {
+  if (isCleanUrl(linkBase)) return undefined;
+  return `${setting} is not a plain http(s) URL (it carries user info, a query, a fragment, '%' or '\\'), so the links Dispatch commands print are dispatch:// references; set DISPATCH_PUBLIC_URL to a plain https URL for dashboard links`;
 }
 
 /**

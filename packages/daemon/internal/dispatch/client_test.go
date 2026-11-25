@@ -50,6 +50,26 @@ func TestListIssuesFiltersStatusesWithoutChangingDispatchOrder(t *testing.T) {
 	if issues[1].Key != "LEGION-2" || fmt.Sprint(issues[1].Rank) != "c" || issues[1].Parent == nil || *issues[1].Parent != "LEGION-1" || issues[1].HandedOver {
 		t.Fatalf("second filtered issue = %#v, want LEGION-2 with Dispatch rank c under LEGION-1, not handed over (no labels)", issues[1])
 	}
+	for i, want := range [][]string{{"frontend", "Legion"}, {}} {
+		if !reflect.DeepEqual(issues[i].Labels, want) {
+			t.Fatalf("labels of %s = %#v, want %#v as the listing answered them", issues[i].Key, issues[i].Labels, want)
+		}
+	}
+}
+
+// release_children reads a child from the project's listing when Dispatch's detail read of it
+// fails, as the summary made an Issue (api's cachedIssueReader), and the copy of Dispatch's issues
+// takes that Issue as a reading of all five values: the Issue keeps the labels the listing showed,
+// with every other field the listing carries.
+func TestASummaryAsAnIssueKeepsItsLabels(t *testing.T) {
+	parent := "LEGION-1"
+	summary := IssueSummary{Key: "LEGION-2", Title: "child", Status: "todo", Parent: &parent, Rank: "b", Labels: []string{"frontend", "Legion"},
+		HandedOver: true, LastSeq: 7, ResolvedRepo: "acme/widgets", BlockedBy: []string{"LEGION-3"}, ClaimedBy: "session:architect"}
+	want := Issue{Key: "LEGION-2", Title: "child", Status: "todo", Parent: &parent, Rank: "b", Labels: []string{"frontend", "Legion"},
+		HandedOver: true, LastSeq: 7, ResolvedRepo: "acme/widgets", BlockedBy: []string{"LEGION-3"}, Claim: &Claim{Kind: "session", ID: "architect"}}
+	if got := summary.Issue(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the summary as an Issue = %#v, want %#v", got, want)
+	}
 }
 
 func TestGetIssueReturnsWorkflowFields(t *testing.T) {
@@ -117,36 +137,6 @@ func TestListAndDetailCarryTheResolvedRepository(t *testing.T) {
 	}
 	if issue.ResolvedRepo != "acme/gadgets" {
 		t.Fatalf("issue = %#v, want it resolved to acme/gadgets", issue)
-	}
-}
-
-// The repository mapping is every project's (GET /api/v1/settings/repo-projects), each mapping
-// with its project and whether it is that project's default; the daemon keeps its own project's.
-func TestListRepoProjectsReadsEveryMappingWithItsDefault(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/settings/repo-projects" {
-			t.Fatalf("request = %s %s, want GET /api/v1/settings/repo-projects", r.Method, r.URL.Path)
-		}
-		assertBearer(t, r)
-		writeJSON(t, w, []map[string]any{
-			{"repo": "acme/gadgets", "project": "LEGION", "default": false, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
-			{"repo": "acme/widgets", "project": "LEGION", "default": true, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
-			{"repo": "other/thing", "project": "OTHER", "default": true, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
-		})
-	}))
-	defer server.Close()
-
-	mappings, err := New(server.URL, dispatchToken).ListRepoProjects(context.Background())
-	if err != nil {
-		t.Fatalf("list repo projects: %v", err)
-	}
-	want := []RepoProject{
-		{Repo: "acme/gadgets", Project: "LEGION"},
-		{Repo: "acme/widgets", Project: "LEGION", Default: true},
-		{Repo: "other/thing", Project: "OTHER", Default: true},
-	}
-	if !reflect.DeepEqual(mappings, want) {
-		t.Fatalf("mappings = %#v, want %#v", mappings, want)
 	}
 }
 
@@ -865,6 +855,58 @@ func TestMessageBodiesSinceReadsACutBodyFromItsMessage(t *testing.T) {
 	}
 }
 
+// R3 of dispatch://INFRA-1523: an issue message its author deleted keeps its message.created
+// event, and every read of that event gives no part of its body: the payload carries deleted_at
+// and deleted_by in place of body. A deleted message is no notice the outbox already posted, so
+// the read passes over it and goes on; it must not refuse the whole read, which would leave the
+// outbox row retrying for as long as the deleted message stands inside its window.
+func TestMessageBodiesSincePassesOverADeletedMessage(t *testing.T) {
+	since := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.URL.Path != "/api/v1/issues/LEGION-5/events" {
+			t.Fatalf("request = %s %s, want the issue's events", r.Method, r.URL.Path)
+		}
+		writeJSON(t, w, []map[string]any{
+			{"seq": 9, "type": "message.deleted", "created_at": "2026-09-23T01:03:00Z",
+				"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000001", "deleted_at": "2026-09-23T01:03:00Z", "deleted_by": map[string]string{"kind": "user", "id": "alice"}}},
+			{"seq": 8, "type": "message.created", "created_at": "2026-09-23T01:02:00Z",
+				"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000001", "deleted_at": "2026-09-23T01:03:00Z", "deleted_by": map[string]string{"kind": "user", "id": "alice"}}},
+			{"seq": 7, "type": "message.created", "created_at": "2026-09-23T01:01:00Z",
+				"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000002", "body": "A short daemon notice."}},
+		})
+	}))
+	defer server.Close()
+
+	bodies, err := New(server.URL, dispatchToken).MessageBodiesSince(context.Background(), "LEGION-5", since)
+	if err != nil {
+		t.Fatalf("list messages beside a deleted one: %v", err)
+	}
+	if len(bodies) != 1 || bodies[0] != "A short daemon notice." {
+		t.Fatalf("bodies = %#v, want the one message that still stands", bodies)
+	}
+}
+
+// The pass over a deleted message is for that message alone: a message.created event with no body
+// and no deleted_at is a payload the daemon cannot read, and the read still refuses it rather than
+// pass a notice the outbox may have posted.
+func TestMessageBodiesSinceStillRefusesAStandingMessageWithNoBody(t *testing.T) {
+	since := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		writeJSON(t, w, []map[string]any{
+			{"seq": 8, "type": "message.created", "created_at": "2026-09-23T01:02:00Z",
+				"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000001"}},
+		})
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL, dispatchToken).MessageBodiesSince(context.Background(), "LEGION-5", since)
+	if err == nil || !strings.Contains(err.Error(), "payload body is required") {
+		t.Fatalf("err = %v, want the refusal of a message.created event with no body", err)
+	}
+}
+
 // Dispatch keeps a label's case as typed and treats labels differing only in case as one label, so
 // the label that hands an issue to Legion matches in any case, and nothing else stands in for it.
 func TestCarriesLegionLabelMatchesTheLabelInAnyCaseAndNothingElse(t *testing.T) {
@@ -947,5 +989,51 @@ func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 	defer stuck.Close()
 	if _, err := New(stuck.URL, dispatchToken).EventsAfter(context.Background(), "LEGION-1", 7); err == nil || !strings.Contains(err.Error(), "non-ascending") {
 		t.Fatalf("a page at the sequence already read = %v, want refused", err)
+	}
+}
+
+// A page that holds an event the client cannot read fails the read with an *EventLogError naming
+// the event's place in the log read so far, counted from 1, here on the second page: an event
+// whose seq does not decode, with sequence 0, and an event at the sequence already read, with its
+// sequence. The error's text is the text the read gave before the type.
+func TestEventsAfterNamesTheEventOfAPageItCannotRead(t *testing.T) {
+	var probe struct {
+		Seq int64 `json:"seq"`
+	}
+	undecoded := json.Unmarshal([]byte(`{"seq":"210"}`), &probe)
+	for _, tc := range []struct {
+		name string
+		bad  map[string]any
+		seq  int64
+		text string
+	}{
+		{name: "a seq that does not decode", bad: map[string]any{"seq": "210", "type": "comment.created"},
+			text: "page issue events for LEGION-1: " + undecoded.Error()},
+		{name: "a seq at the sequence already read", bad: map[string]any{"seq": 209, "type": "comment.created"}, seq: 209,
+			text: "page issue events for LEGION-1: non-ascending sequence 209 after 209"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The first page holds sequences 8 to 207 and the second 208, 209 and the bad event,
+			// the log's 203rd.
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+				if after == 7 {
+					page := make([]map[string]any, 0, 200)
+					for seq := after + 1; seq <= after+200; seq++ {
+						page = append(page, map[string]any{"seq": seq, "type": "comment.created", "issue_key": "LEGION-1"})
+					}
+					writeJSON(t, w, page)
+					return
+				}
+				writeJSON(t, w, []map[string]any{{"seq": 208, "type": "comment.created"}, {"seq": 209, "type": "comment.created"}, tc.bad})
+			}))
+			defer server.Close()
+
+			events, err := New(server.URL, dispatchToken).EventsAfter(context.Background(), "LEGION-1", 7)
+			var unread *EventLogError
+			if !errors.As(err, &unread) || unread.Event != 203 || unread.Seq != tc.seq || err.Error() != tc.text || events != nil {
+				t.Fatalf("EventsAfter = %d events, %#v; want an *EventLogError naming event 203, seq %d, with the text %q", len(events), err, tc.seq, tc.text)
+			}
+		})
 	}
 }

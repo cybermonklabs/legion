@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -69,10 +70,11 @@ const CloneTimeout = 30 * time.Minute
 // CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
 // repository's tree into a workspace that holds none — which is the issue's checkout alone today
 // (`jj sparse reset`, Provision), so the next such command takes this constant rather than a third
-// one. One write of the largest repository mapped, theorem-labs/oss-verify-proofs-internal, 282,134
-// files and 11.56 GiB, took 548.8 s and 554.9 s in an issue pod: this is 6.5 times that measured
-// run, and three times it at the worst rate measured over a 60-second window of it (10.0 MiB/s,
-// which writes the 11.56 GiB in 19.7 minutes).
+// one. One write of the largest repository a project then worked in,
+// example-org/oss-verify-proofs-internal, 282,134 files and 11.56 GiB, took 548.8 s and 554.9 s
+// in an issue pod: this is 6.5 times that measured run, and three times it at the worst rate
+// measured over a 60-second window of it (10.0 MiB/s, which writes the 11.56 GiB in 19.7
+// minutes).
 const CheckoutTimeout = time.Hour
 
 // Command is one process the provisioner runs, each bounded independently of every other: most
@@ -95,8 +97,15 @@ type Command struct {
 	Clone string
 }
 
+// exitedHook, when set, is handed each command execRunner.Run ran and its process's state once it
+// ended, for a test of this package that must tell how a command ended: Result's ExitCode is -1
+// for every signaled process, so it cannot tell a SIGTERM from a SIGKILL. Nothing outside the
+// package's tests sets it.
+var exitedHook atomic.Pointer[func(Command, *os.ProcessState)]
+
 // Result is the process result. A non-zero ExitCode, or TimedOut, is a process failure; a
-// non-nil Run error means the process could not be started or observed.
+// non-nil Run error means the process could not be started or observed, or a signal other than
+// its timeout's ended it, which leaves it no exit code of its own.
 type Result struct {
 	Stdout   string
 	Stderr   string
@@ -214,9 +223,16 @@ type Workspace struct {
 
 // pinnedGitConfig is git configuration every process provisioning starts reads last, after the
 // shared clone's and after the command's own: no hook runs, wherever the clone's hooks directory
-// or its core.hooksPath points. git would read GIT_CONFIG_PARAMETERS (its `-c`) after the pins, so
-// no process provisioning starts inherits it.
-var pinnedGitConfig = [][2]string{{"core.hooksPath", "/dev/null"}}
+// or its core.hooksPath points, and no git starts git's automatic maintenance, whatever the
+// clone's own gc.auto, gc.autoPackLimit or maintenance.auto say. Every git fetch, the one jj
+// starts included, otherwise starts `git maintenance run --auto --detach`, whose `git gc --auto`
+// outlives the fetch and takes the clone's ref locks, HEAD's among them, while jj is still
+// exporting the refs that fetch moved: jj gives up on such a lock and fails the provision
+// (#5349). git 2.51 made that maintenance let go of the locks, and the image's git
+// is older. So no process provisioning starts holds a lock of the clone once it has returned. git
+// would read GIT_CONFIG_PARAMETERS (its `-c`) after the pins, so no process provisioning starts
+// inherits it.
+var pinnedGitConfig = [][2]string{{"core.hooksPath", "/dev/null"}, {"gc.auto", "0"}, {"maintenance.auto", "false"}}
 
 // transportEnvironment is set on every process provisioning starts before the command's own
 // environment: git reaches a remote over https alone, so a url.<base>.insteadOf the tree wrote
@@ -315,6 +331,9 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	child.Stdout = &stdout
 	child.Stderr = &stderr
 	err = child.Run()
+	if hook := exitedHook.Load(); hook != nil && child.ProcessState != nil {
+		(*hook)(command, child.ProcessState)
+	}
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
 	// TimedOut is read before the run's own error is propagated, not after: exec reports a command
 	// whose Cancel succeeded and which then exited cleanly as the context's error (watchCtx), and
@@ -348,7 +367,7 @@ type guardedWorkspace struct {
 // maybe_migrate_legacy_config; automatic until jj 0.49). Those are a workspace's
 // `.jj/workspace-config.toml` beside `.jj/workspace-config-id`, and its repository's
 // `config.toml` beside `config-id`. Removing the legacy file leaves jj to open an empty
-// configuration of its own, never one a tree agent wrote. The worker image's jj is 0.45; the tmux
+// configuration of its own, never one a tree agent wrote. The worker image's jj is 0.46; the tmux
 // daemon refuses a host jj older than 0.38 (internal/daemon's resolveTools).
 //
 // A workspace with no `.jj` is refused when requireJJ and clone are set: it was provisioned with
@@ -532,11 +551,11 @@ func sharedRepository(jjDir, clone string) (string, error) {
 }
 
 // workspaceRepository is the path jj opens as the repository of the workspace whose `.jj` is
-// jjDir, built as jj 0.45's DefaultWorkspaceLoader builds it (lib/src/workspace.rs): `.jj/repo`
-// itself unless it is a regular file, else the path that file holds, appended to `.jj` unless it
-// is absolute. It is never cleaned: jj canonicalizes it physically, each symlink resolved before a
-// `..` after it, and filepath.Join would cancel `link/..` before anything resolved `link`, naming
-// a different directory than the one jj opens.
+// jjDir, built as jj's DefaultWorkspaceLoader builds it (lib/src/workspace.rs, verified against
+// jj 0.46.0-sami): `.jj/repo` itself unless it is a regular file, else the path that file holds,
+// appended to `.jj` unless it is absolute. It is never cleaned: jj canonicalizes it physically,
+// each symlink resolved before a `..` after it, and filepath.Join would cancel `link/..` before
+// anything resolved `link`, naming a different directory than the one jj opens.
 //
 // The pointer file is read through readGitdir, the bounded read of a pointer file a role can
 // write, with no link followed and no wait: a tree agent can write it, and this read runs under
@@ -741,19 +760,45 @@ func runCheckedInWithin(ctx context.Context, run Runner, ws Workspace, timeout t
 	return checkedResult(argv, result, err)
 }
 
-// checkedResult is the checked runners' shared answer: a process that could not
-// start, exited non-zero, or outlived its budget is an error naming the command. A clean exit
-// whose I/O draining outlived WaitDelay (exec.ErrWaitDelay) is not this: execRunner.Run already
-// reads that as the process's own true ExitCode, so it passes through the same as any other
-// answer.
+// checkedResult is the checked runners' shared answer: a process that could not start, that a
+// signal ended, that exited non-zero, or that outlived its budget is an error naming the command
+// (answered, commandFailure). A clean exit whose I/O draining outlived WaitDelay
+// (exec.ErrWaitDelay) is not this: execRunner.Run already reads that as the process's own true
+// ExitCode, so it passes through the same as any other answer.
 func checkedResult(argv []string, result Result, err error) (Result, error) {
-	if err != nil {
-		return Result{}, fmt.Errorf("run %s: %w", strings.Join(argv, " "), err)
+	if err := answered(argv, result, err); err != nil {
+		return Result{}, err
 	}
-	if result.ExitCode != 0 || result.TimedOut {
+	if result.ExitCode != 0 {
 		return Result{}, commandFailure(argv, result)
 	}
 	return result, nil
+}
+
+// answered is nil when a run's status is an answer to read, and otherwise the error naming the
+// command: a run that could not start or that a signal ended (runFailure), and one its budget
+// ended (commandFailure). A read whose non-zero exit can mean something calls this first, since
+// the exit such a run leaves is no answer: 0 for a run that erred, and for one its budget ended,
+// whatever its kill left (-1 when the signal ended it, or the code of a git that handled its
+// SIGTERM and exited inside the grace). Then it reads its answer.
+func answered(argv []string, result Result, err error) error {
+	if err != nil {
+		return runFailure(argv, result, err)
+	}
+	if result.TimedOut {
+		return commandFailure(argv, result)
+	}
+	return nil
+}
+
+// runFailure is a run that answered no status of its own, as an error naming the command: `run
+// <argv>: <err>`, and beneath it the stderr the command wrote when a signal ended it
+// (procgroup.Said). The runner leaves that stderr out of its own error, so a caller whose command
+// can echo a credential scrubs result.Stderr before it reaches here, as Fetch's transfers
+// (transferWithRetries), the shared clone's steps (cloneSteps.runIn) and its fetch
+// (ensureFetchConfiguration) do.
+func runFailure(argv []string, result Result, err error) error {
+	return fmt.Errorf("run %s: %w", strings.Join(argv, " "), procgroup.Said(err, result.Stderr))
 }
 
 func commandFailure(argv []string, result Result) error {
@@ -818,14 +863,18 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 		return err
 	}
 	result, runErr := runCommand(ctx, run, argv, source.env, cloneDir)
+	result.Stderr = source.scrub(result.Stderr)
 	_, err = checkedResult(argv, result, runErr)
 	return err
 }
 
 // GitHubCredentialHelper is the `credential.helper` every shared clone gets: `legion
 // git-credential`, which answers git from the hosts.yml of the owner the repository's path names
-// (the owner's directory of LEGION_GH_OWNERS_DIR, and nothing else; ghconfig.HostsFile), since
-// every shared clone also sets credential.useHttpPath so git passes that path. The `legion` in it
+// (the owner's directory of LEGION_GH_OWNERS_DIR; ghconfig.HostsFile), since every shared clone
+// also sets credential.useHttpPath so git passes that path. For a repository of an owner with no
+// such directory it reads the repository from GitHub with GH_CONFIG_DIR's token, and answers a
+// fork with the token of its parent's owner, or else of its source's owner, where the bundle
+// holds that directory (cmd/legion's forkUpstreamDir). The `legion` in it
 // is resolved on PATH when git runs it, so the one it reaches is the process's own (a pane's
 // launcher directory, the image's /opt/legion/bin), and the value names no path of this machine's
 // that the clone would carry to another.
@@ -848,11 +897,12 @@ func ConfigureRepositoryCredential(ctx context.Context, run Runner, cloneDir str
 		{"credential.useHttpPath", "true"},
 	} {
 		// `git config --get-all` exits 1 for a key the clone never set, which is as stale as an old
-		// helper; a run that failed to start is an error. Each read runs in the clone itself, the
+		// helper, once the read answered (answered). Each read runs in the clone itself, the
 		// directory --git-dir names the repository of: the daemon runs this over a clone it has
 		// just provisioned or found, so it is there.
-		result, err := runCommand(ctx, run, []string{"git", "--git-dir=" + gitDir, "config", "--get-all", check.key}, nil, cloneDir)
-		if err != nil {
+		argv := []string{"git", "--git-dir=" + gitDir, "config", "--get-all", check.key}
+		result, err := runCommand(ctx, run, argv, nil, cloneDir)
+		if err := answered(argv, result, err); err != nil {
 			return false, fmt.Errorf("read the shared clone's %s: %w", check.key, err)
 		}
 		values := strings.Split(strings.TrimRight(result.Stdout, "\n"), "\n")
@@ -902,6 +952,105 @@ func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error
 	return err
 }
 
+// packWindowConfig is the git configuration that bounds how much of a repository's packs one git
+// process holds in memory: pack data mapped 32 MiB at a time (core.packedGitWindowSize) and 256 MiB
+// at most at once (core.packedGitLimit), 64 MiB for the delta search window of pack-objects
+// (pack.windowMemory) and 64 MiB of cached delta bases (core.deltaBaseCacheLimit). git 2.47's
+// defaults on a 64-bit machine map 1 GiB windows up to 32 TiB, and gVisor, which runs every issue
+// pod and repository cache, counts the whole of each window a process has touched as the pod's
+// memory. On one pack of 5.94 GB or 12.3 GB, `git log`, `git status`, a push and a fetch in an issue
+// pod reached 5.2 GiB to 8.8 GB with the defaults, and two pods were killed at their 8 GiB limit
+// (2026-11-16 and 2026-11-18); with these four, that push peaked at 760 MB. In a gVisor Job of
+// 2026-11-19, `git log --first-parent -- <file>` on firefox's one 5.86 GB pack peaked at
+// 6,778,128 KiB with the defaults and at 1,283,352 KiB with these. The first two settings do not
+// bound the pack-objects a push runs, which is why the last two are here. A pack's .idx is mapped
+// whole whatever these say.
+//
+// Every git of an issue pod and of a repository cache gets them, the cache's repack apart, from four
+// places, each for gits the others miss: the role environment's GIT_CONFIG pairs (sandbox's
+// gitConfigPairs, through PackWindowConfig), for every role's git and the git jj runs for a push or
+// a fetch; the worker image's /etc/gitconfig (packages/daemon/docker/worker.Dockerfile), for
+// provisioning's git, whose runner removes the role's pairs (execRunner.Run); the shared clone's own
+// configuration (configurePackWindows), for the shared public leak check's git; and `-c` on the git
+// of Fetch, FeedGit and FeedGitWithin (feedGit), which reads no system file (isolatedGitConfig).
+// The Dockerfile cannot read this list, so it writes the four values out twice: its `git config
+// --system` writes, and the smoke list its build holds /etc/gitconfig to. What holds both copies to
+// this list in CI is TestTheWorkerImageWritesPackWindowConfig (sharedclone_test.go), which reads
+// them out of the Dockerfile and requires each, in order, to equal this list. The pack-memory
+// measurement Job (scripts/e2e/pack-memory-job.sh) measures the built image itself: its
+// `c-pack-window-config system <key>` rows hold the image's `git config --system` to the probe's
+// copy of the four values, and its `c-git-rows role scope <key>` rows hold the pairs rolegitconfig
+// prints from this list to that same copy. A value changed here is changed in the Dockerfile, which
+// that test requires, and in that probe too.
+var packWindowConfig = [][2]string{
+	{"core.packedGitWindowSize", "32m"},
+	{"core.packedGitLimit", "256m"},
+	{"pack.windowMemory", "64m"},
+	{"core.deltaBaseCacheLimit", "64m"},
+}
+
+// PackWindowConfig is packWindowConfig, for the role environment's pairs (sandbox's
+// gitConfigPairs), which carry it after their own.
+func PackWindowConfig() [][2]string { return slices.Clone(packWindowConfig) }
+
+// configurePackWindows sets packWindowConfig in the shared clone's own configuration, which
+// every workspace of the clone reads too, for the one git of a pod that reads nothing else: the
+// shared public leak check's, which every push runs with every GIT_CONFIG variable removed and
+// GIT_CONFIG_NOSYSTEM set, so neither the role environment's pairs nor the image's /etc/gitconfig
+// reach it. Every other git of a pod's clone reads this file beside one of those two, which hold the
+// same values. Every provision writes it, so every shared clone takes them, a host clone of the tmux
+// runtime too (the daemon's Provision with FromGitHub), where they only bound git's pack windows; a
+// clone made before the setting existed, or one whose file a role changed, takes it at its next
+// provision. --replace-all leaves one line of each key whatever the file held, a key a role set
+// twice included. The feed does not take them, for the reason configureCloneReads gives.
+func configurePackWindows(ctx context.Context, run Runner, cloneDir string) error {
+	for _, pair := range packWindowConfig {
+		argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "--replace-all", pair[0], pair[1]}
+		if _, err := RunChecked(ctx, run, argv, nil, cloneDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// configureCloneDefaultRepository marks origin as gh's default repository in the shared clone's
+// own configuration, `remote.origin.gh-resolved base`, the line `gh repo set-default` writes for
+// it, which every workspace of the clone reads too (each jj workspace of the clone is a git
+// worktree, and a git worktree reads its clone's config). gh 2.98.0 resolves the repository a
+// command of the groups that read the marker acts on (cli/cli pkg/cmd/root/root.go,
+// SmartBaseRepoFunc) to the first remote marked `base` (context/context.go,
+// ResolvedRemotes.BaseRepo), and, where none is and gh cannot prompt, to the first of its sorted
+// remotes, in which an `upstream` comes before origin. So with the marker, a worker who adds an
+// `upstream` remote leaves gh on origin, the issue's repository, and `legion gh` counts origin
+// alone there too (cmd/legion's markedOrigin).
+//
+// A clone whose own configuration holds any gh-resolved line gets nothing written: a marker a
+// person set stays as they set it, and so does one that moved with a renamed remote (`gh repo
+// fork --remote` renames origin to upstream, and git renames the remote's keys with it, so gh
+// stays on the repository the fork was made from). The read names the clone's own file alone
+// (--local), so a line of the global or system configuration cannot stop the write. Its exit is
+// the answer once the read answered (answered): exit 0, a gh-resolved line the clone holds, writes
+// nothing; exit 1, which git gives, printing nothing, where no key matches, writes the marker; and
+// any other answer fails the provision. The feed does not take the line, for the reason
+// configureCloneReads gives.
+func configureCloneDefaultRepository(ctx context.Context, run Runner, cloneDir string) error {
+	gitDir := cloneDir + "/.git"
+	read := []string{"git", "--git-dir=" + gitDir, "config", "--local", "--get-regexp", `^remote\..*\.gh-resolved$`}
+	markers, err := runCommand(ctx, run, read, nil, cloneDir)
+	if err := answered(read, markers, err); err != nil {
+		return err
+	}
+	switch markers.ExitCode {
+	case 0:
+		return nil
+	case 1:
+	default:
+		return commandFailure(read, markers)
+	}
+	_, err = RunChecked(ctx, run, []string{"git", "--git-dir=" + gitDir, "config", "--local", "remote.origin.gh-resolved", "base"}, nil, cloneDir)
+	return err
+}
+
 // removeRepositoryIdentity ports workspace.ts's removeRepoScopedIdentity. A per-repository
 // identity would be shared by every issue workspace, while pane identity is deliberately provided
 // through the pane's env.
@@ -921,7 +1070,7 @@ func removeRepositoryIdentity(ctx context.Context, run Runner, cloneDir string) 
 		}
 		removed, err := runCommand(ctx, run, unset, nil, cloneDir)
 		if err != nil {
-			return fmt.Errorf("run %s: %w", strings.Join(unset, " "), err)
+			return runFailure(unset, removed, err)
 		}
 		if removed.ExitCode == 0 {
 			continue

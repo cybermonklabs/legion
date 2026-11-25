@@ -20,8 +20,11 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // sendStateSender is the session every send below names as its source, so no answer here turns on
@@ -65,11 +68,60 @@ func newKnownSessionRigOn(t *testing.T, client *bus.Client, url string) *knownSe
 	return rig
 }
 
+// backgroundReadsHeld is how long a quiet rig's listener connection sends nothing of its own
+// (newQuietKnownSessionRig): longer than any run of a row, which every lane that runs the package
+// bounds by its -timeout (30m in envoy-go-race).
+const backgroundReadsHeld = time.Hour
+
+// newQuietKnownSessionRig is newKnownSessionRig on a listener connection that, once the rig is
+// built, sends no request of its own within backgroundReadsHeld, so a row that counts what the
+// connection sends (jetStreamAPIProbe) counts its route's requests alone, however long its window
+// lasts. In production these reads come every few seconds, and a window longer than that, as a
+// loaded machine makes 100 requests take, would count them against the route:
+//
+//   - each cache watcher on the connection (the interest registry's, its role claims', the session
+//     registry's and the known-session store's) reads its bucket's stream every 2 s. Each is
+//     replaced by one that reads the same bucket into the same cache (replaceWatcher) and arms its
+//     stream probe backgroundReadsHeld after each read (kvwatch.WithStreamProbeInterval), which
+//     spaces by as much the reads the gate on delivered records may send; the completed read's own
+//     check is its last. The role claim watcher's scheduled read of its bucket, a minute after each
+//     read, is left out.
+//   - the bus client reads the event stream's info every 30 s (its keeper) and every 60 s (its read
+//     of the deployed subjects), which bus.WithKeepInterval and bus.WithStreamSubjectsRefresh hold
+//     off.
+//
+// Production's intervals are unchanged. One request no rig can hold: nats.go re-creates a
+// watcher's ordered consumer (a CONSUMER.CREATE) when neither a record nor a heartbeat reached it
+// for 10 s (kvwatch's streamConfirmMaxAge says when), which a client stalled that long sends and
+// a row then names. The rig waits until every copy can be served, as the listener's start does,
+// before any route reads a store.
+func newQuietKnownSessionRig(t *testing.T) *knownSessionRig {
+	t.Helper()
+	url := testnats.URL(t)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1),
+		bus.WithKeepInterval(backgroundReadsHeld), bus.WithStreamSubjectsRefresh(backgroundReadsHeld))
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	t.Cleanup(client.Close)
+	rig := newKnownSessionRigOn(t, client, url)
+	held := kvwatch.WithStreamProbeInterval(backgroundReadsHeld)
+	replaceWatcher(t, rig.harness.registry, "watcher", "interest registry", unwrappedKV, held)
+	replaceWatcher(t, rig.harness.registry, "roleWatcher", "role claims", unwrappedKV, held)
+	replaceWatcher(t, rig.harness.sessions, "watcher", "session registry", unwrappedKV, held)
+	replaceWatcher(t, rig.known, "watcher", "known session store", unwrappedKV, held)
+	testwait.Eventually(t, "every cache on the listener's connection to complete its first read", func() bool {
+		return rig.harness.registry.Servable() == nil && rig.harness.registry.RoleViewErr() == nil &&
+			rig.harness.sessions.Servable() == nil && rig.known.Opened()
+	})
+	return rig
+}
+
 // openKnownSessionsOn opens the known-session store on conn with clock, and waits for its first
 // read of the bucket, as main's start waits for it.
 func openKnownSessionsOn(t *testing.T, conn *natsgo.Conn, clock func() time.Time) *session.KnownSessions {
 	t.Helper()
-	known, err := session.OpenKnownSessions(conn,
+	known, err := session.OpenKnownSessions(t.Context(), conn,
 		session.WithKnownSessionReplicas(1),
 		session.WithKnownSessionClock(clock))
 	if err != nil {
@@ -426,6 +478,7 @@ func TestASilentRelaySubscriberReadsConnected(t *testing.T) {
 // record at all, so a session the store has aged out is that same 404 and not a stopped answer
 // with a month-old last_seen.
 func TestASendToASessionNeitherStoreKnowsIsTheNotFound(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 
 	unknown := rig.send(t, "ses_never_registered", nil)
@@ -464,6 +517,7 @@ func TestASendToASessionNeitherStoreKnowsIsTheNotFound(t *testing.T) {
 // that advertises nothing, so its send is accepted and the mode is left to the session to judge
 // when it runs again.
 func TestASendToAStoppedSessionIsJudgedByItsRecordsCapabilities(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const steerFrame = `{"event":{"id":0,"issue_key":"CORE-1"},"delivery":{"attempt":1,"mode":"steer"}}`
 
@@ -510,6 +564,7 @@ func TestASendToAStoppedSessionIsJudgedByItsRecordsCapabilities(t *testing.T) {
 // only its record is left. A connected target is the ordinary 200, and a send with the flag absent
 // stores for a stopped target.
 func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 
 	const cleanlyStopped = "ses_switch_stopped"
@@ -555,24 +610,24 @@ func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
 	}
 }
 
-// awaitAgentWake waits for the agent wake report naming sessionID on wakes, skipping every report
-// that names another, and fails the test when none arrives within the bound.
-func awaitAgentWake(t *testing.T, wakes *natsgo.Subscription, sessionID string) {
+// awaitWake waits on wakes for the wake report of kind naming name (wakeNamed), skipping every
+// other report, and fails the test when none arrives within the bound.
+func awaitWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		msg, err := wakes.NextMsg(time.Until(deadline))
 		if err != nil {
-			t.Fatalf("no wake report named %s: %v", sessionID, err)
+			t.Fatalf("no %s wake report named %s: %v", kind, name, err)
 		}
-		if wakeReportSession(t, msg) == sessionID {
+		if wakeNamed(wakeReportIn(t, msg), kind, name) {
 			return
 		}
 	}
 }
 
-// wakeReportSession is the session an agent wake report names, empty for any other report.
-func wakeReportSession(t *testing.T, msg *natsgo.Msg) string {
+// wakeReportIn is the wake report msg carries.
+func wakeReportIn(t *testing.T, msg *natsgo.Msg) wakeReport {
 	t.Helper()
 	var item contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &item); err != nil {
@@ -582,10 +637,22 @@ func wakeReportSession(t *testing.T, msg *natsgo.Msg) string {
 	if err := json.Unmarshal([]byte(item.Payload), &report); err != nil {
 		t.Fatalf("decode a wake report's payload %s: %v", item.Payload, err)
 	}
-	if report.Kind != wakeKindAgent {
-		return ""
+	return report
+}
+
+// wakeNamed reports whether report is of kind and names name in the field that kind names: the
+// session of an agent wake, and the role of a role wake. A report of any other kind names neither.
+func wakeNamed(report wakeReport, kind, name string) bool {
+	if report.Kind != kind {
+		return false
 	}
-	return report.Session
+	switch kind {
+	case wakeKindAgent:
+		return report.Session == name
+	case wakeKindRole:
+		return report.Role == name
+	}
+	return false
 }
 
 // A send to a session with no entry within the gone horizon raises the wake report, on the 200
@@ -596,6 +663,7 @@ func wakeReportSession(t *testing.T, msg *natsgo.Msg) string {
 // and whose probe met no responders raises none, as no lingering entry does, and answers stopped
 // with its entry's age and last_seen.
 func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	wakesCtx, stopWakes := context.WithCancel(context.Background())
 	t.Cleanup(stopWakes)
@@ -629,7 +697,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 	if stopped.LastSeen != record.LastSeen {
 		t.Fatalf("the stopped answer's last_seen = %d, want the record's %d: %s", stopped.LastSeen, record.LastSeen, stopped.raw)
 	}
-	awaitAgentWake(t, wakes, cleanlyStopped)
+	awaitWake(t, wakes, wakeKindAgent, cleanlyStopped)
 
 	const pastHorizon = "ses_wake_past_horizon"
 	storeSessionHeartbeat(t, rig.harness.client, pastHorizon, time.Now().Add(-(session.GoneHorizon + time.Minute)))
@@ -642,7 +710,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 	if gone.LastSeen != horizonRecord.LastSeen {
 		t.Fatalf("the past-horizon answer's last_seen = %d, want the record's %d: %s", gone.LastSeen, horizonRecord.LastSeen, gone.raw)
 	}
-	awaitAgentWake(t, wakes, pastHorizon)
+	awaitWake(t, wakes, wakeKindAgent, pastHorizon)
 
 	// Every wake report the three sends raised has arrived by now: each is published off the
 	// route's path in the order the sends raised them, and the last two have been read. A report
@@ -655,7 +723,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 		if err != nil {
 			t.Fatalf("read the wake reports: %v", err)
 		}
-		if named := wakeReportSession(t, msg); named == unheld {
+		if wakeNamed(wakeReportIn(t, msg), wakeKindAgent, unheld) {
 			t.Fatalf("the send to the probe-stopped %s raised a wake report", unheld)
 		}
 	}
@@ -665,9 +733,12 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 // read a send to a missing entry makes. Over warm caches 100 of them send no JetStream API request
 // on the consumer or stream-info subjects, and the probe of the API shows it is watching by seeing
 // the one call the test makes itself (watchJetStreamAPI, which
-// TestAHundredPublishesSendNoJetStreamAPIRequest uses too).
+// TestAHundredPublishesSendNoJetStreamAPIRequest uses too). The rig's connection sends nothing else
+// in the window (newQuietKnownSessionRig), so what the probe counts is the send route's, however
+// long the sends take.
 func TestAHundredSendsToAStoppedSessionSendNoJetStreamAPIRequest(t *testing.T) {
-	rig := newKnownSessionRig(t)
+	t.Parallel()
+	rig := newQuietKnownSessionRig(t)
 	const gone = "ses_stopped_api_free"
 	rig.register(t, gone, nil)
 	rig.stop(t, gone)
@@ -686,11 +757,7 @@ func TestAHundredSendsToAStoppedSessionSendNoJetStreamAPIRequest(t *testing.T) {
 		}
 	}
 
-	control := "$JS.API.STREAM.INFO." + bus.Stream
-	if _, err := rig.harness.client.JS().StreamInfo(bus.Stream); err != nil {
-		t.Fatalf("the watch's control call: %v", err)
-	}
-	if calls := watch.awaitCall(t, control); len(calls) > 0 {
+	if calls := watch.callsBeforeControl(t, rig.harness.client.JS()); len(calls) > 0 {
 		t.Fatalf("100 sends sent %d JetStream API requests: %v", len(calls), calls)
 	}
 }
@@ -702,6 +769,7 @@ func TestAHundredSendsToAStoppedSessionSendNoJetStreamAPIRequest(t *testing.T) {
 // own fields and no port and no host at all, a live session is its ordinary body, and a session
 // neither store knows is still the 404.
 func TestTheRegistryRouteAnswersAStoppedSessionOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const gone = "ses_registry_stopped"
 	rig.register(t, gone, map[string]any{
@@ -734,11 +802,11 @@ func TestTheRegistryRouteAnswersAStoppedSessionOnlyWhenAsked(t *testing.T) {
 						key, value, answer.Body.String())
 				}
 			}
-			var info stoppedSessionInfo
+			var info listenerwire.StoppedSessionInfo
 			if err := json.Unmarshal(answer.Body.Bytes(), &info); err != nil {
 				t.Fatalf("decode %s: %v", answer.Body.String(), err)
 			}
-			want := stoppedSessionInfo{
+			want := listenerwire.StoppedSessionInfo{
 				SessionID:    gone,
 				State:        sessionStateStopped,
 				LastSeen:     stored.LastSeen,
@@ -762,7 +830,7 @@ func TestTheRegistryRouteAnswersAStoppedSessionOnlyWhenAsked(t *testing.T) {
 	if askedLive.Code != http.StatusOK {
 		t.Fatalf("GET /v1/registry/%s?include=unresponsive,stopped: status %d, body %s; want 200", live, askedLive.Code, askedLive.Body.String())
 	}
-	var plainInfo, liveInfo sessionInfo
+	var plainInfo, liveInfo listenerwire.SessionInfo
 	if err := json.Unmarshal(plainLive.Body.Bytes(), &plainInfo); err != nil {
 		t.Fatalf("decode %s: %v", plainLive.Body.String(), err)
 	}

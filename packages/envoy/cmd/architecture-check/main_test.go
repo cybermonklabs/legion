@@ -5,19 +5,26 @@
 // one breaks tools that read paths a line at a time.
 package main
 
+//ci:reads packages/envoy/internal/dispatch/architecture/notes/testdata/** testdataDir joins ../../internal/dispatch/architecture/notes/testdata, which TestTheBuiltBinary's built binary reads
+
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 )
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
 // The bound refuses a set holding a note of notes.MaxFileSize + 1 bytes before any note is read,
 // so the note beside it, whose front matter holds an unknown key, is never parsed and its problem
@@ -208,6 +215,24 @@ func TestTheBuiltBinary(t *testing.T) {
 	})
 }
 
+// An entry that is no file, no directory and no symbolic link is not a note, though its name is a
+// note's: the built binary warns of the named pipe queue.md once, as an other entry, and the valid
+// note beside it keeps the exit status at 0.
+func TestANamedPipeIsAWarningThatKeepsTheExitStatus(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "architecture-check")
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "api.md"), []byte("---\ntitle: API\n---\nThe one note.\n"))
+	pipe := filepath.Join(dir, "queue.md")
+	if err := syscall.Mkfifo(pipe, 0o644); err != nil {
+		t.Fatalf("make the named pipe %s: %v", pipe, err)
+	}
+	expect(t, runBinary(t, binary, "", dir), result{
+		stdout: "architecture-check: " + dir + ": 1 note, the set is valid\n",
+		stderr: "architecture-check: warning: " + pipe + ": not a note (other entry); the importer passes over it\n",
+	})
+}
+
 // result is one run of the command: its exit status and what it wrote to each stream.
 type result struct {
 	code   int
@@ -215,15 +240,29 @@ type result struct {
 	stderr string
 }
 
+// binaryLimit bounds one run of the built binary, which answers in milliseconds. A run that blocks,
+// as one that opens a named pipe nothing writes to does, is killed at the limit and fails its test
+// then, rather than holding it until go test's own deadline and outliving it.
+const binaryLimit = 20 * time.Second
+
 // runBinary runs the built binary with args in the working directory dir, the test's own when
-// empty, and answers its exit status and output.
+// empty, and answers its exit status and output. A run past binaryLimit is killed and fails the
+// test. The binary runs on one P (GOMAXPROCS=1): the parallel rows keep every run alive at once,
+// and a run left to size GOMAXPROCS to the host starts a thread for each P its collector's idle
+// mark workers take, about 80 on a 288-CPU host.
 func runBinary(t *testing.T, binary, dir string, args ...string) result {
 	t.Helper()
-	cmd := exec.Command(binary, args...)
+	ctx, cancel := context.WithTimeout(t.Context(), binaryLimit)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOMAXPROCS=1")
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	if ctx.Err() != nil {
+		t.Fatalf("architecture-check %q did not finish within %s and was killed: stdout %q, stderr %q", args, binaryLimit, stdout.String(), stderr.String())
+	}
 	var exitErr *exec.ExitError
 	if err != nil && !errors.As(err, &exitErr) {
 		t.Fatalf("run architecture-check %q: %v", args, err)

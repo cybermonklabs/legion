@@ -36,8 +36,8 @@ func poolAudienceLines(member string) string {
 const computeClassRequired = "runtime.kubernetes.sandbox.microvm.compute_class is required while runtime.kubernetes.sandbox.type is microvm" +
 	" or runtime.kubernetes.sandbox.canary_issues names an issue: the ComputeClass whose nodes run the microVM pods"
 
-// Each shape of `runtime.kubernetes.sandbox` the loader refuses, read the way `legion start
-// --check-config` reads a whole file (LoadForValidation, cmd/legion's checkStartConfig), so each
+// Each shape of `runtime.kubernetes.sandbox` the loader refuses, read the way
+// `legion config check` reads a whole file (LoadForValidation, cmd/legion's checkConfig), so each
 // refusal is what the operator reads there. Every message names the whole dotted key at fault.
 // The rules that read scheduling, pod and the broker's block too fire only while an issue pod runs
 // in a microVM.
@@ -57,7 +57,7 @@ func TestTheSandboxBlockRefusesEachShapeNamingItsKey(t *testing.T) {
 	// audienceRefusal is the refusal of a broker audience that is the Workload Identity pool.
 	audienceRefusal := func(member string) string {
 		return "runtime.kubernetes.agent_secrets." + member + " must differ from runtime.kubernetes.sandbox.microvm.metadata.workload_pool (both " + testWorkloadPool + ")" +
-			" while an issue pod runs in a microVM: the cluster projects one volume per audience, and the pool's token is the launcher's alone"
+			" while an issue pod runs in a microVM: the cluster projects one volume per audience, so the two tokens would be one"
 	}
 	for _, tc := range []struct {
 		name, block, key, want string

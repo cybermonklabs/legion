@@ -41,8 +41,8 @@
         "typescript": "^5.3.0",
       },
     },
-    "packages/broker-client": {
-      "name": "@legion/broker-client",
+    "packages/cipher-client": {
+      "name": "@legion/cipher-client",
       "version": "0.1.0",
       "dependencies": {
         "@legion/contracts": "workspace:*",
@@ -61,13 +61,13 @@
       "version": "1.0.0",
       "devDependencies": {
         "@biomejs/biome": "^2.3.14",
+        "@legion/cipher-client": "workspace:*",
         "@legion/contracts": "workspace:*",
         "@legion/envoy-client": "workspace:*",
         "@legion/pi-shared": "workspace:*",
         "@legion/test-fixtures": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.30.0",
         "bun-types": "latest",
-        "ky": "^2.0.2",
         "nats": "^2.29.2",
         "typescript": "^5.3.0",
         "zod": "4.3.6",
@@ -118,6 +118,17 @@
         "diff": "^9.0.0",
         "echarts": "^6.1.0",
         "lib0": "^0.2.119",
+        "mdast-util-from-markdown": "2.0.3",
+        "mdast-util-frontmatter": "2.0.1",
+        "mdast-util-gfm-footnote": "2.1.0",
+        "mdast-util-gfm-strikethrough": "2.0.0",
+        "mdast-util-gfm-table": "2.0.0",
+        "mdast-util-gfm-task-list-item": "2.0.0",
+        "micromark-extension-frontmatter": "2.0.0",
+        "micromark-extension-gfm-footnote": "2.1.0",
+        "micromark-extension-gfm-strikethrough": "2.1.0",
+        "micromark-extension-gfm-table": "2.1.1",
+        "micromark-extension-gfm-task-list-item": "2.1.0",
         "micromark-util-classify-character": "^2.0.1",
         "micromark-util-symbol": "^2.0.1",
         "prosemirror-model": "^1.25.11",
@@ -157,7 +168,7 @@
       "name": "@legion/envoy-client",
       "version": "0.1.0",
       "dependencies": {
-        "@legion/broker-client": "workspace:*",
+        "@legion/cipher-client": "workspace:*",
         "@legion/contracts": "workspace:*",
         "@toon-format/toon": "^4.1.1",
         "nats": "^2.29.2",
@@ -291,6 +302,7 @@
     "micromark-core-commonmark@2.0.3": "patches/micromark-core-commonmark@2.0.3.patch",
     "mdast-util-from-markdown@2.0.3": "patches/mdast-util-from-markdown@2.0.3.patch",
     "micromark-extension-gfm-footnote@2.1.0": "patches/micromark-extension-gfm-footnote@2.1.0.patch",
+    "playwright@1.64.1": "patches/playwright@1.64.1.patch",
     "micromark@4.0.2": "patches/micromark@4.0.2.patch",
     "prosemirror-tables@1.8.5": "patches/prosemirror-tables@1.8.5.patch",
     "@milkdown/plugin-clipboard@7.22.1": "patches/@milkdown%2Fplugin-clipboard@7.22.1.patch",
@@ -656,7 +668,7 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
-    "@legion/broker-client": ["@legion/broker-client@workspace:packages/broker-client"],
+    "@legion/cipher-client": ["@legion/cipher-client@workspace:packages/cipher-client"],
 
     "@legion/contracts": ["@legion/contracts@workspace:packages/contracts"],
 
@@ -1834,8 +1846,6 @@
 
     "klona": ["klona@2.0.6", "", {}, "sha512-dhG34DXATL5hSxJbIexCft8FChFXtmskoZYnoPWjXQuebWYCNkVeV3KkGegCK9CP1oswI/vQibS2GY7Em/sJJA=="],
 
-    "ky": ["ky@2.0.2", "", {}, "sha512-/GmXpo9F9W+f8n4Ivr2iH+7h7wL7jLbLKWkMlpflcCRb6kGjBfTlASEXaZ9qUgNTn4VgS0P2pwxxzQ4EM6Ulgg=="],
-
     "layout-base": ["layout-base@1.0.2", "", {}, "sha512-8h2oVEZNktL4BH2JCOI90iD1yXwL6iNW7KcCKT2QZgQJR2vbqDsldCTPRU9NifTCqHZci57XvQQ15YTu+sTYPg=="],
 
     "lib0": ["lib0@0.2.119", "", { "dependencies": { "isomorphic.js": "^0.2.4" }, "bin": { "0serve": "bin/0serve.js", "0gentesthtml": "bin/gentesthtml.js", "0ecdsa-generate-keypair": "bin/0ecdsa-generate-keypair.js" } }, "sha512-vh+TiejVy8Xm+hCdnRfn9BthGNvNUZdEXltNjVZL3TzRIKP3s1lnQh8pWd/Q0wCgY0FPAGVVjFF4ZiHUV3LFgA=="],
@@ -2568,7 +2578,7 @@
 
     "@jridgewell/trace-mapping/@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
-    "@legion/broker-client/@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
+    "@legion/cipher-client/@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 
     "@tailwindcss/node/magic-string": ["magic-string@0.30.21", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.5" } }, "sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ=="],
 
@@ -2686,7 +2696,7 @@
 
     "@expressive-code/core/postcss/nanoid": ["nanoid@3.3.18", "", { "bin": { "nanoid": "bin/nanoid.cjs" } }, "sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w=="],
 
-    "@legion/broker-client/@types/bun/bun-types": ["bun-types@1.4.4", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-yjrJh5oGX7mMPKGd19YXyIjmEuj4G4zNC30bs7PM9Az7NQ3ndF3j6hbeRdvJTRQEhJ/FYQwW0a2moweEi2hMxQ=="],
+    "@legion/cipher-client/@types/bun/bun-types": ["bun-types@1.4.4", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-yjrJh5oGX7mMPKGd19YXyIjmEuj4G4zNC30bs7PM9Az7NQ3ndF3j6hbeRdvJTRQEhJ/FYQwW0a2moweEi2hMxQ=="],
 
     "@tailwindcss/node/magic-string/@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 

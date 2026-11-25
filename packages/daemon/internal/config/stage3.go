@@ -17,12 +17,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
+	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // DesignGate is the word `gates.design` took before it took a list of steps, and which it still
 // accepts in place of one: `root-issues` for the single step spec, `off` for no step at all.
+//
+// The steps a word names are the ones every root must register, which is not every step a root
+// can be held on. Under `root-issues` a root's architect may also register its Verification
+// document as the step criteria, and from then on that root's tree is held on it as on the spec
+// (record.TreeSteps); a root that registers none is held on the spec alone. Under `off` no step
+// holds a tree: a registration records spec whatever step it names, and a criteria row kept
+// from a deployment that gated spec holds nothing.
 type DesignGate string
 
 const (
@@ -56,11 +65,15 @@ type Gates struct {
 	Design []record.DesignStep
 }
 
-// Steps is the design-gate steps the deployment gates, in the order it named them. The daemon
-// keeps one gate record for each step, and every reader of the gate asks this list
-// (classify.RequiredSteps). A nil list is the unset field, which gates the single step spec as
-// the gate did before a deployment could name a list, so a Config built without its Gates field
-// gates rather than waves through; a non-nil empty list is `off` and gates no step.
+// Steps is the design-gate steps the deployment gates, in the order it named them: the steps
+// every root must register before its tree works. The daemon keeps one gate record for each step
+// a root registers, and every reader of the gate asks this list through record.TreeSteps, so a
+// list that names spec and not criteria also holds a tree on criteria once its root's architect
+// registers the Verification document as that step: a tree can be gated on one step more than
+// this list names, never fewer. A nil list is the unset field, which gates the single step spec
+// as the gate did before a deployment could name a list, so a Config built without its Gates
+// field gates rather than waves through; a non-nil empty list is `off` and gates no step, and no
+// step joins it.
 func (g Gates) Steps() []record.DesignStep {
 	if g.Design == nil {
 		return DesignGateRootIssues.Steps()
@@ -70,16 +83,17 @@ func (g Gates) Steps() []record.DesignStep {
 
 // Project is a Dispatch project prefix's configuration: the Slack channels whose @-mentions reach
 // its controller, and whether a merge that closes one of its issues opens a production check at
-// all. Its repositories are Dispatch's mapping (Settings → Repositories → Projects), which the
-// daemon reads at boot and when it changes, never this file.
+// all. It names no repository: the daemon takes each issue's repository from Dispatch, which
+// resolves it from the issue, its ancestors or the project, and never from this file.
 type Project struct {
 	// SlackChannels are `slack_channels`, the Slack channel ids whose app mentions the project's
 	// controller subscribes to, in the file's order; nil when the file names none.
 	SlackChannels []string
 	// CommitIssueTrailerRepos are `commit_issue_trailer_repos`, the repositories whose commits a
-	// pane stamps with the issue key, in the file's order; nil when the file names none. The
-	// project's repositories are Dispatch's mapping (Settings → Repositories → Projects), and this
-	// key only selects among them, so a name the project does not serve stamps nothing.
+	// pane stamps with the issue key, in the file's order, and nil when the file names none. A
+	// pane stamps the commit when its launch's repository is one of these names. The load checks
+	// each name's shape and refuses two names of one repository; nothing compares them with
+	// anything at boot, since a project works in each repository both role Apps reach.
 	CommitIssueTrailerRepos []ghrepo.Repository
 	// Memory is `memory`, the project's per-tree memory setting; its zero value is off, which a
 	// file that names no block leaves.
@@ -98,6 +112,36 @@ type Project struct {
 	// role the file named when it opened keeps that role, and moving the key to off ends no
 	// check that is already open.
 	ProductionCheck claim.Role
+	// DefaultSteps is `default_steps` as the file names it, nil when it names none. Every reader
+	// asks RunsByDefault, which resolves the unset field.
+	DefaultSteps []plan.Step
+}
+
+// defaultStepWords is `default_steps` for a project that names none, as the file would write it:
+// today's line up to the owner's acceptance. With the retro and the merge Legion runs after
+// them, that is today's seven phases. It is the one definition of the default steps.
+var defaultStepWords = []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
+
+// unsetDefaultSteps is defaultStepWords read as steps, once.
+var unsetDefaultSteps = func() []plan.Step {
+	steps, err := plan.ParseSteps(strings.Join(defaultStepWords, " "))
+	if err != nil {
+		panic("config: the default steps are outside the plan's grammar: " + err.Error())
+	}
+	return steps
+}()
+
+// RunsByDefault is the project's default steps: the steps a task whose plan block names neither
+// steps nor a sub-owner runs, and the steps of the one task `default` of an issue whose owner
+// gives no plan or whose experiment's group takes none. They are `default_steps`, or today's line
+// up to the owner's acceptance for a project that names none, and for a Project the loader never
+// read, so a configuration built without the field runs today's line rather than no step. The
+// answer is the caller's own.
+func (p Project) RunsByDefault() []plan.Step {
+	if p.DefaultSteps != nil {
+		return slices.Clone(p.DefaultSteps)
+	}
+	return slices.Clone(unsetDefaultSteps)
 }
 
 // ProductionCheckOff is the one word of `production_check` that takes the check away, which the
@@ -203,7 +247,7 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	var unknown unknownKeyError
 	if errors.As(err, &unknown) {
 		if unknown.name == "repo" {
-			return Project{}, nil, fmt.Errorf(`Unknown key %q: the project's repositories are Dispatch's mapping (Settings → Repositories → Projects)`, key+".repo")
+			return Project{}, nil, fmt.Errorf(`Unknown key %q: the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project`, key+".repo")
 		}
 		// The shipped loader's own words (validateProjectEntry, config.ts).
 		return Project{}, nil, fmt.Errorf(`Unknown key %q`, key+"."+unknown.name)
@@ -211,15 +255,10 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	if err != nil {
 		return Project{}, nil, err
 	}
-	// The mapping itself is scanned for `deploys` rather than fields, which drops a null member:
 	// `deploys:` with nothing under it is a key the deployment still writes, so it warns too.
-	// describedMembers has already refused the key named twice, so this is at most one line.
 	var warnings []string
-	for index := 0; index+1 < len(value.Content); index += 2 {
-		if value.Content[index].Value == "deploys" {
-			warnings = []string{fmt.Sprintf("%s.deploys is set and ignored: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; remove it from the deployment's legion.yaml", key)}
-			break
-		}
+	if namesKey(value, "deploys") {
+		warnings = []string{fmt.Sprintf("%s.deploys is set and ignored: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; remove it from the deployment's legion.yaml", key)}
 	}
 	var project Project
 	if channels := fields["slack_channels"]; channels != nil {
@@ -244,7 +283,12 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 		// The block and `experiments.memory` are one experiment spelled two ways, and only here
 		// are both spellings in view: the memory member is read by the mapping's own key rather
 		// than by the block's value, so an empty block counts as written (checkExperimentMemory).
+		// The rules of `plan` come after it, so `plan` on `experiments.memory` gets that check's
+		// one refusal rather than the plan rules' advice to write `unit: issue`.
 		if err := checkExperimentMemory(project.Experiments, fields["memory"] != nil, key); err != nil {
+			return Project{}, nil, err
+		}
+		if err := checkExperimentPlans(project.Experiments, key); err != nil {
 			return Project{}, nil, err
 		}
 	}
@@ -266,7 +310,48 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 			return Project{}, nil, fmt.Errorf("%s.production_check must be %s or %s (got %q)", key, ProductionCheckOff, claim.RoleTester, word)
 		}
 	}
+	if steps := fields["default_steps"]; steps != nil {
+		if project.DefaultSteps, err = readDefaultSteps(steps, key+".default_steps"); err != nil {
+			return Project{}, nil, err
+		}
+	}
 	return project, warnings, nil
+}
+
+// readDefaultSteps is a project's `default_steps`: a list of steps, each entry one step in the
+// plan's grammar (plan.ParseSteps). The loader holds the list to the checks a plan of the one
+// task `default` with those steps passes (plan.Supported, then plan.Validate against Legion's own
+// roles), and refuses an empty list, so the steps a task with none runs are steps this release
+// carries out. A refusal names the key, then gives every reason of both checks.
+func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
+	words, err := readStrings(value, key)
+	if err != nil {
+		return nil, err
+	}
+	if len(words) == 0 {
+		return nil, fmt.Errorf("%s names no step", key)
+	}
+	steps := make([]plan.Step, 0, len(words))
+	for _, word := range words {
+		parsed, err := plan.ParseSteps(word)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+		if len(parsed) != 1 {
+			return nil, fmt.Errorf("%s names %q, which is not one step: each entry of the list is one step", key, word)
+		}
+		steps = append(steps, parsed[0])
+	}
+	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
+	refusals := append(plan.Supported(task), plan.Validate(task, plan.Deployment{Roles: plan.BuiltinRoles()})...)
+	if len(refusals) > 0 {
+		reasons := make([]string, len(refusals))
+		for i, refusal := range refusals {
+			reasons[i] = refusal.Reason
+		}
+		return nil, fmt.Errorf("%s: %s", key, strings.Join(reasons, " "))
+	}
+	return steps, nil
 }
 
 // readSlackChannels is a project's `slack_channels`: Slack channel ids, each named once. An empty
@@ -317,12 +402,10 @@ func readGates(value *yaml.Node, key string) (*Gates, error) {
 	if value.Tag == "!!null" || value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	for index := 0; index+1 < len(value.Content); index += 2 {
-		// A present merge is refused whatever its value, null included, as the shipped loader
-		// refuses it (parseGates, config.ts).
-		if value.Content[index].Value == "merge" {
-			return nil, errors.New(gatesMergeMessage)
-		}
+	// A present merge is refused whatever its value, null included, as the shipped loader
+	// refuses it (parseGates, config.ts).
+	if namesKey(value, "merge") {
+		return nil, errors.New(gatesMergeMessage)
 	}
 	fields, err := describedMembers(value, key, "gates")
 	if err != nil {
@@ -646,16 +729,18 @@ func daemonEnvironment() []string {
 	return filtered
 }
 
+// commandError is a configured command's failure: how it ended (its exit, or the signal that ended
+// it, procgroup.Ended) and the stderr its run kept, or that it could not run at all.
 func commandError(field string, err error) error {
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		stderr := strings.TrimSpace(string(exit.Stderr))
-		if stderr != "" {
-			return fmt.Errorf("%s failed (exit %d): %s", field, exit.ExitCode(), stderr)
-		}
-		return fmt.Errorf("%s failed (exit %d)", field, exit.ExitCode())
+	var ended *exec.ExitError
+	if !errors.As(err, &ended) {
+		return fmt.Errorf("%s could not run: %w", field, err)
 	}
-	return fmt.Errorf("%s could not run: %w", field, err)
+	end := procgroup.Ended(err)
+	if stderr := strings.TrimSpace(string(ended.Stderr)); stderr != "" {
+		return fmt.Errorf("%s failed (%s): %s", field, end, stderr)
+	}
+	return fmt.Errorf("%s failed (%s)", field, end)
 }
 
 func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
@@ -687,7 +772,7 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 		cfg.GitHubApps = *file.GitHubApps
 	}
 	// A workflow boot needs its Dispatch bearer, its intake, and its own project; each is refused
-	// here, so `legion start --check-config` never passes a file `legion start` refuses.
+	// here, so `legion config check` never passes a file `legion start` refuses.
 	if file.DispatchURL != nil {
 		switch _, ok := cfg.Projects[cfg.Project]; {
 		case cfg.DispatchTokenFile == "":

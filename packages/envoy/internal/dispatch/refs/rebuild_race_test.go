@@ -3,7 +3,6 @@ package refs
 import (
 	"cmp"
 	"context"
-	"errors"
 	"reflect"
 	"slices"
 	"strings"
@@ -11,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -24,18 +23,19 @@ import (
 // lost until something re-indexes that source (stored-document finding 9 of
 // dispatch://INFRA-63/artifact/ha-audit-md, dispatch://INFRA-3285).
 //
-// The two rows below are the two kinds of writer, and they are two rows rather than one because
-// the mechanism differs: an edit of an ask, a comment or a message updates the row its text is
-// in, so a read of that row `for no key update` conflicts with it, while an edit of a document
-// inserts a new version row and takes its OWNER row instead, so a lock on the version row this
-// read finds orders nothing at all. One row per mechanism, each failing for its own reason.
+// Every writer of a source's text takes the source's owner lock before its first read
+// (store.LockOwner): an edit of an ask, a comment or a message, and an edit of a document, which
+// inserts a new version row and never writes the one this read finds. So the rebuild takes that
+// lock too, before it reads (readSourceUnderOwner), and the three rows below are the three owners
+// a source has: the issue of a comment, the issue of an issue's document, and the artifact of a
+// project document. One row per owner, each failing for its own reason.
 //
 // Each row owns both halves of its interleaving, so the scheduler decides neither. readGatePool
 // is the hook: it reports the rebuild's own read of the text, after that read has returned and
 // while the rebuild's transaction is still open, and holds the rebuild there until the test
 // releases it. Inside that window the test asks the database which build it is reading, with one
-// statement and no clock: `for no key update nowait` on the row the fix locks answers
-// 55P03 lock_not_available when the rebuild holds it, and succeeds when it does not.
+// statement and no clock: a try of the owner lock the fix takes (store.TryLockOwners) is refused
+// when the rebuild holds it, and taken when it does not.
 //
 // So each build has one outcome rather than a likely one. With the lock the edit is the writer
 // that waits, as a live editor does, and it lands after the rebuild's replacement, whose edges it
@@ -52,28 +52,29 @@ func TestARebuildBesideAnEditKeepsTheEditsReferences(t *testing.T) {
 		insertResolverIssue(t, tx, "ACME-2", 2)
 	})
 
-	gate := newReadGate("from comments where id")
+	gate := newReadGate("coalesce(edited_at, created_at) from comments where id")
 	defer gate.releaseRebuild()
 	rebuilt := gate.rebuild(t, ctx, database)
 
 	// Which build this is, asked of the database rather than of the clock: the rebuild's read
-	// of the comment either took that row's lock or did not.
+	// of the comment either took its issue's owner lock or did not.
+	owner := store.IssueOwner("ACME-1")
 	probe := beginProbe(t, ctx, database.Pool, gate)
-	locked := probeRefused(t, ctx, probe, gate,
-		`select true from comments where id = $1::uuid for no key update nowait`, source)
+	locked := probeRefused(t, ctx, probe, gate, owner)
 
 	edit := func(tx pgx.Tx) {
+		lockOwnerOrFail(t, ctx, tx, owner)
 		editText(t, ctx, tx,
-			`update comments set body = $2 where id = $1::uuid`, "comment", source, editedComment)
+			`update comments set body = $2 where id = $1::uuid`, "comment", source, editedComment, prefixAuthor)
 	}
 	gate.order(t, ctx, database.Pool, probe, locked, rebuilt, edit)
 
 	wantRefs(t, database.Pool, "comment", source, []Target{{"issue", "ACME-2"}})
 }
 
-// The document path of the same race, which the lock above does not reach: a document edit never
-// writes the version row the rebuild reads, so the row the rebuild must take is the one that
-// edit takes, its owner row - the issue row here, the artifact row for a project document.
+// The document path of the same race: a document edit never writes the version row the rebuild
+// reads, and holds its owner's lock while it inserts the next one, the issue's here, the
+// artifact's for a project document.
 func TestARebuildBesideADocumentEditKeepsTheEditsReferences(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -90,29 +91,29 @@ func TestARebuildBesideADocumentEditKeepsTheEditsReferences(t *testing.T) {
 	defer gate.releaseRebuild()
 	rebuilt := gate.rebuild(t, ctx, database)
 
-	// The owner row is what a document writer takes, so it is what this asks about.
+	// The owner lock is what a document writer takes, so it is what this asks about.
+	owner := store.IssueOwner("ACME-1")
 	probe := beginProbe(t, ctx, database.Pool, gate)
-	locked := probeRefused(t, ctx, probe, gate,
-		`select true from issues where key = $1 for no key update nowait`, "ACME-1")
+	locked := probeRefused(t, ctx, probe, gate, owner)
 
 	edit := func(tx pgx.Tx) {
-		lockDocumentOwnerOrFail(t, ctx, tx, document)
+		lockOwnerOrFail(t, ctx, tx, owner)
 		if _, err := tx.Exec(ctx, `
 			insert into artifact_versions (artifact_id, number, markdown) values ($1, 2, $2)
 		`, document, editedDocument); err != nil {
 			t.Fatalf("write the edited document version: %v", err)
 		}
-		writeEdges(t, ctx, tx, "artifact", document, editedDocument)
+		writeEdges(t, ctx, tx, "artifact", document, editedDocument, model.Actor{})
 	}
 	gate.order(t, ctx, database.Pool, probe, locked, rebuilt, edit)
 
 	wantRefs(t, database.Pool, "artifact", document, []Target{{"issue", "ACME-2"}})
 }
 
-// The same race for a PROJECT document, whose owner is its own artifact row rather than an issue:
-// lockDocumentOwner takes one row or the other, and this is the branch the row above never
-// reaches. A project document stands under no issue, so a writer of it takes the artifact row
-// (lockArtifactOwner's `issue_key is null` arm), and that is the row this probe asks about.
+// The same race for a PROJECT document, whose owner is the artifact itself rather than an issue:
+// store.OwnerOf answers one or the other, and this is the arm the row above never reaches. A
+// project document stands under no issue, so a writer of it takes the artifact's owner lock
+// (lockArtifactOwner's `issue_key is null` arm), and that is the lock this probe asks about.
 func TestARebuildBesideAProjectDocumentEditKeepsTheEditsReferences(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -129,19 +130,20 @@ func TestARebuildBesideAProjectDocumentEditKeepsTheEditsReferences(t *testing.T)
 	defer gate.releaseRebuild()
 	rebuilt := gate.rebuild(t, ctx, database)
 
-	// The artifact row is what a writer of a project document takes, so it is what this asks about.
+	// The artifact's owner lock is what a writer of a project document takes, so it is what this
+	// asks about.
+	owner := store.ArtifactOwner(document)
 	probe := beginProbe(t, ctx, database.Pool, gate)
-	locked := probeRefused(t, ctx, probe, gate,
-		`select true from artifacts where id = $1::uuid for no key update nowait`, document)
+	locked := probeRefused(t, ctx, probe, gate, owner)
 
 	edit := func(tx pgx.Tx) {
-		lockDocumentOwnerOrFail(t, ctx, tx, document)
+		lockOwnerOrFail(t, ctx, tx, owner)
 		if _, err := tx.Exec(ctx, `
 			insert into artifact_versions (artifact_id, number, markdown) values ($1, 2, $2)
 		`, document, editedDocument); err != nil {
 			t.Fatalf("write the edited project document version: %v", err)
 		}
-		writeEdges(t, ctx, tx, "artifact", document, editedDocument)
+		writeEdges(t, ctx, tx, "artifact", document, editedDocument, model.Actor{})
 	}
 	gate.order(t, ctx, database.Pool, probe, locked, rebuilt, edit)
 
@@ -149,7 +151,7 @@ func TestARebuildBesideAProjectDocumentEditKeepsTheEditsReferences(t *testing.T)
 }
 
 // insertProjectDocument writes a document of project rather than of an issue: its artifact row
-// carries no issue_key, which is what makes its own row the owner a writer locks.
+// carries no issue_key, which is what makes the artifact itself the owner a writer locks.
 func insertProjectDocument(t *testing.T, tx pgx.Tx, project, slug string) string {
 	t.Helper()
 	var id string
@@ -170,7 +172,7 @@ const (
 )
 
 // readGate holds a rebuild inside its transaction, once that rebuild has read the text of the
-// source whose read statement names match.
+// source whose read statement holds match.
 type readGate struct {
 	match   string
 	once    sync.Once
@@ -214,7 +216,7 @@ func (g *readGate) rebuild(t *testing.T, ctx context.Context, database *store.St
 func (g *readGate) order(t *testing.T, ctx context.Context, pool Pool, probe pgx.Tx, locked bool, rebuilt chan error, edit func(pgx.Tx)) {
 	t.Helper()
 	if locked {
-		// The rebuild holds the row, so the edit is a writer that waits. It waits here by
+		// The rebuild holds the owner, so the edit is a writer that waits. It waits here by
 		// letting the rebuild finish, which is what the lock makes it do in a server.
 		_ = probe.Rollback(ctx)
 		g.releaseRebuild()
@@ -224,8 +226,8 @@ func (g *readGate) order(t *testing.T, ctx context.Context, pool Pool, probe pgx
 		writeInTx(t, ctx, pool, edit)
 		return
 	}
-	// Nothing holds the row, so the edit goes first and in full, and the rebuild writes after
-	// it from the text it read before it.
+	// Nothing holds the owner, so the edit goes first and in full, holding the lock the probe
+	// took, and the rebuild writes after it from the text it read before it.
 	edit(probe)
 	if err := probe.Commit(ctx); err != nil {
 		t.Fatalf("commit the edit: %v", err)
@@ -237,7 +239,7 @@ func (g *readGate) order(t *testing.T, ctx context.Context, pool Pool, probe pgx
 }
 
 // beginProbe opens the transaction the edit runs in, which first asks whether the rebuild holds
-// the row.
+// the owner.
 func beginProbe(t *testing.T, ctx context.Context, pool Pool, gate *readGate) pgx.Tx {
 	t.Helper()
 	probe, err := pool.Begin(ctx)
@@ -247,47 +249,44 @@ func beginProbe(t *testing.T, ctx context.Context, pool Pool, gate *readGate) pg
 	return probe
 }
 
-// probeRefused reports whether the rebuild holds the row this statement asks for, which is the
-// question `nowait` has the server answer: 55P03 is the lock the fix takes, and no error is its
-// absence.
-func probeRefused(t *testing.T, ctx context.Context, probe pgx.Tx, gate *readGate, sql string, arg any) bool {
+// probeRefused reports whether the rebuild holds owner's lock, which is the question a try of
+// that lock has the server answer without waiting: refused is the lock the fix takes, and taken
+// is its absence, after which the probe holds the lock the edit then writes under.
+func probeRefused(t *testing.T, ctx context.Context, probe pgx.Tx, gate *readGate, owner store.Owner) bool {
 	t.Helper()
-	err := probe.QueryRow(ctx, sql, arg).Scan(new(bool))
-	var refused *pgconn.PgError
-	if errors.As(err, &refused) && refused.Code == "55P03" {
-		return true
-	}
+	taken, err := store.TryLockOwners(ctx, probe, owner)
 	if err != nil {
 		_ = probe.Rollback(ctx)
-		t.Fatalf("ask whether the rebuild holds the row an edit takes: %v", err)
+		t.Fatalf("ask whether the rebuild holds the owner lock an edit takes: %v", err)
 	}
-	return false
+	return len(taken) == 0
 }
 
 // editText writes new text with one statement and then the edges of that text, as a live writer
-// of an ask, a comment or a message does.
-func editText(t *testing.T, ctx context.Context, tx pgx.Tx, sql, kind, id, body string) {
+// of an ask, a comment or a message does, for writer, the author the source's row records.
+func editText(t *testing.T, ctx context.Context, tx pgx.Tx, sql, kind, id, body string, writer model.Actor) {
 	t.Helper()
 	if _, err := tx.Exec(ctx, sql, id, body); err != nil {
 		t.Fatalf("write the edited text: %v", err)
 	}
-	writeEdges(t, ctx, tx, kind, id, body)
+	writeEdges(t, ctx, tx, kind, id, body, writer)
 }
 
-// writeEdges stores the edges of one text, as every writer does after it writes.
-func writeEdges(t *testing.T, ctx context.Context, tx pgx.Tx, kind, id, body string) {
+// writeEdges stores the edges of one text, as every writer does after it writes, its short ids
+// resolved for writer, the author the source records.
+func writeEdges(t *testing.T, ctx context.Context, tx pgx.Tx, kind, id, body string, writer model.Actor) {
 	t.Helper()
-	located := NewReader(ctx, tx, kind, id, resolverServer).Mentions(body)
+	located := NewReader(ctx, tx, writer, kind, id, resolverServer).Mentions(body)
 	if _, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), nil); err != nil {
 		t.Fatalf("write the edges of the edited text: %v", err)
 	}
 }
 
-// lockDocumentOwnerOrFail takes the owner row a document writer takes before it writes.
-func lockDocumentOwnerOrFail(t *testing.T, ctx context.Context, tx pgx.Tx, document string) {
+// lockOwnerOrFail takes the owner lock every writer of a source takes before it writes.
+func lockOwnerOrFail(t *testing.T, ctx context.Context, tx pgx.Tx, owner store.Owner) {
 	t.Helper()
-	if err := lockDocumentOwner(ctx, tx, document); err != nil {
-		t.Fatalf("lock the document's owner as a writer does: %v", err)
+	if err := store.LockOwner(ctx, tx, owner); err != nil {
+		t.Fatalf("lock the source's owner as a writer does: %v", err)
 	}
 }
 
@@ -318,7 +317,9 @@ func wantRefs(t *testing.T, q Queryer, kind, id string, want []Target) {
 }
 
 // readGatePool is a Pool that reports each read a transaction of the rebuild makes, with the
-// statement it made, once that read has returned.
+// statement it made, once that read has returned: a QueryRow's once it is scanned, and each
+// statement of a batch once the batch is closed, which is how the text is read after the owner
+// lock (store.LockOwnerAndRead).
 type readGatePool struct {
 	Pool
 	read func(sql string)
@@ -339,6 +340,28 @@ type readGateTx struct {
 
 func (t readGateTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	return readGateRow{Row: t.Tx.QueryRow(ctx, sql, args...), sql: sql, read: t.read}
+}
+
+func (t readGateTx) SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults {
+	sqls := make([]string, len(b.QueuedQueries))
+	for index, queued := range b.QueuedQueries {
+		sqls[index] = queued.SQL
+	}
+	return readGateBatch{BatchResults: t.Tx.SendBatch(ctx, b), sqls: sqls, read: t.read}
+}
+
+type readGateBatch struct {
+	pgx.BatchResults
+	sqls []string
+	read func(sql string)
+}
+
+func (b readGateBatch) Close() error {
+	err := b.BatchResults.Close()
+	for _, sql := range b.sqls {
+		b.read(sql)
+	}
+	return err
 }
 
 type readGateRow struct {

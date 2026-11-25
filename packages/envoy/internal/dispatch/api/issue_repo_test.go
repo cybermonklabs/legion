@@ -33,12 +33,13 @@ func lastIssueEventPayload(t *testing.T, database *store.Store, key string) map[
 
 // An issue's repository: its own when set, else its nearest ancestor's, else the project's default,
 // else none; every list row, the detail and every issue event carry both the own field and the
-// resolved one. A repository not mapped to the project is refused by name.
+// resolved one. Its own is any `owner/name`, whether or not it is any project's default. Only a
+// value that is not `owner/name` is refused.
 func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE", "default": true}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/gadgets", map[string]any{"project": "CORE"}, "alice")
+	createTestProject(t, handler, "CORE")
+	setDefaultRepository(t, handler, "CORE", "acme/widgets")
 
 	root := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Root"}, "alice"))
 	if root.Repo != nil || root.ResolvedRepo == nil || *root.ResolvedRepo != "acme/widgets" {
@@ -89,27 +90,49 @@ func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
 	if payload["repo"] != nil || payload["resolved_repo"] != "acme/gadgets" {
 		t.Fatalf("issue.updated payload repo=%v resolved_repo=%v, want null and acme/gadgets", payload["repo"], payload["resolved_repo"])
 	}
-	for _, bad := range []struct{ repo, code string }{
-		{"acme/unmapped", "REPO_NOT_MAPPED"},
-		{"not-a-repo", "INVALID_ISSUE"},
+	// An issue's own repository is any `owner/name` (INFRA-2543 R3): its project's default,
+	// another project's default, and one no project names are each taken, by the create route
+	// and by the patch route, and each is what the issue then resolves to.
+	createTestProject(t, handler, "OTHER")
+	setDefaultRepository(t, handler, "OTHER", "other/tools")
+	for _, taken := range []struct{ name, repo string }{
+		{"CORE's default", "acme/widgets"},
+		{"OTHER's default", "other/tools"},
+		{"a repository no project names", "acme/elsewhere"},
 	} {
-		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+leaf.Key, map[string]any{"repo": bad.repo}, "alice")
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), bad.code) {
-			t.Fatalf("patch repo %q: status=%d body=%s, want 400 %s", bad.repo, response.Code, response.Body.String(), bad.code)
+		patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+leaf.Key, map[string]any{"repo": taken.repo}, "alice")
+		if patched.Code != http.StatusOK {
+			t.Fatalf("patch the leaf's repo to %s (%s): status=%d body=%s, want 200", taken.repo, taken.name, patched.Code, patched.Body.String())
 		}
-		response = dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Bad " + bad.repo, "repo": bad.repo, "force": true}, "alice")
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), bad.code) {
-			t.Fatalf("create with repo %q: status=%d body=%s, want 400 %s", bad.repo, response.Code, response.Body.String(), bad.code)
+		if issue := decodeBody[model.Issue](t, patched); issue.Repo == nil || *issue.Repo != taken.repo || issue.ResolvedRepo == nil || *issue.ResolvedRepo != taken.repo {
+			t.Fatalf("patched leaf repo=%v resolved=%v, want its own %s (%s)", issue.Repo, issue.ResolvedRepo, taken.repo, taken.name)
 		}
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Created on " + taken.repo, "repo": taken.repo, "force": true}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create with repo %s (%s): status=%d body=%s, want 201", taken.repo, taken.name, response.Code, response.Body.String())
+		}
+		if issue := decodeBody[model.Issue](t, response); issue.Repo == nil || *issue.Repo != taken.repo || issue.ResolvedRepo == nil || *issue.ResolvedRepo != taken.repo {
+			t.Fatalf("created issue repo=%v resolved=%v, want its own %s (%s)", issue.Repo, issue.ResolvedRepo, taken.repo, taken.name)
+		}
+	}
+	// A value that is not `owner/name` is refused by both routes, as it was.
+	const notARepo = "not-a-repo"
+	response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+leaf.Key, map[string]any{"repo": notARepo}, "alice")
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "INVALID_ISSUE") {
+		t.Fatalf("patch repo %q: status=%d body=%s, want 400 INVALID_ISSUE", notARepo, response.Code, response.Body.String())
+	}
+	response = dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Bad " + notARepo, "repo": notARepo, "force": true}, "alice")
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "INVALID_ISSUE") {
+		t.Fatalf("create with repo %q: status=%d body=%s, want 400 INVALID_ISSUE", notARepo, response.Code, response.Body.String())
 	}
 }
 
 // A project with no default and an issue chain naming none resolves to none: null on list, detail and
 // events, never an error.
 func TestIssueRepoResolvesToNoneWithoutADefault(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE"}, "alice")
+	createTestProject(t, handler, "CORE")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Alone"}, "alice"))
 	if issue.Repo != nil || issue.ResolvedRepo != nil {
 		t.Fatalf("repo=%v resolved=%v, want both null", issue.Repo, issue.ResolvedRepo)
@@ -144,10 +167,10 @@ func createChain(t *testing.T, handler http.Handler, project, parent string, len
 // resolves to the repository its root names, in its detail, every list row and its creation
 // event; an issue one link deeper is refused, 409 PARENT_INPUT.
 func TestIssueCreateRefusesAParentPastTheDepthCap(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE", "default": true}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/gadgets", map[string]any{"project": "CORE"}, "alice")
+	createTestProject(t, handler, "CORE")
+	setDefaultRepository(t, handler, "CORE", "acme/widgets")
 	root := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Root", "repo": "acme/gadgets"}, "alice"))
 	keys := append([]string{root.Key}, createChain(t, handler, "CORE", root.Key, parentDepthCap)...) // keys[d] is d links below the root
 	listed := map[string]model.IssueSummary{}
@@ -176,6 +199,7 @@ func TestIssueCreateRefusesAParentPastTheDepthCap(t *testing.T) {
 // A reparent counts the moved issue's subtree: it is refused when the subtree's deepest issue
 // would sit more than 32 links below its new root, even though neither chain alone is that deep.
 func TestIssuePatchRefusesAReparentPastTheDepthCap(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
 	top := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Top"}, "alice"))
@@ -196,6 +220,7 @@ func TestIssuePatchRefusesAReparentPastTheDepthCap(t *testing.T) {
 // migration 0113 refuses to apply while one exists, so after it only a direct database write, or an
 // earlier release left serving against the rollout rule, makes one. This test writes one directly.
 func TestIssueParentRefusalPastTheCapSaysMoreThan32Links(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "LEG", "name": "Legacy"}, "alice")
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -226,10 +251,11 @@ func TestIssueParentRefusalPastTheCapSaysMoreThan32Links(t *testing.T) {
 // 0113 refuses to apply while one exists, so after it only a direct database write, or an earlier
 // release left serving against the rollout rule, makes one. This test writes one directly.
 func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "DEEP", "name": "Deep"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "DEEP", "default": true}, "alice")
+	createTestProject(t, handler, "DEEP")
+	setDefaultRepository(t, handler, "DEEP", "acme/widgets")
 	const length = 2000 // DEEP-1 is the root; DEEP-n is n-1 links below it
 	if _, err := database.Pool.Exec(ctx, `
 		insert into issues (key, project_key, number, title, parent_key, created_by, rank)
@@ -240,22 +266,34 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 	`, length); err != nil {
 		t.Fatalf("insert a %d-issue chain: %v", length, err)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
+	// The walk's cost is its steps, the rows its recursive term makes (repo_chain): one for each
+	// issue and one per link above it up to the cap, so the issue n links below the root costs
+	// min(n, parentDepthCap)+1 of them. A walk that climbed every chain to its root would make
+	// 2,001,000 here rather than the 65,472 a capped one makes.
+	var steps int
+	if err := database.Pool.QueryRow(ctx, `
+		with recursive subjects as (select i.key from issues i where i.project_key = 'DEEP'),
+		`+refs.IssueRepoTerms+`
+		select count(*) from repo_chain`).Scan(&steps); err != nil {
+		t.Fatalf("count the steps of the walk of %d issues: %v", length, err)
 	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local statement_timeout = '10s'`); err != nil {
-		t.Fatalf("set statement_timeout: %v", err)
+	want := 0
+	for below := range length {
+		want += min(below, parentDepthCap) + 1
+	}
+	if steps != want {
+		t.Fatalf("the walk of a %d-issue chain took %d steps, want %d: one per issue and one per link within %d links above it",
+			length, steps, want, parentDepthCap)
 	}
 	started := time.Now()
-	rows, err := tx.Query(ctx, `
+	rows, err := database.Pool.Query(ctx, `
 		with recursive subjects as (select i.key from issues i where i.project_key = 'DEEP'),
 		`+refs.IssueRepoTerms+`
 		select i.key, `+refs.IssueRepoColumns+` from issues i `+refs.IssueRepoJoin+` where i.project_key = 'DEEP'`)
 	if err != nil {
 		t.Fatalf("walk %d issues: %v", length, err)
 	}
+	defer rows.Close()
 	resolved, refused := 0, 0
 	for rows.Next() {
 		var key string
@@ -275,7 +313,7 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("walk %d issues in a %d-link chain within 10s: %v", length, length-1, err)
+		t.Fatalf("walk %d issues in a %d-link chain: %v", length, length-1, err)
 	}
 	t.Logf("walked %d issues of a %d-link chain in %s", length, length-1, time.Since(started))
 	if resolved != parentDepthCap+1 || refused != length-parentDepthCap-1 {
@@ -291,9 +329,10 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 // A parent chain that loops (which no API write can make) has no answer: the read fails loudly
 // rather than giving the project's default.
 func TestIssueRepoRefusesToResolveALoopedParentChain(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE", "default": true}, "alice")
+	createTestProject(t, handler, "CORE")
+	setDefaultRepository(t, handler, "CORE", "acme/widgets")
 	top := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Top"}, "alice"))
 	below := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Below", "parent": top.Key, "force": true}, "alice"))
 	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, below.Key, top.Key); err != nil {
@@ -308,9 +347,10 @@ func TestIssueRepoRefusesToResolveALoopedParentChain(t *testing.T) {
 
 // The claim and its release are issue events too, and carry the repository as the others do.
 func TestIssueRepoRidesTheClaimEvents(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE", "default": true}, "alice")
+	createTestProject(t, handler, "CORE")
+	setDefaultRepository(t, handler, "CORE", "acme/widgets")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Claimed"}, "alice"))
 	for _, method := range []string{http.MethodPost, http.MethodDelete} {
 		if response := dispatchRequest(t, handler, method, "/api/v1/issues/"+issue.Key+"/claim", map[string]any{}, "alice"); response.Code != http.StatusOK {
@@ -325,9 +365,9 @@ func TestIssueRepoRidesTheClaimEvents(t *testing.T) {
 
 // A closed issue takes no repository write, as it takes no other field but its rank and components.
 func TestIssueRepoIsRefusedOnAClosedIssue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE"}, "alice")
+	createTestProject(t, handler, "CORE")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Done"}, "alice"))
 	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
@@ -335,5 +375,70 @@ func TestIssueRepoIsRefusedOnAClosedIssue(t *testing.T) {
 	response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"repo": "acme/widgets"}, "alice")
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "ISSUE_CLOSED") {
 		t.Fatalf("set repo on a closed issue: status=%d body=%s, want 409 ISSUE_CLOSED", response.Code, response.Body.String())
+	}
+}
+
+// A create and a patch that name a repository by the old name of a rename pair, in any case,
+// store its new name, and so does each link they store: the URL of an imported GitHub issue and
+// the external links of a patch. A name and a URL that only begin like the old name are stored as
+// given. A link resent under the old name to a closed issue is the link it has, so the closed
+// issue takes it.
+func TestAnIssueWriteStoresARenamedRepositoryUnderItsNewName(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{
+		renames: refs.NewRenames([]store.RepoRename{{From: "sjawhar/legion", To: "cybermonklabs/legion"}}),
+	})
+	createTestProject(t, handler, "INFRA")
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "INFRA", "title": "On the old name", "repo": "SJawhar/Legion"}, "alice")
+	if issue := decodeBody[model.Issue](t, created); created.Code != http.StatusCreated || issue.Repo == nil || *issue.Repo != "cybermonklabs/legion" {
+		t.Fatalf("create with repo SJawhar/Legion: status=%d body=%s, want cybermonklabs/legion", created.Code, created.Body.String())
+	}
+	smoke := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "INFRA", "title": "On the smoke repository", "repo": "sjawhar/legion-smoke", "force": true}, "alice"))
+	if smoke.Repo == nil || *smoke.Repo != "sjawhar/legion-smoke" {
+		t.Fatalf("create with repo sjawhar/legion-smoke stored %v, want it as given", smoke.Repo)
+	}
+	imported := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "INFRA", "external": "sjawhar/legion#1955"}, "alice")
+	if imported.Code != http.StatusCreated {
+		t.Fatalf("import sjawhar/legion#1955: status=%d body=%s, want 201", imported.Code, imported.Body.String())
+	}
+	importedKey := decodeBody[model.Issue](t, imported).Key
+
+	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+smoke.Key, map[string]any{
+		"repo": "sjawhar/legion.git",
+		"external_links": []map[string]string{
+			{"url": "https://github.com/SJawhar/Legion/pull/7", "kind": "url"},
+			{"url": "https://github.com/sjawhar/legion-smoke/issues/599", "kind": "url"},
+		},
+	}, "alice")
+	if issue := decodeBody[model.Issue](t, patched); patched.Code != http.StatusOK || issue.Repo == nil || *issue.Repo != "cybermonklabs/legion" {
+		t.Fatalf("patch with repo sjawhar/legion.git: status=%d body=%s, want cybermonklabs/legion", patched.Code, patched.Body.String())
+	}
+	links := func() string {
+		t.Helper()
+		var stored string
+		if err := database.Pool.QueryRow(context.Background(), `
+			select string_agg(issue_key || ' ' || url, ' | ' order by url) from issue_external_links
+		`).Scan(&stored); err != nil {
+			t.Fatalf("read the stored links: %v", err)
+		}
+		return strings.ReplaceAll(strings.ReplaceAll(stored, importedKey, "IMPORTED"), smoke.Key, "SMOKE")
+	}
+	const want = "IMPORTED https://github.com/cybermonklabs/legion/issues/1955 | " +
+		"SMOKE https://github.com/cybermonklabs/legion/pull/7 | SMOKE https://github.com/sjawhar/legion-smoke/issues/599"
+	if got := links(); got != want {
+		t.Fatalf("the stored links = %s, want %s", got, want)
+	}
+
+	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+smoke.Key, map[string]any{"status": "done"}, "alice"); closed.Code != http.StatusOK {
+		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
+	}
+	resent := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+smoke.Key, map[string]any{
+		"external_links": []map[string]string{{"url": "https://github.com/sjawhar/legion/pull/7", "kind": "url"}},
+	}, "alice")
+	if resent.Code != http.StatusOK {
+		t.Fatalf("resend a link under the old name to the closed issue: status=%d body=%s, want 200", resent.Code, resent.Body.String())
+	}
+	if got, want := links(), "IMPORTED https://github.com/cybermonklabs/legion/issues/1955 | SMOKE https://github.com/cybermonklabs/legion/pull/7"; got != want {
+		t.Fatalf("the stored links after the resend = %s, want %s", got, want)
 	}
 }

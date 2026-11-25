@@ -229,7 +229,9 @@ export interface StallTold {
   readonly evidenceWritten: boolean;
   /** The owner was told. A listener that refuses the publish, and a session with Envoy off, leave
    * this false; the ladder goes on, because an owner that cannot be reached is no reason to leave
-   * a worker stuck. */
+   * a worker stuck. A notice the listener refused for the session's send rate is sent again in the
+   * background (`packages/pi-legion/src/stall-evidence.ts`), so a later telling of the same call
+   * answers true once a resend has told the owner, where the first answered false. */
   readonly ownerTold: boolean;
 }
 
@@ -330,7 +332,8 @@ export interface StallWatchdog {
   /** `session_switch`, `session_branch`, `session_tree`, `session_shutdown`: this session's calls
    * are not this watch's business any more. */
   readonly sessionChanged: () => void;
-  /** The 5-second sweep: it judges every open call and carries each overdue one one step. */
+  /** The sweep, every `stallSweepMs` (`./stall-limits`): it judges every open call and carries
+   *  each overdue one one step. */
   readonly sweep: () => Promise<void>;
   /** The calls open now, newest last. */
   readonly openCalls: () => readonly StallCall[];
@@ -503,7 +506,7 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
    * an assistant message that ended aborted. Closing one call leaves it standing, so a second
    * call of the same turn takes no second abort. */
   let turnAborted: string | undefined;
-  /** One sweep at a time: a step can outlast the 5-second tick that armed it. */
+  /** One sweep at a time: a step can outlast the tick that armed it. */
   let sweeping = false;
   /** Whether this worker is watched at all. A `callBoundMs` of 0 is the watch off for it
    * entirely, deadline-judged calls included, so no call is written down here: the two handlers

@@ -30,11 +30,17 @@ import (
 // (record.AttemptRun), which the judgement carries: both fuzzes settle heads, so every judgement
 // with a check run in it reads differently, and a settlement that is newer for some names and
 // older for others is applied per name now rather than dropped whole (ClassifySettlement), which
-// moves what the fences of the run fuzz's several heads come to. What they fence is this release
-// against itself: a daemon running ahead of its listener judges as recorded here, so a later
-// change that moves that judgement is seen rather than deployed.
+// moves what the fences of the run fuzz's several heads come to. The run fuzz's run-1 digest moved
+// once more with the fence the pull request remembers for each settled head (SettledHeads,
+// SettlementFor): in two of its histories a head's fence was reset - the branch left the head and
+// came back, or a reopen - and a settlement of that head with an older run of ci than one applied
+// before was delivered after, which that memory finds stale where the release before applied it.
+// Weighing such a settlement against the head's whole remembered fence, rather than its runs alone,
+// moved no digest: the fuzz's settlements each name one check and no commit status.
+// What they fence is this release against itself: a daemon running ahead of its listener judges
+// as recorded here, so a later change that moves that judgement is seen rather than deployed.
 var noMoveNamedDigests = map[string]string{
-	"run-1":          "766fbd213a31cf9c05dc3144b1a0c4f5388803fa849b83a6a2c7233fdede0b1d",
+	"run-1":          "038c7293085ffb3b0856f09f5235e7c943db824c5610cf54d28f919d9806f964",
 	"run-7":          "ef6c5b97ecbfc20e021c1bc6fe243c6ed18c5af5ae8027643e39eb86bbe17a1f",
 	"move-1-random":  "4335ce7e08f659833a709cda0ceb068f8e7138fba459901fe5d098636c88d4c7",
 	"move-1-bounded": "c7b409783de5e9d58e651d0210051ccca0f39f281d6183a8418785fb432b46f4",
@@ -47,7 +53,7 @@ var noMoveNamedDigests = map[string]string{
 // sender either way - and the move fuzz's are not: there the sender is what tells two pushes of
 // the same two heads apart.
 var noSenderNamedDigests = map[string]string{
-	"run-1":          "766fbd213a31cf9c05dc3144b1a0c4f5388803fa849b83a6a2c7233fdede0b1d",
+	"run-1":          "038c7293085ffb3b0856f09f5235e7c943db824c5610cf54d28f919d9806f964",
 	"run-7":          "ef6c5b97ecbfc20e021c1bc6fe243c6ed18c5af5ae8027643e39eb86bbe17a1f",
 	"move-1-random":  "89200283a3b20a127c13aae45628706f8daf13f666904aa81aeae61eaab52861",
 	"move-1-bounded": "de66fdbccfd11787ee1e1a0a1a2a6e6bf300eaaeaa507ed0ff34d698bee32570",

@@ -20,10 +20,14 @@
 # the path the seam carries, and the two readings differ nowhere else.
 # The origin's whole state is one directory: `blobs/sha256:<digest>` is what the package holds,
 # `manifests/<tag>` is what a tag resolves to, `assets/<path>` is what the release host serves,
-# and `flags/<name>` are the three answers a case asks the origin for — `blob-head-404` for a
-# package that keeps no blob, `absolute-location` for an upload location written as a whole URL,
-# and `no-query-location` for one written with no query. It appends one line per request to
-# `requests.log`, which is what a case reads to say what the run read and wrote.
+# and `flags/<name>` are the five answers a case asks the origin for — `blob-head-404` for a
+# package that keeps no blob, `blob-head-redirect` for one that answers a HEAD of a blob with a 302
+# to the address the flag's file holds, `store` for an origin that is the store such a redirect
+# points at, which answers a HEAD of a blob it holds with no bearer asked for, as a signed address
+# asks for none, `absolute-location` for an upload location written as a whole URL, and
+# `no-query-location` for one written with no query. It appends one line per request to
+# `requests.log`, which is what a case reads to say what the run read and wrote; the store's line
+# names the Authorization header the request carried, or `none`.
 #
 # Each case builds a miniature repository under $work/<case>/repo and symlinks the real script,
 # and the fetch helper it sources, into its .github/scripts/, so the script under test is the
@@ -66,11 +70,30 @@ runner_temp="$work/runner-temp"
 mkdir -p "$runner_temp" "$work/payloads" "$work/bin"
 
 # The curl the cases run, first on their PATH: the real one with `--retry-max-time 1` after the
-# arguments the helper wrote, which is the bound the header above explains.
+# arguments the helper wrote, which is the bound the header above explains. It first writes those
+# arguments down, one per line, appending, into $curl_arguments, which run_mirror empties: a case
+# reads there that no argument of any call held the push credential or the push token.
+# While the file $forwarding_curl exists, it is a curl whose redirects keep every header, as
+# .github/scripts/ci-tools.test.sh's stand-in is in that mode and for the reason that file gives:
+# a call with `-L` gets `--location-trusted` too.
 real_curl=$(command -v curl)
+curl_arguments="$work/curl-arguments"
+forwarding_curl="$work/forwarding-curl"
 cat > "$work/bin/curl" <<SH
 #!/usr/bin/env bash
-exec "$real_curl" "\$@" --retry-max-time 1
+printf '%s\n' "\$@" >> "$curl_arguments"
+forward=()
+if [ -e "$forwarding_curl" ]; then
+  for argument in "\$@"; do
+    case \$argument in
+      --location | -[!-]*L*)
+        forward=(--location-trusted)
+        break
+        ;;
+    esac
+  done
+fi
+exec "$real_curl" "\$@" --retry-max-time 1 \${forward[@]+"\${forward[@]}"}
 SH
 chmod 0755 "$work/bin/curl"
 
@@ -114,6 +137,7 @@ INNER_CONFIG=$(config_digest "$INNER")
 # request appended to requests.log. Its whole state is the directory it is given, so a case says
 # what the package holds by writing a file, and reads what the run did by reading that log.
 cat > "$work/origin.py" <<'PY'
+import base64
 import hashlib
 import http.server
 import os
@@ -171,10 +195,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         return self.rfile.read(length) if length else b""
 
+    def bearer(self, method, path):
+        """Whether the request carries the push token, which the script sends on curl's standard
+        input. One that does not is recorded and refused 401, as the registry refuses it, so every
+        case that reads a request below reads that the bearer reached the registry."""
+        if self.headers.get("Authorization") == "Bearer fixture-token":
+            return True
+        self.record(f"{method} {path} without the bearer")
+        return False
+
     def do_GET(self):
         path, _, query = self.path.partition("?")
         _, path = registry_path(path)
         if path == "/token":
+            # The push credential the run is given (GITHUB_ACTOR:GITHUB_TOKEN), which curl reads in
+            # a config on standard input. A request without it is recorded and refused 401.
+            if self.headers.get("Authorization") != "Basic " + base64.b64encode(b"fixture-actor:fixture-password").decode():
+                self.record(f"GET token {query} without the credential")
+                self.answer(401, b"no credential\n")
+                return
             self.record(f"GET token {query}")
             self.answer(200, b'{"token":"fixture-token"}')
             return
@@ -194,10 +233,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_HEAD(self):
         path, _, _ = self.path.partition("?")
         _, path = registry_path(path)
+        if flag("store"):
+            self.record(f"HEAD store {path} {self.headers.get('Authorization') or 'none'}")
+            blob = BLOB.match(path)
+            file = os.path.join(state, "blobs", blob.group("digest")) if blob else ""
+            if not file or not os.path.isfile(file):
+                self.answer_head(404, 0)
+                return
+            self.answer_head(200, os.path.getsize(file))
+            return
+        if not self.bearer("HEAD", path):
+            self.answer_head(401, 0)
+            return
         blob = BLOB.match(path)
         if blob:
             digest = blob.group("digest")
             self.record(f"HEAD blob {digest}")
+            redirect = os.path.join(state, "flags", "blob-head-redirect")
+            if os.path.isfile(redirect):
+                with open(redirect) as handle:
+                    location = handle.read().strip()
+                self.send_response(302)
+                self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             file = os.path.join(state, "blobs", digest)
             if flag("blob-head-404") or not os.path.isfile(file):
                 self.answer_head(404, 0)
@@ -221,6 +281,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path, _, _ = self.path.partition("?")
         prefix, path = registry_path(path)
         self.read_body()
+        if not self.bearer("POST", path):
+            self.answer(401, b"no bearer\n")
+            return
         uploads = UPLOADS.match(path)
         if uploads:
             self.record("POST upload")
@@ -238,6 +301,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path, _, query = self.path.partition("?")
         _, path = registry_path(path)
         body = self.read_body()
+        if not self.bearer("PUT", path):
+            self.answer(401, b"no bearer\n")
+            return
         upload = UPLOAD.match(path)
         if upload:
             claimed = urllib.parse.parse_qs(query).get("digest", [""])[0]
@@ -385,12 +451,16 @@ fixture() {
 
 # run_mirror [environment assignment…]: the script under test against this case's tree and
 # origin. Sets `out` to the combined output and `status` to the exit code. Not a subshell, so
-# both survive the call.
+# both survive the call. It sets CI_TOOLS_REDIRECT_HTTP=1, which lets the helper follow a
+# redirect to this file's http store and which no workflow sets, as .github/scripts/ci-tools.test.sh
+# explains.
 run_mirror() {
   set +e
+  : > "$curl_arguments"
   out=$(env \
     CI_TOOLS_GHCR_BASE="$base" \
     CI_TOOLS_GITHUB_BASE="$base/github" \
+    CI_TOOLS_REDIRECT_HTTP=1 \
     GITHUB_ACTOR="$ACTOR" \
     GITHUB_TOKEN=fixture-password \
     PATH="$work/bin:$PATH" \
@@ -417,6 +487,13 @@ check "holds the row" "$(contains "$out" "^held whole sha256:$WHOLE ($WHOLE_TAG)
 check "counts it" "$(contains "$out" '^1 ghcr-mirror row(s) held, 0 filled, 0 cold, and 0 row(s) that need no copy$')"
 check "asked for a pull,push token" \
   "$(contains "$(cat "$log")" "^GET token service=ghcr.io&scope=repository:$REGISTRY_PATH:pull,push$")"
+# The registry answers the token request only for the credential (Basic, $ACTOR:fixture-password),
+# so the line above proves it arrived; these prove it, and the token, arrived in no argument.
+check "and curl was handed the token request's URL" \
+  "$(is "$(grep -c "^$base/token?service=ghcr.io&scope=repository:$REGISTRY_PATH:pull,push$" "$curl_arguments" || true)" 1)"
+check "and no argument of any call held the push credential" \
+  "$(is "$(grep -c fixture-password "$curl_arguments" || true)" 0)"
+check "nor the push token" "$(is "$(grep -c fixture-token "$curl_arguments" || true)" 0)"
 check "read the blob and the tag" \
   "$(is "$(requests HEAD)" "HEAD blob sha256:$WHOLE HEAD manifest $WHOLE_TAG ")"
 check "pushed nothing" "$(is "$(requests PUT)$(requests POST)" "")"
@@ -559,6 +636,49 @@ check "the package holds the blob the run pushed" \
   "$(is "$(wc -c < "$state/blobs/sha256:$WHOLE")" "$WHOLE_SIZE")"
 check "and left no temporary file" "$(is "$(temporary_files)" "")"
 
+echo "case: a HEAD the package answers with a redirect to the store that holds the blob"
+# A registry may answer a HEAD of a blob with a redirect to the store that holds it. The run
+# follows it, and the push token goes with the first request alone: the store is read in a
+# request of its own, with no Authorization header, and its answer is the one the row is read by.
+# The run is under the forwarding curl, so a HEAD that left the follow to curl's `-L` hands the
+# store the push token here, and under a .curlrc that names location-trusted, which a HEAD that
+# read it would follow with the push token too.
+fixture head-store whole
+cp "$work/payloads/whole.tar.gz" "$state/blobs/sha256:$WHOLE"
+: > "$state/flags/store"
+store_base=$base
+store_log=$log
+fixture head-redirect whole
+printf 'a manifest\n' > "$state/manifests/$WHOLE_TAG"
+printf '%s\n' "$store_base/v2/$REGISTRY_PATH/blobs/sha256:$WHOLE" > "$state/flags/blob-head-redirect"
+curlrc_home="$work/curlrc-home"
+mkdir -p "$curlrc_home"
+printf 'location-trusted\n' > "$curlrc_home/.curlrc"
+: > "$forwarding_curl"
+run_mirror HOME="$curlrc_home" CURL_HOME="$curlrc_home" XDG_CONFIG_HOME="$curlrc_home"
+rm -f -- "$forwarding_curl"
+check "exits 0" "$(is "$status" 0)"
+check "holds the row, by the store's answer" "$(contains "$out" "^held whole sha256:$WHOLE ($WHOLE_TAG)$")"
+check "the package was asked for the blob and the tag, each with the push token" \
+  "$(is "$(requests HEAD)" "HEAD blob sha256:$WHOLE HEAD manifest $WHOLE_TAG ")"
+check "the store was asked once, with no Authorization header" \
+  "$(is "$(cat "$store_log")" "HEAD store /v2/$REGISTRY_PATH/blobs/sha256:$WHOLE none")"
+check "and nothing is pushed" "$(is "$(requests PUT)$(requests POST)" "")"
+
+echo "case: a HEAD the package answers with a redirect to a file:// address"
+# A store is read at an https address, or an http one under CI_TOOLS_REDIRECT_HTTP=1, and at no
+# other scheme: the 302 is the status this run reads, which it admits nowhere.
+fixture head-file whole
+printf 'a manifest\n' > "$state/manifests/$WHOLE_TAG"
+printf '%s\n' "file:///etc/hostname" > "$state/flags/blob-head-redirect"
+run_mirror
+check "fails" "$(is "$status" 1)"
+check "the helper names the redirect and the scheme it reads a store at" \
+  "$(contains "$out" "^::error::ci-tools: a HEAD of $base/v2/$REGISTRY_PATH/blobs/sha256:$WHOLE answered 302, a redirect to file://, which this run does not follow: it reads a store at an https address alone$")"
+check "and this script refuses the row for that status" \
+  "$(contains "$out" "^::error file=.github/ci-tools.yaml::whole: a HEAD of $base/v2/$REGISTRY_PATH/blobs/sha256:$WHOLE answered 302,")"
+check "and nothing is pushed" "$(is "$(requests PUT)$(requests POST)" "")"
+
 echo "case: an npm row"
 fixture npm-row packaged
 run_mirror
@@ -586,7 +706,7 @@ printf 'a manifest\n' > "$state/manifests/$WHOLE_TAG"
 run_mirror
 check "fails" "$(is "$status" 1)"
 check "naming the row and the word" \
-  "$(contains "$out" "^::error::ci-tools: odd: the manifest's second_source is 's3', and this file reads github-release, ghcr-mirror, npm, pypi and pulumi-releases\$")"
+  "$(contains "$out" "^::error::ci-tools: odd: the manifest's second_source is 's3', and this file reads github-release, ghcr-mirror, npm, pypi, pulumi-releases and helm-releases\$")"
 check "stops at that row, after the row before it was read" \
   "$(contains "$out" "^held whole sha256:$WHOLE ($WHOLE_TAG)\$")"
 check "says of no row that it needs no copy" "$(is "$(contains "$out" 'needs no copy')" false)"

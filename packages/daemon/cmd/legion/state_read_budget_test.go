@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/contracts/fixtures/daemon-api/state.json TestStateReadsADaemonSlowerThanTheOldBudget reads the daemon's state golden as the slow daemon's answer
+
 import (
 	"bytes"
 	"net/http"
@@ -46,7 +48,7 @@ func TestStateReadsADaemonSlowerThanTheOldBudget(t *testing.T) {
 	t.Setenv("LEGION_DAEMON_URL", daemon.URL)
 
 	var stdout, stderr bytes.Buffer
-	if code := runState(t.Context(), nil, &stdout, &stderr); code != 0 {
+	if code := run(t.Context(), []string{"legion", "state"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("legion state = %d, want 0; stderr %s", code, strings.TrimSpace(stderr.String()))
 	}
 	printed := stdout.String()

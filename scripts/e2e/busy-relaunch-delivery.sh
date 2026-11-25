@@ -32,7 +32,8 @@
 #                                the claim row records the turn and the job, and the task is sent
 #                                again behind the sentence naming both
 #
-# Run it from a checkout on a Linux host with go, awk, bash, tar, bun and python3, as
+# Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
+# to start without them), awk, bash, tar, bun and python3, as
 #   LEGION_OMP_PATH=/opt/omp/bin/omp \
 #     LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/busy-relaunch-delivery.sh [--base-commit <rev>]
@@ -130,19 +131,21 @@ base_failures=(
 base_work=''
 base_evidence=''
 
+# control_cleanup prints the negative control's last line through lib/run-verdict.sh, which
+# lib/live-daemon-proof.sh sources: PASS only for a control that reached run_end, negative_control's
+# last statement, once every step failed where it must. A control a signal ended reads FAIL, never
+# the control biting.
 control_cleanup() {
   local status=$?
   [ -z "$base_work" ] || rm -rf "$base_work"
-  if [ "$status" -eq 0 ]; then
-    echo "busy relaunch delivery negative control: PASS in $((SECONDS - started))s (evidence: $base_evidence)"
-  else
-    echo "busy relaunch delivery negative control: FAIL at $check after $((SECONDS - started))s (evidence: $base_evidence)" >&2
-  fi
+  run_verdict "$status" \
+    "busy relaunch delivery negative control: PASS in $((SECONDS - started))s (evidence: $base_evidence)" \
+    "busy relaunch delivery negative control: FAIL at $check after $((SECONDS - started))s (evidence: $base_evidence)"
 }
 
 # negative_control makes the run over the base tree in a subshell of its own — live_daemon_proof
-# ends the shell it runs in, and its EXIT trap is that subshell's — and then reads the base run's
-# proof.log for each step's own failure.
+# ends the shell it runs in, and its EXIT trap and its end mark are that subshell's — and then reads
+# the base run's proof.log for each step's own failure.
 negative_control() {
   local base_sha status expected step assertion line detail tool db_host
   started=$SECONDS
@@ -222,6 +225,7 @@ negative_control() {
     note "as it came: $line"
   done
   pass
+  run_end
 }
 
 if [ -z "$base_commit" ]; then

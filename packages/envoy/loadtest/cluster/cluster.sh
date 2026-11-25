@@ -18,15 +18,20 @@
 #       anchor; a build failure, naming the commits and the compiler's first error), and a
 #       --browsertype-commit that the git store does not hold, whose tree has no
 #       packages/envoy/loadtest/browsertype or whose built browsertype has no -protect or no
-#       -person flag (below), and a --pg-volume that is not a whole number of Gi
+#       -person flag (below), a loadgen that does not build or whose oidc-mint -h lists no
+#       -sub <subject>=<file> (Dispatch's identity at the copy's listener, below), and a
+#       --pg-volume that is not a whole number of Gi
 #       or is above the 240Gi the namespace's quota leaves beside NATS's three 20Gi claims.
 #       Refuses with exit 2 while the lock ConfigMap
-#       dispatch-loadtest-lock exists. Then takes the lock, installs the copy (Postgres 16 CPU /
+#       dispatch-loadtest-lock exists. Then takes the lock, mints the copy's own token issuer
+#       (Dispatch's identity at the copy's listener, below), installs the copy (Postgres 16 CPU /
 #       60Gi on a --pg-volume data volume, default 100Gi, Dispatch 16 / 32Gi, listener 500m /
-#       512Mi, NATS 3 × 2 / 4Gi, runner 8 / 16Gi), builds
-#       loadgen and (with --browsertype-commit) a static browsertype of that commit for browser
-#       typing (below), starts the heartbeat and the sampler, and prints each copy container's
-#       requests and limits and the size of the Postgres data volume.
+#       512Mi, the token issuer 50m / 64Mi, NATS 3 × 2 / 4Gi, runner 8 / 16Gi), checks that the
+#       listener admits Dispatch's token and takes a send's role mark from it, copies the
+#       loadgen and (with --browsertype-commit) the static browsertype of that commit for browser
+#       typing (below) that it built before the lock into the runner, starts the heartbeat and
+#       the sampler, and prints each copy container's requests and limits and the size of the
+#       Postgres data volume.
 #   cluster.sh seed --namespace NS            loadgen seed, seed-refs and seed-finish, then the template
 #                                             database dispatch_seed.
 #   cluster.sh step --namespace NS NAME FACTOR [--duration 10m] [--reads-only] [--typing
@@ -156,6 +161,25 @@
 # <step>/browsertype.txt, and its exit and per-peer sums into <step>/browsertype.json; a peer
 # error is reported, never a step failure.
 #
+# Dispatch's identity at the copy's listener: the listener takes a send's role mark from
+# Dispatch's verified principal alone (ENVOY_DISPATCH_PRINCIPAL), and verifies Dispatch's token
+# against the issuer it discovers (ENVOY_OIDC_ISSUER). A listener that cannot read that issuer's
+# discovery document takes no mark from Dispatch: an older one exits, and a newer one starts and
+# answers that issuer's tokens 503 until it can read it. The namespace's NetworkPolicy lets the
+# copy's pods reach each other and DNS and nothing else, the cluster's own token issuer among the
+# rest, so up makes the copy's own issuer (mint_identity): loadgen oidc-mint generates a P-256 key
+# and signs Dispatch's token with it (iss http://oidc-issuer.<namespace>.svc:8080, sub
+# system:serviceaccount:<namespace>:default, aud ACCOUNT_TOKEN_AUDIENCE, living
+# ACCOUNT_TOKEN_LIFETIME), and keeps the private key in its memory alone. state.json keeps the
+# issuer (oidc_issuer), the key's public half (oidc_key) and the token (secrets.account_token);
+# manifests/oidc-issuer.yaml serves the discovery document and the key set inside the namespace,
+# and manifests/dispatch.yaml mounts the token from the run's Secret as Dispatch's
+# ENVOY_ACCOUNT_TOKEN_FILE. Once the copy is up, up checks that the listener admits that token and,
+# where its build reads role marks, takes a send's role mark from it (check_dispatch_identity), and
+# stops naming the listener's answer when it does not: the replay's role-routed issues need it.
+# The mint runs once the lock is taken, so up checks before the lock that the loadgen it will run
+# answers oidc-mint -sub (loadgen_mints), and the issuer it renders is this namespace's exact one.
+#
 # The Postgres data volume (up --pg-volume, default 100Gi; db-size keeps the same claim): a
 # replay with browser typing on the reference seed filled a 20Gi volume, and Postgres crash-looped
 # with "No space left on device" with the step's load still running. So each step and each replay
@@ -202,7 +226,8 @@
 # names this run or finds no lock: runner_exec and postgres_exec (every kubectl exec that
 # writes, kills or removes in the runner or in postgres-0, the replay's two long streams among
 # them, which carry the bound kube's 300 s would cut them at: runner_exec -t and postgres_exec
-# -t), psql_write (through postgres_exec), runner_put (the kubectl cp into the runner), scale_to
+# -t, and the copy's credentials written for a job, by runner_start -c and replay_checksum),
+# psql_write (through postgres_exec), runner_put (the kubectl cp into the runner), scale_to
 # (the deployments dispatch and listener) and runner_stop (a runner job sent SIGTERM, or
 # SIGKILL, by the pid it recorded). The guard fails closed: a read of the lock
 # that fails is tried LOCK_READ_TRIES times, LOCK_READ_RETRY_SECONDS apart, and once every try
@@ -218,7 +243,7 @@
 # read can fail where the first answered and leave the job running.
 # Reads are unguarded, the retried ones (psql_at, the kube_read execs that cat, test or
 # sha256sum) and the streams that read a pod (a step's files and its heap.txt copied back, the
-# bundle verified, the stored-order check, loadgen replay-checksum) alike, and so is every path
+# bundle verified, the stored-order check) alike, and so is every path
 # that is this run's by construction: up before and at kube_lock_take, down's label-scoped
 # delete and its refusal of another run's lock, the heartbeat's JSON-patch test op, the
 # sampler's and stop_daemon's own processes, nats_box, which picks its pod by the run label,
@@ -227,6 +252,23 @@
 # whose --run names a run other than the one the lock names is refused outright, naming both;
 # status (which reads), collect (which reads this pod's run directory) and down (whose deletes
 # are scoped to the run's label) run then.
+#
+# No credential of the copy is an argument of anything, here or in the runner pod, where every
+# argument of every process is readable by every user of the machine (/proc/<pid>/cmdline). up
+# makes them (random_hex, and the token loadgen oidc-mint writes to a file of mode 600) and gives
+# each to the jq that writes state.json as a file it reads (--rawfile), never as a value. The
+# Dispatch agent token, the listener token and the
+# Postgres URL with its password reach the runner on the standard input of the kubectl exec that
+# starts the loadgen job reading them (runner_start -c, replay_checksum), whose sh writes them
+# into /work/secrets/<job>.<random>, a directory of mode 700 that one start alone claims (mkdir
+# fails on one that is there) with each file mode 600, and loadgen is given their -…-file forms
+# (endpoints). Once the job has ended, however it ended, the sh that waits on it removes that
+# directory, and on a HUP or TERM of that sh too, so none outlives the job that read it and no
+# start removes another's (a detached job's sh ignores INT, as sh does in every background job, so
+# an INT leaves it running with its job); loadgen refuses -token, -listener-token and a -pg that
+# sets a password outright (guard.go). Each manifest's credentials go into its sed script on sed's
+# standard input (render_manifest), the stored-order check takes its URL on standard input too
+# (STORED_ORDER_SCRIPT), and browser typing is given none.
 #
 # Every subcommand needs --namespace (no default; a Legion pod's own namespace is builds), and
 # every kubectl call names it. Subcommands after up find the run from the lock's `run` and its
@@ -276,6 +318,12 @@ ENVOY_IMAGE_REPO=ghcr.io/cybermonklabs/legion/envoy
 PG_IMAGE_PREFIX=mirror.gcr.io/pgvector/pgvector:0.8.1-pg
 SOCAT_IMAGE=mirror.gcr.io/alpine/socat:1.8.0.3
 RUNNER_IMAGE=mirror.gcr.io/library/debian:bookworm-slim
+# Dispatch's identity token at the copy's listener (mint_identity): its audience, the listener's
+# ENVOY_OIDC_AUDIENCE in manifests/listener.yaml, and its life. The life outlasts any run: the
+# runner pod, which every step needs, ends 12 h after up creates it (manifests/runner.yaml), and
+# the token verifies at no listener but this run's, the one that reads this run's key.
+ACCOUNT_TOKEN_AUDIENCE=envoy-listener-loadtest
+ACCOUNT_TOKEN_LIFETIME=168h
 MANIFEST_TYPES='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json'
 # The copy containers the sampler reads and the crash check compares, by role (cgroup.go).
 SAMPLE_ROLES=(dispatch pprof postgres nats-0 nats-1 nats-2 listener runner)
@@ -380,6 +428,12 @@ TRANSIENT_RETRY_SECONDS=5
 
 utc_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# now: the epoch second check_dispatch_identity reads its bound by, and heartbeat_age a lock's age
+# by. cluster.test.sh replaces it with a clock that its fake sleep moves, so the check's 120 s
+# bound costs a test no real second, and an age the test asserts is the age it wrote the lock at,
+# however long a loaded machine took between that write and this read.
+now() { printf %s "$EPOCHSECONDS"; }
+
 # kube ARGS: kubectl in the copy's namespace, bounded by timeout (never --request-timeout, which
 # drops a pod's in-cluster config: kubernetes/kubernetes#93474). kube_for SECONDS ARGS: the same
 # with its own bound.
@@ -416,7 +470,9 @@ kube_read() {
 }
 
 # valid KIND VALUE: VALUE has KIND's shape. Every value cluster.sh puts into a manifest, a URL or a
-# command passes one of these first.
+# command passes one of these first. An issuer is the copy's own alone, the one exact URL of the
+# namespace NS names (manifests/oidc-issuer.yaml): another namespace's would leave the copy's
+# listener verifying against keys outside its namespace.
 valid() {
   local re
   case $1 in
@@ -427,6 +483,9 @@ valid() {
     repo) re='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' ;;
     image) re='^[a-z0-9.-]+\.[a-z]+(:[0-9]+)?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$' ;;
     hex) re='^[0-9a-f]{32,128}$' ;;
+    issuer) [[ ${NS:-} =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ && $2 == "http://oidc-issuer.$NS.svc:8080" ]]; return ;;
+    b64url256) re='^[A-Za-z0-9_-]{43}$' ;;
+    jwt) re='^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$' ;;
     cpu) re='^[1-9][0-9]?$' ;;
     memory) re='^[1-9][0-9]{0,2}Gi$' ;;
     volume) re='^[1-9][0-9]{0,3}Gi$' ;;
@@ -518,7 +577,8 @@ registry_digest() {
     [ -n "$realm" ] || return 1
     token=$(curl -fsS --max-time 30 "$realm?service=$service&scope=repository:$repo:pull" | jq -r '.token // .access_token // empty') || return 1
     [ -n "$token" ] || return 1
-    headers=$(curl -sSI --max-time 30 -H "Authorization: Bearer $token" -H "Accept: $MANIFEST_TYPES" "$url" | tr -d '\r') || return 1
+    # The token reaches curl on standard input from printf, a shell builtin, in no command line.
+    headers=$(printf 'Authorization: Bearer %s' "$token" | curl -sSI --max-time 30 -H @- -H "Accept: $MANIFEST_TYPES" "$url" | tr -d '\r') || return 1
     first=${headers%%$'\n'*}
   fi
   [[ $first =~ ^HTTP/[0-9.]+\ 200 ]] || return 1
@@ -580,12 +640,13 @@ production_file() {
 
 # Every placeholder the manifests hold, and the kind (valid) its value must be.
 declare -A PLACEHOLDER_KIND=(
-  [NAMESPACE]=namespace [RUN_ID]=run [STORAGE_CLASS]=storage_class
+  [NAMESPACE]=namespace [RUN_ID]=run [STORAGE_CLASS]=storage_class [OIDC_ISSUER]=issuer
   [ENVOY_IMAGE]=image [LISTENER_IMAGE]=image [PG_IMAGE]=image [SOCAT_IMAGE]=image [RUNNER_IMAGE]=image
   [PG_TIER]=tier [PG_CPU]=cpu [PG_MEMORY]=memory [PG_VOLUME]=volume
   [PG_MAX_CONNECTIONS]=pg_setting [PG_SHARED_BUFFERS]=pg_setting [PG_EFFECTIVE_CACHE_SIZE]=pg_setting
   [PG_WORK_MEM]=pg_setting [PG_MAINTENANCE_WORK_MEM]=pg_setting [PG_MAX_WAL_SIZE]=pg_setting
-  [PG_PASSWORD]=hex [DISPATCH_TOKEN]=hex [LISTENER_TOKEN]=hex [SIGNING_KEY]=hex
+  [PG_PASSWORD]=hex [DISPATCH_TOKEN]=hex [LISTENER_TOKEN]=hex [SIGNING_KEY]=hex [ACCOUNT_JWT]=jwt
+  [OIDC_KEY_ID]=b64url256 [OIDC_KEY_X]=b64url256 [OIDC_KEY_Y]=b64url256
 )
 
 # render_manifest FILE KEY=VALUE...: FILE with each __KEY__ replaced by its VALUE, which must have
@@ -599,7 +660,7 @@ render_manifest() {
     kind=${PLACEHOLDER_KIND[$key]:-}
     [ -n "$kind" ] || die "render: no placeholder $key"
     if ! valid "$kind" "$value"; then
-      [ "$kind" = hex ] && value='<redacted>'
+      case $kind in hex | jwt) value='<redacted>' ;; esac
       die "render: $key value '$value' is not a valid $kind"
     fi
     script+="s|__${key}__|${value}|g"$'\n'
@@ -612,7 +673,7 @@ render_manifest() {
 
 # manifest_values: every placeholder's value from state.json, as KEY=VALUE lines.
 manifest_values() {
-  jq -r '"NAMESPACE=\(.namespace)", "RUN_ID=\(.run)", "STORAGE_CLASS=\(.storage_class)",
+  jq -r '"NAMESPACE=\(.namespace)", "RUN_ID=\(.run)", "STORAGE_CLASS=\(.storage_class)", "OIDC_ISSUER=\(.oidc_issuer)",
     "ENVOY_IMAGE=\(.images.dispatch)", "LISTENER_IMAGE=\(.images.listener)",
     "PG_IMAGE=\(.images.postgres)", "SOCAT_IMAGE=\(.images.socat)", "RUNNER_IMAGE=\(.images.runner)",
     "PG_TIER=\(.postgres.tier)", "PG_CPU=\(.postgres.cpu)", "PG_MEMORY=\(.postgres.memory)",
@@ -623,8 +684,19 @@ manifest_values() {
     "PG_WORK_MEM=\(.postgres.settings.work_mem)",
     "PG_MAINTENANCE_WORK_MEM=\(.postgres.settings.maintenance_work_mem)",
     "PG_MAX_WAL_SIZE=\(.postgres.settings.max_wal_size)",
+    "ACCOUNT_JWT=\(.secrets.account_token)",
+    "OIDC_KEY_ID=\(.oidc_key.kid)", "OIDC_KEY_X=\(.oidc_key.x)", "OIDC_KEY_Y=\(.oidc_key.y)",
     "PG_PASSWORD=\(.secrets.pg_password)", "DISPATCH_TOKEN=\(.secrets.dispatch_token)",
     "LISTENER_TOKEN=\(.secrets.listener_token)", "SIGNING_KEY=\(.secrets.signing_key)"' "$STATE"
+}
+
+# require_own_issuer: refuse, before anything changes, a run whose state.json a cluster.sh from
+# before the copy's own token issuer wrote. Such a state.json holds the cluster's https issuer and
+# no oidc_key and no account token, so no manifest of it renders again: db-size and redeploy, which
+# render one after they have scaled the copy down, would stop there with the copy left down.
+require_own_issuer() {
+  [ -n "$(state '.oidc_key.kid // empty')" ] ||
+    die "$CMD: run $RUN's state.json holds no oidc_key: a cluster.sh from before the copy served its own token issuer made it, so its manifests no longer render. Nothing was changed. Take it down and start a new run: cluster.sh down --namespace $NS, then cluster.sh up"
 }
 
 # apply_manifest NAME [KUBECTL ARGS...]: manifests/NAME rendered from state.json, applied
@@ -681,7 +753,7 @@ pg_tier() {
 # pass any-run, so that a --run of theirs neither compares nor reads the lock: collect, which
 # only reads the run's directory on this pod (cmd_collect, collect_run), and the daemons, whose
 # parent came through here already -- a lock read of theirs would be an API call with no retry
-# before they write the pidfile that start_daemon waits 5 s for, and a lock that names another
+# before they write the pidfile that start_daemon waits for, and a lock that names another
 # run ends the heartbeat at its patch's test op and the sampler with it. Then the run's directory
 # and state.json, which must name NS and, when it records one, this PID namespace
 # (pid_ns_check); then this command is registered as one that holds the run alive.
@@ -826,17 +898,54 @@ state_set() {
 # loadgen_local ARGS: the run's loadgen on the worker pod, with its root in the run directory.
 loadgen_local() { LOADTEST_ROOT=$RUN_DIR "$LOADGEN" "$@"; }
 
-# endpoints: every endpoint flag of loadgen seed and run (guard.go), into ENDPOINTS.
+# endpoints JOB: every endpoint flag of loadgen seed and run (guard.go), into ENDPOINTS, and the
+# directory in the runner that the job's credentials go in, into JOB_SECRETS: RUNNER_SECRETS/
+# JOB.<random>, so two starts of one job name, of this command or of another one of the run, never
+# share one. The three credentials are their -…-file forms, naming the files runner_start -c and
+# replay_checksum write there (RUNNER_CREDENTIALS), so no credential is an argument of kubectl here
+# or of anything in the runner pod.
 endpoints() {
+  JOB_SECRETS=$RUNNER_SECRETS/$1.$(random_hex 8)
+  [[ $JOB_SECRETS =~ ^/work/secrets/[A-Za-z0-9._-]+$ ]] || die "the runner job name '$1' is not letters, digits, '.', '_' and '-' alone"
   ENDPOINTS=(
-    -url "http://dispatch.$NS.svc:8766" -token "$(state .secrets.dispatch_token)"
-    -listener "http://listener.$NS.svc:9020" -listener-token "$(state .secrets.listener_token)"
+    -url "http://dispatch.$NS.svc:8766" -token-file "$JOB_SECRETS/dispatch-token"
+    -listener "http://listener.$NS.svc:9020" -listener-token-file "$JOB_SECRETS/listener-token"
     -nats "nats://nats.$NS.svc:4222" -nats-mon "http://nats-0.nats-headless.$NS.svc:8222"
-    -pprof "http://dispatch-pprof.$NS.svc:6061" -pg "$(pg_url)" -nats-server-name nats-0
+    -pprof "http://dispatch-pprof.$NS.svc:6061" -pg-file "$JOB_SECRETS/pg-url" -nats-server-name nats-0
   )
 }
 
 pg_url() { printf 'postgres://dispatch:%s@postgres.%s.svc:5432/dispatch?sslmode=disable\n' "$(state .secrets.pg_password)" "$NS"; }
+
+# credentials: the copy's Dispatch agent token, listener token and Postgres URL, one a line, in the
+# order RUNNER_CREDENTIALS writes them: the standard input of the runner call that writes them.
+credentials() {
+  state .secrets.dispatch_token && state .secrets.listener_token && pg_url
+}
+
+# RUNNER_SECRETS is where the runner jobs' credentials live: one directory per start under it
+# (endpoints).
+RUNNER_SECRETS=/work/secrets
+
+# RUNNER_CREDENTIALS: the runner sh's own lines that claim the directory $secrets names and write
+# the three lines of its standard input (credentials) into it, at mode 700, each file mode 600:
+# dispatch-token, listener-token and pg-url, the files endpoints names. The claim is one mkdir,
+# which fails on a directory that is there, so a start never writes into, or removes, another
+# start's. Only sh builtins (read, printf) touch a credential, so none is an argument of a process
+# there either. A claim that fails ends the sh with 1 and removes nothing; a read or a write that
+# fails, or a HUP or TERM that reaches it while it writes, removes the directory and ends the sh,
+# before anything is started (a signal that comes while read waits on standard input is taken once
+# that read returns).
+# shellcheck disable=SC2016 # expanded by the runner's sh
+RUNNER_CREDENTIALS='(umask 077 && mkdir -p -- "${secrets%/*}" && mkdir -- "$secrets") || exit 1; trap "rm -rf -- \"\$secrets\"; exit 143" HUP INT TERM; (umask 077 && for f in dispatch-token listener-token pg-url; do IFS= read -r v && printf "%s\n" "$v" >"$secrets/$f" || exit 1; done) || { rm -rf -- "$secrets"; exit 1; }'
+
+# RUNNER_SECRETS_CLEANUP: the traps of the runner sh that waits on a job given credentials: its
+# EXIT removes the directory $secrets names, and a HUP, INT or TERM exits through that EXIT, which
+# dash, the runner image's sh, runs on no signal it does not trap. A sh started ignoring a signal
+# cannot trap it: a detached job's sh ignores INT, as sh does in every background job, so an INT
+# leaves it and its job running, and the directory goes when the job ends.
+# shellcheck disable=SC2016 # expanded by the runner's sh
+RUNNER_SECRETS_CLEANUP='trap "rm -rf -- \"\$secrets\"" EXIT; trap "exit 143" HUP INT TERM; '
 
 # ---- the lock -------------------------------------------------------------------------------------
 
@@ -916,7 +1025,7 @@ heartbeat_age() {
     echo unknown
     return
   }
-  echo $(($(date -u +%s) - t))
+  echo $(($(now) - t))
 }
 
 # refuse_lock JSON: exit 2, naming the lock's holder and its heartbeat's age; past 15 min it is
@@ -959,15 +1068,37 @@ kube_lock_take() {
 # ---- background daemons -------------------------------------------------------------------------------
 
 # start_daemon NAME: `cluster.sh _NAME` in a session of its own, so it outlives this command and
-# down stops it with its children by its process group. It writes its pidfile itself.
+# down stops it with its children by its process group. It writes its pidfile itself, and this
+# waits for whichever comes first, that pidfile or the daemon's end, with no count of naps: a
+# daemon a loaded machine is slow to start is still starting, not failed. setsid runs the daemon
+# in place, since this shell's background job leads no process group of its own, so $! is the
+# daemon itself; a daemon that has ended is gone or a zombie (pid_running). Job control is off for
+# the start (set +m, undone at return by local -): with it on, as SHELLOPTS=monitor or a sourcing
+# interactive shell gives it, the job would lead its own group, setsid would fork, and $! would be
+# a launcher that exits at once while its daemon lives on.
 start_daemon() {
-  local name=$1 i
+  local name=$1 daemon
+  local -
+  set +m
   setsid bash "$SELF" "_$name" --namespace "$NS" --run "$RUN" >>"$RUN_DIR/logs/$name.log" 2>&1 </dev/null &
-  for ((i = 0; i < 50; i++)); do
-    daemon_alive "$name" && return 0
+  daemon=$!
+  until daemon_alive "$name"; do
+    pid_running "$daemon" || {
+      daemon_alive "$name" && return 0
+      die "the $name daemon ended before this command saw its pidfile name it running; see $RUN_DIR/logs/$name.log"
+    }
     sleep 0.1
   done
-  die "the $name daemon did not start; see $RUN_DIR/logs/$name.log"
+}
+
+# pid_running PID: PID is a process that has not ended. A child that has ended stays a zombie,
+# which kill -0 still finds, until this shell reaps it. The 2>/dev/null comes before the read's
+# input, so bash's own message for a /proc/PID that is gone is silenced too.
+pid_running() {
+  local stat
+  read -r stat 2>/dev/null <"/proc/$1/stat" || return 1
+  stat=${stat##*) }
+  [ "${stat%% *}" != Z ]
 }
 
 # daemon_alive NAME: NAME's pidfile names a live `cluster.sh _NAME` of this run.
@@ -1576,6 +1707,97 @@ stop_copy() {
   scale_to listener 0
 }
 
+# loadgen_mints BIN: die, naming BIN, when its oidc-mint -h lists no -sub <subject>=<file>. up runs
+# it before the lock on the loadgen it will run: once the lock is taken up mints the copy's token
+# issuer with that loadgen (mint_identity), and one from before oidc-mint would stop up there, with
+# the lock taken and the namespace's objects to remove.
+loadgen_mints() {
+  local help
+  help=$("$1" oidc-mint -h 2>&1 || true)
+  [[ $help == *"-sub <subject>=<file>"* ]] ||
+    die "up: the loadgen up would run ($1) answers no 'oidc-mint -sub <subject>=<file>', which mints the copy's token issuer once the lock is taken; give a loadgen built from a tree that has loadgen oidc-mint"
+}
+
+# mint_identity: the copy's own token issuer and Dispatch's token of it (Dispatch's identity at the
+# copy's listener, above), from loadgen oidc-mint, into state.json: the key's public half, which
+# oidc-mint prints, under oidc_key, and Dispatch's token, which it writes to the file of mode 600
+# its -sub names (<subject>=<file>), under secrets.account_token. jq reads the token from that file
+# (--rawfile), never as an argument, and the file is removed once read.
+mint_identity() {
+  local token key
+  token=$(umask 077 && mktemp "$RUN_DIR/tmp/account-token.XXXXXX") || die "up: making a file for Dispatch's minted token failed"
+  if ! key=$(loadgen_local oidc-mint -issuer "$(state .oidc_issuer)" -audience "$ACCOUNT_TOKEN_AUDIENCE" \
+    -lifetime "$ACCOUNT_TOKEN_LIFETIME" -sub "system:serviceaccount:$NS:default=$token") ||
+    ! jq -e '[.kid, .x, .y] | all(type == "string")' <<<"$key" >/dev/null 2>&1; then
+    rm -f -- "$token"
+    die "up: loadgen oidc-mint failed, so the copy has no token issuer for its listener"
+  fi
+  # shellcheck disable=SC2016 # $key and $t are jq's variables
+  state_set '.oidc_key = ($key | {kid, x, y}) | .secrets.account_token = $t' --argjson key "$key" --rawfile t "$token"
+  rm -f -- "$token"
+  valid b64url256 "$(state '.oidc_key.kid // empty')" && valid b64url256 "$(state '.oidc_key.x // empty')" &&
+    valid b64url256 "$(state '.oidc_key.y // empty')" && valid jwt "$(state '.secrets.account_token // empty')" ||
+    die "up: loadgen oidc-mint answered no P-256 key id, point and token of the shapes the copy's issuer serves"
+  note "minted the copy's token issuer $(state .oidc_issuer) (key $(state .oidc_key.kid)) and Dispatch's token of it for system:serviceaccount:$NS:default, audience $ACCOUNT_TOKEN_AUDIENCE, living $ACCOUNT_TOKEN_LIFETIME"
+}
+
+# IDENTITY_PROBE_SCRIPT: what check_dispatch_identity runs in Dispatch's container, under its sh: a
+# send marked with the role -identity-probe, which no claim can name (internal/roles Valid), and
+# naming no target, on the token ENVOY_ACCOUNT_TOKEN_FILE names, to the listener ENVOY_URL names.
+# It prints the answer's body and then, on a line of its own, its status. The bearer reaches curl
+# on its standard input from printf, a shell builtin, so the token is on no command line.
+# shellcheck disable=SC2016 # expanded by the pod's sh
+IDENTITY_PROBE_SCRIPT='printf "Authorization: Bearer %s\n" "$(cat "$ENVOY_ACCOUNT_TOKEN_FILE")" |
+  curl -sS --max-time 10 -H @- -H "Content-Type: application/json" \
+    --data "{\"message\":\"identity probe\",\"role\":\"-identity-probe\"}" \
+    -w "\n%{http_code}" "$ENVOY_URL/v1/messages/send"'
+
+# check_dispatch_identity: the listener admits Dispatch's token, and takes a send's role mark from
+# it, which the replay's role-routed issues need. Dispatch's pod sends IDENTITY_PROBE_SCRIPT's send,
+# and every answer it can get is a refusal, so nothing is written. A token the listener did not
+# verify is a 401 before anything is read. A listener that takes role marks (cmd/listener
+# refuseRoleMark, main's #4387 on) then refuses another principal's mark 403 and, only once it has
+# taken the mark from Dispatch's principal, the role's name 400, naming the field role. A build
+# from before role marks reads no mark: it refuses the missing target 400, naming target_session,
+# which says it admitted the token and neither takes nor refuses the mark. A 503 is a listener
+# still starting (its readiness probe passes on /healthz's "starting", before /v1 serves) or one
+# that cannot read its issuer, so the send is made again every 3 s for IDENTITY_CHECK_SECONDS
+# before it counts. A listener whose Deployment names no ENVOY_DISPATCH_PRINCIPAL takes no mark
+# from anyone, so there is nothing to check, and it says so.
+IDENTITY_CHECK_SECONDS=120
+check_dispatch_identity() {
+  local principal pod answer status body ran deadline=$(($(now) + IDENTITY_CHECK_SECONDS))
+  principal=$(kube get deployment listener -o 'jsonpath={.spec.template.spec.containers[0].env[?(@.name=="ENVOY_DISPATCH_PRINCIPAL")].value}') ||
+    die "reading the listener's ENVOY_DISPATCH_PRINCIPAL (kubectl get deployment listener) failed"
+  if [ -z "$principal" ]; then
+    note "the listener names no ENVOY_DISPATCH_PRINCIPAL, so it takes no send's role mark from anyone: Dispatch's identity is not checked"
+    return 0
+  fi
+  pod=$(find_pod dispatch) && [ -n "$pod" ] || die "found no running Dispatch pod to check Dispatch's identity at the listener from"
+  # A send that did not run (an API server error, kubectl's own time-out, curl's exit 7 or 28)
+  # wrote nothing, so it is made again every 3 s until the deadline, as a 503 is.
+  while :; do
+    ran=1
+    answer=$(kube exec "$pod" -c envoy-dispatch -- sh -c "$IDENTITY_PROBE_SCRIPT") || ran=0
+    status=${answer##*$'\n'} body=${answer%$'\n'*}
+    if ((ran == 0)); then
+      (($(now) < deadline)) ||
+        die "the check of Dispatch's identity at the listener did not run in $pod within $IDENTITY_CHECK_SECONDS s (kubectl's or curl's words above)"
+      note "the check of Dispatch's identity at the listener did not run in $pod (kubectl's or curl's words above); trying again in 3 s"
+    elif [ "$status" != 503 ] || (($(now) >= deadline)); then
+      break
+    fi
+    sleep 3
+  done
+  if [ "$status" = 400 ] && jq -e '.expected == ["role"] and (.error | contains("-identity-probe"))' <<<"$body" >/dev/null 2>&1; then
+    note "the listener takes a send's role mark from Dispatch's token: $principal, issued by $(state .oidc_issuer)"
+  elif [ "$status" = 400 ] && jq -e '.expected == ["target_session"]' <<<"$body" >/dev/null 2>&1; then
+    note "the listener admits Dispatch's token ($principal, issued by $(state .oidc_issuer)); its build reads no send's role mark, so the replay's role-routed sends reach their targets unmarked"
+  else
+    die "the listener does not take a send's role mark from Dispatch's token: a send marked with the role -identity-probe, which no claim can name, on the token Dispatch's ENVOY_ACCOUNT_TOKEN_FILE holds was answered $status $body. A 400 naming the role means the mark was taken from $principal, and one naming target_session a listener that admitted the token and reads no mark; a 401 is a token the listener did not verify against $(state .oidc_issuer), a 403 another principal, and a 503 for all of $IDENTITY_CHECK_SECONDS s a listener still starting or one that cannot read its issuer. The replay's role-routed issues need it; kubectl -n $NS logs deployment/listener says why"
+  fi
+}
+
 elapsed_since() { awk -v a="$1" -v b="$EPOCHREALTIME" 'BEGIN { printf "%.1f", b - a }'; }
 
 # reset_copy RECORD [TEMPLATE]: the reset before every step from TEMPLATE (default
@@ -1645,16 +1867,32 @@ put_executable() {
 # put_loadgen: the run's loadgen into the runner as /work/loadgen (put_executable).
 put_loadgen() { put_executable "$LOADGEN" /work/loadgen; }
 
-# runner_start NAME CMD...: CMD detached in the runner pod, its output in /work/logs/NAME.log, its
-# pid in NAME.pid and its exit status in NAME.rc. It goes through runner_exec, so no job of this
-# run is started in a runner pod the lock gives another run.
+# runner_start [-c DIR] NAME CMD...: CMD detached in the runner pod, its output in
+# /work/logs/NAME.log, its pid in NAME.pid and its exit status in NAME.rc. It goes through
+# runner_exec, so no job of this run is started in a runner pod the lock gives another run. With
+# -c, the copy's three credentials go to the runner on the exec's standard input and are written
+# into DIR, the JOB_SECRETS endpoints gave CMD's -…-file flags, before CMD starts
+# (RUNNER_CREDENTIALS); the shell that waits on CMD removes DIR once CMD has ended, whatever ended
+# it (a SIGTERM or SIGKILL runner_stop sends goes to CMD alone), and on a HUP or TERM of its own
+# (RUNNER_SECRETS_CLEANUP; it ignores INT, as a background job), so no credential outlives the
+# job that read it. A job started without -c is given none.
 runner_start() {
-  local name=$1
+  local input="" stdin=() creds="" on_exit="" dir="" name
+  if [ "$1" = -c ]; then
+    dir=$2
+    shift 2
+    [[ $dir =~ ^/work/secrets/[A-Za-z0-9._-]+$ ]] || die "runner_start -c: '$dir' is no directory endpoints gave"
+    input=$(credentials) || die "reading the copy's credentials from $STATE failed"
+    # The sh's own signal trap of RUNNER_CREDENTIALS is reset before the job starts, so the sh that
+    # returns once the job is started leaves its directory to the job's own shell.
+    stdin=(-i) creds="$RUNNER_CREDENTIALS; trap - HUP INT TERM; " on_exit=$RUNNER_SECRETS_CLEANUP
+  fi
+  name=$1
   shift
   # shellcheck disable=SC2016 # expanded by the runner's sh
-  runner_exec sh -c 'name=$1; shift; mkdir -p /work/logs; rm -f "/work/logs/$name.rc"
-    ( cd /work || exit 1; "$@" >"/work/logs/$name.log" 2>&1 & child=$!; echo "$child" >"/work/logs/$name.pid"; wait "$child"; echo "$?" >"/work/logs/$name.rc" ) </dev/null >/dev/null 2>&1 &' \
-    sh "$name" "$@" || die "$name was not started in the runner pod of $NS"
+  runner_exec "${stdin[@]}" sh -c 'name=$1; shift; secrets='"'$dir'"'; mkdir -p /work/logs; rm -f "/work/logs/$name.rc"; '"$creds"'
+    ( '"$on_exit"'cd /work || exit 1; "$@" >"/work/logs/$name.log" 2>&1 & child=$!; echo "$child" >"/work/logs/$name.pid"; wait "$child"; echo "$?" >"/work/logs/$name.rc" ) </dev/null >/dev/null 2>&1 &' \
+    sh "$name" "$@" <<<"$input" || die "$name was not started in the runner pod of $NS"
 }
 
 # runner_stop NAME [SIGNAL]: the runner job NAME sent SIGNAL (default TERM) in the runner pod,
@@ -2628,7 +2866,7 @@ run_step() {
   runner_exec mkdir -p /work/meta /work/steps "$TYPING_DIR" || die "mkdir in the runner failed"
   runner_put "$dir/copy-meta.json" "/work/meta/$name.json"
 
-  endpoints
+  endpoints "step-$name"
   # -heap-samples: the step's heap-live series, which CURVES.md and TREND.md show. A step measures
   # the copy's capacity, not one build's CPU against another's, so the heap profile Dispatch
   # writes every 15 s is worth its cost here; a replay, which is compared on Dispatch's CPU, runs
@@ -2738,10 +2976,12 @@ step_at_exit() {
 }
 
 # run_in_runner NAME DIR JOB SECONDS CMD...: a step's loadgen run CMD as the runner job JOB (at
-# most SECONDS), with the Postgres data volume read before the load and refusing it with too
-# little free space (pg_disk_low: the step fails with kind pg_disk and sends nothing), a watcher
-# reading it while the load runs (pg_disk_watch, which this shell's pid and start time end when
-# this shell is killed outright), Postgres's write-out counters before and after it
+# most SECONDS), given the copy's credentials in the runner for as long as it runs (runner_start
+# -c, into the JOB_SECRETS the caller's endpoints JOB gave CMD's flags), with the Postgres data
+# volume read before the load and refusing it with too little free space (pg_disk_low: the step
+# fails with kind pg_disk and sends nothing), a watcher reading it while the load runs
+# (pg_disk_watch, which this shell's pid and start time end when this shell is killed outright),
+# Postgres's write-out counters before and after it
 # (pg-stats-before.json, pg-stats-after.json) and, with --typing, browser typing from just before
 # it (typing_start) until the stored-order command ends (typing_stop, and at the latest when the
 # step ends); then the
@@ -2766,7 +3006,7 @@ run_in_runner() {
   pg_stats "$dir/pg-stats-before.json"
   started=$(utc_now)
   typing_start "$name" "$dir" "$seconds"
-  runner_start "$job" "$@"
+  runner_start -c "$JOB_SECRETS" "$job" "$@"
   pg_disk_watch "$name" "$dir" "$job" "$readings" "$shell_pid" "$shell_start" &
   PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=$name
   rc=$(runner_wait "$job" "$seconds" "$dir" "$shell_pid" "$shell_start")
@@ -2926,11 +3166,18 @@ replay_seed_refusal() {
 }
 
 # replay_checksum DB: loadgen replay-checksum of the copy's database DB (its line of JSON), from
-# the runner, which needs its loadgen (put_loadgen).
+# the runner, which needs its loadgen (put_loadgen). It runs in the foreground, its credentials
+# written from the exec's standard input into a directory of its own (endpoints,
+# RUNNER_CREDENTIALS), which the runner's sh removes once loadgen has ended, or on a HUP, INT or
+# TERM of that sh (RUNNER_SECRETS_CLEANUP). Writing them is a write into the runner, so it goes
+# through runner_exec, and a runner the lock gives another run gets none.
 replay_checksum() {
-  local out
-  endpoints
-  out=$(kube_for 1800 exec runner -c runner -- /work/loadgen replay-checksum -allow-foreign "${ENDPOINTS[@]}" -db "$1") || return 1
+  local out input
+  input=$(credentials) || return 1
+  endpoints replay-checksum
+  # shellcheck disable=SC2016 # expanded by the runner's sh
+  out=$(runner_exec -t 1800 -i sh -c 'secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; '"$RUNNER_SECRETS_CLEANUP"'"$@"' \
+    sh "$JOB_SECRETS" /work/loadgen replay-checksum -allow-foreign "${ENDPOINTS[@]}" -db "$1" <<<"$input") || return 1
   jq -ce . <<<"$out"
 }
 
@@ -3188,7 +3435,7 @@ run_replay() {
   [[ $cmax =~ ^([0-9]+)\ ([0-9]+)$ ]] || die "Dispatch's cpu.max reads '$cmax': no CPU limit, so its GOMAXPROCS is not known"
   gomaxprocs=$(((BASH_REMATCH[1] + BASH_REMATCH[2] - 1) / BASH_REMATCH[2]))
 
-  endpoints
+  endpoints "replay-$name"
   run_in_runner "$name" "$dir" "replay-$name" $((30 + window + 300 + RUNNER_RUN_SLACK_SECONDS)) \
     env LOADTEST_ROOT=/work/root "LOADTEST_GOMAXPROCS=$gomaxprocs" \
     /work/loadgen run -allow-foreign -source replay -name "$name" -out "/work/steps/$name" \
@@ -3450,6 +3697,12 @@ up_run() {
     [[ $bt_help == *-person* ]] ||
       die "up: browsertype of commit $bt_commit has no -person flag: Dispatch admits only the identity service's person into a document room (sjawhar/legion#2541), so a driver that connects with the copy's agent token types nothing; give a commit of INFRA-707's driver at or after 67ac05a4, which takes -person and -identity-header"
   fi
+  # loadgen too, before the lock: once the lock is taken up mints the copy's token issuer with its
+  # oidc-mint (mint_identity), so a loadgen that does not build, or answers no oidc-mint -sub, is
+  # refused with nothing taken (loadgen_mints).
+  note "building loadgen (static), the run's"
+  (cd -- "$ENVOY_DIR" && CGO_ENABLED=0 go build -o "$CHECKER_TMP/loadgen" ./loadtest) || die "up: go build of loadgen failed"
+  loadgen_mints "$CHECKER_TMP/loadgen"
 
   set_run "lt-$(date -u +%Y%m%dt%H%M%S)-$(random_hex 2)"
   kube_lock_take
@@ -3459,17 +3712,25 @@ up_run() {
   register_command
   mv -- "$CHECKER_TMP/envoy-dispatch" "$STORED_ORDER_BIN" || die "moving the stored-order checker into $STORED_ORDER_BIN failed"
   [ -z "$bt_commit" ] || mv -- "$CHECKER_TMP/browsertype" "$BROWSERTYPE_BIN" || die "moving browsertype into $BROWSERTYPE_BIN failed"
+  mv -- "$CHECKER_TMP/loadgen" "$LOADGEN" || die "moving loadgen into $LOADGEN failed"
   checker_tmp_remove
+  # The copy's own token issuer, inside the namespace, since the namespace's pods reach nothing
+  # outside it, the cluster's own issuer among the rest (mint_identity, manifests/oidc-issuer.yaml).
+  local oidc_issuer=http://oidc-issuer.$NS.svc:8080
   local tier
   tier=$(pg_tier 16 60)
   tier=$(jq -c --arg v "$pg_volume" '. + {volume: $v}' <<<"$tier")
+  # The four credentials are files jq reads (--rawfile from a pipe random_hex writes, which ends in
+  # no newline), never arguments: an argument of jq is readable by every user of this pod while it
+  # runs (/proc/<pid>/cmdline).
   (umask 077 && jq -n --arg ns "$NS" --arg run "$RUN" --arg sc "$sc" --arg commit "$commit" --arg major "$major" \
+    --arg issuer "$oidc_issuer" \
     --argjson stored_order "$STORED_ORDER_STATE" \
     --arg repo "$PRODUCTION_REPO" --arg created "$(utc_now)" --arg holder "$HOLDER_POD" --arg pidns "$(pid_ns)" \
     --arg dispatch "$dispatch_image" --arg listener "$listener_image" --arg listener_ref "$listener_ref" \
     --arg pg "$pg_image" --arg socat "$socat_image" --arg runner "$runner_image" --argjson nats "$nats_images" \
-    --argjson tier "$tier" --arg pgpw "$(random_hex 24)" --arg dt "$(random_hex 32)" --arg lt "$(random_hex 32)" \
-    --arg sk "$(random_hex 32)" '{namespace: $ns, run: $run, storage_class: $sc, dispatch_commit: $commit,
+    --argjson tier "$tier" --rawfile pgpw <(random_hex 24) --rawfile dt <(random_hex 32) --rawfile lt <(random_hex 32) \
+    --rawfile sk <(random_hex 32) '{namespace: $ns, run: $run, storage_class: $sc, dispatch_commit: $commit, oidc_issuer: $issuer,
       pg_major: $major, production_repo: $repo, created: $created, holder_pod: $holder, pid_ns: $pidns,
       images: ({dispatch: $dispatch, listener: $listener, postgres: $pg, socat: $socat, runner: $runner} + $nats),
       image_sources: {listener: $listener_ref}, postgres: $tier, stored_order: $stored_order, browsertype: null,
@@ -3477,8 +3738,7 @@ up_run() {
   chmod 600 "$STATE"
   start_daemon heartbeat
 
-  note "building loadgen (static) into $LOADGEN"
-  (cd -- "$ENVOY_DIR" && CGO_ENABLED=0 go build -o "$LOADGEN" ./loadtest) || die "go build of loadgen failed"
+  mint_identity
   if [ -n "$bt_commit" ]; then
     # shellcheck disable=SC2016 # $c and $s are jq's variables
     state_set '.browsertype = {commit: $c, sha256: $s}' --arg c "$bt_commit" --arg s "$(sha256_of "$BROWSERTYPE_BIN")"
@@ -3488,6 +3748,7 @@ up_run() {
   apply_manifest secrets.yaml.tmpl
   apply_manifest postgres.yaml
   apply_manifest nats.yaml
+  apply_manifest oidc-issuer.yaml
   apply_manifest listener.yaml
   apply_manifest dispatch.yaml
   apply_manifest runner.yaml create -f -
@@ -3495,7 +3756,10 @@ up_run() {
   kube_for 960 rollout status statefulset/nats --timeout=900s >/dev/null || die "NATS was not ready within 15 min"
   kube_for 960 rollout status deployment/nats-box --timeout=900s >/dev/null || die "nats-box was not ready within 15 min"
   kube_for 960 wait --for=condition=Ready pod/runner --timeout=900s >/dev/null || die "the runner was not ready within 15 min"
+  kube_for 960 rollout status deployment/oidc-issuer --timeout=900s >/dev/null ||
+    die "the copy's token issuer (deployment oidc-issuer) was not ready within 15 min, and without it the listener takes no send's role mark from Dispatch (an older listener exits, a newer one answers Dispatch's token 503)"
   start_copy
+  check_dispatch_identity
   put_loadgen
   put_executable "$STORED_ORDER_BIN" /work/envoy-dispatch
   [ -z "$bt_commit" ] || put_executable "$BROWSERTYPE_BIN" /work/browsertype
@@ -3547,18 +3811,20 @@ seed_run() {
   started=$(utc_now) t0=$EPOCHREALTIME
   wait_dispatch_healthy
   put_loadgen
-  endpoints
+  endpoints seed
   note "seeding through Dispatch's Service from the runner (the harness's 4 projects, 1,000 issues, 8 comments each)"
-  runner_start seed /work/loadgen seed -allow-foreign "${ENDPOINTS[@]}" -out /work/seed.json
+  runner_start -c "$JOB_SECRETS" seed /work/loadgen seed -allow-foreign "${ENDPOINTS[@]}" -out /work/seed.json
   rc=$(runner_wait seed 5400)
   [ "$rc" = 0 ] || die "loadgen seed ended with $rc; see $RUN_DIR/logs/seed.log"
   # The reference seed, as stack.sh seed writes it: 1,000 cited documents and their citations, so
   # the references route does the work it does in production.
   note "writing the production-shaped references through Dispatch's Service from the runner"
-  runner_start seed-refs /work/loadgen seed-refs -allow-foreign "${ENDPOINTS[@]}" -seed /work/seed.json
+  endpoints seed-refs
+  runner_start -c "$JOB_SECRETS" seed-refs /work/loadgen seed-refs -allow-foreign "${ENDPOINTS[@]}" -seed /work/seed.json
   rc=$(runner_wait seed-refs 5400)
   [ "$rc" = 0 ] || die "loadgen seed-refs ended with $rc; see $RUN_DIR/logs/seed-refs.log"
-  runner_start seed-finish /work/loadgen seed-finish -pg "$(pg_url)" -timeout 15m
+  endpoints seed-finish
+  runner_start -c "$JOB_SECRETS" seed-finish /work/loadgen seed-finish -pg-file "$JOB_SECRETS/pg-url" -timeout 15m
   rc=$(runner_wait seed-finish 2400)
   [ "$rc" = 0 ] || die "loadgen seed-finish ended with $rc; see $RUN_DIR/logs/seed-finish.log"
   kube_read exec runner -c runner -- cat /work/seed.json >"$RUN_DIR/seed.json.tmp" || die "copying seed.json back failed"
@@ -3607,6 +3873,7 @@ cmd_db_size() {
   valid cpu "${POS[0]}" || die "db-size: CPU '${POS[0]}' is not a whole number of cores"
   valid memory "${POS[1]}" || die "db-size: MEMORY '${POS[1]}' is not a whole number of Gi (for example 15Gi)"
   use_run
+  require_own_issuer
   ensure_daemons
   resize_postgres "${POS[0]}" "${POS[1]%Gi}"
 }
@@ -3618,6 +3885,7 @@ cmd_redeploy() {
   [ -n "$commit" ] || die "redeploy: --dispatch-commit is required"
   valid commit "$commit" || die "redeploy: --dispatch-commit '$commit' is not a full 40-hex commit sha"
   use_run
+  require_own_issuer
   image=$(image_for_commit "$commit")
   ensure_daemons
   # shellcheck disable=SC2016 # $c and $i are jq's variables

@@ -79,7 +79,7 @@ type ArchitectStart struct {
 	// a wake's, leaves it where it stood (supervise's retirePending, Claim.ServingEntry).
 	ServedEntry int64
 	// MembersRun says an issue of the root's tree other than the root stands past phase.Admitted
-	// in the workflow (record.Store.TreeMembersRun): a member a re-admission's promotion starts
+	// in the workflow (record.Store.TreeMembersRun): a member a re-admitted tree's first run starts
 	// again (admit's startMidPhaseMembers), or one whose own first phase has started. The
 	// derivation reads it for a root at phase.Admitted alone (its fourth and fifth rules), so the
 	// reader reads it for such a root alone.
@@ -245,7 +245,7 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // under its architect's decomposition, or a child a person set todo, which waits at admitted for
 // its slot and its tree's gate (workflow's enterChild) and runs once admission starts its first
 // phase. A member still running when the root comes back at a later generation therefore ran in
-// an earlier one, and the re-admission's promotion starts it again (admit's startMidPhaseMembers).
+// an earlier one, and the re-admitted tree's first run starts it again (admit's startMidPhaseMembers).
 // That holds where the architect's claim served nothing: an architect that never confirmed its
 // first task, whose tree's children ran all the same. At generation 1 there is no earlier run to
 // carry on from, so a member that runs there leaves the root at rule 5.
@@ -399,7 +399,8 @@ func writeEarlierGeneration(task *strings.Builder, start ArchitectStart) {
 // writeGateAsk writes what the architect does about the design gate once the spec is written: a
 // request for approval of each document the deployment gates and a registration of each of their
 // steps, or, where it gates none, the one registration that opens the gate with no approval
-// (skills/legion-architect/references/design-gate.md, "The steps"). again is " again" for a tree
+// (skills/legion-architect/references/design-gate.md, "Which steps are gated" and "The armed
+// gate"). again is " again" for a tree
 // whose earlier generation's gate re-admission cleared, and empty for a tree registering a first
 // time.
 func writeGateAsk(task *strings.Builder, steps []record.DesignStep, again string) {

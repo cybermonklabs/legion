@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // An interest record this build cannot decode (store.ErrMalformedInterest) is answered as what it
@@ -28,6 +29,7 @@ import (
 // listing builds from the copy is the same row the read-through routes report: the session, with
 // no topics.
 func TestAnUnreadableInterestRecordIsAnsweredAsUnreadable(t *testing.T) {
+	t.Parallel()
 	const (
 		readable   = "ses_interest_answer_readable"
 		unreadable = "ses_interest_answer_unreadable"
@@ -39,12 +41,12 @@ func TestAnUnreadableInterestRecordIsAnsweredAsUnreadable(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	logs := &lockedBuffer{}
-	registry, err := store.Open(client.Conn, store.WithReplicas(1),
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1),
 		store.WithLogger(slog.New(slog.NewJSONHandler(logs, nil))))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -84,7 +86,7 @@ func TestAnUnreadableInterestRecordIsAnsweredAsUnreadable(t *testing.T) {
 		handler http.HandlerFunc
 	}{
 		{"/v1/registry/" + unreadable, sessionEntryHandler(state)},
-		{"/v1/interests/" + unreadable, adminInterestsHandler(registry, sessions, nil, logging.New("test"))},
+		{"/v1/interests/" + unreadable, adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))},
 	} {
 		t.Run(route.path, func(t *testing.T) {
 			before := len(logs.String())
@@ -95,7 +97,7 @@ func TestAnUnreadableInterestRecordIsAnsweredAsUnreadable(t *testing.T) {
 			if got := recorder.Header().Get("Retry-After"); got != "" {
 				t.Fatalf("Retry-After = %q, want none: a retry reads the same record", got)
 			}
-			var refusal apiError
+			var refusal listenerwire.APIError
 			if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 				t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 			}
@@ -114,15 +116,15 @@ func TestAnUnreadableInterestRecordIsAnsweredAsUnreadable(t *testing.T) {
 	}
 
 	before := len(logs.String())
-	recorder := get(sessionsHandler(registry, sessions), "/v1/sessions")
+	recorder := get(sessionsHandler(registry, sessions, nil), "/v1/sessions")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d, body %s; want 200", recorder.Code, recorder.Body.String())
 	}
-	var rows []sessionInfo
+	var rows []listenerwire.SessionInfo
 	if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
 		t.Fatalf("decode GET /v1/sessions %s: %v", recorder.Body.String(), err)
 	}
-	byID := map[string]sessionInfo{}
+	byID := map[string]listenerwire.SessionInfo{}
 	for _, row := range rows {
 		byID[row.SessionID] = row
 	}

@@ -37,6 +37,8 @@ transcript_to "$evidence/transcript.log"
 . "$root/scripts/e2e/lib/kind-sandbox.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/role-namespaces.sh
 . "$root/scripts/e2e/lib/role-namespaces.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
 
 # The NFS server: NFS-Ganesha as the Kubernetes SIG Storage's nfs-provisioner image ships it, run
 # with a configuration of the proof's own (two exports, NFSv4.0, no grace period).
@@ -76,17 +78,19 @@ release_shares() {
   fi
 }
 
+# cleanup tears the run down and prints its last line through lib/run-verdict.sh: PASS only for a
+# run that reached run_end, the script's last statement. A run a signal ended reads FAIL, and
+# release_shares and the teardown treat it as a failure, keeping the pods and the cluster's evidence.
 cleanup() {
-  local status=$?
+  local status=$? ended
+  ended=$(run_status "$status")
   docker rm -f "$cluster-driver" "$cluster-probe" >/dev/null 2>&1 || true
-  release_shares "$status"
-  kind_sandbox_teardown "$status" "$evidence"
+  release_shares "$ended"
+  kind_sandbox_teardown "$ended" "$evidence"
   rm -rf "$work"
-  if [ "$status" -eq 0 ]; then
-    echo "share volumes kind e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
-  else
-    echo "share volumes kind e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)" >&2
-  fi
+  run_verdict "$status" \
+    "share volumes kind e2e: PASS in $((SECONDS - started))s (evidence: $evidence)" \
+    "share volumes kind e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)"
 }
 trap cleanup EXIT
 
@@ -265,19 +269,19 @@ held=$(kind_k -n nfs exec ganesha -- cat /export/scratch/from-issue-pod)
 note "the server's /export/scratch/from-issue-pod → $held"
 pass
 
-begin check-config
+begin config-check
 # Each case's own file, beside the token files it names by relative path.
 shares_config=$(awk '$1 == "shares" {print $3}' "$result")
-out=$("$work/legion" start --check-config --config "$shares_config" 2>&1) ||
-  fail "--check-config refused the shares file: $out"
+out=$("$work/legion" config check --config "$shares_config" 2>&1) ||
+  fail "legion config check refused the shares file: $out"
 note "shares: $(head -1 <<<"$out")"
 broken=$(dirname "$shares_config")/broken.yaml
 sed 's|          persistent_volume_claim: {name: team-share}|          persistent_volume_claim: {name: team-share}\n          nfs: {server: '"$server"', path: /team}|' "$shares_config" >"$broken"
-if refused=$("$work/legion" start --check-config --config "$broken" 2>&1); then
-  fail "--check-config passed a volume naming a claim and an NFS export"
+if refused=$("$work/legion" config check --config "$broken" 2>&1); then
+  fail "legion config check passed a volume naming a claim and an NFS export"
 fi
-want="legion start: runtime.kubernetes.pod.volumes[0] must set exactly one of secret, config_map, projected, persistent_volume_claim, nfs"
-[ "$refused" = "$want" ] || fail "--check-config refused the two-source volume with: $refused"
+want="legion config check: runtime.kubernetes.pod.volumes[0] must set exactly one of secret, config_map, projected, persistent_volume_claim, nfs"
+[ "$refused" = "$want" ] || fail "legion config check refused the two-source volume with: $refused"
 note "a volume naming a claim and an export: refused, exit 1: $refused"
 pass
 
@@ -349,3 +353,4 @@ elapsed=$((SECONDS - check_started))
 [[ $probed != *"failed transiently"* ]] || fail "missing-image: probe-boot retried the pull before refusing: $(grep -m1 'failed transiently' <<<"$probed" | cut -c1-300)"
 note "missing-image: probe-boot exit 1 in ${elapsed}s: $(grep -m1 -o 'the registry does not have image [^ ]*' <<<"$probed")"
 pass
+run_end

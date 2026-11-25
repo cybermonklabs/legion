@@ -35,33 +35,68 @@ interface Queue {
   waiter: PromiseWithResolvers<ChannelBrokerMessage | null> | undefined
   /** Set by unsubscribe: the iterator ends at its next pull, even when a message was mid-delivery. */
   closed: boolean
+  /** Set by `failSubscription`: the iterator throws it at its next pull. */
+  failed: Error | undefined
+  /** The refusal the server has for this subscription and has not sent yet (`refuse`). */
+  refusal: Error | undefined
+}
+
+/** nats.js's error for a call on a connection closed for good, as `natsFailureReason` reads it. */
+export function connectionClosedError(): Error {
+  return Object.assign(new Error("CONNECTION_CLOSED"), {
+    name: "NatsError",
+    code: "CONNECTION_CLOSED",
+  })
 }
 
 export class FakeNats implements ChannelConnection {
   readonly published: Array<{ readonly subject: string; readonly data: Uint8Array }> = []
   readonly order: string[] = []
   readonly unsubscribed: string[] = []
+  /** The newest subscription of each subject; `liveSubscriptions` counts every one still live. */
   readonly subscriptions = new Map<string, Queue>()
-  closed = false
+  /** Every subscription neither unsubscribed nor ended, whichever subscribe of a subject made it:
+   *  a second subscribe to a subject keys over the first in `subscriptions`, as nats.js keeps
+   *  both, so a subscription the session left behind still counts here. */
+  private readonly live = new Set<Queue>()
+  /** Set once the connection is closed for good; `closed()` settles then. */
+  closedForGood = false
   private readonly statuses: ChannelConnectionStatus[] = []
   private statusWaiter: PromiseWithResolvers<void> | undefined
+  private readonly ended = Promise.withResolvers<Error | undefined>()
 
   constructor(readonly calls: string[] = []) {}
 
+  /** Every subscribe asked for, those a closed connection refused included. */
+  subscribes = 0
+
+  /** Throws on a connection closed for good, as nats.js does. */
   subscribe(subject: string): ChannelTopicSubscription {
     this.calls.push(`nats.subscribe ${subject}`)
-    const queue: Queue = { subject, messages: [], waiter: undefined, closed: false }
+    this.subscribes += 1
+    if (this.closedForGood) throw connectionClosedError()
+    const queue: Queue = {
+      subject,
+      messages: [],
+      waiter: undefined,
+      closed: false,
+      failed: undefined,
+      refusal: this.refused.get(subject),
+    }
     this.subscriptions.set(subject, queue)
+    this.live.add(queue)
     return {
       unsubscribe: () => {
         this.calls.push(`nats.unsubscribe ${subject}`)
         this.unsubscribed.push(subject)
         this.subscriptions.delete(subject)
+        this.live.delete(queue)
         queue.closed = true
         queue.waiter?.resolve(null)
       },
       async *[Symbol.asyncIterator]() {
         for (;;) {
+          if (queue.failed !== undefined) throw queue.failed
           if (queue.closed) return
           const message = queue.messages.shift()
           if (message !== undefined) {
@@ -72,6 +107,7 @@ export class FakeNats implements ChannelConnection {
           queue.waiter = waiter
           const next = await waiter.promise
           queue.waiter = undefined
+          if (queue.failed !== undefined) throw queue.failed
           if (next === null) return
           yield next
         }
@@ -79,20 +115,126 @@ export class FakeNats implements ChannelConnection {
     }
   }
 
+  /** Throws on a connection closed for good, as nats.js does. */
   publish(subject: string, data: Uint8Array): void {
+    if (this.closedForGood) throw connectionClosedError()
     this.order.push("publish")
     this.published.push({ subject, data })
+    const body = new TextDecoder().decode(data)
+    if (body !== "done" && body !== "nak") return
+    for (const waiter of this.settledWaiters.filter((one) => one.subject === subject)) {
+      this.settledWaiters.splice(this.settledWaiters.indexOf(waiter), 1)
+      waiter.resolve(body)
+    }
+  }
+
+  private readonly settledWaiters: Array<{
+    readonly subject: string
+    readonly resolve: (body: string) => void
+  }> = []
+
+  /** Settles with the answer that ends the relay frame whose inbox is `subject` (`done` or
+   *  `nak`), when the channel publishes it, or at once if it already has. The channel answers a
+   *  frame only after it is through with it (a rejected frame's reply posted, a card written), so
+   *  a row reads what the channel did with the frame from this event, not after a wait. */
+  settled(subject: string): Promise<string> {
+    const ended = this.repliesOn(subject).find((body) => body === "done" || body === "nak")
+    if (ended !== undefined) return Promise.resolve(ended)
+    const waiter = Promise.withResolvers<string>()
+    this.settledWaiters.push({ subject, resolve: waiter.resolve })
+    return waiter.promise
+  }
+
+  /** The server ends `subject`'s subscription with `error`, as nats.js ends one the server refused
+   *  (a permissions violation): its iterator throws it, and the connection stays up. */
+  failSubscription(subject: string, error: Error): void {
+    const queue = this.subscriptions.get(subject)
+    if (queue === undefined) throw new Error(`no subscription for ${subject}`)
+    this.end(queue, error)
+  }
+
+  private end(queue: Queue, error: Error): void {
+    this.closeQueue(queue)
+    this.endIterator(queue, error)
+  }
+
+  /** The subscription is closed: no message reaches it, and it is no longer live. */
+  private closeQueue(queue: Queue): void {
+    if (this.subscriptions.get(queue.subject) === queue) this.subscriptions.delete(queue.subject)
+    this.live.delete(queue)
+  }
+
+  /** The subscription's iterator throws `error` at its next pull. */
+  private endIterator(queue: Queue, error: Error): void {
+    queue.refusal = undefined
+    queue.failed = error
+    queue.waiter?.resolve(null)
+  }
+
+  /** Subjects the server refuses a subscription to, with its refusal (`refuse`). */
+  private readonly refused = new Map<string, Error>()
+
+  /**
+   * The server refuses every subscription to `subject` from now on, as it refuses one whose
+   * subject the connection's user may not take: the refusal reaches the client with its next
+   * flush, and ends the subscription a turn after that flush resolves (`flush`), or, where that
+   * flush is lost to a redial, after the reconnect sends the `SUB` again (`deliverRefusals`).
+   * `undefined` ends the refusals; a subscription already refused stays so.
+   */
+  refuse(subject: string, error: Error | undefined): void {
+    if (error === undefined) this.refused.delete(subject)
+    else this.refused.set(subject, error)
+  }
+
+  /** The refusals the server has for live subscriptions reach the client now: after a reconnect. */
+  deliverRefusals(): void {
+    for (const queue of [...this.subscriptions.values()]) {
+      if (queue.refusal !== undefined) this.end(queue, queue.refusal)
+    }
+  }
+
+  /** How many subscriptions to `subject` are live: neither unsubscribed nor ended. */
+  liveSubscriptions(subject: string): number {
+    return [...this.live].filter((queue) => queue.subject === subject).length
   }
 
   /** When set, a flush never settles, as on a stalled connection. */
   stallFlush = false
+  /** How many flushes reject with nats.js's DISCONNECT, as every pending flush does each time the
+   *  connection redials, before flushes succeed again. */
+  failFlushes = 0
+  /** Every flush asked for, the failed ones included. */
+  flushes = 0
 
+  /**
+   * Rejects on a connection closed for good, as nats.js does. A flush that reaches the server
+   * delivers its refusals (`refuse`), as nats.js delivers them: nats-server sends `-ERR` as it
+   * reads the `SUB`, then the `PONG`, so a refused subscription is closed before the flush
+   * resolves, and its iterator ends a turn of the event loop after it: a caller that looks at the
+   * iterator's reader as the flush returns still finds it running.
+   */
   flush(): Promise<void> {
-    return this.stallFlush ? new Promise<void>(() => undefined) : Promise.resolve()
+    this.flushes += 1
+    if (this.closedForGood) return Promise.reject(connectionClosedError())
+    if (this.failFlushes > 0) {
+      this.failFlushes -= 1
+      return Promise.reject(new Error("DISCONNECT"))
+    }
+    if (this.stallFlush) return new Promise<void>(() => undefined)
+    const refused = [...this.subscriptions.values()].filter((queue) => queue.refusal !== undefined)
+    for (const queue of refused) this.closeQueue(queue)
+    if (refused.length > 0) {
+      setImmediate(() => {
+        for (const queue of refused) {
+          if (queue.refusal !== undefined) this.endIterator(queue, queue.refusal)
+        }
+      })
+    }
+    return Promise.resolve()
   }
 
   isClosed(): boolean {
-    return this.closed
+    return this.closedForGood
   }
 
   drain(): Promise<void> {
@@ -100,19 +242,37 @@ export class FakeNats implements ChannelConnection {
   }
 
   close(): Promise<void> {
-    this.closed = true
+    return this.closeForGood()
+  }
+
+  /** The connection closes for good, as nats.js closes one, with the error that closed it: every
+   *  subscription ends, with no error, and every later subscribe, publish and flush fails. */
+  closeForGood(error?: Error): Promise<void> {
+    if (this.closedForGood) return Promise.resolve()
+    this.closedForGood = true
+    for (const queue of this.live) {
+      queue.closed = true
+      queue.waiter?.resolve(null)
+    }
+    this.subscriptions.clear()
+    this.live.clear()
+    this.ended.resolve(error)
     this.statusWaiter?.resolve()
     return Promise.resolve()
   }
 
+  closed(): Promise<Error | undefined> {
+    return this.ended.promise
+  }
+
   /** nats.js reports a status event: `reconnect`, say. */
-  emitStatus(type: string): void {
+  emitStatus(type: ChannelConnectionStatus["type"]): void {
     this.statuses.push({ type })
     this.statusWaiter?.resolve()
   }
 
   async *status(): AsyncIterable<ChannelConnectionStatus> {
-    while (!this.closed) {
+    while (!this.closedForGood) {
       const next = this.statuses.shift()
       if (next !== undefined) {
         yield next
@@ -238,9 +398,9 @@ export function settled(): Promise<void> {
 }
 
 /**
- * Polls `condition` every 5 ms until it holds; fails after 5 s naming `what`, followed by what
- * `state` reports at that moment (an `observedClient`'s `describe`, the test's own fakes).
- * Real time on purpose: the awaited conditions are filesystem writes the
+ * Polls `condition` every 5 ms until it holds; fails after `deadlineMs` (5 s by default) naming
+ * `what`, followed by what `state` reports at that moment (an `observedClient`'s `describe`, the
+ * test's own fakes). Real time on purpose: the awaited conditions are filesystem writes the
  * server's own heartbeat performs, which no fake clock can advance. The
  * deadline is read from the monotonic clock, which `setSystemTime` leaves alone.
  *
@@ -249,15 +409,17 @@ export function settled(): Promise<void> {
  * only once every wait before it has had its time. The longest is eleven, counting the waits of
  * `boot` and `reconnect` (envoy-channel-replay.test.ts, "a stored frame the channel never takes is
  * named in one notice…"): 11 × 5 s, and 5 s more covers startup and shutdown. A test that chains
- * more raises it. Under bun's default of 5 s its own timeout fired first, and a stuck wait never
- * said which step it was.
+ * more raises it, and so does one that gives a wait a longer deadline (a whole server process,
+ * which a loaded machine starts slowly). Under bun's default of 5 s its own timeout fired first,
+ * and a stuck wait never said which step it was.
  */
 export async function waitFor(
   condition: () => Promise<boolean>,
   what: string,
   state?: () => string,
+  deadlineMs = 5_000,
 ): Promise<void> {
-  const deadline = performance.now() + 5_000
+  const deadline = performance.now() + deadlineMs
   while (!(await condition())) {
     if (performance.now() > deadline) {
       throw new Error(`timed out waiting for ${what}${state === undefined ? "" : ` (${state()})`}`)
@@ -422,6 +584,7 @@ export function sessionOptions(
     configFile: sessionConfigFile("claude", process.env),
     stateDirectory,
     clientInstanceID: randomBytes(16).toString("hex"),
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
     ...extra,
   }

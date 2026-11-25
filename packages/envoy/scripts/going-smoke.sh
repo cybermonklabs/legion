@@ -45,6 +45,9 @@ readonly pg_server="${BASH_REMATCH[1]}" pg_params="${BASH_REMATCH[4]}"
 for command in curl jq python3 openssl psql; do
   command -v "$command" >/dev/null || { printf '%s is required\n' "$command" >&2; exit 1; }
 done
+# psql is given DATABASE_URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$(dirname "$0")/lib/pg-url.sh"
 
 workdir="$(mktemp -d)"
 server_pid=""
@@ -65,7 +68,7 @@ cleanup() {
     wait "$model_pid" 2>/dev/null || true
   fi
   if [[ -n "$database" ]]; then
-    psql "$DATABASE_URL" -qtA -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
+    pg_url_run "$DATABASE_URL" psql -qtA -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
       printf 'going-smoke: the database %s could not be dropped\n' "$database" >&2
   fi
   rm -rf "$workdir"
@@ -74,7 +77,7 @@ cleanup() {
 trap cleanup EXIT
 
 database="going_smoke_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
-psql "$DATABASE_URL" -qtA -c "create database \"$database\"" >/dev/null ||
+pg_url_run "$DATABASE_URL" psql -qtA -c "create database \"$database\"" >/dev/null ||
   { printf 'the database %s could not be made on the server DATABASE_URL names\n' "$database" >&2; exit 1; }
 readonly database_url="${pg_server}/${database}${pg_params}"
 
@@ -131,12 +134,16 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--port-file", required=True)
 parser.add_argument("--certificate", required=True)
 parser.add_argument("--key", required=True)
-parser.add_argument("--token", required=True)
+# The bearer Dispatch must present, read from the file DISPATCH_CHAT_TOKEN_FILE names, so it is in
+# no command line.
+parser.add_argument("--token-file", required=True)
 parser.add_argument("--refusal", required=True)
 parser.add_argument("--status", type=int, default=0)
 parser.add_argument("--chunk", type=int, default=18)
 parser.add_argument("--pause", type=float, default=0.12)
 args = parser.parse_args()
+with open(args.token_file) as handle:
+    args.token = handle.read().strip()
 
 
 def say(message):
@@ -320,7 +327,7 @@ printf '%s\n' "$model_token" >"${workdir}/chat-token"
 python3 "${workdir}/model.py" \
   --port-file "${workdir}/model-port" \
   --certificate "$certificate" --key "${workdir}/model-key.pem" \
-  --token "$model_token" --refusal "${workdir}/model-refusal" --status "$model_status" \
+  --token-file "${workdir}/chat-token" --refusal "${workdir}/model-refusal" --status "$model_status" \
   >"${workdir}/model.log" 2>&1 &
 model_pid=$!
 
@@ -341,6 +348,8 @@ printf 'going-smoke: the fake model serves %s\n' "$model_origin"
 
 # held-port.py opens 127.0.0.1:0 and hands the socket to the server, so the port the kernel chose
 # stays held until the server serves on it; it then runs as the server, so $! is the server's PID.
+# The settings reach it through the environment a subshell exports, never through env's
+# arguments: DATABASE_URL can hold a password, and a process's arguments are any user's to read.
 mkdir "${workdir}/home"
 settings=(
   "HOME=${workdir}/home"
@@ -362,11 +371,13 @@ if ((no_model == 0)); then
     "DISPATCH_CHAT_TOKEN_FILE=${workdir}/chat-token"
   )
 fi
-env "${settings[@]}" \
-  python3 "${root}/scripts/e2e/lib/held-port.py" exec --port-file "${workdir}/port" \
+(
+  export "${settings[@]}"
+  exec python3 "${root}/scripts/e2e/lib/held-port.py" exec --port-file "${workdir}/port" \
     --fd-env DISPATCH_LISTEN_FD \
     --env 'DISPATCH_PORT={port}' --env 'DISPATCH_SERVER_URL=http://127.0.0.1:{port}' \
-    -- "$binary" >"${workdir}/server.log" 2>&1 &
+    -- "$binary"
+) >"${workdir}/server.log" 2>&1 &
 server_pid=$!
 
 port=""

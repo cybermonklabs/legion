@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -197,7 +198,8 @@ type ImageProbe struct {
 	// fixed reservation (internal/daemon/kubernetes.go, probeReservation), its cpu and memory the
 	// request and the limit alike, so the probe pod is Guaranteed whatever the roles request. It
 	// runs Oh My Pi three times, one at a time (pi.agents, the plugin's load, the session-storage
-	// setting), and exits, so it is sized for that and not for a role's work.
+	// setting), checks the image's capability rows and the roles' overlays, and exits, so it is
+	// sized for that and not for a role's work.
 	Resources corev1.ResourceRequirements
 }
 
@@ -233,14 +235,17 @@ func (p ImageProbe) startupBudgetDuration() time.Duration {
 // decide whether the prompt-named agents' models resolve (the LEGION-270 plan, decision 5). An
 // attempt's verdict is definitive — the API refusing what was sent (400, 401, 403, 422, or a
 // create's 404), an image the kubelet cannot use, a pod whose probe container exited on its own
-// and Failed, a log without the OK line or confirming another contract, or not resolving the
-// agents' models, or not checking the capability list, a ConfigMap or Secret the pod cannot mount,
-// or its container cannot be configured for — or waiting: a pod the pool has no room for (stuck),
-// which counts against no attempt budget, since a full pool says nothing about the image and the
-// daemon must stay up until it has room — or transient: anything else, a pod the kubelet itself
-// failed included, retried under p.Retry. The report counts the attempts that waited on capacity
-// and keeps the last one's reason, for the
-// pool-capacity row of the capability report.
+// and Failed with any exit but bootprobe.NoVerdictExit, a log without the OK line or confirming
+// another contract, or not resolving the agents' models, or not checking the capability list, a
+// ConfigMap or Secret the pod cannot mount, or its container cannot be configured for — or
+// waiting: a pod the pool has no room for (stuck), which counts against no attempt budget, since a
+// full pool says nothing about the image and the daemon must stay up until it has room — or
+// transient: anything else, a pod the kubelet itself failed included, and a probe container that
+// exited bootprobe.NoVerdictExit, having seen no failure and some check with no verdict (judge),
+// retried under p.Retry; when the retry gives up, its error carries the last attempt's detail,
+// which for that exit names each step with no verdict. The report counts the attempts
+// that waited on capacity and keeps the last one's reason, for the pool-capacity row of the
+// capability report.
 func (r *Runtime) ProbeImage(ctx context.Context, p ImageProbe) (bootprobe.ImageReport, error) {
 	if p.Contract < 1 || p.Budget <= 0 || p.Retry.Initial <= 0 || p.Retry.Max < p.Retry.Initial {
 		return bootprobe.ImageReport{}, errors.New("image probe: a contract, a positive budget, and a positive retry wait are required")
@@ -1092,7 +1097,10 @@ func (r *Runtime) unstarted(ctx context.Context, name string, uid types.UID, bud
 }
 
 // probeLog is the probe container's last log lines, kept to probeLogBytes from the tail's end
-// (lastBytes), so a refusal's quote reaches the OK line whatever a line's length.
+// (lastBytes), so a refusal's quote reaches the OK line whatever a line's length. The read stops at
+// probeLogReadBytes, and one byte more read past it tells a read its bound stopped from one that
+// reached the log's end: such a read can stop inside a URL, before its "@", and redact.Read drops
+// the run it stopped inside, when that run holds "://", before the URL rule reads the rest.
 func (r *Runtime) probeLog(ctx context.Context, name string) (string, error) {
 	reading, cancel := call(ctx)
 	defer cancel()
@@ -1102,26 +1110,49 @@ func (r *Runtime) probeLog(ctx context.Context, name string) (string, error) {
 		return "", err
 	}
 	defer stream.Close()
+	// The read keeps its own form rather than redact.ReadBounded's, which holds the head of the
+	// read, probeLogReadBytes of it, in memory: a refusal quotes the log's end, and tailBytes holds
+	// only that end (three times probeLogBytes at most), however long the log is.
 	text, err := lastBytes(io.LimitReader(stream, probeLogReadBytes), probeLogBytes)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(text), nil
+	// Anything but the log's end after the bound is a read the bound stopped, an error included:
+	// what it stopped inside is then unknown.
+	var past [1]byte
+	_, err = io.ReadFull(stream, past[:])
+	return strings.TrimSpace(redact.Read(text, err != io.EOF)), nil
 }
 
 // lastBytes reads r to its end, keeping only the last keep bytes (tailBytes), and answers that
-// tail: with a leading … line (everything up to and including the first \n dropped, so what
-// remains starts on its own line) when anything of r was cut, unchanged when r was keep bytes or
-// shorter.
+// tail: with a leading … line when anything of r was cut, unchanged when r was keep bytes or
+// shorter. What the cut left of the line it fell inside is dropped (dropCutHead), so what remains
+// starts on its own line, or, in a tail that holds no \n, after a byte that ends a URL.
 func lastBytes(r io.Reader, keep int) (string, error) {
 	buf, dropped, err := tailBytes(r, keep)
 	if err != nil || !dropped {
 		return string(buf), err
 	}
-	if i := bytes.IndexByte(buf, '\n'); i >= 0 {
-		buf = buf[i+1:]
+	rest, _ := dropCutHead(buf)
+	return "…\n" + string(rest), nil
+}
+
+// dropCutHead is kept, the newest bytes of a read that dropped older ones (tailBytes), with the
+// head its cut fell inside dropped, and whether what is left starts on a whole line. The head is
+// everything up to and including kept's first \n where it holds one, and what is left then starts
+// on a whole line; otherwise everything up to and including its first byte that ends a URL
+// (redact.EndsURLByte), and what is left starts inside a line; and where no byte ends a URL,
+// nothing is left. The cut can fall inside a URL, after its "://" or its "?", where the URL rule
+// no longer finds the userinfo or the query the cut left part of; a \n ends a URL too, so either
+// drop reaches the end of the URL the cut fell inside.
+func dropCutHead(kept []byte) (rest []byte, atLine bool) {
+	if newline := bytes.IndexByte(kept, '\n'); newline >= 0 {
+		return kept[newline+1:], true
 	}
-	return "…\n" + string(buf), nil
+	if end := slices.IndexFunc(kept, redact.EndsURLByte); end >= 0 {
+		return kept[end+1:], false
+	}
+	return nil, false
 }
 
 // tailBytes reads r to its end and answers its last keep bytes, and whether it dropped any before
@@ -1147,15 +1178,20 @@ func tailBytes(r io.Reader, keep int) ([]byte, bool, error) {
 	}
 }
 
-// undefinedFlag is Go's flag package refusing a flag the probed CLI does not define.
-var undefinedFlag = regexp.MustCompile(`flag provided but not defined: (-\S+)`)
+// undefinedFlag is the probed CLI refusing a flag it does not define: pflag's words, which a
+// legion on cobra prints, and Go's flag package's, which an image built before that printed.
+var undefinedFlag = regexp.MustCompile(`(?:unknown flag|flag provided but not defined): (-\S+)`)
 
 // judge is the verdict on a finished probe pod and its log, logErr when the log could not be read
 // (judgeProbeLog), in this order, carrying on a pass what the OK line reported of the image, in
 // Outcome.Report. A pod the kubelet failed for
 // reasons of its own (kubeletFailure) is transient, whatever of its log could be read, and an
 // unread log is judged by the read's error. A Failed pod past those is one whose probe container
-// exited on its own: the image's refusal. The OK line must confirm this daemon's contract: an
+// exited on its own. One that exited bootprobe.NoVerdictExit is transient: the probe saw no
+// failure and some check with no verdict — a check the probe's deadline cut — which the detail
+// names from its no-verdict line (bootprobe.NoVerdict), so the retry runs a new pod. Any other
+// exit is the image's refusal, exit 1 included: a failure, or, from a CLI that predates the
+// no-verdict exit, a check its deadline cut. The OK line must confirm this daemon's contract: an
 // image whose CLI predates the contract check prints none, having checked no contract, and is
 // refused, not waved through; one that confirmed another contract is refused naming both. And it
 // must say the prompt-named agents' models resolved: any other mark, or none, does not prove the
@@ -1186,11 +1222,16 @@ func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, lo
 		return apiOutcome(digest, logErr, fmt.Sprintf("read probe pod %s's log", name), false)
 	}
 	if pod.Status.Phase == corev1.PodFailed {
-		ended := ""
+		ended, exit := "", int32(0)
 		for _, status := range pod.Status.ContainerStatuses {
 			if t := status.State.Terminated; status.Name == probeContainer && t != nil {
 				ended = fmt.Sprintf(" (container %s terminated: %s, exit code %d)", probeContainer, t.Reason, t.ExitCode)
+				exit = t.ExitCode
 			}
+		}
+		if exit == bootprobe.NoVerdictExit {
+			noVerdict, _ := bootprobe.NoVerdict(logTail)
+			return bootprobe.Outcome{Detail: fmt.Sprintf("pod %s exited %d with no verdict: %s — log tail: %s", name, exit, noVerdict, logTail)}
 		}
 		if flag := undefinedFlag.FindStringSubmatch(logTail); flag != nil {
 			return imageRefusal(digest, "pod %s Failed%s: its legion CLI has no %s, a flag this daemon's probe passes: build the image from this daemon's commit — log tail: %s",
@@ -1300,25 +1341,26 @@ type probeSpec struct {
 }
 
 // probeManifest is the probe Sandbox: Running from the start (it holds no Secret to write first),
-// deleted by the controller at shutdown, placed exactly as every worker is placed — the Legion
-// pool, gVisor, the configured scheduling — with the workers' pod security and what the operator
-// adds to every pod (its ServiceAccount, volumes, mounts, and variables, and the providers
-// Secret's configured keys), and a single container running the image's Go `legion probe-image`
-// against p's contract as a worker runs: on the pod's baseline (--pod-safety), loading the plugins
-// from the roots a pod loads them from (--plugin-root, --envoy-plugin-root), with the providers
-// Secret's keys exported as the worker's shim exports them (--provider-env-dir) when its pod mounts
-// that Secret (mountsProviders), each providers secret's `<NAME>_FILE` pointing at its file there
-// as a worker's does (so neither exports it), and resolving the daemon's own role prompts'
-// references (--role-references), which ProbeImage requires, and, first, running one role
-// generation's namespaces as an issue pod's launcher runs every role (--role-namespaces), over a
-// disk emptyDir of its own at RoleProbeDir, as an issue pod's role homes volume is, so a runtime
-// that refuses a role's namespaces fails the probe rather than every role's start. Its command and
-// env are escaped against the kubelet's expansion as every worker container's are
-// (kubeletLiteral). It carries Karpenter's `do-not-disrupt` alone, not the Cluster Autoscaler's
-// `safe-to-evict` (podTemplate sets both): GKE Autopilot places a pod carrying that one on a node
-// of its own whenever possible, so each boot's probe would ask for a node, and a probe minutes long
-// and already retried on failure (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day
-// eviction window.
+// deleted by the controller at shutdown, placed as a gVisor worker is placed — the Legion pool,
+// gVisor, the configured scheduling — whatever runtime.kubernetes.sandbox says, as a repository
+// cache pod is, where an issue pod or the controller's pod may run in a microVM (placement), with
+// the workers' pod security and what the operator adds to every pod (its ServiceAccount, volumes,
+// mounts, and variables, and the providers Secret's configured keys), and a single container
+// running the image's Go `legion probe-image` against p's contract as a worker runs: on the pod's
+// baseline (--pod-safety), loading the plugins from the roots a pod loads them from
+// (--plugin-root, --envoy-plugin-root), with the providers Secret's keys exported as the worker's
+// shim exports them (--provider-env-dir) when its pod mounts that Secret (mountsProviders), each
+// providers secret's `<NAME>_FILE` pointing at its file there as a worker's does (so neither
+// exports it), and resolving the daemon's own role prompts' references (--role-references), which
+// ProbeImage requires, and, first, running one role generation's namespaces as an issue pod's
+// launcher runs every role (--role-namespaces), over a disk emptyDir of its own at RoleProbeDir,
+// as an issue pod's role homes volume is, so a runtime that refuses a role's namespaces fails the
+// probe rather than every role's start. Its command and env are escaped against the kubelet's
+// expansion as every worker container's are (kubeletLiteral). It carries Karpenter's
+// `do-not-disrupt` alone, not the Cluster Autoscaler's `safe-to-evict` (podTemplate sets both):
+// GKE Autopilot places a pod carrying that one on a node of its own whenever possible, so each
+// boot's probe would ask for a node, and a probe minutes long and already retried on failure
+// (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day eviction window.
 // For each role role_config_files names (Options.RoleConfigFiles), in the workflow's order, it
 // passes that role's overlays (--role-config-files), and for every workflow role one value per
 // arm the project declares that names overlays (Options.ExperimentVariants), that arm's files

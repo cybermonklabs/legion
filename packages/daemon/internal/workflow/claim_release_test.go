@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,9 +11,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -32,7 +33,8 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 	// A root's park acts on its whole tree: six suspends and an IssueSuspend for each of its two
 	// members, and the one row that closes the linger.
 	parkedTree := map[string]int{"supervise": 12, "issue_suspend": 2, "linger_close": 1}
-	// A child's park ends the child alone, and tells the tree's architect which child left.
+	// A child's park ends the child alone, and tells the architect above it (here the tree's) which
+	// child left.
 	parkedChild := map[string]int{"supervise": 6, "issue_suspend": 1, "notice": 1}
 	for _, tc := range []struct {
 		name string
@@ -146,7 +148,7 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 			}
 			engine := testEngine(config.DesignGateRootIssues, nil)
 
-			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				return tc.leave(ctx, tx, engine, root, child)
 			})
 
@@ -169,24 +171,34 @@ func withRelease(park map[string]int) map[string]int {
 	return kinds
 }
 
-// applyInTx runs one of the engine's departures in a transaction of its own and commits it, with
-// the commit scope the engine's deferred logging needs (intake.WithCommitHooks), as a fact's
-// application gives it.
-func applyInTx(t *testing.T, pool *pgxpool.Pool, apply func(ctx context.Context, tx pgx.Tx) error) {
+// applyInTx runs one of engine's departures as a fact applies it (factTx), after the boot's open
+// of each run no start counted (bootBefore), which comes before any fact the daemon applies.
+func applyInTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
-	tx, err := pool.Begin(t.Context())
-	if err != nil {
-		t.Fatalf("begin: %v", err)
+	bootBefore(t, pool, engine)
+	factTx(t, pool, engine, apply)
+}
+
+// factTx runs apply in a transaction of its own and commits it (store.Transact), with the commit
+// scope the engine's deferred logging needs and the settle of the runs its writes end
+// (Engine.OpenFact, Engine.SettleFact), as a fact's application gives them, and keeps what it
+// left for the next boot pass's check (factLeft). It runs no boot pass before it: a test that
+// writes what the store held before the daemon booted calls it alone.
+func factTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx context.Context, tx pgx.Tx) error) {
+	t.Helper()
+	if err := store.Transact(t.Context(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx = engine.OpenFact(ctx)
+		if err := apply(ctx, tx); err != nil {
+			return fmt.Errorf("leave: %w", err)
+		}
+		if err := engine.SettleFact(ctx, tx); err != nil {
+			return fmt.Errorf("settle: %w", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
-	defer tx.Rollback(t.Context())
-	ctx, committed := intake.WithCommitHooks(t.Context())
-	if err := apply(ctx, tx); err != nil {
-		t.Fatalf("leave: %v", err)
-	}
-	if err := tx.Commit(t.Context()); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	committed()
+	factLeft(t, pool)
 }
 
 // seedOperatorTree opens key's tree lifecycle under the operator's authority, as an operator root
@@ -229,12 +241,15 @@ func claimReleases(t *testing.T, pool *pgxpool.Pool) []string {
 	return issues
 }
 
-// queuedKinds counts every queued row by kind, with no start passed over: in this package every
-// start carries a task — a phase worker's is one row and carries it (StartOrOwe) — and the
-// task-less starts admission brings back are written in internal/admit, never here.
+// queuedKinds counts every queued row by kind, with no start passed over. In this package a phase
+// worker's start is one row and carries its task (StartOrOwe); a child's own architect's plain
+// start carries none (gateOpened, reviveArchitect), and the task-less starts admission brings back
+// are written in internal/admit, never here. A step record is left out: the tests of the step sites
+// (step_sites_test.go, step_sites_linger_test.go) read those rows exactly (stepWrites), so every
+// row of any other kind is still counted here.
 func queuedKinds(t *testing.T, pool *pgxpool.Pool) map[string]int {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select kind from outbox`)
+	rows, err := pool.Query(t.Context(), `select kind from outbox where kind <> $1`, string(record.OutboxKindStepRecord))
 	if err != nil {
 		t.Fatalf("read the outbox: %v", err)
 	}

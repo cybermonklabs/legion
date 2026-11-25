@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -12,27 +13,47 @@ import (
 
 // helperChildVariables are the markers this package's helper children are re-executed with: the
 // test binary runs as a launcher's child (TestLauncherChild), as a launcher of its own
-// (TestLauncherProcess, TestLauncherPIDOneHelper), as a generation that waits for a SIGTERM
-// (TestLauncherTermDialer) and as role-init in a role's namespaces (TestRoleInitHelper and the
-// helpers of roleinit_test.go, which register their own markers here). Each reads its
-// instructions from a LEGION_ variable its test hands it, and Guard takes every LEGION_ variable
-// out, so a process that is one of these children runs no Guard of its own: it was started by a
-// guarded test process, whose environment it inherits, so it holds nothing of the pod's either.
+// (TestLauncherProcess, TestLauncherPIDOneHelper), as PID 1 of a PID namespace of its own
+// (runAsPIDOne's helpers), as a generation that waits for a SIGTERM
+// (TestLauncherTermDialer), as role-init in a role's namespaces (TestRoleInitHelper and the
+// helpers of roleinit_test.go, which register their own markers here), and as a role's shim,
+// agent and agent's child under that role-init (sessionPeerShim, TestSessionPeerStandInHelper).
+// Each reads its instructions from a LEGION_ variable its test hands it, and Guard takes every
+// LEGION_ variable out, so a process that is one of these children runs no Guard of its own: it
+// was started by a guarded test process, whose environment it inherits, so it holds nothing of
+// the pod's either.
 var helperChildVariables = []string{
-	launcherChildEnv, launcherProcessEnv, launcherTermDialerEnv, namespaceHelperEnv,
-	roleInitEnv, roleProbeEnv,
+	launcherChildEnv, launcherProcessEnv, launcherTermDialerEnv, namespaceHelperEnv, pidOneHelperEnv,
+	roleInitEnv, roleProbeEnv, peerPlanEnv, peerStandInEnv,
 }
 
+// mainHelpers are this package's helper children that no test can re-enter: one started as the
+// controller's shim (`<test binary> worker-shim …`) or as Oh My Pi's eval kernel (`<a copy>
+// __omp_worker_js_eval_process`) takes the arguments of the process it stands for, and its first
+// argument is no -test flag, so m.Run would refuse it or run every test of the package. Each is
+// keyed by its LEGION_ marker, and TestMain runs the one whose marker is set before anything else
+// and exits; the file whose helper it is registers it, as roleinit_test.go registers its markers
+// in helperChildVariables.
+var mainHelpers = map[string]func(){}
+
+// guardKeep is what TestMain's guard keeps beyond fixtureenv's own test inputs: the inputs of a
+// gated live test, which a person or a measurement Job sets for that test alone and none of which
+// names a workspace, a remote or a credential. Each is a LEGION_ variable, which Guard would
+// otherwise take out before the test reads it, so the test would skip wherever it was asked to
+// run. The file whose test reads them registers them, as it registers its helpers in mainHelpers
+// (memoryguard_live_test.go).
+var guardKeep []string
+
 // TestMain takes out of the process every variable that could lead git or jj to a workspace,
-// remote or credential not the test's own (fixtureenv.Guard). The tests here run both: a released
-// workspace's bundle is restored by this package's own code, in process, with the real git and jj
-// (restoreWorkspace), and the launcher starts every generation under the process's own
-// environment merged with the start's (mergeEnv), which is where a restore reads the workspace it
-// is to work (envValue(env, "LEGION_WORKSPACE") in bundleRestore.apply). In a Legion issue pod
+// remote or credential not the test's own (fixtureenv.Guard). The tests here run both, and the
+// launcher starts every generation under the process's own environment merged with the start's
+// (mergeEnv), which is where the pod's git lock sweep reads the workspace whose clone it sweeps
+// (envValue(env, "LEGION_WORKSPACE") in manager.start, gitLockSweep.learn). In a Legion issue pod
 // that variable names the pod's live workspace, so without this a test whose start named no
-// workspace of its own would unbundle into it, move its bookmarks --allow-backwards and jj edit
-// the working copy back to a saved head, over the work the pod's own roles have done
-// (docs/testing.md, "A test that starts jj or git inherits no pod's environment").
+// workspace of its own would have the sweep remove git locks from the clone the pod's own roles
+// work in, under the first pass's rule, which removes every lock no process it can see holds,
+// whatever its age (docs/testing.md, "A test that starts jj or git inherits no pod's
+// environment"). It keeps guardKeep, the gated live tests' own inputs.
 //
 // It takes out the two variables that name a session store as well, which Guard leaves: Guard
 // takes out the LEGION_, GIT_, JJ_, GH_ and GITHUB_ variables and not these. A start's
@@ -41,13 +62,27 @@ var helperChildVariables = []string{
 // and OMP_SESSION_STORAGE name the deployment's shared sessions database, a test of this package
 // would connect to and query the store every agent of the deployment reads and writes. Each test
 // here that needs a session database names its own (testdb.DSNFile).
+//
+// The shim stand-in of the session peer test is this binary run as `<binary> worker-shim`, the
+// argv a shim has (roleShim). The test framework would read that argument as no test flag and run
+// every test, so TestMain runs the stand-in before anything else, and only in a process that
+// carries the test's marker (sessionPeerShim).
 func TestMain(m *testing.M) {
+	for name, helper := range mainHelpers {
+		if os.Getenv(name) != "" {
+			helper()
+			os.Exit(0)
+		}
+	}
+	if len(os.Args) > 1 && os.Args[1] == shimArgument && os.Getenv(peerPlanEnv) != "" {
+		os.Exit(sessionPeerShim())
+	}
 	for _, name := range helperChildVariables {
 		if os.Getenv(name) != "" {
 			os.Exit(m.Run())
 		}
 	}
-	fixtureenv.MustGuard()
+	fixtureenv.MustGuard(guardKeep...)
 	for _, name := range []string{ompsessions.DSNFileVariable, ompsessions.StorageVariable} {
 		if err := os.Unsetenv(name); err != nil {
 			fmt.Fprintln(os.Stderr, "TestMain:", err)
@@ -57,11 +92,84 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// reentry is the arguments that run this test binary's helper test alone, in a process of its own
+// the test starts: the -test.run of that one test, and a -test.timeout that ends reentryMargin
+// before this process's own deadline. The child's own waits end 30 s before that (beforeDeadline)
+// and its cleanups 10 s before (cleanupBeforeDeadline), so a child whose fact never comes fails
+// with its own text, and its parent prints that text, before the parent's own timeout. Under
+// -timeout 0 this process has no deadline, and the child is given none either.
+//
+// So a test waits for a child it re-entered to end with no bound of its own (cmd.Wait,
+// CombinedOutput), or with one that ends after the child's own deadline (runAsPIDOne's ends 30 s
+// after its helper's): the child's -test.timeout ends it, its alarm's goroutine dump in its output,
+// and each child of its own that is re-entered ends before it, so its failure, its cleanups and its
+// alarm all reach the test while the test still waits. A bound of the test's own there,
+// beforeDeadline say, would give up on the child 25 s before the child's own end and kill it
+// without its report. A wait for something the child does short of its end is an ordinary hang
+// guard: the child's own waits end before it, and the case's cleanup ends the child. What the child
+// starts that is not re-entered ends with it only where the child sees to that: a PID namespace the
+// child is PID 1 of, or a parent-death signal, as the role stage's sleep outside the role has.
+//
+// A child started with too little time is still started, with what is left (reentryUntil), and
+// fails at its first wait bounded by beforeDeadline, on a line that names its deadline; a child
+// with no such wait that runs out of time ends at its own alarm, whose panic names its timeout. So
+// no starter checks the time up front: what a child with little time does depends on whether it
+// waits at all.
+func reentry(t *testing.T, helper string) []string {
+	return reentryUntil(reentryEnd(t), helper)
+}
+
+// reentryMargin is how much of its deadline a test keeps back from a child it re-enters: the time
+// it needs to read the child's exit and print what the child said. It is a few seconds rather than
+// beforeDeadline's 30 s, because the child's own waits and cleanups already end before its deadline,
+// so each level of nesting costs 5 s, and a case of a few seconds whose children re-enter twice
+// still runs under a -timeout of a minute or so.
+const reentryMargin = 5 * time.Second
+
+// reentryEnd is when a child this test starts now must end (reentry): reentryMargin before this
+// process's deadline, or the zero time under -timeout 0. A child that the launcher starts by an
+// argv the test does not write, and that has no test of its own to read it from, is handed it in
+// its plan (peerPlan.End).
+func reentryEnd(t *testing.T) time.Time {
+	deadline, ok := t.Deadline()
+	if !ok {
+		return time.Time{}
+	}
+	return deadline.Add(-reentryMargin)
+}
+
+// reentryUntil is reentry for a child that must end by end, the zero time for no end. The timeout
+// is whole seconds, so no command line of the package's gains digits a test reads /proc for (the
+// role stage's detached sleep), and one second at least, so a child started at or after end ends
+// at once rather than with no deadline, which a -test.timeout of 0 would be. The session peer's
+// shim calls it with the end its plan carries.
+func reentryUntil(end time.Time, helper string) []string {
+	args := []string{"-test.run=^" + helper + "$"}
+	if end.IsZero() {
+		return args
+	}
+	return append(args, "-test.timeout="+max(time.Until(end).Truncate(time.Second), time.Second).String())
+}
+
+// exitHelper ends a helper test that runs as a process of its own: with os.Exit(0) when it passed,
+// so the test framework writes nothing more on an output a starter may read as a protocol (the
+// deleter's replies), and through t.FailNow when it failed. A re-entered helper runs without
+// -test.v, so the framework keeps its t.Error lines until the test ends, and os.Exit would end the
+// process with exit 1 and drop them; FailNow ends the test, and the framework writes its
+// `--- FAIL` and those lines on the helper's output, which its starter prints with the rest.
+func exitHelper(t *testing.T) {
+	if t.Failed() {
+		t.FailNow()
+	}
+	os.Exit(0)
+}
+
 // No test of this package can reach the workspace of the pod it runs in. The first two cases fail
 // without a Guard in a Legion issue pod, where LEGION_WORKSPACE names the pod's live workspace,
-// and name the workspace a restore of this package's tests would have worked. The third holds
-// whether or not a Guard ran: it checks only that fixtureenv.Isolated, which the bundle fixture
-// builds its environment from, drops a workspace the process holds.
+// and name the workspace whose clone a git lock sweep of this package's tests would have swept.
+// The third holds whether or not a Guard ran: it checks only that fixtureenv.Isolated, which the
+// git and jj fixtures of the sweep's tests build their environment from (fixturegit.Isolated),
+// drops a workspace the process holds.
 func TestNoTestOfThisPackageCanReachThePodsWorkspace(t *testing.T) {
 	// The test process: Guard ran, and nothing it takes out is left — no LEGION_, no GIT_ but
 	// GIT_ALLOW_PROTOCOL=file, no JJ_ (fixtureenv.RequireGuarded), so neither this package's code
@@ -69,21 +177,21 @@ func TestNoTestOfThisPackageCanReachThePodsWorkspace(t *testing.T) {
 	t.Run("the test process holds no workspace of the pod's", func(t *testing.T) {
 		fixtureenv.RequireGuarded(t)
 		if dir := os.Getenv("LEGION_WORKSPACE"); dir != "" {
-			t.Errorf("the test process holds LEGION_WORKSPACE=%s, the workspace a restore would work", dir)
+			t.Errorf("the test process holds LEGION_WORKSPACE=%s, the workspace a sweep would work", dir)
 		}
 	})
-	// The environment a generation is started under, which is where a restore reads the workspace
-	// it works (bundleRestore.apply): a start that names no workspace of its own must reach a
-	// restore that has none at all. RequireGuarded holds the process's variables; this holds the
+	// The environment a generation is started under, which is where the sweep reads the workspace
+	// it works (gitLockSweep.learn): a start that names no workspace of its own must reach a
+	// sweep that has none at all. RequireGuarded holds the process's variables; this holds the
 	// launcher's own merge of them with the start's.
 	t.Run("a generation a start names no workspace in reaches none", func(t *testing.T) {
 		started := mergeEnv(os.Environ(), []string{"TOLD=" + t.TempDir()})
 		if dir := envValue(started, "LEGION_WORKSPACE"); dir != "" {
-			t.Errorf("a generation started by a test here would restore into %s, the workspace of the process that runs the tests", dir)
+			t.Errorf("a generation started by a test here would have the sweep work %s, the workspace of the process that runs the tests", dir)
 		}
 	})
-	// fixtureenv.Isolated, which bundleFixture.env is built from, drops a workspace the process
-	// holds whether or not a Guard ran. This reads Isolated and not bundleFixture.env itself. The
+	// fixtureenv.Isolated, which fixturegit.Isolated builds its environment from, drops a
+	// workspace the process holds whether or not a Guard ran. This reads Isolated itself. The
 	// process is handed a workspace of this case's own to read back, so what passes is Isolated's
 	// doing and not an environment that held none anyway.
 	t.Run("a fixture's environment carries no workspace the process holds", func(t *testing.T) {

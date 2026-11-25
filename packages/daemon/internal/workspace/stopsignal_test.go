@@ -12,6 +12,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
+// inFlight runs f on a goroutine of its own and answers the channel its answer arrives on, for a
+// row that waits, under a bound of its own (testwait.Receive), for a call that may never return.
+func inFlight[T any](f func() T) <-chan T {
+	answered := make(chan T, 1)
+	go func() { answered <- f() }()
+	return answered
+}
+
 // commandLives keeps a test's command running until a signal ends it. A shell runs a trap when the
 // command it is waiting for ends, so the command waits in a loop of short foreground sleeps rather
 // than in one long one: a SIGTERM it handles is then acted on within one sleep of its arrival,
@@ -50,7 +58,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		script := `: >"$1"; trap 'rm -f "$1"; exit 0' TERM; : >"$2"; ` + commandLives
 
 		started := time.Now()
-		_, err := RunCommand(ctx, nil, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready})
+		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready})
 		elapsed := time.Since(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {
@@ -94,7 +102,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		script := `sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; : >"$1"; ` + commandLives
 
 		started := time.Now()
-		_, err := RunCommand(ctx, nil, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped})
+		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped})
 		elapsed := time.Since(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {

@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  A secrets broker request belongs to the person, the Legion claim or the machine that made it, not
+  to one enrollment: any later enrollment of the same owner reads it (`agent-secrets status`) and
+  cancels it (`agent-secrets cancel`), and every other one is refused `NOT_YOURS`. Each slot of a pod
+  that states no claim is an owner of its own. A person's or a machine's grant still follows the
+  session that asked. The next pod of a Legion claim also takes the grants and pending requests a
+  dormant pod of that claim left, and a pod of the claim that came up before the last one ended is
+  handed them at that end, so a person who approves a role's request after its pod is gone has the
+  value reach the role's next pod, and that pod's equal request joins the pending one.
+  `POST /v1/enrollments` takes a pod-only `claim`; a claim on a session, on a pod enrolling itself,
+  on a pod under a service login a person approved, or in any other shape than
+  `^[a-z][a-z0-9-]{0,127}$` is `400 INVALID_CLAIM`. Migration `0035_enrollment_owner` adds
+  `enrollments.owner` and `enrollments.claim`; an enrollment from before it keeps its requests to
+  itself, as every enrollment did.

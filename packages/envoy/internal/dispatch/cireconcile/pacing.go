@@ -24,7 +24,7 @@ const (
 // spread over the share of its own bound it may spend waiting.
 //
 // The work is what the last pass learned there is -- the pages of each listing of each head
-// the queries could not answer whole, and one read of each mapped repository's identity -- so a
+// the queries could not answer whole, and one read of each covered repository's identity -- so a
 // pass paces itself by the size of the job rather than by a fixed pause, which is what makes a
 // pass of 1,681 requests take 26 minutes of a 5-minute interval. Most of a pass is queries,
 // which GitHub's own secondary limit on GraphQL time paces instead (graphQLPace), so the REST
@@ -35,6 +35,21 @@ const (
 // because the secondary limit it sits inside is the App's and this pass is not the only reader
 // the App pays for; Pace is the ceiling, so the pass is never slower than the pause a deployment
 // configures and the work only ever buys GitHub more room, never less.
+//
+// The passes after a pass that its own bound ended before it reached a head -- read one whole or
+// gave one up (counts.heads) -- read at the floor until one reaches a head (Reconciler.starved).
+// In a process's first cycle such a pass learned no page of any head it listed, so the work the
+// arithmetic spreads over the bound is each repository's identity alone, and nine tenths of a
+// bound of a second or more over one request is above the ceiling: the gap would be Pace. A pass
+// at Pace under a short bound can reach no head either and learn nothing again, so every pass
+// after it would end on its bound at Pace and no cycle would close. At the floor a pass reads as
+// fast as this package ever lets it, so it reaches a head wherever the bound holds one head's
+// requests at the floor, learns that head's pages, and the pass after it paces itself by them.
+// Later, the Reconciler holds the pages of the heads earlier cycles read, and a pass its bound
+// cut in a head's status read keeps that head's other pages (readHead), so the arithmetic can
+// answer faster than Pace there; the floor is then only the faster answer, never a slower one,
+// until a pass reaches a head. This needs no count of the listings a head takes: a bound that
+// does not hold one head's requests at the floor holds them at no slower pace either.
 func (r *Reconciler) gap(rows int) time.Duration {
 	if r.Pace <= 0 {
 		// A caller that waits for nothing, which is what every test of this package is.
@@ -44,6 +59,10 @@ func (r *Reconciler) gap(rows int) time.Duration {
 		// An unbounded pass has no budget to spread its requests over, so it keeps the pause its
 		// deployment configured.
 		return r.Pace
+	}
+	if r.starved {
+		// Never slower than the pause the deployment configured, as the clamp below never is.
+		return min(FastestRequestPace, r.Pace)
 	}
 	work := r.restWork()
 	if r.known() == 0 && work == 0 {
@@ -56,29 +75,31 @@ func (r *Reconciler) gap(rows int) time.Duration {
 	expected := work + rows
 	if expected == 0 {
 		// A cycle whose heads the queries all answered whole leaves no REST work behind, while
-		// the heads it listed are still counted, so the guard above does not fire; a mapping
-		// that has since been emptied leaves no repository to read either, and there is nothing
-		// at all for this pass to spread over its bound. The floor is the answer to no expected
-		// work, as it is above, and the arithmetic below would divide by zero: nothing recovers
-		// a panic of the pass's goroutine, so it would take the process down.
+		// the heads it listed are still counted, so the guard above does not fire; a deployment
+		// whose project defaults and issues no longer name a repository leaves none to read
+		// either, and there is nothing at all for this pass to spread over its bound. The floor
+		// is the answer to no expected work, as it is above, and the arithmetic below would
+		// divide by zero: nothing recovers a panic of the pass's goroutine, so it would take the
+		// process down.
 		return FastestRequestPace
 	}
 	return min(max(r.PassTimeout*9/10/time.Duration(expected), FastestRequestPace), r.Pace)
 }
 
 // restWork is the REST requests the last pass learned this one will make: every head a query
-// could not answer whole is read again over REST, one request for each page of each of its two
-// listings.
+// could not answer whole is read again over REST, one request for each page of each of its
+// listings -- its check runs, its check suites, and its commit statuses where its token holds
+// Commit statuses.
 //
 // A head a query answered whole is no REST work at all, and the Reconciler holds it with no
-// page of either listing and a fingerprint instead (headState), so it adds nothing here. The
+// page of any listing and a fingerprint instead (headState), so it adds nothing here. The
 // pass that then cannot read such a head in a query reads it over REST with no ETag to send,
-// which is two requests this did not expect: the gap is what the last pass learned, and a head
+// which is requests this did not expect: the gap is what the last pass learned, and a head
 // that has just overflowed is news.
 func (r *Reconciler) restWork() int {
 	requests := 0
 	for _, state := range r.heads {
-		requests += len(state.runs) + len(state.suites)
+		requests += len(state.runs) + len(state.suites) + len(state.statuses)
 	}
 	return requests
 }

@@ -64,7 +64,8 @@ agent-secrets: request 0eaf43c4-dea5-4d41-8798-c25f6be7d811 to the broker AGENT_
 agent-secrets: waiting for ada@example.com to approve it on the secrets broker: http://127.0.0.1:62083/approve/<record>
 ```
 
-The approver is the one the broker recorded when the agent asked: the secret's owner, or, for a
+The approver is the one the broker recorded when the agent asked: the secret's owner; for a secret
+a Google group owns, any member of that group, which the line names as `group:<address>`; or, for a
 shared secret, anyone signed in to the broker. Tell that person, not whoever you believe owns the
 secret: a request goes to whomever its owner tag named at the moment it was made.
 `agent-secrets request` and `agent-secrets status` print the same `waiting for …` line while the
@@ -104,12 +105,11 @@ and two buttons, **Approve** and **Deny**. The broker records the decision under
 approver signed in to the broker as; [approving a request](/legion/broker/guides/approve-a-request/)
 covers the page in full.
 
-Some requests never reach that page. Where the deployment configures a model judge, the broker
-that wrote a request pending puts it to a model in the background, as long as it asks for one
-secret, for 15 minutes or less that the secret's airlock rules let the judge decide, with a
-reason naming a Dispatch issue that is not done. The judge approves such a request or leaves it
-here for the approver, and it never denies. A judged approval takes the request out of every
-Inbox, and the **State** line names `judge:<model id>` as the decider, as
+Some requests never reach that page. Where the deployment configures a model judge, a request for
+keys whose profiles' `proxy` blocks in the profiles file let the judge decide goes to a model in the background instead, and
+nobody sees it while the judge decides. The judge grants it or refuses it for good, each key against
+its owner's guidance; a request it cannot decide comes to this page once, as any other does. A
+judged grant's **State** line names `judge:<model id>` as the decider, as
 `agent-secrets status <request id>` then does under `decided_by`
 ([Concepts](/legion/broker/concepts/#the-model-judge)). The local stack this page
 uses runs no judge; the airlock stack does ([let the judge decide a
@@ -137,6 +137,7 @@ $ agent-secrets self
 enrollment_id: 2b8627f4-9a2a-4c12-85bf-910144bc0b5c
 kind: session
 operator: ada@example.com
+projects: -
 lease_expires_at: 2026-10-03T03:36:40Z
 source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 grant: f5167d29-1789-4719-8e8c-9aec6f1229e7 (request ce11549a-ab03-4a13-95cf-896961c36fc0, expires 2026-10-11T03:56:07Z)

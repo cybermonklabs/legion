@@ -1,6 +1,6 @@
 /** How the Inbox bands its rows by priority and by whose turn it is, and that the bands leave one
  *  flat keyboard list: what the page arranges out of one fixed answer, so it runs against a
- *  recording (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  recording (packages/dispatch/README.md, "The stubbed layer").
  */
 import { expect, type Page } from "@playwright/test";
 
@@ -23,7 +23,7 @@ import { stubbed } from "./stub/stub-test";
  * chosen the rows stay one flat list the keyboard walks top to bottom.
  *
  * The row reads the bands and the walk the page draws over one list, so it runs against a
- * recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+ * recording rather than against a harness (packages/dispatch/README.md, "The stubbed layer").
  */
 
 const session = {
@@ -110,7 +110,8 @@ test("the list bands by priority and by whose turn it is, and its rows stay one 
   );
 
   // Whatever the banding, the rows are one list: the Inbox selects its first row, `j` walks
-  // down it and `k` walks back up, across every band heading on the way.
+  // down it and `k` walks back up, across every band heading on the way. The count above
+  // waited for every row of the scene, so the list read here is the whole of it.
   const forward = await inboxRows(page);
   await page.locator("body").focus();
   for (const [index, id] of forward.entries()) {

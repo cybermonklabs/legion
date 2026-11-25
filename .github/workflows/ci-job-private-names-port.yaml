@@ -15,13 +15,12 @@ name: CI job private-names-port
 #
 # It is a job because of what that comparison costs the filters: the harness builds ./cmd/legion
 # out of packages/daemon (:70), so the filter that selects it has to name the whole closure of
-# that build - `go list -deps ./cmd/legion`, the ci.yaml anchor legion_command. While the step
+# that build - `go list -deps ./cmd/legion`. While the step
 # was the test job's, that closure sat on the `test` filter, and a change to any package of the
 # daemon or to the envoy packages it imports ran thirty-odd shell harnesses, the Claude Code
 # plugin build and the Bun suites of scripts/ beside this one, none of which could see it
-# (dispatch://INFRA-1413). A gate on the step inside that job could not cure it: the gate's own
-# filter would be that closure a second time, and the changes job's filters string has no room
-# for one (rule 18 of .github/scripts/check-ci-filters.sh).
+# (dispatch://INFRA-1413). A gate on the step inside that job could not cure it: the job's own
+# filter takes every step gate's reads, so that closure would select the `test` job all the same.
 #
 # Everything the harness needs, and nothing else:
 #   * the checkout, which is the whole of its corpus: the harness, the frozen script it compares
@@ -59,12 +58,14 @@ env:
 
 jobs:
   private-names-port:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # The harness takes 71 s on a machine whose Go build cache is warm, the build of ./cmd/legion
     # included (measured here, dispatch://INFRA-1413). This job restores no cache, so every run
     # compiles that command's 1,217 packages from nothing; 20 minutes is many times the cold
     # build and the 148 cases after it, and still fails a hung case well inside the hour.
     timeout-minutes: 20
+    env:
+      JOB_TIMEOUT_MINUTES: 20 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -76,6 +77,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       - name: Test the private-name rules' port against the frozen script

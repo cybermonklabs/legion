@@ -185,6 +185,8 @@ export async function measureDraw(
   if (!started) {
     throw new Error(`the page never asked for ${reset.source}`);
   }
+  // `drawn` above waited for the formatted body, so the record read once here is the
+  // measurement of that draw, which is what the row asserts.
   const measured = await page.evaluate(() => ({
     drawn: performance.now() - (window.__mainThreadResetAt ?? Number.NaN),
     gap: window.__mainThreadLongestGap,

@@ -41,16 +41,16 @@ type connectionContextKey struct{}
 type ownerVerifiedContextKey struct{}
 
 // ownerVerifiedToken is installed only on the server's own calls, by a caller that already
-// knows the document's owner state or has no use for it: a settlement, which holds the owner row
-// locked in its transaction, and its warm-up load, which applies nothing; the publish of a
-// committed live write, whose transaction held that row until it committed; the block-id
+// knows the document's owner state or has no use for it: a settlement, which holds the owner's
+// lock in its transaction, and its warm-up load, which applies nothing; the publish of a
+// committed live write, whose transaction held that lock until it committed; the block-id
 // backfill, which is a command run against a database nobody is serving from; or one of a
-// comment's anchor operations under WithCommentMarks, whose caller holds the owner row locked
-// and decided under it that the comment is written. Their injections skip the issue read in
-// allowInject - for the settlement that read would be a second pooled connection taken while
-// its transaction is open (store.ErrNestedAcquire), for its warm-up a refusal its closed issue
-// does not make (a closed issue's document settles as an open one's does), for the publish a
-// read other writers' connections can starve (see publishLiveUpdate), for the backfill a
+// comment's anchor operations under WithCommentMarks, whose caller holds the owner's lock and
+// decided under it that the comment is written, or deleted. Their injections skip the issue
+// read in allowInject - for the settlement that read would be a second pooled connection taken
+// while its transaction is open (store.ErrNestedAcquire), for its warm-up a refusal its closed
+// issue does not make (a closed issue's document settles as an open one's does), for the publish
+// a read other writers' connections can starve (see publishLiveUpdate), for the backfill a
 // question already answered, and for a comment's anchor a refusal its closed issue does not make.
 type ownerVerifiedToken struct{ _ byte }
 
@@ -66,19 +66,29 @@ func isOwnerVerified(ctx context.Context) bool {
 type commentMarksContextKey struct{}
 
 // WithCommentMarks marks ctx as a comment's writes to the document its anchor is in, made by a
-// caller holding the document's owner row locked in its joined transaction that decided there
-// the comment is written. A closed issue still takes a comment, so its document still takes
-// that comment's anchor: the comment mark MarkQuote places and VerifyMark reads, the version
-// SnapshotVersion pins the anchor to, the margin record ProjectMark writes, and the
-// SuggestionKind read of the thread root a reply projects. Each of those, and only those, runs
-// owner-verified under this context (commentMarkOperation). A suggestion's mark, a content edit,
-// a named version or a rebuild made under the same context is still refused on a closed issue.
+// caller whose joined transaction holds the document owner's lock (store.LockOwner) and decided
+// under it that the comment is written, or that the body its author wrote there is that author's
+// to replace or to withdraw. A closed issue still takes a comment, and takes its author's
+// correction of it, so its document still takes the writes that comment makes there. Every
+// operation that takes its context through commentMarkOperation runs owner-verified under this
+// context. For a comment's anchor that is the comment mark MarkQuote places and VerifyMark reads,
+// the version SnapshotVersion pins the anchor to, the margin record ProjectMark writes, and the
+// SuggestionKind read a projection makes - of the thread root a reply projects, and of the
+// comment's own mark where an edit projects it.
+//
+// For the delete of a comment it is also the reject of the comment's pending suggestion
+// (RejectDeletedCommentSuggestion) and the version that settles the document without an insert's
+// words (SettleVersion). A closed issue still takes that delete, so its document takes that
+// reject, which carries the suggestion's text out of it with the comment's body, and that version,
+// which holds the document without it. Every other way a suggestion's mark is placed or settled,
+// and a content edit, a named version or a rebuild made under this context, is still refused on a
+// closed issue.
 func WithCommentMarks(ctx context.Context) context.Context {
 	return context.WithValue(ctx, commentMarksContextKey{}, true)
 }
 
-// commentMarkOperation is ctx for one of the comment anchor operations WithCommentMarks names:
-// owner-verified when the caller marked ctx, unchanged otherwise.
+// commentMarkOperation is ctx for an operation WithCommentMarks says runs owner-verified under the
+// caller's mark: owner-verified when the caller marked ctx, unchanged otherwise.
 func commentMarkOperation(ctx context.Context) context.Context {
 	if commentMarks(ctx) {
 		return withOwnerVerified(ctx)
@@ -94,12 +104,12 @@ func commentMarks(ctx context.Context) bool {
 	return marked
 }
 
-// commentMarkAnchor is whether ctx is one of the comment anchor operations WithCommentMarks
-// names, inside the operation that made it owner-verified (commentMarkOperation): the reads and
-// writes a closed issue's document takes for a comment, and no other caller's. It is the one
-// test of that, which the three decisions a closed issue turns share - the fork a comment's mark
-// is written on (closedIssueCommentMark), the tree its mark_id is verified against and the
-// version its anchor is pinned to (closedIssueCommentAnchor).
+// commentMarkAnchor is whether ctx is inside an operation commentMarkOperation made owner-verified
+// under the caller's mark (WithCommentMarks): the reads and writes a closed issue's document takes
+// for a comment, and no other caller's. It is the one test of that, which the three decisions a
+// closed issue turns share - the fork a comment's mark is written on (closedIssueCommentMark), the
+// tree its mark_id is verified against and the version its anchor is pinned to
+// (closedIssueCommentAnchor).
 func commentMarkAnchor(ctx context.Context) bool {
 	return commentMarks(ctx) && isOwnerVerified(ctx)
 }
@@ -143,6 +153,28 @@ func withShutdownLoad(ctx context.Context) context.Context {
 
 func isShutdownLoad(ctx context.Context) bool {
 	load, _ := ctx.Value(shutdownLoadContextKey{}).(bool)
+	return load
+}
+
+type settlementLoadContextKey struct{}
+
+// withSettlementLoad marks the settlement a browser's departure runs (settleLastPeer) and the
+// Apply that retires the room its warm-up loaded (retireSettlementRoom). A departure's
+// settlement loads a room only when the document's room has left ygo's map before it: a close
+// took the room out from under the departing browser, and the load would put back a room no one
+// asked for. A timer's settlement carries no mark, and the room it loads idles out as any room
+// does. ygo runs a room's load hook only on the goroutine whose call created the room, and hands
+// it that call's context (sjawhar/ygo v1.55.1-sami.2, provider/websocket/server.go:1755-1769,
+// 1903-1921): a load whose context carries the mark was made by such a settlement's warm-up or
+// retire, not by a browser or a writer, and the room it publishes is the settlement's
+// (roomState.warmed, recorded by onLoadDocument). A load the injection only waited for, made by
+// another caller, never sees the mark.
+func withSettlementLoad(ctx context.Context) context.Context {
+	return context.WithValue(ctx, settlementLoadContextKey{}, true)
+}
+
+func isSettlementLoad(ctx context.Context) bool {
+	load, _ := ctx.Value(settlementLoadContextKey{}).(bool)
 	return load
 }
 
@@ -575,7 +607,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		return err
 	}
 	// Everything this load needs comes from the pool that owns loads. A writer holding a
-	// pooled connection and the issue's row lock waits for this load, so a read of the shared
+	// pooled connection and the issue's owner lock waits for this load, so a read of the shared
 	// pool here waits for a connection only that writer can release: the wedge, arrived at
 	// without a transaction of its own and so invisible to the pool's guard.
 	rooms, err := s.store.Pool.Rooms()
@@ -650,6 +682,19 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	state := s.lockState(room)
 	state.recordIssueLocked(issue)
 	open := !state.closed
+	// A room a late departure's settlement loaded is that settlement's until a browser or a writer
+	// takes it up (withSettlementLoad, retireSettlementRoom). It is known by this load's token as
+	// well as its document, so an earlier room's unload, which may run before ygo hands this room
+	// to anyone, does not read as this room's end (warmedRoom). A writer that holds the writer slot
+	// now took it before this load took the record, so its take-up (openLiveWrite) cleared the mark
+	// before this load could set one, and this load sets none under it: the writer may publish into
+	// this room once the room has loaded (publishLiveWrite), so it takes the room up as a writer
+	// that takes the slot after the load does. A writer that let the slot go before this point
+	// published into no room of this load: a write with updates holds its slot until its publish's
+	// Apply, which waits for this load, returns.
+	if isSettlementLoad(ctx) && state.liveWriter == nil {
+		state.warmed = &warmedRoom{doc: doc, load: counted}
+	}
 	// The room has counted itself loaded here since roomLoaded, above, and stays counted until its
 	// unload (roomLoadedHere), so a socket's admission offers it no preload from then on
 	// (offerPreload). An offer that checked before that count and has stored its preload is under
@@ -1122,6 +1167,12 @@ func (s *Service) removeConnection(room string, id uint64) {
 // returned. It counts itself as running (settling) from the moment it takes the timer, as the timer
 // it replaces counted as armed: a write that opens before the settlement reaches its own count
 // then takes the settlement over (openLiveWrite) rather than ending it with nobody to arm it again.
+// ygo can run this after a close of the room has returned (sjawhar/ygo v1.55.1-sami.2,
+// provider/websocket/inject.go:483-485), so its settlement may load the document into a room of
+// its own, which its mark records as the settlement's (withSettlementLoad). The departing browser
+// still holds the room's record here, registered and admitted, and lets go of it only as its
+// socket ends, which is where that room is retired unless someone took it up meanwhile
+// (ServeHTTP, retireSettlementRoom).
 func (s *Service) settleLastPeer(_ context.Context, room string) {
 	state := s.lockExistingState(room)
 	if state == nil {
@@ -1140,5 +1191,5 @@ func (s *Service) settleLastPeer(_ context.Context, room string) {
 		state.settling--
 		s.unlockState(room, state)
 	}()
-	s.settleRoom(room, generation)
+	s.followUpSettlement(room, s.settleRoomWithin(withSettlementLoad(context.Background()), room, generation, false))
 }

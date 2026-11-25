@@ -1,25 +1,42 @@
 // Every psql the e2e harness runs goes through here. Of e2e/ it imports only
-// e2e/harness-ports.ts, which reads the environment and opens nothing, so a module can import it
-// statically without evaluating e2e/api.ts, whose module scope reads PLAYWRIGHT_BASE_URL.
+// e2e/harness-ports.ts, which reads the environment and opens nothing, and e2e/pg-url.ts, which
+// imports nothing, so a module can import it statically without evaluating e2e/api.ts, whose
+// module scope reads PLAYWRIGHT_BASE_URL.
 import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
 import { promisify } from "node:util";
 
 import { stackValue } from "./harness-ports";
+import { splitDatabaseUrl } from "./pg-url";
 
 const execFileAsync = promisify(execFile);
 
-/** psql's environment. psql is libpq, which also reads PGHOSTADDR — an address that replaces the
- *  URL's host for the connection and that pgx does not read (it is not in pgconn's environment
- *  list). With it set in a shell, every psql here would empty a server the Dispatch server's
- *  own loopback check never saw, so it is dropped before psql runs. PGHOST and PGSERVICE stay,
- *  since pgx and libpq read both; a service entry's `hostaddr` is the one key they part on, and
- *  pgx sends it to Postgres as a setting, which refuses the connection, so the harness server
- *  never boots on such an entry. */
-const psqlEnvironment: NodeJS.ProcessEnv = Object.fromEntries(
-  Object.entries(process.env).filter(([name]) => name !== "PGHOSTADDR")
-);
+/** The arguments and environment of a psql against `url`: the URL without its password first,
+ *  then `rest`, and the password, when the URL holds one, in `PGPASSWORD` of that psql's
+ *  environment alone. A process's arguments are in the process list for any user of the machine
+ *  to read, and its environment is not. A URL with no password is passed whole, and psql keeps
+ *  the caller's own `PGPASSWORD`. A URL `splitDatabaseUrl` refuses throws, starting nothing.
+ *
+ *  The environment is the caller's, read at each start as `databaseUrl` is, less PGHOSTADDR.
+ *  psql is libpq, which also reads PGHOSTADDR — an address that replaces the URL's host for the
+ *  connection and that pgx does not read (it is not in pgconn's environment list). With it set in
+ *  a shell, every psql here would empty a server the Dispatch server's own loopback check never
+ *  saw, so it is dropped before psql runs. PGHOST and PGSERVICE stay, since pgx and libpq read
+ *  both; a service entry's `hostaddr` is the one key they part on, and pgx sends it to Postgres
+ *  as a setting, which refuses the connection, so the harness server never boots on such an
+ *  entry. */
+function psqlCommand(
+  url: string,
+  rest: readonly string[]
+): { args: string[]; env: NodeJS.ProcessEnv } {
+  const split = splitDatabaseUrl(url);
+  const env: NodeJS.ProcessEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => name !== "PGHOSTADDR")
+  );
+  if (split.password !== undefined) env.PGPASSWORD = split.password;
+  return { args: [split.url, ...rest], env };
+}
 
 /** The database this run's SQL writes to: a deployed server's own `PLAYWRIGHT_DATABASE_URL`, else
  *  the `DATABASE_URL` of this process's stack, which is the one the caller supplied for a run of
@@ -120,14 +137,17 @@ type Session = { child: ChildProcessWithoutNullStreams; out: MarkedStream; error
  *  a connection and a teardown — about 400 ms of `resetDatabase`'s 441 — for statements that take
  *  single-digit milliseconds on an open connection. */
 let session: Session | null = null;
+// Kills the current psql as this process exits. It is one handler for the process, not one per
+// start: `resetSession` makes the next call start psql again, and a handler per start would pile
+// up over a file's reruns.
+process.once("exit", () => session?.child.kill());
 
 function startSession(): Session {
   // No ON_ERROR_STOP: it makes psql exit on the first error, which would take the connection with
   // it. A failing statement is recognised by psql's own verdict on it (`send`) instead, and the
   // session stays open for the next caller.
-  const child = spawn("psql", [databaseUrl(), "-X", "-v", "VERBOSITY=verbose", "-tA"], {
-    env: psqlEnvironment,
-  });
+  const command = psqlCommand(databaseUrl(), ["-X", "-v", "VERBOSITY=verbose", "-tA"]);
+  const child = spawn("psql", command.args, { env: command.env });
   const started: Session = {
     child,
     out: markedStream(child.stdout),
@@ -152,14 +172,22 @@ function startSession(): Session {
   // A Playwright worker ends when its event loop empties, and a piped child holds the loop open
   // through its own handle and its three pipes. Unref'ed, none of them keeps a finished worker
   // alive; psql then reads EOF on the stdin this process leaves behind and exits by itself, and
-  // the kill below closes it at once rather than on the next read.
+  // the exit handler beside `session` kills it at once rather than on the next read.
   child.unref();
   for (const pipe of [child.stdin, child.stdout, child.stderr]) {
     // The pipes are net sockets, whose stream types do not say so.
     if ("unref" in pipe && typeof pipe.unref === "function") pipe.unref();
   }
-  process.once("exit", () => session?.child.kill());
   return started;
+}
+
+/** Ends this process's psql, so the next `sql` call starts another and resolves its database
+ *  again: a bun test file that points `sql` at a database of its own, before it drops it and
+ *  before a case that needs no psql to have been started. A Playwright worker never calls it;
+ *  its psql ends with the worker. */
+export function resetSession(): void {
+  session?.child.kill();
+  session = null;
 }
 
 /** Runs one statement and returns what each stream carried for it, and psql's verdict on it. The
@@ -240,19 +268,41 @@ export async function sqlAt(
   statements: readonly string[],
   signal?: AbortSignal
 ): Promise<string> {
-  const { stdout } = await execFileAsync(
-    "psql",
-    [
-      url,
-      "-X",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-v",
-      "VERBOSITY=verbose",
-      "-tA",
-      ...statements.flatMap((statement) => ["-c", statement]),
-    ],
-    { env: psqlEnvironment, signal }
-  );
+  const command = psqlCommand(url, [
+    "-X",
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-v",
+    "VERBOSITY=verbose",
+    "-tA",
+    ...statements.flatMap((statement) => ["-c", statement]),
+  ]);
+  const { stdout } = await execFileAsync("psql", command.args, { env: command.env, signal });
   return stdout.trim();
+}
+
+/** Drops the database `name`, one a test made on `server` with `create database`, where the login
+ *  `server` names may not be a superuser, as CI's is not. It has no FORCE: `drop database ... with
+ *  (force)` first checks that the caller may signal every process on the database, and an
+ *  autovacuum worker has no role, so a login without superuser or `pg_signal_backend` is refused
+ *  while one is attached. A plain drop ends an autovacuum worker itself, with no such check, and
+ *  waits up to 5 s for any other session to leave. So the login's own sessions on the database,
+ *  which any login may end, are ended first: a psql the test just killed that has not left the
+ *  server yet, or one it left open, cannot keep the database. The two statements are two `-c`
+ *  arguments of `sqlAt`'s psql, each a request of its own: `drop database` cannot run inside the
+ *  transaction block one request holding both would be. `name` is written into both as it is, so
+ *  a name that is not a lowercase unquoted identifier, which every name the harness generates is,
+ *  is refused rather than quoted. */
+export async function dropDatabase(server: string, name: string): Promise<void> {
+  if (!/^[a-z_][a-z0-9_]*$/.test(name)) {
+    throw new Error(
+      "dropDatabase takes a lowercase unquoted identifier, as the harness generates; " +
+        `it refuses ${JSON.stringify(name)}`
+    );
+  }
+  await sqlAt(server, [
+    "select pg_terminate_backend(pid) from pg_stat_activity " +
+      `where datname = '${name}' and usename = current_user and pid <> pg_backend_pid()`,
+    `drop database if exists ${name}`,
+  ]);
 }

@@ -7,6 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
+    "maxSize": 2097152,
     "includes": [
       "**",
       "!!packages/contracts/fixtures/classification",
@@ -16,7 +17,8 @@
       "!!packages/daemon/internal/runtime/sandbox/testdata/golden",
       "!!packages/envoy/internal/dispatch/pmdoc/testdata",
       "!!packages/envoy/internal/dispatch/text/testdata",
-      "!!packages/envoy/internal/broker/approval/templates",
+      "!!packages/envoy/internal/dispatch/textversions/testdata",
+      "!!packages/envoy/internal/cipher/approval/templates",
       "!!packages/daemon/docker/language-servers/package-lock.json",
       "!!.legion"
     ]
@@ -33,7 +35,13 @@
       "!packages/envoy-client/src/__tests__/fixtures/dispatch-tool.schema.json",
       "!packages/envoy-client/src/__tests__/fixtures/command-surface.json",
       "!packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json",
-      "!packages/contracts/schemas/dispatch-openapi.json"
+      "!packages/contracts/schemas/dispatch-openapi.json",
+      "!packages/contracts/fixtures/session-grant.json",
+      "!packages/contracts/fixtures/github-envelopes/**",
+      "!packages/contracts/fixtures/capability-redaction-plugin-report.json",
+      "!packages/daemon/internal/capabilities/testdata/web-search-open-planner.json",
+      "!packages/daemon/internal/runtime/tmux/testdata/golden/launch-baseline-no-experiment.json",
+      "!packages/envoy/going/testdata/filtered-answers.json"
     ]
   },
   "linter": {
@@ -42,6 +50,9 @@
       "recommended": true,
       "suspicious": {
         "noImportCycles": "error"
+      },
+      "nursery": {
+        "noFloatingPromises": "error"
       }
     }
   },
@@ -83,6 +94,12 @@
         "!packages/proof-editor/src/editor-change-decorations.ts",
         "!packages/proof-editor/src/document-reading.ts",
         "!packages/proof-editor/src/reference-decorations.ts",
+        "!packages/proof-editor/src/document-json.ts",
+        "!packages/proof-editor/src/editor/schema/dom-attributes.ts",
+        "!packages/proof-editor/src/editor/schema/leaf-marks.ts",
+        "!packages/proof-editor/src/nested-links.ts",
+        "!packages/proof-editor/src/tests/block-ids-cost.test.ts",
+        "!packages/proof-editor/src/tests/reference-links-import.test.ts",
         "packages/proof-editor/upstream/**"
       ],
       "assist": { "enabled": false },

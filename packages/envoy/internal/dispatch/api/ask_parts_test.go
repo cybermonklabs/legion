@@ -212,6 +212,7 @@ func answerPartAsk(t *testing.T, handler http.Handler, ask model.Ask, login stri
 // drain. The order here is the order the routes allow: an answered ask is closed to edits
 // (ASK_NOT_OPEN), so the rewording and the dropped option come before the answer.
 func TestAnAsksPartsAreIndexedOnEveryWrite(t *testing.T) {
+	t.Parallel()
 	const (
 		monday      = "Monday — Ship at the start of the week."
 		tuesday     = "Tuesday — Ship once the review lands."
@@ -271,10 +272,69 @@ func TestAnAsksPartsAreIndexedOnEveryWrite(t *testing.T) {
 	}
 }
 
+// An ask the part index has never reached - every ask stored before migration 20261101143212,
+// which seeds each of them owed at revision 0 - takes its first index from whichever write lands
+// first. When that write is an edit, its parts were made at a time the ask never recorded, so
+// each records none, as a comment's blocks do at the first indexing of a comment already edited.
+// The edit's own update of edited_at is queued and has not run when the plan reads the index, so
+// the ask is planned as edited from the edited_at the route holds on its row.
+func TestAnEditThatFirstIndexesAnAsksPartsRecordsNoMakingTime(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "First indexed by an edit", "A spec")
+	ask := createPartAsk(t, handler, issue.Key, "Which day do we ship?",
+		map[string]string{"label": "Monday", "description": "Ship at the start of the week."},
+		map[string]string{"label": "Tuesday", "description": "Ship once the review lands."})
+	seedAskPartIndex(t, database, ask.ID)
+
+	editPartAskOptions(t, handler, ask.ID, "reword an option",
+		map[string]string{"label": "Monday", "description": "Ship at the start of the week."},
+		map[string]string{"label": "Tuesday", "description": "Ship once the review lands and the queue is green."})
+
+	requireAskParts(t, database, ask.ID, "the edit that first indexes the ask", "b1@1 b2@1 b3@1", 1)
+	for _, part := range []string{"b1", "b2", "b3"} {
+		if made := askPartMadeAt(t, database, ask.ID, part); made != nil {
+			t.Fatalf("part %s of the ask the edit first indexed was made at %v, want no making time", part, *made)
+		}
+	}
+}
+
+// seedAskPartIndex puts the ask's part index back to what migration 20261101143212 seeded for
+// every ask stored before it: a state row owed at revision 0, with no part row and no part text,
+// which the next write of the ask indexes for the first time.
+func seedAskPartIndex(t *testing.T, database *store.Store, askID string) {
+	t.Helper()
+	ctx := context.Background()
+	for _, statement := range []string{
+		`delete from ask_block_refs where ask_id = $1::uuid`,
+		`delete from ask_block_texts where ask_id = $1::uuid`,
+		`delete from ask_blocks where ask_id = $1::uuid`,
+		`update ask_block_state set revision = 0, next_block = 1, body_sha256 = null, owed_at = now() where ask_id = $1::uuid`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement, askID); err != nil {
+			t.Fatalf("seed the part index of ask %s: %v", askID, err)
+		}
+	}
+}
+
+// askPartMadeAt is the time the part was made (made_at), null for a part found at the first
+// indexing of an ask already edited.
+func askPartMadeAt(t *testing.T, database *store.Store, askID, blockID string) *time.Time {
+	t.Helper()
+	var made *time.Time
+	if err := database.Pool.QueryRow(context.Background(), `
+		select made_at from ask_blocks where ask_id = $1::uuid and block_id = $2
+	`, askID, blockID).Scan(&made); err != nil {
+		t.Fatalf("read the making time of %s of ask %s: %v", blockID, askID, err)
+	}
+	return made
+}
+
 // A decided ask an earlier release reworded gets its decided wording back with no event of any
 // kind (restoreWordings), and its parts move with its row: the restoration is a write of the
 // ask's question and options, so it indexes them, and leaves nothing owed.
 func TestARestoredDecidedWordingMovesTheAsksPartRevision(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, ServerURL: "https://dispatch.example", Settle: time.Hour})
@@ -381,6 +441,7 @@ func askEditedEvents(t *testing.T, database *store.Store, askID string) int {
 // out of nothing else. A link the question alone holds is written by the ask's row and by its
 // question part, and the target counts it once either way.
 func TestALinkInAnOptionStartsAtThatOption(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -414,6 +475,7 @@ func TestALinkInAnOptionStartsAtThatOption(t *testing.T) {
 // An answer is a part, so its text reaches the graph, and the ask.answered event the answer
 // appends names what the answer moved: the targets its own text mentions.
 func TestAnAnsweredAsksEventNamesWhatItsAnswerMentions(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -473,6 +535,7 @@ func askPartTime(t *testing.T, database *store.Store, askID, blockID string) tim
 // the ask's card counts it. Each current part is part_of the ask, so an answer adds one. A part
 // the ask does not hold answers 404 naming the part and the ask.
 func TestAnAskOptionIsAddressable(t *testing.T) {
+	t.Parallel()
 	const option = "Monday — Ship at the start of the week."
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Addressable ask parts", "A spec")
@@ -538,6 +601,7 @@ func TestAnAskOptionIsAddressable(t *testing.T) {
 // revision that first held each; the answerer made the answer part, at the answer's time; each is
 // part of its ask at the revision its text last changed in.
 func TestAnAskPartCarriesTheFactsOfEveryNode(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ask part facts", "A spec")
 	ask := createPartAsk(t, handler, issue.Key, "Which day do we ship?", map[string]string{"label": "Monday"})
@@ -580,6 +644,7 @@ func TestAnAskPartCarriesTheFactsOfEveryNode(t *testing.T) {
 // (after the edit that drops it, with the revision that removed it). The unpinned link reads the
 // current text, or 404 once the part is gone; a pin past the ask's revision answers 404.
 func TestAPinnedAskPartShowsTheRevisionItNames(t *testing.T) {
+	t.Parallel()
 	const (
 		tuesday  = "Tuesday — Ship once the review lands."
 		reworded = "Tuesday — Ship once the review lands and the queue is green."
@@ -653,6 +718,7 @@ func TestAPinnedAskPartShowsTheRevisionItNames(t *testing.T) {
 // and no older one; an unstamped row is invisible to every such read. awaitSinceRead settles
 // which answer of the read after the answer is final.
 func TestAnAnsweredAsksPartEdgesAreListedSince(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -729,6 +795,7 @@ func askOptionsJSON(t *testing.T, database *store.Store, askID string) string {
 // than guessing it, the answer carries its own id, and the ask carries the revision of its parts
 // that `@v<N>` pins.
 func TestAnAsksReadCarriesThePartIDsOfItsOptionsAndAnswer(t *testing.T) {
+	t.Parallel()
 	const monday = "Monday — Ship at the start of the week."
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ask part ids", "A spec")
@@ -768,6 +835,7 @@ func TestAnAsksReadCarriesThePartIDsOfItsOptionsAndAnswer(t *testing.T) {
 // without it, so no caller mints a part id or moves one, and the ask's parts keep the ids they
 // were minted with.
 func TestAWriteCannotMintOrMoveAnAskPartID(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Minted part ids", "A spec")
 	ask := createPartAsk(t, handler, issue.Key, "Which day do we ship?",
@@ -796,6 +864,7 @@ func TestAWriteCannotMintOrMoveAnAskPartID(t *testing.T) {
 // own text and type, never by its place among them. The option the rewording left alone keeps
 // its part, and the revision the ask's parts have reached is still its own.
 func TestAnAskWhoseIndexIsBehindItsRowCarriesNoWrongPartIDs(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Parts behind the row", "A spec")
 	ask := createPartAsk(t, handler, issue.Key, "Ship on Monday?",
@@ -824,6 +893,7 @@ func TestAnAskWhoseIndexIsBehindItsRowCarriesNoWrongPartIDs(t *testing.T) {
 // where the edit's own event, whose options are the ask's, carries each option's part id. Both
 // carry the revision the ask's parts have reached, which is the ask's own fact.
 func TestAnAskEventPayloadNamesOnlyThePartsItsOwnOptionsStandFor(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ask event part ids", "A spec")
 	ask := createPartAsk(t, handler, issue.Key, "Which day do we ship?",
@@ -885,6 +955,7 @@ func askEventOptions(t *testing.T, handler http.Handler, issueKey, eventType, as
 // human Inbox name each option as the ask's own read names it, so a reader cites an option from
 // the list in front of it.
 func TestAListedAskCarriesThePartIDsItsOwnReadCarries(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Listed part ids", "A spec")
 	ask := createPartAsk(t, handler, issue.Key, "Which day do we ship?",
@@ -927,6 +998,7 @@ func TestAListedAskCarriesThePartIDsItsOwnReadCarries(t *testing.T) {
 // reads; a part the ask does not hold is refused; and a reply an older build wrote under the
 // ask, with no block at all, still reads under it naming none.
 func TestAReplyToAnAskNamesThePartItAnswers(t *testing.T) {
+	t.Parallel()
 	const monday = "Monday — Ship at the start of the week."
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ask thread replies", "A spec")
@@ -1038,6 +1110,7 @@ func TestAReplyToAnAskNamesThePartItAnswers(t *testing.T) {
 // either way - the thread hangs under the ask - and each refusal names the item the request
 // named.
 func TestAReplyNamesABlockOfTheItemTheRequestNamed(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Blocks in an ask's thread", "A spec")
 	ask := createPartAsk(t, handler, issue.Key, "Which day do we ship?",

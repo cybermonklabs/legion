@@ -102,6 +102,7 @@ func seedRenamedTree(t *testing.T, pool *pgxpool.Pool, prRepo string) {
 		Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "V", LastDispatchSeq: 1})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "implement-claim"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "head", Summary: "reviewed"})
+	seedClaimSession(t, pool, "legion-legion-legion-209-reviewer", "ses-reviewer")
 	if prRepo == "" {
 		return
 	}
@@ -113,7 +114,7 @@ func seedRenamedTree(t *testing.T, pool *pgxpool.Pool, prRepo string) {
 var renamedUpdated = time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 
 // A tree recorded under the repository a transfer moved takes the GitHub facts naming the one it
-// moved to: the issue's record keeps sjawhar/legion for its whole life, GitHub's events name
+// moved to: the issue's record keeps sjawhar/legion (only the daemon's one-time rename pass writes the new name), GitHub's events name
 // cybermonklabs/legion, and a configured rename (Config.RepositoryRenames) makes the two one
 // repository wherever the engine compares them — issueForBranch for a pull request opened on the
 // issue's branch, and ownPullRequest for the settlement, the review and the merge of the pull
@@ -222,8 +223,8 @@ func TestAGitHubFactNamingARenamedRepositoryAppliesToTheTreeRecordedUnderItsOldN
 }
 
 // A pull request already open when its repository was transferred takes the GitHub facts naming
-// the repository it moved to: its row keeps the name it opened under (sjawhar/legion) for its
-// whole life, while every event after the transfer names cybermonklabs/legion, so the row is
+// the repository it moved to: its row keeps the name it opened under (sjawhar/legion) until the
+// daemon's one-time rename pass, while every event after the transfer names cybermonklabs/legion, so the row is
 // found only when the read is tried under both names of the configured pair
 // (ghrepo.Under, read by pullRequest and pullRequestByBranch). This is the tree the
 // parent issue holds Legion to: one whose pull request was open at the transfer pushes a commit,

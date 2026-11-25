@@ -16,7 +16,7 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import type { ReplyTarget } from "../conversation/composer-model";
+import type { ListedReplies, ReplyParent, ReplyTarget } from "../conversation/composer-model";
 import { useHeldSends } from "../conversation/held-sends";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { PendingSendTurn } from "../conversation/PendingSendTurn";
@@ -35,7 +35,9 @@ export interface AgentReply {
  *  (`useSending`) to hold what a message on its way has already fixed - the picker and the Reply
  *  buttons - and the composer names its send with it, so the two keys cannot drift apart. A row
  *  that mounts again while its send is out, or after it was refused - the reader came back to the
- *  page - shows that send (`useComposerSend`), and holds for it. */
+ *  page - shows that send (`useComposerSend`), and holds for it. The Inbox's thread box names its
+ *  send by its thread instead (`threadSendKey` in ThreadBody.tsx): two threads can be one
+ *  session's, and each holds its own reply. */
 export function agentSendKey(sessionID: string): MutationKey {
   return ["agent-composer", sessionID];
 }
@@ -49,41 +51,62 @@ export function agentSendKey(sessionID: string): MutationKey {
 export function AgentMessageComposer({
   agent,
   hold,
+  listed,
   onCancelReply,
   onClose,
+  replyParent,
   replyTo,
   sendKey,
   standing = false,
+  thread,
 }: {
   agent: Agent;
   /** The row's hold on that send (`useSending(sendKey)`): while it is out the message is
    *  addressed, so the picker holds until it lands, from Send's own task on. The send's request is
    *  frozen at Send either way. */
   hold: Sending;
+  /** The messages of the session's conversation the row lists (`MentionComposer`'s `listed`),
+   *  or none where its host has not read them, or where the box answers only its own thread's
+   *  newest message (`standing`), which leaves the page with the box. */
+  listed?: ListedReplies;
   onCancelReply: () => void;
   /** One level out of the composer: the row it belongs to takes focus. The composer calls it on
    *  Escape from an untouched draft and on Discard - and also right after a successful send,
    *  which is NOT one level out; that case is filtered below. */
   onClose: () => void;
+  /** The message `replyTo` quotes, as the host's read of the session's exchanges holds it now:
+   *  its quote says the message is deleted or edited (`MentionComposer`'s `replyParent`). */
+  replyParent?: ReplyParent;
   replyTo: AgentReply | null;
-  /** The row's `agentSendKey`, which names the composer's send. */
+  /** The name of the composer's send: the row's `agentSendKey`, or the Inbox thread's own. */
   sendKey: MutationKey;
   /** The reply target is this box's standing address rather than a Reply the reader pressed,
    *  so the box takes no focus of its own (`MentionComposer`'s `standing`): what the Inbox
    *  column's thread box is, mounted again for every row the reader steps onto. */
   standing?: boolean;
+  /** The ids of the messages of the one thread this box answers, where it is a thread's box (the
+   *  Inbox's): of the session's other sends it shows only those answering one of them, since a
+   *  send into another thread, or a message of its own, is not this thread's. */
+  thread?: ReadonlySet<string>;
 }): ReactNode {
   const queryClient = useQueryClient();
   const store = useHeldSends();
   const { sending, sendingNow } = hold;
   // The session's other messages still on their way - its live view's - show here too, as their
   // own turns, and Retry, Discard or Stop trying here acts on the same write there: the session is
-  // the write's target, not the surface that made it. This composer's own send shows in it.
+  // the write's target, not the surface that made it. This composer's own send shows in it. A
+  // thread's box shows those answering its thread alone.
   const sends = useSessionSends(agent.session_id);
   const ownName = hashKey(sendKey);
-  const others = sends.pending.filter((held) => hashKey(held.mutationKey) !== ownName);
-  // The issue a held send went to - out, or refused - is the one the picker names when the row
-  // mounts again, so what the toggle says and where Retry sends stay one issue.
+  const others = sends.pending.filter(
+    (held) =>
+      hashKey(held.mutationKey) !== ownName &&
+      (thread === undefined ||
+        (held.request.replyTo !== null && thread.has(held.request.replyTo.id)))
+  );
+  // The issue a held send is addressed to - out, or refused - is the one the picker names when
+  // the row mounts again, so what the toggle says and where Retry sends stay one issue. A pick
+  // made over a refusal carries it to the issue picked (`ownMoves` below), so that is the one.
   const [issueKey, setIssueKey] = useState(() => {
     const held = store.get(sendKey)?.request;
     return held?.replyTo === null && held.owner.kind === "issue" ? held.owner.issueKey : "";
@@ -146,7 +169,9 @@ export function AgentMessageComposer({
   };
   /** Bumped by every commit, the issue changed or not, since every commit unmounts the select the
    *  reader is in. The hand-off keys on it rather than on `issueKey`, which re-confirming the
-   *  issue already held leaves alone. */
+   *  issue already held leaves alone. The composer counts it among the reader's own moves of its
+   *  address (`ownMoves`): a pick is the reader's, so the draft goes with it, and a refusal and the
+   *  files pasted into the draft with it. */
   const [commits, setCommits] = useState(0);
   const commitIssue = (value: string) => {
     if (sendingNow()) return;
@@ -316,6 +341,7 @@ export function AgentMessageComposer({
             ? undefined
             : [{ target: `session:${agent.session_id}`, title: agent.title || agent.session_id }]
         }
+        listed={listed}
         mutationKey={sendKey}
         onCancelReply={onCancelReply}
         onClose={() => {
@@ -335,6 +361,8 @@ export function AgentMessageComposer({
           refocusComposer();
         }}
         owner={composerOwner}
+        ownMoves={commits}
+        replyParent={replyParent}
         replyTo={replyTo?.target ?? null}
         standing={standing}
       />

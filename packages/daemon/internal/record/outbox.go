@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"regexp"
 	"slices"
@@ -12,8 +13,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/sjawhar/envoy/steprecord"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
 // OutboxKind names one durable side effect.
@@ -34,11 +39,16 @@ const (
 	OutboxKindCheckLook        OutboxKind = "check_look"
 	OutboxKindCheckBound       OutboxKind = "check_bound"
 	OutboxKindRoleMessage      OutboxKind = "role_message"
-	OutboxKindPhaseEnded       OutboxKind = "phase_ended"
 	OutboxKindHookPrompt       OutboxKind = "hook_prompt"
 	OutboxKindUpdateAsk        OutboxKind = "update_ask"
-	OutboxKindIssueBundle      OutboxKind = "issue_bundle"
-	OutboxKindIssueRelease     OutboxKind = "issue_release"
+	// OutboxKindIssueBundle is the kind of the idle release's workspace check
+	// (IssueWorkspaceCheck). The check replaced the release's save of a bundle, and its kind keeps
+	// the save's stored name, which this identifier spells: a row either release queued reads as
+	// the first act of a release, so a row an earlier daemon queued before an upgrade runs as this
+	// check, and a row this daemon queued before a rollback runs as that release's save, with no
+	// migration of the outbox's kind check and no row left that one release cannot run.
+	OutboxKindIssueBundle  OutboxKind = "issue_bundle"
+	OutboxKindIssueRelease OutboxKind = "issue_release"
 	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
 	// holds the bare project key (GatedStepsPublish).
 	OutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"
@@ -52,12 +62,30 @@ const (
 	// left (MergeQueueRemoval).
 	OutboxKindMergeQueueRead    OutboxKind = "merge_queue_read"
 	OutboxKindMergeQueueRemoval OutboxKind = "merge_queue_removal"
+	// OutboxKindDesignChanges reconciles one tree's news of its approved design
+	// (DesignNewsReconcile): it reads what changed between the versions its holders took and the
+	// versions approved now, and queues the starts that tell them. Its issue column is the tree's
+	// root.
+	OutboxKindDesignChanges OutboxKind = "design_changes"
 	// OutboxKindRoleHoldersPublish publishes the live role sessions of one issue onto its Dispatch
 	// row (RoleHoldersPublish).
 	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
+	// OutboxKindStepRecord writes one start or one end of a step of the issue onto Dispatch's
+	// record of that step, or the rating a retro gave the plan onto the retro's record
+	// (StepRecord).
+	OutboxKindStepRecord OutboxKind = "step_record"
+	// OutboxKindConflictConfirm reads a pull request's head again a minute after a first read
+	// found it conflicting with its base (ConflictConfirm), and OutboxKindMergeForward carries one
+	// message of a merge forward, the daemon's act on a confirmed conflict, to one role of the
+	// issue (MergeForwardMessage).
+	OutboxKindConflictConfirm OutboxKind = "conflict_confirm"
+	OutboxKindMergeForward    OutboxKind = "merge_forward"
+	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
+	// (PlanRecord).
+	OutboxKindPlanRecord OutboxKind = "plan_record"
 )
 
-// OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
+// OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
 // side. The lifecycle lane runs the rows that start, stop and tidy the issue's roles and their
 // resources, one at a time in the order they were queued: each assumes the state its predecessor
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
@@ -69,20 +97,35 @@ const (
 // publish too, the one row addressed to the bare project key rather than to an issue, so that
 // write runs on a board lane of the project's own, behind none of any issue's rows and holding
 // none of them back. The role-message lane runs the kinds the daemon addresses to one role of
-// the issue on that role's own topic: the end of a phase and a hook's words, which go to a phase
-// worker (phase_ended, hook_prompt), the message that tells the merger its pull request left the
-// merge queue (merge_queue_removal), and an update round's ask, which goes to any role whose
-// process runs in the issue's pod, its architect included (update_ask). It also runs the read of
-// GitHub that comes before a merge-queue removal's message (merge_queue_read). It is a lane of its
-// own because the board lane's architect notices are ordered among themselves and one of them waits
-// for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
-// phase ended, given the words a hook fired on a move back, told that its pull request left the
-// merge queue, or asked to get ready for the replacement of its pod must hear it while that is
-// news, not after whatever its tree's architect is owed.
+// the issue on that role's own topic: a hook's words, which go to a phase worker (hook_prompt),
+// the message that tells the merger its pull request left the merge queue (merge_queue_removal),
+// the messages of a merge forward, which go to the role asked to merge (MergeForwardAsker) and to
+// the worker of the phase the issue stays in (merge_forward), and an update round's ask, which
+// goes to any role whose process runs in the issue's pod, its architect included (update_ask).
+// It also runs the two reads of
+// GitHub that come before a message: the read before a merge-queue removal's message
+// (merge_queue_read), and the second read of a head a first read found conflicting, whose
+// confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
+// own because the board lane's architect notices are ordered among themselves and one of them
+// waits for as long as its architect holds no role (the daemon's errNoticeWaits): a role given the
+// words a hook fired on a move back, told that its pull request left the merge queue, asked to
+// merge the base forward or to hold while that merge runs, or asked to get ready for the
+// replacement of its pod must hear it while that is news, not after whatever the architect that
+// owns its issue is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
 // is what a place on the board lane would cost it.
+// The documents lane runs the reconcile of a tree's news of its approved design (design_changes),
+// which reads Dispatch for what changed between two versions of a gated document, on a lane of its
+// own: on the lifecycle lane that read would hold every start, stop and suspend of the tree's
+// root behind it, and on the board lane it would wait behind a notice that waits as long as its
+// architect holds no role, while the news it sends is owed to every holder of the tree.
+// The record lane runs the writes of the records of the issue's work — each step's record and the
+// rating a retro gave the plan (step_record), and the plan of each run (plan_record) — on a lane of
+// their own, so a Dispatch that is slow to take a record, or one that backs a record off until it
+// has the route, delays no status write, notice or start of that issue: a record is history, and
+// the work it records never waits for it.
 type OutboxLane string
 
 const (
@@ -90,6 +133,8 @@ const (
 	LaneBoard       OutboxLane = "board"
 	LaneRoleMessage OutboxLane = "role_message"
 	LaneClaim       OutboxLane = "claim"
+	LaneDocuments   OutboxLane = "documents"
+	LaneRecord      OutboxLane = "record"
 )
 
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
@@ -97,8 +142,10 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
-	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
+	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
+	LaneDocuments:   {OutboxKindDesignChanges},
+	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
 }
 
 // LaneOf is the lane that runs kind.
@@ -116,6 +163,13 @@ func LaneKinds(lane OutboxLane) []OutboxKind {
 	return slices.Clone(laneKinds[lane])
 }
 
+// OutboxLanes is every lane an issue's rows run on, in name order: the lanes laneKinds holds, so
+// a reader that needs every lane, or every kind, takes them from here rather than from a list of
+// its own, which a new lane would leave short.
+func OutboxLanes() []OutboxLane {
+	return slices.Sorted(maps.Keys(laneKinds))
+}
+
 // LaneKey names one lane of one issue.
 type LaneKey struct {
 	Issue string
@@ -127,6 +181,55 @@ type LaneKey struct {
 type HeldRow struct {
 	OutboxRow
 	WaitsOn int64
+}
+
+// pauseHold is one shape of outbox row a project's pause holds: every row of kind, or, where op
+// is set, the rows of kind whose supervise op is op.
+type pauseHold struct {
+	kind OutboxKind
+	op   SuperviseOp
+}
+
+// pauseHolds is the one list of the rows a project's pause holds (decision 9 of
+// dispatch://INFRA-3759): every row that launches a role, hands it a task or a message, or starts
+// or ends a production check's look. Those are a supervise row whose op is `start`, an architect's
+// notice (which resumes a released architect, the daemon's wakeForDelivery), the four messages to
+// one role (hook_prompt, role_message, update_ask, merge_forward) and the merger's merge-queue
+// message, and the three rows of a production check (check_wake, check_look, check_bound). Every
+// other row runs while the project is paused: the stops (a supervise row of any other op,
+// issue_suspend, issue_release), the writes to Dispatch, the reconcile of a tree's news of its
+// approved design (design_changes), which reads Dispatch and writes the news record and tells a
+// role only by a news-only start, which is a start this list holds, and the controller's notices
+// (controller_notice), since the pause never holds the controller (spec Design item 8).
+//
+// The outbox's claim reads the list as SQL literals (store.go's outboxPauseFree, built from it),
+// so DueRows, ClaimRow, HeldRows and PauseHeldRows hold exactly these rows, and the resume marks
+// exactly these rows with the pause it ends (MarkPauseHeldRows).
+// TestEveryOutboxKindIsHeldOrNotHeldByAPause names every kind the lanes run as held or not held,
+// so a kind added to a lane fails it until somebody decides which it is.
+var pauseHolds = []pauseHold{
+	{kind: OutboxKindSupervise, op: "start"},
+	{kind: OutboxKindNotice},
+	{kind: OutboxKindHookPrompt},
+	{kind: OutboxKindRoleMessage},
+	{kind: OutboxKindUpdateAsk},
+	{kind: OutboxKindMergeForward},
+	{kind: OutboxKindMergeQueueRemoval},
+	{kind: OutboxKindCheckWake},
+	{kind: OutboxKindCheckLook},
+	{kind: OutboxKindCheckBound},
+}
+
+// PauseHeldRow is one row a project's pause holds, as the state lists it and the resume logs it
+// (Postgres.PauseHeldRows, Postgres.MarkPauseHeldRows). Claim is the claim the row is for where
+// the row names one, and empty where it names none: an architect's notice goes to the architect
+// that owns its issue when it runs (the daemon's readNoticeRoute walks the tree for it), and a
+// production check's rows name no role. WaitedSeconds counts from the moment the row came due
+// (next_at), as api.HeldOutboxRow's do in the state.
+type PauseHeldRow struct {
+	OutboxRow
+	Claim         claim.Token
+	WaitedSeconds int64
 }
 
 // OwedStart is one pending worker start that waits for its issue's admission slot
@@ -292,12 +395,20 @@ type Notice struct {
 	// (skill://legion-controller/references/wakes.md,
 	// skill://legion-architect/references/wake-routing.md).
 	Escalation string `json:"escalation,omitempty"`
+	// StoppedBy is the claim of the architect whose stop_task stopped the task a task-stopped
+	// notice reports (workflow's taskStopped), carried by no other kind (validateOutboxPayload),
+	// and absent from the task-stopped notice of a task that no architect stopped (workflow's
+	// stopUnreturned). The architect that made the call is answered by its own call, so the
+	// daemon's notice executor publishes the notice only when the architect the issue's notices
+	// reach is another claim (the daemon's deliverNotice). Published keeps it, so a re-held copy
+	// is judged the same way.
+	StoppedBy claim.Token `json:"stoppedBy,omitempty"`
 	// Resends counts the times the notice was queued again after the listener could not forward
 	// it to its architect's session (the daemon's rehold), which stops at a cap.
 	Resends int `json:"resends,omitempty"`
 	// PacedAt is the moment the daemon's wake pacing reserved for a catch-up it holds to its turn,
 	// and the zero value on every other notice: the catch-up the outbox writes in place of a
-	// launch when a start row finds the tree's root architect already running (the outbox's start,
+	// launch when a start row finds an architect already running (the outbox's start,
 	// workflow.Config.Reserve). Reading that catch-up is a wake of the architect, and what the
 	// organization's per-minute cap counts is the context it reads, so the row waits its turn like
 	// a launch does.
@@ -364,15 +475,16 @@ type Notice struct {
 	// (workflow.BackgroundStalledWorker, SilentIssue.BackgroundSince), as admission derives the
 	// list (admit.Admission.silentWorkers). Only a tick controller notice carries it, as Blocked
 	// does: the tick is the turn that posts the day's report, and a tick with nothing silent
-	// carries none. The issue's architect is told of each of these by a `worker-silent` or
-	// `worker-background-stalled` notice of its own, judged by the same rules, with the two
+	// carries none. The architect that owns the issue is told of each of these by a `worker-silent`
+	// or `worker-background-stalled` notice of its own, judged by the same rules, with the two
 	// differences admit.Admission.silentWorkers sets out: a handler also refuses a fact whose run
 	// is not the issue's current generation, a term the tick does not weigh, since it reads the
 	// worker's claim by its token alone and that claim carries no serving run; and the sweep that
 	// writes those notices runs once a minute, so a tick can name a worker up to a minute before
-	// its architect is told. The controller is the second reader, because that architect may be
-	// failed or gone, so its notice reaches nobody, and the controller holds `fresh_session` and
-	// reads the whole project.
+	// its architect is told. The controller is the second reader, because the notice can reach
+	// nobody: a child's architect that does not hold its role is passed over for the one above
+	// it, but a notice whose walk ends at a tree root whose architect claim failed, retired or is
+	// gone ends undelivered. The controller holds `fresh_session` and reads the whole project.
 	Silent []SilentIssue `json:"silent,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
 	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
@@ -391,6 +503,193 @@ type Notice struct {
 	// Update is an update-stalled notice's account of the round that is not finishing, and is
 	// absent from every other kind. Only an UpdateStalledNotice carries one.
 	Update *UpdateStalled `json:"update,omitempty"`
+	// Pause is a project-paused or project-resumed notice's account of the act, and is absent
+	// from every other kind. Only those two kinds carry one.
+	Pause *ProjectPause `json:"pause,omitempty"`
+	// Volume is what a volume-near-full notice carries: one sweep of the issue pod's volume as
+	// the cache trimmer in that pod's launcher reported it. Only that kind carries one.
+	Volume *VolumeNearFull `json:"volume,omitempty"`
+	// Count is how many messages the intake gave up that an intake-gave-up notice counts, and
+	// GiveUps names the first of them, at most giveUpNoticeNames (Postgres.countIntakeGiveUp). Only
+	// that kind carries either: the controller reads the rest in the state.
+	Count   int            `json:"count,omitempty"`
+	GiveUps []NoticeGiveUp `json:"giveUps,omitempty"`
+}
+
+// NoticeGiveUp names one message the intake gave up, in an intake-gave-up notice: its record's id
+// in intake_failures, which a replay or a discard names, the consumer that delivered it and its
+// subject.
+type NoticeGiveUp struct {
+	ID       int64  `json:"id"`
+	Consumer string `json:"consumer"`
+	Subject  string `json:"subject"`
+}
+
+// ProjectPause is what the controller is told when the operator pauses or resumes its project
+// (decision 24 of dispatch://INFRA-3759): who acted, when, and why. A project-paused notice names
+// the pause the act began and the reason it was given; a project-resumed notice names the pause
+// the act ended, which is its why, and carries no reason of its own.
+type ProjectPause struct {
+	// ID is the pause: the one begun, or the one ended (store's Pause, its id).
+	ID int64 `json:"id"`
+	// By is who acted: who paused, or who resumed.
+	By PauseActor `json:"by"`
+	// At is when the act was done.
+	At time.Time `json:"at"`
+	// Reason is why the project was paused, on a project-paused notice alone.
+	Reason string `json:"reason,omitempty"`
+}
+
+// PauseActor is who paused a project or ended its pause: the kind `controller` with the
+// controller's session id, or the kind `operator` with no session. The store records the same two
+// shapes (store.PauseActor, the checks of project_pauses).
+type PauseActor struct {
+	Kind    string `json:"kind"`
+	Session string `json:"session,omitempty"`
+}
+
+// The two kinds of PauseActor.
+const (
+	PauseByController = "controller"
+	PauseByOperator   = "operator"
+)
+
+// validate holds the account to its kind's fields: an id, an actor of one of the two shapes, a
+// moment, and a reason with words in it on a project-paused notice and none on a
+// project-resumed notice.
+func (p ProjectPause) validate(kind NoticeKind) error {
+	if p.ID <= 0 || p.At.IsZero() {
+		return fmt.Errorf("a %s notice names its pause and when it was acted on", kind)
+	}
+	switch p.By.Kind {
+	case PauseByController:
+		if p.By.Session == "" {
+			return fmt.Errorf("a %s notice by the controller names the controller's session", kind)
+		}
+	case PauseByOperator:
+		if p.By.Session != "" {
+			return fmt.Errorf("a %s notice by the operator names no session; it names %q", kind, p.By.Session)
+		}
+	default:
+		return fmt.Errorf("a %s notice is by the controller or the operator, not %q", kind, p.By.Kind)
+	}
+	if kind == ProjectPausedNotice && strings.TrimSpace(p.Reason) == "" {
+		return fmt.Errorf("a %s notice names the reason the project was paused", kind)
+	}
+	if kind != ProjectPausedNotice && p.Reason != "" {
+		return fmt.Errorf("a %s notice carries no reason; only a project-paused notice does", kind)
+	}
+	return nil
+}
+
+// VolumeNearFull is one sweep of an issue pod's volume as the trimmer in its launcher process
+// reported it (shimwire.LauncherVolumeReport), plus the pod it was of, which the report does not
+// carry: the launcher is authenticated for one pod and the session names it. It is what a
+// volume-near-full notice tells the issue's architect, and the one thing in Legion that sees the
+// volume the roles of an issue share fill under them (INFRA-2009).
+//
+// It holds everything the report holds. Trimmer is the identifier the trimmer minted for itself
+// when the launcher process started, which is what counts a restarted roles container apart from
+// the first episode, Episode the trimmer's own episode number and RaisedBy what raised it
+// (shimwire.VolumeEpisodeFirst, VolumeEpisodeRecovery, VolumeEpisodeRise). UsedBytes and
+// FreeBytes are the volume as the sweep's last reading saw it and FreedBytes what the sweep
+// freed, read from the volume and never counted from the bytes unlinked: the sweep's first
+// reading's used bytes less its last's, negative where the volume's used bytes grew while the
+// sweep ran. StopReason is why the sweep stopped, in the trimmer's own words, and RefusedReads
+// the /proc reads the kernel refused that no report had carried yet, of this sweep and of earlier
+// ones that sent no report: one per process the trimmer could not read, or one for /proc itself
+// when /proc could not be listed.
+//
+// Sizes are the size walk's targets with their two age splits (VolumeSize), SizesAt when they
+// were measured — a report made between walks carries the last walk's numbers with that walk's
+// time — SizesPartial a walk its budget or the container's stop cut before it reached every
+// target, which is the one way a walk ends early, and SizesMissing every target the walk did not
+// measure at all, and the volume root or an immediate child of it where the walk did not list
+// one in full, each with its reason where a read was refused (VolumeMissing): a directory it
+// could not open or list, a file whose lstat was refused, and, of a walk that was cut, every
+// target it had not measured when it was cut, as far as the report's cap and counted past it
+// (SizesMissingOmitted) — where the cut came while it listed them, every one it had listed, the
+// child of the volume root whose names it was reading, whole, and every child it had not yet
+// listed, or the volume root alone where the cut came inside the root's own listing
+// (shimwire.LauncherVolumeReport). A directory the walk could read only in part is a
+// size that names the first read under it the walk did not make, one the kernel refused or a
+// directory deeper than the walk descends (VolumeSize). Faults are the panics the trimmer
+// recovered from, each with its stack, and SwitchedOff the report no sweep produces: the trimmer
+// has stopped itself after three faults in a row, and the daemon sends that one whatever its
+// bounds stand at, since the protection this notice exists for has stopped on exactly the pod
+// that has been reporting.
+//
+// The four Omitted counts are how many entries the launcher's own bound left out of each list,
+// which it cuts because a path two levels under /legion is a name a role of the pod chose and a
+// pod may hold thousands of them (internal/launcher's bound, and its walk's own for the sizes,
+// which keeps the largest): a reader of a notice is never shown a cut list as the whole of what
+// the trimmer measured.
+//
+// It is a shape of this package rather than the wire's because it is a durable payload: an
+// outbox row's JSON is read back by a daemon of a later release (the re-hold's decode, Notice's
+// own), so the shape a row carries must be one this package owns and can keep.
+type VolumeNearFull struct {
+	PodUID              string          `json:"podUid"`
+	Trimmer             string          `json:"trimmer"`
+	Episode             int             `json:"episode"`
+	RaisedBy            string          `json:"raisedBy"`
+	UsedBytes           int64           `json:"usedBytes"`
+	FreeBytes           int64           `json:"freeBytes"`
+	FreedBytes          int64           `json:"freedBytes"`
+	StopReason          string          `json:"stopReason"`
+	RefusedReads        []string        `json:"refusedReads,omitempty"`
+	RefusedReadsOmitted int             `json:"refusedReadsOmitted,omitempty"`
+	Sizes               []VolumeSize    `json:"sizes"`
+	SizesOmitted        int             `json:"sizesOmitted,omitempty"`
+	SizesAt             time.Time       `json:"sizesAt"`
+	SizesPartial        bool            `json:"sizesPartial,omitempty"`
+	SizesMissing        []VolumeMissing `json:"sizesMissing,omitempty"`
+	SizesMissingOmitted int             `json:"sizesMissingOmitted,omitempty"`
+	Faults              []string        `json:"faults,omitempty"`
+	FaultsOmitted       int             `json:"faultsOmitted,omitempty"`
+	SwitchedOff         bool            `json:"switchedOff,omitempty"`
+}
+
+// VolumeSize is one target of the trimmer's size walk — a directory two levels under the pod's
+// volume root, a regular file beside such directories in an immediate child of the root, or an
+// immediate child of the root that holds no directory of its own — as the walk measured it: the
+// bytes of the regular files under it, or of the file itself, and of those the bytes of the files
+// whose modification time is more than an hour old and more than a day old, which are what tell
+// a reader a working set from cold bytes. Refused names the first read under Path the walk did
+// not make — one the kernel refused, or a directory deeper below Path than the walk descends,
+// which it does not open — as Path/<name> for a name in it and Path/.../<name> (depth N) for a
+// name N levels below it, and Refusals is how many such reads there were in all: a size that
+// carries them is a lower bound of the directory's own, never the whole of it. A target the walk
+// read nothing of is no size but one of SizesMissing (VolumeMissing, shimwire.LauncherVolumeSize).
+type VolumeSize struct {
+	Path          string `json:"path"`
+	Bytes         int64  `json:"bytes"`
+	BytesOverHour int64  `json:"bytesOverHour"`
+	BytesOverDay  int64  `json:"bytesOverDay"`
+	Refused       string `json:"refused,omitempty"`
+	Refusals      int    `json:"refusals,omitempty"`
+}
+
+// VolumeMissing is one target the trimmer's size walk measured none of, or the volume root or an
+// immediate child of it that the walk did not list in full, and why where a read was refused: the
+// read and the kernel's answer, as `openat: permission denied`, for a directory the walk could
+// not open or list or a file whose lstat was refused, and nothing for one the cut of a walk left
+// unmeasured, which VolumeNearFull.SizesPartial says (shimwire.LauncherVolumeMissing).
+type VolumeMissing struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// MarshalJSON keeps `sizes` an array on the wire, empty rather than `null`, exactly as
+// UpdateStalled.MarshalJSON keeps `waiting` one and for the same reason: the plugin's strict
+// reader refuses a null. The `wire` alias is what keeps the method from re-entering itself.
+func (v VolumeNearFull) MarshalJSON() ([]byte, error) {
+	type wire VolumeNearFull
+	out := wire(v)
+	if out.Sizes == nil {
+		out.Sizes = []VolumeSize{}
+	}
+	return json.Marshal(out)
 }
 
 // NoticeFailure is why a claim failed, as the notices of that failure name it: Cause is the one
@@ -434,10 +733,13 @@ type FailureBudget struct {
 // UpdateStalled is what an update-stalled controller notice carries: the update round the daemon
 // opened over an issue's pod, and why something holds it past its bound. Round is the round's
 // identity (supervise.Claim.UpdateRound), Pod the pod it was opened over, and Reasons the drift
-// the round was opened for, as the ask states it. Waiting is every claim the round asked, each
-// marked with whether it answered, so the controller can ask the operator to act on a suspended
-// claim rather than read the whole claims list to find out who the round asked; what
-// each entry says is UpdateWaiting's. The notice's issue is the outbox row's own.
+// the round was opened for, as the ask states it. Waiting is every claim of the issue with a
+// session that has not failed (the daemon's noticeClaims), each with its state and marked with
+// whether it answered. A claim the daemon suspended is listed too, although the round neither
+// asks it nor waits for it, unless a project's pause stopped it and still owes that role a launch
+// (internal/daemon's podHolds.owes). So the controller can ask the operator to act on a suspended
+// claim rather than read the whole claims list to find out who is in the round; what each entry
+// says is UpdateWaiting's. The notice's issue is the outbox row's own.
 //
 // Reasons is one string, never a list: a single reason carries ", " inside it already — a moved
 // address reads `<where> <held>, now <handed>`, a pod-shape drift `image <was>, now <now>`, and a
@@ -452,10 +754,12 @@ type UpdateStalled struct {
 	Waiting []UpdateWaiting `json:"waiting"`
 }
 
-// UpdateWaiting is one claim an update round asked: its token, the role it holds, the state it
-// is in (supervise.ClaimState — an operator-suspended claim waits for the operator; a pod round
-// lists no `failed` claim, since it asks none), and Answered for a claim that has already
-// answered this round.
+// UpdateWaiting is one claim the notice lists (UpdateStalled.Waiting): its token, the role it
+// holds, the state it is in (supervise.ClaimState — an operator-suspended claim waits for the
+// operator, and the round waits for no other suspended claim but one a project's pause stopped
+// while the pause still owes that role a launch, internal/daemon's podHolds.owes; a pod round
+// lists no `failed` claim, whose machine records no round), and Answered for a claim that has
+// already answered this round.
 //
 // The contract the claim's plugin records is not here. A plugin with no ready_for_update op is
 // asked like any other, on its role's own topic (UpdateAsk), and the round ends at its bound
@@ -532,20 +836,26 @@ type SilentIssue struct {
 	BackgroundSince time.Time  `json:"backgroundSince,omitzero"`
 }
 
-// CatchUp is what a tree's root architect is told of its tree when its claim is ready at a launch
-// (a catch-up notice), which is the architect's first instruction: admission launches it with no
-// task, or only with the decisions kept for it. It is the tree as the daemon records it then: the
-// root's generation, the launch of the architect's claim it was written for, whether a hand-over
-// created the root at this generation with its child's phase and pull request (HandedOver) and
-// whether its old root's gate came with them (Carried), the design gate step by step (Gates),
-// and every issue of the tree. A handed-over root's workers already run their phases, so its
-// architect decomposes nothing anew; one that carried no gate registers its own spec. Decided names
-// what a person decided on the tree while nobody in it could hear it and the start did not name (a
-// decision made while the architect's claim had ended, before this relaunch), in the words of
-// workflow.Engine.ParkedDecisionTask; empty when there is none. Kept is what Decided named, which
-// a published catch-up forgets (Store.ForgetKeptDecisions): a catch-up a newer one supersedes
-// hands it over to a fresh catch-up instead (workflow.HandOverKept), and one that finishes
-// undelivered any other way leaves it all for the architect's next ready to name again.
+// CatchUp is what an architect is told of the issues it owns when its claim is ready at a launch
+// (a catch-up notice). It is a child's own architect's first instruction, since a child's first
+// phase start launches that architect with no task; a tree's root architect is launched with the
+// task its record derives (workflow.ArchitectStartTask), or with none where it derives none, and
+// is told its tree here beside it. It is those issues as the daemon records them then: the
+// generation of the architect's own issue, the launch of the architect's claim it was written
+// for, whether a hand-over created the root at this generation with its child's phase
+// and pull request (HandedOver) and whether its old root's gate came with them (Carried), the
+// design gate step by step (Gates), and every issue the architect owns — a root's whole tree, a
+// child's own issue and every issue under it. A child registers no gate and no hand-over creates
+// one, so a child's catch-up states no step and is neither handed over nor carried. A handed-over
+// root's workers already run their phases, so its architect decomposes nothing anew; one that
+// carried no gate registers its own spec. Decided names what a person decided on the tree while
+// nobody in it could hear it and the start did not name (a decision made while the architect's
+// claim had ended, before this relaunch), in the words of workflow.Engine.ParkedDecisionTask;
+// empty when there is none, and on every child's catch-up, since what is kept for a tree is its
+// root architect's to hear. Kept is what Decided named, which a published catch-up forgets
+// (Store.ForgetKeptDecisions): a catch-up a newer one supersedes hands it over to a fresh catch-up
+// instead (workflow.HandOverKept), and one that finishes undelivered any other way leaves it all
+// for the architect's next ready to name again.
 type CatchUp struct {
 	Generation uint64         `json:"generation"`
 	Launch     uint64         `json:"launch"`
@@ -564,10 +874,12 @@ type CatchUp struct {
 // has still to register.
 //
 // A catch-up carries one entry for each step the root must hold open before its tree works
-// (classify.RequiredSteps), so a deployment that gates nothing carries the one spec entry with
-// Gated false: that registration opens the step at once and asks no person, which is what the
-// policy word `off` said. The list replaced that word, because one word cannot name a list and
-// each entry now says its own step's part of it.
+// (classify.RequiredSteps over the steps the tree is gated on, TreeSteps), so a deployment that
+// gates nothing carries the one spec entry with Gated false: that registration opens the step at
+// once and asks no person, which is what the policy word `off` said. The list replaced that
+// word, because one word cannot name a list and each entry now says its own step's part of it. A
+// criteria row the architect registered beside a deployment that gates spec alone of the two is
+// an entry with Gated true, since that row holds the tree as the spec's does.
 type CatchUpGate struct {
 	Step         DesignStep `json:"step"`
 	Gated        bool       `json:"gated"`
@@ -628,9 +940,14 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // neither a slot nor a place in the waiting line, which it then put in phase.Done; its reason
 // names the status the root stood at. An update-stalled notice names an issue whose update round
 // has passed its bound (`pod_update_grace_minutes` after it opened) while something still holds
-// it: an operator's suspension of a role the round asks, a ReplacePod the runtime refused, no
-// claim recording a process in the round's pod (or in any pod), or claims recording two pods. It
-// is told once per round (the daemon's reconcilePodUpdates). A
+// it: an operator's suspension of a role the round asks, a pod replacement the runtime refused
+// (ReplacePod, or ReplaceIssuePod for a pod with no role process in it), no claim recording a
+// process in the round's pod (or in any pod), claims recording two pods, or a pod the runtime
+// cannot read. No process in the round's pod holds the round past its bound only where an
+// operator's suspension holds a role of it, where the runtime cannot say which pod the issue's
+// Sandbox holds, or where the replacement by issue is refused or not offered
+// (runtime.IssuePodReplacer): otherwise the daemon replaces that pod by issue at the bound. It is
+// told once per round (the daemon's reconcilePodUpdates). A
 // provider-errors notice names an issue whose role has ended six turns in a row in a provider
 // error: its Role is that role, and its Reason the model and the HTTP status the provider
 // answered, where it answered one, in words built from structured fields alone (supervise's
@@ -663,6 +980,30 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // two arms read raises two and neither hides the other. Nobody inside the tree is told: the
 // architect is the role that would be, and each arm is a reading that it did not take, cannot be
 // reached, or has not moved (dispatch://INFRA-2614).
+//
+// A memory-guard-kill notice names one of the controller's own programs that the memory guard of
+// the controller's pod ended with SIGKILL because the pod was near its memory limit. Its issue is
+// the project key, as a tick's is, its Role is the controller, and its Reason names the process,
+// its pid, its size, the pod's reading and the limit, with none of the process's arguments, and
+// says what to run instead (workflow's controllerMemoryGuardKill). Each kill is a row of its own,
+// written by the workflow in the kill's own fact and never through admit.Admission.wakeController,
+// whose rule keeps one unsent notice per kind: two kills are two programs ended, and the second
+// must not be dropped behind the first.
+//
+// A project-paused notice tells the controller that the operator paused its project, and a
+// project-resumed notice that the operator resumed it (decision 24 of dispatch://INFRA-3759). Its
+// issue is the project key, and its Pause names who acted, when, and why: the pause's reason, or
+// the pause the resume ended (ProjectPause). Each is queued in the pause's or the resume's own
+// transaction (store's Pause and Resume); the controller's own pause or resume tells it nothing.
+//
+// An intake-gave-up notice counts the messages the intake gave up while it waited for its
+// publish, and names the first giveUpNoticeNames of them by their records' ids (Count, GiveUps).
+// It carries no role, and its issue is the project key, as a tick's is. The give-up writes it,
+// and only while a controller is registered (Postgres.GiveUpIntakeMessage, countIntakeGiveUp):
+// the first give-up of a burst opens it, due giveUpNoticeDelay later, each later give-up joins it
+// while no publish has taken it, and one that finds it leased or given back to retry opens the
+// next. Nobody inside a tree is told: the message is the intake's, of no issue an architect runs,
+// and the controller replays or discards it (dispatch://INFRA-1575).
 const (
 	TriageNotice           NoticeKind = "triage"
 	SlotFreeNotice         NoticeKind = "slot-free"
@@ -675,6 +1016,10 @@ const (
 	ProviderErrorsNotice   NoticeKind = "provider-errors"
 	TreeStalledNotice      NoticeKind = "tree-stalled"
 	ArchitectStalledNotice NoticeKind = "architect-stalled"
+	MemoryGuardKillNotice  NoticeKind = "memory-guard-kill"
+	ProjectPausedNotice    NoticeKind = "project-paused"
+	ProjectResumedNotice   NoticeKind = "project-resumed"
+	IntakeGaveUpNotice     NoticeKind = "intake-gave-up"
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -682,17 +1027,18 @@ const (
 // Store.TellArchitectsStalled), and the first words of the notice's reason, so a controller that
 // reads two wakes of one root reads two different facts:
 //
-//   - ArchitectTookNothing: the task of the entry the architect's phases row names was first
-//     queued to its claim more than workflow.StrandedReleaseWake ago and no turn of that claim
-//     confirmed it. It is counted from the first queueing of that entry, which the claim's
-//     handshake keeps (supervise.Claim.Handshake), however many times the daemon queued that
-//     entry's task again. A task a let-go of the claim's process took back from a turn is counted
-//     only while the claim is ready, working or idle, from the later of that first queueing and
-//     the relaunched agent's ready. The daemon writes no second start of that entry while its task
-//     stands (workflow.OwedEntry), so the wake is the one thing left. A task the root's own record
-//     has superseded — one that carries an entry, of a run before its generation or of an entry
-//     the row has moved past — is no such task: the sweep writes the start of the row's entry and
-//     that start's task takes its place (workflow.ArchitectStartPending,
+//   - ArchitectTookNothing: the task of the entry the architect's phases row names stands queued
+//     to its claim, no turn of that claim confirmed it, and more than
+//     workflow.StrandedReleaseWake has passed since the later of the first queueing of that entry,
+//     which the claim's handshake keeps (supervise.Claim.Handshake) however many times the daemon
+//     queued that entry's task again, and the last ready of the claim's agent. The task is counted
+//     only while the claim is ready, working or idle, so a launch the wake pacing holds back counts
+//     nothing; a task no let-go took back, held by a claim that is suspended, failed or retired, is
+//     counted from that first queueing. The daemon writes no second start of that entry while
+//     its task stands (workflow.OwedEntry), so the wake is the one thing left. A task the root's
+//     own record has superseded — one that carries an entry, of a run before its generation or of
+//     an entry the row has moved past — is no such task: the sweep writes the start of the row's
+//     entry and that start's task takes its place (workflow.ArchitectStartPending,
 //     supervise.Delivery.SupersededBy). Nor is a task of no entry, such as a wake's: no start takes
 //     its place, and the sweep holds the entry's start back until a turn takes it.
 //   - ArchitectClaimUnreachable: the architect's claim is failed or retired, or the root has no
@@ -702,7 +1048,11 @@ const (
 //     since the daemon queues the next start of its architect only when that wait is answered.
 //   - ArchitectSlowBeforeGate: the root stands at phase.Admitted with no design-gate step
 //     registered 90 minutes after it was admitted, or after its architect's entry was last
-//     raised, whichever is later.
+//     raised, whichever is later, counted from no earlier than the moment the wake pacing let
+//     out the launch of the architect that the latest pause held, and, once a turn of the
+//     architect has confirmed a task of that entry, than the moment it first did. While no turn
+//     has confirmed one, the pacing's queue counts against the bound, and a healthy architect
+//     confirms its entry's task long before the bound.
 type ArchitectStallArm string
 
 const (
@@ -760,8 +1110,10 @@ type ArchitectStall struct {
 // as the first tree's waited in the outbox, and no pass could tell the controller of it until
 // that first notice was published.
 //
-// Every other kind says something about the project — a free slot, a todo issue, the day's tick
-// — which one wake carries however many facts find it pending.
+// Every other kind that wakeController queues says something about the project — a free slot, a
+// todo issue, the day's tick — which one wake carries however many facts find it pending. A
+// memory-guard-kill notice never passes through that rule: the workflow writes one row for each
+// kill.
 func NoticePerClaim(kind NoticeKind) bool {
 	return kind == ProviderErrorsNotice || kind == TreeStalledNotice
 }
@@ -771,10 +1123,18 @@ func NoticePerClaim(kind NoticeKind) bool {
 // its session too, as one role stop of an idle pod's release, and is its own op rather than a
 // second "suspend" because the open-issue invariant reads the op to say which act it is reading —
 // a suspend stops a role of an issue the workflow is taking out, a release stops a role of an
-// issue that stays in the workflow and comes back at the next wake; "tree_close" is the tree's
+// issue that stays in the workflow and comes back at the next wake; "step_stop" stops the process
+// of the step a stopped task ran and keeps its session, as a suspend does and from the same source
+// (the daemon), and is its own op for the same reason a release is: the stopped task's issue stays
+// in the workflow, held, until a later version of its plan starts the task again (workflow's
+// stopTask); "tree_close" is the tree's
 // close — the request that ends the claim, the tree's root claim included; "issue_close" is a
-// child issue's close as done, which ends the claim as a tree close does and drops its session,
-// since the issue is finished and its next run, should a person set it todo again, starts fresh.
+// child issue's close as done, which ends the claim as a tree close does and keeps its session, so
+// the issue's next run, should a person set it todo again, resumes each claim's session rather
+// than starting fresh (supervise's RequestIssueClose); "pause_stop" is a project pause's stop of
+// one live role (store's Pause), which stops its process and keeps its session, phase and task as
+// an idle release's stop does, and is its own op because it is bound to its pause (Pause below)
+// and does nothing once that pause has ended.
 // There is no plain stop: only a close ends a claim from the workflow, so the op states which.
 type SuperviseOp string
 
@@ -792,10 +1152,19 @@ type SuperviseRequest struct {
 	Kept *KeptDecisions `json:"kept,omitempty"`
 	// Generation is the issue generation the request serves. A request of an earlier generation
 	// finishes without acting: it must never suspend, stop, or start the next generation's worker.
+	// Three requests are not held to it. A production check's look start (CheckLook) is fenced on
+	// its check instead (the daemon outbox's checkLookHolds). A tree close of the issue's own tree
+	// whose cleanup is reserved still retires its claim and drives that cleanup, however stale its
+	// generation (reservedTreeClose). And a suspend or a tree close of a tree the issue has since
+	// left (Tree is not the issue's tree) still stops a claim that stands in that tree, which no
+	// worker of the issue's new tree is until that tree's start re-points it (stopInLeftTree).
 	Generation uint64 `json:"generation"`
 	// Phase is the phase a phase worker's start serves; a start for a phase the issue has left
-	// finishes without acting. It is empty for the architect, which serves every phase, and for a
-	// suspend or a tree's close, which must still act after the issue moves on.
+	// finishes without acting. It is empty for a root's architect, which serves every phase, for a
+	// child's own architect's plain start (workflow's childArchitectStart), and for a suspend or a
+	// tree's close, which must still act after the issue moves on. The start a re-admission writes
+	// to bring back a mid-phase child's own architect names the phase the child stands in (admit's
+	// startMidPhaseMembers), and finishes without acting once the child has left it.
 	Phase phase.Phase `json:"phase,omitempty"`
 	// Entry is the phase entry this start's task is of, as the transition raised it on the role's
 	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
@@ -815,16 +1184,30 @@ type SuperviseRequest struct {
 	// retry, which marks it with ResendEntry below. It is zero for every other
 	// operation, and for every start that hands no entry's work at all. Those starts, in full, so
 	// that no other comment need list them: the promotion's architect start of a root the
-	// derivation serves no task (admit's promotion), the roles admission brings back beside a
-	// re-admitted member's phase worker (admit's startMidPhaseMembers), the boot's resume by rule
+	// derivation serves no task (admit's promotion), a child's own architect's plain start
+	// (workflow's gateOpened, which a child's first phase start runs, and reviveArchitect, which
+	// each phase start of a child runs), the roles admission brings back beside a re-admitted
+	// member's phase worker (admit's startMidPhaseMembers), the boot's resume by rule
 	// (workflow's booted), the boot's one-time start of a merger the `awaiting_merge` cutover left
 	// released (workflow's cutoverMergerRepair), the phase's resume task a ready worker level with
 	// the entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
 	// resume task to a silent worker level with that entry (workflow's workerSilent), a production
-	// check's look (workflow's startLook), the pod wake (workflow's wakeRow) and the resume of a
-	// cancelled idle release (the daemon's outbox). Each hands its role work it was already on, or
-	// work no phase entry numbers at all.
+	// check's look (workflow's startLook), the pod wake (workflow's wakeRow), the resume of a
+	// cancelled idle release (the daemon's outbox) and a start queued for news of the approved
+	// design alone (News below, the daemon's design_changes reconcile). Each hands its role work
+	// it was already on, or work no phase entry numbers at all.
 	Entry int64 `json:"entry,omitempty"`
+	// News marks a start queued for news of the approved design alone: the reconcile of a tree's
+	// news (the daemon's design_changes executor) queues it as a row of its own (Store.Enqueue),
+	// never through workflow.StartOrOwe, which would take the issue's owed phase start out in its
+	// place, and it waits for no admission slot.
+	// It carries no task and no entry of its own: its executor reads, when it runs, what the record
+	// owes the claim it reaches and hands that as the task, and finishes without acting where the
+	// record owes it nothing then. A holder's carries the phase of the member it tells (Phase), so
+	// it finishes once that member has left the phase; an architect's carries none, as every
+	// architect start, and is queued on the architect's own issue: the tree root's for its
+	// summary, and the owning architect's for the holder form of a member in accepting.
+	News bool `json:"news,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
 	// (supervise.Claim.GivenEntry, the queue's entry test). The held phase's retry, by any route
@@ -835,10 +1218,24 @@ type SuperviseRequest struct {
 	// (supervise.Claim.DeliveredRows), so a retry of the row itself gives that task no second
 	// time.
 	ResendEntry bool `json:"resendEntry,omitempty"`
-	// ResumeTask marks Task as the phase's resume task (workflow.ResumePhaseTask), the one a
+	// ResumeTask marks Task as the phase's resume task (workflow's Engine.ResumeTask), the one a
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
 	ResumeTask bool `json:"resumeTask,omitempty"`
+	// RoundNamed is the typed fact that Task ends with the daemon's two sentences of the reviewer's
+	// review round (reviewround.Sentences). The queue sets it on each start of the reviewer that
+	// carries a task, once it has named that task (workflow's queuedRow, namingTheReviewRound), and
+	// three starts set it before the queue, since what they send is the task enter stored with the
+	// sentences already in it (workflow's startMarks.stored), so the queue adds none. The outbox's
+	// start carries it into the claim's delivery (supervise.RequestDeliver.RoundNamed), and the one
+	// place each prompt of a delivery is composed reads it there (supervise's Delivery.message): a
+	// reviewer's task with no such fact, which only a row the release before this one queued can
+	// be, is given the daemon's sentences naming no commit and no entry at its end, so no text a
+	// task of the release before ends with is taken for the daemon's. A row the release before
+	// wrote decodes with it false. The release before decodes strictly (DisallowUnknownFields), so
+	// the way back of 20261116234034_phase_reviewed_head deletes the key from each row before that
+	// release boots.
+	RoundNamed bool `json:"roundNamed,omitempty"`
 	// RuleResume marks the boot's resume-by-rule start, and the boot's one-time start of a merger
 	// the `awaiting_merge` cutover left released (workflow's cutoverMergerRepair). If its resumed
 	// claim spends its launch budget, the runner finishes this row rather than retrying it as
@@ -850,7 +1247,7 @@ type SuperviseRequest struct {
 	// holds a row; everything else the transition writes — the phase, the Dispatch status, the
 	// entry and its task on the role's phases row, the notices — is written in the transition's
 	// own transaction and waits for nothing. A start into accepting, retro or merging carries no
-	// mark, since an issue past its review holds no row for such a start to wait for, and it is
+	// mark, since an issue in those phases holds no row for such a start to wait for, and it is
 	// claimable the moment it commits. workflow.StartOrOwe is the
 	// one writer of the mark, which it reads from the start's own phase, so no caller decides
 	// it. The hold is on this row's claimability alone (store.go's outboxInOrder): a row that is
@@ -893,6 +1290,19 @@ type SuperviseRequest struct {
 	Linger uint64 `json:"linger,omitempty"`
 	// Reason is why a suspend stops the claim, for the line the suspended claim logs.
 	Reason string `json:"reason,omitempty"`
+	// TurnStart fences the `suspend` of a left pod's close on a turn: it is the newest turn start
+	// of the issue's claims in the view the pass queued the close from, as the close's workspace
+	// check carried it (IssueWorkspaceCheck.TurnStart), the zero moment where none had had a turn.
+	// The suspend of a claim whose last turn started after it finishes without acting (the daemon
+	// outbox's suspend), since that turn may have made work the check's read did not see, as a
+	// release's role stop is cancelled by a turn after its mark (issue_releases.turn_start). The
+	// claim stays live, the close's Sandbox suspension carries the same fence and finishes without
+	// acting too (IssueSuspend.TurnStart), and the next idle pass decides the close again. Every
+	// other request carries none: nil is no
+	// fence, and the zero moment is a fence that any turn passes. A release before this field
+	// refuses a row that carries it (DisallowUnknownFields), so a rollback waits for such rows to
+	// run (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
+	TurnStart *time.Time `json:"turnStart,omitempty"`
 	// CheckLook is the look of the issue's production check a start starts, 0 for a phase start.
 	// A check start runs after the close, where the issue has no phase and its tree may linger, so
 	// the outbox fences it on the open check and its look (the row acts only while the check is
@@ -904,6 +1314,28 @@ type SuperviseRequest struct {
 	// finishes a start without acting when the issue's check is not the one it names; zero names
 	// no instance (a row queued before the field) and is not fenced.
 	CheckOpenedAt time.Time `json:"checkOpenedAt,omitzero"`
+	// Pause is the project pause a row serves (store's Pause, its id). A `pause_stop` row carries
+	// it always: its executor stops the claim for that pause, and finishes without acting once
+	// the pause has ended (decision 4 of dispatch://INFRA-3759). A start may carry the pause that
+	// held it, and the launch a pause owed a role it stopped always does: the start the stop
+	// transaction writes beside the held wake (WakeKind pods.WakePause). Every other request
+	// carries none.
+	Pause int64 `json:"pause,omitempty"`
+	// Issue is the issue of the claim a `pause_stop` row stops where the row is keyed by the
+	// project rather than by that issue (pause.StopKey): a claim of another project's issue, which
+	// the operator's spawn makes under the daemon's own project token. Such a row is keyed by the
+	// project because the outbox runs only the rows of its own project's keys (DueRows), and its
+	// executor reads the claim from this issue. It is an issue key, and every other row carries
+	// none, a `pause_stop` row keyed by its claim's issue among them. A release before this key
+	// refuses a row that carries it (DisallowUnknownFields); the rollback deletes every
+	// `pause_stop` row (migrations/20261115194357_project_pause.up.sql).
+	Issue string `json:"issue,omitempty"`
+	// WakeKind marks a start that brings a released role back for a wake: the wake's kind, one of
+	// the pods wake kinds (validWakeKind), as the resume the wake took records it. The start
+	// finishes without acting when its claim is suspended by the daemon, since a park, a close or
+	// a moved phase took the role over while the row waited (decision 10).
+	// A start that is no wake, and every request of another op, carries none.
+	WakeKind string `json:"wakeKind,omitempty"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -932,46 +1364,79 @@ func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }
 
 // IssueSuspend stops an issue's pod after its close has stopped every role, and deletes the
 // Sandbox the roles ran in (runtime.IssueSuspender). Both workflow generations and this row's ID
-// fence a later re-admission or start. The issue keeps nothing: its disk is its pod's own and
-// goes with the pod, so a later todo re-enters the issue fresh on a Sandbox its next launch
-// makes.
+// fence a later re-admission or start. The issue keeps nothing: an ephemeral disk is its pod's own
+// and goes with the pod, and a kept volume goes with the Sandbox, so a later todo re-enters the
+// issue fresh on a Sandbox its next launch makes.
+//
+// TurnStart, on the suspension of a left pod's close that stops a role, is the turn start its
+// workspace check read, as each of that close's `suspend` rows carries it
+// (SuperviseRequest.TurnStart): the suspension finishes without acting where a claim of the issue
+// started a turn after it (store.IssueSuspension), as the stop of that claim's role did, so
+// nothing of the close outlives a stop its fence held and the next idle pass decides the close
+// again with a read of its own. Every other suspension carries none: nil is no fence, and the
+// zero moment is a fence that any turn passes. A release before this field refuses a row that
+// carries it (DisallowUnknownFields), so a rollback waits for such rows to run
+// (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
 type IssueSuspend struct {
-	Tree           string `json:"tree"`
-	Generation     uint64 `json:"generation"`
-	TreeGeneration uint64 `json:"treeGeneration"`
+	Tree           string     `json:"tree"`
+	Generation     uint64     `json:"generation"`
+	TreeGeneration uint64     `json:"treeGeneration"`
+	TurnStart      *time.Time `json:"turnStart,omitempty"`
 }
 
 func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 
-// IssueBundle is the first act of an idle pod's release: it asks the shim of Role — a role whose
-// process is still running in the pod, because this row runs before the `release` rows that stop
-// them — for the git bundle of the unpushed work of the workspace every role of the issue shares,
-// and saves it in the daemon's own database (runtime.WorkspaceBundler). Only a shim can build it:
-// it runs the `jj` of the workspace it already works in, and it dies with its role's process, so
-// the save has to happen while that process is there.
+// IssueWorkspaceCheck is the first act of an idle pod's release: it asks the shim of Role — a role
+// whose process is still running in the pod, because this row runs before the `release` rows that
+// stop them — to read whether the workspace every role of the issue shares holds work that no
+// branch or tag on origin holds (runtime.WorkspaceWorkReader). Only a shim can read it: it runs the
+// `jj` of the workspace it already works in, and it dies with its role's process, so the read has
+// to happen while that process is there. A read that finds work, or that fails, declines the
+// release: the pod stays with the work, and Role is told once that the release waits for its push
+// (internal/daemon's checkIssueWorkspace). The daemon pushes nothing for a role.
 //
-// It stops nothing, so a release cancelled here costs only the save, and it sits before the
+// It stops nothing, so a release cancelled here costs only the read, and it sits before the
 // release's boundary (the first `release` row), so a delivery queued while it runs still cancels
-// the whole release and takes the stored bundle with it (outbox.cancelRelease).
-type IssueBundle struct {
-	Tree           string     `json:"tree"`
-	Generation     uint64     `json:"generation"`
-	TreeGeneration uint64     `json:"treeGeneration"`
-	Role           claim.Role `json:"role"`
+// the whole release (outbox.cancelRelease). The teardown waits for it (store.IssueRelease).
+//
+// CloseRoles, where it names any role, makes the row the first act of another act: the close of a
+// pod whose issue left the workflow while its tree runs on (workflow.LeftPodClose), which marks no
+// release. Those are the live roles the close stops. The check reads the same way and declines the
+// same way, and on a read that finds nothing origin does not hold it queues the close's stops and
+// the Sandbox suspension itself (internal/daemon's checkLeftPodWorkspace). A row with no
+// CloseRoles is a release's, and its JSON is the one an earlier release wrote.
+//
+// TurnStart, on a close's row, is the newest turn start of the issue's claims in the view the pass
+// queued the close from (pods.IdleView.NewestTurnStart), zero where none had had a turn: the close
+// stops no role after a turn that started since, as a release's mark holds the same moment for its
+// own stops (issue_releases.turn_start). The check holds the close on a turn before its decision
+// (workflow.LeftPodCloseAfterCheck), and each `suspend` it queues carries the moment on
+// (SuperviseRequest.TurnStart), so a turn between the decision and the stop holds that stop. A
+// release's row leaves it zero, since its mark holds it.
+type IssueWorkspaceCheck struct {
+	Tree           string       `json:"tree"`
+	Generation     uint64       `json:"generation"`
+	TreeGeneration uint64       `json:"treeGeneration"`
+	Role           claim.Role   `json:"role"`
+	CloseRoles     []claim.Role `json:"closeRoles,omitempty"`
+	TurnStart      time.Time    `json:"turnStart,omitzero"`
 }
 
-func (IssueBundle) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
+func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
 
-// IssueRelease is the last act of an idle pod's release, queued behind the save (IssueBundle) and
-// the per-role `release` supervise rows that stopped the pod's role processes: it suspends the
-// issue's Sandbox, waits its pod out and deletes the Sandbox with the role Secrets it owns
-// (runtime.IssueSuspender), and records the release with the size of the bundle the save stored.
-// Both workflow generations and this row's ID fence a start or a re-admission that came after, as
-// an IssueSuspend's do.
+// IssueRelease is the last act of an idle pod's release, queued behind the workspace check
+// (IssueWorkspaceCheck) and the per-role `release` supervise rows that stopped the pod's role
+// processes: it asks the runtime's release (runtime.IssueReleaser), which suspends the issue's
+// Sandbox and waits its pod out, keeps a Sandbox that owns the issue's kept volume and deletes
+// every other Sandbox with the role Secrets it owns, and records the release. Both workflow
+// generations and this row's ID fence a start or a re-admission that came after, as an
+// IssueSuspend's do.
 //
 // Unlike a close, the issue stays in the workflow: the claims keep their phase and their pending
-// task, and the next wake for one of the roles brings a new pod that restores the bundle before
-// any role starts.
+// task, and the next wake for one of the roles brings a new pod, whose workspace provisioning makes
+// again from what was pushed to the issue's branch. The check took the pod only because the
+// workspace held nothing that was not pushed. A new pod of a kept Sandbox mounts the volume the
+// last pod used.
 type IssueRelease struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
@@ -995,13 +1460,25 @@ type WorkspaceRemove struct {
 func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemove }
 
 // RoleMessage is one message the daemon sends a role holder, published to that role's topic: Role
-// is the claim token, which the
-// runner addresses as a role topic, and Body is the whole of what the holder is told. It is how
-// the daemon reaches a worker with something to read rather than a task to do - a settled head's
-// check results, which move nothing (workflow's tellChecks, dispatch://INFRA-714/spec R1). A role
-// with no live holder is told nothing: the row finishes, since the message is of a moment that
-// has passed by the time anyone claims the role, and every recipient can read the pull request's
-// checks on GitHub for itself.
+// is the claim token, which the runner addresses as a role topic, and Body is the whole of what the
+// holder is told. It is how the daemon reaches a worker with something to read rather than a task
+// to do - a settled head's check results, which move nothing (workflow's tellChecks,
+// dispatch://INFRA-714/spec R1). A role with no live holder is told nothing: the row finishes,
+// since the message is of a moment that has passed by the time anyone claims the role, and every
+// recipient can read the pull request's checks on GitHub for itself.
+//
+// A role whose claim is released is told nothing either, and is not woken for the message: the
+// row finishes without a publish. The message's three senders in the workflow - tellChecks (a CI
+// settlement), tellGateMoved (a design gate's move) and tellStuckMergeState (an approved round
+// stuck on its merge state) - only inform; before a release stopped its session cleanly, such a
+// message to a released role was dropped all the same once that session expired; and a wake for
+// each would start a pod for every CI settlement and every gate move, once per released role.
+// Published, the message would meet a released role as one nobody holds: the listener answers
+// holder_lapsed, or unclaimed once the reaper has freed the claim, and raises the role's wake
+// beside either, so the pod would come back for a message the row had already dropped. The one
+// exception is a row a project's pause held for a role a pause stopped: without the pause the role
+// would have had the message, so the row is published to the role after the resume, and that
+// publish wakes it (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759).
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
@@ -1039,13 +1516,33 @@ type DesignGatesPublish struct {
 	Gates []DesignGateDocument `json:"gates"`
 }
 
-// DesignGateDocument is one step of a publication and the document that step's gate recorded.
+// DesignGateDocument is one step of a publication, the document that step's gate recorded, and
+// Holds, whether the issue's tree is gated on that step (GateDocuments: TreeSteps over the
+// deployment's steps and the issue's own rows). Dispatch's advice reads Holds to name the gates a
+// new version of an approved document closes: a criteria row a root registered beside a
+// deployment that gates spec and not criteria holds that tree although the project's gated steps
+// do not name criteria, and a row kept under `gates.design: off` holds nothing although the row is
+// there.
+// Holds is nil only in a payload an older daemon queued, which carried no such field; it is sent
+// as null, which Dispatch reads as a row an older daemon published and answers by the project's
+// gated steps, as it answered every row before this field.
 type DesignGateDocument struct {
 	Step       DesignStep `json:"step"`
 	ArtifactID string     `json:"artifactId"`
+	Holds      *bool      `json:"holds"`
 }
 
 func (DesignGatesPublish) OutboxKind() OutboxKind { return OutboxKindDesignGatesPublish }
+
+// DesignNewsReconcile is the reconcile of one tree's news of its approved design: the row's issue
+// column is the tree's root, which is the whole of what it carries. Its executor (the daemon's
+// designChanges) reads what the tree owes (OwedNews) when it runs, never what it owed when the row
+// was queued, so one unrun row stands for every reason to run one, and a write that would queue a
+// second beside it queues nothing (QueueDesignNews). A row already running is not that row: it
+// may have read the record before the write that would queue one, so such a write queues another.
+type DesignNewsReconcile struct{}
+
+func (DesignNewsReconcile) OutboxKind() OutboxKind { return OutboxKindDesignChanges }
 
 // RoleHoldersPublish writes the session of each live Legion role of Issue onto the issue's
 // Dispatch row (PUT /api/v1/issues/{key}/role-holders), which Dispatch reads to take the role of a
@@ -1060,6 +1557,95 @@ type RoleHoldersPublish struct {
 }
 
 func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHoldersPublish }
+
+// StepRecord is one write of an issue's record of one step onto Dispatch (PUT
+// /api/v1/issues/{key}/steps/{id}): the start of the step, its end, or the report alone of a
+// completion that landed after that end (workflow's reportEndedStep). ID is the record's id, a
+// uuid every write of one run of the step computes, and the row's issue column is the issue. Each
+// other field is a field of the route's body under the same name.
+//
+// Dispatch writes each field once and keeps every field a write leaves out, so the writes of one
+// run merge in any order and a write that runs again changes nothing. Every write carries the
+// identity of the step (task, step, kind, role, type, agent and generation), the empty type of a
+// retro or a merge and the place 0 of either included, and each field a write may not know yet is
+// a pointer, nil for one the write leaves to another. The route takes a text field sent as "" as
+// left out, so for a text field the pointer only says what the write knows; for a time and for
+// ReturnedTo it is what tells "not known" apart from a value: a zero time would be a moment
+// Dispatch keeps for good, and ReturnedTo 0 is a return to the retro, whose place is 0.
+type StepRecord struct {
+	ID         string     `json:"id"`
+	Task       string     `json:"task"`
+	Step       int        `json:"step"`
+	Kind       string     `json:"kind"`
+	Role       string     `json:"role"`
+	Type       string     `json:"type"`
+	Agent      string     `json:"agent"`
+	Generation uint64     `json:"generation"`
+	Session    *string    `json:"session,omitempty"`
+	Model      *string    `json:"model,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	Result     *string    `json:"result,omitempty"`
+	ReturnedTo *int       `json:"returned_to,omitempty"`
+	Report     *string    `json:"report,omitempty"`
+	// PlanRating is the rating the retro gave the plan, with its reason: the one write that carries
+	// it is the retro's rating, which Dispatch takes on the record's rating route
+	// (dispatch.HTTPClient.PutStep), and every other write leaves it out. It is embedded, so its two
+	// members are members of the payload itself, written together and left out together when it is
+	// nil (validateOutboxPayload holds a stored row to that).
+	*PlanRating
+}
+
+// PlanRating is a retro's rating of the plan its issue ran: Rating, on the scale
+// github.com/sjawhar/envoy/steprecord holds (RatingLeast, the plan cost the work, to RatingMost,
+// the plan fit the work), and Reason, why. The two are one value, so a step record carries a
+// rating with its reason or no rating. It mirrors dispatch.PlanRating, which the publication
+// converts it to (publishStepRecord), because the dispatch package imports no record of the daemon's;
+// internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to the same fields.
+type PlanRating struct {
+	Rating int    `json:"rating"`
+	Reason string `json:"rating_reason"`
+}
+
+func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
+
+// PlanRecord is the plan one run of an issue carries out, written onto Dispatch (PUT
+// /api/v1/issues/{key}/plans/{id}) when the run's work starts and again at each later version of
+// the owner's plan that Legion takes (workflow's planNode). ID is the plan's id, a uuid of the
+// issue and its run, one for each run, and the row's issue column is the issue. Each other field
+// is a field of the route's body under the same name: the run (record.Issue.Generation), where the
+// plan came from (default, the steps Legion runs when the owner gave none, or owner), the owner's
+// document with its version, which a plan of the source default leaves out, and each task with its
+// steps in order. The source, the document, the version and the tasks are one fact, so each write
+// carries all four: a write whose version is above the version Dispatch holds replaces all four,
+// and a write at or below it changes nothing, a version left out (the source default) counting as
+// 0. So a write that arrives late or twice does no harm.
+type PlanRecord struct {
+	ID         string `json:"id"`
+	Generation uint64 `json:"generation"`
+	Source     string `json:"source"`
+	// PlanDocument is embedded, so its two members are members of the payload itself, written
+	// together and left out together when it is nil.
+	*PlanDocument
+	Tasks []PlanRecordTask `json:"tasks"`
+}
+
+// PlanDocument is the owner's document a plan of the source owner was taken from: the artifact and
+// the version of it Legion took. The two are one value, so a plan names its document with its
+// version or no document. It mirrors dispatch.PlanDocument, which the publication converts it to
+// (publishPlanRecord), because the dispatch package imports no record of the daemon's.
+type PlanDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
+}
+
+// PlanRecordTask is one task of a plan: its id and its steps in order, each a role or `role:key`.
+type PlanRecordTask struct {
+	ID    string   `json:"id"`
+	Steps []string `json:"steps"`
+}
+
+func (PlanRecord) OutboxKind() OutboxKind { return OutboxKindPlanRecord }
 
 // IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
@@ -1113,46 +1699,6 @@ type CheckBound struct{}
 
 func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 
-// PhaseEnded tells the role whose phase a transition the daemon raised on its own ended that its
-// phase is over, on that role's own Envoy topic. It is the daemon's own news of the workflow to a
-// role that is not an architect, where the hook prompt beside it on this lane carries a
-// deployment's words: when the daemon moves an issue out of a phase on something it read of the
-// pull request — a head that conflicts with its base, the review GitHub delivered, the merge —
-// the next role starts at once, and without this message nothing tells the tester, the reviewer,
-// the merger or the implementer in retro that the phase it was working is no longer its own,
-// since the daemon's next task for a role waits for that role's turn to end. Role is the
-// recipient, From the phase that ended, To the phase the issue is in now, Reason what the
-// architect's notice carries, and TaskFollows that the recipient is also the role the new phase
-// starts — the implementer sent back from retro — whose task for that phase follows this message.
-// It stops nothing: the recipient keeps its turn, its jobs, its process and its session.
-type PhaseEnded struct {
-	Role        claim.Role  `json:"role"`
-	From        phase.Phase `json:"from"`
-	To          phase.Phase `json:"to"`
-	Reason      string      `json:"reason"`
-	TaskFollows bool        `json:"taskFollows,omitempty"`
-}
-
-func (PhaseEnded) OutboxKind() OutboxKind { return OutboxKindPhaseEnded }
-
-// Message is what the runner publishes for issue: one sentence that the recipient's phase ended
-// and which phase the issue is in now, the implementer's own sentence where its task follows, the
-// two that keep the role off the working copy the new phase owns without stopping it (the worker
-// prompt says the same, internal/prompts/go/worker-common.md), and the reason last, behind the
-// `Reason:` label a started worker's task carries it under (workflow's task), so the GitHub names
-// in it are marked off from the daemon's own sentences in both places.
-func (p PhaseEnded) Message(issue string) string {
-	follows := ""
-	if p.TaskFollows {
-		follows = fmt.Sprintf(" Your %s task follows.", p.To)
-	}
-	return fmt.Sprintf("%s: the daemon ended your %s phase, and the issue is in %s now.%s"+
-		" Nothing of yours is stopped: your turn, your jobs, your process and your session run on."+
-		" The workspace is the %s phase's now, so stop writing it at once and leave whatever you have uncommitted."+
-		" Reason: %s.",
-		issue, p.From, p.To, follows, p.To, p.Reason)
-}
-
 // HookPrompt is a hook of the deployment that fired on a move back of the issue, and its words
 // put in front of one role of the issue on that role's own Envoy topic. Hook is the hook's name
 // as the deployment spells it, Role the recipient, From the phase the work left and To the phase
@@ -1160,9 +1706,10 @@ func (p PhaseEnded) Message(issue string) string {
 // backward-move count of the issue after the move, PullRequest the issue's pull request as
 // `owner/name#n` where the issue has one, and Prompt the hook's own words.
 //
-// It rides the role-message lane beside PhaseEnded because a role hears a hook prompt while it is
-// news, as it hears that its phase ended: a prompt held behind whatever its tree's architect is
-// owed would reach the role rounds after the round the firing wrote it for.
+// It rides the role-message lane (LaneRoleMessage) because a role hears a hook prompt while it is
+// news, as it hears a merge forward's messages (MergeForwardMessage): a prompt held behind
+// whatever the architect that owns its issue is owed would reach the role rounds after the round
+// the firing wrote it for.
 //
 // The daemon writes the facts and never substitutes anything into the hook's own words: Message
 // states the move, the counts and the pull request in sentences of the daemon's own, and then the
@@ -1170,9 +1717,12 @@ func (p PhaseEnded) Message(issue string) string {
 // that word. There is nothing for a hook to interpolate, because every fact it could ask for
 // stands above its words already.
 //
-// A role with no session holds no topic, and the row ends there undelivered with one log line, as
-// a phase-ended message nobody holds does: the words were written for the round the move back
-// opened, and a role that reads them later reads them of a round that is over.
+// The prompt is published with keep: for a role no live session holds, the listener answers it
+// kept and holds it for an hour for the role's next live holder, and the row ends with one log
+// line, the listener its keeper. A listener before #4079 keeps nothing for a claim whose holder is
+// not live. The daemon's publishKeptToRole says what each answer does to the row, and why a later
+// round's session can be handed the prompt and what bounds that; the move back and the counts
+// Message states tell that reader which round the words were written for.
 type HookPrompt struct {
 	Hook        string         `json:"hook"`
 	Role        claim.Role     `json:"role"`
@@ -1197,7 +1747,7 @@ func (HookPrompt) OutboxKind() OutboxKind { return OutboxKindHookPrompt }
 // starts with (`Legion hook `), which its role prompt and skill both name. The pull-request
 // sentence is left out for an issue with no pull request.
 //
-// The counts are listed in the order phase.BackwardPairs() gives rather than the map's own, so
+// The counts are listed in the order phase.MovePairs() gives rather than the map's own, so
 // two readings of one row read alike; a pair the map does not hold is left out. An empty map
 // reads `Counts by move: none.` rather than dropping the sentence: the firing counted the move
 // that fired it, so the map cannot normally be empty, and a sentence that says `none` tells a
@@ -1205,7 +1755,7 @@ func (HookPrompt) OutboxKind() OutboxKind { return OutboxKindHookPrompt }
 // would leave it to guess.
 func (p HookPrompt) Message(issue string) string {
 	listed := make([]string, 0, len(p.Counts))
-	for _, pair := range phase.BackwardPairs() {
+	for _, pair := range phase.MovePairs() {
 		if count, ok := p.Counts[pair]; ok {
 			listed = append(listed, fmt.Sprintf("%s=%d", pair, count))
 		}
@@ -1237,7 +1787,10 @@ func (p HookPrompt) Message(issue string) string {
 //
 // The ask is best effort: the round ends at its bound whether or not the role reads it. So a
 // row whose role no live session holds finishes undelivered, and a row whose round the claim no
-// longer records finishes without a publish (the daemon's updateAsk).
+// longer records, or whose claim the daemon suspended after the row was queued, finishes without
+// a publish (the daemon's updateAsk). The daemon marks a claim asked only once its row's publish
+// reached a session, so an ask that finished undelivered is lost, not given, and the daemon's
+// sweep writes the claim a new row of this kind at a later tick.
 type UpdateAsk struct {
 	Role  claim.Role `json:"role"`
 	Round string     `json:"round"`
@@ -1280,15 +1833,16 @@ func (MergeQueueRead) OutboxKind() OutboxKind { return OutboxKindMergeQueueRead 
 // for the removal, so the merger reads the reason on GitHub itself. The row names no role: the
 // merger is the one role it is ever for.
 //
-// The row is held as an architect's notice is held, not dropped as a phase-ended message nobody
-// holds is: it wakes a released merger and waits until the merger's session holds its role, since
+// The row is held as an architect's notice is held, not ended as a hook prompt nobody holds is:
+// it wakes a released merger and waits until the merger's session holds its role, since
 // a merger whose pod was released would otherwise never learn that its pull request is out of the
-// queue. While the root's design gate is closed it neither wakes nor tells a released merger, which
-// could enqueue the pull request again against the gate, and it waits for the gate to open; a
-// merger whose session holds its role is told at once. The row ends undelivered when the issue has
-// left merging at Head (its phase is not merging, it is out of the workflow, its tree lingers, or
-// its pull request is not open at Head), and when the merger's claim is failed or retired. A merger
-// with no claim yet is no end: the row waits for it.
+// queue. While the root's design gate is closed, or while the merger is owed news of the approved
+// design whose change set is not recorded yet, it neither wakes nor tells a released merger, which
+// could enqueue the pull request again against the gate or before it reads what changed, and it
+// waits as the merger's start waits; a merger whose session holds its role is told at once. The
+// row ends undelivered when the issue has left merging at Head (its phase is not merging, it is
+// out of the workflow, its tree lingers, or its pull request is not open at Head), and when the
+// merger's claim is failed or retired. A merger with no claim yet is no end: the row waits for it.
 type MergeQueueRemoval struct {
 	Number int    `json:"number"`
 	Head   string `json:"head"`
@@ -1298,8 +1852,8 @@ type MergeQueueRemoval struct {
 func (MergeQueueRemoval) OutboxKind() OutboxKind { return OutboxKindMergeQueueRemoval }
 
 // Message is what the runner publishes for issue to its merger, where repo is the repository the
-// record holds the pull request under (PullRequest.Repo): it starts with the issue key, as a
-// phase-ended message does, names the pull request as `owner/name#n` and the head, and says that
+// record holds the pull request under (PullRequest.Repo): it starts with the issue key, as a merge
+// forward's message does, names the pull request as `owner/name#n` and the head, and says that
 // GitHub's event names no reason, so the merger reads the reason on GitHub as step 5 of its role
 // prompt says (internal/prompts/roles/merger.md). With Unread it also says that the daemon could
 // not read the pull request, so the merger does not take the message to mean that GitHub did not
@@ -1317,9 +1871,253 @@ func (p MergeQueueRemoval) Message(issue, repo string) string {
 		issue, repo, p.Number, p.Head, unread)
 }
 
+// ConflictConfirm is the daemon's second read of a pull request whose head a first read found
+// conflicting with its base (PullRequest.ConflictRead, dispatch://INFRA-4374 R2). The transaction
+// that records the first read writes it, due a minute after that read (workflow's mergeability),
+// and its executor reads the pull request from GitHub again. GitHub computes mergeability in a
+// background job and can answer CONFLICTING about a base it has not caught up with, so one read
+// acts on nothing: a CONFLICTING answer about the same head and base branch, a minute or more
+// after the first read, confirms the conflict, and a MERGEABLE answer releases it, each through
+// the mergeability fact every read of the pull request applies. An UNKNOWN answer is read again,
+// a bounded number of times; when the last read still answers UNKNOWN, or no read succeeded, the
+// row applies the fact that releases the first read (intake.ConflictConfirmDone). Number is the
+// pull request, Head the head the first read found conflicting, and FirstReadAt when that first
+// read was made (PullRequest.ConflictRead.At).
+//
+// A first read a MERGEABLE read released and a later CONFLICTING read of the same head made again
+// is a new first read with a row of its own, so the head alone does not say which first read a row
+// is the second read of: FirstReadAt does. Its executor finishes without a read once the record's
+// first read was made at another time, and the fact its last attempt applies carries the time
+// (intake.ConflictConfirmDone.FirstReadAt), so a row of a released first read can neither read for
+// nor release the newer one. Both this payload and pull_requests.conflict_read are jsonb, where
+// Go's time is kept to the nanosecond, so the two times compare equal for the same read.
+//
+// It is a durable row rather than a timer held in memory for the reason MergeQueueRead is: a
+// restart between the two reads loses nothing, since the first read's fact is acknowledged once
+// its transaction commits.
+type ConflictConfirm struct {
+	Number      int       `json:"number"`
+	Head        string    `json:"head"`
+	FirstReadAt time.Time `json:"firstReadAt"`
+}
+
+func (ConflictConfirm) OutboxKind() OutboxKind { return OutboxKindConflictConfirm }
+
+// MergeForwardStep is which message of a merge forward a MergeForwardMessage carries
+// (PullRequest.MergeForward): the two the act on a confirmed conflict writes, and the two the
+// landing of a new head writes.
+type MergeForwardStep string
+
+const (
+	// MergeForwardAsk asks the role the daemon asks (MergeForwardAsker), the implementer before
+	// merging and the merger in merging, to merge the base forward onto the head and push.
+	MergeForwardAsk MergeForwardStep = "ask"
+	// MergeForwardHold tells the worker of the phase the issue stays in, when that is the
+	// tester, the reviewer or the merger, to stop writing the workspace while the merge runs.
+	MergeForwardHold MergeForwardStep = "hold"
+	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
+	MergeForwardLanded MergeForwardStep = "landed"
+	// MergeForwardReview asks the reviewer to read the merge that landed on an issue whose task's
+	// reviewer step already ran, and to approve the new head or request changes.
+	MergeForwardReview MergeForwardStep = "review"
+)
+
+// mergeForwardRoles is the roles each step of a merge forward may go to: the ask to the
+// implementer or the merger, whose merge it is (MergeForwardAsker, which only in merging names
+// the merger); the hold to a worker of the phase the issue stays in that is neither the role
+// asked, whom the ask tells, nor the architect, whom the checks-red notice tells; the landed to the
+// worker of that phase, the merger included, which in merging made the merge and learns from it
+// to merge only once the reviewer approved the new head, where its task has a reviewer step; and
+// the review to the reviewer. The hold still lists the merger, which a daemon before
+// cybermonklabs/legion#4979 held in merging while it asked the implementer, so a row that daemon
+// queued is still read after the upgrade.
+var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
+	MergeForwardAsk:    {claim.RoleImplementer, claim.RoleMerger},
+	MergeForwardHold:   {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
+	MergeForwardLanded: {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
+	MergeForwardReview: {claim.RoleReviewer},
+}
+
+// MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
+// one list the workflow addresses the hold and the landed by (workflow's mergeForward and
+// mergeForwardLanded) and a row is validated against (validateOutboxPayload).
+func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
+	return slices.Contains(mergeForwardRoles[step], role)
+}
+
+// MergeForwardMessage is one message of a merge forward (PullRequest.MergeForward,
+// dispatch://INFRA-4374 R1) to one role of the issue, on that role's own Envoy topic. The daemon
+// acts on a confirmed conflict without moving the issue out of its phase: it asks the implementer,
+// or in merging the merger (MergeForwardAsker, cybermonklabs/legion#4979), to merge Base forward onto
+// Head in the issue workspace and push (MergeForwardAsk), and tells the worker of the phase the
+// issue stays in, where that is another role, to stop writing that workspace while the merge runs
+// (MergeForwardHold). Once a new head lands it tells that worker so (MergeForwardLanded), and asks
+// the reviewer to read the merge where the reviewer step of the issue's task already ran
+// (MergeForwardReview).
+//
+// Role is the recipient, and Step the message (mergeForwardRoles says which role each step goes
+// to). Head is the head that conflicted, Landed the head the merge left ("" before it lands), Base
+// the base branch, Phase the phase the issue stays in, PullRequest the pull request's number, and
+// Why the first of R0's reasons that held (MergeForward.Why), which the ask and the hold state.
+//
+// It is a row of its own kind rather than a RoleMessage, because a RoleMessage ends undelivered on
+// a released claim, and a released implementer must still be woken for the merge; its executor
+// follows the merge-queue removal's (MergeQueueRemoval).
+type MergeForwardMessage struct {
+	Role        claim.Role       `json:"role"`
+	Step        MergeForwardStep `json:"step"`
+	Head        string           `json:"head"`
+	Landed      string           `json:"landed,omitempty"`
+	Base        string           `json:"base"`
+	Phase       phase.Phase      `json:"phase"`
+	PullRequest int              `json:"pullRequest"`
+	Why         ConflictWhy      `json:"why,omitempty"`
+}
+
+func (MergeForwardMessage) OutboxKind() OutboxKind { return OutboxKindMergeForward }
+
+// mergeForwardReason is the sentence the ask and the hold give for why, one of R0's reasons
+// (ConflictWhy), of the base branch base, and "" for any other word. validateOutboxPayload refuses
+// a row whose why this answers "" for, save the empty why of a landed or a review, which gives no
+// reason, so no message can go out with a reason it cannot state.
+func mergeForwardReason(why ConflictWhy, base string) string {
+	switch why {
+	case ConflictMergeNext:
+		return "The next step of the issue is the merge, and GitHub cannot merge a head that conflicts with its base."
+	case ConflictRulesUnread:
+		return fmt.Sprintf("The daemon could not read the rules of %s, so it cannot tell if every check that %s requires passed on this head.", base, base)
+	case ConflictRequiresCurrent:
+		return fmt.Sprintf("A ruleset of %s requires a pull request to be current with %s before it merges.", base, base)
+	case ConflictCheckNotGreen:
+		return fmt.Sprintf("A check that %s requires has not passed on this head, and GitHub runs no checks on a head that conflicts with its base.", base)
+	}
+	return ""
+}
+
+// Message is what the runner publishes for issue to Role, where pr is the pull request as the
+// record holds it when the row is delivered: the repository it is held under (PullRequest.Repo),
+// and its merge forward (PullRequest.MergeForward), whose ReviewAsked says whether the landing
+// asked the reviewer to read the merge. It starts with the issue key, as every message of this
+// lane does, and names the pull request as `owner/name#n`. The sentences are short and plain, one
+// instruction to a sentence, because an agent reads them (ASD-STE100).
+//
+// The ask names the pull request, the head, the base and the phase the issue stays in, gives why
+// the daemon acted, and tells the role asked (the implementer, or in merging the merger) to merge
+// the base forward in the issue workspace, the one workspace every role of the issue shares, as
+// the worker skill's conflicts reference says, and to push the issue branch, with no handoff and
+// no completion for the merge. In implementing it also says that the implementer's own
+// assignment and its completion stand: the act starts no phase entry there. To the merger it also
+// says that the merge is its own to resolve and that, where its task has a reviewer step, the
+// reviewer is asked to approve the head it pushes (cybermonklabs/legion#4979); the ask is written
+// before the landing reads the task, so it names the condition, and the landed, which comes when
+// that matters, is what holds its merge to that approval (MergeForward.ReviewAsked).
+//
+// The hold gives why the daemon acted, and tells the worker that the implementer is asked to merge
+// the head forward in the workspace they share and that the issue stays in its phase, to stop
+// writing the workspace now (the merger also: not to merge the pull request or put it in the merge
+// queue), not to complete its phase at the old head but at the new head the daemon names, to keep
+// its session and its turn's jobs, that it is told the new head when it lands, and that a result
+// it recorded at the old head stays a result of the old head.
+//
+// The landed names both heads and how to read what changed (readMerge): for a merge of the base,
+// `git show --remerge-diff` for how the merge resolved the conflict and `git diff --stat` against
+// the merge's first parent for the files the base brought in, and for any other new head `git
+// diff` from the old head to the new. Then the worker goes on at the new head. To the merger in
+// merging, where the landing asked the reviewer to read the merge (MergeForward.ReviewAsked), it
+// also says to merge the pull request or put it in the merge queue at the new head only once the
+// reviewer's approval of that head is on the pull request, and the merger's task says the same
+// (workflow's task). A landing on a task with no reviewer step asks no review, so its merger is
+// told to go on at the new head as every other worker is, with no approval to wait for. The review
+// names both heads and the phase,
+// tells the reviewer to read the merge the same way and to approve the new head by its SHA, with
+// its review's Legion footer naming that head, or to request changes, with no handoff and no
+// completion, and then to tell what it decided, on their role topics, to the architect and to the
+// worker of the phase the issue stands in (the tester in testing, the implementer in retro, the
+// merger in merging; the architect alone in accepting).
+func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
+	pull := fmt.Sprintf("pull request %s#%d", pr.Repo, p.PullRequest)
+	switch p.Step {
+	case MergeForwardAsk:
+		own := ""
+		switch {
+		case p.Phase == phase.Implementing:
+			own = " Your own assignment in implementing stands, and so does its completion."
+		case p.Role == claim.RoleMerger:
+			own = " The merge and its conflict are yours to resolve, as your role says." +
+				" When your merge lands, the daemon asks the reviewer to read it and approve the new head, where your task has a reviewer step."
+		}
+		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s, and a second read of GitHub confirmed it."+
+			" The issue stays in %s. %s"+
+			" Merge %s forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace."+
+			" Merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch."+
+			" Write no handoff and make no completion for this forward merge.%s",
+			issue, pull, p.Head, p.Base, p.Phase, mergeForwardReason(p.Why, p.Base), p.Base, own)
+	case MergeForwardHold:
+		merger := ""
+		if p.Role == claim.RoleMerger {
+			merger = " Do not merge the pull request, and do not put it in the merge queue."
+		}
+		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s. %s"+
+			" The implementer is asked to merge %s forward in the issue workspace, $LEGION_WORKSPACE, which you share with it."+
+			" The issue stays in %s. Stop writing the workspace now.%s"+
+			" Do not complete your phase at head %s. Complete it at the new head that the daemon names."+
+			" Keep your session and the jobs of your turn. The daemon tells you the new head when it lands."+
+			" A result you recorded at head %s stays a result of head %s.",
+			issue, pull, p.Head, p.Base, mergeForwardReason(p.Why, p.Base), p.Base, p.Phase, merger, p.Head, p.Head, p.Head)
+	case MergeForwardLanded:
+		merge := ""
+		if p.Role == claim.RoleMerger && p.Phase == phase.Merging && pr.MergeForward != nil && pr.MergeForward.ReviewAsked {
+			merge = fmt.Sprintf(" Merge the pull request or put it in the merge queue at head %s only once the reviewer's approval of that head is on the pull request.", p.Landed)
+		}
+		return fmt.Sprintf("%s: the merge of %s forward landed on %s. The old head is %s, and the new head is %s."+
+			" The issue stays in %s. Read what changed since the old head: %s Then go on with your work at the new head.%s",
+			issue, p.Base, pull, p.Head, p.Landed, p.Phase, p.readMerge(), merge)
+	default: // MergeForwardReview, the one step left: validateOutboxPayload admits no other.
+		tell := "the architect what you decided, on its role topic"
+		switch p.Phase {
+		case phase.Testing:
+			tell = "the architect and the tester what you decided, each on its own role topic"
+		case phase.Retro:
+			tell = "the architect and the implementer what you decided, each on its own role topic"
+		case phase.Merging:
+			tell = "the architect and the merger what you decided, each on its own role topic"
+		}
+		return fmt.Sprintf("%s: the merge of %s forward landed on %s, and the issue stands in %s. The old head is %s, and the new head is %s."+
+			" Read what the merge changed since the old head: %s"+
+			" Then approve the new head %s by its SHA, with the Legion footer of your review naming that head, or request changes."+
+			" Write no handoff and make no completion for this review. Then tell %s.",
+			issue, p.Base, pull, p.Phase, p.Head, p.Landed, p.readMerge(), p.Landed, tell)
+	}
+}
+
+// readMerge is how the landed and the review tell their role to read what a landed merge forward
+// changed (Message): for a merge of the base, `git show --remerge-diff` for how the merge resolved
+// the conflict, which is what the reviewer reads (cybermonklabs/legion#4979), and `git diff --stat`
+// against the merge's first parent for the files the base brought in; for any other new head,
+// `git diff` from the old head to the new, whose diff holds the base's own changes too.
+func (p MergeForwardMessage) readMerge() string {
+	return fmt.Sprintf("for a merge of the base, `git show --remerge-diff %s` shows how the merge resolved the conflict,"+
+		" and `git diff --stat %s^1 %s` lists the files the base brought in; for any other new head, run `git diff %s %s`.",
+		p.Landed, p.Landed, p.Landed, p.Head, p.Landed)
+}
+
+// retryBackoffDoublings is how many times a row's backoff doubles before it stops at
+// RetryBackoffMost.
+const retryBackoffDoublings = 6
+
+// RetryBackoffMost is the longest a row waits to run again after a failed run: the backoff's cap.
+const RetryBackoffMost = time.Second << retryBackoffDoublings
+
+// RetryBackoff is how long a row waits to run again after a failed run, given its attempts before
+// that run (the count RetryOutbox raises): one second, doubled at each attempt, at most
+// RetryBackoffMost. The daemon's outbox sets a retried row's next run by it.
+func RetryBackoff(attempts int) time.Duration {
+	return time.Second << min(max(attempts, 0), retryBackoffDoublings)
+}
+
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {
-	if err := validateOutboxPayload(payload); err != nil {
+	if err := validateOutboxPayload(issue, payload); err != nil {
 		return OutboxRow{}, err
 	}
 	encoded, err := json.Marshal(payload)
@@ -1335,7 +2133,7 @@ func DecodeOutboxPayload(row OutboxRow) (OutboxPayload, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validateOutboxPayload(payload); err != nil {
+	if err := validateOutboxPayload(row.Issue, payload); err != nil {
 		return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 	}
 	if payload.OutboxKind() != row.Kind {
@@ -1398,7 +2196,7 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		}
 		payload = value
 	case OutboxKindIssueBundle:
-		value := IssueBundle{}
+		value := IssueWorkspaceCheck{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -1463,12 +2261,6 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
-	case OutboxKindPhaseEnded:
-		value := PhaseEnded{}
-		if err := decoder.Decode(&value); err != nil {
-			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
-		}
-		payload = value
 	case OutboxKindHookPrompt:
 		value := HookPrompt{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1493,8 +2285,38 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindConflictConfirm:
+		value := ConflictConfirm{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindMergeForward:
+		value := MergeForwardMessage{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindStepRecord:
+		value := StepRecord{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindPlanRecord:
+		value := PlanRecord{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindClaimRelease:
 		value := ClaimRelease{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindDesignChanges:
+		value := DesignNewsReconcile{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -1520,7 +2342,9 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 	return payload, nil
 }
 
-func validateOutboxPayload(payload OutboxPayload) error {
+// validateOutboxPayload refuses a payload no row may carry. issue is the row's key
+// (OutboxRow.Issue), which a `pause_stop` row's own Issue is read against.
+func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	switch value := payload.(type) {
 	case StatusWrite:
 		// A row whose kind is not one of StatusRowKinds can never be queued, and one stored by an
@@ -1535,9 +2359,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("outbox status write has empty status")
 		}
 		// A reason is posted on the issue before the status lands: a done write's, and an ordinary
-		// move's that nothing else on Dispatch explains (workflow's moveReason, a head that
-		// conflicts with its base). A hand-over, a re-assertion or a person's handover repeats or
-		// carries out a move whose cause is already on the issue, so it posts none.
+		// move's that nothing else on Dispatch explains (workflow's moveReason: a worker's backward
+		// move). A hand-over, a re-assertion or a person's handover repeats or carries out a move
+		// whose cause is already on the issue, so it posts none.
 		if value.Reason != "" && value.Status != "done" && value.Kind != OrdinaryStatusRow {
 			return fmt.Errorf("a %s status write to %s carries a reason; only a done write or the workflow's own move does", value.Kind, value.Status)
 		}
@@ -1555,14 +2379,14 @@ func validateOutboxPayload(payload OutboxPayload) error {
 				return fmt.Errorf("a message's artifact %s holds %d bytes, more than the %d of one Dispatch document", artifact.Name, len(artifact.Content), MaxMessageArtifactBytes)
 			}
 		}
-	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
+	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease, DesignNewsReconcile:
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
 		}
-	case IssueBundle:
+	case IssueWorkspaceCheck:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || value.Role == "" {
-			return fmt.Errorf("a release's workspace save requires its tree, both workflow generations and the role whose shim is asked")
+			return fmt.Errorf("a release's workspace check requires its tree, both workflow generations and the role whose shim reads the workspace")
 		}
 	case IssueRelease:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
@@ -1593,10 +2417,25 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Update != nil {
 			return fmt.Errorf("a %s notice carries an update round; only the controller's update-stalled notice does", value.Kind)
 		}
+		if value.Pause != nil {
+			return fmt.Errorf("a %s notice carries a project pause; only the controller's project-paused and project-resumed notices do", value.Kind)
+		}
+		if (value.Kind == VolumeNearFullNotice) != (value.Volume != nil) {
+			return fmt.Errorf("a %s notice carries a volume sweep only when it is one", value.Kind)
+		}
+		if volume := value.Volume; volume != nil && (volume.PodUID == "" || volume.Trimmer == "" || volume.Episode <= 0) {
+			return fmt.Errorf("a volume-near-full notice requires the pod it is of, the trimmer that swept it and the episode it was in")
+		}
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
 			return err
 		}
 		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
+			return err
+		}
+		if err := validateNoticeGiveUps(value.Kind, value.Role, value.Count, value.GiveUps); err != nil {
+			return err
+		}
+		if err := validateNoticeStopper(value.Kind, value.StoppedBy); err != nil {
 			return err
 		}
 	case ControllerNotice:
@@ -1619,14 +2458,35 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Kind != TickNotice && len(value.Held) > 0 {
 			return fmt.Errorf("a %s notice carries held issues only when it is a tick", value.Kind)
 		}
+		pauseKind := value.Kind == ProjectPausedNotice || value.Kind == ProjectResumedNotice
+		if pauseKind != (value.Pause != nil) {
+			return fmt.Errorf("a %s notice carries a project pause only when it is a project-paused or a project-resumed notice", value.Kind)
+		}
+		if pause := value.Pause; pause != nil {
+			if value.Reason != "" {
+				return fmt.Errorf("a %s notice carries its reason in its pause, not beside it", value.Kind)
+			}
+			if err := pause.validate(value.Kind); err != nil {
+				return err
+			}
+		}
+		if value.Volume != nil {
+			return fmt.Errorf("a %s controller notice carries a volume sweep; a filling issue pod's volume is its own architect's to read", value.Kind)
+		}
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
 			return err
 		}
 		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
 			return err
 		}
+		if err := validateNoticeStopper(value.Kind, value.StoppedBy); err != nil {
+			return err
+		}
 		if value.Kind == ArchitectStalledNotice && value.Reason == "" {
 			return fmt.Errorf("an architect-stalled notice carries the reason that names its arm, the root and what the record says")
+		}
+		if err := validateNoticeGiveUps(value.Kind, value.Role, value.Count, value.GiveUps); err != nil {
+			return err
 		}
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
@@ -1656,6 +2516,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
 			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
 		}
+		if value.News && (value.Op != "start" || value.Task != "" || value.Entry != 0 || value.RuleResume || value.CheckLook != 0 ||
+			(value.Phase == "") != (value.Role == claim.RoleArchitect)) {
+			return fmt.Errorf("a supervise start for news alone carries no task and no entry, and names the phase of the holder it tells, or none for an architect")
+		}
 		if value.Kept != nil {
 			if value.Op != "start" || value.Task == "" {
 				return fmt.Errorf("only a supervise start with a task names the decisions it kept")
@@ -1663,6 +2527,28 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			if err := value.Kept.validate(); err != nil {
 				return err
 			}
+		}
+		if value.Op == "pause_stop" && (value.Pause <= 0 || !claim.IsRole(value.Role)) {
+			return fmt.Errorf("a pause's stop names its pause and the role it stops; it names pause %d and role %q", value.Pause, value.Role)
+		}
+		if value.Issue != "" && (value.Op != "pause_stop" || !claim.IsIssueKey(value.Issue) || claim.IsIssueKey(issue)) {
+			return fmt.Errorf("a supervise %s names the issue %q on a row keyed by %q; only a pause's stop keyed by its project names its claim's issue, and that is an issue key",
+				value.Op, value.Issue, issue)
+		}
+		if value.Op == "pause_stop" && value.Issue == "" && !claim.IsIssueKey(issue) {
+			return fmt.Errorf("a pause's stop keyed by %q, which is no issue key, names the issue of the claim it stops", issue)
+		}
+		if value.Pause < 0 || (value.Pause != 0 && value.Op != "pause_stop" && value.Op != "start") {
+			return fmt.Errorf("a supervise %s names pause %d; only a pause's stop and a start name one", value.Op, value.Pause)
+		}
+		if value.WakeKind != "" && (value.Op != "start" || !validWakeKind(value.WakeKind)) {
+			return fmt.Errorf("a supervise %s names the wake kind %q; only a start names one, and it is one of the pods wake kinds", value.Op, value.WakeKind)
+		}
+		if value.WakeKind == pods.WakePause && value.Pause == 0 {
+			return fmt.Errorf("a start for a %s wake names the pause that owed it", value.WakeKind)
+		}
+		if value.TurnStart != nil && value.Op != "suspend" {
+			return fmt.Errorf("a supervise %s names a turn start; only a left pod's close's suspend names one", value.Op)
 		}
 	case RoleMessage:
 		if value.Role == "" {
@@ -1715,19 +2601,6 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Look <= 0 {
 			return fmt.Errorf("check look bound requires the look it bounds")
 		}
-	case PhaseEnded:
-		if !claim.IsRole(value.Role) || value.Role == claim.RoleArchitect {
-			return fmt.Errorf("a phase-ended message goes to the role whose phase ended, never to an architect, which its checks-red notice tells; %q is neither", value.Role)
-		}
-		if value.From == "" || value.To == "" || value.From == value.To {
-			return fmt.Errorf("a phase-ended message names the phase that ended and the different phase the issue is in now; it names %q and %q", value.From, value.To)
-		}
-		if value.Reason == "" {
-			return fmt.Errorf("a phase-ended message carries the reason the architect's notice carries")
-		}
-		if value.TaskFollows && value.Role != claim.RoleImplementer {
-			return fmt.Errorf("only the implementer is told its task follows, since the phase a conflicting head opens is its own; the %s is not", value.Role)
-		}
 	case HookPrompt:
 		if value.Hook == "" {
 			return fmt.Errorf("a hook prompt carries the name of the hook that fired it")
@@ -1735,7 +2608,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if !claim.IsRole(value.Role) || value.Role == claim.RoleArchitect {
 			return fmt.Errorf("a hook prompt goes to a phase worker of the issue, never to an architect, whose own wake the daemon writes as a notice; %q is neither", value.Role)
 		}
-		if !phase.MovesBack(value.From, value.To) {
+		// A move back is one by the order of the issue's task (workflow's Walk.MovesBack), which need
+		// not be today's, so the pair is any of two different workflow phases (phase.MovePairs).
+		if !phase.IsMovePair(value.From, value.To) {
 			return fmt.Errorf("a hook prompt names the move back that fired it; %q to %q is no move back", value.From, value.To)
 		}
 		if value.Count <= 0 {
@@ -1761,6 +2636,72 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	case MergeQueueRemoval:
 		if value.Number < 1 || value.Head == "" {
 			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
+		}
+	case ConflictConfirm:
+		if value.Number < 1 || value.Head == "" {
+			return fmt.Errorf("a conflict confirm names the pull request it reads again and the head the first read found conflicting; it names #%d at %q", value.Number, value.Head)
+		}
+		if value.FirstReadAt.IsZero() {
+			return fmt.Errorf("a conflict confirm names when the first read it reads again was made; its read of #%d at %q names no time", value.Number, value.Head)
+		}
+	case MergeForwardMessage:
+		if _, known := mergeForwardRoles[value.Step]; !known {
+			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
+		}
+		if !MergeForwardReaches(value.Step, value.Role) {
+			return fmt.Errorf("a merge-forward ask goes to the implementer or the merger, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
+		}
+		if value.Head == "" || value.Base == "" || value.Phase == "" || value.PullRequest < 1 {
+			return fmt.Errorf("a merge-forward message names the head, the base branch, the phase the issue stays in and the pull request; it names %q, %q, %q and #%d", value.Head, value.Base, value.Phase, value.PullRequest)
+		}
+		// The merger is asked only where MergeForwardAsker names it, in merging. The implementer's ask
+		// is valid in every phase, so a row a daemon before cybermonklabs/legion#4979 queued past the
+		// review still reads.
+		if value.Step == MergeForwardAsk && value.Role == claim.RoleMerger && MergeForwardAsker(value.Phase) != claim.RoleMerger {
+			return fmt.Errorf("a merge-forward ask goes to the merger only while the issue stands in merging; this one names %q", value.Phase)
+		}
+		landing := value.Step == MergeForwardLanded || value.Step == MergeForwardReview
+		if landing != (value.Landed != "") {
+			return fmt.Errorf("a merge-forward landed or review names the head that landed, and an ask or a hold names none; a %s names %q", value.Step, value.Landed)
+		}
+		if mergeForwardReason(value.Why, value.Base) == "" && (value.Why != "" || !landing) {
+			return fmt.Errorf("a merge-forward ask or hold names why the daemon acted, as one of R0's reasons, and a landed or a review names one of them or none; a %s names %q", value.Step, value.Why)
+		}
+	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
+	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id
+	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND "no route for
+	// …", the one answer the row waits on for ever; and a write without the step's identity is
+	// refused only when it is the record's first, so the same defect would make a record on one
+	// run and none on another.
+	// A rating is held whole here too, though Dispatch's rating route would refuse half of one: the
+	// workflow (rateRetro) writes the rating and its reason as one value, so a rating of 0 or an
+	// empty reason, which is what a stored row naming only one of the two reads as, is a defect of
+	// the daemon, refused where it is queued rather than found by a warning after the completion
+	// that carried it committed.
+	case StepRecord:
+		if _, err := uuid.Parse(value.ID); err != nil {
+			return fmt.Errorf("a step record names no uuid as its id; it names %q", value.ID)
+		}
+		if value.Task == "" || value.Kind == "" || value.Role == "" {
+			return fmt.Errorf("a step record carries its task, kind and role on every write; it carries %q, %q and %q", value.Task, value.Kind, value.Role)
+		}
+		// The words and the place rule are Dispatch's own (steprecord, from contracts): one it
+		// refuses is a 400 STEP_INPUT that ends the row, and the run would have no record.
+		if !steprecord.PlaceHolds(value.Kind, value.Step) {
+			return fmt.Errorf("a step record's step %d is no place of a run of kind %q", value.Step, value.Kind)
+		}
+		if value.Result != nil && !slices.Contains([]string{steprecord.ResultPassed, steprecord.ResultFailed, steprecord.ResultStopped}, *value.Result) {
+			return fmt.Errorf("a step record's result %q is no result of a run", *value.Result)
+		}
+		if value.PlanRating != nil && (value.PlanRating.Rating == 0 || value.PlanRating.Reason == "") {
+			return fmt.Errorf("a step record carries the rating of the plan with its reason or neither; it carries the rating %d with the reason %q",
+				value.PlanRating.Rating, value.PlanRating.Reason)
+		}
+	// The rest of a plan Dispatch judges, as it judges a step record's; its id is held here for the
+	// same reason a step record's is.
+	case PlanRecord:
+		if _, err := uuid.Parse(value.ID); err != nil {
+			return fmt.Errorf("a plan record names no uuid as its id; it names %q", value.ID)
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)
@@ -1802,14 +2743,55 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // workerBackgroundStalled). It is that worker's issue's architect's to read, and it is a telling
 // and not a repair: it names the kinds the session reported and how long the report has stood,
 // and says that nothing was sent and nothing will be sent for it.
+//
+// `task-stopped` is a task stopped where it stands, its issue held: by its owner's stop_task
+// (workflow's taskStopped), whose notice names the architect that made the call (StoppedBy) and
+// reaches the issue's architect only when that is another claim (the daemon's deliverNotice);
+// or by a failed step that no step before it of the type implementation can take the work back
+// from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
+// architect, in its reason.
+//
+// `retro-held` is a parent whose task's last step is not the owner's acceptance, held before its retro because it
+// passed its last step while issues beneath it are still in the workflow (workflow's
+// beneathRetro, retroHeldNotice; HoldForChildren). Its reason names each of them, and that the
+// retro starts when the last one leaves (workflow's releaseHeldParents).
+//
+// `plan-not-taken` is a plan its issue's first step did not take, the first step telling the
+// issue's architect once, whatever number of versions it passed over, after it deleted their
+// rows; it carries one of two meanings. A plan an earlier owner gave (workflow's
+// passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree now
+// (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
+// moves a member to another tree; the reason names each version, its document and its giver,
+// the plan the first step runs (an owner's, of the issue's generation or carried to it, or the
+// default steps), and that the architect may give the plan again with register_plan as its own.
+// Or a plan of an issue whose experiment's group takes no plan from its owner (workflow's
+// passOverOwners, tellNotTaken): every plan its owner or an earlier owner gave is passed over, the
+// run takes the project's default steps, and the reason names each version and the group
+// (intake's GroupClause), and offers no register_plan, which that issue's owner is answered
+// PLAN_NOT_TAKEN for.
+//
+// `session-forgotten` is the worker whose claim forgot its recorded session because the pod's
+// launcher, older than the release that added the kind, could not look the session up by its id,
+// and Oh My Pi did not resume it by that id (workflow's sessionLost). It is a kind of its own and
+// not `session-lost` because the kind is published as the notice's one-line message, and that
+// session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
+// of migration 20261120042902 deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
-	"catch-up", "checks-red", "review-stuck", "status-reasserted",
-	"session-lost", "session-store-fault",
+	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
+	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
 }
+
+// VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
+// that volume still above its low mark, or of the trimmer having switched itself off: the one
+// word anybody in Legion gets that the disk the roles of an issue share is filling under them
+// (INFRA-2009). It is the architect's and not the controller's because the work that filled the
+// volume is the issue's — a repository cache, a build tree, a test run's artefacts — and the
+// architect is who can stop or redirect it.
+const VolumeNearFullNotice NoticeKind = "volume-near-full"
 
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {
@@ -1857,12 +2839,53 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 	return nil
 }
 
+// validateNoticeGiveUps holds a notice's count and named give-ups to the intake-gave-up notice,
+// which counts one give-up or more, names between one and min(Count, giveUpNoticeNames) of them,
+// each by its record's positive id, and carries no role, since it is the controller's alone.
+// Every other kind carries neither. Both arms of the switch above call it, as they call
+// validateNoticeFailure: a Notice can never be of this kind, so there it refuses any count.
+func validateNoticeGiveUps(kind NoticeKind, role claim.Role, count int, giveUps []NoticeGiveUp) error {
+	if kind != IntakeGaveUpNotice {
+		if count != 0 || len(giveUps) > 0 {
+			return fmt.Errorf("a %s notice carries a count or names give-ups; only an intake-gave-up notice does", kind)
+		}
+		return nil
+	}
+	if count < 1 {
+		return fmt.Errorf("an intake-gave-up notice counts one give-up or more, not %d", count)
+	}
+	if most := min(count, giveUpNoticeNames); len(giveUps) < 1 || len(giveUps) > most {
+		return fmt.Errorf("an intake-gave-up notice that counts %d names between 1 and %d of them, not %d", count, most, len(giveUps))
+	}
+	for _, giveUp := range giveUps {
+		if giveUp.ID <= 0 {
+			return fmt.Errorf("an intake-gave-up notice names each give-up by its positive record id, not %d", giveUp.ID)
+		}
+	}
+	if role != "" {
+		return fmt.Errorf("an intake-gave-up notice carries no role, not %q: it is the controller's alone", role)
+	}
+	return nil
+}
+
+// validateNoticeStopper holds the claim of the architect that stopped a task to the one notice
+// that carries it: the task-stopped notice of its owner's stop_task (workflow's taskStopped),
+// which the daemon's executor publishes only to an architect that is not that claim. Both arms
+// of the switch above call it, as they call validateNoticeFailure and for the same reason.
+func validateNoticeStopper(kind NoticeKind, stoppedBy claim.Token) error {
+	if stoppedBy != "" && kind != "task-stopped" {
+		return fmt.Errorf("a %s notice names the architect that stopped its task; only a task-stopped notice does", kind)
+	}
+	return nil
+}
+
 // controllerOnlyNoticeKind says whether kind is a notice for the controller alone, never an
 // architect's.
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
-		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice:
+		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, MemoryGuardKillNotice,
+		ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice:
 		return true
 	default:
 		return false
@@ -1871,7 +2894,18 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 
 func validSuperviseOp(op SuperviseOp) bool {
 	switch op {
-	case "start", "suspend", "release", "tree_close", "issue_close":
+	case "start", "suspend", "release", "step_stop", "tree_close", "issue_close", "pause_stop":
+		return true
+	default:
+		return false
+	}
+}
+
+// validWakeKind says whether kind is one of the pods wake kinds a resume records, the one
+// vocabulary a start's WakeKind is held to.
+func validWakeKind(kind string) bool {
+	switch kind {
+	case pods.WakeDelivery, pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeBackstop, pods.WakePause:
 		return true
 	default:
 		return false

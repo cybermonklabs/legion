@@ -8,7 +8,6 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -138,7 +137,14 @@ func (r *SessionRegistry) StartSessionReaper(ctx context.Context, interval time.
 // threshold takes it, as every session consumer did before, and the records behind this one are
 // reaped whatever became of it.
 func (r *SessionRegistry) ReapSessions(ctx context.Context, reaper SessionReaper) int {
-	if err := r.applyMaxAge(); err != nil {
+	// The age is settled under one request's budget, as it was before bus.SetKeyValueMaxAge sent
+	// an unanswered read again: that resending is for the start, which fails if the age cannot be
+	// set, and a pass that waited out the start's hang guard instead would hold its deletes back
+	// for 36 s of a one-minute tick over a question the next tick asks again.
+	ageCtx, cancelAge := context.WithTimeout(ctx, bus.RequestTimeout)
+	err := r.applyMaxAge(ageCtx)
+	cancelAge()
+	if err != nil {
 		r.logger().Warn("session reaper could not settle the session bucket's maximum age", slog.String("error", err.Error()))
 	}
 	now := r.now()
@@ -203,9 +209,8 @@ func (r *SessionRegistry) goneCandidates(now time.Time) []goneCandidate {
 
 // deleteGone deletes candidate's record only while the bucket's latest revision is the one the
 // pass judged it on, and reports whether it did. A registration that landed since makes JetStream
-// refuse the delete with wrong last sequence (10071, which nats.go names nats.ErrKeyExists), and
-// the record is kept: false and no error, as store's interest reaper keeps a row written again
-// (store.Registry.deleteInterestAt).
+// refuse the delete with wrong last sequence (bus.IsCASConflict), and the record is kept: false and
+// no error, as store's interest reaper keeps a row written again (store.Registry.deleteInterestAt).
 //
 // A copy that holds no revision for the key, because a watch moved the epoch since its read began
 // (kvwatch.Copy.FenceFor), names none for the delete to be conditioned on, which a conditional
@@ -236,7 +241,7 @@ func (r *SessionRegistry) deleteGone(ctx context.Context, candidate goneCandidat
 	if !answered {
 		return false, fmt.Errorf("delete session %s's record at revision %d: %w", candidate.sessionID, revision, err)
 	}
-	if errors.Is(err, nats.ErrKeyExists) {
+	if bus.IsCASConflict(err) {
 		return false, nil
 	}
 	if err != nil {
@@ -257,8 +262,9 @@ func (r *SessionRegistry) deleteGone(ctx context.Context, candidate goneCandidat
 //
 // A key the bucket no longer holds, and a record a registration has renewed since, are both 0:
 // the caller deletes nothing, counts nothing and logs nothing for them. A value this build cannot
-// read is dated by nothing, and a record no reader can judge is not one this pass deletes: it is
-// the error that reports the record kept.
+// read, and one that is not the session's registration (DecodeEntry), are dated by nothing the
+// session wrote, and a record no reader can judge is not one this pass deletes: it is the error
+// that reports the record kept.
 func (r *SessionRegistry) judgeGone(ctx context.Context, kv bus.KeyValue, sessionID string) (uint64, error) {
 	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if !answered {
@@ -270,8 +276,8 @@ func (r *SessionRegistry) judgeGone(ctx context.Context, kv bus.KeyValue, sessio
 	if err != nil {
 		return 0, err
 	}
-	var stored SessionEntry
-	if err := json.Unmarshal(got.Value(), &stored); err != nil {
+	stored, err := DecodeEntry(sessionID, got.Value())
+	if err != nil {
 		return 0, fmt.Errorf("judge session %s's record before deleting it: %w", sessionID, err)
 	}
 	if r.stateOf(stored, r.now()) != Gone {

@@ -1,0 +1,5 @@
+{
+  "code": "PAUSE_UNAVAILABLE",
+  "error": "this daemon cannot pause its project under runtime: tmux: a pause stops and wakes roles through the idle release, which runs only under runtime: kubernetes; nothing was paused",
+  "setting": "runtime: tmux"
+}

@@ -25,6 +25,10 @@
  *  psql-session.test.ts does. The refusal rows that need none hold strings psql gets no answer
  *  through: a database named `mine`, which the pod's server does not hold, a port nothing listens
  *  on, or a string libpq refuses outright. One more row reads two source files and runs nothing.
+ *  Four rows put a stand-in psql first on PATH instead and need neither: it records what each read
+ *  handed it, so they hold how a string reaches psql. A postgres:// URL reaches it without its
+ *  password, which psql gets in PGPASSWORD alone; a key=value string with a password key is
+ *  refused before psql runs, naming its variable; one with none reaches psql as it is.
  */
 
 import { expect, test } from "bun:test";
@@ -35,12 +39,13 @@ import { fileURLToPath } from "node:url";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
-import { sqlAt } from "../psql";
+import { dropDatabase, sqlAt } from "../psql";
 import { masked, rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const driverPath = join(dispatchPackage, "e2e/acceptance/replace-blocks.sh");
-const localInstancePath = join(dispatchPackage, "e2e/local-instance.ts");
+/** Where the hand-over message e2e/local-instance.ts prints is written (`handOverMessage`). */
+const handOverPath = join(dispatchPackage, "e2e/local-instance-support.ts");
 
 /** LEGION_TEST_PG_DSN as this run has it, quotes and all, which `drive` hands the driver
  *  unchanged, so the guard reads it through the driver's own strip of its quotes. */
@@ -77,9 +82,10 @@ if (!live) {
   );
 }
 
-/** The first line of the hand-over message e2e/local-instance.ts prints once the instance is up,
- *  the message that holds DATABASE_URL whole. The fixture log below is built from it, and a row
- *  ties it to the line the instance writes and to the line the driver's cut names. */
+/** The first line of the hand-over message e2e/local-instance.ts prints once the instance is up
+ *  (`handOverMessage` in e2e/local-instance-support.ts), the message that holds DATABASE_URL. The
+ *  fixture log below is built from it, and a row ties it to the line the message writes and to
+ *  the line the driver's cut names. */
 const handOverHeading = "Dispatch local instance is up.";
 
 /** The user and the host of a postgres:// URL, which `withPassword` puts around a password. */
@@ -103,8 +109,9 @@ function withPassword(password: string, rest: string, authority = localAuthority
   return `postgres://${authority.user}:${password}@${authority.host}/${rest}`;
 }
 
-/** A database on the shared server for one row alone, made by `create database` and dropped with
- *  FORCE, and the URL that reaches it: LEGION_TEST_PG_DSN with only its database changed. */
+/** A database on the shared server for one row alone, and the URL that reaches it:
+ *  LEGION_TEST_PG_DSN with only its database changed. It is made by `create database` and dropped
+ *  by `dropDatabase`. */
 async function withScratchDatabase(
   use: (scratch: { name: string; url: string }) => Promise<void>
 ): Promise<void> {
@@ -115,7 +122,7 @@ async function withScratchDatabase(
   try {
     await use({ name, url: url.href });
   } finally {
-    await sqlAt(server, [`drop database if exists ${name} with (force)`]);
+    await dropDatabase(server, name);
   }
 }
 
@@ -285,12 +292,143 @@ for (const { label, shape, databaseUrl, secret } of [
   test.skipIf(withoutPsql)(
     `a refusal writes no password to stderr: ${shape}`,
     async () => {
-      await expectRefusal(label, databaseUrl, unreadReason, [secret]);
+      // A key=value string with a password key is refused before psql runs; every other string
+      // here reaches psql, which gets no answer through it.
+      const reason = label.startsWith("keyword")
+        ? keywordPasswordReason("DATABASE_URL")
+        : unreadReason;
+      await expectRefusal(label, databaseUrl, reason, [secret]);
     },
     // The driver, a bounded child under the short bound.
     rowLimit("short")
   );
 }
+
+/** The reason the driver's `refuse_keyword_password` gives for the variable `name`. */
+function keywordPasswordReason(name: string): string {
+  return `${name} holds a password key, which psql would carry in its arguments`;
+}
+
+/** The driver run as `drive` runs it, with `env` for its connection strings and a stand-in psql
+ *  first on PATH beside the fake `bun`: it records each call's arguments and the PGPASSWORD it was
+ *  given, and exits 1, so the guard reads no answer and refuses, and the run ends there. No server
+ *  is needed. `calls` holds one entry per psql call. */
+async function driveWithStandIn(
+  label: string,
+  env: { DATABASE_URL: string; LEGION_TEST_PG_DSN?: string }
+): Promise<{
+  code: number;
+  stderr: string;
+  started: boolean;
+  calls: { args: string[]; pgpassword: string }[];
+}> {
+  const bin = fakeBunDirectories();
+  const marker = join(bin, "bun-ran");
+  const record = join(bin, "psql-calls");
+  writeFileSync(join(bin, "bun"), `#!/usr/bin/env bash\n: >'${marker}'\nexit 1\n`, { mode: 0o755 });
+  writeFileSync(
+    join(bin, "psql"),
+    [
+      "#!/usr/bin/env bash",
+      `{ printf 'call\\0'; printf '%s\\0' "$@"; printf 'PGPASSWORD=%s\\0' "\${PGPASSWORD-unset}"; } >>'${record}'`,
+      "exit 1",
+      "",
+    ].join("\n"),
+    { mode: 0o755 }
+  );
+  const { code, stderr } = await runBounded({
+    argv: ["bash", "e2e/acceptance/replace-blocks.sh"],
+    bound: "short",
+    cwd: dispatchPackage,
+    env: {
+      ...env,
+      DISPATCH_E2E_CASE: label,
+      HOME: process.env.HOME ?? "",
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
+    },
+    from: import.meta.url,
+  });
+  const calls = existsSync(record)
+    ? readFileSync(record, "utf8")
+        .split("call\0")
+        .slice(1)
+        .map((call) => {
+          const fields = call.split("\0").slice(0, -1);
+          return { args: fields.slice(0, -1), pgpassword: fields.at(-1) ?? "" };
+        })
+    : [];
+  return { code, stderr, started: existsSync(marker), calls };
+}
+
+test(
+  "a postgres:// DATABASE_URL reaches psql without its password, which psql gets in PGPASSWORD alone",
+  async () => {
+    const run = await driveWithStandIn("url-to-psql", {
+      DATABASE_URL: withPassword("not-a-secret%40guard", "mine?sslmode=disable"),
+    });
+    expect(
+      {
+        calls: run.calls,
+        printed: run.stderr.includes("not-a-secret"),
+        reason: run.stderr.includes(unreadReason),
+      },
+      driverSaid(run)
+    ).toEqual({
+      calls: [
+        {
+          args: [
+            "-XAtqw",
+            "--dbname=postgres://legion_test@127.0.0.1:5433/mine?sslmode=disable",
+            "-c",
+            "select current_database(), inet_server_port()",
+          ],
+          pgpassword: "PGPASSWORD=not-a-secret@guard",
+        },
+      ],
+      printed: false,
+      reason: true,
+    });
+  },
+  rowLimit("short")
+);
+
+for (const name of ["DATABASE_URL", "LEGION_TEST_PG_DSN"] as const) {
+  test(
+    `a key=value ${name} that holds a password key is refused before psql runs, naming the variable and none of its value`,
+    async () => {
+      const keyword = "host=127.0.0.1 port=5433 dbname=mine password=not-a-secret-kv";
+      const run = await driveWithStandIn(`keyword-refused-${name}`, {
+        DATABASE_URL: name === "DATABASE_URL" ? keyword : "host=127.0.0.1 port=5433 dbname=mine",
+        ...(name === "LEGION_TEST_PG_DSN" ? { LEGION_TEST_PG_DSN: keyword } : {}),
+      });
+      expect(
+        {
+          code: run.code,
+          reason: run.stderr.includes(keywordPasswordReason(name)),
+          printed: run.stderr.includes("not-a-secret-kv"),
+          calls: run.calls.length,
+          started: run.started,
+        },
+        driverSaid(run)
+      ).toEqual({ code: 2, reason: true, printed: false, calls: 0, started: false });
+    },
+    rowLimit("short")
+  );
+}
+
+test(
+  "a key=value DATABASE_URL with no password reaches psql as it is",
+  async () => {
+    const keyword = "host=127.0.0.1 port=5433 dbname=mine";
+    const run = await driveWithStandIn("keyword-to-psql", { DATABASE_URL: keyword });
+    expect(
+      run.calls.map(({ args }) => args[1]),
+      driverSaid(run)
+    ).toEqual([`--dbname=${keyword}`]);
+  },
+  rowLimit("short")
+);
 
 test.skipIf(withoutPsql)(
   "a refusal of a string no reader can parse names the reason and none of the string",
@@ -365,10 +503,11 @@ test.skipIf(!live)(
 );
 
 /** The log a start leaves when the driver's read misses the signed-in line and the instance then
- *  stops: what came before the hand-over, then the hand-over message itself, which
- *  e2e/local-instance.ts writes in one console.log holding DATABASE_URL whole, twice. The
- *  signed-in line is left out of it, which is the read missing it: with that line the driver
- *  takes the run for started and prints no log at all. */
+ *  stops: what came before the hand-over, then the hand-over message itself, as
+ *  e2e/local-instance.ts once wrote it, holding DATABASE_URL whole, twice (it now leaves out a
+ *  password the run gave; the cut is held to the worse case). The signed-in line is left out of
+ *  it, which is the read missing it: with that line the driver takes the run for started and
+ *  prints no log at all. */
 function stoppedInstanceLog(databaseUrl: string): { log: string; handOver: string[] } {
   const handOver = [
     handOverHeading,
@@ -388,12 +527,13 @@ function stoppedInstanceLog(databaseUrl: string): { log: string; handOver: strin
 }
 
 test("the hand-over heading is the line the instance writes and the line the driver cuts at", () => {
-  const source = readFileSync(localInstancePath, "utf8");
+  const source = readFileSync(handOverPath, "utf8");
   const written = JSON.stringify(`\n${handOverHeading}\n`);
   expect(
     source.split(written).length - 1,
-    `e2e/local-instance.ts does not write ${written} once, as a line of its own. The driver ` +
-      "cuts the instance's log at that line, and this file's fixture log is built from it."
+    `e2e/local-instance-support.ts (handOverMessage, which e2e/local-instance.ts prints) does not ` +
+      `write ${written} once, as a line of its own. The driver cuts the instance's log at that ` +
+      "line, and this file's fixture log is built from it."
   ).toBe(1);
   const cut = `sed '/^${handOverHeading.replaceAll(".", "\\.")}/,$d'`;
   expect(

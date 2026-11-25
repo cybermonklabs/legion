@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // bootReads is what boot reads from the configuration, the daemon's environment and the files they
@@ -29,9 +30,10 @@ type bootReads struct {
 
 // variantInstructions is one declared variant's instructions file as boot read it: the experiment
 // and the arm that name it, and the operator's file verbatim. Boot writes one copy per entry
-// under the state directory (config.WriteVariantInstructions), named and headed as the arm's
-// declaration says (config.Variant.MemoryBlock), and a launch's prompt ends with the copies of the
-// arms its unit was drawn into.
+// under the state directory (writeInstructionsCopies), named and headed as the arm's declaration
+// says (config.Variant.MemoryBlock), each launch reads the file again into that copy
+// (instructionsCopies.refresh), and a launch's prompt ends with the copies of the arms its unit was
+// drawn into.
 type variantInstructions struct {
 	experiment string
 	variant    config.Variant
@@ -46,7 +48,7 @@ type variantInstructions struct {
 // file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
 // file, and the runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
-// runtime. prepare runs it first; CheckStart is it for `legion start --check-config`, so the check
+// runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check
 // refuses whatever boot refuses before its first write. What boot does after it is not a check's to
 // do: create the state directory, write the instructions copies and the Dispatch token file, read
 // provider keys from secretsd, and run the plugin gate or the image probe.
@@ -89,7 +91,7 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	// Every hook that reads its words from a file rather than writing them in the key, read as
 	// the deployment's instructions are and refused the same way. The engine is given words and
 	// never a path, so a file a hook names is as much a part of boot as the instructions are: a
-	// missing one refuses boot, and `legion start --check-config` with it.
+	// missing one refuses boot, and `legion config check` with it.
 	for _, hook := range cfg.Hooks {
 		if hook.PromptFile == "" {
 			continue
@@ -108,21 +110,12 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	// (config.Config.ExperimentsDeclared, the list that maps the `memory` block in as the
 	// experiment named memory). No mode decides it: a unit already drawn into an arm is given
 	// that arm's instructions whatever the mode is now, and only removing the key takes them away.
-	// The block's own arm (config.Variant.MemoryBlock) is refused in the block's own words
-	// (config.ReadMemoryInstructions), which the documentation quotes, and every arm of the
-	// `experiments` key, `experiments.memory` included, in the experiments' words
-	// (config.ReadVariantInstructions).
 	for _, experiment := range cfg.ExperimentsDeclared() {
 		for _, variant := range experiment.Variants {
 			if variant.InstructionsPath == "" {
 				continue
 			}
-			var contents []byte
-			if variant.MemoryBlock {
-				contents, err = config.ReadMemoryInstructions(variant.InstructionsPath)
-			} else {
-				contents, err = config.ReadVariantInstructions(experiment.Name, variant.Name, variant.InstructionsPath)
-			}
+			contents, err := readArmInstructions(experiment.Name, variant)
 			if err != nil {
 				return bootReads{}, err
 			}
@@ -253,14 +246,27 @@ func checkRoleConfigFiles(cfg config.Config) error {
 	return nil
 }
 
-// CheckStart is `legion start --check-config`'s reading of what boot reads before it writes
+// CheckStart is `legion config check`'s reading of what boot reads before it writes
 // anything (readBoot), over the daemon's environment (lookup, and the process's for the OMP
-// invocation): nil when boot would get past every such refusal, and the public keys of the pane
-// seed's user and the daemon seed's user, each "" when the daemon has no such seed, never a seed.
+// invocation), then of postgres_dsn as the store reads it before it opens a connection
+// (store.PoolConfig, which parses the DSN and opens nothing): nil when boot would get past every
+// such refusal, and the public keys of the pane seed's user and the daemon seed's user, each ""
+// when the daemon has no such seed, never a seed. The store refuses a postgres_dsn pgx cannot
+// parse, such as a malformed URL, a bad pool_* key or an sslrootcert, sslcert or sslkey file it
+// cannot read, and one whose default_query_exec_mode the store's text rule cannot run in. pgx
+// fills what the DSN leaves unset from the process's own PG* environment variables, whatever
+// lookup holds, as it does at boot. Each such refusal is store.ConnectError, as store.Open wraps
+// it: the DSN's address and the driver's detail, never the DSN's password. The driver's detail of
+// a DSN pgx cannot parse quotes the DSN with its user name and its query, which
+// `legion config check` and `legion start` both remove when they write the refusal (printRefusal,
+// the URL rule).
 func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser string, err error) {
 	r, err := readBoot(cfg, lookup, os.Getenv, true, slog.New(slog.DiscardHandler))
 	if err != nil {
 		return "", "", err
+	}
+	if _, err := store.PoolConfig(cfg.PostgresDSN); err != nil {
+		return "", "", store.ConnectError(cfg.PostgresDSN, err)
 	}
 	if r.nats.source == natsSeedDaemon {
 		daemonNatsUser = r.nats.user

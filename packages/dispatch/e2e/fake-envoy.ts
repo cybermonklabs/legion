@@ -1,4 +1,5 @@
 import { type ExpectsReply, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import { connect, type KV, StringCodec } from "nats";
 import type { TmuxPlace } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 
@@ -60,6 +61,16 @@ type SessionState = "live" | "unresponsive";
 
 const SESSION_STATES: readonly SessionState[] = ["live", "unresponsive"];
 
+/** How the listener answers a send to a session. `200` takes it. `404` is its "no live session"
+ *  refusal: Dispatch then publishes a targeted message on the session's agent subject itself and
+ *  records the attempt queued, while a mention's attempt fails. `503` is the listener behind its
+ *  starting gate (`service starting`, packages/envoy/cmd/listener/starting_gate.go startingGate):
+ *  Dispatch tries it again through its take-over window and then records the attempt failed, which
+ *  is the failure a row stages to read a failed card and its Retry. */
+type SendStatus = 200 | 404 | 503;
+
+const SEND_STATUSES: readonly SendStatus[] = [200, 404, 503];
+
 /** What a send's answer says of its target's connection, in the `state` it carries beside
  *  `recipient_state` (packages/envoy/cmd/listener/api.go, sendHandler): `connected` is a session
  *  whose plugin holds its relay subject, `stopped` one the listener knows and that is not
@@ -86,12 +97,18 @@ type ListsState = "ok" | "refilling" | "down";
 
 const LISTS_STATES: readonly ListsState[] = ["ok", "refilling", "down"];
 
+/** The `Retry-After` the real listener's refilling answer carries, in seconds, which this one
+ *  answers with unless a test set its own (`/__fixture/lists`'s `retry_after_seconds`): a row that
+ *  waits through several refilling reads waits each one's retries, and only the row that pins
+ *  what Dispatch passes on needs the listener's own figure. */
+const LISTENER_REFILLING_RETRY_AFTER_SECONDS = 5;
+
 /** The listener's list answer for a state other than `ok`. */
-function listRefusal(lists: Exclude<ListsState, "ok">): Response {
+function listRefusal(lists: Exclude<ListsState, "ok">, retryAfterSeconds: number): Response {
   if (lists === "refilling") {
     return Response.json(
       { code: "refilling", error: "envoy: the agent list is refilling; try again in a moment" },
-      { headers: { "Retry-After": "5" }, status: 503 }
+      { headers: { "Retry-After": String(retryAfterSeconds) }, status: 503 }
     );
   }
   return Response.json(
@@ -173,7 +190,7 @@ interface FakeEnvoyState {
    *  had gone by the send, which the listener's probe finds. An id named by no entry here is
    *  `connected`. */
   readonly sendStates: Map<string, ConnectionState>;
-  readonly sendStatuses: Map<string, 200 | 404>;
+  readonly sendStatuses: Map<string, SendStatus>;
   /** How long a send to a session is held before it is answered, in milliseconds, as a listener
    *  slow to take it would; an id named by no entry here is answered at once. */
   readonly sendDelays: Map<string, number>;
@@ -189,6 +206,9 @@ interface FakeEnvoyState {
   readonly publishedKeys: Set<string>;
   readonly unsubscribeCalls: unknown[];
   lists: ListsState;
+  /** The `Retry-After` of a refilling answer, `LISTENER_REFILLING_RETRY_AFTER_SECONDS` unless a
+   *  test set its own with the list state. */
+  listsRetryAfterSeconds: number;
 }
 
 function emptyState(): FakeEnvoyState {
@@ -197,6 +217,7 @@ function emptyState(): FakeEnvoyState {
     legionAgents: [],
     legionRegistry: "ok",
     lists: "ok",
+    listsRetryAfterSeconds: LISTENER_REFILLING_RETRY_AFTER_SECONDS,
     liveSessions: new Set(),
     publishedKeys: new Set(),
     records: new Map(),
@@ -318,8 +339,9 @@ function tokenOrder(sessions: readonly FakeLegionAgent[]): [number, string] {
 /** A registry read's answer for `agents`, holding the selected entries: each with `live` from the
  *  session's own registration (`registrationIsLive`) and, within its role token ordered by start,
  *  the session that replaced it and when (`replaced_by`/`replaced_at`, null for the newest), as
- *  the listener derives them at the read (`legionAgentAnswer`, `legionagents.succession`). Newest
- *  first within a role token; across tokens by role in workflow order, then by token.
+ *  the listener derives them at the read (`listenerwire.LegionAgentAnswer`,
+ *  `legionagents.succession`). Newest first within a role token; across tokens by role in workflow
+ *  order, then by token.
  *
  *  Succession is derived over every entry of each token the registry holds and the selection is
  *  applied after, so the three reads never answer one session two ways: an issue read of a token
@@ -361,6 +383,58 @@ function legionAnswer(selected: readonly FakeLegionAgent[]): Record<string, unkn
     });
 }
 
+/** The live holder of `role`, as this listener's role lookup names it: the first seeded session
+ *  that is running and lists the role. */
+function liveHolder(role: string): FakeSession | undefined {
+  return state.sessions.find(
+    (session) => state.liveSessions.has(session.session_id) && session.roles?.includes(role)
+  );
+}
+
+/** The bus the harness's Dispatch server publishes through: DISPATCH_E2E_NATS_URLS, which
+ *  e2e/run-server.sh hands that server as its NATS_URLS, and which this listener inherits from the
+ *  harness that starts both. Empty for a run with no bus. */
+const busServers = (process.env.DISPATCH_E2E_NATS_URLS ?? "")
+  .split(",")
+  .map((server) => server.trim())
+  .filter((server) => server !== "");
+
+/** The two buckets of the real listener's that Dispatch's outbox reads itself rather than asking
+ *  this listener (packages/envoy/internal/roles, Buckets): the role claims, keyed by role, and the
+ *  session registrations, keyed by session id (packages/envoy/internal/bus, RoleClaimBucket and
+ *  SessionBucket). The outbox resolves a role route's holder from them, never from
+ *  `GET /v1/roles/{role}`, so a role this listener names a holder for is still read unclaimed
+ *  there until its claim is written on the bus too. Opened, and created where the bus holds
+ *  neither, on the first claim a test asks for. */
+let busBuckets: Promise<{ roles: KV; sessions: KV }> | undefined;
+
+function roleBuckets(): Promise<{ roles: KV; sessions: KV }> {
+  busBuckets ??= (async () => {
+    const js = (await connect({ servers: busServers })).jetstream();
+    return {
+      roles: await js.views.kv("envoy_roles"),
+      sessions: await js.views.kv("envoy_sessions"),
+    };
+  })();
+  return busBuckets;
+}
+
+const codec = StringCodec();
+
+/** The session a role's claim on the bus names, "" for a role the bus holds no claim of or a
+ *  claim that names no holder. */
+async function claimedHolder(roles: KV, role: string): Promise<string> {
+  const entry = await roles.get(role);
+  if (entry === null || entry.operation !== "PUT") return "";
+  const claim: unknown = JSON.parse(codec.decode(entry.value));
+  return typeof claim === "object" &&
+    claim !== null &&
+    "holder_session_id" in claim &&
+    typeof claim.holder_session_id === "string"
+    ? claim.holder_session_id
+    : "";
+}
+
 // FAKE_ENVOY_PORT, or with it unset port 0, so the OS chooses; the line at the end reports the
 // port bound, which e2e/harness-start.ts reads.
 const server = Bun.serve({
@@ -369,7 +443,7 @@ const server = Bun.serve({
   async fetch(request) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/v1/sessions") {
-      if (state.lists !== "ok") return listRefusal(state.lists);
+      if (state.lists !== "ok") return listRefusal(state.lists, state.listsRetryAfterSeconds);
       const now = Date.now();
       const unresponsive = includes(url, "unresponsive");
       return Response.json(
@@ -383,9 +457,7 @@ const server = Bun.serve({
     }
     if (request.method === "GET" && url.pathname.startsWith("/v1/roles/")) {
       const role = decodeURIComponent(url.pathname.slice("/v1/roles/".length));
-      const holder = state.sessions.find(
-        (session) => state.liveSessions.has(session.session_id) && session.roles?.includes(role)
-      );
+      const holder = liveHolder(role);
       if (holder === undefined)
         return Response.json({ error: `no holder for role ${role}` }, { status: 404 });
       const holderState = stateOf(holder.session_id);
@@ -492,6 +564,10 @@ const server = Bun.serve({
       const delay = state.sendDelays.get(message.target_session) ?? 0;
       if (delay > 0) await Bun.sleep(delay);
       const sendStatus = state.sendStatuses.get(message.target_session);
+      // A listener behind its starting gate answers every send so, whatever the session.
+      if (sendStatus === 503) {
+        return Response.json({ error: "service starting" }, { status: 503 });
+      }
       const seeded = state.sessions.find(
         (session) => session.session_id === message.target_session
       );
@@ -556,12 +632,81 @@ const server = Bun.serve({
         legionAgents: state.legionAgents,
         legionRegistry: state.legionRegistry,
         lists: state.lists,
+        listsRetryAfterSeconds: state.listsRetryAfterSeconds,
         liveSessions: new Set(ids),
         sendStatuses: new Map(ids.map((id) => [id, 200] as const)),
         sessions,
         unsubscribeCalls: state.unsubscribeCalls,
       };
       return Response.json({ ok: true });
+    }
+    // The claim of a role on the bus, as the real listener writes it when a session claims the
+    // role (packages/envoy/internal/store, RoleClaim): the holder is the live holder this
+    // listener's own lookup names, whose registration is written beside it, live from now, so
+    // Dispatch's outbox forwards a role route to that session and records it as the role's
+    // holder. A second claim of the same role, once a test has moved the lookup to another
+    // holder, names the first as previous_session_id. A role with no live holder is 404, and a
+    // listener started with no bus (DISPATCH_E2E_NATS_URLS unset) is 409, writing nothing.
+    if (request.method === "PUT" && url.pathname.startsWith("/__fixture/role-claims/")) {
+      const role = decodeURIComponent(url.pathname.slice("/__fixture/role-claims/".length));
+      const holder = liveHolder(role);
+      if (holder === undefined) {
+        return Response.json({ error: `no live holder for role ${role}` }, { status: 404 });
+      }
+      if (busServers.length === 0) {
+        return Response.json(
+          { error: "this listener has no bus: DISPATCH_E2E_NATS_URLS is unset" },
+          { status: 409 }
+        );
+      }
+      const { roles, sessions } = await roleBuckets();
+      const previous = await claimedHolder(roles, role);
+      const now = Date.now();
+      await sessions.put(
+        holder.session_id,
+        codec.encode(
+          JSON.stringify({
+            capabilities: holder.capabilities ?? [],
+            dir: holder.dir ?? "",
+            host: holder.host ?? holder.machine_id,
+            machine_id: holder.machine_id ?? "",
+            port: 0,
+            title: holder.title,
+            updated_at: now,
+          })
+        )
+      );
+      await roles.put(
+        role,
+        codec.encode(
+          JSON.stringify({
+            claimed_at: now,
+            holder_session_id: holder.session_id,
+            previous_session_id: previous,
+            renewed_at: now,
+          })
+        )
+      );
+      return Response.json({ holder: holder.session_id, previous, role });
+    }
+    // The release of a role's claim on the bus and of the registration of the session it named,
+    // which a test that claimed a role makes before it ends: the claims are the bus's and outlive
+    // this listener's fixture, so neither a reseed nor a reset removes them.
+    if (request.method === "DELETE" && url.pathname.startsWith("/__fixture/role-claims/")) {
+      const role = decodeURIComponent(url.pathname.slice("/__fixture/role-claims/".length));
+      if (busServers.length === 0) {
+        return Response.json(
+          { error: "this listener has no bus: DISPATCH_E2E_NATS_URLS is unset" },
+          { status: 409 }
+        );
+      }
+      const { roles, sessions } = await roleBuckets();
+      const released = await claimedHolder(roles, role);
+      if (released !== "") {
+        await roles.delete(role);
+        await sessions.delete(released);
+      }
+      return Response.json({ released, role });
     }
     // The registry's entries, replaced whole; the daemon is the real bucket's only writer.
     if (request.method === "PUT" && url.pathname === "/__fixture/legion-agents") {
@@ -584,12 +729,20 @@ const server = Bun.serve({
       return Response.json({ state: state.legionRegistry });
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/lists") {
-      const body = (await request.json()) as { state?: ListsState };
+      const body = (await request.json()) as { retry_after_seconds?: number; state?: ListsState };
       if (body.state === undefined || !LISTS_STATES.includes(body.state)) {
         return Response.json({ error: "state must be ok, refilling or down" }, { status: 400 });
       }
+      const retryAfter = body.retry_after_seconds ?? LISTENER_REFILLING_RETRY_AFTER_SECONDS;
+      if (!Number.isInteger(retryAfter) || retryAfter < 1) {
+        return Response.json(
+          { error: "retry_after_seconds must be a whole number of seconds, 1 or more" },
+          { status: 400 }
+        );
+      }
       state.lists = body.state;
-      return Response.json({ state: state.lists });
+      state.listsRetryAfterSeconds = retryAfter;
+      return Response.json({ retry_after_seconds: retryAfter, state: state.lists });
     }
     if (request.method === "PATCH" && url.pathname.startsWith("/__fixture/sessions/")) {
       const sessionID = decodeURIComponent(url.pathname.slice("/__fixture/sessions/".length));
@@ -598,7 +751,7 @@ const server = Bun.serve({
         record?: SessionRecord;
         send_delay_ms?: number;
         send_state?: ConnectionState;
-        send_status?: 200 | 404;
+        send_status?: SendStatus;
         state?: SessionState;
         stopped?: boolean;
         last_seen?: number;
@@ -611,8 +764,8 @@ const server = Bun.serve({
         else state.liveSessions.delete(sessionID);
       }
       if (body.send_status !== undefined) {
-        if (body.send_status !== 200 && body.send_status !== 404) {
-          return Response.json({ error: "send_status must be 200 or 404" }, { status: 400 });
+        if (!SEND_STATUSES.includes(body.send_status)) {
+          return Response.json({ error: "send_status must be 200, 404 or 503" }, { status: 400 });
         }
         state.sendStatuses.set(sessionID, body.send_status);
       }
@@ -695,7 +848,7 @@ const server = Bun.serve({
       return Response.json(state.sentMessages);
     }
     if (request.method === "GET" && url.pathname === "/v1/interests/") {
-      if (state.lists !== "ok") return listRefusal(state.lists);
+      if (state.lists !== "ok") return listRefusal(state.lists, state.listsRetryAfterSeconds);
       return Response.json(state.interests);
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/interests") {

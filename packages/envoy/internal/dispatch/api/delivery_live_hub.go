@@ -11,7 +11,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
 
@@ -38,11 +40,12 @@ type deliverySubscription struct {
 
 // Subscribe answers one subscribe frame on conn, and reports whether conn's sub now follows the
 // frame's view. The socket has refused a frame with no sub (subscribeLive). A view the matching GET
-// route would refuse is an INVALID_QUERY error frame naming the sub, a malformed view or a resume
-// seq that is not a decimal change position INVALID_FRAME, and a sub id conn already holds is then
-// left as it was. Otherwise conn's sub follows the view from now on: it is answered a snapshot, or,
-// on a resume, the delta against the revisions the page holds (a snapshot when the page applied
-// nothing since before the oldest kept change, OldestChangeSeq() - 1), and later only the deltas.
+// route would refuse is an error frame naming the sub and carrying the code that route answers; a
+// malformed view, or a resume seq that is not a decimal change position, is INVALID_FRAME; and a
+// sub id conn already holds is then left as it was. Otherwise conn's sub follows the view from now
+// on: it is answered a snapshot, or, on a resume, the delta against the revisions the page holds
+// (a snapshot when the page applied nothing since before the oldest kept change,
+// OldestChangeSeq() - 1), and later only the deltas.
 // Right after that first answer, or where it would be for a resume with nothing to catch up, conn
 // is sent the freshness verdict the hub knows: the hub sends its open pages a verdict only when it
 // changes, and a page keeps the last one it was sent, so a socket that was down at a change, or a
@@ -172,9 +175,14 @@ func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 	}
 }
 
-// The channels the delivery hub listens on. delivery_changes carries no payload and is notified as
-// a delivery_changes row commits (migration 0100); delivery_freshness carries the settings row's
-// freshness columns as JSON (0100).
+// The channels the delivery hub listens on, all on its listener's one connection (startLocked).
+// delivery_changes carries no payload and is notified as a delivery_changes row commits (migration
+// 0100); delivery_freshness carries the settings row's freshness columns as JSON (0100);
+// legion.StateChannel carries a project key and is notified after each read of that project's
+// Legion daemon and after each write of its Legion setting (settings_legion.go), which with
+// Dispatch's own events is all that moves a Legion board; and workflowstore.RunsChannel carries
+// an issue key and is notified as a write of one of that issue's runs commits, which with the
+// project's notifies on legion.StateChannel is all that moves the issue's legion_issue view.
 const (
 	deliveryChangesChannel   = "delivery_changes"
 	deliveryFreshnessChannel = "delivery_freshness"
@@ -185,14 +193,16 @@ const (
 // was busy when it came.
 const deliveryHubFeedBuffer = 1024
 
-// deliveryHub keeps every open Delivery and Pipeline page current (LEGION-690). It learns of a
-// delivery change from Postgres (LISTEN delivery_changes and delivery_freshness, on one connection
-// of its own, pglisten.Listener) and of a committed event from the event stream relay's feed, the
-// live paths' one reader of the event log; marks dirty only the views the change can touch;
-// recomputes each dirty view once per burst, one recompute at a time, as the GET routes'
-// population read and pure compute; re-runs the compute alone, reading nothing, when something
-// leaves a preset window; and sends each subscriber only the keys whose revision differs from
-// what it holds.
+// deliveryHub keeps every open Delivery and Pipeline page, and every open view of the Legion state
+// of a project or an issue, current (LEGION-690). It learns of a delivery change from Postgres
+// (LISTEN delivery_changes and delivery_freshness, on one connection of its own,
+// pglisten.Listener), of a read of a Legion daemon and of a write of a run on the same connection
+// (legion.StateChannel, workflowstore.RunsChannel), and of a committed event from the event stream
+// relay's feed, the live paths' one reader of the event log; marks dirty only the views the change
+// can touch; recomputes each dirty view once per burst, one recompute at a time, as the GET
+// routes' population read and pure compute; re-runs the compute alone, reading nothing, when
+// something leaves a preset window; and sends each subscriber only the keys whose revision
+// differs from what it holds.
 //
 // Each run of the hub is a generation (hubGeneration): the first Subscribe of a hub with no sub
 // starts one, and the drop of its last sub stops it, at once, with no grace period, so a process
@@ -345,15 +355,22 @@ type deliverySub struct {
 }
 
 // deliveryLiveSpec is a subscribed view, resolved: its kind, its window (a preset's length in days,
-// or a custom range), its query without from and to, a pipeline view's pinned at, and the
-// canonical key identical views share.
+// or a custom range), its query without from and to, a pipeline view's pinned at, a Legion view's
+// project, a legion_issue view's issue, and the canonical key identical views share.
 type deliveryLiveSpec struct {
 	kind     string
 	preset   int
 	from, to time.Time
 	query    url.Values
 	at       *time.Time
-	key      string
+	// project is the project whose daemon a Legion view (viewReadsLegion) reads: the one a legion
+	// view's board shows, and the one a legion_issue view's key names (parseLegionIssueLiveView).
+	// A delivery view names none.
+	project string
+	// issue is the issue a legion_issue view shows (DeliveryLiveView.Issue), which a write of one
+	// of its runs marks (dirtyLegionIssue); every other kind names none.
+	issue string
+	key   string
 }
 
 // deliveryFreshnessHeard is the freshness row as the hub last heard it, and the population's
@@ -439,7 +456,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	listener := &pglisten.Listener{
 		Owner:       "dispatch",
 		Dial:        h.dial,
-		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel},
+		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel, legion.StateChannel, workflowstore.RunsChannel},
 		ListenIdle:  h.listenIdle,
 		PingTimeout: h.pingTimeout,
 		Backoff:     h.backoff,
@@ -485,13 +502,70 @@ func (h *deliveryHub) note(n deliveryHubNote) {
 }
 
 // onNotify routes one notification to g, on the listener's goroutine: a change wakes the intake's
-// catch-up of the change log, and a freshness row is applied at once, reading nothing.
+// catch-up of the change log, a freshness row is applied at once, reading nothing, a read of a
+// Legion daemon or a write of its setting marks that project's Legion views, and a write of a run
+// marks the legion_issue views of its issue.
 func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	switch channel {
 	case deliveryChangesChannel:
 		signal(g.wakeChanges)
 	case deliveryFreshnessChannel:
 		h.applyFreshness(g, payload)
+	case legion.StateChannel:
+		h.dirtyLegionProject(g, payload)
+	case workflowstore.RunsChannel:
+		h.dirtyLegionIssue(g, payload)
+	}
+}
+
+// dirtyLegionProject marks every Legion view of the project a read of a Legion daemon just recorded,
+// or whose Legion setting a write just named or removed: its board, and the legion_issue view of
+// each of its issues. The sampler announces every read, failed or not: the header and an issue's
+// read carry the read itself, so a view whose daemon stopped answering moves as surely as one
+// whose issues did. A setting's write moves every such view too: the board appears or is refused,
+// and an issue's view says whether the project names a daemon (configured).
+func (h *deliveryHub) dirtyLegionProject(g *hubGeneration, project string) {
+	now := h.clock.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, view := range g.views {
+		if view.spec.classes().reads == viewReadsLegion && view.spec.project == project {
+			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+		}
+	}
+}
+
+// dirtyLegionIssue marks the legion_issue views of the issue a write of one of its runs just
+// committed for, and nothing else: no other view shows an issue's runs, and a run's write appends
+// no event the intake would hear (workflowstore.RunsChannel).
+func (h *deliveryHub) dirtyLegionIssue(g *hubGeneration, issue string) {
+	now := h.clock.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, view := range g.views {
+		if view.spec.issue != "" && view.spec.issue == issue {
+			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+		}
+	}
+}
+
+// dirtyLegionViews marks every Legion view (viewReadsLegion), the boards and the legion_issue
+// views alike, at each connection of g's listener, the first included (intake). What a Legion
+// view shows of a daemon's state and of an issue's runs reaches the hub on a notification alone
+// (legion.StateChannel, workflowstore.RunsChannel), which Postgres sends only to a connection that
+// listens: one sent while the listener was down, or before its first LISTEN while a view's first
+// read ran, is lost, and the catch-up of the change log marks only the views a delivery change
+// touches, which no Legion view is (touchedBy). So each is read again, and its read answers
+// whatever the lost notification announced; one that finds nothing moved sends nothing, since the
+// board's computed_at is in no delta and an issue's body has no computed time.
+func (h *deliveryHub) dirtyLegionViews(g *hubGeneration) {
+	now := h.clock.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, view := range g.views {
+		if view.spec.classes().reads == viewReadsLegion {
+			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+		}
 	}
 }
 

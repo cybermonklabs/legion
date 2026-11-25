@@ -1,4 +1,4 @@
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
 import {
   focusManager,
@@ -12,6 +12,8 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
+import { ownReplies } from "../../__tests__/own-replies";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -22,6 +24,7 @@ import {
   NetworkError,
   RequestTimeoutError,
 } from "../../api/client";
+import { userAgentStateQuery } from "../../api/queries";
 import type {
   Agent,
   BroadcastCreated,
@@ -32,16 +35,22 @@ import type {
   MessageDelivery,
   MessageDeliveryMode,
   MessageRead,
+  UserAgentState,
   UserAgentStates,
 } from "../../api/types";
 import { AuthGate } from "../../app";
 import type { BroadcastRequest } from "./broadcast-plan";
 import { messageDeliveryFields } from "./delivery-fixture";
-// The live view is a lazy route of the app. Its module's first compile is not what a wait is
-// for, so the module is loaded here, with the test file, and no wait measures that load.
+// The live view and the broadcast page are lazy routes of the app, and the margin a lazy part of
+// its shell (`MarginColumn.tsx`). No row here reads the margin or a broadcast page, and a load
+// that a row starts and ends before lands in a later row, where React's report of it is outside
+// `act`. So each module is loaded here, with the test file, and no row starts or waits for it.
 import "../agent-view/AgentConversationPage";
+import "../margin/Margin";
+import "./BroadcastPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
 import { orderAgents } from "./AgentsPage";
@@ -82,35 +91,58 @@ async function refuseBroadcast(): Promise<never> {
 // fixture frozen at an absolute date would age out of every retry assertion.
 const recentAttemptAt = new Date(Date.now() - 60_000).toISOString();
 
-const now = Date.now();
-const agents = [
-  {
-    capabilities: ["aside", "btw"],
-    dir: "/workspaces/planner",
-    host: "build-host",
-    last_activity: new Date(now - 60_000).toISOString(),
-    last_seen: now - 30_000,
-    machine_id: "build-host",
-    open_asks: 2,
-    roles: ["planner"],
-    session_id: "planner-session",
-    state: "running",
-    title: "Planner",
-  },
-  {
-    capabilities: ["aside"],
-    dir: "/workspaces/reviewer",
-    host: "review-host",
-    last_activity: new Date(now - 10 * 60_000).toISOString(),
-    last_seen: now - 5 * 60_000,
-    machine_id: "review-host",
-    open_asks: 0,
-    roles: [],
-    session_id: "reviewer-session",
-    state: "running",
-    title: "Reviewer",
-  },
-] satisfies Agent[];
+/**
+ * When the row running now began, which the sessions and asks below count back from. The page
+ * groups a session by its own clock as it draws (`agentGroup`: Active is Dispatch activity inside
+ * two minutes), so a fixture dated once, as this file loads, ages while the file runs: a loaded
+ * run reaches some rows more than a minute in, where the Planner's activity "a minute ago" is
+ * past two minutes and the Planner reads as Idle. So each row dates them again: `agents` here,
+ * and `inbox` in a hook of its own beside it, which runs after this one. A time whose reading a
+ * row asserts to the minute - a `seen` label, or the two minutes that keep a session Active - is
+ * dated with `ago` as the row builds it instead, as `staleAgent` and `deployerAgent` are.
+ */
+let now: number;
+let agents: ReturnType<typeof datedAgents>;
+beforeEach(() => {
+  now = Date.now();
+  agents = datedAgents();
+});
+
+/** `ms` before this moment. */
+function ago(ms: number): number {
+  return Date.now() - ms;
+}
+
+function datedAgents() {
+  return [
+    {
+      capabilities: ["aside", "btw"],
+      dir: "/workspaces/planner",
+      host: "build-host",
+      last_activity: new Date(now - 60_000).toISOString(),
+      last_seen: now - 30_000,
+      machine_id: "build-host",
+      open_asks: 2,
+      roles: ["planner"],
+      session_id: "planner-session",
+      state: "running",
+      title: "Planner",
+    },
+    {
+      capabilities: ["aside"],
+      dir: "/workspaces/reviewer",
+      host: "review-host",
+      last_activity: new Date(now - 10 * 60_000).toISOString(),
+      last_seen: now - 5 * 60_000,
+      machine_id: "review-host",
+      open_asks: 0,
+      roles: [],
+      session_id: "reviewer-session",
+      state: "running",
+      title: "Reviewer",
+    },
+  ] satisfies Agent[];
+}
 
 /** The agent list as a plan reads it after a read that succeeded: it says who is absent. */
 function currentList(listed: readonly Agent[]): BroadcastRoster {
@@ -120,44 +152,47 @@ function currentList(listed: readonly Agent[]): BroadcastRoster {
 // The signed-in reader is `alice`, and a card's first number is their own work: these rows wait
 // on them, which is what the server answers in `waiting_on_person` for an ask nobody has handed
 // on whose issue is theirs.
-const inbox: InboxRow[] = [1, 2].map((number) => ({
-  anchor: null,
-  answer: null,
-  artifact_id: null,
-  asked_of: null,
-  asked_of_at: null,
-  asked_of_by: null,
-  author: { id: "planner-session", kind: "session" },
-  block_id: null,
-  created_at: new Date(now - 60_000).toISOString(),
-  edited_at: null,
-  id: `ask-${number}`,
-  issue: { assignee: "alice", key: "CORE-1", title: "Core work" },
-  issue_key: "CORE-1",
-  waiting_on_person: "alice",
-  kind: "question",
-  last_reply: null,
-  multiple: false,
-  opened_event_id: number,
-  options: [],
-  thread: {
-    answers: [],
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-  },
-  priority: null,
-  snoozed_until: null,
-  question: "What should happen next?",
-  state: "open",
-  waiting_on: "human",
-  urgency: "med",
-}));
+let inbox: InboxRow[];
+beforeEach(() => {
+  inbox = [1, 2].map((number) => ({
+    anchor: null,
+    answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    author: { id: "planner-session", kind: "session" },
+    block_id: null,
+    created_at: new Date(now - 60_000).toISOString(),
+    edited_at: null,
+    id: `ask-${number}`,
+    issue: { assignee: "alice", key: "CORE-1", title: "Core work" },
+    issue_key: "CORE-1",
+    waiting_on_person: "alice",
+    kind: "question",
+    last_reply: null,
+    multiple: false,
+    opened_event_id: number,
+    options: [],
+    thread: {
+      answers: [],
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_status: null,
+      route_holder: null,
+      route_status_reason: null,
+    },
+    priority: null,
+    snoozed_until: null,
+    question: "What should happen next?",
+    state: "open",
+    waiting_on: "human",
+    urgency: "med",
+  }));
+});
 
 function message(body: string, overrides: Partial<Message> = {}): Message {
   return {
@@ -166,6 +201,7 @@ function message(body: string, overrides: Partial<Message> = {}): Message {
     broadcast_id: null,
     created_at: "2026-09-14T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id: "message-1",
     in_reply_to: null,
     issue_key: null,
@@ -183,6 +219,11 @@ const ANSWERED_PIN_AT = "2026-09-14T12:00:00Z";
 function LocationProbe() {
   const location = useLocation();
   return <div data-testid="location-search">{location.search}</div>;
+}
+
+/** The viewer's agent state of `session` as the page holds it. */
+function storedState(queryClient: QueryClient, session: string): UserAgentState | undefined {
+  return queryClient.getQueryData<UserAgentStates>(userAgentStateQuery().queryKey)?.[session];
 }
 
 function renderAgents({
@@ -265,21 +306,35 @@ function renderAgents({
     session_id: "planner-session",
     state: "sent",
   });
-  const getMyAgentState = spyOn(api, "getMyAgentState").mockResolvedValue(agentState);
+  // Dispatch's store of the viewer's agent state: a read answers it as it stands, and a write
+  // changes it, so a read asked after a write - the one a write's answer asks again for a read it
+  // cancelled (`replaceQueryData`) - answers the write. While a row holds the reads
+  // (`holdAgentStateReads`), each waits, so what the page shows of a write is what it stored of
+  // the write's own answer.
+  const served: UserAgentStates = { ...agentState };
+  let heldReads: (() => void)[] | undefined;
+  const getMyAgentState = spyOn(api, "getMyAgentState").mockImplementation(() => {
+    if (heldReads === undefined) return Promise.resolve({ ...served });
+    const { promise, resolve } = Promise.withResolvers<UserAgentStates>();
+    heldReads.push(() => resolve({ ...served }));
+    return promise;
+  });
   // Dispatch answers a state write with the session's whole state: the marks the write set over
   // the state it held, with `pinned_at` added by a pin and dropped by an unpin, and nothing left
   // unread. A mark the body leaves out rides as a null the write does not read.
   const putAgentState = answerAgentStates().mockImplementation(async (session, input) => {
     const { cleared_before: cleared, pinned, read_through: read } = input;
-    const { pinned_at: held, ...rest } = agentState[session] ?? {};
+    const { pinned_at: held, ...rest } = served[session] ?? {};
     const pinnedAt = pinned == null ? held : pinned ? ANSWERED_PIN_AT : undefined;
-    return {
+    const state = {
       ...rest,
       ...(cleared == null ? {} : { cleared_before: cleared }),
       ...(read == null ? {} : { read_through: read }),
       ...(pinnedAt === undefined ? {} : { pinned_at: pinnedAt }),
       unread_replies: 0,
     };
+    served[session] = state;
+    return state;
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
@@ -299,12 +354,28 @@ function renderAgents({
     getBroadcast,
     getInbox,
     getMyAgentState,
+    /** Holds every agent-state read from here on, and answers the function that lets them go:
+     *  it answers each with the state as it stands then, inside an awaited `act`, since each
+     *  answer redraws the page. */
+    holdAgentStateReads: (): (() => Promise<void>) => {
+      heldReads ??= [];
+      return () =>
+        act(async () => {
+          const answers = heldReads ?? [];
+          heldReads = undefined;
+          for (const answer of answers) answer();
+        });
+    },
     listAgentMessages,
     listAgents,
     listIssues,
     listProjects,
     putAgentState,
     queryClient,
+    /** Changes what Dispatch holds of `session`, as another of the person's devices would. */
+    serveAgentState: (session: string, state: UserAgentState) => {
+      served[session] = state;
+    },
     restore: () => {
       getBroadcast.mockRestore();
       getMyAgentState.mockRestore();
@@ -323,6 +394,14 @@ function renderAgents({
     view,
     whoAmI,
   };
+}
+
+/** Reads the agent list again, as the poller's next tick would, inside `act`: the read's answer
+ *  re-renders the page, and the update lands where the test can see it. */
+async function refetchAgents(queryClient: QueryClient): Promise<void> {
+  await act(async () => {
+    await queryClient.refetchQueries({ queryKey: ["agents"] });
+  });
 }
 
 function card(region: HTMLElement, name: string): HTMLElement {
@@ -384,7 +463,9 @@ function groupCount(region: HTMLElement, group: AgentGroup): string {
 
 test("Agents lists live session activity and capability-aware actions", async () => {
   const user = userEvent.setup();
-  const page = renderAgents();
+  const page = renderAgents({
+    listedAgents: [{ ...agents[0], last_seen: ago(30_000) }, agents[1]],
+  });
 
   try {
     await screen.findByRole("heading", { name: "Agents" });
@@ -421,7 +502,7 @@ test("Agents lists live session activity and capability-aware actions", async ()
 test("Agents lists an unresponsive session with its state, neither dropped nor drawn as running", async () => {
   const stalled = {
     ...agents[0],
-    last_seen: now - 6 * 60_000,
+    last_seen: ago(6 * 60_000),
     session_id: "stalled-session",
     state: "unresponsive",
     title: "Stalled",
@@ -481,6 +562,42 @@ test("an agent card sends a plain message in the mode the session takes", async 
     const silent = card(region, "Deaf");
     await expand(user, silent, "Deaf");
     expect(within(silent).getByText("Takes no messages")).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A capability that is no delivery mode carries no message, so the card draws none as one: a
+// session listing only such capabilities takes no messages, as one listing none does.
+test("an agent card lists only the delivery modes the session takes", async () => {
+  const user = userEvent.setup();
+  const unknown = {
+    ...agents[1],
+    capabilities: ["future-capability"],
+    session_id: "unknown-session",
+    title: "Unknown",
+  };
+  const mixed = {
+    ...agents[1],
+    capabilities: ["future-capability", "aside"],
+    session_id: "mixed-session",
+    title: "Mixed",
+  };
+  const page = renderAgents({ listedAgents: [...agents, unknown, mixed] });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const silent = card(region, "Unknown");
+    await expand(user, silent, "Unknown");
+    expect(within(silent).getByText("Takes no messages")).toBeTruthy();
+    expect(within(silent).queryByText("future-capability")).not.toBeInTheDocument();
+
+    const listening = card(region, "Mixed");
+    await expand(user, listening, "Mixed");
+    expect(within(listening).getByText("Aside")).toBeTruthy();
+    expect(within(listening).queryByText("Takes no messages")).not.toBeInTheDocument();
+    expect(within(listening).queryByText("future-capability")).not.toBeInTheDocument();
   } finally {
     page.view.unmount();
     page.restore();
@@ -662,7 +779,7 @@ function session(overrides: Partial<Agent> & Pick<Agent, "session_id">): Agent {
   };
 }
 
-const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
+const minutesAgo = (minutes: number) => new Date(ago(minutes * 60_000)).toISOString();
 
 test("orderAgents puts who needs you first, then open asks, then Dispatch recency with silent sessions last", () => {
   const needsYou = session({ last_activity: minutesAgo(30), open_asks: 1, session_id: "needy" });
@@ -821,21 +938,21 @@ test("Agents lists each session in its group, orders the rows inside one, and ke
   const olderActivityButNewerHeartbeat: Agent = {
     ...agents[1],
     last_activity: minutesAgo(5),
-    last_seen: now - 1_000,
+    last_seen: ago(1_000),
     session_id: "z-session",
     title: "Zulu",
   };
   const newerActivityButOlderHeartbeat: Agent = {
     ...agents[1],
     last_activity: minutesAgo(1),
-    last_seen: now - 9 * 60_000,
+    last_seen: ago(9 * 60_000),
     session_id: "a-session",
     title: "Alpha",
   };
   const noActivity: Agent = {
     ...agents[1],
     last_activity: null,
-    last_seen: now,
+    last_seen: Date.now(),
     session_id: "none-session",
     title: "None",
   };
@@ -865,7 +982,7 @@ test("Agents lists each session in its group, orders the rows inside one, and ke
     expect(groupCount(region, "active")).toBe("(1)");
     expect(groupCount(region, "idle")).toBe("(2)");
     expect(groupCount(region, "quiet")).toBe("(0)");
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     expect(titles()).toEqual(["Planner", "Alpha", "Zulu", "None"]);
 
     // Collapsing a group hides its rows and no others, and opening it puts them back.
@@ -944,10 +1061,26 @@ test("Agents keeps a pinned session in its own group, first among its rows", asy
     expect(titles(region)).toEqual(["Planner", "Silent", "Reviewer"]);
     expect(groupCount(region, "idle")).toBe("(2)");
 
+    const releaseReads = page.holdAgentStateReads();
+    // The reads that follow the write wait, so what the row sees is what the page stored of
+    // the write's own answer, not what a later read brought.
+    // Another of the person's devices clears Silent's conversation first, so Dispatch's answer to
+    // the unpin carries that Clear, which the press does not draw.
+    page.serveAgentState("silent-session", {
+      cleared_before: "2026-09-14T00:30:00Z",
+      pinned_at: "2026-09-14T00:00:00Z",
+      unread_replies: 0,
+    });
     await user.click(within(region).getByRole("button", { name: "Unpin Silent" }));
     // Unpinned it stays in Idle, behind the Reviewer, whose activity is the newer of the two.
     await waitFor(() => expect(titles(region)).toEqual(["Planner", "Reviewer", "Silent"]));
     expect(groupCount(region, "idle")).toBe("(2)");
+    await waitFor(() =>
+      expect(storedState(page.queryClient, "silent-session")?.cleared_before).toBe(
+        "2026-09-14T00:30:00Z"
+      )
+    );
+    await releaseReads();
     expect(page.putAgentState.mock.calls.map(([session, input]) => [session, input])).toEqual([
       ["silent-session", { pinned: false }],
     ]);
@@ -957,18 +1090,21 @@ test("Agents keeps a pinned session in its own group, first among its rows", asy
   }
 });
 
-/** Heard from eleven minutes ago, its last Dispatch activity half an hour old: Quiet. */
-const stale: Agent = {
-  ...agents[1],
-  last_activity: new Date(now - 30 * 60_000).toISOString(),
-  last_seen: now - 11 * 60_000,
-  session_id: "stale-session",
-  title: "Stale",
-};
+/** Heard from eleven minutes ago, its last Dispatch activity half an hour old: Quiet. Dated as a
+ *  row builds it, since a row reads its `seen 11 minutes ago`. */
+function staleAgent(): Agent {
+  return {
+    ...agents[1],
+    last_activity: minutesAgo(30),
+    last_seen: ago(11 * 60_000),
+    session_id: "stale-session",
+    title: "Stale",
+  };
+}
 
 test("Agents puts a session unseen for ten minutes in Quiet, which collapses and opens", async () => {
   const user = userEvent.setup();
-  const page = renderAgents({ listedAgents: [stale, ...agents] });
+  const page = renderAgents({ listedAgents: [staleAgent(), ...agents] });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
@@ -1011,7 +1147,7 @@ test("Agents keeps a pinned session unseen for ten minutes in Quiet", async () =
   const user = userEvent.setup();
   const page = renderAgents({
     agentState: { "stale-session": { pinned_at: "2026-09-14T00:00:00Z", unread_replies: 0 } },
-    listedAgents: [...agents, stale],
+    listedAgents: [...agents, staleAgent()],
   });
 
   try {
@@ -1038,7 +1174,7 @@ test("Agents keeps a pinned session unseen for ten minutes in Quiet", async () =
 test("Agents lists a session with an open ask under Needs you alone, however long it has been silent", async () => {
   const user = userEvent.setup();
   const silentForHours: Agent = {
-    ...stale,
+    ...staleAgent(),
     last_activity: null,
     last_seen: now - 2 * 60 * 60_000,
   };
@@ -1120,10 +1256,18 @@ test("Agents pins a card by writing the person's agent state, not a browser pref
   try {
     const pin = await screen.findByRole("button", { name: "Pin Planner" });
     expect(pin).toHaveAttribute("aria-pressed", "false");
+    const releaseReads = first.holdAgentStateReads();
+    // The reads that follow the write wait, so what the row sees is what the page stored of
+    // the write's own answer, not what a later read brought.
     await user.click(pin);
 
     const unpin = await screen.findByRole("button", { name: "Unpin Planner" });
     expect(unpin).toHaveAttribute("aria-pressed", "true");
+    // The press draws the pin at the browser's time; the answer carries Dispatch's.
+    await waitFor(() =>
+      expect(storedState(first.queryClient, "planner-session")?.pinned_at).toBe(ANSWERED_PIN_AT)
+    );
+    await releaseReads();
     expect(within(unpin.closest("article") ?? unpin).getByRole("heading").textContent).toBe(
       "Planner"
     );
@@ -1249,6 +1393,141 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
   } finally {
     page.view.unmount();
     page.restore();
+  }
+});
+
+/** Opens a row's issue picker and picks `issue`, the empty value being No issue. */
+async function pickIssue(user: UserEvent, row: HTMLElement, issue: string): Promise<void> {
+  await user.click(within(row).getByRole("button", { name: "Choose issue" }));
+  await user.selectOptions(await within(row).findByRole("combobox", { name: "Issue" }), issue);
+}
+
+// An Agents row's composer is one box for its session, whose address the issue picker moves. The
+// picker is the reader's own control, so a message Dispatch refused goes with the pick: the draft
+// takes the issue's mention at once, and its Retry comments on the issue, a new write under a key
+// of its own, rather than sending the direct message again.
+test("a direct message refused on an Agents row goes with the issue pick, and its Retry comments there", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ issues: [coreIssue] });
+  page.createAgentMessage.mockRejectedValueOnce(
+    new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+  );
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    const composer = within(planner).getByRole("form", { name: "Comment composer" });
+    await type(user, field, "Status please");
+    // The composer's own form submit, which user-event has no form for.
+    fireEvent.submit(composer);
+    await within(planner).findByText("Couldn't send — Dispatch refused the message");
+
+    await pickIssue(user, planner, "CORE-1");
+    await waitFor(() => expect(field.value).toBe("@Planner Status please"));
+    expect(within(planner).queryByText(/This message was written/)).not.toBeInTheDocument();
+    await user.click(within(planner).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(page.createComment).toHaveBeenCalledTimes(1));
+    expect(page.createComment.mock.calls.map(([issue, input]) => [issue, input.body])).toEqual([
+      ["CORE-1", "@Planner Status please"],
+    ]);
+    expect(page.createAgentMessage).toHaveBeenCalledTimes(1);
+    expect(page.createComment.mock.calls[0]?.[2].key).not.toBe(
+      page.createAgentMessage.mock.calls[0]?.[2].key
+    );
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+/** A picture pasted into a row's message. */
+const shot = new File(["bytes"], "shot.png", { type: "image/png" });
+
+// A file pasted into an Agents row is uploaded to the address the row was on, as a message is
+// sent to it, and its reference belongs to the draft it was pasted into. The picker is the
+// reader's own control, so that draft goes with a pick, and so does a refused upload: its Retry
+// is offered at once, uploads to the issue the file was pasted for - the press carries it - and
+// adds the file's reference to the message the row now writes.
+test("an upload refused on an Agents row's issue goes with the pick, and its Retry joins the message there", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ issues: [coreIssue] });
+  const uploadArtifact = spyOn(api, "uploadArtifact")
+    .mockRejectedValueOnce(
+      new ApiError(413, { code: "FILE_TOO_LARGE", error: "That file is too large." })
+    )
+    .mockResolvedValue({
+      artifact: { name: "shot.png", slug: "shot-png" },
+      version: { number: 1 },
+    } as never);
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await pickIssue(user, planner, "CORE-1");
+    await waitFor(() => expect(field.value).toBe("@Planner"));
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(field, { clipboardData: { files: [shot] } });
+    await within(planner).findByText("That file is too large.");
+
+    await pickIssue(user, planner, "");
+    await waitFor(() => expect(field.value).toBe(""));
+    expect(within(planner).queryByText(/This file was pasted/)).not.toBeInTheDocument();
+    await user.click(within(planner).getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(field.value).toBe("![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
+    );
+    expect(uploadArtifact.mock.calls.map(([owner]) => owner)).toEqual([
+      { issue: "CORE-1" },
+      { issue: "CORE-1" },
+    ]);
+  } finally {
+    page.view.unmount();
+    page.restore();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// A file's reference belongs to the draft it was pasted into, and an issue pick is the reader's
+// own move, which that draft goes with. One that lands after the pick joins the message at once,
+// naming the issue the file went to, not the address the row writes to now.
+test("an upload that lands after an Agents row's issue pick joins the message at once, naming its issue", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ issues: [coreIssue] });
+  const stored = Promise.withResolvers<never>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockReturnValue(stored.promise);
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await pickIssue(user, planner, "CORE-1");
+    await waitFor(() => expect(field.value).toBe("@Planner"));
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(field, { clipboardData: { files: [shot] } });
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
+
+    await pickIssue(user, planner, "");
+    await waitFor(() => expect(field.value).toBe(""));
+    act(() =>
+      stored.resolve({
+        artifact: { name: "shot.png", slug: "shot-png" },
+        version: { number: 1 },
+      } as never)
+    );
+    await waitFor(() =>
+      expect(field.value).toBe("![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
+    );
+    expect(within(planner).queryByText(/is uploaded/)).not.toBeInTheDocument();
+    expect(uploadArtifact).toHaveBeenCalledTimes(1);
+  } finally {
+    page.view.unmount();
+    page.restore();
+    uploadArtifact.mockRestore();
   }
 });
 
@@ -1679,9 +1958,11 @@ test("an agent's unread reply shows on its row and in the navigation until its c
     await expect(screen.findByRole("link", { name: "New reply 1" })).resolves.toBeTruthy();
     expect(within(planner).queryByText("At /dash.")).not.toBeInTheDocument();
 
-    await user.click(
-      await within(planner).findByRole("button", { name: "New reply 1 from Planner" })
-    );
+    const opener = await within(planner).findByRole("button", { name: "New reply 1 from Planner" });
+    const releaseReads = page.holdAgentStateReads();
+    // The reads that follow the write wait, so what the row sees is what the page stored of
+    // the write's own answer, not what a later read brought.
+    await user.click(opener);
     await expect(within(planner).findByText("At /dash.")).resolves.toBeTruthy();
     await waitFor(() =>
       expect(page.putAgentState).toHaveBeenCalledWith(
@@ -1693,6 +1974,8 @@ test("an agent's unread reply shows on its row and in the navigation until its c
     await waitFor(() =>
       expect(within(planner).queryByRole("button", { name: /unread/ })).not.toBeInTheDocument()
     );
+    expect(screen.queryByRole("link", { name: /^New repl/ })).not.toBeInTheDocument();
+    await releaseReads();
     expect(screen.queryByRole("link", { name: /^New repl/ })).not.toBeInTheDocument();
   } finally {
     page.view.unmount();
@@ -1840,6 +2123,9 @@ test("Agents Clear hides every exchange up to now for this viewer and persists t
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     await expand(user, planner, "Planner");
     await expect(within(planner).findByText("Second question")).resolves.toBeTruthy();
+    const releaseReads = page.holdAgentStateReads();
+    // The reads that follow the write wait, so what the row sees is what the page stored of
+    // the write's own answer, not what a later read brought.
     await user.click(within(planner).getByRole("button", { name: "Clear conversation" }));
     // The cutoff is the newest visible message's own timestamp, so the Clear hides exactly what
     // was on screen whatever the browser clock says.
@@ -1862,6 +2148,7 @@ test("Agents Clear hides every exchange up to now for this viewer and persists t
     ).not.toBeInTheDocument();
     const cleared = within(planner).getByText(/^Cleared/);
     expect(cleared.querySelector("time")?.getAttribute("datetime")).toBe("2026-09-14T02:00:00Z");
+    await releaseReads();
     const showAnyway = within(planner).getByRole("button", { name: "Show anyway" });
 
     // Looking back does not touch the cutoff; the whole history is there, folded as usual.
@@ -2056,7 +2343,8 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
       name: "Conversation with Planner",
     });
     const replies = await within(conversation).findByRole("list", { name: "Replies" });
-    const answer = within(replies).getByText("Yes, it can.").closest("li");
+    // The reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    const answer = (await within(replies).findByText("Yes, it can.")).closest("li");
     if (answer === null) throw new Error("answer turn missing");
     expect(within(planner).getByRole("button", { name: "Choose issue" })).toBeTruthy();
 
@@ -2188,7 +2476,8 @@ test("a reply inherits the mode of the exchange's newest attempt even within one
       name: "Conversation with Planner",
     });
     const replies = await within(conversation).findByRole("list", { name: "Replies" });
-    const answer = within(replies).getByText("Yes, it can.").closest("li");
+    // The reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    const answer = (await within(replies).findByText("Yes, it can.")).closest("li");
     if (answer === null) throw new Error("answer turn missing");
     await user.click(within(answer).getByRole("button", { name: "Reply" }));
     await type(user, within(planner).getByRole("textbox", { name: "Comment" }), "Ship it.");
@@ -2446,8 +2735,8 @@ test("a broadcast composer labels a mode-mismatched recipient", () => {
   const [, reviewer] = agents;
   const composer = broadcastPlan(new Set([reviewer.session_id]), currentList([reviewer]), "btw");
 
-  // `packages/dispatch/AGENTS.md:36-41` and `features/conversation/delivery.ts:8-12` name this
-  // composer-facing label.
+  // `MODE_LABELS` (`features/conversation/delivery.ts`) names the mode in this composer-facing
+  // label; the server's stored diagnostic keeps the wire name.
   expect(composer.excluded[0]?.reason).toBe("does not advertise BTW");
 });
 
@@ -2671,7 +2960,7 @@ test("a restored broadcast shows the mode it re-sends, even after the selection'
 
     // The Reviewer now takes BTW too, so the selection's own mode would be BTW.
     page.listAgents.mockResolvedValue([planner, { ...reviewer, capabilities: ["aside", "btw"] }]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     const sends = await screen.findByRole("region", { name: "Sends" });
     await within(sends).findByText(`Could not send to 1 agent: ${BROADCAST_REFUSED}`);
     await user.click(within(sends).getByRole("button", { name: "Restore draft" }));
@@ -2714,7 +3003,7 @@ test("a selected agent that went away does not change what Restore draft re-send
     expect(posted(page, 0).session_ids).toEqual(["planner-session", "reviewer-session"]);
 
     page.listAgents.mockResolvedValue([planner]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await waitFor(() =>
       expect(
         within(region).queryByRole("checkbox", { name: "Select Reviewer for broadcast" })
@@ -2801,7 +3090,7 @@ test("a selected agent that came back is shown as not in the restored send, and 
 
     // The Reviewer now takes BTW: the live plan would reach it, the refused request does not.
     page.listAgents.mockResolvedValue([planner, { ...reviewer, capabilities: ["aside", "btw"] }]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await restoreDraft(1);
     expect(within(composer()).getByRole("heading", { level: 2 }).textContent).toBe(
       "Broadcast to 1 of 2 selected"
@@ -3054,7 +3343,7 @@ test("the broadcast composer shows a selected agent missing from a refilling lis
     // A current read without the Planner keeps it a recipient, named by its id with no reason:
     // it may be stopped rather than ended, which the server decides (INFRA-626).
     page.listAgents.mockResolvedValue([reviewer]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await waitFor(() => expect(chips()[0]).toBe("session:planner-… ✕"));
     expect(chips()[1]).toBe("Reviewer ✕");
     expect(within(composer()).getByRole("heading", { level: 2 }).textContent).toBe(
@@ -3063,7 +3352,7 @@ test("the broadcast composer shows a selected agent missing from a refilling lis
 
     // A refilling read keeps the Reviewer's row and says nothing of the Planner's absence.
     page.listAgents.mockRejectedValue(refillingError());
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await screen.findByTestId("agent-list-refilling");
     expect(chips()[0]).toEndWith(
       ` · couldn't check whether it is running. ${AGENT_LIST_REFILLING} ✕`
@@ -3217,9 +3506,10 @@ test("a broadcast Dispatch has not confirmed is tried again under its key until 
     expect(page.createBroadcast).toHaveBeenCalledTimes(1);
 
     for (const [index, wait] of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000].entries()) {
-      await tick(wait - 1);
+      // tick's last round moves the clock 1 ms: it stands at wait - 1 here, at wait after tick(0).
+      await tick(wait - 2);
       expect(page.createBroadcast).toHaveBeenCalledTimes(index + 1);
-      await tick(1);
+      await tick(0);
       expect(page.createBroadcast).toHaveBeenCalledTimes(index + 2);
       // 1 + 2 + 4 + 8 + 16 s is past the send's 30 s deadline: still the server's, not refused.
       if (index === 4) {
@@ -3562,6 +3852,8 @@ test("the header checkbox follows the filters and its count never hides a select
 
 test("the header checkbox selects a row a collapsed group hides, and the group says how many", async () => {
   const user = userEvent.setup();
+  // Planner spoke a minute before this row runs, so it is Active, outside the group it folds.
+  const planner: Agent = { ...agents[0], last_activity: minutesAgo(1) };
   // Seen half a minute ago and never heard from by Dispatch: Idle.
   const silent: Agent = {
     ...agents[0],
@@ -3570,7 +3862,7 @@ test("the header checkbox selects a row a collapsed group hides, and the group s
     session_id: "silent-session",
     title: "Silent",
   };
-  const page = renderAgents({ inboxRows: [], listedAgents: [agents[0], silent] });
+  const page = renderAgents({ inboxRows: [], listedAgents: [planner, silent] });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
@@ -3641,6 +3933,8 @@ test("a refused send's row shows its message formatted on one line, with its who
 // expanded in there. Nobody can see it, so a reply that arrives then must stay unread - in the
 // navigation and on the row - until the group opens and puts the conversation back on screen.
 test("an open row a collapsed group hides marks nothing read, and opening the group reads it", async () => {
+  // A body is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads in real time.
+  await warmMarkdownRenderer();
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const asked = exchange("m1", "Still there?", "2026-09-14T01:00:00Z");
@@ -3648,7 +3942,7 @@ test("an open row a collapsed group hides marks nothing read, and opening the gr
   // arrives and after it: the group holding it does not change under the hidden row.
   const page = renderAgents({
     inboxRows: [{ ...inbox[0], author: { id: "stale-session", kind: "session" }, id: "ask-stale" }],
-    listedAgents: [stale, ...agents],
+    listedAgents: [staleAgent(), ...agents],
     messages: [asked],
   });
 
@@ -3676,7 +3970,9 @@ test("an open row a collapsed group hides marks nothing read, and opening the gr
       },
     ]);
     page.getMyAgentState.mockResolvedValue({ "stale-session": { unread_replies: 1 } });
-    await page.queryClient.invalidateQueries();
+    await act(async () => {
+      await page.queryClient.invalidateQueries();
+    });
     await within(staleCard).findByText("Yes, still here.");
     // A mark the hidden row sent would go out from an effect a few microtasks on; give it a
     // task, so the assertion below is not merely early.
@@ -3757,7 +4053,9 @@ test("i on a row collapsed with its picker open goes back into the picker's sele
     await expand(user, planner, "Planner");
     expect(toggle).toHaveAttribute("aria-expanded", "true");
 
-    planner.focus();
+    act(() => {
+      planner.focus();
+    });
     // The key goes to the focused row; clicking it would collapse the card the key has to reach.
     await user.keyboard("i");
     const select = within(planner).getByRole("combobox", { hidden: true, name: "Issue" });
@@ -3783,7 +4081,7 @@ test("a registry poll that fails keeps every row and what it holds, and says so"
     await type(user, field, "Half a thought");
 
     page.listAgents.mockRejectedValue(new Error("Envoy listener unreachable"));
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     expect((await screen.findByRole("alert")).textContent).toBe(
       "Could not refresh agents: Envoy listener unreachable"
     );
@@ -3813,7 +4111,7 @@ test("a refilling registry keeps every row, says it is refilling, and ends no se
     await screen.findByRole("region", { name: "Replied, no longer connected" });
 
     page.listAgents.mockRejectedValue(refillingError());
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     expect((await screen.findByTestId("agent-list-refilling")).textContent).toBe(
       AGENT_LIST_REFILLING
     );
@@ -3835,7 +4133,7 @@ test("a refilling registry never says no agents are connected", async () => {
   try {
     await screen.findByText("No agents are connected.");
     page.listAgents.mockRejectedValue(refillingError());
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await screen.findByTestId("agent-list-refilling");
     expect(screen.queryByText("No agents are connected.")).toBeNull();
     expect(screen.queryByText(/Could not (load|refresh) agents/)).toBeNull();
@@ -3885,12 +4183,12 @@ test("a row back after its session left mid-send holds the send it left until it
     );
 
     page.listAgents.mockResolvedValue([agents[1]]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await waitFor(() =>
       expect(within(region).queryByRole("heading", { name: "Planner" })).not.toBeInTheDocument()
     );
     page.listAgents.mockResolvedValue(agents);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     const back = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     expect(back).not.toBe(planner);
     // A new row for the same session, open where the reader left it: the page holds which rows
@@ -4016,16 +4314,19 @@ test("a link naming a machine opens the page filtered to it, and the filter can 
   }
 });
 
-/** A session on its own machine, so the machine filter has more than two rows to narrow. */
-const deployer: Agent = {
-  ...agents[1],
-  host: "deploy-host",
-  last_activity: new Date(now - 60_000).toISOString(),
-  last_seen: now - 10_000,
-  roles: ["deployer"],
-  session_id: "deploy-session",
-  title: "Deployer",
-};
+/** A session on its own machine, so the machine filter has more than two rows to narrow. It
+ *  spoke a minute before the row that builds it, so a row reads it as Active. */
+function deployerAgent(): Agent {
+  return {
+    ...agents[1],
+    host: "deploy-host",
+    last_activity: minutesAgo(1),
+    last_seen: ago(10_000),
+    roles: ["deployer"],
+    session_id: "deploy-session",
+    title: "Deployer",
+  };
+}
 
 /** The three filters of the row, by the concept each picks from. */
 const FILTER_LABELS = { group: "Group", machine: "Machine", role: "Role" } as const;
@@ -4056,7 +4357,7 @@ function filterOption(filter: keyof typeof FILTER_LABELS, name: string): HTMLEle
 // its own options, takes more than one, says how many are picked, and clears them.
 test("the machine filter is a searchable multi-select that keeps the rows of every machine picked", async () => {
   const user = userEvent.setup();
-  const page = renderAgents({ listedAgents: [...agents, deployer] });
+  const page = renderAgents({ listedAgents: [...agents, deployerAgent()] });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
@@ -4065,9 +4366,9 @@ test("the machine filter is a searchable multi-select that keeps the rows of eve
         .getAllByRole("heading", { hidden: false, level: 2 })
         .map((heading) => heading.textContent);
     // No dropdown in the filter row: the three filters are buttons over panels.
-    expect(within(within(region).getByTestId("agents-filters")).queryAllByRole("combobox")).toEqual(
-      []
-    );
+    expect(
+      within(within(region).getByTestId("agents-filters")).queryAllByRole("combobox").length
+    ).toBe(0);
 
     const machine = filterTrigger(region, "machine");
     expect(machine.textContent).toBe("Machine");
@@ -4099,7 +4400,7 @@ test("the machine filter is a searchable multi-select that keeps the rows of eve
 
 test("the group and role filters are searchable multi-selects of their own", async () => {
   const user = userEvent.setup();
-  const page = renderAgents({ listedAgents: [...agents, deployer] });
+  const page = renderAgents({ listedAgents: [...agents, deployerAgent()] });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
@@ -4491,6 +4792,90 @@ test("an edit typed over a refused row survives a reload", async () => {
   }
 });
 
+// A refused reply is kept in the tab across a reload with the copy of its message that Reply
+// took (`ReplyTarget.excerpt`, `held-sends.ts`), and the row's composer draws it again before the
+// session's conversation is read. The message may have been deleted meanwhile, so the quote gives
+// no word of it until that read answers, and then reads it as it stands: deleted, with no part of
+// the body the reply took.
+test("a reply refused before a reload quotes no word of its message until the conversation is read, then reads it as deleted", async () => {
+  const user = userEvent.setup();
+  const root = message("Can this ship?", { issue_key: "CORE-1" });
+  const answer = message("Yes, it can.", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    id: "message-2",
+    in_reply_to: root.id,
+    issue_key: "CORE-1",
+  });
+  const before = renderAgents({ messages: [{ message: root, replies: [answer] }] });
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const turn = (await within(planner).findByText("Yes, it can.")).closest("li");
+    if (turn === null) throw new Error("answer turn missing");
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    const composer = within(planner).getByRole("form", { name: "Comment composer" });
+    expect(
+      within(composer).getByText(wholeText("Replying to Planner — Yes, it can."))
+    ).toBeTruthy();
+    before.createMessage.mockRejectedValueOnce(
+      new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+    );
+    await type(user, within(planner).getByRole("textbox", { name: "Comment" }), "Ship it.");
+    // The composer's own form submit, which user-event has no form for.
+    await act(async () => {
+      fireEvent.submit(composer);
+    });
+    await within(planner).findByText("Couldn't send — Dispatch refused the message");
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+  } finally {
+    before.view.unmount();
+    before.restore();
+  }
+
+  reloadTab();
+  const after = renderAgents();
+  // The session's conversation is read only once the row opens, and that read is held.
+  const conversation = Promise.withResolvers<MessageRead[]>();
+  after.listAgentMessages.mockReturnValue(conversation.promise);
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const quoteWords = () =>
+      within(planner).getByRole("form", { name: "Comment composer" }).textContent ?? "";
+    await within(planner).findByText("Couldn't send — Dispatch refused the message");
+    const unread = {
+      author: quoteWords().includes("Replying to Planner"),
+      excerpt: quoteWords().includes("Yes, it can."),
+    };
+    await act(async () => {
+      conversation.resolve([
+        {
+          message: root,
+          replies: [
+            {
+              ...answer,
+              body: "",
+              deleted_at: "2026-09-14T02:00:00Z",
+              deleted_by: { id: "planner-session", kind: "session" },
+            },
+          ],
+        },
+      ]);
+    });
+    await waitFor(() => expect(quoteWords()).toContain("Deleted by"));
+    expect({
+      read: { excerpt: planner.textContent?.includes("Yes, it can.") },
+      unread,
+    }).toEqual({ read: { excerpt: false }, unread: { author: true, excerpt: false } });
+  } finally {
+    after.view.unmount();
+    after.restore();
+  }
+});
+
 // W6. A kept send belongs to the person who pressed it: a tab alice left a send in, that bob
 // signs into, sends nothing of hers, shows no row for it, and drops what was kept.
 test("a send alice left behind is not resumed for bob, and is dropped", async () => {
@@ -4522,8 +4907,19 @@ test("a send alice left behind is not resumed for bob, and is dropped", async ()
   reloadTab();
   const bob = renderAgents();
   bob.whoAmI.mockResolvedValue({ event_head: "0", kind: "user", login: "bob" });
-  bob.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
+  act(() => {
+    bob.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
+  });
   try {
+    // The sign-in check `renderAgents` started still answers alice after the data above names
+    // bob, and the page reads who is signed in again after that, so the shell is drawn for bob,
+    // then alice, then bob, each person a shell of their own (`AuthGate`). The page asserted on is
+    // the one drawn once the check has settled on bob, its card looked up there.
+    await waitFor(() => {
+      const check = bob.queryClient.getQueryState<{ login: string }>(["whoami"]);
+      expect(check?.fetchStatus).toBe("idle");
+      expect(check?.data?.login).toBe("bob");
+    });
     const region = await screen.findByRole("region", { name: "Agents" });
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");
@@ -4580,6 +4976,113 @@ test("a send pressed offline goes late with Stop trying, and lands when the netw
   } finally {
     realClock();
     onlineManager.setOnline(online);
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("the Agents page marks an edited message and reads a deleted one as deleted", async () => {
+  const user = userEvent.setup();
+  const edited = message("Can this ship?", {
+    edited_at: "2026-09-14T00:30:00Z",
+    issue_key: "CORE-1",
+  });
+  const deletedReply = message("", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    deleted_at: "2026-09-14T01:05:00Z",
+    deleted_by: { id: "planner-session", kind: "session" },
+    id: "reply-1",
+    in_reply_to: "message-1",
+  });
+  const page = renderAgents({ messages: [{ message: edited, replies: [deletedReply] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    await within(planner).findByText("Can this ship?");
+    await waitFor(() => expect(planner.textContent).toContain("edited"));
+    await waitFor(() => expect(planner.textContent).toContain("Deleted by"));
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A reply's quote prints its parent, so a parent its author edited carries ` · edited` in the
+// quote as on its own byline, and a parent nobody edited carries none.
+test("the Agents page marks a reply's quote of an edited parent, and not of a standing one", async () => {
+  const user = userEvent.setup();
+  const root = message("Can this ship?", {
+    edited_at: "2026-09-14T00:30:00Z",
+    issue_key: "CORE-1",
+  });
+  const answer = message("Yes, it can.", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    id: "reply-1",
+    in_reply_to: "message-1",
+    issue_key: "CORE-1",
+  });
+  const thanks = message("Thanks.", {
+    created_at: "2026-09-14T01:10:00Z",
+    id: "reply-2",
+    in_reply_to: "reply-1",
+    issue_key: "CORE-1",
+  });
+  const page = renderAgents({ messages: [{ message: root, replies: [answer, thanks] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const turn = (id: string) => planner.querySelector(`[data-turn="message:${id}"]`);
+    await waitFor(() =>
+      expect(turn("reply-1")?.textContent).toContain("· edited — Can this ship?")
+    );
+    await waitFor(() => expect(turn("reply-2")?.textContent).toContain("— Yes, it can."));
+    expect(turn("reply-2")?.textContent).not.toContain("edited");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A post its author deleted takes no reply (409 POST_DELETED), so the Agents row offers no Reply
+// on one - the exchange's message, or a reply under it - and a standing reply keeps its own.
+test("the Agents page offers no Reply on a deleted message, and a standing one keeps it", async () => {
+  const user = userEvent.setup();
+  const deleted = {
+    deleted_at: "2026-09-14T02:00:00Z",
+    deleted_by: { id: "alice", kind: "user" } as const,
+  };
+  const root = message("", { ...deleted, issue_key: "CORE-1" });
+  const answer = message("Yes, it can.", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    id: "reply-1",
+    in_reply_to: "message-1",
+    issue_key: "CORE-1",
+  });
+  const thanks = message("", {
+    ...deleted,
+    created_at: "2026-09-14T01:10:00Z",
+    id: "reply-2",
+    in_reply_to: "reply-1",
+    issue_key: "CORE-1",
+  });
+  const page = renderAgents({ messages: [{ message: root, replies: [answer, thanks] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    await within(planner).findByText("Yes, it can.");
+    const turn = (id: string) => planner.querySelector(`[data-turn="message:${id}"]`);
+    expect({
+      answer: ownReplies(turn("reply-1")),
+      exchange: ownReplies(turn("message-1")),
+      thanks: ownReplies(turn("reply-2")),
+    }).toEqual({ answer: 1, exchange: 0, thanks: 0 });
+  } finally {
     page.view.unmount();
     page.restore();
   }

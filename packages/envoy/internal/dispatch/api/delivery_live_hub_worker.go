@@ -1,7 +1,7 @@
 package api
 
 import (
-	"errors"
+	"context"
 	"log"
 	"log/slog"
 	"maps"
@@ -145,7 +145,7 @@ type deliveryViewRead struct {
 // takes over every mark made until then (read), so a change committed during the read lands past
 // it and marks the view again; then the GET route's population read, the ancestors of the issues
 // it names, and the pure compute. It sends each sub the delta against what it holds (a snapshot to
-// a sub with none), or DELIVERY_NOT_CONFIGURED to a sub not yet told.
+// a sub with none), or the refusal its read answered (viewReads.refusal) to a sub not yet told.
 func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause string) {
 	started := time.Now()
 	h.mu.Lock()
@@ -158,18 +158,19 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 	h.note(deliveryHubNote{what: "recompute read", view: spec.key, cause: cause, through: read.seq})
 
 	now := h.clock.Now()
+	classes := spec.classes()
+	code, message, refused := classes.reads.refusal(err)
 	h.mu.Lock()
 	view.computing, view.readingSeq = false, 0
 	sent := 0
 	switch {
 	case g.views[spec.key] != view:
 		// Every sub left while it read, and the generation stopped if they were the last.
-	case errors.Is(err, delivery.ErrNoSettings):
+	case refused:
 		view.body, view.expiry, view.seq = nil, time.Time{}, read.seq
 		for sub := range view.subs {
 			if !sub.told {
-				sub.conn.Send(liveRefusal(sub.id, "DELIVERY_NOT_CONFIGURED",
-					"delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery"))
+				sub.conn.Send(liveRefusal(sub.id, code, message))
 				sub.told = true
 				sent++
 			}
@@ -194,6 +195,11 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 		view.from, view.at, view.expiry = read.from, read.at, read.expiry
 		view.issues, view.ancestors, view.sessions = read.issues, read.ancestors, read.sessions
 		sent = h.sendLocked(g, view)
+		if classes.reads != viewReadsDelivery {
+			// A view that reads no delivery row holds no delivery settings, so it judges no
+			// freshness: the verdict stays the one the delivery views' own reads set.
+			break
+		}
 		if !g.known {
 			// The first verdict is set silently, from the first settings read.
 			g.fresh = deliveryFreshnessHeard{
@@ -246,63 +252,115 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 			return read, err
 		}
 	}
-	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
-		return read, err
-	}
 	now := h.clock.Now()
-	var body any
-	if spec.kind == deliveryLivePipeline {
-		read.at = now
-		if spec.at != nil {
-			read.at = *spec.at
-		}
-		if read.pipe, err = h.server.readPipelinePopulation(ctx, read.settings, read.at); err != nil {
-			return read, err
-		}
-		body = deliveryPipelineCompute(read.settings, read.pipe, read.at, now)
-		if spec.at == nil {
-			read.expiry = pipelineNextExpiry(read.pipe, now)
-		}
-		read.from = measures.WindowStart(read.at)
-		read.prs, read.runs = len(read.pipe.leadTimes.prs), len(read.pipe.checks.Runs)+len(read.pipe.deploys.Runs)
-		read.unfetchable = read.pipe.leadTimes.unfetchable
-	} else {
-		from, to := spec.from, spec.to
-		if spec.preset > 0 {
-			from, to = now.Add(-spec.days()), now
-		}
-		if read.pop, err = h.server.readDeliveryPopulation(ctx, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
-			return read, err
-		}
-		read.issues = map[string]struct{}{}
-		read.sessions = map[string]string{}
-		name := func(issue *string, sessions []string) {
-			if issue != nil {
-				read.issues[*issue] = struct{}{}
-			}
-			for _, session := range sessions {
-				read.sessions[session] = delivery.SessionTitle(read.pop.titles, session)
-			}
-		}
-		for _, pr := range read.pop.prs {
-			name(pr.IssueKey, pr.Sessions)
-		}
-		for _, pr := range read.pop.waiting {
-			name(pr.IssueKey, pr.Sessions)
-		}
-		if read.ancestors, err = delivery.IssueAncestors(ctx, pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap); err != nil {
-			return read, err
-		}
-		body = deliveryLiveCompute(spec.kind, read.settings, read.pop, from, to, now)
-		if spec.preset > 0 {
-			read.expiry = nextExpiry(read.pop, spec.days(), now)
-		}
-		read.from = from
-		read.prs, read.runs = len(read.pop.prs), len(read.pop.applyRuns)+len(read.pop.windowRuns)
-		read.unfetchable = read.pop.unfetchable
+	body, err := spec.classes().read(h, ctx, spec, now, &read)
+	if err != nil {
+		return read, err
 	}
 	read.body, err = encodeDeliveryBody(spec.kind, body)
 	return read, err
+}
+
+// readLegionBoardView is a Legion board's read: the project's own daemon state as the sampler
+// recorded it. It reads no delivery settings — its own are the project's Legion setting, and a
+// deployment that configured one and not the other still shows the board. A project that does
+// not exist is loadProject's refusal, as GET /api/v1/projects/{key}/legion/board answers it.
+func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	if _, err := h.server.loadProject(ctx, h.server.deps.Store.Pool, spec.project); err != nil {
+		return nil, err
+	}
+	board, err := h.server.readLegionBoard(ctx, spec.project)
+	if err != nil {
+		return nil, err
+	}
+	// Every issue the board names, so an event about one marks the view (dirtyIssueLocked); the
+	// board shows no session, so it names none.
+	read.issues = board.issueKeys()
+	return legionBoardCompute(board, now), nil
+}
+
+// readLegionIssueView is a legion_issue view's read: GET /api/v1/issues/{key}/legion's body, through
+// the route's own readLegionIssue, so the view and the route answer one body. A key Dispatch holds
+// no issue of is that function's *apiError, NOT_FOUND in the route's words, which the hub refuses
+// the view's subscribers with once (viewReads.refusal). A project that names no daemon is the body
+// whose configured is false and never an error, so this view, unlike the board, is never refused
+// LEGION_NOT_CONFIGURED. It names no issue in read.issues: no Dispatch event moves the body, which
+// only its project's notifications and its issue's runs move (dirtyLegionProject, dirtyLegionIssue).
+func (h *deliveryHub) readLegionIssueView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	answer, err := h.server.readLegionIssue(ctx, spec.issue)
+	if err != nil {
+		return nil, err
+	}
+	return answer, nil
+}
+
+// readPipelineView is a pipeline view's read: the delivery settings and the runs, jobs and merges
+// of the seven days ending on its at, or on the present for a view that names none.
+func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	pool := h.server.deps.Store.Pool
+	var err error
+	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
+		return nil, err
+	}
+	read.at = now
+	if spec.at != nil {
+		read.at = *spec.at
+	}
+	if read.pipe, err = h.server.readPipelinePopulation(ctx, read.settings, read.at); err != nil {
+		return nil, err
+	}
+	body := deliveryPipelineCompute(read.settings, read.pipe, read.at, now)
+	if spec.at == nil {
+		read.expiry = pipelineNextExpiry(read.pipe, now)
+	}
+	read.from = measures.WindowStart(read.at)
+	read.prs, read.runs = len(read.pipe.leadTimes.prs), len(read.pipe.checks.Runs)+len(read.pipe.deploys.Runs)
+	read.unfetchable = read.pipe.leadTimes.unfetchable
+	return body, nil
+}
+
+// readDeliveryView is a timeline or measures view's read: the delivery settings, the population
+// of its window and facets, and the ancestors of every issue that population names.
+func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	pool := h.server.deps.Store.Pool
+	var err error
+	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
+		return nil, err
+	}
+	from, to := spec.from, spec.to
+	if spec.preset > 0 {
+		from, to = now.Add(-spec.days()), now
+	}
+	if read.pop, err = h.server.readDeliveryPopulation(ctx, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
+		return nil, err
+	}
+	read.issues = map[string]struct{}{}
+	read.sessions = map[string]string{}
+	name := func(issue *string, sessions []string) {
+		if issue != nil {
+			read.issues[*issue] = struct{}{}
+		}
+		for _, session := range sessions {
+			read.sessions[session] = delivery.SessionTitle(read.pop.titles, session)
+		}
+	}
+	for _, pr := range read.pop.prs {
+		name(pr.IssueKey, pr.Sessions)
+	}
+	for _, pr := range read.pop.waiting {
+		name(pr.IssueKey, pr.Sessions)
+	}
+	if read.ancestors, err = delivery.IssueAncestors(ctx, pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap); err != nil {
+		return nil, err
+	}
+	body := deliveryLiveCompute(spec.kind, read.settings, read.pop, from, to, now)
+	if spec.preset > 0 {
+		read.expiry = nextExpiry(read.pop, spec.days(), now)
+	}
+	read.from = from
+	read.prs, read.runs = len(read.pop.prs), len(read.pop.applyRuns)+len(read.pop.windowRuns)
+	read.unfetchable = read.pop.unfetchable
+	return body, nil
 }
 
 // expire answers a view whose preset window, or whose pipeline day, moved past something it holds,

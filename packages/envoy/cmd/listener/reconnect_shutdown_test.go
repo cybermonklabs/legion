@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // listenerRelay lets this test hold one NATS request from the listener, then drop the live link so
@@ -57,7 +58,7 @@ func startListenerRelay(t *testing.T, uri string) *listenerRelay {
 	if err != nil {
 		t.Fatalf("parse NATS URL %q: %v", uri, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for relay: %v", err)
 	}
@@ -193,6 +194,7 @@ func (r *listenerRelay) close() {
 // During a deploy, a reconnect can interrupt the replacement's durable bind. The reconnect must
 // leave that bind to finish, keep the role lane forwarding, then make SIGTERM an ordered shutdown.
 func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testing.T) {
+	t.Parallel()
 	const (
 		machineID = "reconnect-bind-sigterm"
 		holderID  = "ses_reconnect_bind_sigterm_holder"

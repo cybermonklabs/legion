@@ -3,6 +3,8 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
+  LegionBoardResponse,
+  LegionIssueResponse,
 } from "./dispatch-api.generated";
 import type { DispatchEvent } from "./dispatch-api-events";
 
@@ -17,11 +19,19 @@ export type DeliveryLiveWindow =
   | { readonly from: string; readonly to: string };
 
 /** One view a page shows. `query` is the query string the page would send to the matching GET route
- *  without `from`/`to` (search and every facet), so the live answer and the GET answer are one. */
+ *  without `from`/`to` (search and every facet), so the live answer and the GET answer are one. A
+ *  legion view names the project whose board it shows and nothing else: the board has no window,
+ *  and `project` is all `GET /api/v1/projects/{key}/legion/board` reads. Its snapshot and deltas
+ *  carry a `LegionBoardResponse`. A legion_issue view names one issue and nothing else, which is
+ *  all `GET /api/v1/issues/{key}/legion` reads, and its snapshot and deltas carry a
+ *  `LegionIssueResponse`. It is never refused for a project that names no daemon: its body says
+ *  `configured` false. Its one refusal is `NOT_FOUND`, for a key Dispatch holds no issue of. */
 export type DeliveryLiveView =
   | { readonly kind: "timeline"; readonly window: DeliveryLiveWindow; readonly query: string }
   | { readonly kind: "measures"; readonly window: DeliveryLiveWindow; readonly query: string }
-  | { readonly kind: "pipeline"; readonly at?: string };
+  | { readonly kind: "pipeline"; readonly at?: string }
+  | { readonly kind: "legion"; readonly project: string }
+  | { readonly kind: "legion_issue"; readonly issue: string };
 
 /** The timeline's lists sent item by item, by id. */
 export type DeliveryLiveList = "prs" | "runs" | "session_groups";
@@ -108,10 +118,14 @@ export interface LiveUnsubscribe {
 }
 export type LiveClientFrame = LiveSubscribe | LiveUnsubscribe;
 
+/** The body a delivery-hub snapshot or delta carries, by the view's kind: the matching GET
+ *  route's body, byte for byte. */
 export type DeliveryLiveBody =
   | DeliveryTimelineWithMeasures
   | DeliveryMeasuresResponse
-  | DeliveryPipelineResponse;
+  | DeliveryPipelineResponse
+  | LegionBoardResponse
+  | LegionIssueResponse;
 
 export interface DeliveryLiveSnapshot {
   readonly type: "snapshot";

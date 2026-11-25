@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // keptEditorQuestion and keptEditorReword are the question keptEditorSpec's decision asks and the
@@ -87,7 +88,7 @@ func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSwee
 	}
 	if err := joinedWrite(service, func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
-		if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+		if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)
 		}
 		if _, err := service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{withdrawnAsk(f.decision, closer)}, closer, true); err != nil {
@@ -124,7 +125,7 @@ func (f keptEditorSweep) settleOwed(t *testing.T, what string) int64 {
 	return lastEvent
 }
 
-// reopen reopens DOC-1 as the API's reopen does (api.restoreIssueAsksTx), in one transaction that
+// reopen reopens DOC-1 as the API's reopen does (api.prepareRestoration, recordRestoredAsksTx), in one transaction that
 // holds the issue's row once it clears closed_at: it restores the asks the sweep withdrew, writes
 // the decision's block open again (the reopen's ask-state write, which names no editor of its own,
 // so the pending row it inserts names alice), marks owed the documents whose ask blocks wait for
@@ -138,7 +139,6 @@ func (f keptEditorSweep) reopen(t *testing.T) {
 	if f.approval != "" {
 		restored = append(restored, f.approval)
 	}
-	var followed []model.Event
 	if err := joinedWrite(f.service, func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
 		if _, err := tx.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
@@ -153,14 +153,9 @@ func (f keptEditorSweep) reopen(t *testing.T) {
 		if err := f.service.MarkReopenOwedAskDocuments(ctx, "DOC-1"); err != nil {
 			return err
 		}
-		var err error
-		followed, err = f.service.FollowClosedIssueVersions(ctx, "DOC-1")
-		return err
+		return f.service.FollowClosedIssueVersions(ctx, "DOC-1")
 	}); err != nil {
 		t.Fatalf("reopen the issue: %v", err)
-	}
-	for _, event := range followed {
-		f.service.events.Publish(event)
 	}
 	f.service.issueOpenChanged(context.Background(), "DOC-1")
 	if kept := keptClosedEditSource(t, f.service, f.artifactID); kept == nil || !kept.SameAs(f.alice) {
@@ -246,6 +241,7 @@ func askEventsOf(t *testing.T, appended []appendedEvent, kind, id string) []appe
 //   - A request opened after the reopen names the version the sweep's settlement wrote, so its move
 //     goes over the reopen's ask-state write alone, in the name of SettlementActor.
 func TestAVersionNamesNoEditorWhoseTextItDoesNotHold(t *testing.T) {
+	t.Parallel()
 	t.Run("a closed issue's settlement of the ask repair's sweep", func(t *testing.T) {
 		f := sweepAfterAClosedEdit(t, false)
 		lastEvent := f.settleOwed(t, "the closed issue's settlement of the sweep")

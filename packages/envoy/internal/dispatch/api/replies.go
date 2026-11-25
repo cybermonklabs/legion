@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // GET /api/v1/me/replies is the Inbox's thread read, of two kinds of row. A Reply row is a thread
@@ -197,10 +198,13 @@ const myRepliesPageRest = `
 	       end,
 	       i.key, i.title, ar.project_key, ar.slug, ar.name,
 	       coalesce(a.question, root.body, mroot.body, ''),
+	       coalesce(root.edited_at, mroot.edited_at),
+	       coalesce(root.deleted_at, mroot.deleted_at), coalesce(root.deleted_by, mroot.deleted_by),
 	       p.last_reply_id::text, answered.id is not null,
 	       coalesce(rc.author, rm.author,
 	         case when answered.id is not null then jsonb_build_object('kind', 'user', 'id', answered.answer->>'user') end),
 	       coalesce(rc.body, rm.body, answered.text, ''),
+	       coalesce(rc.deleted_at, rm.deleted_at), coalesce(rc.deleted_by, rm.deleted_by),
 	       coalesce(rc.created_at, rm.created_at, p.replied_at),
 	       i.priority, p.project_key, p.read_through, p.unread,
 	       coalesce(counted.unread_count, 0), coalesce(root.anchor, a.anchor), p.dismissed_at,
@@ -217,22 +221,22 @@ const myRepliesPageRest = `
 		offset 0
 	) a on true
 	left join lateral (
-		select root.body, root.anchor
+		select root.body, root.anchor, root.edited_at, root.deleted_at, root.deleted_by
 		from comments root where p.kind = 'comment' and root.id = p.thread_id
 		offset 0
 	) root on true
 	left join lateral (
-		select mroot.body
+		select mroot.body, mroot.edited_at, mroot.deleted_at, mroot.deleted_by
 		from messages mroot where p.kind = 'message' and mroot.id = p.thread_id
 		offset 0
 	) mroot on true
 	left join lateral (
-		select rc.author, rc.body, rc.created_at
+		select rc.author, rc.body, rc.created_at, rc.deleted_at, rc.deleted_by
 		from comments rc where p.kind <> 'message' and rc.id = p.last_reply_id
 		offset 0
 	) rc on true
 	left join lateral (
-		select rm.author, rm.body, rm.created_at
+		select rm.author, rm.body, rm.created_at, rm.deleted_at, rm.deleted_by
 		from messages rm where p.kind = 'message' and rm.id = p.last_reply_id
 		offset 0
 	) rm on true
@@ -533,10 +537,15 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	rows := []model.MyReplyRow{}
 	// How many rows a paged read asks each kind for: a row past offset+limit of its own order
 	// cannot be inside the merged page, so neither half reads one. An unpaged read asks for every
-	// row (null).
+	// row (null). The offset is the caller's, up to math.MaxInt (parseMyRepliesPage), so the sum
+	// stops at math.MaxInt rather than wrapping to a negative LIMIT: each half then reads every
+	// row, and the offset cut below answers an empty page, with the total counted as for any page.
 	var reach *int
 	if limit != nil {
-		through := offset + *limit
+		through := math.MaxInt
+		if offset <= math.MaxInt-*limit {
+			through = offset + *limit
+		}
 		reach = &through
 	}
 	// Every state but the Dismissed view counts its rows when the read is paged, since the page it
@@ -672,7 +681,8 @@ func (s *server) readMyReplyRows(
 		var row model.MyReplyRow
 		var issueKey, issueTitle, project, slug, name, replyID *string
 		var subject, body string
-		var author, anchor []byte
+		var author, anchor, subjectDeletedBy, replyDeletedBy []byte
+		var subjectEditedAt, subjectDeletedAt, replyDeletedAt *time.Time
 		var isAnswer bool
 		var readThrough time.Time
 		var projectKey string
@@ -682,11 +692,23 @@ func (s *server) readMyReplyRows(
 		if err := rows.Scan(
 			&row.ThreadID, &row.Kind, &row.Ref,
 			&issueKey, &issueTitle, &project, &slug, &name,
-			&subject, &replyID, &isAnswer, &author, &body, &row.Reply.CreatedAt,
+			&subject, &subjectEditedAt, &subjectDeletedAt, &subjectDeletedBy,
+			&replyID, &isAnswer, &author, &body, &replyDeletedAt, &replyDeletedBy, &row.Reply.CreatedAt,
 			&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
 			&row.DismissedAt, &version,
 		); err != nil {
 			return nil, fmt.Errorf("scan my reply: %w", err)
+		}
+		// The thread's root post carries the time its author last edited it, and the root and the
+		// reply the row shows each carry the mark of a delete, so a row whose text a delete cleared
+		// says that the post is deleted and not an empty line.
+		row.EditedAt = subjectEditedAt
+		var err error
+		if row.DeletedAt, row.DeletedBy, err = model.DeletedPostMark(subjectDeletedAt, subjectDeletedBy); err != nil {
+			return nil, err
+		}
+		if row.Reply.DeletedAt, row.Reply.DeletedBy, err = model.DeletedPostMark(replyDeletedAt, replyDeletedBy); err != nil {
+			return nil, err
 		}
 		row.Reply.Kind = "reply"
 		if isAnswer {
@@ -730,15 +752,29 @@ type threadReadInput struct {
 	ReadThrough *string `json:"read_through" required:"true"`
 }
 
+// threadReadMoves is the predicate a thread mark moves the caller's row by: login $1's row of
+// thread $2, read short of least($3, now()), $3 being the caller's read_through cast by Postgres
+// from its own text and now() the transaction's own start. putThreadRead's read of whether the
+// mark moves and its update both write it, so the two judge the row by one rule.
+const threadReadMoves = `login = $1 and thread_id = $2 and read_through < least($3::text::timestamptz, now())`
+
 // putThreadRead answers PUT /api/v1/me/threads/{id}/read: it moves the caller's read mark on one
 // thread forward to read_through (stored as no later than now, as the Agents page's read mark is),
 // so a row a tab read less of a moment ago never comes back. A thread the caller has no row for
 // writes nothing.
 //
-// This transaction takes the Inbox's read-mark lock order over its one thread: the thread's
-// owner row `for share`, then the caller's user_threads row, then the project its event names.
-// Which locks that order rules out, and why the Inbox's Mark all read has to take the same one,
-// is written on markInboxReadThreads (api/inbox_read.go).
+// It runs in the two phases every write route runs in (INFRA-636): a read phase holding no
+// transaction id, which takes the thread's owner lock and then the project's and reads the row
+// under them, and a write phase of the row's update and the event's append, back to back. The
+// project is what the event is owned by, so its lock is the one the append would otherwise be
+// the first to take (events' lockEventOwner), after the update had already given this
+// transaction a transaction id to wait on it with.
+//
+// The owner is taken exclusively (store.LockOwnerAndRead), where this route once took it in
+// shared mode, and that is what lets the project be taken before the row. Why that order closes
+// no cycle with any other writer of the row, the Inbox's Mark all read and its dismissal among
+// them, is written once, on markInboxReadThreads (api/inbox_read.go), with the rest of the
+// read-mark lock order.
 func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -768,6 +804,11 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The read phase holds no transaction id. The caller's row is read first and plainly, for
+	// the owners it names: the thread's, which the lock below takes, and the project, which the
+	// event's append takes. Neither ever changes on a row that stands - the trigger writes them
+	// when it inserts the row and moves only its marks afterwards (user_threads_record,
+	// migration 20261105093501) - so they are read before any lock and used after it.
 	var project string
 	var issueKey, artifactID *string
 	err = tx.QueryRow(r.Context(), `
@@ -781,32 +822,56 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// A closed issue is not refused: reading a thread on a closed issue is reading it.
-	if issueKey != nil {
-		_, err = tx.Exec(r.Context(), `select 1 from issues where key = $1 for share`, *issueKey)
-	} else if artifactID != nil {
-		_, err = tx.Exec(r.Context(), `select 1 from artifacts where id = $1 for share`, *artifactID)
+	// A closed issue is not refused: reading a thread on a closed issue is reading it. The lock
+	// is the one every reader and writer of the thread's rows takes (store.OwnerOf), and it is
+	// advisory, so this route waits for it holding no transaction id. Every row names an owner:
+	// user_threads_record returns before its insert when the thread's issue or document names no
+	// project, so every row read above names an issue or a document. A row naming neither is
+	// refused rather than marked: a mark that went on without the thread's lock would hold the
+	// project while it waited for a row the Inbox's Mark all read may hold while it waits for that
+	// project, the cycle markInboxReadThreads rules out.
+	owner := store.OwnerOf(issueKey, artifactID)
+	if owner == nil {
+		s.writeHandlerError(w, fmt.Errorf("%s's user_threads row of thread %s names no issue and no document", login, threadID))
+		return
 	}
-	if err != nil {
+	// Whether the mark moves at all, read under that lock in the statement after it
+	// (store.LockOwnerAndRead) and by the predicate the update below writes by, against the same
+	// now(), which is this transaction's own start. Nothing can move the row between the read and
+	// the update: every writer of it holds the owner this transaction now holds exclusively.
+	//
+	// A revisit that moves nothing stops here, having taken no project lock and no transaction
+	// id: the thread on screen marks itself on every visit, and a mark that announced one would
+	// refetch the count in every tab the viewer has open, and would queue every such visit behind
+	// every write of events in that project.
+	var moves bool
+	if err := store.LockOwnerAndRead(r.Context(), tx, *owner,
+		`select exists (select 1 from user_threads where `+threadReadMoves+`)`,
+		[]any{login, threadID, *input.ReadThrough}, &moves); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if !moves {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(project)); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The write phase: the row and the event, back to back, and the COMMIT behind them.
+	//
 	// read_through is cast by Postgres from the caller's own text rather than bound as a parsed
 	// time: an answer's time carries nanoseconds, which the trigger's cast of the answer rounds to
 	// the microsecond while pgx truncates a bound time, so a mark through the answer's own time
-	// would otherwise fall a microsecond short of the answer and leave the thread unread.
-	moved, err := tx.Exec(r.Context(), `
+	// would otherwise fall a microsecond short of the answer and leave the thread unread. The
+	// predicate is written on the update as well as on the read, because this is the statement
+	// that must never move a mark back, whatever was read before it; under the owner's lock it
+	// moves the row the read said it would, so the event below is appended for a mark that moved.
+	if _, err := tx.Exec(r.Context(), `
 		update user_threads set read_through = least($3::text::timestamptz, now())
-		where login = $1 and thread_id = $2 and read_through < least($3::text::timestamptz, now())
-	`, login, threadID, *input.ReadThrough)
-	if err != nil {
+		where `+threadReadMoves, login, threadID, *input.ReadThrough); err != nil {
 		s.writeHandlerError(w, err)
-		return
-	}
-	// A revisit that moves nothing announces nothing: the thread on screen marks itself on every
-	// visit, and each event would refetch the count in every tab the viewer has open.
-	if moved.RowsAffected() == 0 {
-		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(project).event(

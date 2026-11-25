@@ -12,9 +12,11 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // createDeliveryInput is the body of POST /api/v1/messages/{id}/deliveries.
@@ -47,6 +49,12 @@ func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 	message, err := s.loadMessage(r.Context(), s.deps.Store.Pool, "", r.PathValue("id"))
 	if err != nil || message.Target == nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
+		return
+	}
+	// A send of a deleted message would carry the text the delete withdrew, so there is nothing
+	// left to send; every attempt still pending when the delete ran was failed by it.
+	if message.DeletedAt != nil {
+		s.writeHandlerError(w, deletedPostError(refs.ItemMessage))
 		return
 	}
 	// The send outlives the request's connection, keeping its values and dropping its
@@ -121,8 +129,13 @@ type acceptedDelivery struct {
 // It may land while the attempt is still pending, since a session answers the frame before
 // Dispatch settles the send, so it writes neither state nor claimed_at, which the settle is
 // scoped to, and appends its own message.accepted rather than a second message.delivery receipt.
-// The event's owners are locked before the message and attempt rows, the order
-// settleDeliveryAttempt takes them in.
+// It takes no owner lock: the message it accepts is a direct message (acceptDirect), whose event
+// names no owner, and a message on an issue is refused 409 ACCEPT_NOT_DIRECT before any write, so
+// no append of this route takes an owner's lock either.
+//
+// The attempt in the path is a positive number that fits message_deliveries.attempt, an integer
+// column (fitsIntegerColumn): any other is an attempt no message has, so it is the 404
+// MESSAGE_NOT_FOUND a missing attempt is, answered before any query is made with it.
 //
 // The actor is a bearer's own claim of its session, as on every session write, so a bearer
 // naming another session can spend that session's one acceptance of a fresh attempt: the real
@@ -142,7 +155,7 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	number, err := strconv.Atoi(r.PathValue("attempt"))
-	if err != nil || number < 1 {
+	if err != nil || number < 1 || !fitsIntegerColumn(number) {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
 		return
 	}
@@ -162,10 +175,6 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(ctx)
-	if err := s.deps.Events.LockOwners(ctx, tx, event); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	// Every attempt is opened, resumed and accepted under this lock, so what the checks below
 	// read cannot move before the update. It is FOR NO KEY UPDATE, which serialises it against
 	// the claim's, and not FOR UPDATE: the session's reply takes the attempt row first and then,
@@ -298,6 +307,11 @@ type pendingMessageDelivery struct {
 	// session's message - is queued for a stopped session.
 	connectedOnly bool
 	frame         []byte
+	// message is the message this attempt is sent with, carrying the text its row held under the
+	// claim's lock (recordPendingMessageDelivery): the body and edited_at an edit moves. The
+	// frame is built from it and the send carries its body, so neither carries text an edit or a
+	// delete that committed while the claim waited on its lock took away.
+	message model.Message
 }
 
 // messageDeliveryRoute is what a targeted send resolves against the listener: the session a
@@ -379,10 +393,32 @@ func (s *server) recordPendingMessageDelivery(
 	}
 	// FOR NO KEY UPDATE, as the accept's is: the session's reply takes an attempt row and then
 	// this row FOR KEY SHARE through its insert's foreign key, and FOR UPDATE would wait for that
-	// while this transaction waits below for the attempt row the reply holds.
+	// while this transaction waits below for the attempt row the reply holds. A message of an
+	// issue has its text read here too, under the issue's owner lock every writer of it holds
+	// (lockedMessageForCorrection), so the frame and the send carry the body as the lock's
+	// previous holder left it, not as the caller read it before the lock. A message with no issue,
+	// a direct message or a broadcast's copy, takes no edit and no delete (NOT_AN_ISSUE_MESSAGE),
+	// so the body the caller read is the body it has, and its row gives the target alone.
 	var target string
-	if err := tx.QueryRow(ctx, `select target from messages where id = $1 for no key update`, message.ID).Scan(&target); err != nil {
+	var deleted bool
+	if message.IssueKey != nil {
+		if err := tx.QueryRow(ctx, `
+			select target, body, edited_at, deleted_at is not null from messages where id = $1 for no key update
+		`, message.ID).Scan(&target, &message.Body, &message.EditedAt, &deleted); err != nil {
+			return pendingMessageDelivery{}, err
+		}
+	} else if err := tx.QueryRow(ctx, `select target from messages where id = $1 for no key update`, message.ID).Scan(&target); err != nil {
 		return pendingMessageDelivery{}, err
+	}
+	// An unbound send is a Retry (createDelivery), which resumes or opens an attempt of the
+	// message, so it is this row that decides whether any text is left to send: a delete that
+	// committed while the Retry waited on the lock refuses it here, where the route's own check
+	// read the message before the lock. A bound sender takes its own attempt and no other, which
+	// that delete has already settled (queueDeletedPostSettlement), so it finds the attempt no
+	// longer pending below and sends nothing; one bound to the first attempt of a message that has
+	// none opens nothing for a deleted message either (below).
+	if resumeAttempt == 0 && deleted {
+		return pendingMessageDelivery{}, deletedPostError(refs.ItemMessage)
 	}
 	pending := pendingMessageDelivery{resolved: resolved}
 	if resumeAttempt > 0 {
@@ -405,6 +441,14 @@ func (s *server) recordPendingMessageDelivery(
 			&bound.Attempt, &bound.Delivery, &bound.SessionID, &pending.urgency, &pending.connectedOnly, &free,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
+			// A deleted message opens no first attempt. Its delete settled each attempt it had
+			// pending and wrote none for a message that had none, so there is no attempt of it to
+			// open, settled or not: an attempt opened failed here would be one the delete never
+			// ended, with a receipt the delete never appended. The sender is told, as a bound
+			// sender whose attempt was settled is, that it has nothing to send.
+			if deleted {
+				return pendingMessageDelivery{}, errAttemptNotPending
+			}
 			return s.openFirstMessageDeliveryAttempt(
 				ctx, tx, message, target, actor, resolved, replyThread, resumeAttempt,
 			)
@@ -580,7 +624,8 @@ func (s *server) openFirstMessageDeliveryAttempt(
 
 // finishPendingMessageDelivery builds the frame this claimed attempt will be sent with and
 // commits the claim transaction. Both claim paths end here, so a bound sender's frame says
-// exactly what an ordinary one's does.
+// exactly what an ordinary one's does. message is the message as the claim read it under its
+// lock, which the attempt's send carries too (pendingMessageDelivery.message).
 func finishPendingMessageDelivery(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -592,8 +637,9 @@ func finishPendingMessageDelivery(
 	thread := replyThread
 	if thread == nil {
 		// A retry sends the stored message, so the block it answers is read as its write named
-		// it, for the frame's message and the preview its thread carries.
-		if err := hydrateMessageReplyBlocks(ctx, tx, &message); err != nil {
+		// it, for the frame's message and the preview its thread carries. The frame is sent where
+		// every reader of the conversation reads it, so the block is read as everyReader.
+		if err := hydrateMessageReplyBlocks(ctx, tx, everyReader, &message); err != nil {
 			return err
 		}
 		derived, err := loadMessageReplyThread(ctx, tx, message)
@@ -616,7 +662,7 @@ func finishPendingMessageDelivery(
 	if err != nil {
 		return fmt.Errorf("encode target delivery frame: %w", err)
 	}
-	pending.frame = frame
+	pending.frame, pending.message = frame, message
 	return tx.Commit(ctx)
 }
 
@@ -695,12 +741,13 @@ func (s *server) completeMessageDelivery(
 	}, pending.resolved.title)
 	return settleDeliveryAttempt(ctx, s, receipt,
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, error) {
-			return scanMessageDelivery(tx.QueryRow(ctx, `
+			settled, err := scanMessageDelivery(tx.QueryRow(ctx, `
 				update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7
 				where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
 				returning `+messageDeliveryColumns,
 				message.ID, pending.attempt, pending.claimedAt, outcome.envelopeID, state, failure, outcome.duplicate,
 			))
+			return settled, err
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, bool, *string, error) {
 			var mine bool
@@ -712,6 +759,13 @@ func (s *server) completeMessageDelivery(
 		},
 		func(answered model.MessageDelivery) model.Event {
 			return messageDeliveryReceipt(message, actor, answered, pending.resolved.title)
+		},
+		// The session this attempt reached, in the transaction that records that it did and
+		// under the receipt that records it (graphstore.QueueReached): an attempt the listener
+		// took, sent or queued (model.DeliveryTaken), is a delivery and its session is a node
+		// from this moment, a pending or failed one reached nobody and writes nothing.
+		func(b *store.WriteBatch, settled model.MessageDelivery) error {
+			return graphstore.QueueReached(b, settled.State, settled.SessionID, actor, settled.CreatedAt, graphstore.LatestEvent)
 		},
 	)
 }
@@ -732,9 +786,10 @@ func (s *server) deliverMessage(
 }
 
 // errAttemptNotPending reports that the attempt a bound sender owns is no longer its to send:
-// something else settled it, superseded it, or is sending it right now. Only a bound sender
-// (resumeAttempt > 0) can see it, and its caller drops the send rather than opening another
-// attempt - a second attempt here is a second frame on the wire.
+// something else settled it, superseded it, or is sending it right now, or it is the first
+// attempt of a message deleted before it had one (recordPendingMessageDelivery). Only a bound
+// sender (resumeAttempt > 0) can see it, and its caller drops the send rather than opening
+// another attempt - a second attempt here is a second frame on the wire.
 var errAttemptNotPending = errors.New("delivery attempt is no longer pending")
 
 // deliverMessageResuming is deliverMessage bound to one attempt. resumeAttempt > 0 sends that
@@ -752,6 +807,13 @@ var errAttemptNotPending = errors.New("delivery attempt is no longer pending")
 //
 // Bound or not, a send that meets a listener take-over tries again under the attempt it claimed
 // (takeoverRetry.retry, renewMessageDeliveryClaim) and settles only with the last try's outcome.
+// A last try that found no live session for the session the attempt names - the registry read's
+// answer or the send's own 404, so neither the listener's registry nor its known-session store
+// holds that session - is queued by Dispatch itself on that session's own subject
+// (queueForUnknownSession) while this sender still holds the attempt, so every sender of a
+// targeted message queues it alike: the request, a keyed repeat, a broadcast's copy, a Retry and
+// the delivery sweep. The queued copy is a send too, so the sender re-checks its claim
+// immediately before it (holdMessageDeliveryClaim), as it does before every try.
 func (s *server) deliverMessageResuming(
 	ctx context.Context,
 	message model.Message,
@@ -777,6 +839,9 @@ func (s *server) deliverMessageResuming(
 	if err != nil {
 		return model.MessageDelivery{}, err
 	}
+	// The message as the claim read it under its lock, so the send, any queued copy and the
+	// settle carry the text the frame does.
+	message = pending.message
 	// The key is scoped to the message and the mode, stable across every attempt of that pair,
 	// so a retry of a send that already landed repeats its dedupe key and is recognised as the
 	// repeat it is (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts says by what). The
@@ -787,28 +852,48 @@ func (s *server) deliverMessageResuming(
 	// on every send of it, whatever its row holds, judged in the mode this attempt is sent in
 	// (isSessionSwitch, pendingMessageDelivery.connectedOnly).
 	connectedOnly := pending.connectedOnly || isSessionSwitch(message, pending.resolved.Delivery)
+	// A direct message is written to the session it names and invites its answer; nothing about
+	// one says a reply is unwanted. A copy Dispatch queues for its session says the same.
+	wanted := contracts.ExpectsReplyOptional
 	takeover := s.newTakeoverRetry()
 	var outcome sendOutcome
+	// held is whether this sender still holds the attempt's claim when its tries end. A renew that
+	// found the attempt answered or taken meanwhile ends them holding nothing, and then nothing is
+	// queued: the settle below reads what the row holds now.
+	held := true
 	err = takeover.retry(ctx,
 		func() string {
-			// A direct message is written to the session it names and invites its answer;
-			// nothing about one says a reply is unwanted.
 			outcome = s.sendResolvedDelivery(
-				ctx, pending.resolved, message.Body, key, pending.urgency,
-				contracts.ExpectsReplyOptional, pending.frame, connectedOnly,
+				ctx, pending.resolved, messageTarget(message.Target), message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
 			)
 			return outcome.failure
 		},
 		func() (bool, error) {
-			renewed, held, err := s.renewMessageDeliveryClaim(ctx, message, pending)
-			if held {
+			renewed, stillHeld, err := s.renewMessageDeliveryClaim(ctx, message, pending)
+			if stillHeld {
 				pending = renewed
 			}
-			return held, err
+			held = stillHeld
+			return stillHeld, err
 		},
 	)
 	if err != nil {
 		return model.MessageDelivery{}, err
+	}
+	if held && s.mayQueueForUnknownSession(message, pending, connectedOnly, outcome.failure) {
+		// The last try was a listener call with nothing held, and a delete that committed during it
+		// settled the attempt and moved its claim (queueDeletedPostSettlement); a copy published
+		// now would store the deleted body for the session to read when it registers again. So the
+		// claim is re-checked first, in a statement scoped to it, as every try's renew is, and a
+		// claim no longer this sender's publishes nothing: the settle below reads the row as it
+		// stands and appends whatever receipt that row still owes.
+		pending, held, err = s.holdMessageDeliveryClaim(ctx, message, pending, pending)
+		if err != nil {
+			return model.MessageDelivery{}, err
+		}
+		if held {
+			outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure)
+		}
 	}
 	return s.completeMessageDelivery(ctx, message, actor, pending, outcome)
 }
@@ -816,12 +901,9 @@ func (s *server) deliverMessageResuming(
 // renewMessageDeliveryClaim prepares one more try of an attempt this sender holds, after a try a
 // listener take-over failed: it resolves again only the recipient the attempt names - the session
 // its row is pinned to, or, for a row still unpinned, the message's own target, which is written
-// once - and renews the claim, pinning an unpinned row to the session that resolution found, in
-// one statement scoped to the claim held, as every settle statement is, in a transaction of its
-// own, as every write a keyed request makes is (markRequestKeyCommitted). It answers the attempt
-// as the next try sends and settles it, and held = false, with pending unchanged, when the claim
-// is no longer this sender's: the attempt was answered or taken meanwhile, and the settle that
-// follows reads which.
+// once - and renews the claim on that resolution (holdMessageDeliveryClaim). It answers the
+// attempt as the next try sends and settles it, and held = false, with pending unchanged, when
+// the claim is no longer this sender's.
 func (s *server) renewMessageDeliveryClaim(
 	ctx context.Context, message model.Message, pending pendingMessageDelivery,
 ) (pendingMessageDelivery, bool, error) {
@@ -834,6 +916,20 @@ func (s *server) renewMessageDeliveryClaim(
 	// lookups at mentionLookupTimeout, because it answers without them. A read cut short here
 	// would leave the attempt unanswered with no resolve error, and this sender settles it.
 	renewed.resolved = s.resolveMentionTarget(ctx, route, pending.resolved.Delivery, 0)
+	return s.holdMessageDeliveryClaim(ctx, message, pending, renewed)
+}
+
+// holdMessageDeliveryClaim renews the claim pending holds on its attempt, pinning a row still
+// unpinned to the session next resolved to, in one statement scoped to the claim held, as every
+// settle statement is, in a transaction of its own, as every write a keyed request makes is
+// (markRequestKeyCommitted). It answers next with the claim it renewed and the session the row is
+// pinned to, and held = false, with pending unchanged, when the claim is no longer this sender's:
+// the attempt was answered, taken or settled by its post's delete meanwhile, and the settle that
+// follows reads which. A sender about to queue its message passes pending as next: the row is
+// pinned already, and the statement only re-checks and renews the claim.
+func (s *server) holdMessageDeliveryClaim(
+	ctx context.Context, message model.Message, pending, next pendingMessageDelivery,
+) (pendingMessageDelivery, bool, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return pending, false, err
@@ -844,8 +940,8 @@ func (s *server) renewMessageDeliveryClaim(
 		set claimed_at = now(), session_id = coalesce(nullif(session_id, ''), $4)
 		where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
 		returning claimed_at, session_id
-	`, message.ID, pending.attempt, pending.claimedAt, renewed.resolved.attemptSessionID,
-	).Scan(&renewed.claimedAt, &renewed.resolved.attemptSessionID)
+	`, message.ID, pending.attempt, pending.claimedAt, next.resolved.attemptSessionID,
+	).Scan(&next.claimedAt, &next.resolved.attemptSessionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return pending, false, nil
 	}
@@ -855,7 +951,7 @@ func (s *server) renewMessageDeliveryClaim(
 	if err := tx.Commit(ctx); err != nil {
 		return pending, false, err
 	}
-	return renewed, true, nil
+	return next, true, nil
 }
 
 // messageReplyInput is the body of POST /api/v1/messages/{id}/reply.
@@ -866,6 +962,56 @@ type messageReplyInput struct {
 	Error   *string      `json:"error"`
 	// InReplyToBlock is the id of the block of message {id} the reply answers ("b2").
 	InReplyToBlock *string `json:"in_reply_to_block"`
+}
+
+// messageReplyPlan is everything a session's reply to a message delivery is decided on, read
+// and planned before the route takes its first row lock (replyRowPlan), with the body that
+// reply carries and the block of its parent it names.
+//
+// One plan serves both rows the route can insert - the reply to the attempt, and a follow-up
+// posted under a reply the session already made (replyAfterAnswer) - because at most one of
+// them is written and both carry this body, in this conversation's issue.
+type messageReplyPlan struct {
+	replyRowPlan
+	// block is the block of the answered message the reply names, nil when it names none; a
+	// follow-up names none, so one plan serves both rows.
+	block *namedBlock
+	// body is the reply row's, which its index and its references were planned for.
+	body string
+}
+
+// planMessageReply plans one session reply above every row lock the route takes: the block the
+// reply names with the index its message owes, and the reply's own index and references, for an
+// id and a created_at reserved here. Nothing it plans is written here.
+//
+// The reply row is not inserted yet, so the document its `#id`s resolve against is handed over,
+// named by the fields that row will hold (planPendingItem, refs.PendingSource), as
+// createStoredMessage hands it over for a row it has only queued. The named block is addressed
+// here for the same reason: the read that gives a stored reply its block would find no row yet.
+// A direct message writes no mention, so its blocks hold none and it moves nothing. who is the
+// session replying, which a block it may not see is refused to.
+func (s *server) planMessageReply(
+	ctx context.Context, tx pgx.Tx, who model.Actor, message model.Message, body string, inReplyToBlock *string,
+) (messageReplyPlan, error) {
+	plan := messageReplyPlan{body: body}
+	if inReplyToBlock != nil {
+		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemMessage, message.ID, *inReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE")
+		if err != nil {
+			plan.refusal, err = deferredRefusal(err)
+			return plan, err
+		}
+		plan.parentIndex, plan.block = repair, block
+		plan.replyBlock = block.replyBlock(message.IssueKey, "", "")
+	}
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&plan.id, &plan.createdAt); err != nil {
+		return plan, err
+	}
+	var err error
+	plan.changes, plan.write, err = s.planPendingItem(
+		ctx, tx, who, refs.ItemMessage, plan.id, plan.body, refs.PendingSource{IssueKey: message.IssueKey},
+		plan.createdAt, message.IssueKey != nil,
+	)
+	return plan, err
 }
 
 func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
@@ -907,6 +1053,25 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The message's target and the session its attempt names are read before the transaction,
+	// so a reply from a session the attempt does not name, to a message sent for a route to a
+	// role, asks the listener whether that session holds the role now with nothing held
+	// (lookUpRoleHolderReply). A read that finds nothing asks nothing: the transaction below
+	// answers that message or attempt as it always has. A read that fails is the route's 500. An
+	// attempt past message_deliveries.attempt's range names no delivery, so no read is made with
+	// it: the bound below (fitsIntegerColumn) answers it, where it always has.
+	var roleReply roleHolderReply
+	if fitsIntegerColumn(input.Attempt) {
+		roleReply, err = s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
+		select coalesce(m.target, ''), d.session_id
+		from messages m left join message_deliveries d on d.message_id = m.id and d.attempt = $2
+		where m.id = $1
+	`, input.Attempt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -914,16 +1079,42 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	message, err := scanMessage(tx.QueryRow(r.Context(), `
-		select `+messageColumns+`
-		from messages where id = $1
-	`, r.PathValue("id")))
+	// The first read is for the issue key alone. A delete committing behind it leaves the row
+	// it holds stale, so the issue is locked first - the order createStoredMessage takes
+	// (messages.go) - and the row this route judges and answers from is the one read again
+	// under that lock. A message with no issue takes no lock and needs none: a delete refuses
+	// one (NOT_AN_ISSUE_MESSAGE), so its deleted_at is never set.
+	message, err := s.loadMessage(r.Context(), tx, "", r.PathValue("id"))
 	if err != nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
 		return
 	}
 	if message.IssueKey != nil {
 		if _, err := s.lockIssue(r.Context(), tx, *message.IssueKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if message, err = s.loadMessage(r.Context(), tx, "", message.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	// A reply adds text under the post, which a deleted one no longer holds. The session keeps
+	// its attempt: a reply it cannot post is this refusal, not a lost delivery.
+	if message.DeletedAt != nil {
+		s.writeHandlerError(w, deletedPostError(refs.ItemMessage))
+		return
+	}
+	// This reply - its own body, and the block it names - is read and planned here, before the
+	// first statement that takes a row lock, so no document work runs while the transaction
+	// holds a transaction id (INFRA-636). The refusal the planning earns is raised in the
+	// branch that answers with it, where it was raised; the index it finds the parent owes is
+	// written there too, under the parent's lock, which is taken below: the order
+	// refs.IndexItemIfOwed states, and the one queueReplyParentMessageLock queues for a route
+	// with a write phase.
+	var plan messageReplyPlan
+	if input.Body != nil {
+		if plan, err = s.planMessageReply(r.Context(), tx, actor, message, *input.Body, input.InReplyToBlock); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -935,6 +1126,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The attempt is a number message_deliveries keeps in an integer column, so one past that
+	// column (fitsIntegerColumn) is a delivery no message has, answered as the read below answers
+	// one, before any query is made with it.
+	if !fitsIntegerColumn(input.Attempt) {
+		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
+		return
+	}
 	attempt, err := scanMessageDelivery(tx.QueryRow(r.Context(), `
 		select `+messageDeliveryColumns+`
 		from message_deliveries where message_id = $1 and attempt = $2 for update
@@ -943,8 +1141,11 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
 		return
 	}
-	if attempt.SessionID != actor.ID {
-		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "session may reply only to its own delivery")
+	// The session the attempt names answers it, and so does the session that holds the role the
+	// message went to now, while it is live: a different session that took the role from the one
+	// the attempt names is handed what that session had not read (lookUpRoleHolderReply).
+	if attempt.SessionID != actor.ID && !roleReply.allows(messageTarget(message.Target)) {
+		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "session may reply only to its own delivery, or to one sent for a role it holds while it is live")
 		return
 	}
 	// Each outcome is a response, its status, and the event it appended, if any; they share one
@@ -964,14 +1165,16 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, input.Body, followUp, wantsDisplayTrees(r))
+		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, input.Body != nil && followUp, plan, wantsDisplayTrees(r))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 		// A message handed back as it is stored reads the block it answers as every read does.
+		// It is a database read, and loadMessage beside it is in this window whatever this read
+		// does, so it stays on the transaction, where replyComment's own replay hydrates too.
 		if posted == nil {
-			if err := hydrateMessageReplyBlocks(r.Context(), tx, &read.Message); err != nil {
+			if err := hydrateMessageReplyBlocks(r.Context(), tx, actor, &read.Message); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -1003,25 +1206,34 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		response, events = updated, append(events, receipt)
 	default:
-		var block *namedBlock
-		if input.InReplyToBlock != nil {
-			block, err = s.replyBlockOf(r.Context(), tx, refs.ItemMessage, message.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE")
-			if err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
+		if plan.refusal != nil {
+			s.writeHandlerError(w, plan.refusal)
+			return
 		}
-		reply, answered, err := s.insertSessionReply(r.Context(), tx, message, actor, *input.Body, block)
+		if err := plan.parentIndex.Write(r.Context(), tx); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		reply, answered, err := s.insertSessionReply(r.Context(), tx, message, actor, plan)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 		// The session answered, so the message reached it whatever the attempt recorded: a failed
 		// attempt (a stale receipt, an error the session itself reported) reads as sent and answered.
-		if _, err := tx.Exec(r.Context(), `
-			update message_deliveries set reply_id = $3, state = 'sent', error = null
-			where message_id = $1 and attempt = $2
-		`, message.ID, input.Attempt, reply.ID); err != nil {
+		// So the session that attempt names is a node of the store from this write on, as a
+		// settle's is, written in the same batch as the attempt's update. This child writes no
+		// message node, so the answer states the node alone and no delivered_to
+		// (queueAnsweredDelivery).
+		if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+			b.Queue("", `
+				update message_deliveries set reply_id = $3, state = 'sent', error = null
+				where message_id = $1 and attempt = $2
+			`, message.ID, input.Attempt, reply.ID)
+			return queueAnsweredDelivery(b, answeredDelivery{
+				session: attempt.SessionID, was: attempt.State,
+			}, actor, answered.CreatedAt, answered.ID)
+		}); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1036,16 +1248,32 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 // replyAfterAnswer is the reply route on an attempt the session already answered with answer.
-// Without a follow-up every call is a retry of that answer and posts nothing: the host's
-// automatic BTW answer is sent that way, so a frame the session is handed twice can never post a
-// second answer, and an error report after an answer is a retry too. A follow-up whose text the
-// session already posted in this conversation (its first reply, or an earlier follow-up) is a
-// resend and posts nothing; any other is posted under the first reply, and its event is returned.
+// post is this call asking to post the plan's body under that answer: the request carried a
+// body and named ?follow_up=true. Without it every call is a retry of that answer and posts
+// nothing: the host's automatic BTW answer is sent that way, so a frame the session is handed
+// twice can never post a second answer, and an error report after an answer is a retry too. A
+// follow-up whose text the session already posted in this conversation (its first reply, or an
+// earlier follow-up) is a resend and posts nothing; any other is posted under the first reply,
+// and its event is returned. A follow-up under an answer the session has deleted is refused, as
+// a reply to any other deleted post is. A posted follow-up is the plan's row: the route planned
+// one reply for this body above its locks, and at most one of the two branches writes it
+// (messageReplyPlan).
 func (s *server) replyAfterAnswer(
-	ctx context.Context, tx pgx.Tx, answer model.Message, actor model.Actor, body *string, followUp, trees bool,
+	ctx context.Context, tx pgx.Tx, answer model.Message, actor model.Actor, post bool,
+	plan messageReplyPlan, trees bool,
 ) (replyRead, *model.Event, error) {
-	if body == nil || !followUp {
+	if !post {
 		return replyRead{shapedMessage: newShapedMessage(answer, trees), Duplicate: true}, nil, nil
+	}
+	// The answer is the session's own post, which it may have deleted since it wrote it: a
+	// follow-up adds text under it, and a deleted post takes none, which is the refusal the
+	// message replied to takes above. A retry above this line posts nothing, so it stands and
+	// hands back the answer as every other read of a deleted post gives it, with no body.
+	//
+	// The answer was read under its issue's lock (replyMessage), so no delete commits behind
+	// it; an answer in a conversation with no issue is never deleted at all.
+	if answer.DeletedAt != nil {
+		return replyRead{}, nil, deletedPostError(refs.ItemMessage)
 	}
 	posted, err := scanMessage(tx.QueryRow(ctx, `
 		select `+messageColumns+`
@@ -1053,14 +1281,14 @@ func (s *server) replyAfterAnswer(
 		where (id = $1 or in_reply_to = $1) and body = $2
 		  and author->>'kind' = 'session' and author->>'id' = $3
 		order by created_at desc limit 1
-	`, answer.ID, *body, actor.ID))
+	`, answer.ID, plan.body, actor.ID))
 	if err == nil {
 		return replyRead{shapedMessage: newShapedMessage(posted, trees), Duplicate: true}, nil, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return replyRead{}, nil, err
 	}
-	followUpReply, event, err := s.insertSessionReply(ctx, tx, answer, actor, *body, nil)
+	followUpReply, event, err := s.insertSessionReply(ctx, tx, answer, actor, plan)
 	if err != nil {
 		return replyRead{}, nil, err
 	}
@@ -1101,37 +1329,46 @@ func followUpRequested(r *http.Request) (bool, error) {
 // insertSessionReply writes a session's reply to parent in parent's conversation - its issue,
 // or none, and its target - with the reply's references and its message.answered event. A reply
 // naming a block of parent stores it and previews that block's text in place of the parent's.
+//
+// plan carries the row: its id and created_at, written explicitly because its index and its
+// references were planned for them before this insert ran, the body, the block it names and the
+// step that writes its index (planMessageReply). A follow-up names no block, so the plan's
+// serves both rows the route can insert. Nothing of the body and nothing of the reply's own row
+// is read here, so this write holds the transaction id for its own statements alone
+// (INFRA-636).
 func (s *server) insertSessionReply(
-	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, body string, block *namedBlock,
+	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, plan messageReplyPlan,
 ) (model.Message, model.Event, error) {
 	author, err := json.Marshal(actor)
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
 	reply, err := scanMessage(tx.QueryRow(ctx, `
-		insert into messages (issue_key, author, body, target, in_reply_to, replies_to_block)
-		values ($1, $2, $3, $4, $5, $6)
+		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8)
 		returning `+messageColumns+`
-	`, parent.IssueKey, author, body, parent.Target, parent.ID, block.nodeID()))
+	`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), plan.createdAt))
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
+	// The block was read above the route's locks, where this row did not exist yet, so the
+	// reply carries it from the plan rather than reading it back (createStoredMessage).
+	reply.ReplyBlock = plan.replyBlock
 	replyParent := messageReplyParentOf(parent)
-	if block != nil {
-		if err := hydrateMessageReplyBlocks(ctx, tx, &reply); err != nil {
-			return model.Message{}, model.Event{}, err
-		}
-		replyParent.ReplyBody = messageReplyPreview(block.excerpt)
+	if plan.block != nil {
+		replyParent.ReplyBody = messageReplyPreview(plan.block.excerpt)
 	}
-	referenceChanges, err := s.indexMessage(ctx, tx, reply)
-	if err != nil {
+	// The reply's blocks, the mentions each holds and its own references were planned above the
+	// route's locks; their statements run here as one batch of their own, where the index of a
+	// reply this route wrote has always run.
+	if err := store.RunWrite(ctx, tx, plan.write); err != nil {
 		return model.Message{}, model.Event{}, err
 	}
 	thread, err := replyParent.thread(ctx, tx)
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
-	payload := thread.payload(reply, referenceChanges)
+	payload := thread.payload(reply, plan.changes)
 	payload.ThreadLogins, err = messageThreadLogins(ctx, tx, reply)
 	if err != nil {
 		return model.Message{}, model.Event{}, err
@@ -1201,4 +1438,21 @@ func (s *server) loadMessageDeliveries(ctx context.Context, q queryer, messageID
 		deliveries[delivery.MessageID] = append(deliveries[delivery.MessageID], delivery)
 	}
 	return deliveries, rows.Err()
+}
+
+// hydrateWrittenMessage sets message.Deliveries to every attempt of the message, as GET
+// /api/v1/messages/{id} lists them (hydrateMessageThreads), for the answer of a write of it. A
+// correction (editMessage, deleteMessage) passes its own transaction as q, in its read phase,
+// before its write phase runs, so a read that fails ends the request with nothing written; the
+// delete sets the attempts its settle leaves in the answer itself. The other callers pass the
+// pool after the write committed, so a read that fails there fails the answer of a write that
+// stands: a keyed repeat's answer (recoveredMessage, freshMessage), and the answer of a targeted
+// message whose attempt 1 another sender took (createStoredMessage's errAttemptNotPending).
+func (s *server) hydrateWrittenMessage(ctx context.Context, q queryer, message *model.Message) error {
+	deliveries, err := s.loadMessageDeliveries(ctx, q, []string{message.ID})
+	if err != nil {
+		return err
+	}
+	message.Deliveries = deliveries[message.ID]
+	return nil
 }

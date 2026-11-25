@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // captureLogs sends the default logger's lines to the returned log until the test ends.
@@ -80,7 +81,7 @@ func runTaskProgress(t *testing.T, service *Service) <-chan struct{} {
 		defer close(done)
 		service.RunTaskProgressReconciliation(ctx)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		cancel()
 		<-done
 	})
@@ -90,6 +91,7 @@ func runTaskProgress(t *testing.T, service *Service) <-chan struct{} {
 // The reconciliation counts every uncounted issue once at start and then returns: every version
 // write counts its own, so it keeps no timer and makes no statement after the boot pass.
 func TestTaskProgressIsCountedAtStartAndThenNothingRuns(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	keys := []string{
 		seedUncountedIssue(t, database, 1, "- [x] a\n- [ ] b\n"),
@@ -98,7 +100,7 @@ func TestTaskProgressIsCountedAtStartAndThenNothingRuns(t *testing.T) {
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	service := New(Deps{Store: counted, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 
 	done := runTaskProgress(t, service)
 	select {
@@ -128,11 +130,13 @@ func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = writer.Rollback(context.Background()) }()
-	if _, err := writer.Exec(ctx, `select 1 from issues where key = $1 for update`, held); err != nil {
+	// The pass tries each issue's owner lock rather than its row (store.TryLockOwners), so a
+	// writer holds an issue out of a pass by holding that lock, as every writer of the issue does.
+	if err := store.LockOwner(ctx, writer, store.IssueOwner(held)); err != nil {
 		t.Fatalf("hold %s: %v", held, err)
 	}
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 
 	done := runTaskProgress(t, service)
 	waitFor(t, 20*time.Second, "the boot pass to give up on the held row", func() bool {

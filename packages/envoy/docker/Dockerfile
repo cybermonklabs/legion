@@ -29,7 +29,7 @@ RUN set -eu; \
 COPY package.json bun.lock ./
 COPY patches patches
 COPY packages/contracts/package.json packages/contracts/package.json
-COPY packages/broker-client/package.json packages/broker-client/package.json
+COPY packages/cipher-client/package.json packages/cipher-client/package.json
 COPY packages/envoy-client/package.json packages/envoy-client/package.json
 COPY packages/pi-envoy/package.json packages/pi-envoy/package.json
 COPY packages/pi-legion/package.json packages/pi-legion/package.json
@@ -99,30 +99,15 @@ RUN go-third-party-notices.sh --install
 COPY packages/envoy/go.mod packages/envoy/go.sum ./
 RUN go mod download
 
-COPY packages/envoy/cmd ./cmd
-COPY packages/envoy/internal ./internal
-# agentloop: the model loop and the tools a model may call, a package outside internal/ so the
-# daemon runs the same loop. envoy-broker's judge compiles it in, so the build needs it here
-# beside cmd and internal.
-COPY packages/envoy/agentloop ./agentloop
-# listenfd: the inherited listening socket envoy-dispatch and envoy-listener serve on
-# (DISPATCH_LISTEN_FD, ENVOY_LISTEN_FD).
-COPY packages/envoy/listenfd ./listenfd
-# going: the chat client, the answer filter and the run the going routes answer with, a package
-# outside internal/ so the daemon can speak the same stream (going/events.go). envoy-dispatch
-# compiles it in, so the build needs it here beside cmd and internal.
-COPY packages/envoy/going ./going
-# migrationid: the rule a store's migration identifiers follow, which internal/pgmigrate reads to
-# name the remedy a collision takes in the set that refused it.
-COPY packages/envoy/migrationid ./migrationid
-# roleholder: the no-holder reasons envoy-listener's role publish refusal names.
-COPY packages/envoy/roleholder ./roleholder
-# natsversion: the nats-server versions envoy-listener refuses to start against, which its session
-# consumers read (internal/bus) and the Legion daemon reads too.
-COPY packages/envoy/natsversion ./natsversion
-# The Go contracts file is generated from packages/contracts/schemas; never
+# The whole module, so a binary that imports a new package of it builds here with no edit to this
+# file, as the worker image's `COPY packages/envoy packages/envoy` builds agent-secrets. The root
+# .dockerignore leaves out what no image compiles: test files, internal/integration,
+# internal/smoke, deploy, infra (the envoy-infra module) and the changelog fragments.
+COPY packages/envoy ./
+# The Go contracts files are generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
 COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/contracts/generated.go
+COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go ./listenerwire/envelope_generated.go
 
 # /out/THIRD_PARTY_NOTICES, the image's /usr/share/doc/legion/THIRD_PARTY_NOTICES: the licenses of
 # the Go modules the four binaries below compile in (with the build's CGO_ENABLED and the image's
@@ -131,29 +116,33 @@ COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/
 COPY --from=web /repo/packages/dispatch/web/dist/THIRD_PARTY_NOTICES.txt /tmp/dispatch-web-notices
 RUN mkdir -p /out \
     && CGO_ENABLED=0 go-third-party-notices.sh /tmp/go-notices \
-      ./cmd/listener ./cmd/dispatch ./cmd/broker ./cmd/agent-secrets \
+      ./cmd/listener ./cmd/dispatch ./cmd/cipherd ./cmd/cipher \
     && assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES \
       "Third-party software in the Legion Envoy image, with the license of each piece. Legion's own code is under the Apache License 2.0. The Debian packages the image installs carry their terms in /usr/share/doc/<package>/copyright." \
       "Go modules compiled into /usr/local/bin/envoy-listener, envoy-dispatch, envoy-broker and agent-secrets" /tmp/go-notices \
       "npm packages inlined into, and the typeface shipped with, the Dispatch web app, /srv/dispatch-web (served as /THIRD_PARTY_NOTICES.txt)" /tmp/dispatch-web-notices
 
 # The legion commit this image is built from, which envoy-dispatch's /healthz reports as
-# `commit`. The release workflow passes its own github.sha, for the image it publishes and for
+# `commit`, and which every binary below that connects to NATS names after its connection's name
+# (internal/buildversion's commit; legacy-subjects-gate.sh reads it from the hub's census of
+# connections). The release workflow passes its own github.sha, for the image it publishes and for
 # the smoke image it tests first. Left empty — a local compose or hand build, and the
-# pull-request lane's smoke image, which publishes nothing to match — the binary reports null;
-# anything else must be a full commit sha, so no placeholder is ever reported as a commit.
+# pull-request lane's smoke image, which publishes nothing to match — the binary reports null and
+# names no build; anything else must be a full commit sha, so no placeholder is ever reported as a
+# commit.
 ARG LEGION_COMMIT=
 RUN if [ -n "$LEGION_COMMIT" ] && ! printf '%s' "$LEGION_COMMIT" | grep -Eqx '[0-9a-f]{40}'; then \
       echo "LEGION_COMMIT must be a full 40-character commit sha or empty, got '$LEGION_COMMIT'" >&2; exit 1; \
     fi \
+    && build="-X github.com/sjawhar/envoy/internal/buildversion.commit=${LEGION_COMMIT}" \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -o /out/envoy-listener ./cmd/listener \
+    go build -ldflags "$build" -o /out/envoy-listener ./cmd/listener \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -ldflags "-X main.buildCommit=${LEGION_COMMIT}" -o /out/envoy-dispatch ./cmd/dispatch \
+    go build -ldflags "-X main.buildCommit=${LEGION_COMMIT} $build" -o /out/envoy-dispatch ./cmd/dispatch \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -o /out/envoy-broker ./cmd/broker \
+    go build -ldflags "$build" -o /out/envoy-broker ./cmd/cipherd \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -o /out/agent-secrets ./cmd/agent-secrets
+    go build -ldflags "$build" -o /out/agent-secrets ./cmd/cipher
 
 # Minimal runtime — static binary, no shell needed.
 # curl is included for HEALTHCHECK and operational debugging.

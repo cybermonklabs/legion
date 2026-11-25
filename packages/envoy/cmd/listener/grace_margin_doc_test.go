@@ -1,5 +1,8 @@
 package main
 
+//ci:reads packages/envoy/infra/README.md graceMarginDocs lists it, and TestDocumentedGraceMarginIsTheListenerGraceMargin reads it through ../../infra
+//ci:reads packages/envoy/infra/docs/nats-hub.md graceMarginDocs lists it, and TestDocumentedGraceMarginIsTheListenerGraceMargin reads it through ../../infra
+
 import (
 	"os"
 	"path/filepath"
@@ -11,13 +14,11 @@ import (
 // graceMarginDocs are the documents that state the margin a listener pod grants above its
 // pre-stop wait and stopBudget: read is the path from this package's directory, and path names
 // the same file from the repository root, for a failure read in CI. packages/envoy/infra is a Go
-// module of its own and AGENTS.md is prose, so none of the three can name listenerGraceMargin as
-// a symbol; each writes the number out and cites the constant beside it, and this list is what
-// brings them back to it.
+// module of its own, so neither document can name listenerGraceMargin as a symbol; each writes
+// the number out and cites the constant beside it, and this list is what brings them back to it.
 var graceMarginDocs = []struct{ read, path string }{
 	{filepath.Join("..", "..", "infra", "README.md"), "packages/envoy/infra/README.md"},
 	{filepath.Join("..", "..", "infra", "docs", "nats-hub.md"), "packages/envoy/infra/docs/nats-hub.md"},
-	{filepath.Join("..", "..", "AGENTS.md"), "packages/envoy/AGENTS.md"},
 }
 
 // graceMarginConst is the constant the sentences cite, written here as the documents write it.
@@ -25,9 +26,8 @@ const graceMarginConst = "listenerGraceMargin"
 
 // graceMarginSentence matches the one shape the sentences are written in, "margin of <n> seconds
 // (`listenerGraceMargin`)", and captures the number. The citation is part of the shape and not
-// decoration around it: packages/envoy/AGENTS.md uses the word "margin" some twenty times for a
-// document's margin, and a pattern that asked only for a margin and a number would read one of
-// those and hold a paragraph about layout to this listener's stop. A sentence is matched after
+// decoration around it: a pattern that asked only for a margin and a number would read a
+// paragraph about a layout margin and hold it to this listener's stop. A sentence is matched after
 // runs of whitespace are collapsed to single spaces, so one an editor wraps across two lines is
 // still one sentence here.
 var graceMarginSentence = regexp.MustCompile("margin of ([0-9]+) seconds \\(`" + graceMarginConst + "`\\)")
@@ -38,13 +38,13 @@ var graceMarginWhitespace = regexp.MustCompile(`\s+`)
 // TestDocumentedGraceMarginIsTheListenerGraceMargin holds every sentence that states the
 // listener pod's grace margin to listenerGraceMargin, which nothing else does. Each sentence
 // cites the constant by name, and a citation is not a check: a reader who moves
-// listenerGraceMargin and reads the documents afterwards finds four sentences that still name the
+// listenerGraceMargin and reads the documents afterwards finds three sentences that still name the
 // constant they now contradict, each looking right on its own. Only something that reads both
 // sides at once can tell them apart, and this is that.
 //
-// What is compared: the number each sentence states, in packages/envoy/infra/README.md (twice),
-// packages/envoy/infra/docs/nats-hub.md and packages/envoy/AGENTS.md, against
-// int(listenerGraceMargin.Seconds()). Nothing else of the sentence is read.
+// What is compared: the number each sentence states, in packages/envoy/infra/README.md (twice)
+// and packages/envoy/infra/docs/nats-hub.md, against int(listenerGraceMargin.Seconds()). Nothing
+// else of the sentence is read.
 //
 // What this cannot see: it does not read a sentence's meaning, so a sentence whose number is
 // right while the prose around it is stale, wrong, or describes some other pod's stop passes
@@ -57,6 +57,7 @@ var graceMarginWhitespace = regexp.MustCompile(`\s+`)
 // The subtests stay serial: files and sentences are written inside them and compared after the
 // loop, so a t.Parallel() added to one would make the counts fail rather than pass wrongly.
 func TestDocumentedGraceMarginIsTheListenerGraceMargin(t *testing.T) {
+	t.Parallel()
 	margin := int(listenerGraceMargin.Seconds())
 	files, sentences := 0, 0
 	for _, doc := range graceMarginDocs {
@@ -95,8 +96,8 @@ func TestDocumentedGraceMarginIsTheListenerGraceMargin(t *testing.T) {
 	// take its own assertion away and the run would pass having covered one document less, and an
 	// emptied list would pass having covered none.
 	const (
-		graceMarginFiles     = 3
-		graceMarginSentences = 4
+		graceMarginFiles     = 2
+		graceMarginSentences = 3
 	)
 	t.Logf("read %d documents stating the margin, %d sentences in all", files, sentences)
 	if sentences == 0 {

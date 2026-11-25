@@ -40,35 +40,23 @@ func TestThePhaseEntryVerbatimMigrationLeavesEveryRowUnmarkedAndTheMarkRoundTrip
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the mark: %v", err)
 	}
-	rowOf := func(st *Store, role claim.Role) record.PhaseRow {
-		t.Helper()
-		var rows []record.PhaseRow
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
-			var err error
-			rows, err = record.NewStore().Phases(ctx, tx, "LEGION-208")
-			return err
-		}); err != nil {
-			t.Fatalf("read the phases rows of LEGION-208: %v", err)
-		}
-		return record.PhaseRowOf(rows, role)
-	}
 	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleImplementer} {
-		if row := rowOf(store, role); row.Entry == 0 || row.EntryVerbatim {
+		if row := phaseRowOf(t, store, "LEGION-208", role); row.Entry == 0 || row.EntryVerbatim {
 			t.Fatalf("the %s's row after the migration = entry %d, sent as written %t; want the entry it stood on, unmarked: "+
 				"no row of the release before this one is a resume's", role, row.Entry, row.EntryVerbatim)
 		}
 	}
 
 	// The resume of an answered root raises the architect's entry 2 and marks its task.
-	want := rowOf(store, claim.RoleArchitect)
+	want := phaseRowOf(t, store, "LEGION-208", claim.RoleArchitect)
 	want.Entry, want.EntryTask, want.EntryVerbatim = 2, "A person answered your ask ask-1 on LEGION-208; read it. Continue.", true
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(ctx, tx, want)
 	}); err != nil {
 		t.Fatalf("put the architect's row of the resume's entry: %v", err)
 	}
 	for _, st := range []*Store{store, reopenStore(t, store)} {
-		if got := rowOf(st, claim.RoleArchitect); got.Entry != 2 || got.EntryTask != want.EntryTask || !got.EntryVerbatim {
+		if got := phaseRowOf(t, st, "LEGION-208", claim.RoleArchitect); got.Entry != 2 || got.EntryTask != want.EntryTask || !got.EntryVerbatim {
 			t.Fatalf("the architect's row = entry %d, task %q, sent as written %t; want entry 2 carrying %q, marked to be sent as written",
 				got.Entry, got.EntryTask, got.EntryVerbatim, want.EntryTask)
 		}

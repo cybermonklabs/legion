@@ -1,5 +1,7 @@
 package text
 
+//ci:reads packages/contracts/fixtures/go-unicode-isspace.json TestUnicodeIsSpaceReportsTheCommittedScalars os.ReadFile (goSpaceFixturePath, ../../../../contracts/fixtures)
+
 import (
 	"encoding/json"
 	"fmt"
@@ -12,7 +14,7 @@ import (
 
 // goSpaceFixturePath is the committed list of the scalars Go's unicode.IsSpace reports, read by
 // relative path as the other shared fixtures of this repository are. Its other reader is a Bun
-// test of packages/envoy-client, which holds goBlankPattern - the same set written out as a
+// test of packages/contracts, which holds goBlankPattern - the same set written out as a
 // regular expression - to the same list.
 const goSpaceFixturePath = "../../../../contracts/fixtures/go-unicode-isspace.json"
 
@@ -83,12 +85,14 @@ func TestUnicodeIsSpaceReportsTheCommittedScalars(t *testing.T) {
 		"This test measured this Go over every scalar from 0 to 10FFFF, so the characters above are where "+
 		"Go stands now and the list is what Go reported when the list was written: raising Go or its "+
 		"Unicode version moves the first line, editing the file by hand moves the second.\n"+
-		"goBlankPattern in packages/envoy-client/src/dispatch-execute.ts writes the same set out as a "+
-		"regular expression, and `dispatch artifact` reads it to tell whether the Dispatch server will "+
-		"call a create's content blank; the server reads strings.TrimSpace, which trims what this test "+
-		"measured. Measure the two together: write what this test reports into the list, correct the "+
-		"pattern to the same characters, and run this test and `goBlankPattern` > `calls blank exactly "+
-		"the scalars the committed list holds` (packages/envoy-client) again. Correcting one alone "+
-		"reddens the other.",
+		"goBlankPattern in packages/contracts/src/go-blank.ts writes the same set out as a "+
+		"regular expression: `dispatch artifact` and the `legion` tool read it to tell whether "+
+		"the Dispatch server or the daemon will call a text blank, and the Envoy plugin's "+
+		"listenerRoleName reads it to trim a role's name as the Envoy listener trims a claim's; "+
+		"those three servers read strings.TrimSpace, which trims what this test measured. Measure "+
+		"the two together: write what this test reports into "+
+		"the list, correct the pattern to the same characters, and run this test and `goBlankPattern` "+
+		"> `calls blank exactly the scalars the committed list holds` (packages/contracts) again. "+
+		"Correcting one alone reddens the other.",
 		goSpaceFixturePath, strings.Join(moved, "\n"))
 }

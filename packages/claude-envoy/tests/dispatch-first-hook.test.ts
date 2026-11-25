@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const packageRoot = resolve(import.meta.dir, "..")
 const hookEntry = join(packageRoot, "hooks", "session-hook.ts")
@@ -19,7 +21,7 @@ async function runHook(
   mode = "dispatch-first",
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
   const run = Bun.spawn(["bun", hookEntry, mode], {
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE, ...env },
     stdin: new TextEncoder().encode(JSON.stringify(input)),
     stdout: "pipe",
     stderr: "pipe",
@@ -32,7 +34,9 @@ async function runHook(
   return { exitCode, stdout, stderr }
 }
 
-const withDispatch = { DISPATCH_URL: "http://127.0.0.1:9", DISPATCH_TOKEN: "hook-token" }
+/** The Dispatch token the hook is handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp")
+const withDispatch = { DISPATCH_URL: "http://127.0.0.1:9", DISPATCH_TOKEN }
 
 test("with Dispatch configured, puts the plugin's dispatch-first skill into the session as SessionStart context", async () => {
   const home = await mkdtemp(join(tmpdir(), "claude-envoy-dispatch-first-"))

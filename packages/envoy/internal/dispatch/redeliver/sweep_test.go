@@ -20,9 +20,11 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -120,7 +122,7 @@ func openState(tb testing.TB) bus.KeyValue {
 	if err != nil {
 		tb.Fatalf("JetStream: %v", err)
 	}
-	state, err := redeliver.OpenState(nc, js, 1)
+	state, err := redeliver.OpenState(tb.Context(), nc, js, 1)
 	if err != nil {
 		tb.Fatalf("open redelivery state: %v", err)
 	}
@@ -130,7 +132,7 @@ func openState(tb testing.TB) bus.KeyValue {
 func (h *harness) sweeper() *redeliver.Sweeper {
 	return &redeliver.Sweeper{
 		GitHub: h.client,
-		Open:   func() (bus.KeyValue, error) { return h.state, nil },
+		Open:   func(context.Context) (bus.KeyValue, error) { return h.state, nil },
 		Limits: h.limits,
 		Logger: slog.New(slog.NewTextHandler(h.logs, nil)),
 		Now:    h.clock.Now,
@@ -301,7 +303,8 @@ func TestSweepRedeliversAServerFailureOnce(t *testing.T) {
 // a signature it cannot check, 400 for a body it cannot use, 422 for a publish NATS refused), and
 // what it cannot take now it may take later. So every failed attempt is asked for again on the
 // doubling backoff, past five requests, until GitHub records one OK; the sweep then says once, at
-// INFO, how many requests the delivery took.
+// INFO, how many requests the delivery took. Each request is due nine tenths of its backoff after
+// the one before (duty.LeasePeriod), the least time the sweeps that many intervals on can take.
 func TestSweepAsksAgainForEveryFailedDeliveryUntilGitHubRecordsItOK(t *testing.T) {
 	h := newHarness(t)
 	answers := []int{
@@ -318,13 +321,14 @@ func TestSweepAsksAgainForEveryFailedDeliveryUntilGitHubRecordsItOK(t *testing.T
 		t.Fatalf("first sweep: outcome %q, want %q", got, redeliver.Redelivered)
 	}
 	for i, backoff := range []time.Duration{2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute, 32 * time.Minute, time.Hour} {
-		h.clock.advance(backoff - time.Second)
+		due := duty.LeasePeriod(backoff)
+		h.clock.advance(due - time.Second)
 		if got := outcome(h.sweep(redeliver.Options{}), "guid-refused"); got != redeliver.Waiting {
-			t.Fatalf("a second before backoff %s: outcome %q, want %q", backoff, got, redeliver.Waiting)
+			t.Fatalf("a second before nine tenths of backoff %s: outcome %q, want %q", backoff, got, redeliver.Waiting)
 		}
 		h.clock.advance(time.Second)
 		if got := outcome(h.sweep(redeliver.Options{}), "guid-refused"); got != redeliver.Redelivered {
-			t.Fatalf("after backoff %s (the redelivery before it answered %d): outcome %q, want %q", backoff, answers[i], got, redeliver.Redelivered)
+			t.Fatalf("nine tenths of backoff %s on (the redelivery before it answered %d): outcome %q, want %q", backoff, answers[i], got, redeliver.Redelivered)
 		}
 		if got, want := len(h.requests()), i+2; got != want {
 			t.Fatalf("requests after backoff %s = %d, want %d", backoff, got, want)
@@ -348,13 +352,13 @@ func TestSweepAsksAgainForEveryFailedDeliveryUntilGitHubRecordsItOK(t *testing.T
 }
 
 // A record waits the longest backoff, an hour, between its last request and the next, and the
-// index brings it back to a sweep when that hour is up and not before. GitHub recorded that
-// request OK, so the listing of the sweep that reads the record must still carry the OK attempt:
-// the listing is what closes a delivery, and a window no wider than the backoff no longer holds
-// the attempt by the time the record is read. A delivery GitHub has delivered would otherwise be
-// asked for again every hour until it expired undelivered. Here GitHub refused every request but
-// the last, so its log holds no failed attempt of this delivery inside any later window and the
-// record is the only thing that brings it back.
+// index brings it back to a sweep when nine tenths of that hour are up and not before. GitHub
+// recorded that request OK, so the listing of the sweep that reads the record must still carry
+// the OK attempt: the listing is what closes a delivery, and a window no wider than the backoff
+// no longer holds the attempt by the time the record is read. A delivery GitHub has delivered
+// would otherwise be asked for again every hour until it expired undelivered. Here GitHub refused
+// every request but the last, so its log holds no failed attempt of this delivery inside any
+// later window and the record is the only thing that brings it back.
 func TestADeliveryRecoveredDuringTheLongestBackoffIsDeliveredAndAskedForNoMore(t *testing.T) {
 	h := newHarness(t)
 	failed := h.fail("guid-recovered", http.StatusServiceUnavailable, 0)
@@ -382,8 +386,9 @@ func TestADeliveryRecoveredDuringTheLongestBackoffIsDeliveredAndAskedForNoMore(t
 
 	// The running loop sweeps every interval, and these ticks are offset by a minute so none
 	// lands in the minute the record is due in: the sweep that reads it is the one just past that
-	// minute, which is what the loop's tick and the jitter after it leave.
-	due := h.clock.Now().Add(time.Hour)
+	// minute, which is what the loop's tick and the jitter after it leave. The record is due nine
+	// tenths of the hour after its last request (duty.LeasePeriod).
+	due := h.clock.Now().Add(duty.LeasePeriod(time.Hour))
 	h.clock.advance(time.Minute)
 	closed := false
 	for h.clock.Now().Before(due.Add(2 * time.Minute)) {
@@ -422,11 +427,13 @@ func TestSweepExpiresADeliveryStillFailingAfter72Hours(t *testing.T) {
 	if got := len(h.requests()); got != 72 {
 		t.Fatalf("requests in the 72 hours = %d, want 72", got)
 	}
-	h.clock.advance(time.Hour - time.Second)
+	// The last request's backoff is the hour, so the next is due nine tenths of it on; the sweep a
+	// second before that waits, and the one at 72 hours expires the delivery instead.
+	h.clock.advance(duty.LeasePeriod(time.Hour) - time.Second)
 	if got := outcome(h.sweep(redeliver.Options{}), "guid-down"); got != redeliver.Waiting {
-		t.Fatalf("a second before 72 hours: outcome %q, want %q", got, redeliver.Waiting)
+		t.Fatalf("a second before the next request is due: outcome %q, want %q", got, redeliver.Waiting)
 	}
-	h.clock.advance(time.Second)
+	h.clock.advance(time.Hour - duty.LeasePeriod(time.Hour) + time.Second)
 	if got := outcome(h.sweep(redeliver.Options{}), "guid-down"); got != redeliver.Expired {
 		t.Fatalf("72 hours after the first failed attempt: outcome %q, want %q", got, redeliver.Expired)
 	}
@@ -523,13 +530,14 @@ func TestSweepAsksAgainWhenDueForAnAcceptedRequestWithNoNewAttempt(t *testing.T)
 		t.Fatalf("first sweep: outcome %q, want %q", got, redeliver.Redelivered)
 	}
 	for _, backoff := range []time.Duration{2 * time.Minute, 4 * time.Minute} {
-		h.clock.advance(backoff - time.Second)
+		due := duty.LeasePeriod(backoff)
+		h.clock.advance(due - time.Second)
 		if got := sweep(); got != redeliver.Waiting {
-			t.Fatalf("a second before backoff %s: outcome %q, want %q", backoff, got, redeliver.Waiting)
+			t.Fatalf("a second before nine tenths of backoff %s: outcome %q, want %q", backoff, got, redeliver.Waiting)
 		}
 		h.clock.advance(time.Second)
 		if got := sweep(); got != redeliver.Redelivered {
-			t.Fatalf("after backoff %s with no new attempt: outcome %q, want %q", backoff, got, redeliver.Redelivered)
+			t.Fatalf("nine tenths of backoff %s on with no new attempt: outcome %q, want %q", backoff, got, redeliver.Redelivered)
 		}
 	}
 	if got, want := github.requested(), []int64{failed.ID, failed.ID, failed.ID}; !slices.Equal(got, want) {
@@ -621,6 +629,169 @@ func TestARefusedRequestIsRetriedNotMistakenForDelivered(t *testing.T) {
 	}
 	if got, want := h.requests(), []int64{failed.ID, failed.ID}; !slices.Equal(got, want) {
 		t.Fatalf("requests %v, want %v", got, want)
+	}
+}
+
+// readRecorder is a githubreads.Recorder that keeps each attempt it is handed, in the order the
+// sweeps recorded them, so a test reads what the running loop gave GET /healthz to answer.
+type readRecorder struct {
+	mu       sync.Mutex
+	recorded []recordedRead
+}
+
+// recordedRead is one attempt a readRecorder was handed.
+type recordedRead struct {
+	read      githubreads.Read
+	succeeded bool
+	cause     string
+}
+
+func (r *readRecorder) record(_ context.Context, read githubreads.Read, succeeded bool, cause string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recorded = append(r.recorded, recordedRead{read: read, succeeded: succeeded, cause: cause})
+	return nil
+}
+
+// take answers the attempts recorded since the last take, and forgets them.
+func (r *readRecorder) take() []recordedRead {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	taken := r.recorded
+	r.recorded = nil
+	return taken
+}
+
+// runningSweep runs one sweep of sweeper's running loop -- the pass duty.Exclusive runs, which is
+// the one that records its attempt (sweepAndReport) -- under a lease of the test's own that runs
+// it once on a live context, and returns once the loop has stopped.
+func runningSweep(sweeper *redeliver.Sweeper) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sweeper.RunUnderLease(ctx, time.Hour, func(ctx context.Context, _ duty.Leases, _ string, _ time.Time, _ time.Duration, pass func(context.Context)) bool {
+		pass(ctx)
+		cancel()
+		return true
+	})
+}
+
+// Each sweep of the running loop records its attempt at reading GitHub, which GET /healthz
+// answers: a sweep whose listing GitHub answered 503 records failed, with that answer as its
+// cause; the next sweep, which GitHub answered, records succeeded; and a sweep that asked GitHub
+// nothing -- NATS not connected, so it opened no state -- records nothing at all.
+func TestEachRunningSweepRecordsItsAttemptAtReadingGitHub(t *testing.T) {
+	h := newHarness(t)
+	reads := &readRecorder{}
+	sweeper := h.sweeper()
+	sweeper.GitHubReads = reads.record
+
+	// The stand-in answers every listing with the status Limit gives it. A 503 is no rate limit
+	// whatever the body says (githubapp.RateLimit reads 403 and 429 alone), so the client notes it
+	// as GitHub failing to answer.
+	h.webhook.Limit(http.MethodGet, http.StatusServiceUnavailable, nil)
+	runningSweep(sweeper)
+	got := reads.take()
+	if len(got) != 1 || got[0].read != githubreads.WebhookRedelivery || got[0].succeeded ||
+		!strings.Contains(got[0].cause, "/app/hook/deliveries") || !strings.Contains(got[0].cause, "status 503") {
+		t.Fatalf("the sweep GitHub answered 503 recorded %+v, want one failed %s attempt whose cause is the listing's 503:\n%s", got, githubreads.WebhookRedelivery, h.logs)
+	}
+
+	h.webhook.Limit(http.MethodGet, 0, nil)
+	runningSweep(sweeper)
+	if got := reads.take(); len(got) != 1 || got[0].read != githubreads.WebhookRedelivery || !got[0].succeeded || got[0].cause != "" {
+		t.Fatalf("the sweep GitHub answered recorded %+v, want one succeeded %s attempt with no cause:\n%s", got, githubreads.WebhookRedelivery, h.logs)
+	}
+
+	unconnected := h.sweeper()
+	unconnected.Open = func(context.Context) (bus.KeyValue, error) {
+		return bus.KeyValue{}, errors.New("NATS is not connected")
+	}
+	unconnected.GitHubReads = reads.record
+	runningSweep(unconnected)
+	if got := reads.take(); len(got) != 0 {
+		t.Fatalf("a sweep that asked GitHub nothing recorded %+v, want nothing", got)
+	}
+	if listings := h.webhook.Listings(); listings != 2 {
+		t.Fatalf("GitHub served %d listings, want the two of the sweeps that opened their state", listings)
+	}
+}
+
+// A running sweep records failed when it gives up part of its read of GitHub on an answer the
+// client takes as data and notes nothing of -- a 4xx, or a limit recorded before the request was
+// sent -- so in each failed row only the sweep's own note can make the record say so: a listing
+// GitHub refused, a redelivery request GitHub refused, and a sweep a rate limit stopped. A
+// redelivery request GitHub answers 404 is GitHub saying it no longer has the delivery, which the
+// sweep expires as data, and the sweep records succeeded.
+func TestARunningSweepRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		// arrange sets up GitHub's answers and the shared limits before the one sweep.
+		arrange   func(h *harness)
+		succeeded bool
+		// causeHas is what the cause of a failed attempt must name.
+		causeHas []string
+	}{{
+		name: "a listing GitHub refuses",
+		arrange: func(h *harness) {
+			// A 422 is no rate limit whatever the stand-in's body says (githubapp.RateLimit reads
+			// 403 and 429 alone), and the client notes no 4xx.
+			h.webhook.Limit(http.MethodGet, http.StatusUnprocessableEntity, nil)
+		},
+		causeHas: []string{"list webhook deliveries since", "status 422"},
+	}, {
+		name: "a redelivery request GitHub refuses",
+		arrange: func(h *harness) {
+			failed := h.fail("guid-refused", http.StatusServiceUnavailable, time.Minute)
+			h.webhook.Refuse(failed.ID, http.StatusUnprocessableEntity)
+		},
+		causeHas: []string{"/attempts", "status 422"},
+	}, {
+		name: "a sweep a recorded rate limit stops",
+		arrange: func(h *harness) {
+			// The sweep's own backoff, which the sweep reads before each request and the client
+			// does not: the sweep stops before it asks GitHub anything.
+			if _, err := h.limits.Strike(context.Background(), "redelivery", time.Minute); err != nil {
+				h.t.Fatalf("record the sweep's backoff: %v", err)
+			}
+			h.fail("guid-held", http.StatusServiceUnavailable, time.Minute)
+		},
+		causeHas: []string{"rate limit stopped the webhook redelivery sweep"},
+	}, {
+		name: "a redelivery GitHub no longer has",
+		arrange: func(h *harness) {
+			failed := h.fail("guid-gone", http.StatusServiceUnavailable, time.Minute)
+			h.webhook.Refuse(failed.ID, http.StatusNotFound)
+		},
+		succeeded: true,
+	}} {
+		t.Run(row.name, func(t *testing.T) {
+			h := newHarness(t)
+			row.arrange(h)
+			reads := &readRecorder{}
+			sweeper := h.sweeper()
+			sweeper.GitHubReads = reads.record
+
+			runningSweep(sweeper)
+
+			got := reads.take()
+			if len(got) != 1 || got[0].read != githubreads.WebhookRedelivery {
+				t.Fatalf("the sweep recorded %+v, want one %s attempt:\n%s", got, githubreads.WebhookRedelivery, h.logs)
+			}
+			if row.succeeded {
+				if !got[0].succeeded || got[0].cause != "" {
+					t.Fatalf("the sweep recorded %+v, want succeeded with no cause:\n%s", got[0], h.logs)
+				}
+				return
+			}
+			if got[0].succeeded {
+				t.Fatalf("the sweep recorded succeeded, want failed:\n%s", h.logs)
+			}
+			for _, text := range row.causeHas {
+				if !strings.Contains(got[0].cause, text) {
+					t.Fatalf("the recorded cause %q does not name %q", got[0].cause, text)
+				}
+			}
+		})
 	}
 }
 
@@ -852,7 +1023,7 @@ func TestASweepPausedBeforeItsRequestSendsNothingUnderANewLimit(t *testing.T) {
 	paused := &pausedClaim{KeyValue: h.state.Legacy(), entered: make(chan struct{}), release: make(chan struct{})}
 	second := h.sweeper()
 	pausedState := bus.NewKeyValue(paused, h.state.WatchHandle(), h.state.Streams())
-	second.Open = func() (bus.KeyValue, error) { return pausedState, nil }
+	second.Open = func(context.Context) (bus.KeyValue, error) { return pausedState, nil }
 	reports := make(chan redeliver.Report, 1)
 	go func() {
 		report, err := second.Sweep(context.Background(), redeliver.Options{})
@@ -1294,9 +1465,10 @@ func TestDryRunReportsWithoutActing(t *testing.T) {
 	if got := h.logs.count("webhook delivery expired undelivered", "guid=guid-expiring"); got != 1 {
 		t.Fatalf("the continuous sweep logged the expiry %d times, want once:\n%s", got, h.logs)
 	}
-	// The two deliveries it redelivered are next looked at after the first backoff, two minutes
-	// on, and the expired one is asked for no more, so no entry is owed it.
-	due := h.clock.Now().Add(2 * time.Minute)
+	// The two deliveries it redelivered are next looked at nine tenths of the first backoff on,
+	// at the next sweep (duty.LeasePeriod), and the expired one is asked for no more, so no entry
+	// is owed it.
+	due := h.clock.Now().Add(duty.LeasePeriod(2 * time.Minute))
 	want := []string{
 		"cursor", "index",
 		"guid.guid-expiring", "guid.guid-backlog", "guid.guid-refused",
@@ -1413,7 +1585,7 @@ func TestAFailedIndexWriteLeavesTheDeliveryForTheNextSweep(t *testing.T) {
 
 	refused := errors.New("nats: no responders available for request")
 	sweeper := h.sweeper()
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		refusing := refusingIndex{KeyValue: h.state.Legacy(), refused: refused}
 		return bus.NewKeyValue(refusing, h.state.WatchHandle(), h.state.Streams()), nil
 	}
@@ -1495,7 +1667,7 @@ func TestARefusedRecordWriteLeavesTheDeliveryForTheNextSweep(t *testing.T) {
 
 	refused := errors.New("nats: no responders available for request")
 	sweeper := h.sweeper()
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		refusing := refusingRecord{KeyValue: h.state.Legacy(), refused: refused}
 		return bus.NewKeyValue(refusing, h.state.WatchHandle(), h.state.Streams()), nil
 	}
@@ -1700,7 +1872,7 @@ func TestARecordWithNoIndexEntryIsBackfilledOnTheFirstSweep(t *testing.T) {
 
 	counting := &countingBucket{KeyValue: h.state.WatchHandle()}
 	sweeper := h.sweeper()
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		return bus.NewKeyValue(h.state.Legacy(), counting, h.state.Streams()), nil
 	}
 	report, err := sweeper.Sweep(context.Background(), redeliver.Options{})
@@ -1773,7 +1945,7 @@ func TestABackfillWhoseRecordWriteIsRefusedLeavesTheIndexUnmarked(t *testing.T) 
 
 	refused := errors.New("nats: no responders available for request")
 	sweeper := h.sweeper()
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		refusing := refusingRecord{KeyValue: h.state.Legacy(), refused: refused}
 		return bus.NewKeyValue(refusing, h.state.WatchHandle(), h.state.Streams()), nil
 	}
@@ -1795,7 +1967,8 @@ func TestABackfillWhoseRecordWriteIsRefusedLeavesTheIndexUnmarked(t *testing.T) 
 // conflictingRecord is the sweep's state bucket whose first record write loses its
 // compare-and-set, as one whose record another writer moved between the read and the write does:
 // NATS answers a write over a revision that is no longer the last with a wrong last sequence
-// error. Every write after that first one is the bucket's own.
+// error, which nats.go v1.55.0 wraps in nats.ErrKeyRevisionMismatch. Every write after that first
+// one is the bucket's own.
 type conflictingRecord struct {
 	natsgo.KeyValue
 	lost atomic.Bool
@@ -1803,7 +1976,8 @@ type conflictingRecord struct {
 
 func (c *conflictingRecord) Update(key string, value []byte, last uint64) (uint64, error) {
 	if strings.HasPrefix(key, "guid.") && c.lost.CompareAndSwap(false, true) {
-		return 0, errors.New("nats: wrong last sequence: 1")
+		moved := &natsgo.APIError{Code: 400, ErrorCode: natsgo.JSErrCodeStreamWrongLastSequence, Description: "wrong last sequence: 1"}
+		return 0, fmt.Errorf("%w: %w", moved, natsgo.ErrKeyRevisionMismatch)
 	}
 	return c.KeyValue.Update(key, value, last)
 }
@@ -1828,7 +2002,7 @@ func TestABackfillThatLosesItsRecordRaceLeavesTheIndexUnmarked(t *testing.T) {
 	}
 
 	sweeper := h.sweeper()
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		return bus.NewKeyValue(&conflictingRecord{KeyValue: h.state.Legacy()}, h.state.WatchHandle(), h.state.Streams()), nil
 	}
 	report, err := sweeper.Sweep(context.Background(), redeliver.Options{})
@@ -2044,7 +2218,7 @@ func TestABackfillLeavesALiveClaimToItsClaimant(t *testing.T) {
 	}
 
 	refusing := h.sweeper()
-	refusing.Open = func() (bus.KeyValue, error) {
+	refusing.Open = func(context.Context) (bus.KeyValue, error) {
 		refusing := refusingPending{KeyValue: h.state.Legacy(), refused: errors.New("nats: no responders available for request")}
 		return bus.NewKeyValue(refusing, h.state.WatchHandle(), h.state.Streams()), nil
 	}
@@ -2143,7 +2317,7 @@ func TestAMarkerOlderThanTheLookbackIsBackfilledAgain(t *testing.T) {
 
 	counting := &countingBucket{KeyValue: h.state.WatchHandle()}
 	sweeper := h.sweeper()
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		return bus.NewKeyValue(h.state.Legacy(), counting, h.state.Streams()), nil
 	}
 	report, err := sweeper.Sweep(context.Background(), redeliver.Options{})
@@ -2283,7 +2457,7 @@ func BenchmarkSweepWithLongPendingRecords(b *testing.B) {
 					b.Fatalf("write index entry %d: %v", i, err)
 				}
 			}
-			sweeper := &redeliver.Sweeper{GitHub: github, Open: func() (bus.KeyValue, error) { return state, nil }, Logger: slog.New(slog.DiscardHandler), Now: func() time.Time { return now }}
+			sweeper := &redeliver.Sweeper{GitHub: github, Open: func(context.Context) (bus.KeyValue, error) { return state, nil }, Logger: slog.New(slog.DiscardHandler), Now: func() time.Time { return now }}
 			// The warm-up leaves the cursor every later index sweep reads its window from, and
 			// the marker that says the records are indexed, so no sweep under the clock below
 			// pays for the back-fill.
@@ -2330,7 +2504,7 @@ func TestASweepOpensTheStateItWasBuiltWithout(t *testing.T) {
 	failed := h.fail("guid-a", http.StatusServiceUnavailable, time.Minute)
 	sweeper := h.sweeper()
 	opens := 0
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		opens++
 		return h.state, nil
 	}
@@ -2359,7 +2533,7 @@ func TestASweepWhoseStateWillNotOpenFails(t *testing.T) {
 	h.fail("guid-a", http.StatusServiceUnavailable, time.Minute)
 	sweeper := h.sweeper()
 	refused := errors.New("NATS is not connected")
-	sweeper.Open = func() (bus.KeyValue, error) { return bus.KeyValue{}, refused }
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) { return bus.KeyValue{}, refused }
 
 	if _, err := sweeper.Sweep(context.Background(), redeliver.Options{}); !errors.Is(err, refused) {
 		t.Fatalf("sweep error %v, want %v", err, refused)

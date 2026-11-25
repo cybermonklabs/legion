@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -26,14 +25,18 @@ import (
 //
 // It is started the way scripts/e2e/envoy-session-delivery.sh starts one — a build of this
 // checkout's cmd/listener, then PORT, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and a HOME of
-// its own, waited on until /healthz says healthy — because that is the only configuration it
-// takes.
+// its own, waited on until /healthz says healthy — but on a listening socket the test holds from
+// the listener's first start until the test ends, handed to each start as ENVOY_LISTEN_FD, so no
+// other program can take the port before the first start or between a stop and the next.
 type idleRigListener struct {
 	t      *testing.T
 	url    string
 	logs   string
 	cmd    *exec.Cmd
 	client *http.Client
+	// socket is the test's descriptor of the listening socket on port, which each start inherits
+	// as ENVOY_LISTEN_FD.
+	socket *os.File
 	port   int
 	stop   func()
 }
@@ -42,12 +45,13 @@ type idleRigListener struct {
 // once /healthz answers healthy.
 func startIdleRigListener(t *testing.T, natsURL, machine string) *idleRigListener {
 	t.Helper()
-	return startIdleRigListenerOn(t, natsURL, machine, idleRigFreePort(t))
+	socket, port := heldSocket(t)
+	return startIdleRigListenerOn(t, natsURL, machine, socket, port)
 }
 
-// startIdleRigListenerOn is startIdleRigListener on a port of the caller's choosing, so a
-// listener restarted mid-test comes back where every URL already handed out reaches it.
-func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *idleRigListener {
+// startIdleRigListenerOn is startIdleRigListener on the socket the test holds, listening on port,
+// so a listener restarted mid-test comes back where every URL already handed out reaches it.
+func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.File, port int) *idleRigListener {
 	t.Helper()
 	binary := testbuild.EnvoyBinary(t, "./cmd/listener")
 	// The listener's HOME is also where it runs, and the only path the test writes under it is
@@ -62,9 +66,16 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, binary)
 	cmd.Dir = home
+	// The unplaceable window is ten seconds rather than the shipped minute: a copy stored on the
+	// agent subject of a session with no record is held for that window before the listener gives
+	// it up and reports the wake (cmd/listener's unplaceableAgentDelivery), so a pod woken that
+	// way comes back inside the rig's pod wait with room to spare.
 	cmd.Env = append(os.Environ(),
-		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1",
-		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL)
+		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1", "ENVOY_LISTEN_FD=3",
+		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL, "ENVOY_UNPLACEABLE_RETRY_WINDOW=10s")
+	// ExtraFiles' first entry is the listener's descriptor 3. The test keeps its own descriptor of
+	// the socket open, so the port stays held while no listener runs.
+	cmd.ExtraFiles = []*os.File{socket}
 	cmd.Stdout, cmd.Stderr = file, file
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -75,7 +86,7 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 		defer close(done)
 		_ = cmd.Wait()
 	}()
-	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), logs: logs, cmd: cmd, port: port,
+	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), logs: logs, cmd: cmd, socket: socket, port: port,
 		client: &http.Client{Timeout: 10 * time.Second}}
 	var once sync.Once
 	l.stop = func() {
@@ -175,20 +186,4 @@ func (l *idleRigListener) answer(request *http.Request) (int, string) {
 		l.t.Fatal(err)
 	}
 	return response.StatusCode, string(read)
-}
-
-// idleRigFreePort is a loopback port nothing holds now. The Envoy listener binds the port it is
-// told, so the port is chosen by binding one and giving it back, as the e2e scripts' port keeper
-// does for processes that take no inherited socket.
-func idleRigFreePort(t *testing.T) int {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return port
 }

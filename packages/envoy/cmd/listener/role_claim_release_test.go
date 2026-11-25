@@ -123,8 +123,8 @@ func (r *roleClaimReleaseRig) assertNoRecord(t *testing.T) {
 }
 
 // assertRemoved fails unless the answer's removed list is exactly want. It reads the raw body
-// before decoding it, because a null decodes into the same empty slice an empty list does, and
-// null is what the route must never write.
+// before decoding it, because slices.Equal holds the nil slice a null decodes into equal to an
+// empty one, and null is what the route must never write.
 func (r *roleClaimReleaseRig) assertRemoved(t *testing.T, recorder *httptest.ResponseRecorder, want ...string) {
 	t.Helper()
 	body := recorder.Body.String()
@@ -148,6 +148,7 @@ func (r *roleClaimReleaseRig) assertRemoved(t *testing.T, recorder *httptest.Res
 // named from the record as it always has. The instance is trimmed on the way in, as session_id
 // is, so a client that pads the field still hands its own role back.
 func TestAnUnsubscribeNamingTheClaimsProcessFreesTheRoleAndRemovesItsTopics(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_release_own_process"
 		role      = "legion-controller"
@@ -174,6 +175,7 @@ func TestAnUnsubscribeNamingTheClaimsProcessFreesTheRoleAndRemovesItsTopics(t *t
 // removed as it always was, which is what the topic of the holder's own, named beside the
 // lane's, reads here.
 func TestAnUnsubscribeThatDoesNotNameTheClaimsProcessFreesNoRole(t *testing.T) {
+	t.Parallel()
 	const role = "legion-controller"
 	for name, instance := range map[string]string{
 		"a second process of that session": secondProcess,
@@ -216,6 +218,7 @@ func TestAnUnsubscribeThatDoesNotNameTheClaimsProcessFreesNoRole(t *testing.T) {
 // tell the client a topic left its record while the record still holds it. The empty list is the
 // answer wherever nothing left the record, and null is never written.
 func TestUnsubscribeAnswersTheTopicsItRemoved(t *testing.T) {
+	t.Parallel()
 	const role = "legion-controller"
 	roleTopic := contracts.RoleTopicPrefix + role
 	for name, tc := range map[string]struct {
@@ -278,6 +281,7 @@ func TestUnsubscribeAnswersTheTopicsItRemoved(t *testing.T) {
 // that has gone away. It frees a claim naming a process and one naming none alike, and the
 // session's interest record goes with it.
 func TestTheAdministratorsDeleteFreesTheRoleClaimWhoeverHoldsIt(t *testing.T) {
+	t.Parallel()
 	const role = "legion-controller"
 	for name, tc := range map[string]struct {
 		sessionID string

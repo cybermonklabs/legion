@@ -6,6 +6,14 @@
 
 package main
 
+// The two-build suite's stored-document half reads this tree's side of what each build holds
+// (documentSides, tree ../../internal/dispatch at :55); the previous build's side is the copy
+// packages/envoy/scripts/build-dispatch-build.sh writes outside the checkout.
+//ci:reads packages/envoy/internal/dispatch/pmdoc/schema/blocks.json documentSides readManifest (os.ReadFile) of the current build's block manifest
+//ci:reads packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md documentSides the current build's corpus: corpusFiles os.ReadDir, and requireCorpusCrossesBuilds os.ReadFile of each .md file it lists
+//ci:reads packages/envoy/internal/dispatch/text/testdata/dispatch-text-references.json documentSides the current build's reference fixtures, read by referencesMarkdown os.ReadFile
+//ci:reads packages/envoy/internal/dispatch/text/testdata/dispatch-href-references.json documentSides the current build's reference fixtures, read by referencesMarkdown os.ReadFile
+
 import (
 	"bytes"
 	"context"
@@ -290,7 +298,8 @@ func (b *twoBuilds) fleet(t *testing.T) fleetNumbers {
 //
 // A reader that predates the admission - its manifest names no nodes - knows no fleet: it
 // compares the page's token, which is the page's schema version alone, with its own version, and
-// answers read-only when they differ (packages/dispatch/AGENTS.md, the document socket's token).
+// answers read-only when they differ (the socket's token in
+// packages/dispatch/web/src/features/doc/connection.ts).
 // So a release that raises the manifest version makes every page of the newer build read-only on
 // a process of the older one until the older build is gone, whatever the elements are creatable
 // from.
@@ -593,12 +602,18 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 	reader.process.call(t, http.MethodPost, "/api/v1/asks/"+askID+"/answer",
 		`{"selected":["First"],"expected_edited_at":null}`, http.StatusOK)
 
+	// The carried approval is in the approver's name, and its whole actor crosses the builds, the
+	// proven flag included: neither build may lose the mark when it carries the other's review.
+	// Every release from legion-envoy-v30.44.0 on stores model.Actor.Proven (main's #4281), and
+	// no pair the harness makes holds a build older than that: dispatch-two-builds pairs this tree
+	// with the newest release before it, which only moves forward, and dispatch-two-builds-same
+	// pairs it with its own build. So the comparison holds every field of the actor, the flag too.
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		var reviews []servedReview
 		getJSON(t, writer.process, "/api/v1/artifacts/"+artifactID+"/reviews", &reviews)
 		if len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
-			reviews[0].Actor == (model.Actor{Kind: "user", ID: dispatchTestLogin}) {
+			reviews[0].Actor == (model.Actor{Kind: "user", ID: dispatchTestLogin, Proven: true}) {
 			t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, reviews[0].Version)
 			return
 		}

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,6 +45,14 @@ type fakeClock struct {
 	armed  int
 	// slept is every wait a machine asked to Sleep, in order.
 	slept []time.Duration
+	// advancing is how many Advance calls are moving the clock now, and stood is signalled each
+	// time one ends and each time a posted function returns; posted is how many functions
+	// whenStill posted that have not returned yet, whether they wait for the clock to stand still
+	// or run; settling is how many moves wait for them (settlePosts).
+	advancing int
+	stood     *sync.Cond
+	posted    int
+	settling  int
 }
 
 // Sleep records d and returns at once, with ctx's error when it has ended: a machine's wait costs
@@ -64,7 +73,11 @@ type fakeTimer struct {
 	fired   bool
 }
 
-func newFakeClock() *fakeClock { return &fakeClock{now: epoch} }
+func newFakeClock() *fakeClock {
+	c := &fakeClock{now: epoch}
+	c.stood = sync.NewCond(&c.mu)
+	return c
+}
 
 func (c *fakeClock) Now() time.Time {
 	c.mu.Lock()
@@ -75,8 +88,24 @@ func (c *fakeClock) Now() time.Time {
 func (c *fakeClock) AfterFunc(d time.Duration, f func()) Cancel {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.armLocked(c.now.Add(d), f)
+}
+
+func (c *fakeClock) At(at time.Time, f func()) Cancel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.armLocked(at, f)
+}
+
+// armLocked arms f for at, or for the clock's own time when at has passed: Advance sets the clock
+// to each timer's moment as it fires it, so a timer left at a passed moment would move the clock
+// back. The caller holds mu.
+func (c *fakeClock) armLocked(at time.Time, f func()) Cancel {
+	if at.Before(c.now) {
+		at = c.now
+	}
 	c.armed++
-	timer := &fakeTimer{clock: c, at: c.now.Add(d), order: c.armed, f: f}
+	timer := &fakeTimer{clock: c, at: at, order: c.armed, f: f}
 	c.timers = append(c.timers, timer)
 	return timer
 }
@@ -91,11 +120,29 @@ func (t *fakeTimer) Stop() bool {
 	return true
 }
 
-// Advance moves time forward by d, firing what falls due on the way.
+// postsSettleBound is the most of the wall clock a move waits for the functions whenStill posted
+// to return (settlePosts). A posted decision that waits for something the test gives only after
+// the move would wait for ever; past this bound the move panics, naming the count, rather than
+// hang the test binary.
+const postsSettleBound = 30 * time.Second
+
+// Advance moves time forward by d, firing what falls due on the way. A move that begins with the
+// clock standing still first lets every function whenStill posted run to its end (settlePosts), so
+// what a grant's decision arms is armed before the clock moves, and the move fires it exactly
+// when it is due.
 func (c *fakeClock) Advance(d time.Duration) {
 	c.mu.Lock()
+	c.settlePosts()
 	until := c.now.Add(d)
+	c.advancing++
 	c.mu.Unlock()
+	// A callback that ends its goroutine (t.Fatal) still leaves the clock standing.
+	defer func() {
+		c.mu.Lock()
+		c.advancing--
+		c.stood.Broadcast()
+		c.mu.Unlock()
+	}()
 	for {
 		c.mu.Lock()
 		var next *fakeTimer
@@ -117,6 +164,73 @@ func (c *fakeClock) Advance(d time.Duration) {
 		c.mu.Unlock()
 		next.f()
 	}
+}
+
+// settlePosts waits, where no Advance moves the clock, until every function whenStill posted has
+// returned: a grant the gate made before this move reaches its machine, and the decision it
+// starts ends, before the clock moves. A move begun while another runs, on any goroutine, waits
+// for none: what it would wait for waits for the running move to end. So a posted function must
+// not move the clock itself; the bound below turns one that does into a panic. Called with mu
+// held.
+func (c *fakeClock) settlePosts() {
+	if c.advancing > 0 || c.posted == 0 {
+		return
+	}
+	c.settling++
+	defer func() { c.settling-- }()
+	timedOut := false
+	bound := time.AfterFunc(postsSettleBound, func() {
+		c.mu.Lock()
+		timedOut = true
+		c.stood.Broadcast()
+		c.mu.Unlock()
+	})
+	defer bound.Stop()
+	for c.posted > 0 && !timedOut {
+		c.stood.Wait()
+	}
+	if c.posted > 0 {
+		panic(fmt.Sprintf("fakeClock.Advance: %d functions whenStill posted have not returned after %s of the wall clock; a posted grant's decision waits for something the test does only after this move",
+			c.posted, postsSettleBound))
+	}
+}
+
+// whenStill runs f on a goroutine of its own once no Advance is moving the clock: podHarness's
+// post of the gate's grants (PodStarts.post). The next move waits for f to return (settlePosts).
+func (c *fakeClock) whenStill(f func()) {
+	c.mu.Lock()
+	c.posted++
+	c.mu.Unlock()
+	go func() {
+		c.mu.Lock()
+		for c.advancing > 0 {
+			c.stood.Wait()
+		}
+		c.mu.Unlock()
+		// Lowered however f ends, its goroutine's end (t.Fatal off the test goroutine) included,
+		// so the next move does not wait the bound for a function that will never return.
+		defer func() {
+			c.mu.Lock()
+			c.posted--
+			c.stood.Broadcast()
+			c.mu.Unlock()
+		}()
+		f()
+	}()
+}
+
+// waitingPosts is how many functions whenStill posted have not returned yet.
+func (c *fakeClock) waitingPosts() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.posted
+}
+
+// settlingMoves is how many moves wait for the functions whenStill posted (settlePosts).
+func (c *fakeClock) settlingMoves() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.settling
 }
 
 // dropAll is every armed timer dying with the process that armed it.
@@ -141,6 +255,28 @@ func (c *fakeClock) Live() int {
 	return live
 }
 
+// movingClock is the harness's clock moved by step right after each read while moving is set, as
+// another goroutine moves a test's clock between a decision's read of it and its arm. A move fires
+// nothing, so the decision that read the clock still runs; a timer that falls due within a move
+// fires at the next Advance at its own moment, which sets the clock back to that moment.
+type movingClock struct {
+	*fakeClock
+	step   time.Duration
+	moving atomic.Bool
+	moves  atomic.Int32
+}
+
+func (c *movingClock) Now() time.Time {
+	c.fakeClock.mu.Lock()
+	defer c.fakeClock.mu.Unlock()
+	now := c.fakeClock.now
+	if c.moving.Load() {
+		c.moves.Add(1)
+		c.fakeClock.now = now.Add(c.step)
+	}
+	return now
+}
+
 // memStore is the store as a double: what was written, in order, and a way to fail a write.
 type memStore struct {
 	mu         sync.Mutex
@@ -152,6 +288,9 @@ type memStore struct {
 	failures map[string]error
 	// onPut, when set, runs on every PutClaim before it is recorded.
 	onPut func(Claim)
+	// holds is the claim each name of a session is held for, as the store's claim_sessions table
+	// keeps it (HoldSessions); every claim of a harness is of one project.
+	holds map[Hold]claim.Token
 }
 
 func newMemStore() *memStore {
@@ -159,8 +298,129 @@ func newMemStore() *memStore {
 		claims:     map[claim.Token]Claim{},
 		deliveries: map[claim.Token]Delivery{},
 		failures:   map[string]error{},
+		holds:      map[Hold]claim.Token{},
 	}
 }
+
+// HoldSessions is the store's: the first claim to record a name holds it, all of one call's names
+// or none, a call whose new names take the claim past MaxHeldNamesPerClaim records none, and the
+// answer about a name never changes after. Every claim of a harness is of one project. A call on a
+// context already cancelled answers its error and holds nothing, as a query of Postgres does.
+func (s *memStore) HoldSessions(ctx context.Context, _ string, token claim.Token, holds []Hold) ([]claim.Token, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.failures["HoldSessions"]; err != nil {
+		return nil, err
+	}
+	holders := make([]claim.Token, len(holds))
+	mine, added := true, map[Hold]bool{}
+	for i, h := range holds {
+		if h.Name == "" {
+			return nil, errors.New("hold session: an empty name")
+		}
+		holder, held := s.holds[h]
+		if !held {
+			holder = token
+			added[h] = true
+		}
+		holders[i] = holder
+		mine = mine && holder == token
+	}
+	if !mine {
+		return holders, nil
+	}
+	if len(added) > 0 {
+		held := len(added)
+		for _, holder := range s.holds {
+			if holder == token {
+				held++
+			}
+		}
+		if held > MaxHeldNamesPerClaim {
+			return nil, fmt.Errorf("%d names held with this call's %d new ones: %w", held, len(added), ErrHeldNamesCap)
+		}
+	}
+	for _, h := range holds {
+		s.holds[h] = token
+	}
+	return holders, nil
+}
+
+// ClaimHolds is the store's.
+func (s *memStore) ClaimHolds(_ context.Context, _ string, token claim.Token) ([]Hold, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var holds []Hold
+	for h, holder := range s.holds {
+		if holder == token {
+			holds = append(holds, h)
+		}
+	}
+	slices.SortFunc(holds, CompareHolds)
+	return holds, nil
+}
+
+// ReleaseHolds is the store's one transaction: it writes c and deletes every one of holds held
+// for c's claim, and answers the names it deleted, in kind and then name order. A claim write the
+// store refuses (fail("PutClaim")) frees nothing, as the store's rollback does.
+func (s *memStore) ReleaseHolds(ctx context.Context, c Claim, holds []Hold) ([]Hold, error) {
+	if err := s.PutClaim(ctx, c); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var freed []Hold
+	for _, h := range holds {
+		if s.holds[h] == c.Token {
+			delete(s.holds, h)
+			freed = append(freed, h)
+		}
+	}
+	slices.SortFunc(freed, CompareHolds)
+	return freed, nil
+}
+
+// fillHolds holds n session ids of earlier sessions for token, to bring it toward the cap.
+func (s *memStore) fillHolds(token claim.Token, n int) {
+	for i := range n {
+		s.setHold(sessionID(fmt.Sprintf("ses_earlier_%d", i)), token)
+	}
+}
+
+// heldBy is how many names the store holds for token.
+func (s *memStore) heldBy(token claim.Token) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, holder := range s.holds {
+		if holder == token {
+			n++
+		}
+	}
+	return n
+}
+
+// setHold records holder as h's, as an operator settling a held-for-none name or a migration
+// does, under the store's lock so it may run while a machine does.
+func (s *memStore) setHold(h Hold, holder claim.Token) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.holds[h] = holder
+}
+
+// holdOf is the claim h is held for, and whether any is.
+func (s *memStore) holdOf(h Hold) (claim.Token, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	holder, held := s.holds[h]
+	return holder, held
+}
+
+// sessionID is the hold of a session id.
+func sessionID(id string) Hold { return Hold{Kind: HoldSessionID, Name: id} }
 
 func (s *memStore) PutClaim(_ context.Context, c Claim) error {
 	s.mu.Lock()
@@ -726,7 +986,7 @@ func (h *harness) promptInTurn() string {
 	}
 	delivery, _ := reporter.TakePromptResult()
 	h.m.mu.Lock()
-	held := slices.Contains(h.m.outstanding, delivery)
+	held := h.m.outstandingPrompt(delivery)
 	h.m.mu.Unlock()
 	if !held {
 		return ""
@@ -740,7 +1000,7 @@ func (h *harness) promptInTurn() string {
 func (h *harness) outstanding() []string {
 	h.m.mu.Lock()
 	defer h.m.mu.Unlock()
-	return slices.Clone(h.m.outstanding)
+	return h.m.outstanding.ids()
 }
 
 func (h *harness) must(ev Event) {
@@ -1041,7 +1301,9 @@ func adoptRefusal(reason string) error {
 // fakeEnroller is the broker as the machine sees it: it records every enrollment and revocation,
 // mints ids, and fails what the test told it to. It verifies the pod token's expiry against now
 // as the broker does (enroll.Service.Create): an expired token is refused POD_TOKEN_EXPIRED and
-// one whose expiry cannot be read POD_IDENTITY_MISMATCH.
+// one whose expiry cannot be read POD_IDENTITY_MISMATCH. carried is what Carried answers for each
+// session id it is asked (the broker's POST /v1/enrollments/carried), and asked every list of ids
+// it was asked, in order.
 type fakeEnroller struct {
 	mu          sync.Mutex
 	enrollments []PodEnrollment
@@ -1052,6 +1314,47 @@ type fakeEnroller struct {
 	calls       int // every Revoke call, failed or not
 	next        int
 	now         func() time.Time
+	carried     map[string][]CarriedEnrollment
+	carriedErr  error
+	asked       [][]string
+}
+
+func (f *fakeEnroller) Carried(_ context.Context, sessionIDs []string) ([]CarriedEnrollment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asked = append(f.asked, slices.Clone(sessionIDs))
+	if f.carriedErr != nil {
+		return nil, f.carriedErr
+	}
+	answer := []CarriedEnrollment{}
+	for _, id := range sessionIDs {
+		answer = append(answer, f.carried[id]...)
+	}
+	return answer, nil
+}
+
+// carry makes Carried answer c for its session id.
+func (f *fakeEnroller) carry(c CarriedEnrollment) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.carried == nil {
+		f.carried = map[string][]CarriedEnrollment{}
+	}
+	f.carried[c.SessionID] = append(f.carried[c.SessionID], c)
+}
+
+// endCarry makes Carried answer nothing for sessionID, as once its carry ends.
+func (f *fakeEnroller) endCarry(sessionID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.carried, sessionID)
+}
+
+// askedCarried is every list of session ids Carried was asked, in order.
+func (f *fakeEnroller) askedCarried() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.asked)
 }
 
 func (f *fakeEnroller) Enroll(_ context.Context, e PodEnrollment) (string, error) {

@@ -12,6 +12,7 @@ import (
 )
 
 func TestLoadNonTransactionalMigration(t *testing.T) {
+	t.Parallel()
 	for name, sql := range map[string]string{
 		"one index":         "create index concurrently if not exists things_kind on things (kind);",
 		"literal semicolon": "create index concurrently if not exists things_kind on things ((kind || ';')); -- ;\n",
@@ -28,9 +29,13 @@ func TestLoadNonTransactionalMigration(t *testing.T) {
 	}
 }
 
+// The marker's words inside a literal, or in prose of a longer comment, are text: the file is an
+// ordinary migration. The marker as a comment of its own on any line but the first is refused
+// (TestLoadRefusesTheNonTransactionalMarkerBelowTheFirstLine).
 func TestLoadDoesNotReadAMarkerInsideSQLAsAnExecutionMode(t *testing.T) {
+	t.Parallel()
 	for _, sql := range []string{
-		"-- ordinary header\n-- pgmigrate:non-transactional\nselect 1; select 2;",
+		"-- see `-- pgmigrate:non-transactional` in the README\nselect 1; select 2;",
 		"select $$\n-- pgmigrate:non-transactional\n$$;",
 	} {
 		migrations, err := Load(fstest.MapFS{"migrations/0001_normal.up.sql": {Data: []byte(sql)}}, "migrations")
@@ -40,7 +45,41 @@ func TestLoadDoesNotReadAMarkerInsideSQLAsAnExecutionMode(t *testing.T) {
 	}
 }
 
+// A replaces line, or any other line, written above the non-transactional marker leaves the marker
+// where nonTransactionalHeader does not read it, so the file would run in a transaction; the
+// loader refuses it, naming the file and the marker's line. Before this rule the first case loaded
+// as a transactional migration, and an earlier version of the test above accepted the second. The
+// control is the same file with the marker first and the replaces line after it, which loads as
+// non-transactional and declares the line.
+func TestLoadRefusesTheNonTransactionalMarkerBelowTheFirstLine(t *testing.T) {
+	t.Parallel()
+	index := "create index concurrently if not exists things_kind on things (kind);\n"
+	replaces := "-- replaces: 0001_index.up.sql sha256:" + strings.Repeat("0", 64) + "\n"
+	for name, sql := range map[string]string{
+		"below a replaces line":       replaces + "-- pgmigrate:non-transactional\n" + index,
+		"below an ordinary comment":   "-- ordinary header\n-- pgmigrate:non-transactional\nselect 1; select 2;",
+		"indented, with CRLF endings": "-- header\r\n  -- pgmigrate:non-transactional\r\n" + index,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Load(fstest.MapFS{"migrations/0001_index.up.sql": {Data: []byte(sql)}}, "migrations")
+			if err == nil || len(got) != 0 || !strings.Contains(err.Error(), "migration 0001_index.up.sql line 2: the -- pgmigrate:non-transactional marker is read on the first line alone") {
+				t.Fatalf("Load = %+v, %v; want a refusal naming the file and line 2", got, err)
+			}
+		})
+	}
+	t.Run("control: the marker first, the replaces line after it", func(t *testing.T) {
+		got, err := Load(fstest.MapFS{"migrations/0001_index.up.sql": {Data: []byte("-- pgmigrate:non-transactional\n" + replaces + index)}}, "migrations")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !got[0].NonTransactional || len(got[0].Replaces) != 1 {
+			t.Errorf("non-transactional %v, replaces %v; want the marker read and the line declared", got[0].NonTransactional, got[0].Replaces)
+		}
+	})
+}
+
 func TestLoadRefusesUnsafeNonTransactionalMigrations(t *testing.T) {
+	t.Parallel()
 	for name, sql := range map[string]string{
 		"two statements":      "create index concurrently if not exists i on things (kind); select 1;",
 		"not idempotent":      "create index concurrently i on things (kind);",
@@ -59,6 +98,7 @@ func TestLoadRefusesUnsafeNonTransactionalMigrations(t *testing.T) {
 }
 
 func TestLoadRefusesUniqueConcurrentIndex(t *testing.T) {
+	t.Parallel()
 	set := fstest.MapFS{
 		"migrations/0001_first.up.sql":  {Data: []byte("select 1")},
 		"migrations/0002_unique.up.sql": {Data: []byte("-- pgmigrate:non-transactional\ncreate unique index concurrently if not exists things_kind on things (kind)")},
@@ -67,6 +107,79 @@ func TestLoadRefusesUniqueConcurrentIndex(t *testing.T) {
 	if err == nil || len(migrations) != 0 || !strings.Contains(err.Error(), "0002_unique.up.sql") {
 		t.Fatalf("Load = %v, %v; want whole-set refusal of the unique concurrent index", migrations, err)
 	}
+}
+
+// LoadBuilt keeps every check of Load's that reads no statement: a marker below the first line is
+// refused there too, and a marker on the first line selects execution outside a transaction.
+func TestLoadBuiltKeepsTheMarkerChecks(t *testing.T) {
+	t.Parallel()
+	index := "create index concurrently if not exists things_kind on things (kind);\n"
+	got, err := LoadBuilt(fstest.MapFS{"migrations/0001_index.up.sql": {Data: []byte("-- ordinary header\n-- pgmigrate:non-transactional\n" + index)}}, "migrations")
+	if err == nil || len(got) != 0 || !strings.Contains(err.Error(), "migration 0001_index.up.sql line 2") {
+		t.Fatalf("LoadBuilt = %+v, %v; want the refusal Load gives a marker on line 2", got, err)
+	}
+	got, err = LoadBuilt(fstest.MapFS{"migrations/0001_index.up.sql": {Data: []byte("-- pgmigrate:non-transactional\n" + index)}}, "migrations")
+	if err != nil || len(got) != 1 || !got[0].NonTransactional {
+		t.Fatalf("LoadBuilt = %+v, %v; want one migration marked non-transactional", got, err)
+	}
+}
+
+// A runner that reads its set with LoadBuilt reaches a marked migration's statement unchecked, so
+// ExecNonTransactional is what refuses the statements Load refuses (the two tests above), before
+// anything of them runs: each case's statement would build its relation, or open a transaction,
+// on the table it names, and after the refusal the relation is not there and the session is idle.
+// The control is the one statement Load admits, which the same call builds, so the check that
+// the relation is absent can see one that is there.
+func TestExecNonTransactionalRefusesWhatLoadRefuses(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, sql string
+		// relations are the relations the statement would make if it ran.
+		relations []string
+	}{
+		{"two statements", "create index concurrently if not exists things_kind on things (kind); create table leaked (id integer);", []string{"things_kind", "leaked"}},
+		{"not idempotent", "create index concurrently things_kind on things (kind);", []string{"things_kind"}},
+		{"not concurrent", "create index if not exists things_kind on things (kind);", []string{"things_kind"}},
+		{"unique", "create unique index concurrently if not exists things_kind on things (kind);", []string{"things_kind"}},
+		{"not an index", "create table leaked (id integer);", []string{"leaked"}},
+		{"transaction control", "begin;", nil},
+		{"no statement", "-- nothing\n", nil},
+		{"invalid SQL", "create index concurrently if not exists", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			conn := connect(t, ctx, testpg.URL(t))
+			if _, err := conn.Exec(ctx, "create table things (kind text)"); err != nil {
+				t.Fatal(err)
+			}
+			migration := Migration{Name: "0001_index.up.sql", SQL: tc.sql, NonTransactional: true}
+			err := ExecNonTransactional(ctx, conn, migration, nil)
+			if err == nil || !strings.Contains(err.Error(), "migration 0001_index.up.sql: ") || !strings.Contains(err.Error(), "non-transactional migration") {
+				t.Fatalf("ExecNonTransactional(%q) = %v, want a refusal naming the migration", tc.sql, err)
+			}
+			for _, name := range tc.relations {
+				if got := indexState(t, ctx, conn, name); got != (relation{}) {
+					t.Errorf("after the refusal %s is %+v, want no relation of that name: the statement ran", name, got)
+				}
+			}
+			if status := conn.PgConn().TxStatus(); status != 'I' {
+				t.Errorf("after the refusal the session's transaction status is %q, want idle", status)
+			}
+		})
+	}
+	t.Run("control: the statement Load admits is built", func(t *testing.T) {
+		ctx := context.Background()
+		conn := connect(t, ctx, testpg.URL(t))
+		if _, err := conn.Exec(ctx, "create table things (kind text)"); err != nil {
+			t.Fatal(err)
+		}
+		if err := ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
+			t.Fatalf("ExecNonTransactional = %v, want the index built", err)
+		}
+		if got := indexState(t, ctx, conn, "things_kind"); !got.Index || !got.Valid {
+			t.Fatalf("things_kind = %+v, want a valid index", got)
+		}
+	})
 }
 
 // connect opens one connection to url and closes it when t ends. The URL is the caller's, since
@@ -90,6 +203,7 @@ func connect(t *testing.T, ctx context.Context, url string) *pgx.Conn {
 // other and role to group, a role that other is a member of. Each role takes the name of the
 // test's own database, which is random, since a role spans the cluster that every test shares.
 func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	url := testpg.URL(t)
 	config, err := pgx.ParseConfig(url)
@@ -176,6 +290,7 @@ func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 // with role first, or one select with role first) and this row fails: session_user stays the login,
 // but current_user falls back to it.
 func TestExecNonTransactionalRestoresSessionAuthorizationBeforeRole(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	url := testpg.URL(t)
 	config, err := pgx.ParseConfig(url)
@@ -269,6 +384,7 @@ func leaveInvalidIndex(t *testing.T, ctx context.Context, conn *pgx.Conn, name, 
 // A build the runner itself started and lost to lock_timeout leaves an INVALID index of the
 // migration's own name on the migration's own table. The next attempt must drop it and build again.
 func TestExecNonTransactionalRebuildsAfterATimedOutBuild(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	url := testpg.URL(t)
 	conn := connect(t, ctx, url)
@@ -323,6 +439,7 @@ func TestExecNonTransactionalRebuildsAfterATimedOutBuild(t *testing.T) {
 // A build killed outside the runner leaves the same INVALID index of the migration's own name;
 // one ExecNonTransactional drops it and builds again.
 func TestExecNonTransactionalDropsTheLeftoverOfAKilledBuild(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	conn := connect(t, ctx, testpg.URL(t))
 	if _, err := conn.Exec(ctx, "create table things (kind text); insert into things values ('same'), ('same')"); err != nil {
@@ -345,6 +462,7 @@ func TestExecNonTransactionalDropsTheLeftoverOfAKilledBuild(t *testing.T) {
 // that name is a relation it did not build, and it refuses, naming the relation and the way out
 // that relation leaves: another table's index can be dropped concurrently, a table cannot.
 func TestExecNonTransactionalRefusesAnIndexItDidNotBuild(t *testing.T) {
+	t.Parallel()
 	// Every refusal names the relation; the remedy is each case's own, so the subtest brings it.
 	refusal := func(t *testing.T, conn *pgx.Conn, remedy ...string) {
 		t.Helper()
@@ -407,6 +525,7 @@ func TestExecNonTransactionalRefusesAnIndexItDidNotBuild(t *testing.T) {
 // An INVALID index of another name is another migration's or another operator's business: the
 // runner neither drops it nor refuses over it, and its own build goes through.
 func TestExecNonTransactionalLeavesAnIndexOfAnotherNameAlone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	conn := connect(t, ctx, testpg.URL(t))
 	if _, err := conn.Exec(ctx, "create table things (kind text, other text); insert into things values ('a', 'same'), ('b', 'same')"); err != nil {
@@ -429,6 +548,7 @@ func TestExecNonTransactionalLeavesAnIndexOfAnotherNameAlone(t *testing.T) {
 // back as a *LockTimeoutError, which is what RetryLockTimeouts finds with errors.As and retries,
 // and it must be the drop's own: the error carries the wrapping only the drop adds.
 func TestExecNonTransactionalReportsADropTimeoutAsALockTimeoutError(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	url := testpg.URL(t)
 	conn := connect(t, ctx, url)

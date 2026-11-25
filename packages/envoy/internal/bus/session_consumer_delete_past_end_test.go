@@ -14,8 +14,8 @@ import (
 )
 
 // floorPastEndLine is the WARN line of a resume floor past the stream's end, which the record
-// holds at the sequence before the stream's first (recordResumeFloorAt). packages/envoy/AGENTS.md
-// ("The log lines of a start") states it whole, so the tests name it whole.
+// holds at the sequence before the stream's first (recordResumeFloorAt). The tests name it whole,
+// as they name the lines of a start (cmd/listener/session_resume_past_end_test.go).
 const floorPastEndLine = "session resume floor past the stream's end, recorded at the sequence before the stream's first"
 
 // deletePath is one path that takes a session's consumer away and records the session's resume
@@ -189,6 +189,7 @@ func createdAtTheStreamsFirstSequence(t *testing.T, again createAgain, owner *Cl
 // delete reads the consumer itself and records the floor that read holds
 // (cmd/listener sessionDelivery.deleteConsumer).
 func TestADeregistrationsDeleteOfAConsumerPastTheEndRecordsTheSequenceBeforeTheStreamsFirst(t *testing.T) {
+	t.Parallel()
 	deletePastEndRecordsTheSequenceBeforeTheStreamsFirst(t, "ses_deleted_past_end", func(t *testing.T, consumers *SessionConsumers, session string, _ []string) uint64 {
 		t.Helper()
 		floor, err := consumers.Delete(context.Background(), session, nil)
@@ -207,6 +208,7 @@ func TestADeregistrationsDeleteOfAConsumerPastTheEndRecordsTheSequenceBeforeTheS
 // passes the listed info to sessionDelivery.deleteConsumer). The floor recorded is the listed
 // info's, and it is past the stream's end as the consumer's own read of it would be.
 func TestTheSweepsDeleteOfAConsumerPastTheEndRecordsTheSequenceBeforeTheStreamsFirst(t *testing.T) {
+	t.Parallel()
 	deletePastEndRecordsTheSequenceBeforeTheStreamsFirst(t, "ses_swept_past_end", func(t *testing.T, consumers *SessionConsumers, session string, _ []string) uint64 {
 		t.Helper()
 		ctx := context.Background()
@@ -235,6 +237,7 @@ func TestTheSweepsDeleteOfAConsumerPastTheEndRecordsTheSequenceBeforeTheStreamsF
 // before the stream's first for the sequence before it, and drops the start, which would otherwise
 // have the next create undo the delete.
 func TestADroppedPendingStartPastTheEndRecordsTheSequenceBeforeTheStreamsFirst(t *testing.T) {
+	t.Parallel()
 	deletePastEndRecordsTheSequenceBeforeTheStreamsFirst(t, "ses_dropped_past_end", func(t *testing.T, consumers *SessionConsumers, session string, filters []string) uint64 {
 		t.Helper()
 		ctx := context.Background()
@@ -284,6 +287,7 @@ func TestADroppedPendingStartPastTheEndRecordsTheSequenceBeforeTheStreamsFirst(t
 // of them; the consumer created again, at a start past the end or with no start of its own, must
 // start at 1 and hand over both and then the next message stored.
 func TestADeleteOfTheConsumerAWholeLossLeftUnreconciledRecordsTheSequenceBeforeTheStreamsFirst(t *testing.T) {
+	t.Parallel()
 	for _, again := range createdAgain {
 		t.Run(again.name, func(t *testing.T) {
 			srv, uri := testnats.Start(t)

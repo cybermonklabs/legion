@@ -7,7 +7,7 @@ tags:
   - learnings
   - never-edit-rule
 date: 2026-10-31
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/.
 module: skills/legion-retro
 related_issues:
   - "INFRA-336"

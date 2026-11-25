@@ -1,6 +1,10 @@
 package testnats
 
+//ci:builds packages/envoy ./... go list -f ... ./... in packages/envoy
+//ci:reads packages/envoy/**/*.go !packages/envoy/infra/** !packages/envoy/testdata/** containerImporters and dockerDriverFiles walks packages/envoy but infra, node_modules and testdata, and reads every .go file it finds, test files included (dockerDriverFiles, called by TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime)
+
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -22,6 +26,9 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
@@ -31,7 +38,7 @@ func TestMain(m *testing.M) { os.Exit(Main(m)) }
 // races CreateKeyValue. The helper must retry the JetStream operation itself.
 func TestWaitForJetStreamRetriesTheOperationUntilItIsReady(t *testing.T) {
 	attempts := 0
-	waitForJetStream(t, func() error {
+	waitForJetStream(t, func(context.Context) error {
 		attempts++
 		if attempts < 3 {
 			return errors.New("JetStream is starting")
@@ -153,7 +160,8 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
-// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does.
+// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does, and with its
+// test's deadline, which a wait bounded by it reads (waitBound).
 type fatalRecorder struct {
 	testing.TB
 	message string
@@ -163,6 +171,13 @@ func (f *fatalRecorder) Fatal(args ...any) { f.message = fmt.Sprint(args...); ru
 func (f *fatalRecorder) Fatalf(format string, args ...any) {
 	f.message = fmt.Sprintf(format, args...)
 	runtime.Goexit()
+}
+
+func (f *fatalRecorder) Deadline() (time.Time, bool) {
+	if timed, ok := f.TB.(interface{ Deadline() (time.Time, bool) }); ok {
+		return timed.Deadline()
+	}
+	return time.Time{}, false
 }
 
 // A test gets one account however often it asks, so every connection it makes reaches the streams
@@ -411,7 +426,7 @@ func TestAClosedGateKeepsItsPort(t *testing.T) {
 		t.Fatalf("open the other program's socket: %v", err)
 	}
 	t.Cleanup(func() { _ = syscall.Close(fd) })
-	err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: address.Port, Addr: [4]byte{127, 0, 0, 1}})
+	err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: address.Port, Addr: [4]byte(address.IP.To4())})
 	if err == nil {
 		// The port was free: hold it listening, as a program that took it would, so the Open below
 		// meets it.
@@ -421,7 +436,7 @@ func TestAClosedGateKeepsItsPort(t *testing.T) {
 		t.Errorf("another program's bind of the closed gate's port %d: %v, want address already in use", address.Port, err)
 	}
 
-	if claim, reservation, err := holdGatePort(address.Port); err == nil {
+	if claim, reservation, err := holdGatePort(address.IP, address.Port); err == nil {
 		_ = syscall.Close(reservation)
 		_ = claim.Close()
 		t.Errorf("a second gate held the closed gate's port %d", address.Port)
@@ -714,6 +729,61 @@ func TestAFrozenServerTimesOutARequestWithoutDroppingTheConnection(t *testing.T)
 	}
 	if string(answer.Data) != "answer" {
 		t.Errorf("the answer after the thaw is %q, want %q", answer.Data, "answer")
+	}
+}
+
+// natsDefaultWait is how long nats.go waits for the answer to a JetStream request a test's context
+// makes without MaxWait or RequestTimeout: the legacy context's MaxWait default and the
+// JetStream client's DefaultTimeout, five seconds each (nats.go v1.55.0).
+const natsDefaultWait = 5 * time.Second
+
+// A JetStream request of a context a test makes with MaxWait or RequestTimeout waits past
+// nats.go's own five seconds for a server that answers late: each context's account info, sent to
+// a frozen server, is answered once the server is thawed a second after nats.go's own wait would
+// have ended it, and neither request fails. The second is counted from the moment the connection
+// has published both requests (Stats().OutMsgs), and each request's wait began before its publish:
+// nats.go makes both contexts' timeouts before it sends (nats.go v1.55.0 jsm.go getJSContextOpts,
+// jetstream/jetstream.go wrapContextWithoutDeadline).
+func TestAJetStreamRequestOfATestsContextOutwaitsNatsGosFiveSeconds(t *testing.T) {
+	server, uri := Start(t)
+	conn := Connect(t, uri)
+	defer conn.Close()
+	legacy, err := conn.JetStream(MaxWait(t))
+	if err != nil {
+		t.Fatalf("the legacy JetStream context: %v", err)
+	}
+	client, err := jetstream.New(conn, RequestTimeout(t))
+	if err != nil {
+		t.Fatalf("the JetStream client: %v", err)
+	}
+
+	sentBefore := conn.Stats().OutMsgs
+	thaw := server.Freeze(t)
+	defer thaw()
+	type answer struct {
+		context string
+		err     error
+	}
+	answers := make(chan answer, 2)
+	go func() {
+		_, err := legacy.AccountInfo()
+		answers <- answer{"the legacy context (MaxWait)", err}
+	}()
+	go func() {
+		_, err := client.AccountInfo(context.Background())
+		answers <- answer{"the JetStream client (RequestTimeout)", err}
+	}()
+	testwait.Until(t, "the connection to publish both requests", func() (uint64, bool) {
+		sent := conn.Stats().OutMsgs - sentBefore
+		return sent, sent >= 2
+	})
+	time.Sleep(natsDefaultWait + time.Second)
+	thaw()
+	for range 2 {
+		got := testwait.Receive(t, "the answer to a request sent to the frozen server", answers)
+		if got.err != nil {
+			t.Errorf("%s: the account info sent to a server thawed %s later: %v, want its answer", got.context, natsDefaultWait+time.Second, got.err)
+		}
 	}
 }
 

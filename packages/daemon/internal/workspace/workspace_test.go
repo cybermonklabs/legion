@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -107,7 +108,7 @@ func (r *recordingRunner) Run(ctx context.Context, command Command) (Result, err
 	if r.failReadTree && command.Argv[0] == "git" && slices.Contains(command.Argv, "read-tree") {
 		return Result{ExitCode: 1, Stderr: "forced read-tree failure for test"}, nil
 	}
-	if r.beforeLsRemote != nil && len(command.Argv) > 2 && command.Argv[0] == "git" && command.Argv[2] == "ls-remote" {
+	if r.beforeLsRemote != nil && command.Argv[0] == "git" && slices.Contains(command.Argv, "ls-remote") {
 		r.beforeLsRemote()
 	}
 
@@ -116,15 +117,6 @@ func (r *recordingRunner) Run(ctx context.Context, command Command) (Result, err
 	// A clone from a pod's feed reaches it through the insteadOf its own environment names.
 	if isClone(actual.Argv) && !slices.Contains(command.Env, "GIT_ALLOW_PROTOCOL=file") {
 		actual.Argv[3] = r.remote
-	}
-	// The skills clone names GitHub in its argv too: `git clone --depth 1 --single-branch
-	// --quiet <url> <dir>` (CloneSkills).
-	if commandWith(actual.Argv, "git", "clone", "--depth", "1", "--single-branch") {
-		for i, arg := range actual.Argv {
-			if arg == "https://github.com/acme/widgets" {
-				actual.Argv[i] = r.remote
-			}
-		}
 	}
 	if commandWith(actual.Argv, "git", "clone", "--bare", "--quiet", "https://github.com/acme/widgets") {
 		for i, arg := range actual.Argv {
@@ -405,7 +397,7 @@ func TestEnsureRepoCloneDoesNotDisarmTheCallersWorkingDirectory(t *testing.T) {
 	}
 	clone := filepath.Join(t.TempDir(), "clone")
 
-	if err := ensureRepoClone(context.Background(), run, WallClock{}, clone, run.remote, "main", remote{}); err != nil {
+	if err := ensureRepoClone(context.Background(), run, clock.Real(), clone, run.remote, "main", remote{}); err != nil {
 		t.Fatalf("ensureRepoClone: %v", err)
 	}
 	if _, err := os.Stat(config); err != nil {
@@ -650,7 +642,7 @@ func fetchRequest(t *testing.T) FetchRequest {
 	t.Helper()
 	return FetchRequest{
 		Repo: ghrepo.MustParse("acme/widgets"), Token: staticToken(testInstallationToken), CredentialDir: t.TempDir(), Feed: filepath.Join(t.TempDir(), "feed"),
-		Log: func(line string) { t.Logf("fetch logged: %s", line) }, Clock: WallClock{},
+		Log: func(line string) { t.Logf("fetch logged: %s", line) }, Clock: clock.Real(),
 	}
 }
 
@@ -727,7 +719,7 @@ func TestFetchClonesBareReadingNoConfigurationButItsOwn(t *testing.T) {
 		t.Errorf("the feed's main is %s, not the remote's", main)
 	}
 	clone := findCall(t, run.Calls(), "git", "clone")
-	if want := []string{"git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "clone", "--bare", "--quiet", "https://github.com/acme/widgets"}; !slices.Equal(clone.Argv[:len(want)], want) || len(clone.Argv) != len(want)+1 || !strings.HasPrefix(clone.Argv[len(want)], feed+".clone-") {
+	if want := slices.Concat(feedGit, []string{"-c", "gc.auto=0", "-c", "maintenance.auto=false", "clone", "--bare", "--quiet", "https://github.com/acme/widgets"}); !slices.Equal(clone.Argv[:len(want)], want) || len(clone.Argv) != len(want)+1 || !strings.HasPrefix(clone.Argv[len(want)], feed+".clone-") {
 		t.Errorf("Fetch ran %q, want %q into a temporary sibling of %s", clone.Argv, want, feed)
 	}
 	assertCredentialedEnvironmentBounded(t, clone, FetchTimeout)

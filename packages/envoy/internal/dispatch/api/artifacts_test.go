@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -24,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/fixtureenv"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func createArtifactIssue(t *testing.T, handler http.Handler) model.Issue {
@@ -43,6 +43,7 @@ func createArtifactIssue(t *testing.T, handler http.Handler) model.Issue {
 }
 
 func TestUploadArtifactJSONCreatesDocumentVersionOne(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 
@@ -70,6 +71,7 @@ func TestUploadArtifactJSONCreatesDocumentVersionOne(t *testing.T) {
 }
 
 func TestUploadArtifactRejectsPrimaryFlag(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	path := "/api/v1/issues/" + issue.Key + "/artifacts"
@@ -116,6 +118,7 @@ func TestUploadArtifactRejectsPrimaryFlag(t *testing.T) {
 // A JSON upload ignores a member the route does not declare, as a newer build's client may send
 // one while a release rolls out. `primary` above is still declared, so it is still refused.
 func TestUploadArtifactJSONIgnoresAMemberItDoesNotDeclare(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 
@@ -139,6 +142,7 @@ func TestUploadArtifactJSONIgnoresAMemberItDoesNotDeclare(t *testing.T) {
 }
 
 func TestPrimaryRoutesAreGone(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 
@@ -153,6 +157,7 @@ func TestPrimaryRoutesAreGone(t *testing.T) {
 	}
 }
 func TestUploadArtifactJSONCreatesNextVersion(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	path := "/api/v1/issues/" + issue.Key + "/artifacts"
@@ -163,8 +168,9 @@ func TestUploadArtifactJSONCreatesNextVersion(t *testing.T) {
 	if first.Code != http.StatusCreated {
 		t.Fatalf("create JSON artifact: status=%d body=%s", first.Code, first.Body.String())
 	}
-	second := dispatchRequest(t, handler, http.MethodPost, path, map[string]string{
+	second := dispatchRequest(t, handler, http.MethodPost, path, map[string]any{
 		"name": "architect-spec.md", "content": "# Revised\n", "summary": "Revision",
+		"precondition": uploadBaseNamed(t, handler, path, "architect-spec.md"),
 	}, "alice")
 	if second.Code != http.StatusCreated {
 		t.Fatalf("create JSON artifact version: status=%d body=%s", second.Code, second.Body.String())
@@ -190,6 +196,7 @@ func TestUploadArtifactJSONCreatesNextVersion(t *testing.T) {
 // document that already exists it is refused: it would store a version holding nothing over the
 // text that document has. Blank is blank whatever its spaces.
 func TestUploadArtifactJSONRejectsBlankContent(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	owner := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
@@ -216,6 +223,7 @@ func TestUploadArtifactJSONRejectsBlankContent(t *testing.T) {
 }
 
 func TestUploadArtifactJSONReturnsCanonicalMarkdown(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
@@ -240,6 +248,7 @@ func TestUploadArtifactJSONReturnsCanonicalMarkdown(t *testing.T) {
 }
 
 func TestUploadRejectsMarkdownOutsideProofSchema(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
@@ -251,6 +260,7 @@ func TestUploadRejectsMarkdownOutsideProofSchema(t *testing.T) {
 }
 
 func TestUploadArtifactRejectsFileAndContent(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	response := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
@@ -261,6 +271,7 @@ func TestUploadArtifactRejectsFileAndContent(t *testing.T) {
 	}
 }
 func TestUploadArtifactMultipartTrimsNameBeforeMIMEInference(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	response := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
@@ -289,6 +300,7 @@ func pngBytes(body string) []byte {
 // bytes are; anything else, an SVG for one, is a file under the type its client declared. The
 // rule is the same on an issue and in an agent's conversation.
 func TestAnUploadIsAPictureOnlyWhenItsBytesAreOne(t *testing.T) {
+	t.Parallel()
 	memory := filestest.NewMemory()
 	handler, _, _ := newTestServer(t, testServerOptions{files: memory})
 	issue := fileIssue(t, handler)
@@ -330,6 +342,7 @@ func TestAnUploadIsAPictureOnlyWhenItsBytesAreOne(t *testing.T) {
 }
 
 func TestUploadArtifactJSONRejectsOversizedContent(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
@@ -344,6 +357,7 @@ func TestUploadArtifactJSONRejectsOversizedContent(t *testing.T) {
 // (maxJSONRequestBytes), and three times the largest document ever stored; a binary artifact keeps
 // 25 MiB (LEGION-465, D6).
 func TestUploadRefusesAMarkdownDocumentOverOneMiB(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	over := []byte(strings.Repeat("word ", (maxDocumentMarkdownBytes/5)+1))
@@ -361,6 +375,7 @@ func TestUploadRefusesAMarkdownDocumentOverOneMiB(t *testing.T) {
 // character, is the caller's malformed input: 400 with the parser's reason. Only a body past the
 // upload's size limit is 413.
 func TestUploadRefusesAMalformedMultipartBodyAsBadInput(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	send := func(contentType string, body []byte) *httptest.ResponseRecorder {
@@ -452,6 +467,7 @@ func TestAnUploadLeavesNoSpooledFileBehind(t *testing.T) {
 }
 
 func TestArtifactRoutesResolveUUIDsAndIssueScopedSlugs(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	otherIssueResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
@@ -546,6 +562,7 @@ func TestArtifactRoutesResolveUUIDsAndIssueScopedSlugs(t *testing.T) {
 }
 
 func TestDocumentRoutesResolveUnambiguousFilenameAliases(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	projectDocument := createProjectDocument(t, handler, "TEST", "runbook.md", "# Runbook\n")
@@ -562,6 +579,7 @@ func TestDocumentRoutesResolveUnambiguousFilenameAliases(t *testing.T) {
 }
 
 func TestMissingIssueDocumentRouteListsItsSlugsAndNames(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
@@ -587,6 +605,7 @@ func TestMissingIssueDocumentRouteListsItsSlugsAndNames(t *testing.T) {
 // reference come first, the newest fill the rest, and the hint says how many the owner holds and
 // which route lists them all.
 func TestMissingDocumentOnABusyOwnerNamesTheClosestAndCountsTheRest(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	names := []string{"prediction-P1.md"}
@@ -645,6 +664,7 @@ func TestMissingDocumentOnABusyOwnerNamesTheClosestAndCountsTheRest(t *testing.T
 // how much longer it is, so an old short match is not lost behind newer long ones, and only ASCII
 // letters fold, so İ is not i in either ranker.
 func TestDocumentsNearestRanksByExactDistanceAndFoldsOnlyASCII(t *testing.T) {
+	t.Parallel()
 	documents := func(names ...string) []model.Artifact {
 		var out []model.Artifact
 		for _, name := range names {
@@ -690,6 +710,7 @@ func TestDocumentsNearestRanksByExactDistanceAndFoldsOnlyASCII(t *testing.T) {
 }
 
 func TestDocumentRoutesRejectAmbiguousFilenameWithSlugChoices(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createArtifactIssue(t, handler)
 	issueDocument := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
@@ -738,13 +759,14 @@ func TestDocumentRoutesRejectAmbiguousFilenameWithSlugChoices(t *testing.T) {
 // one by its slug and one by its name, and a removal takes only a document that holds nothing
 // (removeArtifact), so once either held writing the two would stand for good.
 func TestAnUploadNamedAfterAnArtifactsSlugIsItsNextVersion(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	issue := createArtifactIssue(t, handler)
 	type answer struct {
 		Artifact model.Artifact `json:"artifact"`
 		Version  model.Version  `json:"version"`
 	}
-	upload := func(path string, body map[string]string) answer {
+	upload := func(path string, body map[string]any) answer {
 		t.Helper()
 		response := dispatchRequest(t, handler, http.MethodPost, path, body, "alice")
 		if response.Code != http.StatusCreated {
@@ -771,20 +793,20 @@ func TestAnUploadNamedAfterAnArtifactsSlugIsItsNextVersion(t *testing.T) {
 			name:  "issue",
 			owner: issue.Key,
 			create: func() answer {
-				return upload("/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "plan.md", "content": "# Plan\n"})
+				return upload("/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{"name": "plan.md", "content": "# Plan\n"})
 			},
 			again: func() answer {
-				return upload("/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "plan-md", "content": "# Plan, again\n"})
+				return upload("/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{"name": "plan-md", "content": "# Plan, again\n", "precondition": uploadBaseNamed(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", "plan-md")})
 			},
 		},
 		{
 			name:  "project",
 			owner: "TEST",
 			create: func() answer {
-				return upload("/api/v1/projects/TEST/artifacts", map[string]string{"name": "plan.md", "content": "# Plan\n"})
+				return upload("/api/v1/projects/TEST/artifacts", map[string]any{"name": "plan.md", "content": "# Plan\n"})
 			},
 			again: func() answer {
-				return upload("/api/v1/projects/TEST/artifacts", map[string]string{"name": "plan-md", "content": "# Plan, again\n"})
+				return upload("/api/v1/projects/TEST/artifacts", map[string]any{"name": "plan-md", "content": "# Plan, again\n", "precondition": uploadBaseNamed(t, handler, "/api/v1/projects/TEST/artifacts", "plan-md")})
 			},
 		},
 		{
@@ -822,6 +844,7 @@ func TestAnUploadNamedAfterAnArtifactsSlugIsItsNextVersion(t *testing.T) {
 // version, and is refused naming the artifact, rather than stored as a second artifact the slug
 // would also name.
 func TestAnUploadNamedAfterAnArtifactsSlugOfAnotherKindIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	issue := createArtifactIssue(t, handler)
 	path := "/api/v1/issues/" + issue.Key + "/artifacts"
@@ -850,6 +873,7 @@ func TestAnUploadNamedAfterAnArtifactsSlugOfAnotherKindIsRefused(t *testing.T) {
 // object is written before the upload's transaction opens, and an object no version names is one
 // nothing ever deletes.
 func TestARefusedFileUploadLeavesNoObjectInTheFileStore(t *testing.T) {
+	t.Parallel()
 	issueUploads := func(issue model.Issue) string { return "/api/v1/issues/" + issue.Key + "/artifacts" }
 	for _, test := range []struct {
 		name    string
@@ -926,8 +950,11 @@ func TestARefusedFileUploadLeavesNoObjectInTheFileStore(t *testing.T) {
 // lands first decides whether they make one artifact or two: `plan-md` first holds that name and
 // slug, and `plan.md` then gets `plan-md-2`. Neither upload may look its artifact up while the
 // other is still creating one, which a project's upload, with no row to lock as an issue's has,
-// needs its own lock for.
+// needs its own lock for. Only the first upload of each name creates: one that reaches an owner
+// already holding the name is a replacement, which names no token here and is taken unchecked
+// (INFRA-4980).
 func TestConcurrentUploadsUnderOneNameAndItsSlugLeaveNoReferenceNamingTwo(t *testing.T) {
+	t.Parallel()
 	for _, owner := range []string{"issue", "project"} {
 		t.Run(owner, func(t *testing.T) {
 			handler, database, _ := newTestServer(t, testServerOptions{})
@@ -950,7 +977,8 @@ func TestConcurrentUploadsUnderOneNameAndItsSlugLeaveNoReferenceNamingTwo(t *tes
 			}
 			close(start)
 			for range uploads {
-				if response := awaitResponse(t, responses); response.Code != http.StatusCreated {
+				response := awaitResponse(t, responses)
+				if response.Code != http.StatusCreated {
 					t.Fatalf("concurrent upload: status=%d body=%s, want 201", response.Code, response.Body.String())
 				}
 			}
@@ -981,6 +1009,7 @@ type unrecordedPeople struct{ auth.PeopleStore }
 func (unrecordedPeople) Record(context.Context, string) error { return nil }
 
 func TestArtifactIDRoutesValidateBeforeDatabaseUse(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{
 		Store:    &store.Store{},
@@ -1116,6 +1145,7 @@ func TestAnUploadToAClosedIssueIsRefusedBeforeItsBodyIsSpooled(t *testing.T) {
 // stored, so the closed-issue refusal must not answer it. The key holds the answer, and the keyed
 // layer replays it; the file is stored once.
 func TestARepeatOfAnUploadThatLandedReplaysItsAnswerAfterTheIssueCloses(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	issue := createArtifactIssue(t, handler)
 	before := issueArtifactCount(t, database, issue.Key)
@@ -1165,11 +1195,7 @@ func TestARepeatOfAnUploadStillRunningWaitsForItsAnswerAfterTheIssueCloses(t *te
 	before := issueArtifactCount(t, database, issue.Key)
 	answered := make(chan sentUpload, 1)
 	go func() { answered <- sendBigUpload(t, handler, issue.Key, "running-upload") }()
-	select {
-	case <-held.reached:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first upload never reached the file store")
-	}
+	testwait.Receive(t, "the first upload to reach the file store", held.reached)
 	closeArtifactIssue(t, handler, issue.Key)
 
 	// The first upload has parsed its spooled body already: it reaches nothing more of the
@@ -1184,12 +1210,7 @@ func TestARepeatOfAnUploadStillRunningWaitsForItsAnswerAfterTheIssueCloses(t *te
 	})
 
 	releaseOnce()
-	var first sentUpload
-	select {
-	case first = <-answered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first upload never answered once released")
-	}
+	first := testwait.Receive(t, "the first upload's answer once released", answered)
 	if code, _ := refusalOf(t, first.ResponseRecorder); first.Code != http.StatusConflict || code != "ISSUE_CLOSED" {
 		t.Fatalf("the first upload, which reached its issue after the close: status=%d body=%s, want 409 ISSUE_CLOSED",
 			first.Code, first.Body.String())

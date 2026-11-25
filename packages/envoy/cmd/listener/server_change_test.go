@@ -14,8 +14,10 @@
 // window a plugin's reconnect wait leaves.
 //
 // Its own build tag, and its own CI job (listener-server-change), because one run sends for a
-// minute and then waits out each server's restart and the JetStream catch-up after it, past what
-// envoy-go's unit step holds under go test's ten-minute package deadline.
+// minute and then waits out each server's restart and the JetStream catch-up after it, time the
+// package's other CI runs should not carry: envoy-go-race runs cmd/listener's untagged tests under
+// -race and a 30-minute -timeout, and envoy-go runs only the package's natslive tests, its unit
+// step leaving the package to the race job.
 
 package main
 
@@ -40,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const (
@@ -330,13 +333,13 @@ func (s *serverChangeSoak) startStandIn(t *testing.T) {
 		t.Fatalf("flush the stand-in's subscription: %v", err)
 	}
 
-	registration, err := json.Marshal(subscribeBody{
+	registration, err := json.Marshal(listenerwire.SubscribeRequest{
 		SessionID:      serverChangeSession,
 		Dir:            "/server-change",
 		Topics:         []string{agentSubject, serverChangeTeam, serverChangeCaptured},
 		Title:          "server-change stand-in",
 		SelfSubscribed: true,
-		Delivery:       &subscribeDelivery{Consumer: true, Epoch: "epoch-1"},
+		Delivery:       &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "epoch-1"},
 	})
 	if err != nil {
 		t.Fatalf("marshal the stand-in's registration: %v", err)
@@ -353,11 +356,11 @@ func (s *serverChangeSoak) awaitStandInSeenBySenders(t *testing.T) {
 	t.Helper()
 	waitFor(t, serverChangeRecovery, "the senders' listener to list the stand-in with both topics and name it the role's holder", func() bool {
 		status, body := callListener(t, s.via.port, http.MethodGet, "/v1/sessions", "")
-		var sessions []sessionInfo
+		var sessions []listenerwire.SessionInfo
 		if status != http.StatusOK || json.Unmarshal([]byte(body), &sessions) != nil {
 			return false
 		}
-		listed := slices.ContainsFunc(sessions, func(info sessionInfo) bool {
+		listed := slices.ContainsFunc(sessions, func(info listenerwire.SessionInfo) bool {
 			return info.SessionID == serverChangeSession &&
 				slices.Contains(info.Topics, serverChangeTeam) && slices.Contains(info.Topics, serverChangeCaptured)
 		})

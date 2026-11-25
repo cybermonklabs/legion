@@ -29,7 +29,7 @@ import (
 //     again like any other failure, recovered once the listener reads it, and logged recovered.
 func TestWebhookRedelivery_TheSweepRecoversFailedDeliveriesThroughTheListener(t *testing.T) {
 	env := setupTestEnv(t)
-	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", env.client, refusingRecorder{t})
+	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", "", env.client, refusingRecorder{t}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	var started, refusing atomic.Bool
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !started.Load() {
@@ -89,7 +89,7 @@ func TestWebhookRedelivery_TheSweepRecoversFailedDeliveriesThroughTheListener(t 
 	rejected := github.Record(unreadable, "submitted", 7, http.StatusBadRequest, time.Now().Add(-time.Minute))
 	refusing.Store(false)
 
-	state, err := redeliver.OpenState(env.client.Conn, env.client.JS(), 1)
+	state, err := redeliver.OpenState(t.Context(), env.client.Conn, env.client.JS(), 1)
 	if err != nil {
 		t.Fatalf("open redelivery state: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestWebhookRedelivery_TheSweepRecoversFailedDeliveriesThroughTheListener(t 
 		t.Fatalf("App client: %v", err)
 	}
 	var logs bytes.Buffer
-	sweeper := &redeliver.Sweeper{GitHub: client, Open: func() (bus.KeyValue, error) { return state, nil }, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	sweeper := &redeliver.Sweeper{GitHub: client, Open: func(context.Context) (bus.KeyValue, error) { return state, nil }, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
 	if _, err := sweeper.Sweep(context.Background(), redeliver.Options{}); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}

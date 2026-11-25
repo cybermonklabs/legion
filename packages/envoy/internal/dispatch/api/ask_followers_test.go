@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func followerSessions(followers []model.AskFollower) []string {
@@ -58,6 +59,7 @@ func replyToAskAs(t *testing.T, handler http.Handler, issueKey, askID, sessionID
 }
 
 func TestEveryoneWhoWritesToAnAskFollowsIt(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Followers", "A spec")
 	askID := openAskAs(t, handler, issue.Key, "s1", "Ship it?")
@@ -90,7 +92,95 @@ func TestEveryoneWhoWritesToAnAskFollowsIt(t *testing.T) {
 	}
 }
 
+// askSessionsOf is the ask_sessions a comment event's payload carries, and whether it carries the
+// field at all.
+func askSessionsOf(t *testing.T, payload map[string]any) ([]string, bool) {
+	t.Helper()
+	value, present := payload["ask_sessions"]
+	if !present {
+		return nil, false
+	}
+	list, ok := value.([]any)
+	if !ok {
+		t.Fatalf("ask_sessions = %#v, want a list", value)
+	}
+	sessions := make([]string, 0, len(list))
+	for _, session := range list {
+		id, ok := session.(string)
+		if !ok {
+			t.Fatalf("ask_sessions = %#v, want session ids", value)
+		}
+		sessions = append(sessions, id)
+	}
+	return sessions, true
+}
+
+// A comment.created in an ask's thread names the sessions that own the ask once the comment is in
+// (ask_sessions): the ask's author when a session wrote it, then its followers in the order they
+// joined, each once, a session that replies among them. An author that left its ask still owns it,
+// since it wrote it. An ask a person wrote that no session follows names [], and a comment outside
+// an ask's thread carries no ask_sessions at all.
+func TestACommentInAnAsksThreadNamesTheSessionsThatOwnTheAsk(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Ask sessions", "A spec")
+	comments := "/api/v1/issues/" + issue.Key + "/comments"
+	askID := openAskAs(t, handler, issue.Key, "s1", "Ship it?")
+	// s3 follows before s2 replies, so the list is in the order the sessions joined, not by id.
+	if followed := followerRequest(t, handler, http.MethodPut, "/api/v1/asks/"+askID+"/followers/s3", map[string]any{
+		"actor": map[string]any{"kind": "session", "id": "s3"},
+	}); followed.Code != http.StatusNoContent {
+		t.Fatalf("s3 following: status=%d body=%s", followed.Code, followed.Body.String())
+	}
+	replyToAskAs(t, handler, issue.Key, askID, "s2", "I would hold.")
+	if got, present := askSessionsOf(t, latestCommentCreatedPayload(t, handler, issue.Key)); !present || strings.Join(got, ",") != "s1,s3,s2" {
+		t.Fatalf("s2's reply ask_sessions = %v (present %v), want [s1 s3 s2]: the asker, then each follower once, the replier among them", got, present)
+	}
+
+	if left := followerRequest(t, handler, http.MethodDelete, "/api/v1/asks/"+askID+"/followers/s1", map[string]any{
+		"actor": map[string]any{"kind": "session", "id": "s1"},
+	}); left.Code != http.StatusNoContent {
+		t.Fatalf("s1 leaving its ask: status=%d body=%s", left.Code, left.Body.String())
+	}
+	if replied := dispatchRequest(t, handler, http.MethodPost, comments, map[string]any{
+		"body": "Hold for now.", "ask_id": askID,
+	}, "alice"); replied.Code != http.StatusCreated {
+		t.Fatalf("alice's reply: status=%d body=%s", replied.Code, replied.Body.String())
+	}
+	if got, present := askSessionsOf(t, latestCommentCreatedPayload(t, handler, issue.Key)); !present || strings.Join(got, ",") != "s1,s3,s2" {
+		t.Fatalf("alice's reply after s1 left ask_sessions = %v (present %v), want [s1 s3 s2]: s1 wrote the ask", got, present)
+	}
+
+	asked := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
+		"question": "Which region first?",
+	}, "alice")
+	if asked.Code != http.StatusCreated {
+		t.Fatalf("alice's ask: status=%d body=%s", asked.Code, asked.Body.String())
+	}
+	personAsk := decodeBody[struct {
+		ID string `json:"id"`
+	}](t, asked).ID
+	if replied := dispatchRequest(t, handler, http.MethodPost, comments, map[string]any{
+		"body": "East first.", "ask_id": personAsk,
+	}, "bob"); replied.Code != http.StatusCreated {
+		t.Fatalf("bob's reply: status=%d body=%s", replied.Code, replied.Body.String())
+	}
+	if got, present := askSessionsOf(t, latestCommentCreatedPayload(t, handler, issue.Key)); !present || len(got) != 0 {
+		t.Fatalf("a reply on a person's ask no session follows: ask_sessions = %v (present %v), want []", got, present)
+	}
+
+	if root := dispatchRequest(t, handler, http.MethodPost, comments, map[string]any{
+		"body": "A note on the spec.",
+	}, "alice"); root.Code != http.StatusCreated {
+		t.Fatalf("alice's comment: status=%d body=%s", root.Code, root.Body.String())
+	}
+	if got, present := askSessionsOf(t, latestCommentCreatedPayload(t, handler, issue.Key)); present {
+		t.Fatalf("a comment outside an ask's thread carries ask_sessions %v, want none", got)
+	}
+}
+
 func TestApprovalAskFollowsItsRequestingSession(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Approval followers", "A spec")
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{
@@ -110,6 +200,7 @@ func TestApprovalAskFollowsItsRequestingSession(t *testing.T) {
 }
 
 func TestApprovalHandBackFollowsItsActorWithoutChangingTheRequester(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
@@ -173,6 +264,7 @@ func TestApprovalHandBackFollowsItsActorWithoutChangingTheRequester(t *testing.T
 }
 
 func TestAskBlockWrittenBySessionFollowsThatSession(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -191,24 +283,21 @@ func TestAskBlockWrittenBySessionFollowsThatSession(t *testing.T) {
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	askID := testwait.UntilPolling(t, 10*time.Millisecond, "the typed ask block to settle into the inbox", func() (string, bool) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		if inbox.Code != http.StatusOK {
 			t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 		}
 		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
-			if ask.BlockID == nil || *ask.BlockID != "block-ask" {
-				continue
+			if ask.BlockID != nil && *ask.BlockID == "block-ask" {
+				return ask.ID, true
 			}
-			if got := readAskFollowers(t, handler, ask.ID); strings.Join(got, ",") != "s-writer" {
-				t.Fatalf("ask block followers = %v, want [s-writer]", got)
-			}
-			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		return "", false
+	})
+	if got := readAskFollowers(t, handler, askID); strings.Join(got, ",") != "s-writer" {
+		t.Fatalf("ask block followers = %v, want [s-writer]", got)
 	}
-	t.Fatal("typed ask block did not settle into the inbox")
 }
 
 func followerRequest(t *testing.T, handler http.Handler, method, target string, body any) *httptest.ResponseRecorder {
@@ -224,6 +313,7 @@ func followerRequest(t *testing.T, handler http.Handler, method, target string, 
 }
 
 func TestASessionFollowsAndUnfollowsOnlyItself(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Self follow", "A spec")
 	askID := openAskAs(t, handler, issue.Key, "s1", "Ship it?")
@@ -313,6 +403,7 @@ func TestASessionFollowsAndUnfollowsOnlyItself(t *testing.T) {
 }
 
 func TestAHumanAddsAndRemovesAnyFollower(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Human follow", "A spec")
 	askID := openAskAs(t, handler, issue.Key, "s1", "Ship it?")

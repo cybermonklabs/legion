@@ -23,6 +23,7 @@ import (
 // session, and the listener's own clock in epoch milliseconds. A role report names no session
 // and an agent report no role, so a daemon never matches one against the wrong claim.
 func TestTheWakeReportsWireShape(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		report wakeReport
@@ -68,6 +69,7 @@ func TestTheWakeReportsWireShape(t *testing.T) {
 // A report with no bus to publish on is dropped, never a panic: a listener built without a
 // client in a test answers its 404s as it always did.
 func TestAWakeReportWithNoBusIsDropped(t *testing.T) {
+	t.Parallel()
 	publishWakeReport(context.Background(), nil, logging.New("test"), wakeReport{Kind: wakeKindReady})
 	reportAgentWake(nil, logging.New("test"), "")
 	if !bus.StreamCaptures(bus.LegionWakeTopic) {
@@ -83,6 +85,7 @@ func TestAWakeReportWithNoBusIsDropped(t *testing.T) {
 // three kinds, and checks every field contracts.Envelope.Validate requires — source_event_id,
 // the one that was missing, among them.
 func TestEveryWakeReportCrossesTheBusAsAValidEnvelope(t *testing.T) {
+	t.Parallel()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the bus: %v", err)
@@ -157,6 +160,7 @@ func TestEveryWakeReportCrossesTheBusAsAValidEnvelope(t *testing.T) {
 // The bus here is out of reach exactly that way: a client of an account whose stream does not
 // exist yet cannot publish to it at all, and the stream arrives while the report is retrying.
 func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
+	t.Parallel()
 	url := testnats.URL(t)
 	client, err := bus.Connect([]string{url})
 	if err != nil {
@@ -206,12 +210,35 @@ func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
 	}
 }
 
+// A wake report the server refuses under the listener's grant is given up at its first attempt,
+// naming the refusal, rather than published again until its five-minute budget runs out with one
+// of the reports in flight held all that time: the grant refuses it again however often it is
+// sent.
+func TestAWakeReportTheGrantRefusesIsGivenUpAtOnce(t *testing.T) {
+	client := deniedGrantClient(t, bus.LegionWakeTopic)
+	logs := &lockedBuffer{}
+	lifetime, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	started := time.Now()
+	publishWakeReport(lifetime, client, logging.NewWithWriter("test", logs), wakeReport{Kind: wakeKindAgent, Session: "session-denied"})
+	elapsed := time.Since(started)
+	output := logs.String()
+	if !strings.Contains(output, "legion wake report not published") || !strings.Contains(output, `bus: NATS denied the publish to \"`+bus.LegionWakeTopic) {
+		t.Fatalf("the refused report's log names no refusal:\n%s", output)
+	}
+	if strings.Contains(output, "retrying until the bus takes it") || elapsed > wakeReportAttempt+3*time.Second {
+		t.Fatalf("the refused report was retried, or ended after %s, want one attempt within %s:\n%s",
+			elapsed.Round(time.Millisecond), wakeReportAttempt+3*time.Second, output)
+	}
+}
+
 // One report retries for up to wakeReportBudget, and during a bus outage one is raised per role
 // send with no holder and per message nothing can place. So the reports run under the
 // listener's own lifetime, which the shutdown ends, and no more than wakeReportsInFlight run at
 // once: without both, an outage piles up a goroutine and a report per such request for minutes,
 // and the shutdown leaves every one of them running.
 func TestWakeReportsEndWithTheListenerAndAreCappedInFlight(t *testing.T) {
+	t.Parallel()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the bus: %v", err)
@@ -253,6 +280,7 @@ func TestWakeReportsEndWithTheListenerAndAreCappedInFlight(t *testing.T) {
 // included, so a session that could publish here could wake pods at will and keep that gate open
 // with a report dated in the future.
 func TestThePublishRouteRefusesTheLegionWakeTopic(t *testing.T) {
+	t.Parallel()
 	recorder, _ := publishThrough(&listenerDeps{}, `{"topic":"`+bus.LegionWakeTopic+`","message":"listener_ready","source":"envoy"}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("publishing %s answered %d; want it refused with 400, body %s", bus.LegionWakeTopic, recorder.Code, recorder.Body)

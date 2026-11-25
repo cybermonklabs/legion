@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"golang.org/x/sys/unix"
 )
 
@@ -68,7 +70,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	defer func() {
 		_ = source.remove()
 	}()
-	if err := ensureRepoClone(ctx, run, WallClock{}, workspace.Clone, GitHubURL(request.Repo), request.DefaultBranch, source); err != nil {
+	if err := ensureRepoClone(ctx, run, clock.Real(), workspace.Clone, GitHubURL(request.Repo), request.DefaultBranch, source); err != nil {
 		return Workspace{}, err
 	}
 	if err := ensureFetchConfiguration(ctx, run, workspace.Clone, source); err != nil {
@@ -104,9 +106,15 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	if err := configureRepositoryCredential(ctx, run, workspace.Clone, request.CredentialHelper); err != nil {
 		return Workspace{}, err
 	}
-	// Every provision writes it, so a clone made before this setting existed takes it at its next
+	// Every provision runs these, so a clone made before a setting existed takes it at its next
 	// provision.
 	if err := configureCloneReads(ctx, run, workspace.Clone); err != nil {
+		return Workspace{}, err
+	}
+	if err := configurePackWindows(ctx, run, workspace.Clone); err != nil {
+		return Workspace{}, err
+	}
+	if err := configureCloneDefaultRepository(ctx, run, workspace.Clone); err != nil {
 		return Workspace{}, err
 	}
 	if err := removeRepositoryIdentity(ctx, run, workspace.Clone); err != nil {
@@ -134,11 +142,11 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	// daemon bounds checkouts by.
 	//
 	// It is also the one command past those steps that no change of this repository's makes fit
-	// CommandTimeout's five minutes: one write of the largest repository mapped took nine minutes
-	// in an issue pod (CheckoutTimeout), and the runner killing it there failed the whole
-	// provision and spent one of the claim's three launches. So this command alone takes
-	// CheckoutTimeout (request.checkoutBound), and every provisioning command but it and those
-	// steps keeps the runner's slow-command budget.
+	// CommandTimeout's five minutes: one write of the largest repository a project then worked
+	// in took nine minutes in an issue pod (CheckoutTimeout), and the runner killing it there
+	// failed the whole provision and spent one of the claim's three launches. So this command
+	// alone takes CheckoutTimeout (request.checkoutBound), and every provisioning command but it
+	// and those steps keeps the runner's slow-command budget.
 	store.unlock()
 	if checkout {
 		release, err := request.checkoutPlace(ctx)
@@ -216,30 +224,30 @@ const excludeLimit = 1 << 20
 // The file is on the issue's volume, which every role of the pod writes, and the call runs under
 // whatever Provision's caller holds: the tmux daemon's outbox, with the repository's store lock
 // held, which every later provision and removal of the repository waits on. So it is opened once,
-// read and appended to through that one descriptor, and opened as openRegular opens a file a role
-// can write: a symlink there is refused rather than followed, which would grow whatever file the
-// link names, and a fifo or a device is refused rather than waited on, in its open or its read. A
-// directory, or a file larger than excludeLimit, is refused too, each naming the file. The clone
+// read and appended to through that one descriptor, and opened as rolefile.OpenRegular opens a file
+// a role can write: a symlink there is refused rather than followed, which would grow whatever file
+// the link names, and a fifo or a device is refused rather than waited on, in its open or its read.
+// A directory, or a file larger than excludeLimit, is refused too, each naming the file. The clone
 // and the two directories between it and the file are opened the same way, without following a
-// link (openDirectory), each under the descriptor of the one above it, so a link a role leaves at
-// .git or at info is refused as one at the file is, and nothing below the clone is reached by a
-// path a role could swap between two opens.
+// link (rolefile.OpenDirectory), each under the descriptor of the one above it, so a link a role
+// leaves at .git or at info is refused as one at the file is, and nothing below the clone is
+// reached by a path a role could swap between two opens.
 func excludeCodegraphDirectory(cloneDir string) error {
 	excludePath := filepath.Join(cloneDir, ".git", "info", "exclude")
-	dir, err := openDirectory(unix.AT_FDCWD, cloneDir, cloneDir)
+	dir, err := rolefile.OpenDirectory(unix.AT_FDCWD, cloneDir, cloneDir)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", excludePath, err)
 	}
 	path := cloneDir
 	for _, name := range []string{".git", "info"} {
 		path = filepath.Join(path, name)
-		next, err := openDirectory(dir, name, path)
+		next, err := rolefile.OpenDirectory(dir, name, path)
 		if errors.Is(err, fs.ErrNotExist) {
 			if err := unix.Mkdirat(dir, name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
 				_ = unix.Close(dir)
 				return fmt.Errorf("create %s: %w", path, err)
 			}
-			next, err = openDirectory(dir, name, path)
+			next, err = rolefile.OpenDirectory(dir, name, path)
 		}
 		_ = unix.Close(dir)
 		if err != nil {
@@ -248,12 +256,12 @@ func excludeCodegraphDirectory(cloneDir string) error {
 		dir = next
 	}
 	defer unix.Close(dir)
-	file, err := openRegular(dir, "exclude", excludePath, unix.O_RDWR|unix.O_CREAT|unix.O_APPEND, 0o600)
+	file, err := rolefile.OpenRegular(dir, "exclude", excludePath, unix.O_RDWR|unix.O_CREAT|unix.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", excludePath, err)
 	}
 	defer file.Close()
-	existing, err := readBounded(file, excludePath, excludeLimit)
+	existing, err := rolefile.ReadBounded(file, excludePath, excludeLimit)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", excludePath, err)
 	}

@@ -1,0 +1,22 @@
+{
+  "name": "@sjawhar/codex-envoy",
+  "version": "1.0.0",
+  "license": "Apache-2.0",
+  "description": "Codex CLI plugin for Legion's Envoy bus and Dispatch",
+  "type": "module",
+  "bin": {
+    "dispatch": "bin/dispatch"
+  },
+  "files": [
+    ".codex-plugin/**",
+    "bin/**",
+    "dist/**",
+    "hooks/**",
+    "skills/**",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cybermonklabs/legion"
+  }
+}

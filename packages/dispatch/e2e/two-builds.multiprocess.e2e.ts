@@ -541,6 +541,18 @@ function visits(seed: Seeded): readonly Visit[] {
       url: `/delivery?${deliveryWindow}`,
     },
     { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
+    {
+      // The walk is signed in as alice (`signIn` below), and alice is who `seedEveryRoute`
+      // writes the issue's comment as (e2e/api.ts's default author), so her page lists that
+      // comment. Its words are what says the page drew the store's answer rather than its
+      // loading skeleton or its empty state.
+      route: "/people/:login",
+      shows: (page) => [
+        heading(page, "alice"),
+        page.getByRole("list", { name: "Person nodes" }).getByText(shown.comment),
+      ],
+      url: "/people/alice",
+    },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
     {
       // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), so
@@ -560,11 +572,6 @@ function visits(seed: Seeded): readonly Visit[] {
 
 function isAsset(url: URL): boolean {
   return url.origin === dashboardOrigin && url.pathname.startsWith("/assets/");
-}
-
-async function allVisible(locators: readonly Locator[]): Promise<boolean> {
-  for (const locator of locators) if (!(await locator.isVisible())) return false;
-  return true;
 }
 
 /** Opens every visit with the page document, API calls and sockets on `pageProcess` (the pin
@@ -653,13 +660,21 @@ async function walk(
         await page.goto(visit.url);
         // A failed asset ends the visit at once: the landmark it keeps from rendering would
         // only add a timeout.
-        await expect.poll(async () => problems.length > 0 || (await allVisible(shows))).toBe(true);
+        await expect
+          .poll(async () => {
+            if (problems.length > 0) return true;
+            for (const locator of shows) if (!(await locator.isVisible())) return false;
+            return true;
+          })
+          .toBe(true);
         if (problems.length === 0) {
           await expect(page.locator("#root")).not.toBeEmpty();
           await expect.poll(() => pending.size).toBe(0);
         }
       } catch (error) {
         for (const locator of shows) {
+          // The visit has already failed, so this reads once which landmarks are missing at the
+          // failure, for its message: a wait here would only add a timeout to a failed visit.
           if (!(await locator.isVisible())) problems.push(`${locator} is not visible`);
         }
         if (problems.length === 0) problems.push(String(error));
@@ -753,6 +768,10 @@ test("a tab of build A focused while A and B are both live shows no new-version 
       live: [builds.a.entry, builds.b.entry].sort(),
       serving: builds.a.entry,
     });
+    // The absence is read once the signed-in page has drawn, not off the shell's loading
+    // skeleton, and after the page has read the builds answer (`focusedTab`).
+    await expect(heading(page, "Inbox")).toBeVisible();
+    // The waits above settled the content this reads, so one read is enough.
     expect(await page.getByRole("status", { name: "A new version is available" }).count()).toBe(0);
   } finally {
     await page.context().close();
@@ -785,9 +804,7 @@ test("a tab of build B focused once only build A is live shows the new-version n
     const tab = await focusedTab(browser, "b");
     page = tab.page;
     expect(tab.builds).toEqual({ live: [builds.a.entry], serving: builds.b.entry });
-    expect(await page.getByRole("status", { name: "A new version is available" }).isVisible()).toBe(
-      true
-    );
+    await expect(page.getByRole("status", { name: "A new version is available" })).toBeVisible();
   } finally {
     if (moved.length > 0) {
       await sql(

@@ -114,13 +114,14 @@ two_builds_setup 'dispatch search two builds e2e' "$@"
 
 # fetch URL reads one GET as an agent bearer and sets answer_status and answer_body, whatever the
 # status: a case of this proof judges the status itself, and 404 is the answer two of them want.
+# The bearer reaches curl on standard input, in no command line.
 answer_status=''
 answer_body=''
 fetch() {
   local out
   out=$(mktemp "$work/answer.XXXXXX")
-  answer_status=$(curl -sS -o "$out" -w '%{http_code}' --max-time "$call_seconds" \
-    -H "Authorization: Bearer $agent_token" "$1") || answer_status=000
+  answer_status=$(printf 'Authorization: Bearer %s' "$agent_token" | curl -sS -o "$out" -w '%{http_code}' --max-time "$call_seconds" \
+    -H @- "$1") || answer_status=000
   answer_body=$(cat "$out")
   rm -f "$out"
 }
@@ -151,7 +152,7 @@ new_issue() {
 coverage_reading=''
 every_item_embedded() {
   local body
-  body=$(curl -sS --max-time "$call_seconds" -H "Authorization: Bearer $agent_token" \
+  body=$(printf 'Authorization: Bearer %s' "$agent_token" | curl -sS --max-time "$call_seconds" -H @- \
     "$head_url/api/v1/search/coverage") || return 1
   # shellcheck disable=SC2016 # the JavaScript below is bun's, not this shell's
   coverage_reading=$(printf '%s' "$body" | bun -e 'let data = ""; process.stdin.on("data", (chunk) => { data += chunk; }); process.stdin.on("end", () => { const report = JSON.parse(data); const kinds = Object.entries(report.kinds ?? {}).map(([kind, counts]) => `${kind} ${counts.lacking}/${counts.items}`).join(", "); console.log(`lacking=${report.total.lacking} items=${report.total.items} (${kinds})`); });') || return 1
@@ -372,3 +373,4 @@ begin keywords_only
 prove_member keywords_only "q=quasar%20drift&keywords_only=true" "q=quasar%20drift" \
   "issue $both_words_key; document $both_words_key"
 pass
+run_end

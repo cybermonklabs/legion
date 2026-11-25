@@ -68,6 +68,9 @@ type writeAdvice struct {
 	// SupersededApproval is set by a document write that stored a version replacing the one a
 	// person or a plan review had approved; nil (omitted) everywhere else.
 	SupersededApproval *supersededApproval `json:"superseded_approval,omitempty"`
+	// StandingReview is the person's review the issue's specification already carries, set only
+	// on a question opened on an issue (createAskFor); nil (omitted) everywhere else.
+	StandingReview *standingReview `json:"standing_review,omitempty"`
 	// MovedApprovalRequest is set by a document write that took an open approval request back
 	// from the person it waits on; nil (omitted) everywhere else.
 	MovedApprovalRequest *movedApprovalRequest `json:"moved_approval_request,omitempty"`
@@ -103,6 +106,28 @@ func (e *adviceQueryError) Unwrap() error {
 	return e.err
 }
 
+// sessionWriteTypes are the events session_writes_since_human counts; its query binds them.
+var sessionWriteTypes = []string{"message.created", "comment.created", "ask.opened"}
+
+// adviceOpenAskLimit is how many of the caller's open asks your_open_asks names: the oldest two,
+// enough to tell a session it is waiting on answers without listing a backlog.
+const adviceOpenAskLimit = 2
+
+// adviceAsks is how a write moves the asks your_open_asks names, which its own read cannot see:
+// the read runs in the write's read phase, before the write's statements (writeAdvice), so a
+// close's withdrawals and a reopen's restorations are queued rather than written. excluded names
+// the asks the answer leaves out - the ask the write is about, which it never echoes back, and
+// the asks a close withdraws, whose rows the read still finds open - and opened the ids of the
+// asks a reopen restores, whose rows the read still finds resolved; a write names an ask in at
+// most one of them. A restoration writes back an ask's state, its answer and its resolution and
+// nothing else (prepareRestoration), so a restored row's question, author and created_at already
+// read as they would after the write, and the query itself takes both sets, in its own order and
+// under its own cap.
+type adviceAsks struct {
+	excluded []string
+	opened   []string
+}
+
 // computeWriteAdvice runs the issue-scoped advice queries for a session's write. Two of them are
 // about the calling session itself - its own writes since the last human event, its own open
 // asks - so writeAdvice calls this only for a session actor. The third, the asks of the issue a
@@ -112,16 +137,22 @@ func (e *adviceQueryError) Unwrap() error {
 // whose status is triage: that is the only line the answer decides, so an ordinary write on an
 // ordinary issue gains no query at all. status is the issue's status as the write committed it,
 // the same value writeAdvice reports. route names the caller for the two queries whose failure
-// is logged rather than returned (declinedAsksAdvice, legionManagedStatusAdvice).
+// is logged rather than returned (declinedAsksAdvice, legionManagedStatusAdvice). appending is
+// the event the write appends after the advice is read (writeAdvice), and asks what the write
+// moves about the issue's open asks (adviceAsks). row is the issue row as the write leaves it
+// when the write reads its advice before it writes that row (writeAdviceBefore), nil to read
+// the stored one.
 func (s *server) computeWriteAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
 	route string,
 	issueKey string,
 	actor model.Actor,
-	excludeAskID string,
+	asks adviceAsks,
 	status string,
+	appending string,
 	opensAQuestion bool,
+	row *adviceIssueRow,
 ) (*writeAdvice, error) {
 	advice := &writeAdvice{YourOpenAsks: []adviceAsk{}, IssueStatus: status}
 	if err := s.runAdviceQueryHook(ctx, tx, "session_writes_since_human"); err != nil {
@@ -134,22 +165,29 @@ func (s *server) computeWriteAdvice(
 		)
 		select count(*) from events, last_human
 		where issue_key = $1 and actor->>'kind' = 'session' and actor->>'id' = $2
-		  and type in ('message.created', 'comment.created', 'ask.opened')
+		  and type = any($3::text[])
 		  and id > last_human.last_id
-	`, issueKey, actor.ID).Scan(&advice.SessionWritesSinceHuman); err != nil {
+	`, issueKey, actor.ID, sessionWriteTypes).Scan(&advice.SessionWritesSinceHuman); err != nil {
 		return nil, &adviceQueryError{query: "session_writes_since_human", err: err}
+	}
+	// The write's own event is not appended yet (writeAdvice), and it is the session's newest
+	// write: under the issue's owner lock no other event of the issue commits before it, and the
+	// write appends no human event, so the count it would have read after the append is one more.
+	if slices.Contains(sessionWriteTypes, appending) {
+		advice.SessionWritesSinceHuman++
 	}
 	if err := s.runAdviceQueryHook(ctx, tx, "your_open_asks"); err != nil {
 		return nil, &adviceQueryError{query: "your_open_asks", err: err}
 	}
 	rows, err := tx.Query(ctx, `
 		select id::text, question from asks
-		where issue_key = $1 and state = 'open'
+		where issue_key = $1
 		  and author->>'kind' = 'session' and author->>'id' = $2
-		  and ($3 = '' or id::text <> $3)
+		  and ((state = 'open' and id::text <> all(coalesce($3::text[], '{}')))
+		    or id::text = any(coalesce($5::text[], '{}')))
 		order by created_at, id
-		limit 2
-	`, issueKey, actor.ID, excludeAskID)
+		limit $4
+	`, issueKey, actor.ID, asks.excluded, adviceOpenAskLimit, asks.opened)
 	if err != nil {
 		return nil, &adviceQueryError{query: "your_open_asks", err: err}
 	}
@@ -170,7 +208,7 @@ func (s *server) computeWriteAdvice(
 		advice.DeclinedAsks = s.declinedAsksAdvice(ctx, tx, route, issueKey)
 	}
 	if status == model.IssueStatusTriage {
-		advice.LegionManagedStatus = s.legionManagedStatusAdvice(ctx, tx, route, issueKey)
+		advice.LegionManagedStatus = s.legionManagedStatusAdvice(ctx, tx, route, issueKey, row)
 	}
 	return advice, nil
 }
@@ -192,7 +230,7 @@ func (s *server) computeWriteAdvice(
 // would be dropped anyway. The failure is logged once, in the shape every omitted advice query
 // takes. The 500 ms bound writeAdvice set still covers it: SET LOCAL holds across a savepoint
 // opened under it.
-func (s *server) legionManagedStatusAdvice(ctx context.Context, tx pgx.Tx, route, issueKey string) *bool {
+func (s *server) legionManagedStatusAdvice(ctx context.Context, tx pgx.Tx, route, issueKey string, row *adviceIssueRow) *bool {
 	walk, err := tx.Begin(ctx)
 	if err != nil {
 		s.logAdviceError(route, issueKey, "legion_managed_status", err)
@@ -203,7 +241,12 @@ func (s *server) legionManagedStatusAdvice(ctx context.Context, tx pgx.Tx, route
 		s.logAdviceError(route, issueKey, "legion_managed_status", err)
 		return nil
 	}
-	managed, err := legionManagedStatus(ctx, walk, issueKey)
+	var managed bool
+	if row != nil {
+		managed, err = legionManagedStatusOfRow(ctx, walk, issueKey, row.project, row.parent, row.labels)
+	} else {
+		managed, err = legionManagedStatus(ctx, walk, issueKey)
+	}
 	if err != nil {
 		_ = walk.Rollback(ctx)
 		s.logAdviceError(route, issueKey, "legion_managed_status", err)
@@ -331,7 +374,14 @@ func (s *server) runAdviceQueryHook(ctx context.Context, tx pgx.Tx, query string
 	return s.adviceQueryHook(ctx, tx, query)
 }
 
-// writeAdvice is the advice of one write, run on a savepoint of the write's own transaction.
+// writeAdvice answers what a write tells its caller about the issue it wrote. A write joined to a
+// document ledger reads it in its read phase, before Commit runs its writes, so its queries hold no
+// transaction id (INFRA-636), and its own event is not in the table yet. appending names the event
+// the write appends for actor after this read - "" for none, or for a write that appends before
+// it reads its advice - and a counted one (sessionWriteTypes) is counted as if appended, so the
+// answer is the one the same read gave after the append. asks names the asks the write moves,
+// which the read finds as they stood (adviceAsks).
+//
 // opensAQuestion says the write is about to put a question to a person, which is what the
 // issue's declined asks are read for (computeWriteAdvice): the ask route passes true, a
 // document edit passes whether its ops added an ask block, and every other write passes false
@@ -342,22 +392,68 @@ func (s *server) writeAdvice(
 	route string,
 	issueKey string,
 	actor model.Actor,
-	excludeAskID string,
+	asks adviceAsks,
 	status string,
+	appending string,
 	opensAQuestion bool,
+) *writeAdvice {
+	return s.adviseWrite(ctx, tx, route, issueKey, actor, asks, status, appending, opensAQuestion, nil)
+}
+
+// adviceIssueRow is the part of an issue row a write's advice reads - its project, its parent and
+// its labels, which the walk for who owns the issue's status starts from
+// (legionManagedStatusOfRow) - as the write leaves the row.
+type adviceIssueRow struct {
+	project string
+	parent  *string
+	labels  []string
+}
+
+// writeAdviceBefore is writeAdvice for a write that reads its advice before it writes the issue
+// row the advice describes, so that the advice runs before the write's first statement and holds
+// no transaction id (INFRA-636): a create, whose row does not exist yet, and a patch, which may
+// change the row's labels, its parent or its status. status and row are the row as the write
+// leaves it, and asks what it moves about the issue's open asks (adviceAsks), so the answer is
+// the one the same read gave after the write; the write appends no counted event, puts no
+// question to a person, and a new issue has neither events nor asks.
+func (s *server) writeAdviceBefore(
+	ctx context.Context,
+	tx pgx.Tx,
+	route string,
+	issueKey string,
+	actor model.Actor,
+	status string,
+	row adviceIssueRow,
+	asks adviceAsks,
+) *writeAdvice {
+	return s.adviseWrite(ctx, tx, route, issueKey, actor, asks, status, "", false, &row)
+}
+
+// adviseWrite is writeAdvice and writeAdviceBefore: row nil reads the stored issue row.
+func (s *server) adviseWrite(
+	ctx context.Context,
+	tx pgx.Tx,
+	route string,
+	issueKey string,
+	actor model.Actor,
+	asks adviceAsks,
+	status string,
+	appending string,
+	opensAQuestion bool,
+	row *adviceIssueRow,
 ) *writeAdvice {
 	// A person's write has no advice query to run - every one of them is about the calling
 	// session, and the triage line this answers is about what a session is told - so it is
 	// answered here, outside the savepoint and the two statement_timeout statements that would
-	// otherwise run inside the write's own transaction while it holds the issue row. Such a
-	// write still gets the triage advice, which is true for a reader who may move the status.
-	// Two kinds of actor reach a write: a session, which every bearer naming itself becomes
-	// (bearerSessionActor), and the person, which a cookie is and which actingPerson hands back
-	// for every credential holding the `person` scope, an agent's personal token among them.
-	// That agent gets the person's advice and not a session's, which is right: it is acting as
-	// the person, and the advice is about what the acting writer is told. The guard is on the
-	// kind rather than on "is a human" so an actor kind the server does not produce today cannot
-	// silently acquire session-shaped advice.
+	// otherwise run inside the write's own transaction while it holds the issue's owner lock.
+	// Such a write still gets the triage advice, which is true for a reader who may move the
+	// status. Two kinds of actor reach a write: a session, which every bearer naming itself
+	// becomes (bearerSessionActor), and the person, which a cookie is and which actingPerson
+	// hands back for every credential holding the `person` scope, an agent's personal token
+	// among them. That agent gets the person's advice and not a session's, which is right: it
+	// is acting as the person, and the advice is about what the acting writer is told. The
+	// guard is on the kind rather than on "is a human" so an actor kind the server does not
+	// produce today cannot silently acquire session-shaped advice.
 	if actor.Kind != "session" {
 		return &writeAdvice{YourOpenAsks: []adviceAsk{}, IssueStatus: status}
 	}
@@ -367,13 +463,13 @@ func (s *server) writeAdvice(
 		return nil
 	}
 	// Healthy advice queries complete in single-digit milliseconds. Bound them at 500 ms so a
-	// future plan regression cannot hold the issue row lock and a pool connection indefinitely.
+	// future plan regression cannot hold the issue's owner lock and a pool connection indefinitely.
 	if _, err := adviceTx.Exec(ctx, "set local statement_timeout = '500ms'"); err != nil {
 		_ = adviceTx.Rollback(ctx)
 		s.logAdviceError(route, issueKey, "statement_timeout", err)
 		return nil
 	}
-	advice, err := s.computeWriteAdvice(ctx, adviceTx, route, issueKey, actor, excludeAskID, status, opensAQuestion)
+	advice, err := s.computeWriteAdvice(ctx, adviceTx, route, issueKey, actor, asks, status, appending, opensAQuestion, row)
 	if err != nil {
 		_ = adviceTx.Rollback(ctx)
 		query := "unknown"
@@ -474,9 +570,10 @@ type decisionBlockCheck struct {
 // Whether a Legion design gate was among the things that approval held open is what DesignGates
 // answers. Dispatch keeps, issue by issue, which document each gated step records (design_gates,
 // PUT /api/v1/issues/{key}/design-gates), and the list is that record read for this document,
-// kept to the gates that hold a READY back: the issue is in the workflow there, and the project's own
-// list of gated steps names the row's step (supersededApprovalGates). Where nothing is left,
-// this write closed no gate anyone here knows of.
+// kept to the gates that hold a READY back: the issue is in the workflow there, and the row holds
+// its tree, as the daemon that published it says or, where it said nothing, as the project's own
+// list of gated steps says (supersededApprovalGates). Where nothing is left, this write closed no
+// gate anyone here knows of.
 type supersededApproval struct {
 	// ApprovedVersion is the version that approval pinned, the one this write superseded.
 	ApprovedVersion int `json:"approved_version"`
@@ -485,7 +582,7 @@ type supersededApproval struct {
 	// ApprovedBy is who gave that approval, as its review records the actor's id.
 	ApprovedBy string `json:"approved_by"`
 	// DesignGates are the design gates Dispatch's record says this document is: one entry per
-	// issue and step, kept to the issues still in the workflow whose step the project gates.
+	// issue and step, kept to the issues still in the workflow whose row holds its tree.
 	// Omitted when empty, and empty is also what a failed gate read leaves
 	// (supersededApprovalAdvice), because an absent list and an empty one say the one thing a
 	// client acts on - Dispatch names no gate here.
@@ -501,19 +598,19 @@ type supersededApprovalGate struct {
 }
 
 // supersededApprovalAdvice reports the approval the write of version just made stale, or nil when
-// it made none, which is every write of a document nobody has approved. It runs inside the write's
-// own transaction, after the version row and the approval carry (docs.carryApproval) are written,
-// so it reads what the write left: a carried approval is pinned to version itself and reports
+// it made none, which is every write of a document nobody has approved. It runs in the write's
+// read phase, where the version row and the approval carry (docs.carryApproval) are queued rather
+// than written, so the carry's own review comes off the ledger (docs.Ledger.PendingReview) and
+// everything else from the table: a carried approval is pinned to version itself and reports
 // nothing, which is right - the gate reopens on that carry's own artifact.approved event.
 //
 // The read is the newest review of the document (docs.NewestReview), one entry of
 // artifact_reviews_by_artifact_event_seq in docs.ReviewOrder, the order the reviews' events
-// committed: artifact_reviews.created_at is its transaction's start and its id is random, so the
-// carry's own approval of this version can carry an earlier pair than an approval committed while
-// this write was open, and ordering by those two alone would report a gate this write did not
-// close. It reports only when that newest review approves the version right below this one: an
-// older approval was already stale before this write, and a newer changes request had already
-// closed the gate.
+// committed: artifact_reviews.created_at is its transaction's start and its id is random, so an
+// approval committed while this write was open can carry an earlier pair than an older one, and
+// ordering by those two alone would report a gate this write did not close. It reports only when
+// that newest review approves the version right below this one: an older approval was already
+// stale before this write, and a newer changes request had already closed the gate.
 //
 // Like every other advice query this runs behind a savepoint of its own (adviceSavepoint),
 // because a failed statement aborts the transaction it ran in and this must never fail the write
@@ -522,11 +619,17 @@ type supersededApprovalGate struct {
 func (s *server) supersededApprovalAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
+	ledger *docs.Ledger,
 	route string,
 	issueKey string,
 	artifactID string,
 	version int,
 ) *supersededApproval {
+	// A review this transaction queued is newer than every stored one and no read of the table
+	// can see it before the write phase runs, so it answers for the newest review by itself.
+	if review, queued := ledger.PendingReview(artifactID); queued {
+		return supersededBy(&review, version)
+	}
 	adviceTx, ok := s.adviceSavepoint(ctx, tx, route, issueKey, "superseded_approval")
 	if !ok {
 		return nil
@@ -558,7 +661,7 @@ func (s *server) supersededApprovalAdvice(
 
 // supersededApprovalGates reads Dispatch's record of which issues' design gates record this
 // document (design_gates, written by PUT /api/v1/issues/{key}/design-gates), keeping the rows
-// that hold a READY back and no others. Two things decide that, and the row alone says neither.
+// that hold a READY back and no others. Two things decide that.
 //
 // The issue must be in the workflow, which is every status but the four that take it out
 // (model.IssueStatusesOutOfWorkflow): a closed tree, and a tree parked in `backlog` or `icebox`,
@@ -567,13 +670,28 @@ func (s *server) supersededApprovalAdvice(
 // them for as long as it stays parked - so the rows outlive the tree that ran, and only the
 // re-admission that brings it back clears them.
 //
-// The deployment must gate the row's step, which is the project's own list (projects.gated_steps,
-// written by PUT /api/v1/projects/{key}/gated-steps, the publication of the same boot that writes
-// these rows). A daemon records a gate row for a step it does not gate - with `gates.design: off`
-// the registration records the spec step, approves it, and no later event ever moves it - and
-// that gate refuses nothing. A project whose daemon has published no list gates nothing it holds,
-// and prints no clause, which is the direction this whole change takes: a reader told nothing
-// asks the architect, where a reader told a gate that is not there stops working.
+// The row must hold its tree, and the daemon that published it says whether it does
+// (design_gates.holds): which steps a tree is gated on is the daemon's rule, and the project's
+// own list (projects.gated_steps, written by PUT /api/v1/projects/{key}/gated-steps) is not the
+// whole of it. A root's architect may register its Verification document as `criteria` beside a
+// deployment whose list names `spec` and not `criteria`, and that row holds the tree although the
+// list does not name its step. A daemon also records a gate row for a step it does not gate - with
+// `gates.design: off` the registration records the spec step, approves it, and no later event ever
+// moves it - and that row holds nothing.
+//
+// A null holds is a row whose publish did not say whether it holds its tree, and the rule keeps it
+// where the project's list names its step (`coalesce`), which is how every row was read before
+// the daemon said. A daemon older than the column publishes no holds, so a Dispatch with the
+// column reads that daemon's rows as it always read them. A Dispatch older than the column takes
+// a newer daemon's publish and answers 200, dropping holds, since decodeJSON ignores a member it
+// does not declare, and nothing retries the publish. Each row it took that way is null once
+// Dispatch has the column, so a `criteria` row a root registered beside a deployment whose list
+// names `spec` and not `criteria` is left out of this advice until the daemon publishes the set
+// again, which every daemon boot does. So the operator deploys Dispatch first, or restarts the
+// daemon once Dispatch has the column. For a null row, a project whose daemon has published no
+// list gates nothing, and prints no clause, which is the direction this whole change takes: a
+// reader told nothing asks the architect, where a reader told a gate that is not there stops
+// working.
 //
 // The order is the issue's key and then the order a gate runs the steps in ($2,
 // model.GatedStepsKnown), the order the issue read lists an issue's own gates in.
@@ -583,7 +701,8 @@ func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID str
 		from design_gates g
 		join issues i on i.key = g.issue
 		join projects p on p.key = i.project_key
-		where g.artifact_id = $1 and not (i.status = any($3::text[])) and g.step = any(p.gated_steps)
+		where g.artifact_id = $1 and not (i.status = any($3::text[]))
+			and coalesce(g.holds, g.step = any(p.gated_steps))
 		order by g.issue, array_position($2::text[], g.step)
 	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow)
 	if err != nil {
@@ -611,14 +730,20 @@ func newestReviewAsApproval(ctx context.Context, q docs.Queryer, artifactID stri
 	if err != nil {
 		return nil, fmt.Errorf("read the document's newest review: %w", err)
 	}
+	return supersededBy(review, version), nil
+}
+
+// supersededBy is that rule over one review, whichever read answered it: the document's newest,
+// reported when it approves the version right below version and nothing otherwise.
+func supersededBy(review *model.ArtifactReview, version int) *supersededApproval {
 	if review == nil || review.State != "approved" || review.Version != version-1 {
-		return nil, nil
+		return nil
 	}
 	return &supersededApproval{
 		ApprovedVersion: review.Version,
 		Version:         version,
 		ApprovedBy:      review.Actor.ID,
-	}, nil
+	}
 }
 
 // movedApprovalRequest is what a document write reports when the version it stored moved an
@@ -656,9 +781,10 @@ type movedApprovalDocument struct {
 // movedApprovalRequestAdvice reports the open approval request the write just took back from the
 // person, or nil when it took none: a document with no open request, and a request still at the
 // version its agent handed over, which is what a write whose own carry answered the request
-// leaves. It runs inside the write's own transaction, after the version row, the request's move
-// (docs.MoveApprovalAsk) and the approval carry, so it reads the state the write left and not
-// the state it found.
+// leaves. It runs in the write's read phase, where the version row, the request's move
+// (docs.MoveApprovalAsk) and the approval carry are queued and not yet written, so it reads the
+// request as this transaction leaves it off the ledger (docs.Ledger.PendingApproval) and the
+// stored row only where the transaction queued no write of the request at all.
 //
 // The rule is docs.ApprovalAwaitsHandBack, the same one the SQL approvalMoved (ask_rows.go) and
 // the quiet flag of a later move (docs.MoveApprovalAsk) apply, asked here of the request as this
@@ -672,6 +798,7 @@ type movedApprovalDocument struct {
 func (s *server) movedApprovalRequestAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
+	ledger *docs.Ledger,
 	route string,
 	issueKey string,
 	artifactID string,
@@ -681,12 +808,21 @@ func (s *server) movedApprovalRequestAdvice(
 		return nil
 	}
 	defer func() { _ = adviceTx.Rollback(ctx) }()
-	ask, err := docs.OpenApprovalAsk(ctx, adviceTx, artifactID)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "moved_approval_request", err)
-		return nil
+	ask, queued := ledger.PendingApproval(artifactID)
+	if !queued {
+		stored, err := docs.OpenApprovalAsk(ctx, adviceTx, artifactID)
+		if err != nil {
+			s.logAdviceError(route, issueKey, "moved_approval_request", err)
+			return nil
+		}
+		if stored == nil {
+			return nil
+		}
+		ask = *stored
 	}
-	if ask == nil || ask.Approval == nil {
+	if ask.State != "open" || ask.Approval == nil {
+		// A request this write's own carry answered is the person's no longer, so it took
+		// nothing back from them.
 		return nil
 	}
 	if !docs.ApprovalAwaitsHandBack(ask.Approval.Documents) {
@@ -904,15 +1040,11 @@ func (response advisedResponse) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	encoded := make([]byte, 0, len(payload)+len(advice)+11)
-	encoded = append(encoded, payload[:len(payload)-1]...)
+	key := `"advice":`
 	if len(payload) > 2 {
-		encoded = append(encoded, ',')
+		key = "," + key
 	}
-	encoded = append(encoded, `"advice":`...)
-	encoded = append(encoded, advice...)
-	encoded = append(encoded, '}')
-	return encoded, nil
+	return slices.Concat(payload[:len(payload)-1], []byte(key), advice, []byte("}")), nil
 }
 
 func withAdvice(payload any, advice *writeAdvice) any {

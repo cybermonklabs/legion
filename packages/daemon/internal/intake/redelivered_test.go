@@ -1,5 +1,7 @@
 package intake_test
 
+//ci:builds packages/envoy ./cmd/listener ./cmd/dispatch seedRedeliveredIssue testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)
+
 import (
 	"bytes"
 	"context"
@@ -61,14 +63,15 @@ const (
 	githubSubjects      = "notifications.github.>"
 )
 
-// redeliveredRepositories serves acme/widgets at main, as the daemon's mapping would.
+// redeliveredRepositories records an issue on acme/widgets at main, as the daemon would once
+// GitHub answers for it; a repository nothing has read GitHub for is answered as unread.
 type redeliveredRepositories struct{}
 
 func (redeliveredRepositories) ResolveRepository(resolved string) (workflow.Resolution, error) {
 	if resolved == redeliveredRepo {
 		return workflow.Resolution{Repo: redeliveredRepo, DefaultBranch: "main", GitHubRepo: redeliveredRepo}, nil
 	}
-	return workflow.Resolution{Refusal: resolved + " is not mapped to project " + redeliveredProject + " in Dispatch"}, nil
+	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
 // GitHub sends a pull request opened on an issue's branch while the stream does not capture
@@ -79,6 +82,14 @@ func (redeliveredRepositories) ResolveRepository(resolved string) (workflow.Reso
 // listener stores it, and the daemon's consumer applies it with the workflow's handler: the pull
 // request is recorded on its issue, once, under the delivery's fact id. The listener and the
 // sweep are the real binaries; GitHub is a fake that keeps the App webhook's delivery log.
+//
+// The test's own listener also reports on notifications.legion.wake: a listener_ready report as
+// it starts and every five minutes after (packages/envoy/cmd/listener/main.go:1739-1744). Every
+// daemon is meant to apply those reports, as the signal that lets it release idle pods
+// (internal/workflow/wake.go:110-120), so the daemon here applies each one stored after its wake
+// durable opened, under source envoy, at a time this test does not control. The test therefore
+// admits envoy rows in processed_events and holds its GitHub rows to exactly the redelivered
+// delivery (redeliveredGitHubEvents).
 func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	ctx := context.Background()
 	binaries := builtEnvoyBinaries(t)
@@ -148,7 +159,7 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	// runs it against the database its server already migrated. This test gives it a database of
 	// its own and brings it to Dispatch's schema first, through a subcommand that migrates and then
 	// finds nothing to do on an empty database.
-	dispatchDSN := testdb.Database(t, "legion_intake_redelivered_dispatch")
+	dispatchDSN := testdb.PlainDatabase(t, "legion_intake_redelivered_dispatch")
 	home := t.TempDir()
 	migrate := exec.Command(binaries.dispatch, "backfill-block-ids")
 	migrate.Dir = home
@@ -186,10 +197,10 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 
 	factID := "github." + redeliveredGUID
 	testwait.Eventually(t, "the daemon to apply "+factID, func() bool {
-		return slices.Contains(processedGitHubEvents(t, pool), factID)
+		return slices.Contains(redeliveredGitHubEvents(t, pool), factID)
 	})
-	if got := processedGitHubEvents(t, pool); !slices.Equal(got, []string{factID}) {
-		t.Errorf("processed events %v, want exactly %s", got, factID)
+	if got := redeliveredGitHubEvents(t, pool); !slices.Equal(got, []string{factID}) {
+		t.Errorf("processed GitHub events %v, want exactly %s", got, factID)
 	}
 	if n := storedOn(t, stream, subject); n != 1 {
 		t.Errorf("the stream holds %d messages on %s, want the redelivered one", n, subject)
@@ -214,8 +225,37 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	if logged := logs.String(); logged != "" {
 		t.Errorf("the consumer and the handlers logged, want nothing at warn or above:\n%s", logged)
 	}
-	t.Logf("6. the daemon applied %s once: processed_events holds %v, and %s#%d is recorded open on %s at %s",
-		factID, processedGitHubEvents(t, pool), redeliveredRepo, redeliveredNumber, pr.Issue, pr.HeadSHA)
+	t.Logf("6. the daemon applied %s once: processed_events holds %v from GitHub, and %s#%d is recorded open on %s at %s",
+		factID, redeliveredGitHubEvents(t, pool), redeliveredRepo, redeliveredNumber, pr.Issue, pr.HeadSHA)
+}
+
+// redeliveredGitHubEvents is the id of every event processed_events holds from GitHub, sorted in
+// Go's byte order as processedGitHubEvents sorts them. A row from source envoy is a report of the
+// test's own listener, which the daemon is meant to apply (the test's comment), and is left out;
+// a row from any other source fails the test.
+func redeliveredGitHubEvents(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select source || ':' || event_id from processed_events`)
+	if err != nil {
+		t.Fatalf("read the processed events: %v", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the processed events: %v", err)
+	}
+	var github []string
+	for _, id := range ids {
+		source, eventID, _ := strings.Cut(id, ":")
+		switch source {
+		case "github":
+			github = append(github, eventID)
+		case "envoy":
+		default:
+			t.Fatalf("processed event %s is from %s, want only GitHub's and the listener's (envoy)", eventID, source)
+		}
+	}
+	slices.Sort(github)
+	return github
 }
 
 const redeliveredHead = "4c1e9a7b2d5f8e0a3c6b9d2f5e8a1c4b7d0e3f6a"
@@ -363,13 +403,20 @@ func startListener(t *testing.T, binary, natsURL string) *listenerProcess {
 	}()
 	t.Cleanup(func() {
 		_ = cmd.Process.Signal(os.Interrupt)
-		select {
-		case <-exited:
-		case <-time.After(10 * time.Second):
+		// A listener that never stops fails the wait, and is killed on the way out so it outlives
+		// no test; one that stopped is past killing, and Kill only says so.
+		defer func() {
 			_ = cmd.Process.Kill()
 			<-exited
-			t.Errorf("the listener did not stop after SIGINT:\n%s", output.String())
-		}
+		}()
+		testwait.Until(t, "the listener to stop after SIGINT", func() (string, bool) {
+			select {
+			case <-exited:
+				return "", true
+			default:
+				return output.String(), false
+			}
+		})
 	})
 	client := &http.Client{Timeout: 5 * time.Second}
 	url := "http://127.0.0.1:" + strconv.Itoa(port) + "/healthz"

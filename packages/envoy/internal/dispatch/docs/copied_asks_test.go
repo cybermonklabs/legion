@@ -11,11 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const copiedAsksDocument = "Context\n\n" +
@@ -114,6 +118,7 @@ func copiedSourceStates(t *testing.T, service *Service, original string, asks ma
 // SeedText) opens no ask: each block shows the state and answer of the ask it was copied from and
 // names it, and a later settlement of the copy shows a later answer to its source.
 func TestADocumentCopiedOnItsIssueShowsItsSourcesAsksAndOpensNone(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	service.settle = time.Hour
 	asks := copiedAskSource(t, service, original)
@@ -160,6 +165,7 @@ func openAskBlocksOn(t *testing.T, service *Service, document string) string {
 // A second document of an issue that uses the first's block id and question for a question of its
 // own, with other options, is no copy: it asks something else, and opens its own ask.
 func TestABlockAskingTheSameQuestionWithOtherOptionsUnderTheSameIDOpensItsOwnAsk(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, original, ":::ask{#decision urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Matches the platform.\n- gRPC: Streams.\n:::\n")
@@ -182,6 +188,7 @@ func TestABlockAskingTheSameQuestionWithOtherOptionsUnderTheSameIDOpensItsOwnAsk
 // A block cut from one document and pasted into another is no copy: settlement retracted the ask
 // its first document indexed when the block left it, so the second opens an ask of its own.
 func TestABlockMovedFromADocumentWhoseAskSettlementRetractedOpensItsOwnAsk(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	service.settle = time.Hour
 	moved := ":::ask{#moved urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
@@ -211,6 +218,7 @@ func TestABlockMovedFromADocumentWhoseAskSettlementRetractedOpensItsOwnAsk(t *te
 
 // A copied block whose question the copy rewords is a new question, and opens an ask.
 func TestACopiedAskBlockRewordedOnTheCopyOpensAnAsk(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	service.settle = time.Hour
 	copiedAskSource(t, service, original)
@@ -225,6 +233,7 @@ func TestACopiedAskBlockRewordedOnTheCopyOpensAnAsk(t *testing.T) {
 // A project document copied from another of its project's documents opens no ask, while a
 // document of another issue carrying the same block ids is no copy and opens its own.
 func TestCopiedAskSourcesAreTheDocumentOwnersOwn(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	service.settle = time.Hour
 	original := createProjectDocument(t, service.store, "# Original")
@@ -249,6 +258,7 @@ func TestCopiedAskSourcesAreTheDocumentOwnersOwn(t *testing.T) {
 // (pmdoc.TypedBlockIDAttribute), an id written `id="…"` included: a document of the same owner
 // whose latest version holds the block is a copy, and one holding another block is not.
 func TestTheCopiesOfAnAskAreFoundByItsBlockIDAsWritten(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	ask := func(id string) string {
 		return ":::ask{" + pmdoc.TypedBlockIDAttribute(id) + " urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
@@ -299,16 +309,16 @@ func openAsksUnder(t *testing.T, service *Service, blockID string) []string {
 }
 
 // requireOneOpenAskOn waits for the settlement a retraction arms on document: exactly one open ask
-// under blockID on the issue, on document.
+// under blockID on the issue, on document. It waits as long as a room's own work may take
+// (roomWait), and fails naming the asks it read last.
 func requireOneOpenAskOn(t *testing.T, service *Service, blockID, document string) {
 	t.Helper()
 	var open []string
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if open = openAsksUnder(t, service, blockID); len(open) == 1 && open[0] == document {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	if testwait.Holds(roomWait(t), 20*time.Millisecond, func() bool {
+		open = openAsksUnder(t, service, blockID)
+		return len(open) == 1 && open[0] == document
+	}) {
+		return
 	}
 	t.Fatalf("open asks under %s = %v, want one, on the copy %s", blockID, open, document)
 }
@@ -317,6 +327,7 @@ func requireOneOpenAskOn(t *testing.T, service *Service, blockID, document strin
 // first, is a copy until the cut: settlement of the first retracts its ask and settles the copy,
 // which opens the block's own ask. The question is open in exactly one place throughout.
 func TestABlockPastedThenCutOpensItsAskOnTheDocumentItWasPastedInto(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	moved := ":::ask{#moved urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 	seedServiceText(t, service, original, "Context\n\n"+moved)
@@ -339,6 +350,7 @@ func TestABlockPastedThenCutOpensItsAskOnTheDocumentItWasPastedInto(t *testing.T
 // once settlement retracts the source's, while its answered and resolved blocks, whose sources are
 // closed and not retracted, go on showing them and open none.
 func TestACopyOpensItsOwnAskWhenItsOpenSourceLeavesItsDocument(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	asks := copiedAskSource(t, service, original)
 	copied := createIssueDocument(t, service.store, 1, "# Copy")
@@ -361,6 +373,7 @@ func TestACopyOpensItsOwnAskWhenItsOpenSourceLeavesItsDocument(t *testing.T) {
 // answered one, though the later one, which a second document reworded into the same question,
 // is open.
 func TestACopyOfTwoMatchingAsksShowsTheEarlierAsked(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	service.settle = time.Hour
 	block := func(question string) string {
@@ -397,6 +410,7 @@ func TestACopyOfTwoMatchingAsksShowsTheEarlierAsked(t *testing.T) {
 // A copy taken before its source was reworded asks what the source asked then, which the source's
 // ask.edited event records: it is a copy of that ask, opens none, and shows its state.
 func TestACopyOfASourcesEarlierWordingShowsItsStateAndOpensNoAsk(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	service.settle = time.Hour
 	asks := copiedAskSource(t, service, original)
@@ -450,6 +464,7 @@ func rewordShip(t *testing.T, service *Service, original string) model.Ask {
 // resolution owes it, opens the block's own ask on the copy as for any new block, rather than
 // writing a decision on the reworded question into the record.
 func TestAnAnswerOrResolutionOfACopysSourceAfterARewordingOpensTheCopysOwnAsk(t *testing.T) {
+	t.Parallel()
 	for _, closing := range []string{"answered", "resolved"} {
 		t.Run(closing, func(t *testing.T) {
 			service, original := newTestService(t)
@@ -595,8 +610,11 @@ func rewordAsAnEarlierRelease(t *testing.T, service *Service, document string, a
 		t.Fatalf("reword the decided ask's row: %v", err)
 	}
 	ask.EditedAt = askTimestamp(&editedAt)
-	changes, err := refs.ReplaceCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, service.serverURL), ask.Question)
+	changes, writeRefs, err := planAskReferences(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, service.serverURL), ask.ID, ask.Question)
 	if err != nil {
+		t.Fatalf("plan the reworded question's references: %v", err)
+	}
+	if err := store.RunWrite(ctx, tx, writeRefs); err != nil {
 		t.Fatalf("index the reworded question: %v", err)
 	}
 	if _, err := service.events.Append(ctx, tx, documentAskEvent(owner, document, "ask.edited", SettlementActor,
@@ -660,6 +678,7 @@ func TestASettlementRestoresADecidedAskAnEarlierReleaseReworded(t *testing.T) {
 // copy's next settlement opens the block's own ask, the reworded question being one no decision
 // answered. A second restoration finds nothing left, and the copy owes nothing more.
 func TestARestorationOfACopysSourceSettlesTheCopyAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, closing := range []string{"answered", "resolved"} {
 		for _, restoration := range []string{"settlement", "boot"} {
@@ -727,6 +746,7 @@ func TestARestorationOfACopysSourceSettlesTheCopyAgain(t *testing.T) {
 // one settlement the boot arms writes the decided wording back into the block, and a second
 // restoration finds nothing to restore and marks nothing.
 func TestTheBootsRestorationSettlesTheRestoredAsksOwnDocument(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, closing := range []string{"answered", "resolved"} {
 		t.Run(closing, func(t *testing.T) {
@@ -854,6 +874,7 @@ func TestASettlementLogsEachBlockItTakesForACopyOnce(t *testing.T) {
 // document rewords the answered ask, a copy of the reworded text holds a question no decision
 // answered and opens its own ask, and a copy of the wording that was answered shows the answer.
 func TestACopyOfADecidedAsksEditedTextOpensItsOwnAskAndACopyOfItsDecidedWordingShowsTheDecision(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, original, "Context\n\n"+shipBlock)
@@ -896,6 +917,7 @@ func TestACopyOfADecidedAsksEditedTextOpensItsOwnAskAndACopyOfItsDecidedWordingS
 // restoration, which reopen the wording it asked, and stops being one once the restored source
 // is reworded and the new wording answered: the copy then opens its own ask.
 func TestACopyOfARestoredSourceRewordedAndAnsweredOpensItsOwnAsk(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, original, "Context\n\n"+shipBlock)
@@ -959,6 +981,7 @@ func pendingSettlements(t *testing.T, service *Service) int {
 // copies of that ask and name it, never the retracted source, so the question waits in one place in
 // one person's Inbox. Which copy settles first is not fixed, so the test names none.
 func TestThreeCopiesOfARetractedAskShareTheOneAskTheFirstOpens(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 	seedServiceText(t, service, original, "Context\n\n"+shared)
@@ -1087,6 +1110,7 @@ func roomGeneration(t *testing.T, service *Service, document string) uint64 {
 // reconciled too or wait on the copy lock: without the lock all three would read their copy sources
 // before any committed, and each would open an ask.
 func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	service.settle = time.Hour
 	shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
@@ -1151,6 +1175,7 @@ func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T
 // them would wait for the answer too; what fails this test is a lock the two come to share in
 // opposite orders.
 func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	service.settle = time.Hour
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -1214,12 +1239,15 @@ func answerSource(ctx context.Context, service *Service, original string, source
 }
 
 // closeSource answers source, the ask of blockID on original, with answer, or resolves it when
-// answer is nil, in its route's order (closeAskTx, the answer's WriteBlock, the resolve's Apply):
-// the source's owner row and ask row, then SettleCopiesOf, which takes the project's copy lock and
-// marks the copies owed, then the source's block, the ask row and the ask.answered or ask.resolved
-// event, and commits. between, when set, runs right after SettleCopiesOf, while the transaction
-// holds the copy lock and the copies' pending rows. It returns its error rather than failing the
-// test, so it can run off the test's goroutine.
+// answer is nil, in its route's order (closeAskTx, the answer's WriteBlock, the resolve's Apply)
+// and its two phases: the source's owner lock and its read of the ask row, then SettleCopiesOf,
+// which takes the project's copy lock and queues the copies' pending rows, then the source's
+// block, the ask row and the ask.answered or ask.resolved event, queued as a route joined to the
+// ledger queues its own writes, and commits: the write phase writes the copies' pending rows first.
+// between, when set, runs while the write phase stands right after those rows, holding the copy
+// lock and the copies' pending rows: the batch waits there on a gate lock this helper holds
+// (closeSourceGate) until between has returned, so the statements after the rows run only then.
+// It returns its error rather than failing the test, so it can run off the test's goroutine.
 func closeSource(ctx context.Context, service *Service, original, blockID string, source model.Ask, answer *model.AskAnswer, between func()) error {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	tx, err := service.store.Pool.Begin(ctx)
@@ -1231,16 +1259,41 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 	defer ledger.Discard()
 	owner, _, err := lockArtifactOwner(ctx, tx, original)
 	if err != nil {
-		return fmt.Errorf("lock the source's owner row: %w", err)
+		return fmt.Errorf("lock the source's owner: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `select 1 from asks where id = $1 for no key update`, source.ID); err != nil {
-		return fmt.Errorf("lock the source ask: %w", err)
+	// The route reads the ask under the owner's lock, with no row lock (readAskForTransition).
+	if _, err := tx.Exec(ctx, `select 1 from asks where id = $1`, source.ID); err != nil {
+		return fmt.Errorf("read the source ask: %w", err)
 	}
 	if err := service.SettleCopiesOf(closing, source); err != nil {
 		return fmt.Errorf("mark the copies owed: %w", err)
 	}
+	var gate *pgxpool.Conn
+	openGate := func() error { return nil }
 	if between != nil {
-		between()
+		if gate, err = service.store.Pool.Acquire(ctx); err != nil {
+			return fmt.Errorf("acquire the gate's connection: %w", err)
+		}
+		defer gate.Release()
+		if _, err := gate.Exec(ctx, `select pg_advisory_lock($1)`, closeSourceGate); err != nil {
+			return fmt.Errorf("hold the gate: %w", err)
+		}
+		opened := false
+		openGate = func() error {
+			if opened {
+				return nil
+			}
+			opened = true
+			_, err := gate.Exec(context.Background(), `select pg_advisory_unlock($1)`, closeSourceGate)
+			return err
+		}
+		defer openGate()
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			b.Queue("pass the gate", `select pg_advisory_xact_lock($1) as close_source_gate`, closeSourceGate)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("queue the gate: %w", err)
+		}
 	}
 	eventType, attributes := "ask.resolved", map[string]any{"state": "resolved"}
 	if answer != nil {
@@ -1258,23 +1311,71 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 	}
 	if answer != nil {
 		encoded, _ := json.Marshal(answer)
-		if _, err := tx.Exec(ctx, `update asks set state = 'answered', answer = $2 where id = $1`, source.ID, encoded); err != nil {
-			return fmt.Errorf("answer the source ask: %w", err)
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			b.Queue("answer the source ask", `update asks set state = 'answered', answer = $2 where id = $1`, source.ID, encoded)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("queue the source's answer: %w", err)
 		}
 		source.State, source.Answer = "answered", answer
-	} else if source, err = WriteAskResolution(ctx, tx, source, "resolved", "Waived.", alice); err != nil {
+	} else if source, err = WriteAskResolution(closing, tx, source, "resolved", "Waived.", alice); err != nil {
 		return fmt.Errorf("resolve the source ask: %w", err)
 	}
-	if _, err := service.events.Append(ctx, tx, documentAskEvent(
-		owner, original, eventType, alice, model.NewAskEventPayload(source, model.ReferenceChanges{}),
-	)); err != nil {
-		return fmt.Errorf("append the source's %s event: %w", eventType, err)
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		return service.events.QueueAppend(b, documentAskEvent(
+			owner, original, eventType, alice, model.NewAskEventPayload(source, model.ReferenceChanges{}),
+		), func(model.Event) {})
+	}); err != nil {
+		return fmt.Errorf("queue the source's close: %w", err)
 	}
-	if err := ledger.Commit(ctx); err != nil {
-		return fmt.Errorf("commit closing the source: %w", err)
+	if between == nil {
+		if err := ledger.Commit(ctx); err != nil {
+			return fmt.Errorf("commit closing the source: %w", err)
+		}
+		return nil
+	}
+	committed := make(chan error, 1)
+	go func() { committed <- ledger.Commit(ctx) }()
+	reached := func() error {
+		for {
+			waiting, err := storetest.CountLockWaits(ctx, service.store, "%close_source_gate%")
+			if err != nil {
+				return err
+			}
+			if waiting > 0 {
+				return nil
+			}
+			select {
+			case err := <-committed:
+				committed <- err
+				return fmt.Errorf("the close committed (%v) before its write phase reached the gate", err)
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Millisecond):
+			}
+		}
+	}
+	// Whatever happens here, the gate opens and the commit returns before this does, so nothing
+	// rolls the transaction back under the commit.
+	reachErr := reached()
+	if reachErr == nil {
+		between()
+	}
+	openErr := openGate()
+	commitErr := <-committed
+	switch {
+	case reachErr != nil:
+		return reachErr
+	case openErr != nil:
+		return fmt.Errorf("open the gate: %w", openErr)
+	case commitErr != nil:
+		return fmt.Errorf("commit closing the source: %w", commitErr)
 	}
 	return nil
 }
+
+// closeSourceGate is the advisory lock closeSource's write phase waits on while between runs.
+const closeSourceGate int64 = 0x434C4F5345474154
 
 // A copy settling while its source is answered, with the copy's block still in it, so both take the
 // project's copy lock (the copy's settlement to read its source, the answer to mark the copy owed),
@@ -1284,6 +1385,7 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 // only through a foreign key's `for key share`. Both finish, the copy shows the answer once the
 // settlement after the answer has run, and nothing is owed after that.
 func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *testing.T) {
+	t.Parallel()
 	for _, order := range []string{"answer first", "settlement first"} {
 		t.Run(order, func(t *testing.T) {
 			service, _ := newTestService(t)
@@ -1403,6 +1505,7 @@ func copyOwed(t *testing.T, service *Service, document string) int {
 // first and is reworded twice, ask B is asked later and reworded into A's first wording, and a copy
 // asking that wording is a copy of A, though only B asks it now.
 func TestACopyNamesTheEarliestAskedMatchThoughALaterAskAsksItsWordingNow(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	service.settle = time.Hour
 	block := func(question string) string {

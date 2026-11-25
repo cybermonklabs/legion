@@ -6,18 +6,35 @@ import {
   type MessageDeliveryMode,
 } from "@legion/contracts";
 import { commandLine } from "../dispatch-command";
+import type { DispatchClient } from "../dispatch-http";
 import {
   dispatchChildRef,
   dispatchIssueRef,
   issueTopic,
   parseDispatchRef,
 } from "../dispatch-owner";
+import { ToolInputError } from "../tool-input-errors";
 import { renderAdvice } from "./advice";
 import { movedApprovalLine, resolveReplyToAsk } from "./asks";
-import { type CommandContext, type DispatchToolResult, optionalString, stringArg } from "./context";
-import { anchor, resolveArtifact } from "./document-targets";
+import {
+  type CommandContext,
+  type DispatchToolResult,
+  optionalString,
+  optionalStringArray,
+  stringArg,
+} from "./context";
+import { anchor, readRefOwner, resolveArtifact } from "./document-targets";
+import {
+  dispatchAnswered,
+  refusalWithCode,
+  refuseMissingOfRef,
+  refuseMissingPost,
+  throughPostCorrections,
+} from "./failures";
 import {
   itemReplyTo,
+  messageArgumentId,
+  messageArgumentProblem,
   messageInReplyTo,
   refOwnerName,
   refuseItemOffRef,
@@ -31,38 +48,252 @@ import {
   writeResultDetails,
 } from "./results";
 
+/**
+ * The comment a `comment` argument names: its full id, and the project document it is on where
+ * the reference named one. A bare id is read as it is; a reference resolves a prefix against
+ * its owner's comments and then holds the comment read to that owner, so a full id under the
+ * wrong owner is refused rather than written to. `argumentProblems` refused any dispatch://
+ * value that is not a comment reference.
+ */
+export async function resolveCommentArgument(
+  tool: string,
+  reference: string,
+  client: DispatchClient
+): Promise<{ readonly id: string; readonly document?: Artifact }> {
+  const ref = reference.startsWith("dispatch://") ? parseDispatchRef(reference) : null;
+  if (ref === null) return { id: reference };
+  let id = reference;
+  let document: Artifact | undefined;
+  if (ref.owner.kind === "issue") {
+    const issueKey = ref.owner.issue;
+    id = await resolveIdPrefix(tool, "comment", ref.id, refOwnerName(ref), () =>
+      client.getComments(issueKey)
+    );
+  } else {
+    // The document is read once, here: the prefix match, the check that the comment read is on
+    // it, and the owner read of a failing comment read below all use this one read.
+    const artifact = (await resolveArtifact(client, ref.owner, ref.artifact, { canonical: true }))
+      .artifact;
+    document = artifact;
+    id = await resolveIdPrefix(tool, "comment", ref.id, refOwnerName(ref), () =>
+      client.getArtifactComments(artifact.id)
+    );
+  }
+  const read = await client.getComment(id).catch(async (error: unknown) => {
+    throw await refuseMissingOfRef(
+      error,
+      "comment",
+      id,
+      ref.owner,
+      refOwnerName(ref),
+      readRefOwner(client, ref.owner, async () => document)
+    );
+  });
+  await refuseItemOffRef(tool, "comment", ref, reference, read.comment, async () =>
+    document === undefined ? "" : document.id
+  );
+  return { id, ...(document === undefined ? {} : { document }) };
+}
+
+/**
+ * The message a `message` argument of an edit or a delete, or the `ref` of a `dispatch read`
+ * history read, names: the full uuid it carries, or the id a reference's prefix matches among
+ * its issue's messages, replies included. A bare id is the message itself; a reference holds the
+ * message to the issue it names, as `resolveCommentArgument` holds a comment to its owner, so a
+ * full uuid under the wrong issue is refused rather than written to. `argument` is the argument
+ * the caller took the value from, which the refusal of a value naming no message names:
+ * `argumentProblems` refuses a correction's `message` before the call, while a history read's
+ * `ref` is checked there for its kind alone and reaches this refusal. `session` is the host
+ * session the thread is read as, empty or undefined for a caller with none.
+ */
+export async function resolveMessageArgument(
+  tool: string,
+  argument: "message" | "ref",
+  reference: string,
+  client: DispatchClient,
+  session: string | undefined
+): Promise<string> {
+  const named = messageArgumentId(reference);
+  if (named === undefined) throw new ToolInputError(tool, [messageArgumentProblem(argument)]);
+  const ref = named.ref;
+  if (ref === undefined) return named.id;
+  const issueKey = ref.owner.issue;
+  const id = await resolveIdPrefix(tool, "message", named.id, issueKey, async () =>
+    (await client.issueMessages(issueKey)).flatMap((thread) => [
+      thread.message,
+      ...(thread.replies ?? []),
+    ])
+  );
+  // The thread the message belongs to, read by its id alone, names the issue it is really on:
+  // the listing above resolves a prefix among this issue's messages, but a full uuid names a
+  // message of any issue. A message is on an issue or on none, so no document is read for it.
+  const read = await client
+    .getMessageThread(id, session === "" ? undefined : session)
+    .catch(async (error: unknown) => {
+      throw await refuseMissingOfRef(error, "message", id, ref.owner, issueKey, () =>
+        client.getIssue(issueKey)
+      );
+    });
+  await refuseItemOffRef(
+    tool,
+    "message",
+    ref,
+    reference,
+    { id, issue_key: read.message.issue_key },
+    async () => ""
+  );
+  return id;
+}
+
+/** The issue a corrected message sits on. Only a message on an issue is edited or deleted, a
+ *  rule the server holds every such write to (409 NOT_AN_ISSUE_MESSAGE), so an answer carrying
+ *  no issue is a server that does not keep it. */
+function messageIssueKey(message: { readonly issue_key: string | null }): string {
+  if (message.issue_key === null) throw new Error("the corrected message names no issue");
+  return message.issue_key;
+}
+
 /** `dispatch resolve-comment`: close a comment thread on an issue or a document. */
 export async function resolveCommentCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input } = context;
   const reference = stringArg(args, "comment");
-  // `argumentProblems` refused any dispatch:// value that is not a comment reference.
-  const ref = reference.startsWith("dispatch://") ? parseDispatchRef(reference) : null;
-  let id = reference;
-  let document: Artifact | undefined;
-  if (ref?.owner.kind === "issue") {
-    const issueKey = ref.owner.issue;
-    id = await resolveIdPrefix(input.tool, "comment", ref.id, refOwnerName(ref), () =>
-      client.getComments(issueKey)
-    );
-  } else if (ref !== null) {
-    const artifact = (await resolveArtifact(client, ref.owner, ref.artifact, { canonical: true }))
-      .artifact;
-    document = artifact;
-    id = await resolveIdPrefix(input.tool, "comment", ref.id, refOwnerName(ref), () =>
-      client.getArtifactComments(artifact.id)
-    );
-  }
-  // A full id is resolved as it is, so the comment is read first and held to the owner the
-  // reference names before it is resolved.
-  if (ref !== null) {
-    const read = await client.getComment(id);
-    await refuseItemOffRef(input.tool, "comment", ref, reference, read.comment, async () =>
-      document === undefined ? "" : document.id
-    );
-  }
-  const comment = await client.resolveComment(id, actor);
+  const { id, document } = await resolveCommentArgument(input.tool, reference, client);
+  const comment = await client.resolveComment(id, actor).catch((error: unknown) => {
+    throw refuseMissingPost(error, { kind: "comment", id });
+  });
   const { label, details } = await commentOwnerResult(client, comment, document);
   return { text: `Resolved comment ${comment.id} on ${label}.`, details };
+}
+
+/** `dispatch edit-comment`: the author replaces the body of their own comment. */
+export async function editCommentCommand(context: CommandContext): Promise<DispatchToolResult> {
+  const { args, client, actor, input, configUrl } = context;
+  const reference = stringArg(args, "comment");
+  const { id, document } = await resolveCommentArgument(input.tool, reference, client);
+  const comment = await throughPostCorrections(
+    input.tool,
+    configUrl,
+    client.editComment(id, { body: stringArg(args, "body"), actor }),
+    { kind: "comment", id }
+  );
+  const { label, details } = await commentOwnerResult(client, comment, document);
+  // The answer proves the edit landed and nothing else. A build that takes the edit and keeps no
+  // earlier body answers the same way (dispatch://INFRA-1523), so a sentence here about the kept
+  // body would be this command telling a person something its own answer does not show.
+  return { text: `Edited comment ${comment.id} on ${label}.`, details };
+}
+
+/** What each delete command says the delete leaves readable: no read of the post gives its body
+ *  again, and the event log keeps what its events already wrote. The events of a reply that
+ *  quote the post - the reply's creation, and each edit of the reply written before the delete -
+ *  keep the preview of it they carried (`reply_block.text` of a reply naming a block,
+ *  `reply_body` of a message reply, which holds one whether or not the reply named a block): the
+ *  creation's is the post as it read when the reply was written, and an edit's the post as it
+ *  read when the edit was written. A reply's own delete event carries no text of the post it
+ *  answers, so it keeps none. Of a comment, the document's events written before the delete also
+ *  keep the name an accepted suggestion gave its version, which was the comment's body: the
+ *  accept's `artifact.version`, and an `artifact.renamed`, which carries every version. The
+ *  version itself is renamed by the delete. */
+const DELETED_MESSAGE_READS =
+  "No read of it gives its body again; the events of a reply's creation and of each edit of the " +
+  "reply written before the delete keep the preview of it they carried.";
+const DELETED_COMMENT_READS =
+  "No read of it gives its body again; the events of a reply's creation and of each edit of the " +
+  "reply written before the delete keep the preview of it they carried, and the document's " +
+  "events written before the delete keep the name an accepted suggestion gave its version.";
+
+/**
+ * The delete `call` makes of `post`, through `throughPostCorrections`, with Dispatch's
+ * `409 DELETE_CONTENDED` reported under its code and with what to do. It is the one refusal of
+ * either delete that asks for nothing but the same call again: a send of the post moved while the
+ * delete was being written, so nothing was written and the next call reads the post's sends as
+ * they stand then. Every other refusal (403 NOT_AUTHOR, 409 POST_DELETED, 409
+ * NOT_AN_ISSUE_MESSAGE) asks the caller to change something first and reaches them as
+ * `throughPostCorrections` leaves it, which rewrites Dispatch's `404 NOT_FOUND` of the post to name
+ * it and a router's no-route 404 to say this Dispatch predates post corrections. Untouched, this
+ * one reaches them as prose with its code hidden, which reads as a failure to work out rather than
+ * a write to repeat, as `dispatch result`'s CHECK_CONTENDED would.
+ */
+async function throughDelete<T>(
+  context: CommandContext,
+  call: Promise<T>,
+  post: { readonly kind: "comment" | "message"; readonly id: string }
+): Promise<T> {
+  try {
+    return await throughPostCorrections(context.input.tool, context.configUrl, call, post);
+  } catch (error) {
+    if (dispatchAnswered(error, 409) && error.code === "DELETE_CONTENDED") {
+      // Dispatch's own words already say nothing was written, so the clause says only what that
+      // leaves and what to do.
+      throw refusalWithCode(
+        error,
+        `${post.kind} ${post.id} stands: run the same dispatch delete-${post.kind} command again`
+      );
+    }
+    throw error;
+  }
+}
+
+/** `dispatch delete-comment`: the author withdraws their own comment. */
+export async function deleteCommentCommand(context: CommandContext): Promise<DispatchToolResult> {
+  const { args, client, actor, input } = context;
+  const reference = stringArg(args, "comment");
+  const { id, document } = await resolveCommentArgument(input.tool, reference, client);
+  const comment = await throughDelete(context, client.deleteComment(id, actor), {
+    kind: "comment",
+    id,
+  });
+  const { label, details } = await commentOwnerResult(client, comment, document);
+  return {
+    text: `Deleted comment ${comment.id} on ${label}. ${DELETED_COMMENT_READS}`,
+    details,
+  };
+}
+
+/** `dispatch edit-message`: the author replaces the body of their own issue message. */
+export async function editMessageCommand(context: CommandContext): Promise<DispatchToolResult> {
+  const { args, client, actor, input, configUrl, hostSession } = context;
+  const id = await resolveMessageArgument(
+    input.tool,
+    "message",
+    stringArg(args, "message"),
+    client,
+    hostSession
+  );
+  const message = await throughPostCorrections(
+    input.tool,
+    configUrl,
+    client.editMessage(id, { body: stringArg(args, "body"), actor }),
+    { kind: "message", id }
+  );
+  const issue = messageIssueKey(message);
+  // The answer proves the edit landed; what became of the body it replaced is the history read's
+  // to answer, as the comment edit above says.
+  return {
+    text: `Edited message ${message.id} on ${issue}.`,
+    details: { issue, message: message.id },
+  };
+}
+
+/** `dispatch delete-message`: the author withdraws their own issue message. */
+export async function deleteMessageCommand(context: CommandContext): Promise<DispatchToolResult> {
+  const { args, client, actor, input, hostSession } = context;
+  const id = await resolveMessageArgument(
+    input.tool,
+    "message",
+    stringArg(args, "message"),
+    client,
+    hostSession
+  );
+  const message = await throughDelete(context, client.deleteMessage(id, actor), {
+    kind: "message",
+    id,
+  });
+  const issue = messageIssueKey(message);
+  return {
+    text: `Deleted message ${message.id} on ${issue}. ${DELETED_MESSAGE_READS}`,
+    details: { issue, message: message.id },
+  };
 }
 
 /** `dispatch comment`: post a comment, a reply in a thread, or a reply under an ask. */
@@ -90,6 +321,9 @@ export async function commentCommand(context: CommandContext): Promise<DispatchT
   // The schema already refused reply_to alongside reply_to_ask, turn without reply_to_ask,
   // and a turn outside agent|human, so the value is the contract's shape.
   const requestedTurn = optionalString(args, "turn") as CreateCommentInput["turn"];
+  // The schema already refused more mentions than Dispatch takes and any target that is neither
+  // role:<name> nor session:<id>, in the server's own words, so each value is sent as it came.
+  const mentions = optionalStringArray(args, "mentions");
   const body = await writePictures(resolved, stringArg(args, "body"));
   const commentInput: CreateCommentInput = {
     body,
@@ -98,6 +332,7 @@ export async function commentCommand(context: CommandContext): Promise<DispatchT
     ...(replyToBlock === undefined ? {} : { reply_to_block: replyToBlock }),
     ...(replyToAsk === undefined ? {} : { ask_id: replyToAsk }),
     ...(requestedTurn === undefined ? {} : { turn: requestedTurn }),
+    ...(mentions === undefined ? {} : { mentions: mentions.map((target) => ({ target })) }),
     actor,
   };
   const comment =

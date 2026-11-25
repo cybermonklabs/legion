@@ -2,16 +2,23 @@ package webhook
 
 import (
 	"encoding/json"
-	"errors"
-	"io"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/verify"
 )
+
+// ghostWisprMaxBody is the largest Ghost Wispr event body the handler reads.
+const ghostWisprMaxBody = 1 << 20
+
+// ghostWisprRoomWait is the most a Ghost Wispr event waits, in all, for room in the listener's
+// body budget (BodyBudget) before it is answered 503: the server's 10 s to answer, less the bus's
+// 5 s publish bound and a second for the rest. It is a variable so a test can shorten it.
+var ghostWisprRoomWait = 4 * time.Second
 
 // ghostWisprSkip returns true for event types that should be accepted but not published.
 func ghostWisprSkip(event string) bool {
@@ -22,24 +29,22 @@ func ghostWisprSkip(event string) bool {
 	return true
 }
 
-// GhostWisprHandler returns the HTTP handler for Ghost Wispr webhook events. Its publish runs under
-// the request's own context, so it ends when the sender gives up on the request, and at the bus's
-// own 5 s bound otherwise (bus.Client.PublishWithin), inside the 10 s the listener's server gives a
-// route to answer: Ghost Wispr sets no answer deadline of its own.
-func GhostWisprHandler(secret string, publisher Publisher) http.HandlerFunc {
+// GhostWisprHandler returns the HTTP handler for Ghost Wispr webhook events, which reads its bodies
+// against bodies, the listener's one body budget. Its publish runs under the request's own
+// context, so it ends when the sender gives up on the request, and at the bus's own 5 s bound
+// otherwise (bus.Client.PublishEachWithin), inside the 10 s the listener's server gives a route to
+// answer: Ghost Wispr sets no answer deadline of its own. It checks the signature of every event
+// with secret before it parses a byte of the body, and answers 401 to one that does not check, so
+// a handler built with an empty secret refuses every event (verify.GhostWispr).
+func GhostWisprHandler(secret string, publisher Publisher, bodies *BodyBudget) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+		body, release, err := bodies.readBody(r.Context(), w, r, r.Body, ghostWisprMaxBody, ghostWisprRoomWait)
+		defer release()
 		if err != nil {
-			var maxBytesErr *http.MaxBytesError
-			if errors.As(err, &maxBytesErr) {
-				http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
-				return
-			}
-			http.Error(w, "invalid body", http.StatusBadRequest)
 			return
 		}
 		delivery := strings.TrimSpace(r.Header.Get("X-GhostWispr-Delivery"))
@@ -49,11 +54,9 @@ func GhostWisprHandler(secret string, publisher Publisher) http.HandlerFunc {
 			http.Error(w, "missing ghostwispr headers", http.StatusBadRequest)
 			return
 		}
-		if secret != "" {
-			if !verify.GhostWispr(secret, body, signature) {
-				http.Error(w, "invalid signature", http.StatusUnauthorized)
-				return
-			}
+		if !verify.GhostWispr(secret, body, signature) {
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+			return
 		}
 		var payload map[string]any
 		if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
@@ -91,7 +94,7 @@ func GhostWisprHandler(secret string, publisher Publisher) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := publisher.PublishWithin(r.Context(), item); err != nil {
+		if err := publisher.PublishEachWithin(r.Context(), item, nil); err != nil {
 			deliveryFailed(w, "ghostwispr publish", err)
 			return
 		}

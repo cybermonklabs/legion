@@ -223,7 +223,7 @@ func listAnswerKeyFor(r *http.Request, route, owner, etag string) listAnswerKey 
 }
 
 // listETag closes a list's hash with the three lines both lists' ETags carry and answers the
-// validator itself, in referencesETag's form. The trees variant is in the hash rather than left
+// validator itself: the hash's hex in double quotes. The trees variant is in the hash rather than left
 // to `Vary: Dispatch-Trees` alone, so a caller that gains or drops the header can never match an
 // ETag given for the other reading however a cache between it and Dispatch behaves - a list of
 // nothing answers the same bytes either way, and would otherwise share one. The parser version

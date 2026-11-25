@@ -338,6 +338,10 @@ func listenerSeedRows() []seedRow[envoyaws.WebhookListenerArgs] {
 			a.ReviewerAppId = pulumi.StringRef(pick(s, testSeed, "7654321"))
 			return *a.ReviewerAppId
 		}},
+		{input: "verdictAppId", set: func(a *A, s bool) string {
+			a.VerdictAppId = pulumi.StringRef(pick(s, testSeed, "5341240"))
+			return *a.VerdictAppId
+		}},
 		{input: "cloudMapServiceName", set: func(a *A, s bool) string {
 			a.CloudMapServiceName = pick(s, lowerSeed, "example-other-hooks")
 			return a.CloudMapServiceName
@@ -492,7 +496,7 @@ func TestEveryStringInputHasASeedRow(t *testing.T) {
 		var names []string
 		for i := range typ.NumField() {
 			f := typ.Field(i)
-			if k := f.Type.Kind(); k == reflect.Bool || k == reflect.Int || f.Type == reflect.TypeFor[*bool]() {
+			if k := f.Type.Kind(); k == reflect.Bool || k == reflect.Int || f.Type == reflect.TypeFor[*bool]() || f.Type == reflect.TypeFor[*int]() {
 				continue
 			}
 			name, _, _ := strings.Cut(f.Tag.Get("pulumi"), ",")

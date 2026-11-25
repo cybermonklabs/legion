@@ -9,13 +9,14 @@
 #     itself is there already - the six built binaries, dev-airlock-stands among them, the local
 #     token issuer with a pod's, a registrar's and two listed callers' tokens, the broker's own
 #     sign-in client, and the Postgres server - so this script builds and starts none of it a
-#     second time. What that costs is two processes of dev-broker.sh's that this script never
-#     points at: its broker, on a database of its own, and the cmd/dev-airlock-stands it starts
-#     for its own github-app secrets. What it buys is that the identities, the token files and
+#     second time. What that costs is three processes of dev-broker.sh's that this script never
+#     points at: its broker, on a database and a profiles file of its own, the front of that
+#     broker's proxy, and the cmd/dev-proxy-stands it starts for its own github-app secrets.
+#     What it buys is that the identities, the token files and
 #     the issuer are the ones dev-broker.sh documents, and that a change there reaches both
 #     scripts. The airlock's own brokers get a database of their own (below), so they never
 #     share a policy or a secret store with that broker.
-#   - cmd/dev-airlock-stands: the two HTTPS services S and T, which record every request they
+#   - cmd/dev-proxy-stands: the two HTTPS services S and T, which record every request they
 #     get; the stand-in GitHub and Google endpoints a github-app and a google-login secret mint
 #     at; the stand-in Microsoft token endpoint the azure kind exchanges at, which also plays
 #     the resource host an access token is spent at; a stand-in AWS service that verifies
@@ -26,20 +27,27 @@
 #     of it out of the JSON report that command prints.
 #   - The model judge, on every broker: the six BROKER_JUDGE_* settings pointed at the model
 #     and Dispatch stands, and GCE_METADATA_HOST at the metadata stand, so a human-tier request
-#     the rules give the judge seconds for is decided by the model rather than by a person.
-#   - A rules file (BROKER_AIRLOCK_RULES_FILE) and a fake Secrets Manager (the file
-#     BROKER_FAKE_SECRETS_FILE names) that name each other: a stored secret bound to S; a second
-#     stored secret bound to S with headers and allow of its own; a github-app secret; a
-#     google-login secret; an azure-login secret, kind azure, bound to the Microsoft stand-in
-#     and the stand-in resource host; a stored AWS key pair, kind aws, bound to the AWS
-#     stand-in; and the judge's four human-tier secrets - one the rules give the judge 900
-#     seconds of, one they give it nothing of, one owned by nobody that anyone approves, and one
-#     tagged an administrator's that the rules give the judge 900 seconds of all the same, which
-#     the judge must refuse because the tag says a person approves every release of it.
+#     a profile's proxy block gives the judge seconds for is decided by the model rather than by
+#     a person.
+#   - A profiles file (BROKER_PROFILES_FILE) and a fake Secrets Manager (the file
+#     BROKER_FAKE_SECRETS_FILE names) that name each other, each profile a secret of its own name
+#     with a proxy block: a stored secret bound to S; a second stored secret bound to S with
+#     headers and allow of its own; a github-app secret, with the github block every github-app
+#     profile carries; a google-login secret; an azure-login secret, kind azure, bound to the
+#     Microsoft stand-in and the stand-in resource host; a stored AWS key pair, kind aws, bound to
+#     the AWS stand-in; and the judge's five human-tier secrets - two whose proxy blocks give the
+#     judge 900 seconds, each with guidance of its own, one they give it nothing of, one owned by
+#     nobody that anyone approves, and one tagged an administrator's that its proxy block gives the
+#     judge 900 seconds of all the same, which the judge must refuse because the tag says a person
+#     approves every release of it. One more profile, AIRLOCK_PLAIN_GITHUB, is the github-app
+#     secret's with no proxy block, whose release is the value itself: a github-app secret no
+#     profile names is refused (github-app-no-profile), and the broker reads profiles at boot
+#     alone, so a check's control that needs a GitHub token released to the command finds one
+#     here rather than adding one at run time.
 #   - TWO broker processes, each with the whole BROKER_AIRLOCK_* block, both on one database and
 #     each on three ports of its own, its API, proxy and metrics ports (--one-broker starts one).
 #   - One TCP front over both brokers' API ports and one over both proxy ports
-#     (cmd/dev-airlock-stands front), so a client reaches either process. Each new connection
+#     (cmd/dev-proxy-stands front), so a client reaches either process. Each new connection
 #     goes to the next broker in turn; round-robin per connection is all the checks ask for,
 #     since the two brokers share one database and either answers any call. The front is Go
 #     because a Legion issue pod has neither socat nor nginx, and nginx passes no CONNECT.
@@ -50,6 +58,12 @@
 #     Legion issue pod's gVisor kernel does not have. The enrolment id is written beside the
 #     session key, so AGENT_SECRETS_KEY_DIR names the directory and `agent-secrets self` answers
 #     kind: pod.
+#   - That session's renewer, `agent-secrets renew --pod-token-file`, for as long as the stack
+#     runs, as the Legion worker shim runs one for each pod (internal/shim, startRenewer). The
+#     broker ends a session whose lease (BROKER_LEASE_SECONDS, 900 seconds by default) passes
+#     unrenewed, and every grant of it with it, so a check that holds a grant for longer would
+#     have its calls refused 407 midway. Each renewal sends the pod token dev-oidc-issuer
+#     rewrites in place, as a kubelet rewrites a projected token.
 #
 # Every bound host is a name of this stack's own (s.airlock.test and the rest), which no
 # resolver answers: BROKER_AIRLOCK_TEST_RESOLVE tells the proxy where each one is and
@@ -75,8 +89,8 @@
 #   --keep-values     BROKER_AIRLOCK_TEST_KEEP_VALUES=true (check k5's negative control: the
 #                     proxy keeps a grant's values across a reread and past a minted token's
 #                     margin)
-#   --no-kind         BROKER_AIRLOCK_TEST_NO_KIND=true (check k6's negative control: every rules
-#                     entry reads as having no kind, so the azure exchange and the AWS signing
+#   --no-kind         BROKER_AIRLOCK_TEST_NO_KIND=true (check k6's negative control: every proxy
+#                     block reads as having no kind, so the azure exchange and the AWS signing
 #                     are off)
 #   --idle-seconds N  BROKER_AIRLOCK_IDLE_SECONDS (check k9's control sets 60)
 #   --one-broker      start one broker rather than two, each front over that one
@@ -88,6 +102,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# psql is given a database URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$SCRIPT_DIR/lib/pg-url.sh"
 
 usage() {
   cat <<'EOF'
@@ -95,7 +112,7 @@ usage: dev-airlock.sh [--keep-values] [--no-kind] [--idle-seconds N] [--one-brok
                       [--judge-skip-checks]
 
 Starts the airlock's whole local stack - dev-broker.sh's Postgres, issuer and broker, the
-stand-in services, a certificate authority, a rules file, two brokers behind one API front and
+stand-in services, a certificate authority, a profiles file, two brokers behind one API front and
 one proxy front, and an enrolled pod session - and prints the exports a check needs.
 
   --keep-values     BROKER_AIRLOCK_TEST_KEEP_VALUES=true, check k5's negative control
@@ -150,12 +167,13 @@ STANDS_DIR="$WORK_DIR/stands"
 STANDS_JSON="$WORK_DIR/stands.json"
 STANDS_LOG="$WORK_DIR/stands.log"
 DEV_BROKER_LOG="$WORK_DIR/dev-broker.log"
-RULES_FILE="$WORK_DIR/airlock.json"
+PROFILES_FILE="$WORK_DIR/profiles.json"
 FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
 AZURE_TOKEN_FILE="$WORK_DIR/azure-identity-token"
 JUDGE_DISPATCH_TOKEN_FILE="$WORK_DIR/judge-dispatch-token"
 KEY_DIR="$WORK_DIR/session-key"
 ENROLL_JSON="$WORK_DIR/enrollment.json"
+RENEW_LOG="$WORK_DIR/renew.log"
 API_FRONT_JSON="$WORK_DIR/api-front.json"
 API_FRONT_LOG="$WORK_DIR/api-front.log"
 API_BACKENDS="$WORK_DIR/api-backends"
@@ -174,7 +192,7 @@ SECRETS_KMS_KEY_ARN="arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-5
 # only when both halves name that one service, as a deployment's daemon and its worker pods do,
 # so a request of the pod's for one of those secrets is granted at once.
 SERVICE="legion-daemon"
-# The names a check asks for, the stand-in hosts the rules bind them to, and where each one
+# The names a check asks for, the stand-in hosts their proxy blocks bind them to, and where each one
 # listens. Each host is a .test name no resolver answers: BROKER_AIRLOCK_TEST_RESOLVE tells the
 # proxy where it is and BROKER_AIRLOCK_TEST_DIAL_ALLOW lets it dial that one address.
 #
@@ -197,19 +215,25 @@ GITHUB_INSTALLATION=7
 DEMO_SECRET="AIRLOCK_DEMO_TOKEN"
 SCOPED_SECRET="AIRLOCK_SCOPED_TOKEN"
 GITHUB_SECRET="AIRLOCK_GITHUB_APP"
+# The github-app secret's profile with no proxy block (the header): the value released to the
+# command, for a control.
+PLAIN_GITHUB_PROFILE="AIRLOCK_PLAIN_GITHUB"
+# What every GitHub profile of this stack asks for, which the stand's own map of each
+# installation holds, so its cut leaves nothing out.
+GITHUB_PERMISSIONS='{"contents": "read", "metadata": "read"}'
 GOOGLE_SECRET="AIRLOCK_GOOGLE_LOGIN"
 AZURE_SECRET="AIRLOCK_AZURE_LOGIN"
 AWS_SECRET="AIRLOCK_AWS_KEY"
-# The four the model judge is asked about. Each is human tier, so each waits for a person
-# unless the judge decides it first, and each is a plain entry with no type: what the judge is
+# The five the model judge is asked about. Each is human tier, so each waits for a person
+# unless the judge decides it first, and each is a stored value with no type: what the judge is
 # about is who may approve a request, and a type's minting is another check's subject.
-# JUDGED_SECRET is the one the rules give the judge seconds of; UNJUDGED_SECRET the one they
-# give it nothing of, which must still wait for its person; SHARED_SECRET the one nobody owns,
-# which anyone signed in approves and which the judge therefore approves in anyone's place;
-# ADMIN_SECRET the administrator's credential, which carries the same judge seconds as
-# JUDGED_SECRET and which the judge must refuse all the same - the stack writes exactly the
-# rules file the defect allowed, so a check can see the refusal come from the broker rather
-# than from the absence of an entry.
+# JUDGED_SECRET is the one its proxy block gives the judge seconds of; UNJUDGED_SECRET the one
+# whose block gives it nothing, which must still wait for its person; SHARED_SECRET the one
+# nobody owns, which anyone signed in approves and which the judge therefore approves in
+# anyone's place; ADMIN_SECRET the administrator's credential, which carries the same judge
+# seconds as JUDGED_SECRET and which the judge must refuse all the same - the stack writes
+# exactly the profile the defect allowed, so a check can see the refusal come from the broker
+# rather than from the absence of a judge.
 #
 # ADMIN_SECRET carries two tags the others do not, because the policy refuses an admin secret
 # without them (policy.TagRules): a requesters list, which must name this stack's own service
@@ -219,10 +243,20 @@ JUDGED_SECRET="AIRLOCK_JUDGED_TOKEN"
 UNJUDGED_SECRET="AIRLOCK_UNJUDGED_TOKEN"
 SHARED_SECRET="AIRLOCK_SHARED_TOKEN"
 ADMIN_SECRET="AIRLOCK_ADMIN_TOKEN"
+# SECOND_JUDGED_SECRET is a second judge key of the approver's, bound to S as JUDGED_SECRET is,
+# with guidance of its own. A request for it beside JUDGED_SECRET is two judge keys, which the
+# judge decides together, each against its own guidance.
+SECOND_JUDGED_SECRET="AIRLOCK_SECOND_JUDGED_TOKEN"
 ADMIN_MAX_GRANT="1h"
-# The seconds the rules let the judge decide of JUDGED_SECRET, SHARED_SECRET and ADMIN_SECRET,
-# which is also the longest lifetime a request for one of them may sign and still be judged.
+# The seconds the proxy blocks let the judge decide of the judge keys, which is also the longest
+# lifetime a request for one of them may sign, and the lifetime a request naming none gets.
 JUDGE_SECONDS=900
+# The guidance the proxy blocks give the judge for JUDGED_SECRET and for SECOND_JUDGED_SECRET:
+# the key owner's instruction, which the stand-in model is shown with every request for the key.
+# Each is printed single-quoted in the exports below and written into the profiles JSON as it
+# is, so neither may hold a quote of either kind or a backslash.
+JUDGE_GUIDANCE="grant for the stack check runs, which name the run in the reason"
+SECOND_JUDGE_GUIDANCE="grant for the stack release job"
 # What the judge is configured with: the model id its verdicts are recorded under
 # (record.JudgeActor writes "judge:<id>"), the protocol the model stand speaks, and the
 # audience of the identity token the broker mints for it at the metadata stand.
@@ -236,13 +270,14 @@ JUDGE_DISPATCH_TOKEN="the-stand-in-dispatch-service-account-token"
 # and open nothing; a check compares what a stand-in was sent against them by length and prefix.
 DEMO_VALUE="the-real-airlock-demo-token-9f3a7c"
 SCOPED_VALUE="the-real-airlock-scoped-token-4b1e"
-# The values of the judge's own four secrets, which are stored values like the two above: what
+# The values of the judge's own five secrets, which are stored values like the two above: what
 # a judged grant releases is the same sort of credential, read back by a check from the stand-in
-# the rules bind it to.
+# its proxy block binds it to.
 JUDGED_VALUE="the-real-airlock-judged-token-7c2d"
 UNJUDGED_VALUE="the-real-airlock-unjudged-token-5a8b"
 SHARED_VALUE="the-real-airlock-shared-token-2e6f"
 ADMIN_VALUE="the-real-airlock-admin-token-8d41"
+SECOND_JUDGED_VALUE="the-real-airlock-second-judged-token-6b19"
 # The session token of the stack's AWS key pair. One string for both halves of the stand: the
 # fake store hands it to the broker as part of the stored value, and --aws-session-token tells
 # the stand-in AWS service to require exactly it, so a call the proxy signed again verifies.
@@ -263,14 +298,14 @@ POSTGRES_SERVER="${BASH_REMATCH[1]:-}"
 POSTGRES_QUERY="${BASH_REMATCH[3]:-}"
 
 # The brokers' own database, named from this run's own mktemp suffix, created and dropped here.
-# It is never dev-broker.sh's: that broker reads another rules file (none) and another secret
-# store, so a policy of this stack's must not be a policy of its.
+# It is never dev-broker.sh's: that broker reads another profiles file and another secret store,
+# so a policy of this stack's must not be a policy of its.
 DB_NAME="dev_airlock_$(printf '%s' "${WORK_DIR##*.}" | tr '[:upper:]' '[:lower:]')"
 POSTGRES_CONTAINER="dispatch-pg"
 if [ -n "${DEV_BROKER_POSTGRES_URL:-}" ]; then
   POSTGRES_URL="${POSTGRES_SERVER}/${DB_NAME}${POSTGRES_QUERY}"
   POSTGRES_WHERE="the server DEV_BROKER_POSTGRES_URL names"
-  admin_psql() { psql "$DEV_BROKER_POSTGRES_URL" -v ON_ERROR_STOP=1 -q "$@"; }
+  admin_psql() { pg_url_run "$DEV_BROKER_POSTGRES_URL" psql -v ON_ERROR_STOP=1 -q "$@"; }
 else
   POSTGRES_URL="postgres://postgres:dispatch@127.0.0.1:55432/${DB_NAME}?sslmode=disable"
   POSTGRES_WHERE="the shared $POSTGRES_CONTAINER container dev-broker.sh started"
@@ -278,6 +313,7 @@ else
 fi
 
 DEV_BROKER_PID=""
+RENEW_PID=""
 STANDS_PID=""
 API_FRONT_PID=""
 PROXY_FRONT_PID=""
@@ -285,19 +321,24 @@ BROKER_PIDS=()
 CREATED_DB=false
 
 cleanup() {
-  # This stack's own processes first, then dev-broker.sh, whose own EXIT trap stops its broker
-  # and its issuer and drops its database.
+  # This stack's own processes first, the session's renewer before the brokers it renews at,
+  # then dev-broker.sh, whose own EXIT trap stops its broker and its issuer and drops its
+  # database.
   local pid
-  for pid in "${BROKER_PIDS[@]+"${BROKER_PIDS[@]}"}" "$API_FRONT_PID" "$PROXY_FRONT_PID" "$STANDS_PID" "$DEV_BROKER_PID"; do
+  for pid in "$RENEW_PID" "${BROKER_PIDS[@]+"${BROKER_PIDS[@]}"}" "$API_FRONT_PID" "$PROXY_FRONT_PID" "$STANDS_PID" "$DEV_BROKER_PID"; do
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
     fi
   done
   if [ "$CREATED_DB" = true ]; then
-    # Best-effort: cleanup runs on every exit path and must never itself fail.
-    admin_psql -c "drop database if exists ${DB_NAME};" 2>/dev/null || true
-    echo "dev-airlock: dropped this instance's database $DB_NAME in $POSTGRES_WHERE" >&2
+    # Best-effort: cleanup runs on every exit path and must never itself fail. It says which way
+    # the drop went, so a database a failed drop leaves behind is named and not called dropped.
+    if admin_psql -c "drop database if exists ${DB_NAME};" 2>/dev/null; then
+      echo "dev-airlock: dropped this instance's database $DB_NAME in $POSTGRES_WHERE" >&2
+    else
+      echo "dev-airlock: could not drop this instance's database $DB_NAME in $POSTGRES_WHERE; drop it by hand" >&2
+    fi
   fi
   echo "dev-airlock: workdir kept at $WORK_DIR (rm -rf it once nothing reads it)" >&2
 }
@@ -408,9 +449,10 @@ POD_UID="$(issuer_field "$POD_TOKEN_FILE" uid)"
 admin_psql -c "create database ${DB_NAME};"
 CREATED_DB=true
 echo "dev-airlock: created isolated database $DB_NAME" >&2
-DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
+# The banner names the database without any password the URL carries.
+DISPLAY_URL="$(pg_url_without_password "$POSTGRES_URL")"
 
-# --- The stand-ins. Each HTTPS stand's certificate carries the name the rules bind it to, since
+# --- The stand-ins. Each HTTPS stand's certificate carries the name a proxy block binds to it, since
 # the proxy verifies the name it dialled against the certificate the stand presents. The
 # Microsoft stand carries the resource host's name too: it answers the tenant's OpenID
 # configuration document, which is the first thing az reads of an authority, and a token
@@ -424,9 +466,10 @@ echo "dev-airlock: starting dev-airlock-stands..." >&2
   --address "microsoft=$MICROSOFT_ADDRESS" \
   --host "microsoft=$MICROSOFT_HOST" --host "microsoft=$AZURE_RESOURCE_HOST" \
   --address "aws=$AWS_ADDRESS" --host "aws=$AWS_HOST" \
-  --github-owner "$GITHUB_OWNER=$GITHUB_INSTALLATION" \
+  --installation "$GITHUB_OWNER=$GITHUB_INSTALLATION" \
   --google-lifetime 7m \
   --aws-session-token "$AWS_SESSION_TOKEN" \
+  --ask-answered-by "$APPROVER_LOGIN" \
   >"$STANDS_JSON" 2> >(trap '' TERM INT; exec tee -a "$STANDS_LOG" >&2) &
 STANDS_PID=$!
 await "dev-airlock-stands" 60 "$STANDS_LOG" 'stands listening records=' "$STANDS_PID"
@@ -452,6 +495,7 @@ METADATA_URL="$(stand '.stands.metadata.url')"
 METADATA_ADDRESS="$(stand '.stands.metadata.address')"
 DISPATCH_OPEN_ISSUE="$(stand .dispatch_open_issue)"
 DISPATCH_DONE_ISSUE="$(stand .dispatch_done_issue)"
+DISPATCH_ANSWERED_ASK="$(stand .dispatch_answered_ask)"
 # Every bound host is reached by its name on 443, which is how its Host header matches its
 # CONNECT target, so no URL here carries a port.
 S_URL="https://${S_HOST}"
@@ -465,21 +509,27 @@ AWS_URL="https://${AWS_HOST}"
 DIAL_ALLOW="${S_HOST}:443 ${T_HOST}:443 ${MICROSOFT_HOST}:443 ${AZURE_RESOURCE_HOST}:443 ${AWS_HOST}:443"
 RESOLVE="${S_HOST}=${S_ADDRESS%:*} ${T_HOST}=${T_ADDRESS%:*} ${MICROSOFT_HOST}=${MICROSOFT_ADDRESS%:*} ${AZURE_RESOURCE_HOST}=${MICROSOFT_ADDRESS%:*} ${AWS_HOST}=${AWS_ADDRESS%:*}"
 
-# --- The rules file: where each secret's value may go, in which headers, and how many seconds
-# of it the model judge may decide. ---
-cat >"$RULES_FILE" <<EOF
-{"secrets": [
-  {"name": "$DEMO_SECRET", "hosts": ["$S_HOST"]},
-  {"name": "$SCOPED_SECRET", "hosts": ["$S_HOST"], "headers": ["authorization", "x-key"],
-   "allow": [{"method": "GET", "pathPrefix": "/read"}]},
-  {"name": "$GITHUB_SECRET", "hosts": ["$S_HOST"]},
-  {"name": "$GOOGLE_SECRET", "hosts": ["$S_HOST"]},
-  {"name": "$AZURE_SECRET", "hosts": ["$MICROSOFT_HOST", "$AZURE_RESOURCE_HOST"], "kind": "azure"},
-  {"name": "$AWS_SECRET", "hosts": ["$AWS_HOST"], "kind": "aws"},
-  {"name": "$JUDGED_SECRET", "hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS},
-  {"name": "$UNJUDGED_SECRET", "hosts": ["$S_HOST"]},
-  {"name": "$SHARED_SECRET", "hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS},
-  {"name": "$ADMIN_SECRET", "hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS}
+# --- The profiles file: each secret a profile of its own name whose proxy block says where its
+# value may go, in which headers, and how many seconds of it the model judge may decide; the
+# github-app secret's carries the github block every GitHub profile has, and AIRLOCK_PLAIN_GITHUB
+# is that secret's with no proxy block (the header). ---
+cat >"$PROFILES_FILE" <<EOF
+{"profiles": [
+  {"name": "$DEMO_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
+  {"name": "$SCOPED_SECRET", "proxy": {"hosts": ["$S_HOST"], "headers": ["authorization", "x-key"],
+   "allow": [{"method": "GET", "pathPrefix": "/read"}]}},
+  {"name": "$GITHUB_SECRET", "github": {"accounts": ["$GITHUB_OWNER"], "permissions": $GITHUB_PERMISSIONS},
+   "proxy": {"hosts": ["$S_HOST"]}},
+  {"name": "$PLAIN_GITHUB_PROFILE", "source": "$GITHUB_SECRET",
+   "github": {"accounts": ["$GITHUB_OWNER"], "permissions": $GITHUB_PERMISSIONS}},
+  {"name": "$GOOGLE_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
+  {"name": "$AZURE_SECRET", "proxy": {"hosts": ["$MICROSOFT_HOST", "$AZURE_RESOURCE_HOST"], "kind": "azure"}},
+  {"name": "$AWS_SECRET", "proxy": {"hosts": ["$AWS_HOST"], "kind": "aws"}},
+  {"name": "$JUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS, "guidance": "$JUDGE_GUIDANCE"}},
+  {"name": "$UNJUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
+  {"name": "$SHARED_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS}},
+  {"name": "$ADMIN_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS}},
+  {"name": "$SECOND_JUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS, "guidance": "$SECOND_JUDGE_GUIDANCE"}}
 ]}
 EOF
 
@@ -488,10 +538,10 @@ EOF
 # opens nothing. The two stored secrets, the github-app and the google-login secret are owned
 # by the service the enrolled pod runs as, so a request for one is granted at once; the
 # azure-login secret is human tier and owned by the approver, because the broker releases its
-# projected Azure token only for a human-tier name a person approved. The judge's four are
-# human tier too, so each waits for a person: three of them the approver's own, and one
+# projected Azure token only for a human-tier name a person approved. The judge's five are
+# human tier too, so each waits for a person: four of them the approver's own, and one
 # owned by nobody (the owner tag "shared", policy.OwnerShared), which anyone signed in
-# approves and which the judge therefore approves in anyone's place. The last of the four is
+# approves and which the judge therefore approves in anyone's place. One of the approver's is
 # the approver's administrator's credential (admin: "true"), which carries the requesters list
 # and the hour's cap that tag demands of a secret: a list naming the approver and this stack's
 # service, since the enrolled pod acts for that service and a list no requester is on is
@@ -501,7 +551,7 @@ jq -n \
   --arg service "$SERVICE" --arg approver "$APPROVER_LOGIN" \
   --arg demo "$DEMO_VALUE" --arg scoped "$SCOPED_VALUE" \
   --arg judged "$JUDGED_VALUE" --arg unjudged "$UNJUDGED_VALUE" --arg shared "$SHARED_VALUE" \
-  --arg admin "$ADMIN_VALUE" --arg maxgrant "$ADMIN_MAX_GRANT" \
+  --arg admin "$ADMIN_VALUE" --arg second "$SECOND_JUDGED_VALUE" --arg maxgrant "$ADMIN_MAX_GRANT" \
   --arg appid "$GITHUB_APP_ID" --rawfile appkey "$GITHUB_APP_KEY_FILE" \
   --arg owner "$GITHUB_OWNER" \
   --arg awskey "$AWS_KEY_ID" --arg awssecret "$AWS_SECRET_KEY" --arg awssession "$AWS_SESSION_TOKEN" \
@@ -534,7 +584,9 @@ jq -n \
      {name: ($prefix + "airlock-admin-token"), kms_key_id: $kms,
       tags: {owner: $approver, tier: "human", admin: "true",
              requesters: ($approver + " " + $service), "max-grant": $maxgrant},
-      value: $admin}
+      value: $admin},
+     {name: ($prefix + "airlock-second-judged-token"), kms_key_id: $kms,
+      tags: {owner: $approver, tier: "human"}, value: $second}
    ]}' >"$FAKE_SECRETS_FILE"
 chmod 600 "$FAKE_SECRETS_FILE"
 printf '%s' "$AZURE_FEDERATED_TOKEN" >"$AZURE_TOKEN_FILE"
@@ -567,17 +619,28 @@ PROXY_FRONT_PID="$FRONT_PID"
 API_FRONT_URL="$(jq -r .url "$API_FRONT_JSON")"
 PROXY_FRONT_URL="$(jq -r .url "$PROXY_FRONT_JSON")"
 
-# --- The brokers. Both read one database, one rules file and one fake store, and each binds an
+# --- The brokers. Both read one database, one profiles file and one fake store, and each binds an
 # API port, a proxy port and a metrics port the system picks (BROKER_*_LISTEN_ADDR of port 0), so
 # two of them never collide. BROKER_DRAIN_SECONDS=0 as dev-broker.sh does: the five-second default
 # exists to outlast a Kubernetes EndpointSlice propagation nothing here has.
+#
+# BROKER_AIRLOCK_TEST_AZURE_AUTHORITY makes the Microsoft stand-in the token authority the
+# azure exchange is held to, in place of login.microsoftonline.com: the proxy refuses an
+# exchange at any other host, and the stand-in is where this stack's az signs in.
 #
 # Each also gets the model judge: the six BROKER_JUDGE_* settings, which are all-or-none, and
 # GCE_METADATA_HOST. The credential the judge presents to its model endpoint is the broker's
 # own Google machine identity, read from the metadata server at call time; pointing
 # GCE_METADATA_HOST at the metadata stand rather than adding a test-only setting that hands the
 # broker a token leaves that path exactly as production runs it, so what this stack exercises
-# is the code a deployment runs and not a shortcut around it. ---
+# is the code a deployment runs and not a shortcut around it.
+#
+# And each is started with KUBERNETES_SERVICE_HOST empty. Kubernetes sets it in every container,
+# so a run in a Legion pod would hand it to both brokers, and a broker with an airlock that sees it
+# is one deployed in a cluster: it refuses to start unless BROKER_AIRLOCK_CLUSTER_RANGES holds that
+# cluster's Service range, which a pod cannot read. These brokers are local processes on loopback,
+# so they start as a local run does, and a BROKER_AIRLOCK_CLUSTER_RANGES the caller exports still
+# reaches them. ---
 start_broker() {
   local n="$1" log="$2"
   : >"$log"
@@ -601,7 +664,7 @@ start_broker() {
   BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
   BROKER_AZURE_TOKEN_FILE="$AZURE_TOKEN_FILE" \
   BROKER_AZURE_LOGIN_SECRET="$AZURE_SECRET" \
-  BROKER_AIRLOCK_RULES_FILE="$RULES_FILE" \
+  BROKER_PROFILES_FILE="$PROFILES_FILE" \
   BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_AIRLOCK_PROXY_URL="$PROXY_FRONT_URL" \
   BROKER_AIRLOCK_CA_CERT_FILE="$CA_CERT_FILE" \
@@ -614,6 +677,7 @@ start_broker() {
   BROKER_AIRLOCK_TEST_RESOLVE="$RESOLVE" \
   BROKER_AIRLOCK_TEST_KEEP_VALUES="$KEEP_VALUES" \
   BROKER_AIRLOCK_TEST_NO_KIND="$NO_KIND" \
+  BROKER_AIRLOCK_TEST_AZURE_AUTHORITY="$MICROSOFT_HOST" \
   BROKER_JUDGE_MODEL_URL="$MODEL_URL" \
   BROKER_JUDGE_MODEL="$JUDGE_MODEL" \
   BROKER_JUDGE_MODEL_PROTOCOL="$JUDGE_MODEL_PROTOCOL" \
@@ -622,6 +686,7 @@ start_broker() {
   BROKER_JUDGE_DISPATCH_TOKEN_FILE="$JUDGE_DISPATCH_TOKEN_FILE" \
   BROKER_JUDGE_TEST_SKIP_CHECKS="$JUDGE_SKIP_CHECKS" \
   GCE_METADATA_HOST="$METADATA_ADDRESS" \
+  KUBERNETES_SERVICE_HOST='' \
   "$BROKER_BIN" > >(trap '' TERM INT; exec tee -a "$log" >&2) 2>&1 &
   BROKER_PIDS[n]=$!
 }
@@ -685,8 +750,19 @@ fi
 printf '%s' "$ENROLLMENT_ID" >"$KEY_DIR/enrollment"
 echo "dev-airlock: enrolled pod session $ENROLLMENT_ID (pod $POD_UID, service $SERVICE)" >&2
 
-# One banner line per broker, built here rather than substituted into the banner below: a
-# command substitution there would lose the last line's newline.
+# --- The session's renewer, for as long as this stack runs: the same command and the same token
+# file the Legion worker shim gives a pod's renewer, so the session's lease outlives any check
+# however long it holds a grant. It renews at once and then a third of the way through each
+# lease, retries what the broker refuses for now, and exits only on a refusal it can never get
+# past (76), which its log names. ---
+AGENT_SECRETS_URL="$API_FRONT_URL" AGENT_SECRETS_KEY_DIR="$KEY_DIR" \
+  "$AGENT_SECRETS_BIN" renew --pod-token-file "$POD_TOKEN_FILE" >"$RENEW_LOG" 2>&1 &
+RENEW_PID=$!
+echo "dev-airlock: renewing pod session $ENROLLMENT_ID's lease (agent-secrets renew, pid $RENEW_PID, log $RENEW_LOG)" >&2
+
+# One banner line per broker and one for the session's renewer, built here rather than
+# substituted into the banner below: a command substitution there would lose the last line's
+# newline.
 BROKER_BANNER=""
 for n in $(seq 1 "$BROKER_COUNT"); do
   if [ -n "$BROKER_BANNER" ]; then
@@ -694,6 +770,7 @@ for n in $(seq 1 "$BROKER_COUNT"); do
   fi
   BROKER_BANNER+="  broker $n:            api ${BROKER_API_ADDRS[n]}, proxy ${BROKER_PROXY_ADDRS[n]}, pid ${BROKER_PIDS[n]}, log ${BROKER_LOGS[n]}"
 done
+BROKER_BANNER+=$'\n'"  session renewer:     pid $RENEW_PID, agent-secrets renew --pod-token-file $POD_TOKEN_FILE, log $RENEW_LOG"
 
 cat <<EOF
 
@@ -706,7 +783,7 @@ dev-airlock: ready.
   export AIRLOCK_DIR=$WORK_DIR
   export AIRLOCK_CA_CERT_FILE=$CA_CERT_FILE
   export AIRLOCK_CA_KEY_FILE=$CA_KEY_FILE
-  export AIRLOCK_RULES_FILE=$RULES_FILE
+  export AIRLOCK_PROFILES_FILE=$PROFILES_FILE
   export AIRLOCK_FAKE_SECRETS_FILE=$FAKE_SECRETS_FILE
   export AIRLOCK_RECORDS_URL=$RECORDS_URL
   export AIRLOCK_S_URL=$S_URL
@@ -732,6 +809,7 @@ dev-airlock: ready.
   export AIRLOCK_DISPATCH_TOKEN_FILE=$JUDGE_DISPATCH_TOKEN_FILE
   export AIRLOCK_DISPATCH_OPEN_ISSUE=$DISPATCH_OPEN_ISSUE
   export AIRLOCK_DISPATCH_DONE_ISSUE=$DISPATCH_DONE_ISSUE
+  export AIRLOCK_DISPATCH_ANSWERED_ASK=$DISPATCH_ANSWERED_ASK
   export AIRLOCK_METADATA_URL=$METADATA_URL
   export AIRLOCK_METADATA_RECORDS=$RECORDS_URL/records/metadata
   export AIRLOCK_JUDGE_MODEL=$JUDGE_MODEL
@@ -741,6 +819,9 @@ dev-airlock: ready.
   export AIRLOCK_UNJUDGED_SECRET=$UNJUDGED_SECRET
   export AIRLOCK_SHARED_SECRET=$SHARED_SECRET
   export AIRLOCK_ADMIN_SECRET=$ADMIN_SECRET
+  export AIRLOCK_SECOND_JUDGED_SECRET=$SECOND_JUDGED_SECRET
+  export AIRLOCK_JUDGE_GUIDANCE='$JUDGE_GUIDANCE'
+  export AIRLOCK_SECOND_JUDGE_GUIDANCE='$SECOND_JUDGE_GUIDANCE'
   export AIRLOCK_ADMIN_MAX_GRANT=$ADMIN_MAX_GRANT
   export AIRLOCK_APPROVER=$APPROVER_LOGIN
   export AIRLOCK_SIGNIN_URL=$ISSUER_URL
@@ -751,20 +832,27 @@ dev-airlock: ready.
 $BROKER_BANNER
   secrets:             $DEMO_SECRET and $SCOPED_SECRET (stored, bound to $S_HOST; $SCOPED_SECRET in
                        authorization and x-key, GET /read alone), $GITHUB_SECRET (github-app,
-                       installation $GITHUB_INSTALLATION on $GITHUB_OWNER), $GOOGLE_SECRET (google-login),
-                       $AZURE_SECRET (kind azure, human tier) and $AWS_SECRET (kind aws)
-  judge:               $JUDGE_MODEL at $MODEL_URL, which answers approve until a check
-                       POSTs another answer to $MODEL_ANSWER_URL; it reads
-                       $DISPATCH_OPEN_ISSUE (open) and $DISPATCH_DONE_ISSUE (done) at $DISPATCH_URL
-                       and mints its own credential at the metadata stand on $METADATA_ADDRESS.
-                       It decides up to $JUDGE_SECONDS seconds of $JUDGED_SECRET and of
-                       $SHARED_SECRET (owned by nobody), and nothing of $UNJUDGED_SECRET,
-                       which waits for its person. $ADMIN_SECRET carries the same
-                       $JUDGE_SECONDS seconds in the rules and is an administrator's secret
-                       (admin: "true", requesters $APPROVER_LOGIN and $SERVICE, max-grant
-                       $ADMIN_MAX_GRANT): the judge refuses it before the model and the
-                       decision transaction refuses it again, so a person approves it. Ask with
-                       agent-secrets request $JUDGED_SECRET --ttl 10m --reason "<what, naming $DISPATCH_OPEN_ISSUE>"
+                       installation $GITHUB_INSTALLATION on $GITHUB_OWNER; $PLAIN_GITHUB_PROFILE is
+                       its profile with no proxy block, released as its value), $GOOGLE_SECRET
+                       (google-login), $AZURE_SECRET (kind azure, human tier) and $AWS_SECRET (kind
+                       aws), each a profile of its own name in $PROFILES_FILE
+  judge:               $JUDGE_MODEL at $MODEL_URL, which answers grant until a check
+                       POSTs another answer to $MODEL_ANSWER_URL; it reads, as data for the
+                       model, $DISPATCH_OPEN_ISSUE (open) and $DISPATCH_DONE_ISSUE (done) at
+                       $DISPATCH_URL and the one ask that stand holds, $DISPATCH_ANSWERED_ASK on
+                       $DISPATCH_OPEN_ISSUE, answered by $APPROVER_LOGIN, and mints its own
+                       credential at the metadata stand on $METADATA_ADDRESS.
+                       Who decides each key is its profile's proxy block: the judge decides up to
+                       $JUDGE_SECONDS seconds of $JUDGED_SECRET and $SECOND_JUDGED_SECRET (owned by
+                       $APPROVER_LOGIN, each against its guidance) and of $SHARED_SECRET
+                       (owned by nobody). A request for them alone is the judge's: no approve_url,
+                       a read-only page, never listed; granted, or refused for good. No request
+                       has to cite anything. $ADMIN_SECRET carries the same $JUDGE_SECONDS seconds
+                       and is an administrator's secret (admin: "true", requesters $APPROVER_LOGIN
+                       and $SERVICE, max-grant $ADMIN_MAX_GRANT), and $UNJUDGED_SECRET's proxy block
+                       names no judge: each is $APPROVER_LOGIN's card, and so is any request with one of
+                       them beside a judge key. Ask with
+                       agent-secrets request $JUDGED_SECRET --ttl 10m --reason "<what, naming the stack check run>"
   approver:            $APPROVER_LOGIN, who approves $AZURE_SECRET on ${API_FRONT_URL}/approve/<record>;
                        the sign-in at $ISSUER_URL signs that person in with no page to fill in,
                        and a POST to ${API_FRONT_URL}/approve needs an Origin header or the page answers 403

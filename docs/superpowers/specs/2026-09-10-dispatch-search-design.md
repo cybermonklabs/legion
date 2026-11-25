@@ -9,7 +9,7 @@ None. Closed and done issues are included in results (dimmed by status) and in t
 1. Browser (chromium): signed in at `/`, `Ctrl/Cmd+K` opens the palette; typing `astrolabe` lists hits grouped by issue with the term in `<mark>`; `ArrowDown`+`Enter` on the document hit lands on `/issues/<KEY>/spec?q=astrolabe` (non-primary: `/issues/<KEY>/artifacts/<slug>?q=astrolabe`) with the first occurrence highlighted and scrolled into view. `e2e/search.e2e.ts`.
 2. Phone (iphone project): drawer → `Search` button → same palette; every result row is ≥ 44 px tall; tapping navigates and closes the palette. `e2e/search.e2e.ts`.
 3. The `Search` control sits at the top of the navigation rail on both layouts; `Esc` closes the palette and returns focus to the control that opened it.
-4. API: `curl -H 'X-Dispatch-User: alice' '$URL/api/v1/search?q=astrolabe'` → 200 `{results:[{kind,issue:{key,title,status},artifact?,id,snippet,rank,href}],took_ms}`; the same with `Authorization: Bearer $DISPATCH_AGENT_TOKEN`. Go `api/search_test.go`.
+4. API: `curl -H 'X-Dispatch-User: alice' "$URL/api/v1/search?q=astrolabe"` → 200 `{results:[{kind,issue:{key,title,status},artifact?,id,snippet,rank,href}],took_ms}`; the same with the agent bearer on a process substitution (bash or zsh), so the token is never on a command line or in a file: `curl -H @<(printf 'Authorization: Bearer %s' "$DISPATCH_AGENT_TOKEN") "$URL/api/v1/search?q=astrolabe"`. Go `api/search_test.go`.
 5. Agent: `dispatch_search({query:"astrolabe"})` from an OMP session returns the document/comment containing it with the issue key and an absolute link. envoy-client + pi-envoy tests; live: `omp` in the worktree against the dev server.
 6. Agent: `dispatch_issue({project,title})` whose title near-duplicates an existing issue in that project returns the candidates and creates nothing (server `409 POSSIBLE_DUPLICATE`); the same call with `force: true` creates it. Go `api/duplicates_test.go`, envoy-client tests.
 7. Latency: p95 < 100 ms for `GET /api/v1/search` over the live corpus copy (`scripts/restore-dispatch-dump.sh ~/tmp/dispatch-preflight/live-*.dump`, then `TestSearchLatencyOnCorpus`).
@@ -20,11 +20,11 @@ None. Closed and done issues are included in results (dimmed by status) and in t
 
 | Requirement | Provenance |
 | --- | --- |
-| Keyword search across every issue and document, fast, from anywhere in the app | Sami 2026-09-10 17:35Z: "I want some way to search for a keyword across all documents and issues. Like, I know I've used the word astrolabe somewhere in one of these issues. I just don't know where to find it. So I need some way to search. We need a fast global search." |
-| Agents get the same search as a tool, and creation is gated on it | Sami 2026-09-10 17:45Z: "agents need a way to search too, otherwise many duplicate issues" |
+| Keyword search across every issue and document, fast, from anywhere in the app | Sami requested fast global search for humans and agents on 2026-09-10 (https://github.com/cybermonklabs/legion/pull/888#pullrequestreview-5172563196) |
+| Agents get the same search as a tool, and creation is gated on it | The same record covers agent search and the duplicate-creation gate |
 | Corpus = issues (key, title), latest version of every `kind='doc'` artifact, comments, asks (question + answer text), messages | inferred: these are the places a word is written in Dispatch; refs/events restate them |
-| Postgres full-text search in the existing database; no second service | inferred: ~100 documents, one Postgres already backed up; standing rule "boring standard mechanism" |
-| Results carry `href` deep links so a hit is one click from the text | inferred: "I just don't know where to find it" is a navigation problem |
+| Postgres full-text search in the existing database; no second service | inferred: ~100 documents, one Postgres already backed up; Sami's CLAUDE.md rule: "Agents have hand-rolled every one of those here while the boring standard mechanism sat unused" (https://github.com/sjawhar/dotfiles/blob/f52de18367896bee15b5b23248e8b5a86d90fc17/.claude/CLAUDE.md#L34) |
+| Results carry `href` deep links so a hit is one click from the text | inferred: not knowing where a word was written is a navigation problem |
 | Live document text reaches the index at settle (2 s idle, `docs.Deps.Settle`); the palette shows the last settled text | fact: `artifact_versions` is written by `writeVersionTx` on settle; the search reads versions |
 
 ## Design

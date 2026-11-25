@@ -104,14 +104,14 @@ Table-driven tests with `httptest.NewRequest` + `httptest.NewRecorder`. Every ha
 | 5 | Unknown/skipped event type | 200, not published |
 | 6 | Valid signature | 200 |
 | 7 | Invalid signature | 401 |
-| 8 | No secret configured | Skip verification, 200 |
+| 8 | No secret configured | 401 for every signature, the one made with the empty key too, not published (each `verify` function answers false for an empty secret, and the config parser already refuses to start an enabled provider with no secret) |
 | 9 | Event/payload type mismatch | 400 |
 | 10 | Publish failure | 503 (Slack retries the delivery; GitHub does not redeliver a failed one on its own) |
 
 ### Provider-specific additions
 
 **Slack:**
-- `url_verification` challenge response BEFORE signature check (Slack sends it unsigned during app setup)
+- `url_verification` challenge response only AFTER the signature check: Slack signs the handshake like every other request, and its documentation says to verify the request before answering the challenge (https://docs.slack.dev/reference/events/url_verification)
 - Timestamp within 5-minute window — tests must use `time.Now()`, not static timestamps
 - `event_callback` with empty `event_id` → no publish
 
@@ -121,7 +121,7 @@ Table-driven tests with `httptest.NewRequest` + `httptest.NewRecorder`. Every ha
 - Custom mention trigger via config (`@legion` default)
 
 **Ghost Wispr:**
-- Signing secret is optional (empty = skip verification)
+- Signing secret is required, as for GitHub and Slack: start-up refuses an empty one
 - Event type normalization: dots → underscores, lowercased
 
 ## Slack timestamp gotcha

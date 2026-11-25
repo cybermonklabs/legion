@@ -2,6 +2,7 @@ package rendering_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -24,7 +25,9 @@ func listenerEnv() rendering.ListenerEnv {
 }
 
 // withoutGitHub drops github's own inputs, as a listener that does not list github gives none.
-func withoutGitHub(e *rendering.ListenerEnv) { e.ReviewerAppId, e.MentionTrigger = nil, nil }
+func withoutGitHub(e *rendering.ListenerEnv) {
+	e.ReviewerAppId, e.VerdictAppId, e.MentionTrigger = nil, nil, nil
+}
 
 // Check refuses each value the listener cannot run on, naming its input. This is the one table of
 // these refusals: aws:WebhookListener tests that its validate runs Check, and `envoy-infra render
@@ -32,6 +35,7 @@ func withoutGitHub(e *rendering.ListenerEnv) { e.ReviewerAppId, e.MentionTrigger
 // refusals are core's; one row here shows that Check runs it.
 func TestListenerEnvCheck(t *testing.T) {
 	appID := func(v string) *string { return &v }
+	intRef := func(v int) *int { return &v }
 	for _, row := range []struct {
 		name   string
 		mutate func(*rendering.ListenerEnv)
@@ -76,6 +80,31 @@ func TestListenerEnvCheck(t *testing.T) {
 			name:   "github without mentionTrigger",
 			mutate: func(e *rendering.ListenerEnv) { e.MentionTrigger = nil },
 			input:  "mentionTrigger", err: `mentionTrigger is required with webhook "github"`,
+		},
+		// The verdict App's id, which github takes and does not require.
+		{name: "github with a verdictAppId", mutate: func(e *rendering.ListenerEnv) { e.VerdictAppId = appID("5341240") }},
+		{
+			name:   "github with a blank verdictAppId",
+			mutate: func(e *rendering.ListenerEnv) { e.VerdictAppId = appID(" ") },
+			input:  "verdictAppId", err: "verdictAppId is blank: give the verdict App's id, or leave it out",
+		},
+		{
+			name:   "github with a verdictAppId that is not a number",
+			mutate: func(e *rendering.ListenerEnv) { e.VerdictAppId = appID("not-a-number") },
+			input:  "verdictAppId", err: `verdictAppId "not-a-number" is not a GitHub App id: a whole number above 0, with no leading zero`,
+		},
+		{
+			name:   "github with a verdictAppId with a leading zero",
+			mutate: func(e *rendering.ListenerEnv) { e.VerdictAppId = appID("05341240") },
+			input:  "verdictAppId", err: `verdictAppId "05341240" is not a GitHub App id`,
+		},
+		{
+			name: "a verdictAppId with github unlisted",
+			mutate: func(e *rendering.ListenerEnv) {
+				withoutGitHub(e)
+				e.Webhooks, e.VerdictAppId = []string{"slack"}, appID("5341240")
+			},
+			input: "verdictAppId", err: `verdictAppId is given for webhook "github", which webhooks does not list`,
 		},
 		// github's inputs while github is not listed, which would otherwise be dropped silently.
 		{
@@ -124,6 +153,16 @@ func TestListenerEnvCheck(t *testing.T) {
 			name:   "five NATS replicas",
 			mutate: func(e *rendering.ListenerEnv) { e.NatsReplicas = 5 },
 		},
+		// The sender limit, core.CheckSenderLimit's rule, whose own refusals are core's.
+		{
+			name:   "a sender limit",
+			mutate: func(e *rendering.ListenerEnv) { e.SenderMessagesPerMinute, e.SenderMessageBurst = intRef(4), intRef(8) },
+		},
+		{
+			name:   "a sender burst with no rate, refused by core.CheckSenderLimit",
+			mutate: func(e *rendering.ListenerEnv) { e.SenderMessageBurst = intRef(8) },
+			input:  "senderMessageBurst", err: "senderMessageBurst is given without senderMessagesPerMinute",
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			e := listenerEnv()
@@ -139,4 +178,20 @@ func TestListenerEnvCheck(t *testing.T) {
 			require.Equal(t, row.input, refused.Input)
 		})
 	}
+}
+
+// The verdict App's id is written as ENVOY_VERDICT_APP_ID, after the other GitHub variables, only
+// when it is given: a listener given none writes the environment it wrote before the input.
+func TestListenerEnvWritesTheVerdictAppIdOnlyWhenGiven(t *testing.T) {
+	e := listenerEnv()
+	e.NatsUrls = []string{"nats://example-bus.example-namespace.internal.example:4222"}
+	without, err := e.Variables()
+	require.NoError(t, err)
+	require.NotContains(t, strings.Join(without, "\n"), "ENVOY_VERDICT_APP_ID")
+
+	verdictApp := "5341240"
+	e.VerdictAppId = &verdictApp
+	with, err := e.Variables()
+	require.NoError(t, err)
+	require.Equal(t, append(without, "ENVOY_VERDICT_APP_ID=5341240"), with)
 }

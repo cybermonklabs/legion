@@ -127,7 +127,7 @@ func wantDeliveryFailed(t *testing.T, route string, recorder *httptest.ResponseR
 // negative control is a delivery recorded on the same store before the freeze.
 func TestAGitHubCIDeliveryAnswersAFrozenBusInsideTheRecordWait(t *testing.T) {
 	frozen := newFrozenWebhookBus(t)
-	store, err := cistore.Open(frozen.client.Conn, logging.New("test"), cistore.WithReplicas(1))
+	store, err := cistore.Open(t.Context(), frozen.client.Conn, logging.New("test"), cistore.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the CI store: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestAGitHubCIDeliveryAnswersAFrozenBusInsideTheRecordWait(t *testing.T) {
 	if err := store.WaitForCacheReady(ready); err != nil {
 		t.Fatalf("wait for the CI cache: %v", err)
 	}
-	handler := webhook.GitHubHandler(webhookSecret, "@legion", "", frozen.client, store)
+	handler := webhook.GitHubHandler(webhookSecret, "@legion", "", "", frozen.client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	checkSuite := func(number string) string {
 		return `{"action":"completed","check_suite":{"id":900,"status":"completed","conclusion":"success",` +
 			`"updated_at":"2026-10-26T03:01:00Z","head_sha":"abcdef1234567890abcdef1234567890abcdef12","app":{"id":77},` +
@@ -167,9 +167,9 @@ func TestAGitHubCIDeliveryAnswersAFrozenBusInsideTheRecordWait(t *testing.T) {
 // got, 503. The negative control is each route served on the same bus before the freeze.
 func TestTheWebhookPublishesAnswerAFrozenBusInsideTheirCallersWait(t *testing.T) {
 	frozen := newFrozenWebhookBus(t)
-	slack := webhook.SlackHandler(webhookSecret, frozen.client)
-	ghostWispr := webhook.GhostWisprHandler(webhookSecret, frozen.client)
-	github := webhook.GitHubHandler(webhookSecret, "@legion", "", frozen.client, noCI{})
+	slack := webhook.SlackHandler(webhookSecret, frozen.client, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
+	ghostWispr := webhook.GhostWisprHandler(webhookSecret, frozen.client, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
+	github := webhook.GitHubHandler(webhookSecret, "@legion", "", "", frozen.client, noCI{}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	slackEvent := func(eventID string) string {
 		return `{"type":"event_callback","event_id":"` + eventID + `","team_id":"T01234567",` +
 			`"event":{"type":"message","channel":"C01234567","user":"U01234567","text":"hello world","ts":"1700000000.000100"}}`

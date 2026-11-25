@@ -268,7 +268,7 @@ describe("runRulesCheck: which asks a call opens", () => {
         });
       return body(blocks);
     }) as typeof fetch;
-    return (_directory: string, signal: AbortSignal) => ({
+    return async (_directory: string, signal: AbortSignal) => ({
       client: new DispatchClient("https://dispatch.example", bearerCredential("token"), fetchImpl, {
         signal,
       }),
@@ -340,6 +340,47 @@ describe("runRulesCheck: which asks a call opens", () => {
       "The ask block #region that starts 'Which region?'",
     ]);
   });
+  test("an opener naming no id is not new when its question is one the stored version holds", async () => {
+    // A composed body names no block id, and the server gives such a block the live block's id
+    // when its text is unchanged, so the upload opens no ask for it. The opener whose question
+    // nothing stored matches is the only new ask.
+    const check = await checkRules({
+      toolName: "dispatch_artifact",
+      tool: "dispatch artifact",
+      input: {
+        issue: "X-1",
+        name: "brief.md",
+        content: ":::ask{}\nWhich deployment window?\n:::\n\n:::ask{}\nWhich region?\n:::\n",
+      },
+    });
+    expect(check?.names).toEqual(["The ask block that starts 'Which region?'"]);
+  });
+  test("a re-upload whose every opener names no id and repeats a stored question is not judged", async () => {
+    let walks = 0;
+    const check = await checkRules(
+      {
+        toolName: "dispatch_artifact",
+        tool: "dispatch artifact",
+        input: {
+          issue: "X-1",
+          name: "brief.md",
+          content: ":::ask{}\nWhich deployment window?\n:::\n",
+        },
+      },
+      {
+        walk: async () => {
+          walks += 1;
+          return {
+            answer: { kind: "answer" as const, text: RULES_NONE },
+            called: {},
+            elapsedMs: 0,
+          };
+        },
+      }
+    );
+    expect(walks).toBe(0);
+    expect(check).toBeUndefined();
+  });
   test("only an upload leaves out the ids the document holds: a doc-edit insert of one is a new ask", async () => {
     const check = await checkRules({
       toolName: "dispatch_doc_edit",
@@ -353,7 +394,7 @@ describe("runRulesCheck: which asks a call opens", () => {
     expect(check?.names).toEqual(["The ask block #window that starts 'Which deployment window?'"]);
   });
   /** A session whose Dispatch does not resolve: the de-duplication read fails on every call. */
-  const noDispatch: Partial<RulesCheckDeps> = { dispatchClient: () => undefined };
+  const noDispatch: Partial<RulesCheckDeps> = { dispatchClient: async () => undefined };
   test("an upload whose de-duplication read fails judges the openers with no id and leaves the id-carrying ones alone", async () => {
     // Without the read nothing says which asks the stored version already holds, and an opener
     // carrying an id may be one of them.
@@ -430,7 +471,7 @@ describe("runRulesCheck: which asks a call opens", () => {
       {
         // The read takes 7 ms of the clock, and that is all the check spends.
         now: () => clock,
-        dispatchClient: () => {
+        dispatchClient: async () => {
           clock += 7;
           return undefined;
         },
@@ -447,6 +488,48 @@ describe("runRulesCheck: which asks a call opens", () => {
     expect(walks).toBe(0);
     expect(check).toMatchObject({ outcome: "unjudged", asksPartial: true, latencyMs: 7 });
     expect(check?.textMissing).toBe(false);
+  });
+  // A read inside an armed gate hands its Dispatch client the gate's time left as the client's own
+  // deadline, so a broker credential waits that time less the request's reserve and a live token
+  // still goes out in it; before, the client knew only the gate's signal and took no reserve from
+  // it (the review of dc8dc9ea7a, F6).
+  test("a read inside an armed gate hands its Dispatch client the gate's time left", async () => {
+    let clock = 1_000;
+    const handed: (number | undefined)[] = [];
+    await runRulesCheck(
+      {
+        now: () => clock,
+        env: {},
+        dispatchClient: async (_directory, _signal, deadlineMs) => {
+          handed.push(deadlineMs);
+          return undefined;
+        },
+        walk: async () => ({
+          answer: { kind: "answer" as const, text: RULES_NONE },
+          called: {},
+          elapsedMs: 0,
+        }),
+      },
+      {
+        toolName: "dispatch_artifact",
+        tool: "dispatch artifact",
+        input: {
+          issue: "X-1",
+          name: "brief.md",
+          content: `${BRIEF}\n:::ask{#new}\nShould I change the cache path? Recommendation: keep it as it is.\n:::\n`,
+        },
+        directory: async () => {
+          // 4 s of the gate's 30 s pass before the read asks for its client.
+          clock += 4_000;
+          return "/work";
+        },
+        system: "rules",
+        context: () => ({ primarySystemPrompt: "", transcript: "" }),
+        signal: new AbortController().signal,
+        deadlineAt: 31_000,
+      }
+    );
+    expect(handed).toEqual([26_000]);
   });
   test("a re-upload whose stored version holds every opener opens no new ask, and the check answers nothing", async () => {
     // The other fact behind an empty judged list: the read answered, and every ask is already held.

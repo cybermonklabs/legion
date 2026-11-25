@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // visibilityAnswerBound is the longest `legion gh` takes to answer the shared check's own
@@ -16,8 +17,13 @@ import (
 // each of its two tries of that read 20 s (public_leak_check.py's vis_of), so the answer, or its
 // refusal, comes before the check stops waiting, and no read made for it outlives the check's
 // wait. The guard waits for a near rate-limit reset only where its caller's bound has room for
-// the wait and the reads after it, and this bound has room for none.
-const visibilityAnswerBound = 15 * time.Second
+// the wait and the reads after it, and this bound has room for none. It is a variable so that
+// this package's tests can give it their own deadline (programbound).
+var visibilityAnswerBound = 15 * time.Second
+
+func init() {
+	programbound.Register(&visibilityAnswerBound)
+}
 
 // sharedCheckVisibilityRead is the repository the shared public leak check's own visibility read
 // names, and whether argv is that read: exactly leakguard.VisibilityReadArgs of the repository
@@ -45,13 +51,14 @@ func visibilityReadRepository(env map[string]string) (ghrepo.Repository, bool) {
 // answerVisibilityRead answers the shared public leak check's own visibility read of repo
 // (sharedCheckVisibilityRead) by the guard's one rule, read fresh (Guard.FreshVisibility): the
 // REST read, and where GitHub refuses it for a rate limit, GraphQL with the same token or git's
-// ls-remote with no credential, which can answer only public. The guard's reads come back
-// through this command, which runs each with the repository's token, or with the caller's
-// GH_TOKEN or GITHUB_TOKEN where one is set (ghVisibilityRead). The real gh's read, which the
-// check made before, answers nothing while the installation's REST limit is spent, and the check
-// then refuses the push. So this is how a theorem-labs push gets through in a spent hour: the
-// check reads the visibility of every theorem-labs repository itself, before the guard's own
-// read runs.
+// ls-remote with no credential, which can answer only public, and where this command refuses the
+// REST read because the bundle holds no directory for the repository's owner, that same
+// ls-remote. The guard's reads come back through this command, which runs each with the
+// repository's token, or with the caller's GH_TOKEN or GITHUB_TOKEN where one is set
+// (ghVisibilityRead). The real gh's read, which the check made before, answers nothing while the
+// installation's REST limit is spent, and the check then refuses the push. So this is how an
+// example-org push gets through in a spent hour: the check reads the visibility of every
+// example-org repository itself, before the guard's own read runs.
 //
 // The read takes no kept answer and keeps none. The check keeps answers of its own, and reads each
 // other remote of a push fresh: a remote it reads public widens the commits it counts as held,
@@ -68,9 +75,9 @@ func answerVisibilityRead(ctx context.Context, repo ghrepo.Repository, stdout, s
 	if status, ok := signalled(ctx); ok {
 		return status
 	}
-	bounded, cancel := context.WithTimeout(ctx, visibilityAnswerBound)
+	bounded, cancel := context.WithTimeout(ctx, programbound.Of(&visibilityAnswerBound))
 	defer cancel()
-	visibility, err := leakguard.New(leakguard.Options{}).FreshVisibility(bounded, repo.String())
+	visibility, err := leakguard.New(leakguard.Options{Curl: leakguardCurl}).FreshVisibility(bounded, repo.String())
 	if status, ok := signalled(ctx); ok {
 		return status
 	}
@@ -80,13 +87,4 @@ func answerVisibilityRead(ctx context.Context, repo ghrepo.Repository, stdout, s
 	}
 	fmt.Fprintln(stdout, visibility)
 	return 0
-}
-
-// signalled is the status a signal that cancelled ctx ends this command with (endedBySignal), and
-// whether one did.
-func signalled(ctx context.Context) (int, bool) {
-	if cause := context.Cause(ctx); cause != nil {
-		return endedBySignal(cause)
-	}
-	return 0, false
 }

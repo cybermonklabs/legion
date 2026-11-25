@@ -14,9 +14,23 @@ import {
   LegionGrantResponse,
   LegionHandoffCompleteRequest,
   LegionHandoffCompleteResponse,
+  type LegionHealth,
+  LegionHealthResponse,
+  LegionIntakeDiscardRequest,
+  LegionIntakeDiscardResponse,
+  LegionIntakeReplayRequest,
+  LegionIntakeReplayResponse,
+  type LegionIssue,
+  LegionIssueRecordResponse,
   LegionIssueStatusRequest,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionPlanRegisterRequest,
+  LegionPlanRegisterResponse,
+  LegionProjectPauseRequest,
+  LegionProjectPauseResponse,
+  LegionProjectResumeRequest,
+  LegionProjectResumeResponse,
   type LegionReadyForUpdateRequest,
   type LegionReadyRequest,
   LegionRegisterResponse,
@@ -27,6 +41,7 @@ import {
   LegionSignOffRequest,
   type LegionState,
   LegionStateResponse,
+  LegionTaskStopRequest,
   LegionTurnOutcomeRequest,
   LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
@@ -46,9 +61,10 @@ import type { z } from "zod";
  * of a type the schema does not describe is still a refusal, and the daemon's golden tests still
  * hold the reader to the daemon's own types, by the equality between each golden's parse and its
  * file in `packages/contracts/src/legion-api.test.ts`. The requests are the claim wire of
- * `packages/daemon/internal/claim/wire.go`, which refuses a member it does not read. There is no
- * secret recovery: the daemon persists a registration's capability before it answers, so a
- * restart forgets no secret.
+ * `packages/daemon/internal/claim/wire.go`. The daemon refuses a member a route does not read
+ * (`readBody`), except on the registration, whose body it reads leniently (`readRegisterBody`).
+ * There is no secret recovery: the daemon persists a registration's capability before it answers,
+ * so a restart forgets no secret.
  */
 
 /** `claim.RegisterRequest`: the pane's boot token and the session this agent became.
@@ -91,6 +107,23 @@ export interface LegionDaemonClient {
    * that stops waiting for a daemon that does not answer (the phase reminder's bounded record
    * check) aborts it rather than leave it open. */
   readonly state: (options?: { readonly signal?: AbortSignal }) => Promise<LegionState>;
+  /** One issue's record, the value the whole state holds under `issues.<key>`, or `undefined`
+   * for an issue the daemon records nothing of, which it answers 404 `RECORD_NOT_FOUND`. Every
+   * other refusal throws, so a caller's `undefined` is the absent record and its `catch` is the
+   * read that failed. `signal` aborts the request as `state`'s does. */
+  readonly record: (
+    issue: string,
+    options?: { readonly signal?: AbortSignal }
+  ) => Promise<LegionIssue | undefined>;
+  /** That the daemon is serving, and the project it serves: one word for the controller's boot
+   * check, which read the whole state for it before. */
+  readonly health: (options?: { readonly signal?: AbortSignal }) => Promise<LegionHealth>;
+  /** The contract the daemon states on its answer, or `undefined` where it states none. It
+   * reads the health route's header and parses no body, so it answers for a daemon whose health
+   * body this build cannot read: the two numbers are what a reader compares. */
+  readonly daemonContract: (options?: {
+    readonly signal?: AbortSignal;
+  }) => Promise<number | undefined>;
   readonly register: (input: RegisterInput) => Promise<LegionRegistration>;
   /** The same route, for the operator-launched controller: `bootToken` is the capability `legion
    * controller start` fetched, and the answer is the controller's registration. */
@@ -103,7 +136,8 @@ export interface LegionDaemonClient {
   readonly exit: (input: ExitInput) => Promise<void>;
   /** `claim.TurnOutcomeRequest`: how one of the claim's turns ended, under the sequence the
    * reporting plugin counted itself (`packages/pi-legion/src/turn-outcome.ts`). The answer is the
-   * trailing run of refused turns the daemon derived and whether this report failed the claim. */
+   * trailing run of refused turns the daemon derived (`LegionTurnOutcomeResponse` says what its
+   * `failed` holds). */
   readonly turnOutcome: (
     input: z.input<typeof LegionTurnOutcomeRequest>
   ) => Promise<z.output<typeof LegionTurnOutcomeResponse>>;
@@ -150,6 +184,34 @@ export interface LegionDaemonClient {
   readonly compact: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionCompactResponse>>;
+  /** The controller's `pause`: the daemon pauses its own project for `reason`, the effect
+   * `legion project pause` runs for an operator. Every role but the controller stops, one in a
+   * turn when that turn ends, and every start waits for the resume. The answer is the pause it
+   * began. */
+  readonly projectPause: (
+    input: z.input<typeof LegionProjectPauseRequest>
+  ) => Promise<z.output<typeof LegionProjectPauseResponse>>;
+  /** The controller's `resume`: the daemon ends its project's pause, whoever made it, the effect
+   * `legion project resume` runs for an operator. The answer is the pause it ended and how many
+   * held rows it let out to run. */
+  readonly projectResume: (
+    input: z.input<typeof LegionProjectResumeRequest>
+  ) => Promise<z.output<typeof LegionProjectResumeResponse>>;
+  /** The controller's `replay_give_up`: the daemon applies again the messages its intake gave up
+   * on that the selection names, `giveUp`, one record by its id, or `consumer` with `throughSeq`,
+   * every open record of that consumer at or below that stream sequence, through the handling a
+   * live delivery takes, the effect `legion intake replay` runs for an operator. The answer is
+   * each record it took with how its replay ended, and how many open records of the selection
+   * are left. */
+  readonly intakeReplay: (
+    input: z.input<typeof LegionIntakeReplayRequest>
+  ) => Promise<z.output<typeof LegionIntakeReplayResponse>>;
+  /** The controller's `discard_give_up`: the daemon closes the give-ups the selection names, for
+   * `reason`, and applies nothing, the effect `legion intake discard` runs for an operator. The
+   * answer is the id of each record it closed. */
+  readonly intakeDiscard: (
+    input: z.input<typeof LegionIntakeDiscardRequest>
+  ) => Promise<z.output<typeof LegionIntakeDiscardResponse>>;
   readonly waveRelease: (
     input: z.input<typeof LegionWaveReleaseRequest>
   ) => Promise<z.output<typeof LegionWaveReleaseResponse>>;
@@ -165,16 +227,30 @@ export interface LegionDaemonClient {
   readonly rootClose: (
     input: z.input<typeof LegionRootCloseRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  readonly childPark: (
-    input: z.input<typeof LegionChildRequest>
-  ) => Promise<z.output<typeof LegionEmptyResponse>>;
   readonly childRerun: (
     input: z.input<typeof LegionChildRequest>
+  ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The owner's `register_plan` (contract 219): the plan in one version of a document of the
+   * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
+   * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason in the sentence,
+   * and a plan of an issue whose experiment's group takes no plan from its owner `PLAN_NOT_TAKEN`. */
+  readonly planRegister: (
+    input: z.input<typeof LegionPlanRegisterRequest>
+  ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;
+  /** The owner's `stop_task` (contract 219): one task of the plan Legion runs for the issue stops,
+   * and the issue is held `task-stopped` until a later version of the plan changes that task or,
+   * on a root, a person sets the root `todo`. */
+  readonly taskStop: (
+    input: z.input<typeof LegionTaskStopRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
 }
 
 /** The daemon answered with a status that is not success. `detail` is the sentence it put
- * under `error`; workflow refusals also carry their stable `code`. */
+ * under `error`; workflow refusals also carry their stable `code`. A refusal the daemon wrote
+ * says what it refused. A non-success answer this build cannot read as a refusal carries no code,
+ * and its `detail` names the body's length in bytes, the contract this build speaks, the contract
+ * the daemon stated and which side is behind, and quotes no part of the body, as
+ * `LegionDaemonContractError` does for a success this build cannot read. */
 export class LegionDaemonApiError extends Error {
   constructor(
     readonly method: string,
@@ -190,17 +266,51 @@ export class LegionDaemonApiError extends Error {
   }
 }
 
-/** A success the daemon API contract does not describe. The body is never quoted: a
- * registration's carries the claim's secret. */
+/** Which of the two builds is behind, for the refusals of an answer this build cannot read (the
+ * success `LegionDaemonContractError` names, and the non-success `LegionDaemonApiError` that is
+ * not the daemon's refusal shape): this build's contract and the one the daemon stated. A process
+ * whose contract differs from the daemon's, above it or below it, is replaced. An Oh My Pi
+ * role's is relaunched onto the daemon's own plugin by the daemon's stale-plugin lane
+ * (`refreshPlugin` in the daemon's `internal/supervise/plugin.go`). A Claude Code role in a pod
+ * installs no plugin (`NoPluginInstall`): its plugin is its image's own claude-envoy, so the
+ * update round over its pod replaces it. So a process below the daemon waits for its
+ * replacement. A process above it is told that the daemon is older and nothing of a cure: the
+ * lane relaunches an Oh My Pi process above the daemon onto the daemon's plugin too, which is
+ * older than this build. */
+function contractStanding(mine: number, daemon: number | undefined): string {
+  if (daemon === undefined) {
+    return `This build speaks daemon API contract ${mine}. The daemon stated no contract, so this build cannot say which side is behind.`;
+  }
+  if (mine < daemon) {
+    return `This build speaks daemon API contract ${mine}. The daemon speaks ${daemon}. This process is behind the daemon and waits for its replacement.`;
+  }
+  if (mine > daemon) {
+    return `This build speaks daemon API contract ${mine}. The daemon speaks ${daemon}. The daemon is older than this build.`;
+  }
+  return `This build speaks daemon API contract ${mine}. The daemon speaks ${daemon}. Neither side is behind.`;
+}
+
+/** A non-success body that is not the daemon's refusal shape, as the refusal names it: by its
+ * length in bytes of UTF-8, quoting no part of it. A proxy's page, or a body carrying a value,
+ * must not reach the model. */
+function unreadableBody(text: string): string {
+  return `a body of ${new TextEncoder().encode(text).length} bytes`;
+}
+
+/** A success the daemon API contract does not describe: the path of each field that is wrong,
+ * the contract this build speaks, the contract the daemon stated, and which side is behind. The
+ * body is never quoted: a registration's carries the claim's secret. */
 export class LegionDaemonContractError extends Error {
   constructor(
     readonly method: string,
     readonly path: string,
     readonly status: number,
-    problem: string
+    readonly pluginContract: number,
+    readonly daemonContract: number | undefined,
+    readonly problem: string
   ) {
     super(
-      `${method} ${path} answered ${status} with a body the daemon API contract does not describe: ${problem}`
+      `${method} ${path} answered ${status} with a body the daemon API contract does not describe: ${problem}. ${contractStanding(pluginContract, daemonContract)}`
     );
     this.name = "LegionDaemonContractError";
   }
@@ -304,8 +414,10 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * longer the role's phase), `sign_off` (a repeat finds the issue out of accepting and changes
  * nothing), `register_gate` (its fact is keyed by the gate's issue, generation, document,
  * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
- * takes as a re-registration of the same document and tells no one again) and
- * `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
+ * takes as a re-registration of the same document and tells no one again), `register_plan` (its
+ * fact is keyed by the issue, the generation, the document and the version, so a repeat is the
+ * same fact, answered the same), `stop_task` (a repeat finds the task stopped and changes nothing)
+ * and `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
  * cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive
  * its restart. `onRetrying` is told once. A daemon refusal after a dropped attempt is told that
@@ -350,8 +462,11 @@ export async function retryWhileDaemonRestarts<T>(
     } catch (error) {
       const unreachable = daemonUnreachable(error);
       if (unreachable === undefined) {
-        if (dropped && error instanceof LegionDaemonApiError) {
-          error.message += ` (an earlier attempt of ${label} lost its connection before the daemon answered, and may have been applied: read the record before calling again)`;
+        if (
+          dropped &&
+          (error instanceof LegionDaemonApiError || error instanceof LegionDaemonContractError)
+        ) {
+          error.message += ` (an earlier attempt of ${label} lost its connection before the daemon answered, and may have been applied: read_record of your own issue says whether it landed)`;
         }
         throw error;
       }
@@ -378,7 +493,10 @@ export async function retryWhileDaemonRestarts<T>(
 /** `body` read through `schema`, or the reason it is not what the schema describes. The answer
  * schemas ignore a key they do not name, so a body carrying a field this build's contract has no
  * name for is read and that field left out of the value; what is refused is a body that is not
- * JSON, a missing required field, and a field of a type the schema does not describe. */
+ * JSON, a missing required field, and a field of a type the schema does not describe. A body that
+ * is not JSON is said to be so and no more: the parser's own message quotes the body (Bun's names
+ * up to about 200 characters of a bare word), and `LegionDaemonContractError` quotes none of it,
+ * while a non-success answer's refusal shows only the body's length (`unreadableBody`). */
 function parseBody<T>(
   schema: z.ZodType<T>,
   body: string
@@ -386,8 +504,9 @@ function parseBody<T>(
   let json: unknown;
   try {
     json = JSON.parse(body);
-  } catch (error) {
-    return { problem: `not JSON (${messageFor(error)})` };
+  } catch {
+    // The parser's message quotes the word it stopped at, which whatever answered chose.
+    return { problem: "not JSON" };
   }
   const parsed = schema.safeParse(json);
   if (parsed.success) return { value: parsed.data };
@@ -398,31 +517,68 @@ function parseBody<T>(
   };
 }
 
+/** What `createLegionDaemonClient` needs of its host: the contract this build speaks, and the
+ * `fetch` the requests go through. `pluginContract` is required, and each host passes its own
+ * manifest's `legion.daemonApiVersion` (`packages/pi-legion/extensions/legion.ts`,
+ * `packages/claude-envoy/src/envoy-channel-server.ts`): a client that stated nothing would be
+ * served the shape of whatever pod the daemon places it in, which is the defect
+ * dispatch://INFRA-2694 reports. It is the one name for this number: the registration sends it
+ * as `pluginContract`, `PluginBuild` holds it under that name, and `read_build` answers it
+ * beside the daemon's own. */
+export interface LegionDaemonClientOptions {
+  readonly pluginContract: number;
+  readonly fetch?: typeof fetch;
+}
+
+/** The request header a caller states its own contract in
+ * (`packages/daemon/internal/api/shaping.go`), and the response header the daemon states its own
+ * in (`packages/daemon/internal/api/server.go`). */
+const PLUGIN_CONTRACT_HEADER = "Legion-Plugin-Contract";
+const DAEMON_CONTRACT_HEADER = "Legion-Daemon-Contract";
+
+/** The contract the daemon stated on an answer, or `undefined` where it stated none or stated
+ * what is no positive whole number. A daemon older than the header states none. */
+function statedContract(headers: Headers): number | undefined {
+  const stated = headers.get(DAEMON_CONTRACT_HEADER);
+  if (stated === null) return undefined;
+  const contract = Number(stated);
+  return Number.isSafeInteger(contract) && contract > 0 ? contract : undefined;
+}
+
 export function createLegionDaemonClient(
   baseUrl: string,
-  fetchFn: typeof fetch = fetch
+  options: LegionDaemonClientOptions
 ): LegionDaemonClient {
   const endpoint = withoutTrailingSlashes(baseUrl);
+  const pluginContract = options.pluginContract;
+  const fetchFn = options.fetch ?? fetch;
 
-  /** The response's status and body once the daemon answered success; a refusal throws. */
+  /** The response's status, body and stated contract once the daemon answered success; a
+   * refusal throws. Every request carries this build's contract, a GET as much as a POST: the
+   * daemon serves each caller the shape that contract describes, and a caller that states none
+   * is served the shape of the pod the daemon places it in. */
   const call = async (
     method: "GET" | "POST",
     path: string,
     body?: object,
     signal?: AbortSignal
-  ): Promise<{ readonly status: number; readonly text: string }> => {
+  ): Promise<{
+    readonly status: number;
+    readonly text: string;
+    readonly daemonContract: number | undefined;
+  }> => {
     const response = await fetchFn(`${endpoint}${path}`, {
-      ...(body === undefined
-        ? {}
-        : {
-            method,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          }),
+      method,
+      headers: {
+        [PLUGIN_CONTRACT_HEADER]: String(pluginContract),
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       ...(signal === undefined ? {} : { signal }),
     });
     const text = await response.text();
-    if (response.ok) return { status: response.status, text };
+    const daemonContract = statedContract(response.headers);
+    if (response.ok) return { status: response.status, text, daemonContract };
     const refusal = parseBody(LegionErrorResponse, text);
     if ("value" in refusal) {
       throw new LegionDaemonApiError(
@@ -433,12 +589,14 @@ export function createLegionDaemonClient(
         refusal.value.error
       );
     }
+    // A body that is not the daemon's refusal was written by something in its place, which can
+    // echo the request back: it is named by its length alone (`unreadableBody`), never quoted.
     throw new LegionDaemonApiError(
       method,
       path,
       response.status,
       undefined,
-      `${JSON.stringify(text)} is not the daemon's refusal shape (${refusal.problem})`
+      `${unreadableBody(text)} is not the daemon's refusal shape (${refusal.problem}). ${contractStanding(pluginContract, daemonContract)}`
     );
   };
 
@@ -449,10 +607,17 @@ export function createLegionDaemonClient(
     body?: object,
     signal?: AbortSignal
   ): Promise<T> => {
-    const { status, text } = await call(method, path, body, signal);
+    const { status, text, daemonContract } = await call(method, path, body, signal);
     const parsed = parseBody(schema, text);
     if ("problem" in parsed) {
-      throw new LegionDaemonContractError(method, path, status, parsed.problem);
+      throw new LegionDaemonContractError(
+        method,
+        path,
+        status,
+        pluginContract,
+        daemonContract,
+        parsed.problem
+      );
     }
     return parsed.value;
   };
@@ -467,20 +632,51 @@ export function createLegionDaemonClient(
 
   /** The claim routes that answer 204 and nothing else. */
   const acknowledge = async (path: string, body: object, signal?: AbortSignal): Promise<void> => {
-    const { status, text } = await call("POST", path, body, signal);
+    const { status, text, daemonContract } = await call("POST", path, body, signal);
     if (status !== 204 || text !== "") {
       throw new LegionDaemonContractError(
         "POST",
         path,
         status,
+        pluginContract,
+        daemonContract,
         "the route answers 204 with no body"
       );
     }
   };
 
   return {
-    state: (options) =>
-      read("GET", "/legion/v1/state", LegionStateResponse, undefined, options?.signal),
+    state: (reading) =>
+      read("GET", "/legion/v1/state", LegionStateResponse, undefined, reading?.signal),
+    record: async (issue, reading) => {
+      try {
+        return await read(
+          "GET",
+          `/legion/v1/issues/${encodeURIComponent(issue)}/record`,
+          LegionIssueRecordResponse,
+          undefined,
+          reading?.signal
+        );
+      } catch (error) {
+        // The one refusal that is an answer: the daemon records nothing for this issue. Every
+        // other refusal is a read that failed and is thrown on, so a caller's `undefined` is
+        // the absent record and nothing else.
+        if (
+          error instanceof LegionDaemonApiError &&
+          error.status === 404 &&
+          error.code === "RECORD_NOT_FOUND"
+        ) {
+          return undefined;
+        }
+        throw error;
+      }
+    },
+    health: (reading) => read("GET", "/healthz", LegionHealthResponse, undefined, reading?.signal),
+    // The header alone, parsed from an answer whose body this build may be unable to read: a
+    // reader that reports the two numbers side by side must reach the daemon's number whatever
+    // its health body carries, so this parses no schema.
+    daemonContract: async (reading) =>
+      (await call("GET", "/healthz", undefined, reading?.signal)).daemonContract,
     register: (input) => read("POST", "/legion/v1/claims/register", LegionRegisterResponse, input),
     registerController: (input) =>
       read("POST", "/legion/v1/claims/register", LegionControllerRegisterResponse, input),
@@ -523,6 +719,34 @@ export function createLegionDaemonClient(
       ),
     compact: (input) =>
       post("/legion/v1/claims/compact", LegionClaimRequest, LegionCompactResponse, input),
+    projectPause: (input) =>
+      post(
+        "/legion/v1/project/pause",
+        LegionProjectPauseRequest,
+        LegionProjectPauseResponse,
+        input
+      ),
+    projectResume: (input) =>
+      post(
+        "/legion/v1/project/resume",
+        LegionProjectResumeRequest,
+        LegionProjectResumeResponse,
+        input
+      ),
+    intakeReplay: (input) =>
+      post(
+        "/legion/v1/intake/replay",
+        LegionIntakeReplayRequest,
+        LegionIntakeReplayResponse,
+        input
+      ),
+    intakeDiscard: (input) =>
+      post(
+        "/legion/v1/intake/discard",
+        LegionIntakeDiscardRequest,
+        LegionIntakeDiscardResponse,
+        input
+      ),
     gateRegister: (input) =>
       post("/legion/v1/gates/register", LegionGateRegisterRequest, LegionEmptyResponse, input),
     waveRelease: (input) =>
@@ -535,9 +759,16 @@ export function createLegionDaemonClient(
       post("/legion/v1/signoff", LegionSignOffRequest, LegionEmptyResponse, input),
     rootClose: (input) =>
       post("/legion/v1/roots/close", LegionRootCloseRequest, LegionEmptyResponse, input),
-    childPark: (input) =>
-      post("/legion/v1/children/park", LegionChildRequest, LegionEmptyResponse, input),
     childRerun: (input) =>
       post("/legion/v1/children/rerun", LegionChildRequest, LegionEmptyResponse, input),
+    planRegister: (input) =>
+      post(
+        "/legion/v1/plans/register",
+        LegionPlanRegisterRequest,
+        LegionPlanRegisterResponse,
+        input
+      ),
+    taskStop: (input) =>
+      post("/legion/v1/tasks/stop", LegionTaskStopRequest, LegionEmptyResponse, input),
   };
 }

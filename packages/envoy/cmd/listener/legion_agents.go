@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // legionAgentRegistry is the Legion agent registry the /v1/legion/agents routes serve: its store
@@ -29,8 +30,9 @@ import (
 // reconnect each serves once the open succeeds.
 type legionAgentRegistry struct {
 	logger *logging.Logger
-	// openBucket opens the bucket on a connection: legionagents.Open with the listener's options.
-	openBucket func(*nats.Conn) (*legionagents.Store, error)
+	// openBucket opens the bucket on a connection, under the retry's context: legionagents.Open
+	// with the listener's options.
+	openBucket func(context.Context, *nats.Conn) (*legionagents.Store, error)
 	// conn is the connection the next open uses, the latest a connection event brought.
 	conn  atomic.Pointer[nats.Conn]
 	state atomic.Pointer[legionAgentState]
@@ -59,25 +61,19 @@ const (
 	legionAgentRetryMaxWait   = time.Minute
 )
 
-// newLegionAgentRegistry serves store, a registry whose bucket is open.
-func newLegionAgentRegistry(store *legionagents.Store) *legionAgentRegistry {
-	r := &legionAgentRegistry{}
-	r.state.Store(&legionAgentState{store: store})
-	return r
-}
-
 // openLegionAgentRegistry opens the registry's bucket on conn. A bucket it cannot open logs one
 // ERROR and leaves the registry unavailable rather than ending the start, and the open is retried
 // in the background until it succeeds or close ends it.
 func openLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, opts ...legionagents.Option) *legionAgentRegistry {
-	return startLegionAgentRegistry(conn, logger, func(conn *nats.Conn) (*legionagents.Store, error) {
-		return legionagents.Open(conn, opts...)
+	return startLegionAgentRegistry(conn, logger, func(ctx context.Context, conn *nats.Conn) (*legionagents.Store, error) {
+		return legionagents.Open(ctx, conn, opts...)
 	}, legionAgentRetryFirstWait, legionAgentRetryMaxWait)
 }
 
 // startLegionAgentRegistry opens the bucket on conn through openBucket, and, when that fails,
-// starts the retry with a backoff doubling from firstWait to maxWait.
-func startLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, openBucket func(*nats.Conn) (*legionagents.Store, error), firstWait, maxWait time.Duration) *legionAgentRegistry {
+// starts the retry with a backoff doubling from firstWait to maxWait. Every open, the first
+// included, runs under the retry's context, so close ends an open that waits on the cluster.
+func startLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, openBucket func(context.Context, *nats.Conn) (*legionagents.Store, error), firstWait, maxWait time.Duration) *legionAgentRegistry {
 	ctx, stop := context.WithCancel(context.Background())
 	r := &legionAgentRegistry{
 		logger:      logger,
@@ -89,7 +85,7 @@ func startLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, openBucke
 		retried:     make(chan struct{}),
 	}
 	r.conn.Store(conn)
-	if r.open() {
+	if r.open(ctx) {
 		stop()
 		close(r.retried)
 		return r
@@ -98,15 +94,16 @@ func startLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, openBucke
 	return r
 }
 
-// open opens the bucket on the latest connection, and reports whether the registry has its store.
-// A connection event that lands during the open moves the store to the new connection: the event's
-// hook stores the connection before it reads the state, and open stores the state before it reads
-// the connection, so one of the two sees the other's. A move open makes that fails leaves the
-// registry without a store, and the retry opens the bucket again on the latest connection: that
-// event's hook found no store to move and only woke the retry, so no later event is owed.
-func (r *legionAgentRegistry) open() bool {
+// open opens the bucket on the latest connection under ctx, and reports whether the registry has
+// its store. A connection event that lands during the open moves the store to the new connection:
+// the event's hook stores the connection before it reads the state, and open stores the state
+// before it reads the connection, so one of the two sees the other's. A move open makes that fails
+// leaves the registry without a store, and the retry opens the bucket again on the latest
+// connection: that event's hook found no store to move and only woke the retry, so no later event
+// is owed.
+func (r *legionAgentRegistry) open(ctx context.Context) bool {
 	conn := r.conn.Load()
-	store, err := r.openBucket(conn)
+	store, err := r.openBucket(ctx, conn)
 	if err != nil {
 		reason := fmt.Sprintf("envoy: the legion agent registry is unavailable: could not open the %s bucket (a missing grant is the usual cause): %v", bus.LegionAgentBucket, err)
 		r.state.Store(&legionAgentState{unavailable: reason})
@@ -151,16 +148,16 @@ func (r *legionAgentRegistry) retry(ctx context.Context) {
 		case <-timer.C:
 			wait = min(wait*2, r.maxWait)
 		}
-		if r.open() {
+		if r.open(ctx) {
 			return
 		}
 		timer.Reset(wait)
 	}
 }
 
-// close ends the retry. main adds it as a drain hook. It does not wait for an open under way: that
-// open takes no context and can run its 10 s, which the drain's hooks, run one after another, cannot
-// spend; an open that ends after close only stores the registry's state.
+// close ends the retry, and an open under way with it, since every open runs under the retry's
+// context. main adds it as a drain hook. It does not wait for that open to return: an open that
+// ends after close only stores the registry's state.
 func (r *legionAgentRegistry) close(context.Context) {
 	if r.stop == nil {
 		return
@@ -198,26 +195,6 @@ func (r *legionAgentRegistry) serving(w http.ResponseWriter) (*legionagents.Stor
 // legionAgentBodyLimit bounds the body of a Legion agent registry write, one entry or a batch.
 const legionAgentBodyLimit = 1 << 20
 
-// legionAgentAnswer is one Legion agent registry entry as a read answers it: the entry, the session
-// that replaced it within its role token (legionagents.Agent), and whether its session is answering
-// now. Both are derived at the read and neither is stored.
-//
-// Live is the session's own registration state, as every reader of the session registry judges it
-// (session.StateOf through SessionRegistry.Lookup, sessionIsLive): true only while that
-// registration is within the live window, never membership alone, of the session cache or of the
-// registry. So live false does not say the agent has ended: a session past the live window is
-// unresponsive and keeps everything of its own (dispatch://INFRA-392), and only a session the
-// registry calls gone has stopped.
-type legionAgentAnswer struct {
-	legionagents.Agent
-	Live bool `json:"live"`
-}
-
-// legionAgentList is a listing's answer, `[]` when the registry holds no entry.
-type legionAgentList struct {
-	Entries []legionAgentAnswer `json:"entries"`
-}
-
 // legionAgentBatchFailure is a batch write that failed after some entries may have been written
 // (legionagents.PartialWriteError): written counts those, and every write is idempotent, so the
 // caller sends the batch again once the failure is one to retry.
@@ -226,17 +203,21 @@ type legionAgentBatchFailure struct {
 	Written int    `json:"written"`
 }
 
-func answerLegionAgent(sessions *session.SessionRegistry, agent legionagents.Agent) legionAgentAnswer {
+// answerLegionAgent is one registry entry as a read answers it (listenerwire.LegionAgentAnswer):
+// its live is the session's own registration state, as every reader of the session registry
+// judges it (session.StateOf through SessionRegistry.Lookup, sessionIsLive), never membership of
+// the session cache or of the registry.
+func answerLegionAgent(sessions *session.SessionRegistry, agent legionagents.Agent) listenerwire.LegionAgentAnswer {
 	_, state := sessions.Lookup(agent.SessionID)
-	return legionAgentAnswer{Agent: agent, Live: sessionIsLive(state)}
+	return listenerwire.LegionAgentAnswer{LegionAgent: agent, Live: sessionIsLive(state)}
 }
 
-func answerLegionAgents(sessions *session.SessionRegistry, agents []legionagents.Agent) legionAgentList {
-	entries := make([]legionAgentAnswer, len(agents))
+func answerLegionAgents(sessions *session.SessionRegistry, agents []legionagents.Agent) listenerwire.LegionAgentList {
+	entries := make([]listenerwire.LegionAgentAnswer, len(agents))
 	for i, agent := range agents {
 		entries[i] = answerLegionAgent(sessions, agent)
 	}
-	return legionAgentList{Entries: entries}
+	return listenerwire.LegionAgentList{Entries: entries}
 }
 
 // legionAgentReadContext bounds a whole registry read, a session key and its role token's listing
@@ -324,6 +305,20 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 			ctx, cancel := legionAgentReadContext(r)
 			defer cancel()
 			agent, err := registry.Get(ctx, sessionID)
+			if err == nil {
+				// At the edge an agent it does not show - one of another project's issue, or of a
+				// session that is no session of its issue's project confirmed by its stored record -
+				// is answered as one the registry does not hold (edgeScope.showsAgentConfirmed); a
+				// confirmation read that did not answer is the bus-unavailable 503
+				// writeLegionAgentError gives it.
+				var shown bool
+				var confErr error
+				if agent, shown, confErr = edgeScopeOf(r, nil).showsAgentConfirmed(ctx, d.sessions, agent); confErr != nil {
+					err = confErr
+				} else if !shown {
+					err = legionagents.ErrNotFound
+				}
+			}
 			switch {
 			case errors.Is(err, legionagents.ErrNotFound):
 				writeJSONError(w, http.StatusNotFound, "unknown legion agent "+sessionID)
@@ -333,6 +328,10 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 				writeJSON(w, http.StatusOK, answerLegionAgent(d.sessions, agent))
 			}
 		case http.MethodPut:
+			if refusal := edgeLegionWriteRefusal(r); refusal != nil {
+				refusal.write(w)
+				return
+			}
 			if err := legionagents.ValidateSessionID(sessionID); err != nil {
 				writeLegionAgentError(w, err)
 				return
@@ -385,6 +384,11 @@ func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 			writeLegionAgentError(w, err)
 			return
 		}
+		agents, err = edgeScopeOf(r, nil).agentsConfirmed(ctx, d.sessions, agents)
+		if err != nil {
+			writeLegionAgentError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, answerLegionAgents(d.sessions, agents))
 	}
 }
@@ -415,8 +419,17 @@ func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 				writeLegionAgentError(w, err)
 				return
 			}
+			agents, err = edgeScopeOf(r, nil).agentsConfirmed(ctx, d.sessions, agents)
+			if err != nil {
+				writeLegionAgentError(w, err)
+				return
+			}
 			writeJSON(w, http.StatusOK, answerLegionAgents(d.sessions, agents))
 		case http.MethodPut:
+			if refusal := edgeLegionWriteRefusal(r); refusal != nil {
+				refusal.write(w)
+				return
+			}
 			var body struct {
 				Entries []legionagents.Entry `json:"entries"`
 			}

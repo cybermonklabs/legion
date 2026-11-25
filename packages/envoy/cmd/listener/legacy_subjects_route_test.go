@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	natsgo "github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -23,6 +25,7 @@ import (
 // readers take both forms before any producer moves. Its own agent subject, which the plugin adds
 // to every registration itself, is named in no warning, and is delivered in either form too.
 func TestARegistrationInTheOldFormIsToldTheNewFormAndReceivesEither(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_old_form"
 	rig := newSessionConsumerRig(t)
 	legacy := "notifications.dispatch.issue.INFRA-12.>"
@@ -67,6 +70,7 @@ func TestARegistrationInTheOldFormIsToldTheNewFormAndReceivesEither(t *testing.T
 // A registration naming only the new form, or topics the rename leaves alone, is named in no
 // warning: the warning is for a caller still on the old form.
 func TestARegistrationInTheNewFormIsNamedInNoWarning(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_new_form"
 	rig := newSessionConsumerRig(t)
 	body, err := json.Marshal(map[string]any{
@@ -92,6 +96,7 @@ func TestARegistrationInTheNewFormIsNamedInNoWarning(t *testing.T) {
 // role with no warning. The claim record is keyed by the name either way, so GET /v1/roles/<name>
 // reads the holder the new form's claim gave it.
 func TestARoleClaimedInEitherFormClaimsItsName(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_role_forms"
 	const role = "legion-infra-infra-12-architect"
 	rig := newSessionConsumerRig(t)
@@ -128,14 +133,15 @@ func TestARoleClaimedInEitherFormClaimsItsName(t *testing.T) {
 	}
 }
 
-// In this slice a claim's key is the bare role name, which is the claim of the project the name
-// itself gives (contracts.RoleProject), so a role named in the new form under any other project is
-// refused with 400, naming both projects, as the merge base refused every dotted role: a Legion
-// role under another project's key, and a free-form role (lead-reviewer) under a project, whose
-// claim would otherwise land on the `_` claim of its bare name and take it from its holder while
-// the caller believes it holds that project's. The same role under its own project, and its bare
-// name, are claimed. t-c-8 lifts this for a free-form role once a claim keys on its project.
+// A role named in the new form under a project it cannot work for is refused with 400, naming
+// both projects (contracts.ClaimProject): a Legion role under any project but the one its own name
+// gives, _ among them, since its claim is that project's and a caller under another would believe
+// it holds a claim it does not. A free-form role (lead-reviewer) under a project is no such claim:
+// it is that project's own, keyed <project>.<role> (store.RoleClaimKeyOf), beside the claim of the
+// same name under no project, which keeps its bare key and its holder. The Legion role under its
+// own project, and each bare name, are claimed as before.
 func TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_role_project"
 	rig := newSessionConsumerRig(t)
 	rig.register(t, sessionID, nil)
@@ -148,8 +154,6 @@ func TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused(t *testing.T) {
 	for _, refused := range []struct{ role, name, own, asked string }{
 		{"PRIV.legion-zz-controller", "legion-zz-controller", "ZZ", "PRIV"},
 		{"_.legion-zz-controller", "legion-zz-controller", "ZZ", "_"},
-		{"PRIV.lead-reviewer", "lead-reviewer", "_", "PRIV"},
-		{"INFRA.reviewer", "reviewer", "_", "INFRA"},
 	} {
 		answer := claim(refused.role)
 		body := answer.Body.String()
@@ -160,10 +164,23 @@ func TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused(t *testing.T) {
 			t.Fatalf("after the refused claim %s, %s is held by %q, want nobody", refused.role, refused.name, holder)
 		}
 	}
-	for _, role := range []string{"ZZ.legion-zz-controller", "legion-zz-controller", "_.lead-reviewer", "lead-reviewer"} {
+	for role, key := range map[string]string{
+		"ZZ.legion-zz-controller": "legion-zz-controller",
+		"legion-zz-controller":    "legion-zz-controller",
+		"_.lead-reviewer":         "lead-reviewer",
+		"lead-reviewer":           "lead-reviewer",
+		"PRIV.lead-reviewer":      "PRIV.lead-reviewer",
+		"INFRA.reviewer":          "INFRA.reviewer",
+	} {
 		if answer := claim(role); answer.Code != http.StatusOK {
 			t.Fatalf("claim %s answered %d %s, want 200", role, answer.Code, answer.Body.String())
 		}
+		if holder, err := rig.deps.registry.RoleHolder(key); err != nil || holder != sessionID {
+			t.Fatalf("after the claim %s, the claim keyed %s is held by %q (%v), want %s", role, key, holder, err, sessionID)
+		}
+	}
+	if holder, err := rig.deps.registry.RoleHolder("reviewer"); err != nil || holder != "" {
+		t.Fatalf("after the claim INFRA.reviewer, the claim of reviewer under no project is held by %q (%v), want nobody", holder, err)
 	}
 }
 
@@ -172,6 +189,7 @@ func TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused(t *testing.T) {
 // plugin that followed both forms and dropped one reads from `removed` that the other is gone too,
 // rather than finding it missing at its next registration and adding it back.
 func TestAnUnsubscribeNamesEveryFormItRemoved(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	const old, current = "notifications.dispatch.issue.KEY-1.>", "notifications.dispatch.issue.KEY.KEY-1.>"
 	subscribeInterest(t, rig.mux, []string{old})
@@ -196,13 +214,14 @@ func TestAnUnsubscribeNamesEveryFormItRemoved(t *testing.T) {
 	}
 }
 
-// A role's claim is keyed by its bare name in this slice, whichever form named it
-// (store.Registry.ClaimedRole), so every reader of a role name must resolve it to that bare name
-// before it looks the claim up: a send to the role's lane in the new form, and GET
+// A role's claim is keyed by its bare name whichever form named it, for a role of no project and
+// for a Legion role (store.RoleClaimKeyOf), so every reader of a role name must resolve it to that
+// key before it looks the claim up: a send to the role's lane in the new form, and GET
 // /v1/roles/<role>. A reader that takes the name as it stands looks up "_.lead-reviewer", which
 // no claim is keyed by, so the publish is answered 202 kept with no holder and the message
 // reaches nobody.
 func TestARoleIsFoundByEitherFormOfItsName(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := withPublishRoute(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
@@ -244,7 +263,7 @@ func TestARoleIsFoundByEitherFormOfItsName(t *testing.T) {
 
 			for _, name := range []string{tc.role, tc.project + "." + tc.role} {
 				recorder := httptest.NewRecorder()
-				roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+name, nil))
+				roleGetHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+name, nil))
 				var answer struct {
 					Holder string `json:"holder"`
 				}
@@ -256,6 +275,127 @@ func TestARoleIsFoundByEitherFormOfItsName(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A role named in its old form, the name alone, wherever the listener reads it to send to its
+// holder or to look the holder up - a publish to the role's lane, a message the role lane takes on
+// NATS, and GET /v1/roles/<role> - is counted (kind="role_read"), as a claim in the old form is
+// counted (kind="role"): a publisher that only sends to a role is still on the old form, and its
+// sends would stop resolving once the old form is refused, so the count is what
+// legacy-subjects-gate.sh reads to see it. The publish is answered with the warning the claim and
+// registration routes give an old form, naming the new one. The same role in its new form is
+// counted and warned nowhere.
+func TestARoleNamedInTheOldFormIsCountedWhereverItIsRead(t *testing.T) {
+	t.Parallel()
+	const role = "lead-reviewer"
+	const holder = "ses_role_read_holder"
+	harness := newListenerDeliveryHarness(t)
+	counter := &legacyKinds{}
+	counting, err := store.Open(t.Context(), harness.client.Conn, store.WithReplicas(1), store.WithLegacySubjectCounter(counter))
+	if err != nil {
+		t.Fatalf("open a counting registry: %v", err)
+	}
+	waitForRegistry(t, counting)
+	if err := harness.sessions.Put(holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+		t.Fatalf("register the holder: %v", err)
+	}
+	if _, err := counting.SetRole(holder, "test-machine", role, false); err != nil {
+		t.Fatalf("claim %s: %v", role, err)
+	}
+	startStandIn(t, testnats.URL(t), holder)
+
+	state := withPublishRoute(t, &listenerDeps{client: harness.client, registry: counting, sessions: harness.sessions})
+	publish := publishHandler(state, logging.New("test"))
+	laneConfig := harness.config
+	laneConfig.registry = counting
+	laneConfig = wireTestRoleForwarder(t, laneConfig)
+	lane := coreNATSDeliveryHandler(laneConfig)
+
+	// readEach reads the role under topic through each of the three readers, and answers the
+	// publish's warnings.
+	readEach := func(topic, path string) []string {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		publish.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/publish",
+			strings.NewReader(`{"topic":"`+topic+`","message":"please review","source":"agent"}`)))
+		var answer struct {
+			Holder   string    `json:"holder"`
+			Warnings *[]string `json:"warnings"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+			t.Fatalf("decode the publish to %s: %v", topic, err)
+		}
+		if recorder.Code != http.StatusOK || answer.Holder != holder {
+			t.Fatalf("a publish to %s answered %d %s, want 200 naming %s", topic, recorder.Code, recorder.Body.String(), holder)
+		}
+
+		recorder = httptest.NewRecorder()
+		roleGetHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET /v1/roles/%s answered %d %s, want 200", path, recorder.Code, recorder.Body.String())
+		}
+
+		lane(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(topic, "role-read-"+path))})
+		laneConfig.roleForwards.settled(t)
+		if answer.Warnings == nil {
+			return nil
+		}
+		return *answer.Warnings
+	}
+
+	if warnings := readEach(contracts.RoleSubject(contracts.NoProject, role), contracts.NoProject+"."+role); warnings != nil {
+		t.Fatalf("the new form's publish carries warnings %q, want the key left out", warnings)
+	}
+	if got := counter.counted(); len(got) != 0 {
+		t.Fatalf("the new form was counted %q, want nothing", got)
+	}
+
+	current := contracts.NoProject + "." + role
+	if warnings, want := readEach(contracts.RoleTopicPrefix+role, role), []string{role + " is the old form of " + current + "; name " + current}; !slices.Equal(warnings, want) {
+		t.Fatalf("the old form's publish warns %q, want %q", warnings, want)
+	}
+	if got, want := counter.counted(), []string{"role_read", "role_read", "role_read"}; !slices.Equal(got, want) {
+		t.Fatalf("the old form, read by the publish route, GET /v1/roles/<role> and the role lane, was counted %q, want %q", got, want)
+	}
+}
+
+// A name that is no role (roles.Valid: lower-case letters, digits, `_` and `-`), read where the
+// listener reads a role - a publish to its lane, the role lane and GET /v1/roles/<name> - is not
+// counted as an old form, and the publish names no new form of it: a mistyped name is no reader
+// the old form's refusal would stop, and the claim route refuses such a name outright.
+func TestANameThatIsNoRoleIsNotCountedAsAnOldForm(t *testing.T) {
+	t.Parallel()
+	const name = "Lead-Reviewer"
+	harness := newListenerDeliveryHarness(t)
+	counter := &legacyKinds{}
+	counting, err := store.Open(t.Context(), harness.client.Conn, store.WithReplicas(1), store.WithLegacySubjectCounter(counter))
+	if err != nil {
+		t.Fatalf("open a counting registry: %v", err)
+	}
+	waitForRegistry(t, counting)
+	state := withPublishRoute(t, &listenerDeps{client: harness.client, registry: counting, sessions: harness.sessions})
+
+	recorder := httptest.NewRecorder()
+	publishHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/publish",
+		strings.NewReader(`{"topic":"`+contracts.RoleTopicPrefix+name+`","message":"please review","source":"agent","keep":false}`)))
+	var answer struct {
+		Warnings *[]string `json:"warnings"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the publish to %s: %v (%d %s)", name, err, recorder.Code, recorder.Body.String())
+	}
+	if answer.Warnings != nil {
+		t.Fatalf("the publish to %s warns %q, want no old-form warning for a name that is no role", name, *answer.Warnings)
+	}
+	roleGetHandler(state, logging.New("test")).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v1/roles/"+name, nil))
+	laneConfig := harness.config
+	laneConfig.registry = counting
+	laneConfig = wireTestRoleForwarder(t, laneConfig)
+	coreNATSDeliveryHandler(laneConfig)(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(contracts.RoleTopicPrefix+name, "role-read-no-role"))})
+	laneConfig.roleForwards.settled(t)
+	if got := counter.counted(); len(got) != 0 {
+		t.Fatalf("%s, which is no role, read by the publish route, GET /v1/roles/<name> and the role lane, was counted %q, want nothing", name, got)
 	}
 }
 
@@ -287,6 +427,7 @@ func (c *legacyKinds) counted() []string {
 // form. The session's own agent subject, which the subscribe route writes into the row itself, and
 // its role's lane, which the stream does not carry and so no filter holds, are not counted.
 func TestAStoredOldFormTopicIsCountedEachTimeTheRowIsReadIntoTheFilter(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_stored_old_form"
 	rig := newSessionConsumerRig(t)
 	rig.register(t, sessionID, map[string]any{"topics": []string{"notifications.dispatch.issue.INFRA-12.>"}})
@@ -302,7 +443,7 @@ func TestAStoredOldFormTopicIsCountedEachTimeTheRowIsReadIntoTheFilter(t *testin
 	}
 
 	counter := &legacyKinds{}
-	counting, err := store.Open(rig.harness.client.Conn, store.WithReplicas(1), store.WithLegacySubjectCounter(counter))
+	counting, err := store.Open(t.Context(), rig.harness.client.Conn, store.WithReplicas(1), store.WithLegacySubjectCounter(counter))
 	if err != nil {
 		t.Fatalf("open a counting registry: %v", err)
 	}

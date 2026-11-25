@@ -252,29 +252,32 @@ func (s *drawSequence) calls() []time.Duration {
 	return slices.Clone(s.fromNs)
 }
 
-// The running sweep sweeps at start and then waits the interval plus up to a tenth of it again
-// after every sweep (duty.Jittered), drawn afresh each period, so two processes started together
-// drift apart rather than reaching the lease in step for the life of both. With the draws fixed to
-// a sequence that alternates between the smallest and the largest, each draw unlike the one
-// before it, the first sweep is due the moment the loop starts, before any wait; the loop draws
-// once after each sweep, from a tenth of the interval; and each later sweep is due, measured from
-// the end of the sweep before it, after exactly the interval plus the draw made after that sweep:
-// its own draw and no other, at least one interval, a plain ticker's being the interval less the
-// sweep's own time, and under 1.1 of one. Each sweep is handed the moment its timer fired as its
-// due time, the moment duty.Exclusive buckets its period by.
+// The running sweep sweeps at start and then waits the interval less up to a tenth of it after
+// every sweep (duty.JitteredWithin), drawn afresh each time, so no wait is longer than the interval
+// and two processes started together drift apart rather than reaching the lease in step for the
+// life of both. With the draws fixed to a sequence that alternates between the smallest and the
+// largest, each draw unlike the one before it, the first sweep is due the moment the loop starts,
+// before any wait; the loop draws once after each sweep, from a tenth of the interval; and each
+// later sweep is due, measured from the end of the sweep before it, after exactly the interval less
+// the draw made after that sweep: its own draw and no other, more than 0.9 of an interval and at
+// most one, a plain ticker's, the interval less the sweep's own time, being shorter than that. Each
+// sweep hands duty.Exclusive a period of duty.LeasePeriod(interval), which every one of those waits
+// is longer than, and the moment its timer fired as its due time, the moment duty.Exclusive
+// buckets its period by.
 //
 // It runs on the fake clock of a synctest bubble, where those gaps are exact: measured against the
 // wall clock they carried whatever the lease's own statements and a loaded runner's scheduler took
 // between one sweep and the next, which no allowance bounds (run 41295911468 read 1.245970106s for
-// a wait of 1.099999999s). The bubble's lease is this test's own; that the wait of at least one
-// interval always reaches the next period, which is what keeps a sweep from being skipped as
-// served, is the row below against the real one.
-func TestTheRunningSweepSweepsAtStartThenWaitsBetweenOneAndOnePointOneIntervals(t *testing.T) {
+// a wait of 1.099999999s). The bubble's lease is this test's own; that a wait longer than the
+// period always reaches the next period, which is what keeps a sweep from being skipped as served,
+// is the row below against the real one.
+func TestTheRunningSweepSweepsAtStartThenWaitsMoreThanNineTenthsAndAtMostOneInterval(t *testing.T) {
 	const (
 		interval = time.Minute
 		tenth    = interval / 10
 		sweeps   = 4
 	)
+	period := duty.LeasePeriod(interval)
 	for _, tc := range []struct {
 		name  string
 		draws []time.Duration // one per sweep, the draw made after it
@@ -289,7 +292,7 @@ func TestTheRunningSweepSweepsAtStartThenWaitsBetweenOneAndOnePointOneIntervals(
 				logs := &lockedBuffer{}
 				lease := &sweepLease{}
 				sweeper := &redeliver.Sweeper{
-					Open:   func() (bus.KeyValue, error) { return bus.KeyValue{}, errNoStateInABubble },
+					Open:   func(context.Context) (bus.KeyValue, error) { return bus.KeyValue{}, errNoStateInABubble },
 					Logger: slog.New(slog.NewTextHandler(logs, nil)),
 				}
 				ctx, cancel := context.WithCancel(context.Background())
@@ -300,11 +303,11 @@ func TestTheRunningSweepSweepsAtStartThenWaitsBetweenOneAndOnePointOneIntervals(
 					sweeper.RunUnderLease(ctx, interval, lease.exclusive)
 				}()
 				// The fourth sweep ends after four sweeps' time and the three waits between
-				// them; the fifth is due at least one interval later, so half of one after the
-				// fourth ends is after the fourth sweep and before the fifth.
+				// them; the fifth is due more than 0.9 of an interval later, so half of one
+				// after the fourth ends is after the fourth sweep and before the fifth.
 				fourthEnds := sweeps * sweepTime
 				for _, drawn := range tc.draws[:sweeps-1] {
-					fourthEnds += interval + drawn
+					fourthEnds += interval - drawn
 				}
 				time.Sleep(fourthEnds + interval/2)
 				cancel()
@@ -319,11 +322,11 @@ func TestTheRunningSweepSweepsAtStartThenWaitsBetweenOneAndOnePointOneIntervals(
 				}
 				for index := 1; index < sweeps; index++ {
 					wait := took[index].Sub(gave[index-1])
-					if wait < interval || wait >= interval+tenth {
-						t.Errorf("sweep %d was due %v after sweep %d ended, want within [%v, %v)", index+1, wait, index, interval, interval+tenth)
+					if wait <= interval-tenth || wait > interval {
+						t.Errorf("sweep %d was due %v after sweep %d ended, want within (%v, %v]", index+1, wait, index, interval-tenth, interval)
 					}
-					if want := interval + tc.draws[index-1]; wait != want {
-						t.Errorf("sweep %d was due %v after sweep %d ended, want %v, the interval plus the draw made after sweep %d", index+1, wait, index, want, index)
+					if want := interval - tc.draws[index-1]; wait != want {
+						t.Errorf("sweep %d was due %v after sweep %d ended, want %v, the interval less the draw made after sweep %d", index+1, wait, index, want, index)
 					}
 				}
 				if len(took) != sweeps {
@@ -336,8 +339,8 @@ func TestTheRunningSweepSweepsAtStartThenWaitsBetweenOneAndOnePointOneIntervals(
 					t.Errorf("%d of the %d sweeps that ended ran a sweep, want all of them: the pass the loop runs under the lease is the sweep itself\n%s", attempted, len(gave), logs)
 				}
 				for index := range took {
-					if lease.names[index] != webhookRedeliveryLease || lease.periods[index] != interval {
-						t.Errorf("sweep %d took lease %q for a period of %v, want %s for %v", index+1, lease.names[index], lease.periods[index], webhookRedeliveryLease, interval)
+					if lease.names[index] != webhookRedeliveryLease || lease.periods[index] != period {
+						t.Errorf("sweep %d took lease %q for a period of %v, want %s for %v, duty.LeasePeriod of the interval %v", index+1, lease.names[index], lease.periods[index], webhookRedeliveryLease, period, interval)
 					}
 					if !lease.dues[index].Equal(took[index]) {
 						t.Errorf("sweep %d was handed a due time of %v, want %v, the moment its timer fired", index+1, lease.dues[index].Sub(started), took[index].Sub(started))
@@ -350,13 +353,15 @@ func TestTheRunningSweepSweepsAtStartThenWaitsBetweenOneAndOnePointOneIntervals(
 
 // No sweep of a lone process is refused as a period another pass has served. A sweep is skipped
 // when duty_passes already records a pass in the period its due time falls in, and the loop's own
-// waits must never land one there: each wait is at least the interval, which is the period the
-// sweep hands duty.Exclusive, so two sweeps are always in different periods however long a sweep
-// or its lease took. This row runs the real sweep under the real lease - what the fake clock above
-// models - at the smallest draw, a wait of exactly one interval, the shortest the loop ever leaves
-// and so the tightest case for the next period's boundary. It counts what came of each sweep and
-// reads the order everything came in: each sweep listed and then ended, the loop asked for one wait
-// after each sweep and before the next one listed, and the first sweep listed before any wait.
+// waits must never land one there: each wait is longer than duty.LeasePeriod(interval), 0.9 of the
+// interval, which is the period the sweep hands duty.Exclusive, so two sweeps are always in
+// different periods however long a sweep or its lease took. This row runs the real sweep under the
+// real lease - what the fake clock above models - at the largest draw, tenth - 1, a wait of 0.9 of
+// an interval and a nanosecond: the shortest the loop ever leaves, a nanosecond longer than the
+// period, and so the tightest case for the next period's boundary. It counts what came of each
+// sweep and reads the order everything came in: each sweep listed and then ended, the loop asked
+// for one wait after each sweep and before the next one listed, and the first sweep listed before
+// any wait.
 func TestNoSweepOfALoneProcessIsSkippedAsAPeriodAlreadyServed(t *testing.T) {
 	const (
 		interval = 100 * time.Millisecond
@@ -369,9 +374,9 @@ func TestNoSweepOfALoneProcessIsSkippedAsAPeriodAlreadyServed(t *testing.T) {
 	leases := redeliverTestLeases(t)
 	logs := captureDefaultLogs(t)
 	events := &sweepEvents{}
-	redeliver.FixJitter(t, func(time.Duration) time.Duration {
+	redeliver.FixJitter(t, func(tenth time.Duration) time.Duration {
 		events.add("wait")
-		return 0
+		return tenth - 1
 	})
 	h := newHarness(t)
 	// The sweep's own lines go to both: events reads the summary that closes each sweep, and
@@ -379,7 +384,7 @@ func TestNoSweepOfALoneProcessIsSkippedAsAPeriodAlreadyServed(t *testing.T) {
 	swept := &lockedBuffer{}
 	sweeper := &redeliver.Sweeper{
 		GitHub: recordingGitHub{events: events},
-		Open:   func() (bus.KeyValue, error) { return h.state, nil },
+		Open:   func(context.Context) (bus.KeyValue, error) { return h.state, nil },
 		Logger: slog.New(slog.NewTextHandler(io.MultiWriter(events, swept), nil)),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -412,7 +417,7 @@ func TestNoSweepOfALoneProcessIsSkippedAsAPeriodAlreadyServed(t *testing.T) {
 		t.Fatalf("%d sweeps failed for something other than the shutdown:\n%s", failed, swept)
 	}
 	if skipped := logs.count("dispatch duty: leased pass skipped", "lease="+webhookRedeliveryLease); skipped != 0 {
-		t.Errorf("%d sweeps were skipped, want none: a wait of at least one interval reaches the next period\n%s", skipped, logs)
+		t.Errorf("%d sweeps were skipped, want none: a wait longer than the lease's period of 0.9 of an interval reaches the next period\n%s", skipped, logs)
 	}
 	// Every sweep lists once and then ends, and the loop draws one wait after each sweep ends and
 	// before the next one lists. What follows the fourth end - its wait, a sweep the shutdown cut

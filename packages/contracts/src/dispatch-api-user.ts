@@ -25,17 +25,27 @@ export interface AuthenticatedUser {
 
 /** GET /api/v1/whoami: a person by lowercase email (`login`), or an agent with its personal
  *  token's owner (a lowercase email) — null under the shared token or a verified service token —
- *  and that service token's subject, null unless one authenticated the request. `session` is the
- *  session the credential itself proved, which only an access token the secrets broker issued
- *  does, and `project` the one project key that credential lets the caller write, null where it
- *  names none. Both are absent from a Dispatch older than broker-issued tokens, which a client
- *  reads as an older build rather than as null.
+ *  and that service token's subject (`service`), or for a broker-issued token naming no person the
+ *  fleet its machine belongs to or the Kubernetes account an exchange entry lists, null otherwise.
+ *  `session` is the session the credential itself proved, which only an access token the secrets
+ *  broker issued does, and `project` the one project key that credential lets the caller write,
+ *  null where it names none. `sign_in_required` is whether Dispatch refuses every write of the
+ *  credential until a person signs in on its machine (`SIGN_IN_REQUIRED`), the decision its write
+ *  check makes, and false for a read-only credential, which no sign-in lets write. A client reads
+ *  an absent `service`, `session`, `project` or `sign_in_required` as
+ *  a Dispatch older than that field, not as null or false: `service` is absent from one older than
+ *  verified service tokens, `session` and `project` from one older than broker-issued tokens, and
+ *  `sign_in_required` from one older than the field, whose rule the client then reads from the
+ *  owner, the service and the session.
  *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
  *  call: both of them for a person at a browser, the set its row names for a personal token, and
- *  `[]` for the shared token and a verified service token, which act as nobody. The kind stays
- *  `agent` for a personal token holding `person`, because the kind names the credential and not
- *  the act; the person it acts for is `owner`. */
+ *  `[]` for the shared token and a verified service token, which act as nobody. A read-only
+ *  credential, a broker's or a person's, is answered `read` after the scopes it holds
+ *  (`DISPATCH_TOKEN_SCOPES`), and `cut` names the past time it reads at, null for none and for
+ *  every credential that writes. A Dispatch older than read-only tokens names neither. The kind
+ *  stays `agent` for a personal token holding `person`, because the kind names the credential and
+ *  not the act; the person it acts for is `owner`. */
 export type WhoamiResponse = WhoamiUser | WhoamiAgent;
 
 export const UserIssueStateSchema = z

@@ -16,6 +16,10 @@ interface UseMarginListenersOptions {
   onSelectCard: (id: string, blockID?: string) => void;
   /** Whether the open document has reported where its blocks and marks sit. */
   placementsPublished: boolean;
+  /** Whether the item the address names is the margin's to land on: an item the document the
+   *  page opens is opened at, rather than a node of the new issue page's outline
+   *  (`useMarginSheet.ts`). True wherever the margin is no drawer. */
+  routeItemBesideDocument: boolean;
   routeItemId: string | undefined;
   /** The link's request: a new navigation to the same item is a new one. */
   routeItemKey: string | undefined;
@@ -32,6 +36,7 @@ export function useMarginListeners({
   margin,
   onSelectCard,
   placementsPublished,
+  routeItemBesideDocument,
   routeItemId,
   routeItemKey,
   setHoveredItemId,
@@ -76,7 +81,18 @@ export function useMarginListeners({
         : { itemId: focusItemId, key: focusSeq },
     [focusItemId, focusSeq]
   );
-  useCardHold({ card: routeCard, composerOpen, margin, placed, sheetExpanded, tab });
+  // A hold scrolls the margin's scrollport, and in the new issue page's Details that is the one
+  // scrollport the whole panel has. So the link's card is held only where the margin is the
+  // landing for it: an item an issue's address names as a node of the outline is focused there
+  // by the page, and a hold here would scroll the reader off that entry onto the margin's copy.
+  useCardHold({
+    card: routeItemBesideDocument ? routeCard : undefined,
+    composerOpen,
+    margin,
+    placed,
+    sheetExpanded,
+    tab,
+  });
   useCardHold({ card: focusCard, composerOpen, margin, placed, sheetExpanded, tab });
 
   // Opening a composer is the reader taking part, so the corrections above stand down - and the

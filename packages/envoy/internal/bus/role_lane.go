@@ -51,10 +51,15 @@ var errRoleLaneRefused = errors.New("bus: NATS refused the role-lane subscriptio
 // before the flush's PONG, and nats.go records the refusal as the connection's last error: the lane
 // then logs it once and subscribes in its machine's group, ListenerQueue(machineID), on a new
 // connection, as listeners did before. It returns the client, once NATS has accepted the
-// subscription, and the queue group it subscribed in.
+// subscription, and the queue group it subscribed in. The client's later sends of a refused
+// subscription take the same order (Client.ResendRefusedCore, coreQueues): the shared group, then
+// the machine's, so a reload that takes only the shared group's grant away leaves the lane in the
+// machine's group, as a start would.
 func ConnectRoleLane(urls []string, machineID string, handler nats.MsgHandler, options ...ConnectOption) (*Client, string, error) {
+	queues := []string{RoleLaneQueue, ListenerQueue(machineID)}
 	client, err := openRoleLane(urls, RoleLaneQueue, handler, options)
 	if err == nil {
+		client.coreQueues = queues
 		return client, RoleLaneQueue, nil
 	}
 	if !errors.Is(err, errRoleLaneRefused) {
@@ -68,6 +73,7 @@ func ConnectRoleLane(urls []string, machineID string, handler nats.MsgHandler, o
 	if client, err = openRoleLane(urls, queue, handler, options); err != nil {
 		return nil, "", err
 	}
+	client.coreQueues = queues
 	return client, queue, nil
 }
 

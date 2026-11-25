@@ -8,14 +8,18 @@
 # addresses from --targets) and asks each address, and the name itself, for /healthz and
 # GET /v1/sessions; with --send-to it also sends a direct message, and with --dispatch-* it posts a
 # Dispatch message every N ticks. It prints one tab-separated line per target per tick and a summary
-# on exit, Ctrl-C included.
+# on exit, a signal's exit too: one sent to the probe's whole process group, as Ctrl-C at a terminal
+# and timeout -s TERM send one, also kills the child the probe is running at that moment. When that
+# child is a target's request, that target and each one after it print no line for that tick and
+# are not counted.
 #
 # Needs bash, curl, getent and sed only (no jq), so it also runs inside a listener task.
 #
 # Verdict: a target fails when /v1/sessions answers anything but 200 at a tick where its /healthz
 # answered 200 (whatever its status, "starting" included), or when it never answers /v1/sessions 200
 # at all. A /v1 request that times out, or whose connection closes or resets without an answer,
-# counts as a non-200 answer. One that never connects right after /healthz answered (curl exit 7) is
+# counts as a non-200 answer (each request may take --request-timeout seconds, 3 by default, its
+# connection 1 s of them). One that never connects right after /healthz answered (curl exit 7) is
 # counted and shown, not judged a refusal: a listener that stops closes its listening socket first,
 # so that is the task stopping between the tick's two requests. A target that never answers
 # /healthz is unreached: named, not failed. With --dispatch-*, the run also fails when a Dispatch
@@ -46,6 +50,9 @@ Options:
   --token-file PATH          File holding the listener's /v1 bearer (default: $ENVOY_TOKEN_FILE;
                              otherwise $ENVOY_TOKEN; otherwise no bearer).
   --interval SECONDS         Seconds between ticks (default 1).
+  --request-timeout SECONDS  Seconds each request may take, its connection included; a decimal
+                             is allowed (default 3, under Dispatch's 5 s client timeout; the
+                             connection alone gets 1).
   --duration SECONDS         Seconds to run, duration/interval ticks; 0 runs until Ctrl-C
                              (default 300).
   --send-to SESSION          Also POST /v1/messages/send to this session at every target each
@@ -79,6 +86,7 @@ targets_arg=""
 token_file="${ENVOY_TOKEN_FILE:-}"
 interval=1
 duration=300
+request_timeout=3
 send_to=""
 dispatch_url=""
 dispatch_token_file=""
@@ -93,14 +101,16 @@ while (($#)); do
       usage
       exit 0
       ;;
-    --url | --targets | --token-file | --interval | --duration | --send-to | --dispatch-url | \
-      --dispatch-token-file | --dispatch-issue | --dispatch-session | --dispatch-mode | --dispatch-every)
+    --url | --targets | --token-file | --interval | --request-timeout | --duration | --send-to | \
+      --dispatch-url | --dispatch-token-file | --dispatch-issue | --dispatch-session | \
+      --dispatch-mode | --dispatch-every)
       (($# >= 2)) || die_usage "$1 needs a value"
       case "$1" in
         --url) url="$2" ;;
         --targets) targets_arg="$2" ;;
         --token-file) token_file="$2" ;;
         --interval) interval="$2" ;;
+        --request-timeout) request_timeout="$2" ;;
         --duration) duration="$2" ;;
         --send-to) send_to="$2" ;;
         --dispatch-url) dispatch_url="$2" ;;
@@ -128,6 +138,8 @@ if [[ -z "$port" ]]; then
 fi
 [[ "$interval" =~ ^[1-9][0-9]*$ ]] || die_usage "--interval must be a whole number of seconds >= 1"
 [[ "$duration" =~ ^[0-9]+$ ]] || die_usage "--duration must be a whole number of seconds >= 0"
+[[ "$request_timeout" =~ ^[0-9]+(\.[0-9]+)?$ && "$request_timeout" =~ [1-9] ]] ||
+  die_usage "--request-timeout must be a number of seconds > 0, got $request_timeout"
 id_shape='^[A-Za-z0-9._:-]+$'
 [[ -z "$send_to" || "$send_to" =~ $id_shape ]] || die_usage "--send-to is not a session id: $send_to"
 targets=()
@@ -201,7 +213,7 @@ field() {
 # to resolve it as any client would.
 request() {
   local base="$1" target="$2" method="$3" path="$4" header="$5" body="${6:-}" code exit_code=0
-  local args=(-sS -o "$body_file" -w '%{http_code}' --connect-timeout 1 --max-time 3 -X "$method" -H "@${header}")
+  local args=(-sS -o "$body_file" -w '%{http_code}' --connect-timeout 1 --max-time "$request_timeout" -X "$method" -H "@${header}")
   [[ -z "$target" ]] || args+=(--resolve "${host}:${port}:${target}")
   [[ -z "$body" ]] || args+=(-H 'Content-Type: application/json' --data "$body")
   : >"$body_file"
@@ -213,8 +225,8 @@ request() {
 
 # no_answer prints why the last request drew no whole answer, from curl's exit code: a name that
 # did not resolve (6), nothing listening at the address (7), a timeout (28: the 1 s connect or the
-# 3 s the probe allows a request), or a connection closed (52) or reset (56) without an answer,
-# which is what Go's net/http does when a handler panics.
+# --request-timeout the probe allows a request), or a connection closed (52) or reset (56) without
+# an answer, which is what Go's net/http does when a handler panics.
 no_answer() {
   local exit_code
   exit_code="$(<"$exit_file")"
@@ -290,6 +302,19 @@ post_dispatch() {
   printf '%s%s' "${state:-unknown}" "${attempt_error:+:${attempt_error}}"
 }
 
+# stopped STATUS answers a child that failed with STATUS: a command substitution of a tick (a
+# request, a Dispatch post, or a read of a field or of curl's exit code, each in a subshell) or the
+# sleep between ticks. A signal sent to the probe's whole process group, as Ctrl-C at a terminal
+# and timeout -s TERM send one, reaches that child as well as the probe, and kills it: bash resets
+# a subshell's traps, so the subshell dies of the signal, as sleep and curl do. bash runs the
+# probe's trap once the child has ended, before the next command, so with stop set the failure was
+# the signal and stopped returns: probe_tick then ends the tick before it records the target in
+# flight, or the loop ends after the sleep, and finish reports every target recorded before it.
+# Any other failure exits with STATUS, as set -e would.
+stopped() {
+  ((stop)) || exit "$1"
+}
+
 probe_tick() {
   local tick="$1" ts send_key="" dispatch_state="-" addresses=() target label healthz_code
   local healthz_status v1_code v1_error send_code dispatch_column
@@ -298,27 +323,30 @@ probe_tick() {
     addresses=("${targets[@]}")
   else
     mapfile -t addresses < <(getent ahostsv4 "$host" 2>/dev/null | sed -n 's/^\([0-9.]*\)[[:space:]][[:space:]]*STREAM.*/\1/p')
+    # A signal during the lookup can cut the list short, and mapfile does not fail.
+    ((!stop)) || return 0
   fi
   [[ -z "$send_to" ]] || send_key="probe-${ts}"
   if ((dispatching)) && (((tick - 1) % dispatch_every == 0)); then
-    dispatch_state="$(post_dispatch "$ts")"
+    dispatch_state="$(post_dispatch "$ts")" || { stopped $?; return 0; }
     count dispatch_outcomes "$dispatch_state"
   fi
   for target in "${addresses[@]}" ""; do
     label="${target:-$host}"
-    healthz_code="$(request "$url" "$target" GET /healthz "$envoy_header")"
-    healthz_status="$(field status)"
-    v1_code="$(request "$url" "$target" GET /v1/sessions "$envoy_header")"
+    healthz_code="$(request "$url" "$target" GET /healthz "$envoy_header")" || { stopped $?; return 0; }
+    healthz_status="$(field status)" || { stopped $?; return 0; }
+    v1_code="$(request "$url" "$target" GET /v1/sessions "$envoy_header")" || { stopped $?; return 0; }
     v1_error=""
     if [[ "$v1_code" == 000 ]]; then
-      v1_error="$(no_answer)"
+      v1_error="$(no_answer)" || { stopped $?; return 0; }
     elif [[ "$v1_code" != 200 ]]; then
-      v1_error="$(field error)"
+      v1_error="$(field error)" || { stopped $?; return 0; }
     fi
     send_code="-"
     if [[ -n "$send_to" ]]; then
       send_code="$(request "$url" "$target" POST /v1/messages/send "$envoy_header" \
-        "{\"target_session\":\"${send_to}\",\"message\":\"deploy probe ${ts}\",\"idempotency_key\":\"${send_key}\"}")"
+        "{\"target_session\":\"${send_to}\",\"message\":\"deploy probe ${ts}\",\"idempotency_key\":\"${send_key}\"}")" ||
+        { stopped $?; return 0; }
       count send_outcomes "$send_code"
     fi
     record "$label" "$ts" "$healthz_code" "$v1_code" "$v1_error"
@@ -417,8 +445,9 @@ started=$SECONDS
 while ((!stop)); do
   tick=$((tick + 1))
   probe_tick "$tick"
+  ((!stop)) || break
   ((ticks == 0 || tick < ticks)) || break
   next=$((started + tick * interval))
-  ((SECONDS >= next)) || sleep $((next - SECONDS))
+  ((SECONDS >= next)) || sleep $((next - SECONDS)) || stopped $?
 done
 finish

@@ -6,9 +6,11 @@
 //
 // Migrating the template needs internal/store, so this package imports it, and a test binary of
 // internal/store cannot import this one back. The half of the fixture that needs no schema is
-// internal/testpg/testdb, which imports nothing of this module and so is open to every package,
-// internal/store among them: an empty database (testdb.Database), a file holding its DSN
-// (testdb.DSNFile), one database for a whole run (testdb.RunDatabaseMain, testdb.RunDatabaseFor),
-// and a database reached across a network's delay (testdb.Delayed), and the drop that waits an
-// autovacuum worker out (testdb.Drop), which every clone of this package's template goes through.
+// internal/testpg/testdb, which imports no package of this module except internal/testwait, which
+// imports none, and so is open to every package, internal/store among them: an empty database
+// (testdb.Database), a file holding its DSN (testdb.DSNFile), a database reached across a network's
+// delay (testdb.Delayed) or through a proxy that holds or cuts a commit's reply (testdb.CommitFaults),
+// a pool whose transactions are cancelled between two statements (testdb.CancelAfterScan), and the
+// drop that waits out an autovacuum worker and a backend that has not exited yet (testdb.Drop),
+// which every clone of this package's template and the template itself go through.
 package testpg

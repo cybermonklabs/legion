@@ -16,6 +16,10 @@ import { type ConsumerMessages, connect, DeliverPolicy, type NatsConnection } fr
 import type { NatsSeed } from "../../../packages/envoy-client/src/envoy-settings";
 import { messageFor } from "../../../packages/envoy-client/src/errors";
 import { natsAuthOptions } from "../../../packages/envoy-client/src/nats-auth";
+import {
+  natsDialFailure,
+  natsServersForLog,
+} from "../../../packages/envoy-client/src/nats-connection";
 import { operatorNatsSeed } from "./operator-nats-seed";
 
 function refuse(message: string): never {
@@ -100,16 +104,27 @@ async function main(): Promise<void> {
   // the operator's shell resolves it (operator-nats-seed.ts).
   let seed: NatsSeed | undefined;
   try {
-    seed = operatorNatsSeed(url, "<nats-url>", process.env, process.cwd());
+    seed = await operatorNatsSeed(url, "<nats-url>", process.env, process.cwd());
   } catch (error) {
     refuse(messageFor(error));
   }
-  const nc = await connect({
-    servers: url,
-    timeout: 10_000,
-    name: "legion-e2e-nats-stream",
-    ...natsAuthOptions(seed),
-  });
+  // A failed connect is named, and nats.js's own error left uncaught would print the URL it was
+  // given, a credential in it included (a malformed URL's `input`): the line names the server by
+  // its argument and the reason as a log may (natsDialFailure), and the error goes no further.
+  let nc: NatsConnection;
+  try {
+    nc = await connect({
+      servers: url,
+      timeout: 10_000,
+      name: "legion-e2e-nats-stream",
+      ...natsAuthOptions(seed === undefined ? { kind: "none" } : { kind: "seed", seed }),
+    });
+  } catch (error) {
+    process.stderr.write(
+      `nats-stream: ${natsDialFailure(natsServersForLog("<nats-url>", 1), error)}\n`
+    );
+    process.exit(1);
+  }
   try {
     if (command === "last") {
       const seconds = Number(extra ?? "10");

@@ -15,13 +15,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // A tester's turn outlives its phase: the daemon ends no turn when a phase ends, so when the
-// head starts conflicting with its base the implementer starts at once and the tester goes on
-// working. Its issue comes back to
+// tester sends the work back with its own backward move the implementer starts at once and the
+// tester's turn goes on. Its issue comes back to
 // testing on the implementer's pass, where a second testing entry hands the tester a second
 // task — and the completion the first task's turn reports is of work the issue has moved past. The
 // run cannot tell the two apart, since the issue never left run 1, and neither can the phase, which
@@ -35,7 +36,7 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
@@ -50,12 +51,12 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 	firstTesting := takeStart(t, h, tester.token, "LEGION-208", claim.RoleTester)
 
-	// The head starts conflicting with its base while the tester works. The issue goes back to
-	// implementing, the implementer starts at once, and the tester's turn, its process and its
-	// claim are untouched: its delivery is still pending and confirmed.
-	if result, err := intake.ApplyFact(ctx, h.store.Pool(), "github", "conflict", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 42,
-		HeadSHA: "head", Base: "main", Mergeable: record.MergeabilityConflicting}, engine); err != nil || result.Refusal != nil {
-		t.Fatalf("apply the conflicting head = %+v, %v", result.Refusal, err)
+	// The tester sends the work back with its own backward move while its turn goes on. The
+	// issue goes back to implementing, the implementer starts at once, and the tester's turn, its
+	// process and its claim are untouched: its delivery is still pending and confirmed.
+	if result, err := intake.ApplyFact(ctx, h.store.Pool(), "api", "move-back", intake.BackwardMove{Issue: "LEGION-208",
+		Requester: claim.RoleTester, To: phase.Implementing, Reason: "the fix does not cover the empty list"}, engine); err != nil || result.Refusal != nil {
+		t.Fatalf("apply the tester's move back = %+v, %v", result.Refusal, err)
 	}
 	assertIssuePhase(t, h, phase.Implementing)
 	testerMachine, ok := h.supervisor.Machine(tester.token)
@@ -63,13 +64,13 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 		t.Fatal("no machine for the tester")
 	}
 	if p := testerMachine.Claim().Pending; p == nil || p.ConfirmedAt.IsZero() || p.Entry != firstTesting {
-		t.Fatalf("the tester's delivery after the conflict is %+v, want the task of its first entry still confirmed and pending", p)
+		t.Fatalf("the tester's delivery after its move back is %+v, want the task of its first entry still confirmed and pending", p)
 	}
 
 	// The implementer's second round ends and the issue is in testing again: the tester's second
 	// entry, which its first task's turn knows nothing of.
 	takeStart(t, h, implementer.token, "LEGION-208", claim.RoleImplementer)
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "merged the base forward", Commit: "handoff-2",
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "covered the empty list", Commit: "handoff-2",
 		HandoffID: implementer.writeHandoff("implement", 2), HandoffVersion: 2}))
 	assertIssuePhase(t, h, phase.Testing)
 	_, secondStart := queuedStart(t, h, "LEGION-208", claim.RoleTester)
@@ -302,7 +303,7 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
@@ -730,7 +731,7 @@ func seedMovedBackEntry(t *testing.T, h *harness, issue string, role claim.Role,
 func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int64, movedBack bool) {
 	t.Helper()
 	ctx := context.Background()
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: role,
 			Claim: claim.Token(string(role) + "-claim"), Entry: entry, EntryMovedBack: movedBack})
 	}); err != nil {
@@ -822,7 +823,7 @@ func recordedCompletions(t *testing.T, h *harness, role claim.Role) int {
 func holdPhases(h *harness) {
 	h.supervisor.deps.PhaseHolds = func(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
 		var issue *record.Issue
-		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			issue, err = record.NewStore().Issue(ctx, tx, key)
 			return err

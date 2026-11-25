@@ -55,6 +55,7 @@ const bootProbeDeadline = `msg="dispatch: register this server process" ` +
 // redden, since the first poll logged its failure. Step five reads the registration line for
 // the log it names, so a reader of a later failure sees which step the boot got past.
 func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *testing.T) {
+	t.Parallel()
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
 	if err != nil {
@@ -100,6 +101,9 @@ func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *t
 // process with a key set of its own, so its row keeps heartbeating and the wait does not end on
 // its own before the signal.
 func TestAProcessStoppedWhileWaitingForAdmissionExitsCleanly(t *testing.T) {
+	t.Parallel()
+	// Two Dispatch processes at once: the live peer, and the one waiting for admission beside it.
+	dispatchSlots.reserve(t, 2)
 	database := storetest.Open(t)
 	peer := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{SigningKey: "the-live-peers-key"})
 	peer.waitHealthy(t)

@@ -1,8 +1,23 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { createIssue, createProject, getIssue, listIssues, patchIssue, putIssueState } from "./api";
+import { mouseDrag, viewAtRest } from "./board-drag";
 import { pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
+import {
+  expectReadWhileHeld,
+  holdIssuePatches,
+  lastEventSeq,
+  listRead,
+  logReads,
+  pagePicker,
+  readAnsweredSince,
+  savesAtRoute,
+  savesEnded,
+  storedValues,
+  watchShown,
+} from "./pick-writes";
+import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { centerOf, pressFinger, touchDrag, touchHold } from "./touch";
 import { asUser } from "./users";
@@ -18,80 +33,6 @@ function patchOf(page: Page, key: string) {
       response.request().method() === "PATCH" &&
       new URL(response.url()).pathname === `/api/v1/issues/${key}`
   );
-}
-
-/**
- * Waits until no card is mid-flight. dnd-kit lands every reorder it did not animate itself - the
- * rollback and refetch after a rejected rank included - with a 200 ms transform transition, and a
- * card later in the DOM paints over the ones it crosses, so a press during that flight lifts
- * whichever card is passing the point rather than the one measured there.
- */
-async function boardAtRest(page: Page): Promise<void> {
-  await page.getByRole("region", { name: "Project board" }).evaluate(async (board) => {
-    for (;;) {
-      const running = board.getAnimations({ subtree: true });
-      if (running.length === 0) {
-        return;
-      }
-      await Promise.allSettled(running.map((animation) => animation.finished));
-    }
-  });
-}
-
-/**
- * Waits until a click reaches its target again. dnd-kit's pointer sensors stop every click at the
- * document (capture phase) from the lift until a 50 ms timer after the drop, and a busy main
- * thread runs that timer late, so a control clicked straight after a drop is silently ignored.
- * The probe is a node under `body` outside the React root: only that suppressor can stop it.
- */
-async function clicksDelivered(page: Page): Promise<void> {
-  await page.evaluate(async () => {
-    const probe = document.body.appendChild(document.createElement("div"));
-    let delivered = false;
-    probe.addEventListener("click", () => {
-      delivered = true;
-    });
-    try {
-      for (;;) {
-        delivered = false;
-        probe.dispatchEvent(new MouseEvent("click"));
-        if (delivered) {
-          return;
-        }
-        const turn = Promise.withResolvers<void>();
-        setTimeout(turn.resolve, 0);
-        await turn.promise;
-      }
-    } finally {
-      probe.remove();
-    }
-  });
-}
-
-/** Drags with the mouse from the middle of `source` to `target` (a card or a column). */
-async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?: number) {
-  await boardAtRest(page);
-  // `hover` presses only once the card holds still and is the element under the pointer; a bare
-  // `mouse.move` to a measured box would press on whatever is painted there.
-  await source.hover();
-  const sourceBox = await source.boundingBox();
-  if (sourceBox === null) {
-    throw new Error("drag source is not visible");
-  }
-  await page.mouse.down();
-  await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 10, sourceBox.y + sourceBox.height / 2);
-  await target.scrollIntoViewIfNeeded();
-  const targetBox = await target.boundingBox();
-  if (targetBox === null) {
-    throw new Error("drag target is not visible");
-  }
-  await page.mouse.move(
-    targetBox.x + targetBox.width / 2,
-    yOffset === undefined ? targetBox.y + targetBox.height / 2 : targetBox.y + yOffset,
-    { steps: 24 }
-  );
-  await page.mouse.up();
-  await clicksDelivered(page);
 }
 
 // SLOW(>=2s): four whole-card drags, each paying dnd-kit's own 200 ms landing, plus the board's
@@ -686,26 +627,10 @@ async function columnArrived(column: Locator, within: number): Promise<number> {
   }, within);
 }
 
-/** Waits until the scroller has held one frame still. dnd-kit scrolls it with a step a frame
- *  while a carried card is in an edge zone and stops a frame or two after the finger leaves, and
- *  a card in flight takes the snapping off the scroller (`IssueBoard.tsx`), so there is no fling
- *  and no snap behind that scrolling: one unchanged frame is rest. */
-async function scrollerAtRest(scroller: Locator): Promise<void> {
-  await scroller.evaluate(async (element) => {
-    for (;;) {
-      const was = element.scrollLeft;
-      const frame = Promise.withResolvers<void>();
-      requestAnimationFrame(() => requestAnimationFrame(() => frame.resolve()));
-      await frame.promise;
-      if (element.scrollLeft === was) {
-        return;
-      }
-    }
-  });
-}
-
 /** Puts the `index`-th column's start edge at the scroller's start and waits for the scroll to end. */
 async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
+  await viewAtRest(scroller);
+  // The scroller came to rest above, so the offsets read here are the ones it holds still at.
   const target = await scroller.evaluate((element, index) => {
     const section = element.querySelectorAll("section")[index];
     if (section === undefined) {
@@ -761,6 +686,8 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     // K5: a horizontal swipe lands on a column or rail edge (snap-x snap-mandatory).
     const start = await snapOffsets(scroller);
     expect(start.scrollLeft).toBe(0);
+    await expect(scroller).toBeVisible();
+    // The wait above drew the scroller, and a drawn element has a box, so the box is there.
     const box = await scroller.boundingBox();
     if (box === null) {
       throw new Error("board scroller is not visible");
@@ -843,6 +770,8 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     const movePatch = patchOf(page, bravo.key);
     const finger = await pressFinger(page, from);
     await expect(bravoCard).toHaveClass(/opacity-50/);
+    await expect(scroller).toBeVisible();
+    // The wait above drew the scroller, and a drawn element has a box, so the box is there.
     const scrollerBox = await scroller.boundingBox();
     if (scrollerBox === null) {
       throw new Error("board scroller is not visible");
@@ -860,7 +789,8 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     // worth anything.
     const drop = scrollerBox.x + scrollerBox.width / 2;
     await finger.moveTo({ x: drop, y: from.y }, 1);
-    await scrollerAtRest(scroller);
+    await viewAtRest(scroller);
+    // The scroller came to rest above, so the column's box read now is where the drop lands.
     const landing = await inProgress.boundingBox();
     if (landing === null || landing.x > drop - 40 || landing.x + landing.width < drop + 40) {
       throw new Error(
@@ -1081,6 +1011,229 @@ test("the board's view, lanes and edge toggles keep touch-sized targets @phone @
     for (const name of ["Show lanes", "Show Icebox & Done"]) {
       await expect(page.getByRole("button", { name })).toHaveCSS("min-height", "44px");
     }
+  } finally {
+    await context.close();
+  }
+});
+
+// The rows of dispatch://INFRA-299 on the board: while a pick is live - held by Playwright's
+// route control at least `PICK_HOLD_MS` (`holdIssuePatches`) - the card shows it over every
+// answer of the project's list, whose read a rename of another issue starts (every event of an
+// issue reads its project's list again, `api/event-refresh.ts`), and after the picker that made
+// it has left the screen. Each row records every value the card's picker shows, at every
+// animation frame (`watchShown`), from the pick until the saves end.
+
+/** A project with an issue at P3 to pick on and another issue whose rename reads the list. */
+async function boardWithIssueAtP3(): Promise<{ key: string; other: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
+  const other = await createIssue({ project: "CORE", title: "Another issue of the project" });
+  await Promise.all([
+    patchIssue(issue.key, { priority: 3, status: "todo" }),
+    patchIssue(other.key, { status: "todo" }),
+  ]);
+  return { key: issue.key, other: other.key };
+}
+
+/** The project's issues as the Board view, read from the server. */
+async function openBoard(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Board" }).click();
+  await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
+}
+
+// SLOW(>=2s): a save held three seconds while the board reads its list again.
+test("picker keeps a pick on screen: the priority on the project board, over a list read that answers while its save is out", async ({
+  browser,
+}) => {
+  const { key, other } = await boardWithIssueAtP3();
+  const renamed = "Another issue, renamed while a save is out";
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`);
+    const held = await holdIssuePatches(page, key);
+    const reads = logReads(page, listRead("project", "CORE"));
+    await page.goto("/projects/CORE");
+    await openBoard(page);
+    const picker = page.getByRole("combobox", { name: `Priority of ${key}` });
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // A rename of another issue, straight to the server: its live event has the board read the
+    // project's list again, and the answer, carrying P3, lands while the pick's save is held.
+    const renamedAt = Date.now();
+    await patchIssue(other, { title: renamed });
+    await expect(page.getByRole("article", { name: `${other} ${renamed}` })).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, renamedAt);
+
+    expect(shown.values.slice(fromPick), "every value the card showed from the pick on").toEqual([
+      "1",
+    ]);
+    expect(await getIssue(key)).toMatchObject({ priority: 1 });
+    await expect(picker).toHaveValue("1");
+  } finally {
+    await context.close();
+  }
+});
+
+// The board split by priority: a pick on a card and then two drags of it, each to another priority
+// lane, both made while the pick's save is held (`holdIssuePatches`, until the row releases it).
+// The row sends no write of its own straight to the server: the project's list read waits for the
+// board's moves (`boardMovesSettled`), so no answer of it lands while they are out.
+// SLOW(>=2s): three saves each held three seconds, two drags across lanes, dnd-kit's landings and
+// a reload.
+test("picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const anchor = await createIssue({ project: "CORE", title: "P0 card" });
+  const issue = await createIssue({ project: "CORE", title: "Picked card" });
+  await Promise.all([
+    patchIssue(anchor.key, { priority: 0, status: "todo" }),
+    patchIssue(issue.key, { priority: 3, status: "todo" }),
+  ]);
+  const seq = await lastEventSeq(issue.key);
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1920, height: 900 });
+  try {
+    const shown = await watchShown(page, `Priority of ${issue.key}`);
+    const held = await holdIssuePatches(page, issue.key);
+    await page.goto("/projects/CORE");
+    await openBoard(page);
+    await page.getByRole("button", { name: "Show lanes" }).click();
+    const card = page.getByRole("article", { name: `${issue.key} Picked card` });
+    const picker = card.getByRole("combobox", { name: `Priority of ${issue.key}` });
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    const p1Lane = page.getByRole("region", { name: "P1 lane" });
+    await expect(p1Lane.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+
+    // The pick is still out when the card is dragged into the P0 lane: the move joins the
+    // issue's line behind it, and the server will store the move's priority after the pick's.
+    const p0Todo = page.getByRole("region", { name: "P0 lane" }).getByRole("region", {
+      name: "Todo",
+    });
+    await mouseDrag(page, card, p0Todo.getByRole("article").first());
+    await expect.poll(() => shown.values.at(-1)).toBe("0");
+    const fromDrop = shown.values.length - 1;
+    await expect(p0Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    // The drop was made while the pick's save was out: the route still holds it, and it is the
+    // only save of the issue to have reached the route, the drag's waiting behind it in the line.
+    expect(
+      savesAtRoute(held),
+      "the saves of the issue at the route once the card is in the P0 lane, and whether each is held"
+    ).toEqual([{ body: { priority: 1 }, held: true }]);
+    // A second drag, into the P2 lane, while the pick and the first drag are both out: the newer
+    // drag is the card's lane from the moment it is made, although its save waits for the first
+    // drag's answer before it goes out.
+    const p2Todo = page.getByRole("region", { name: "P2 lane" }).getByRole("region", {
+      name: "Todo",
+    });
+    await mouseDrag(page, card, p2Todo);
+    await expect.poll(() => shown.values.at(-1)).toBe("2");
+    const fromSecondDrop = shown.values.length - 1;
+    await expect(p2Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    // So was the second drop: no save of the issue had been answered when the card took the P2
+    // lane, so every answer the card shows through below lands after both drops.
+    expect(
+      savesAtRoute(held),
+      "the saves of the issue at the route once the card is in the P2 lane, and whether each is held"
+    ).toEqual([{ body: { priority: 1 }, held: true }]);
+    held.release();
+    await savesEnded(page, held);
+
+    expect(
+      held.sent.map(({ body }) => body),
+      "the pick's save and each drag's, as they reached the route"
+    ).toHaveLength(3);
+
+    expect(
+      shown.values.slice(fromPick, fromDrop).some((value) => value.split("|").includes("3")),
+      `every value the card showed from the pick to the first drop: ${JSON.stringify(shown.values.slice(fromPick, fromDrop))}`
+    ).toBe(false);
+    expect(
+      shown.values.slice(fromDrop, fromSecondDrop),
+      "every value the card showed from the first drop to the second"
+    ).toEqual(["0"]);
+    expect(
+      shown.values.slice(fromSecondDrop),
+      "every value the card showed from the second drop on"
+    ).toEqual(["2"]);
+    await expect(p2Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    expect(await storedValues(issue.key, "priority", seq)).toEqual([1, 0, 2]);
+    expect(await getIssue(issue.key)).toMatchObject({ priority: 2 });
+    // A fresh read of the board, once every save has ended: the card is in the P2 lane.
+    await page.reload();
+    await expect(p2Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    await expect(picker).toHaveValue("2");
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a save held three seconds while the project's board is opened and read, and read
+// again for a rename of another issue.
+test("picker keeps a pick on screen: a pick made on the issue page shows on the board opened while its save is out", async ({
+  browser,
+}) => {
+  const { key, other } = await boardWithIssueAtP3();
+  const renamed = "Another issue, renamed while the board shows the pick";
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`);
+    const held = await holdIssuePatches(page, key);
+    const reads = logReads(page, listRead("project", "CORE"));
+    await page.goto(`/issues/${key}`);
+    const picker = pagePicker(page, `Priority of ${key}`);
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // The picker leaves the screen with its save still out, and the project's list is read
+    // from the server, which still holds P3.
+    const leftAt = Date.now();
+    await navigateInApp(page, "/projects/CORE");
+    await openBoard(page);
+    const card = page.getByRole("article", { name: `${key} Priority under a held save` });
+    await expect(card.getByRole("combobox", { name: `Priority of ${key}` })).toHaveValue("1");
+    await expect.poll(() => reads.some((read) => read.answeredAt !== undefined)).toBe(true);
+    // A rename of another issue of the project, straight to the server, with the save still
+    // held: its live event has the board read the project's list again, and the answer, carrying
+    // P3, lands while the save is out.
+    const renamedAt = Date.now();
+    await patchIssue(other, { title: renamed });
+    await expect(page.getByRole("article", { name: `${other} ${renamed}` })).toBeVisible();
+    await expect.poll(() => readAnsweredSince(reads, renamedAt)).toBe(true);
+    await nextFrames(page);
+    await expect(card.getByRole("combobox", { name: `Priority of ${key}` })).toHaveValue("1");
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, leftAt);
+    expectReadWhileHeld(reads, held, renamedAt);
+
+    // The issue page's picker, then the table's row and the board's card, with no picker drawn
+    // between them (`(none)`): each shows the pick.
+    expect(
+      [...new Set(shown.values.slice(fromPick).filter((value) => value !== "(none)"))],
+      `every value shown from the pick on: ${JSON.stringify(shown.values.slice(fromPick))}`
+    ).toEqual(["1"]);
+    expect(await getIssue(key)).toMatchObject({ priority: 1 });
+    await expect(card.getByRole("combobox", { name: `Priority of ${key}` })).toHaveValue("1");
   } finally {
     await context.close();
   }

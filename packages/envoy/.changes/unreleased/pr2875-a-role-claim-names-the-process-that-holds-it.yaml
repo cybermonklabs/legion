@@ -22,13 +22,14 @@ body: |-
   `POST /v1/interests/subscribe` renews every claim the
   registering session holds that names the registering process, whatever topics the registration
   carries, and the first registration of that session stating any instance adopts a claim that
-  names none — any process of the session id, not only the one that took the role; one that
-  states no process renews the claims of its own session that name none and adopts none, so no
-  claim standing at a deploy ages out. A renewal that cannot run never fails the registration,
+  names none, while no registration stating none has renewed it — any process of the session id,
+  not only the one that took the role; one that states no process renews the claims of its own
+  session that name none and adopts none, so the claim of a client that states no process ages
+  out for nobody while it runs. A renewal that cannot run never fails the registration,
   and the cost is one role-bucket write per heartbeat per role held.
   `POST /v1/interests/unsubscribe`
-  takes `client_instance_id` and frees only the claims naming that process, freeing a claim that
-  names no process outright, while `DELETE /v1/interests/<session_id>` keeps its force and is
+  takes `client_instance_id` and frees only the claims naming that process, and no claim that
+  names no process, while `DELETE /v1/interests/<session_id>` keeps its force and is
   the one caller that forces. It answers in `removed` the topics that left the record rather
   than the ones the request named, because a role lane topic whose claim it did not free stays
   in the record: one interest record serves every process running under one session id, and that

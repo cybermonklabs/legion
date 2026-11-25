@@ -19,14 +19,16 @@ import (
 )
 
 // The class of every Verify failure. A caller logs the class and answers 401;
-// no error carries the token.
+// no error carries the token. ErrNotYetValid is IAPVerifier's alone: an
+// assertion issued further ahead of this process's clock than the skew allows.
 var (
-	ErrMalformed = errors.New("oidc: malformed token")
-	ErrIssuer    = errors.New("oidc: token from another issuer")
-	ErrAudience  = errors.New("oidc: token for another audience")
-	ErrExpired   = errors.New("oidc: token expired")
-	ErrCancelled = errors.New("oidc: verification context ended")
-	ErrSignature = errors.New("oidc: token signature not verified")
+	ErrMalformed   = errors.New("oidc: malformed token")
+	ErrIssuer      = errors.New("oidc: token from another issuer")
+	ErrAudience    = errors.New("oidc: token for another audience")
+	ErrExpired     = errors.New("oidc: token expired")
+	ErrNotYetValid = errors.New("oidc: token issued in the future")
+	ErrCancelled   = errors.New("oidc: verification context ended")
+	ErrSignature   = errors.New("oidc: token signature not verified")
 )
 
 // Reason names the class of a Verify failure in one word, for the log line and
@@ -55,6 +57,8 @@ func Reason(err error) string {
 		return "audience"
 	case errors.Is(err, ErrExpired):
 		return "expired"
+	case errors.Is(err, ErrNotYetValid):
+		return "not-yet-valid"
 	case errors.Is(err, ErrCancelled):
 		return "cancelled"
 	case errors.Is(err, ErrIssuerUnavailable):
@@ -103,6 +107,11 @@ type Verifier struct {
 	verifier *gooidc.IDTokenVerifier
 	issuer   string
 	audience string
+	// skipExpiry is set when verifier skips the exp check (gooidc.Config.SkipExpiryCheck), as
+	// IAPVerifier's does, which checks the verified exp itself. classify then reports no failure
+	// as ErrExpired: an exp it reads is from a payload whose signature, issuer or audience failed,
+	// and says nothing about a token's age.
+	skipExpiry bool
 }
 
 // New reads the issuer's OIDC discovery document now and returns a verifier for
@@ -125,7 +134,8 @@ func New(ctx context.Context, issuer, audience string) (*Verifier, error) {
 // exchange, to hand the key itself to the OAuth provider (Keys), and building
 // both from one *Keys makes one discovery read at boot, keeps one set in
 // memory, and bounds the reads a token naming an unpublished key id prompts at
-// one per MinRefresh across both of them.
+// one per MinRefresh while reads succeed, and one per FailureSpacing while they
+// fail, across both of them.
 func NewWithKeys(issuer, audience string, keys *Keys) *Verifier {
 	return &Verifier{
 		// SupportedSigningAlgs is set because gooidc.NewVerifier, unlike the
@@ -161,17 +171,6 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 		issuer:   issuer,
 		audience: audience,
 	}
-}
-
-// Issues reports whether raw's iss claim, read without verifying anything, names this verifier's
-// issuer, Google's scheme-less spelling included when the verifier is Google's (namesIssuer). A
-// caller that trusts several issuers picks with it the one verifier a token is for, so a token of
-// one issuer never makes another's verifier fetch its keys; Verify still checks the issuer with
-// everything else. It reads unverified text, so it picks a verifier and decides nothing about a
-// caller: no claim anyone is admitted on comes from it.
-func (v *Verifier) Issues(raw string) bool {
-	claims, err := decodeUnverifiedClaims(raw)
-	return err == nil && v.namesIssuer(claims.Issuer)
 }
 
 // Verify checks raw against the issuer's published keys, the configured
@@ -267,6 +266,10 @@ func (v *Verifier) verify(ctx context.Context, raw string) (*gooidc.IDToken, Cla
 // cancelled says "no verdict is trustworthy", where the alternative spends
 // "signature" — the word an operator reads as a forgery attempt — on callers
 // that merely hung up.
+//
+// A verifier that skips the exp check (skipExpiry) has no ErrExpired here at all: go-oidc returns
+// it no TokenExpiredError, and the exp case below is passed over, so a token whose signature
+// failed is a signature failure (or ErrIssuerUnavailable) whatever its payload's exp says.
 func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Errorf("%w: %v", ErrCancelled, ctxErr)
@@ -283,7 +286,7 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 		return fmt.Errorf("%w: %q, want %q", ErrIssuer, claims.Issuer, v.issuer)
 	case !slices.Contains(claims.Audience, v.audience):
 		return fmt.Errorf("%w: %q, want %q", ErrAudience, []string(claims.Audience), v.audience)
-	case claims.Expiry != 0 && time.Unix(int64(claims.Expiry), 0).Before(time.Now()):
+	case !v.skipExpiry && claims.Expiry != 0 && time.Unix(int64(claims.Expiry), 0).Before(time.Now()):
 		return fmt.Errorf("%w at %s", ErrExpired, time.Unix(int64(claims.Expiry), 0).UTC().Format(time.RFC3339))
 	case errors.Is(keySetErr, ErrKeySet):
 		return fmt.Errorf("%w: %w", ErrIssuerUnavailable, keySetErr)

@@ -2,11 +2,14 @@ package testnats
 
 import (
 	"bytes"
+	"maps"
 	"net"
 	"net/url"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Proxy relays a client's TCP connections to a NATS server, so a test can take one client off
@@ -33,6 +36,12 @@ type Proxy struct {
 	// gate is nil while the proxy moves bytes, and open from Freeze until Restore: every read
 	// and every write of a relayed connection waits for it to close.
 	gate chan struct{}
+	// serverGate is nil while server replies move, and open from FreezeServerReplies until Restore.
+	// It holds only server-to-client reads and writes.
+	serverGate chan struct{}
+	// atGate holds, by the client's address, each connection whose client-to-server reader waits at
+	// a freeze's gate: that reader reads nothing more of its client until Restore (gatedReaders).
+	atGate map[string]bool
 }
 
 // ProxyOption configures a Proxy.
@@ -53,14 +62,15 @@ func ProxyRate(bytesPerSecond int) ProxyOption {
 }
 
 // StartProxy relays to the NATS server at target, a client URL such as Start returns, on a
-// loopback port of its own, until the test ends. URL is the same server through the proxy.
+// loopback port and address of its own (testport.LoopbackIP), until the test ends. URL is the same
+// server through the proxy.
 func StartProxy(t testing.TB, target string, options ...ProxyOption) *Proxy {
 	t.Helper()
 	server, err := url.Parse(target)
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the proxy relays to: %v", target, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the NATS proxy: %v", err)
 	}
@@ -72,6 +82,7 @@ func StartProxy(t testing.TB, target string, options ...ProxyOption) *Proxy {
 		url:      proxied.String(),
 		done:     make(chan struct{}),
 		conns:    map[net.Conn]struct{}{},
+		atGate:   map[string]bool{},
 	}
 	for _, option := range options {
 		option(p)
@@ -110,8 +121,19 @@ func (p *Proxy) Freeze() {
 	}
 }
 
-// Restore ends a Cut and a Freeze: the proxy accepts and relays connections again, and the bytes a
-// freeze held move on.
+// FreezeServerReplies stops server replies while client writes still reach the server. Restore
+// releases the replies. A test uses it when it must prove a request stored before it loses the
+// request's acknowledgement.
+func (p *Proxy) FreezeServerReplies() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.serverGate == nil {
+		p.serverGate = make(chan struct{})
+	}
+}
+
+// Restore ends a Cut, a Freeze and a FreezeServerReplies: the proxy accepts and relays connections
+// again, the bytes a freeze held move on, and server replies resume.
 func (p *Proxy) Restore() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -119,6 +141,10 @@ func (p *Proxy) Restore() {
 	if p.gate != nil {
 		close(p.gate)
 		p.gate = nil
+	}
+	if p.serverGate != nil {
+		close(p.serverGate)
+		p.serverGate = nil
 	}
 }
 
@@ -147,8 +173,8 @@ func (p *Proxy) join(client net.Conn) {
 		p.untrack(client)
 		return
 	}
-	go p.relay(server, client)
-	p.relay(client, server)
+	go p.relay(server, client, false)
+	p.relay(client, server, true)
 }
 
 // track records conn as relayed and reports true, or closes it and reports false while the proxy
@@ -187,18 +213,23 @@ const proxyReadBuffer = 64 << 10
 // relay copies src to dst, each chunk written the proxy's delay after it was read and each read
 // held to the proxy's rate, until either ends; then it closes both, which ends the other direction
 // too.
-func (p *Proxy) relay(dst, src net.Conn) {
+func (p *Proxy) relay(dst, src net.Conn, serverToClient bool) {
 	defer p.untrack(dst, src)
 	type chunk struct {
 		data []byte
 		due  time.Time
 	}
 	queue := make(chan chunk, 4096)
+	// reader names the connection's client-to-server reader to gatedReaders, by the client's address.
+	var reader string
+	if !serverToClient {
+		reader = src.RemoteAddr().String()
+	}
 	go func() {
 		defer close(queue)
 		buffer := make([]byte, proxyReadBuffer)
 		for {
-			p.pass()
+			p.pass(serverToClient, reader)
 			read, err := src.Read(buffer)
 			if read > 0 {
 				queue <- chunk{data: bytes.Clone(buffer[:read]), due: time.Now().Add(p.delay)}
@@ -213,7 +244,7 @@ func (p *Proxy) relay(dst, src net.Conn) {
 	}()
 	for c := range queue {
 		time.Sleep(time.Until(c.due))
-		p.pass()
+		p.pass(serverToClient, "")
 		if _, err := dst.Write(c.data); err != nil {
 			// The reader ends once src is closed below.
 			break
@@ -224,18 +255,44 @@ func (p *Proxy) relay(dst, src net.Conn) {
 	}
 }
 
-// pass waits while the proxy is frozen, and returns at once while it is not or once it closes.
-func (p *Proxy) pass() {
+// pass waits for any active gate before a relay read or write proceeds. serverToClient selects the
+// server-to-client gate in addition to the bidirectional one. A client-to-server reader passes its
+// client's address as reader, and is named in atGate while it waits at a freeze's gate.
+func (p *Proxy) pass(serverToClient bool, reader string) {
 	p.mu.Lock()
 	gate := p.gate
+	serverGate := p.serverGate
+	if gate != nil && reader != "" {
+		p.atGate[reader] = true
+	}
 	p.mu.Unlock()
-	if gate == nil {
-		return
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-p.done:
+		}
+		if reader != "" {
+			p.mu.Lock()
+			delete(p.atGate, reader)
+			p.mu.Unlock()
+		}
 	}
-	select {
-	case <-gate:
-	case <-p.done:
+	if serverToClient && serverGate != nil {
+		select {
+		case <-serverGate:
+		case <-p.done:
+		}
 	}
+}
+
+// gatedReaders is the set of client addresses whose connection's client-to-server reader waits at
+// a freeze's gate now. Such a reader has made its last read of its client: it reads nothing more of
+// it until Restore, so the client's socket and the proxy's end of it move no more bytes than the
+// kernel already lets them.
+func (p *Proxy) gatedReaders() map[string]bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return maps.Clone(p.atGate)
 }
 
 // close stops listening, closes every relayed connection and releases every copy a freeze holds.

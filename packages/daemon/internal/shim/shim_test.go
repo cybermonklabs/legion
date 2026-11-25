@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -38,7 +40,6 @@ const fakeOMPEnv = "LEGION_SHIM_FAKE_OMP"
 const (
 	bootToken = "boot-token-for-the-pane"
 	grace     = 3 * time.Second
-	waitLimit = 10 * time.Second
 )
 
 func TestMain(m *testing.M) {
@@ -105,6 +106,10 @@ func fakeOMP() int {
 	if message := os.Getenv("FAKE_OMP_EXTENSION_ERROR"); message != "" {
 		emit(fmt.Sprintf(`{"type":"extension_error","extensionPath":"/opt/legion/pi-legion/dist/legion.js","event":"session_start","error":%q}`, message))
 	}
+	// FAKE_OMP_TOOL_ARGS is the JSON arguments of a tool call the fake starts once it is ready.
+	if args := os.Getenv("FAKE_OMP_TOOL_ARGS"); args != "" {
+		emit(`{"type":"tool_execution_start","toolCallId":"toolu_1","toolName":"bash","args":` + args + `}`)
+	}
 	if os.Getenv("FAKE_OMP_HUGE_LINE") == "1" {
 		emit(`{"type":"fake_huge","pad":"` + strings.Repeat("x", 2<<20) + `"}`)
 	}
@@ -157,9 +162,7 @@ func (o *omp) started() bool {
 // since a test that reads it is asking what the spawn did.
 func (o *omp) environment(t *testing.T) map[string]string {
 	t.Helper()
-	if !testwait.Holds(waitLimit, 5*time.Millisecond, o.started) {
-		t.Fatal("the fake OMP never started, so it recorded no environment")
-	}
+	testwait.Eventually(t, "the fake OMP to start and record its environment", o.started)
 	body, err := os.ReadFile(o.marker)
 	if err != nil {
 		t.Fatalf("read the fake OMP's environment: %v", err)
@@ -226,13 +229,7 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 // already knows (drainCommands' bound, which is what is left of a span).
 func (c *fakeClock) nextAny(t *testing.T, what string) clockWait {
 	t.Helper()
-	select {
-	case w := <-c.waits:
-		return w
-	case <-time.After(waitLimit):
-		t.Fatalf("the shim never waited %s", what)
-		return clockWait{}
-	}
+	return testwait.Receive(t, "the shim to wait "+what, c.waits)
 }
 
 // next is the shim's next wait, which must be of d.
@@ -271,23 +268,12 @@ func (c *fakeClock) idle(t *testing.T) {
 	}
 }
 
-// syncBuffer is the shim's log: what the pane shows. changed signals each write so tests wait on
-// a real event rather than polling the log on a wall clock.
+// syncBuffer is the shim's log: what the pane shows.
 type syncBuffer struct {
 	testlog.Buffer
-	changed chan struct{}
 }
 
-func newSyncBuffer() *syncBuffer { return &syncBuffer{changed: make(chan struct{}, 1)} }
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	n, err := b.Buffer.Write(p)
-	select {
-	case b.changed <- struct{}{}:
-	default:
-	}
-	return n, err
-}
+func newSyncBuffer() *syncBuffer { return &syncBuffer{} }
 
 // count is how many log lines contain substr.
 func (b *syncBuffer) count(substr string) int {
@@ -300,31 +286,26 @@ func (b *syncBuffer) count(substr string) int {
 	return n
 }
 
+// await waits for n log lines that contain substr; a failure prints the log.
 func (b *syncBuffer) await(t *testing.T, substr string, n int) {
 	t.Helper()
-	for b.count(substr) < n {
-		select {
-		case <-b.changed:
-		case <-time.After(waitLimit):
-			t.Fatalf("the shim never logged %q %d time(s); log:\n%s", substr, n, b)
-		}
-	}
+	testwait.Until(t, fmt.Sprintf("the shim to log %q %d time(s)", substr, n), func() (string, bool) {
+		return "log: " + b.String(), b.count(substr) >= n
+	})
 }
 
 // awaitLine waits for n log lines that are exactly line: the pane's one-line frame summaries.
 func (b *syncBuffer) awaitLine(t *testing.T, line string, n int) {
 	t.Helper()
-	if !testwait.Holds(waitLimit, 5*time.Millisecond, func() bool {
+	testwait.Until(t, fmt.Sprintf("the shim to log the line %q %d time(s)", line, n), func() (string, bool) {
 		got := 0
 		for l := range strings.Lines(b.String()) {
 			if strings.TrimSpace(l) == line {
 				got++
 			}
 		}
-		return got >= n
-	}) {
-		t.Fatalf("the shim never logged the line %q %d time(s); log:\n%s", line, n, b)
-	}
+		return "log: " + b.String(), got >= n
+	})
 }
 
 // running is one shim.Run in a goroutine.
@@ -350,13 +331,17 @@ func run(t *testing.T, cfg shim.Config, clock *fakeClock) *running {
 	t.Cleanup(func() {
 		clock.release()
 		r.cancel()
-		select {
-		case <-r.done:
-		case <-time.After(waitLimit):
-			t.Errorf("the shim never exited; log:\n%s", r.log)
-		}
+		r.awaitExit(t)
 	})
 	return r
+}
+
+// awaitExit waits for the shim to exit; a failure prints its log.
+func (r *running) awaitExit(t *testing.T) {
+	t.Helper()
+	testwait.Until(t, "the shim to exit", func() (string, bool) {
+		return "log: " + r.log.String(), r.exited()
+	})
 }
 
 // stop ends the shim's own context and waits for it to exit, without wait's refusal of a
@@ -365,11 +350,7 @@ func run(t *testing.T, cfg shim.Config, clock *fakeClock) *running {
 func (r *running) stop(t *testing.T) {
 	t.Helper()
 	r.cancel()
-	select {
-	case <-r.done:
-	case <-time.After(waitLimit):
-		t.Fatalf("the shim never exited; log:\n%s", r.log)
-	}
+	r.awaitExit(t)
 }
 
 // err is r.failure's text once the shim has ended (r.done is closed by then), or "" when it
@@ -383,11 +364,7 @@ func (r *running) err() string {
 
 func (r *running) wait(t *testing.T) int {
 	t.Helper()
-	select {
-	case <-r.done:
-	case <-time.After(waitLimit):
-		t.Fatalf("the shim never exited; log:\n%s", r.log)
-	}
+	r.awaitExit(t)
 	if r.failure != nil {
 		t.Fatalf("shim.Run: %v; log:\n%s", r.failure, r.log)
 	}
@@ -443,14 +420,9 @@ func (s *stub) accept(t *testing.T) *peer {
 			accepted <- conn
 		}
 	}()
-	select {
-	case conn := <-accepted:
-		t.Cleanup(func() { _ = conn.Close() })
-		return &peer{conn: conn, r: shimwire.NewReader(conn), w: shimwire.NewWriter(conn)}
-	case <-time.After(waitLimit):
-		t.Fatal("the shim never dialled the listener")
-		return nil
-	}
+	conn := testwait.Receive(t, "the shim to dial the listener", accepted)
+	t.Cleanup(func() { _ = conn.Close() })
+	return &peer{conn: conn, r: shimwire.NewReader(conn), w: shimwire.NewWriter(conn)}
 }
 
 type peer struct {
@@ -461,7 +433,9 @@ type peer struct {
 
 func (p *peer) next(t *testing.T) shimwire.Frame {
 	t.Helper()
-	if err := p.conn.SetReadDeadline(time.Now().Add(waitLimit)); err != nil {
+	// The read's deadline is the one every wait has: the moment the shared wait gives up.
+	deadline, _ := testwait.Context(t).Deadline()
+	if err := p.conn.SetReadDeadline(deadline); err != nil {
 		t.Fatalf("set a read deadline: %v", err)
 	}
 	line, err := p.r.ReadLine()
@@ -583,26 +557,50 @@ func TestOMPIsSpawnedOnlyAfterTheHelloAck(t *testing.T) {
 	}
 }
 
-// theTag is the pin a pod's worker image carries, as these tests spell one.
+// theTag is the pin a pod's worker image carries, as these tests spell one, and theChecker the
+// deployment's manifest digest the runtime tells a role of a deployment that runs a shared leak
+// check (leakguard.CheckerVar): the digest (leakguard.Manifest) of the stand-in check every install
+// here holds (installedFiles), which the shim compares before it starts an agent.
 const theTag = "leak-check-v15"
 
+// installedFiles are the files of the stand-in check every install here holds: a launcher whose
+// --help names both shapes, and the other files of its manifest.
+var installedFiles = map[string]string{
+	leakguardtest.CheckName:    "#!/bin/sh\n" + leakguardtest.AnswersHelp(os.DevNull),
+	leakguardtest.ProgramName:  leakguardtest.Program,
+	leakguardtest.ReadmeName:   leakguardtest.Readme,
+	leakguardtest.MustPassName: leakguardtest.MustPass,
+}
+
+var theChecker = leakguard.CheckerVar + "=" + func() string {
+	digest, err := leakguard.Manifest(func(name string) ([]byte, error) { return []byte(installedFiles[name]), nil })
+	if err != nil {
+		panic(err)
+	}
+	return digest
+}()
+
 // installedCheck is the directory the pod's launcher installs the check the daemon served into,
-// made the way the launcher makes it: a GitHub-shaped tarball of a stand-in check whose --help
-// names both shapes (leakguardtest.AnswersHelp), packed (leakguard.PackTarball) and installed at
-// tag (leakguard.InstallServed).
+// made the way the launcher makes it: a GitHub-shaped tarball of installedFiles, packed
+// (leakguard.PackTarballManifest) and installed at tag (leakguard.InstallServed).
 func installedCheck(t *testing.T, tag string) string {
 	t.Helper()
-	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
-		leakguardtest.CheckName: {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")), Mode: 0o755},
-	})
-	body, err := leakguard.PackTarball(bytes.NewReader(raw))
+	members := map[string]leakguardtest.Member{}
+	for name, body := range installedFiles {
+		mode := int64(0o644)
+		if name == leakguardtest.CheckName {
+			mode = 0o755
+		}
+		members[name] = leakguardtest.Member{Body: body, Mode: mode}
+	}
+	raw := leakguardtest.GitHubTarball(t, members)
+	body, _, err := leakguard.PackTarballManifest(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(t.TempDir(), "leak-check")
-	ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
-	defer cancel()
-	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: tag, Body: body}); err != nil {
+	ctx := testwait.Context(t)
+	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: tag, Body: body, Start: procgroup.NoReaper}); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -626,7 +624,7 @@ func TestAnInstallOfThePinStartsTheAgent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := socketPath(t)
 			daemon := listen(t, path)
-			extra := []string{leakguard.TagVariable + "=" + theTag}
+			extra := []string{leakguard.TagVariable + "=" + theTag, theChecker}
 			if tc.already != "" {
 				extra = append(extra, leakguard.CheckVar+"="+tc.already)
 			}
@@ -648,9 +646,9 @@ func TestAnInstallOfThePinStartsTheAgent(t *testing.T) {
 	}
 }
 
-// A role whose environment carries the pin and whose pod holds no install of it runs no agent at
-// all: the shim ends with exit 1 and the read's own refusal. Every write path of such a role would
-// refuse anyway.
+// A role whose environment carries the pin and the deployment's checker and whose pod holds no
+// install of the pin runs no agent at all: the shim ends with exit 1 and the read's own refusal.
+// Every write path of such a role would refuse anyway.
 func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -665,7 +663,7 @@ func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := socketPath(t)
 			daemon := listen(t, path)
-			child := newOMP(t, leakguard.TagVariable+"="+theTag)
+			child := newOMP(t, leakguard.TagVariable+"="+theTag, theChecker)
 			cfg := config(t, path, child)
 			cfg.LeakCheckDir = tc.dir(t)
 			sh := run(t, cfg, newClock())
@@ -673,9 +671,7 @@ func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 			p := daemon.accept(t)
 			p.expectHello(t)
 			p.send(t, shimwire.HelloAck{})
-			if !testwait.Holds(waitLimit, 5*time.Millisecond, sh.exited) {
-				t.Fatalf("the shim kept running with no install of its pin; log:\n%s", sh.log)
-			}
+			sh.awaitExit(t)
 			if sh.code != 1 {
 				t.Errorf("the shim ended %d, want 1", sh.code)
 			}
@@ -691,22 +687,34 @@ func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 	}
 }
 
-// A tmux pane's environment carries no pin, and its shim reads no install at all: the agent
-// starts where no install exists, and the shim names no check of its own for it.
-func TestWithNoPinTheAgentStartsWithNoInstall(t *testing.T) {
-	path := socketPath(t)
-	daemon := listen(t, path)
-	child := newOMP(t)
-	cfg := config(t, path, child)
-	cfg.LeakCheckDir = filepath.Join(t.TempDir(), "leak-check")
-	sh := run(t, cfg, newClock())
+// A tmux pane's environment carries no pin, and a role of a deployment that runs no shared leak
+// check carries the image's pin and no checker (leakguard.CheckerVar): the shim of either reads no
+// install at all, the agent starts where no install exists, and the shim names no check of its
+// own for it.
+func TestWithNoPinOrNoCheckerTheAgentStartsWithNoInstall(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  []string
+	}{
+		{"no pin", nil},
+		{"the pin and no checker", []string{leakguard.TagVariable + "=" + theTag}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := socketPath(t)
+			daemon := listen(t, path)
+			child := newOMP(t, tc.env...)
+			cfg := config(t, path, child)
+			cfg.LeakCheckDir = filepath.Join(t.TempDir(), "leak-check")
+			sh := run(t, cfg, newClock())
 
-	daemon.accept(t).open(t)
-	if got, ok := child.environment(t)[leakguard.CheckVar]; ok {
-		t.Errorf("the child was told %s=%q, want no check named by the shim; log:\n%s", leakguard.CheckVar, got, sh.log)
-	}
-	if sh.log.count("the shared public leak check") != 0 {
-		t.Errorf("the shim logged an install with no pin; log:\n%s", sh.log)
+			daemon.accept(t).open(t)
+			if got, ok := child.environment(t)[leakguard.CheckVar]; ok {
+				t.Errorf("the child was told %s=%q, want no check named by the shim; log:\n%s", leakguard.CheckVar, got, sh.log)
+			}
+			if sh.log.count("the shared public leak check") != 0 {
+				t.Errorf("the shim logged an install it should not have read; log:\n%s", sh.log)
+			}
+		})
 	}
 }
 
@@ -740,9 +748,7 @@ func TestTheCodegraphWarmUpStartsOnTheChildsFirstFrameOnce(t *testing.T) {
 	p.expectHello(t)
 	p.send(t, shimwire.HelloAck{})
 	sh.log.await(t, "[worker-shim] spawned ", 1)
-	for deadline := time.Now().Add(200 * time.Millisecond); time.Now().Before(deadline) && !child.started(); {
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the fake OMP to start, held before its first line", child.started)
 	if got := calls(); len(got) != 0 {
 		t.Fatalf("the warm-up started at the spawn, before the child wrote anything: %v", got)
 	}
@@ -750,12 +756,9 @@ func TestTheCodegraphWarmUpStartsOnTheChildsFirstFrameOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.expectRaw(t, "fake_ready")
-	for deadline := time.Now().Add(waitLimit); len(calls()) == 0; {
-		if time.Now().After(deadline) {
-			t.Fatalf("the warm-up never started after the child's first frame; log:\n%s", sh.log)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, "the warm-up to start after the child's first frame", func() (string, bool) {
+		return "log: " + sh.log.String(), len(calls()) > 0
+	})
 	if got := calls(); !slices.Equal(got, []string{workspace}) {
 		t.Fatalf("the warm-up was started with %v, want once with %q", got, workspace)
 	}
@@ -828,11 +831,7 @@ func TestTheShimEndsOnlyOnceAnInFlightWarmUpHasReturned(t *testing.T) {
 	p.expectRaw(t, "fake_sigterm")
 	expired := clock.next(t, grace)
 	// The child is ignoring its SIGTERM and still running; the warm-up has already been ended.
-	select {
-	case <-ended:
-	case <-time.After(waitLimit):
-		t.Fatalf("the warm-up's context did not end when the child was told to stop; log:\n%s", sh.log)
-	}
+	testwait.Receive(t, "the warm-up's context to end when the child was told to stop", ended)
 	expired.elapse()
 	if code := sh.wait(t); code != 128+int(syscall.SIGKILL) {
 		t.Fatalf("the shim exited %d, want the child's %d", code, 128+int(syscall.SIGKILL))
@@ -1283,10 +1282,7 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 // phase role left, as a `jj split` of its work into a described commit leaves one, becomes the
 // incoming phase role's, and the described commit under it keeps its id and its author.
 func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	for _, tc := range []struct {
 		name       string
 		leave      []string // what the previous role ran once README.md was written, nil for nothing
@@ -1390,10 +1386,7 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 // role's workspace; on a devbox, a checkout), so the adoption runs in the workspace it adopts and
 // leaves the repository the shim runs in as it was.
 func TestAdoptWorkingCopyLeavesTheRepositoryTheShimRunsInUntouched(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	home := t.TempDir()
 	initialize := func(dir string) {
 		t.Helper()
@@ -1486,10 +1479,7 @@ func treeOf(t *testing.T, root string) map[string]string {
 // backend reported it (the index jj rewrites as it snapshots the working copy, as in LEGION-731)
 // or a git command jj ran; and the lock stays.
 func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	for _, tc := range []struct {
 		name string
 		// script is the PATH's jj, given the real jj and the lock.
@@ -1555,6 +1545,143 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 				t.Fatalf("the lock after the failed adoption: %v, want it left in place", err)
 			}
 		})
+	}
+}
+
+// An adoption that fails answers its reason to the daemon on the connection it was asked on,
+// however much jj wrote to its standard error. The answer goes out as one line, and an error
+// longer than one line can hold would make an answer the writer refuses: the shim would close the
+// connection and send that line first again at each reconnect, so the role's stream would stay
+// down (ASVS v5.0.0-15.2.2). The answer keeps the start of the reason, which names the command and
+// its exit, and its end, where the note about a stale git lock goes, which tells the role what to
+// do; it says that the shim cut the bytes between. The connection then carries the next answer.
+func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testing.T) {
+	workspace := t.TempDir()
+	lock := filepath.Join(workspace, ".git", "index.lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	written := time.Now().Add(-31 * time.Minute)
+	if err := os.Chtimes(lock, written, written); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\necho 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\n"+
+		"echo >&2\necho \"fatal: Unable to create '%s': File exists.\" >&2\nexit 1\n", 2*shimwire.MaxFrameBytes, lock)
+	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := newOMP(t)
+	cfg := config(t, path, child)
+	cfg.Env = append(fixtureenv.Isolated(t.TempDir()), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker,
+		"FAKE_OMP_LOG="+child.log, "LEGION_WORKSPACE="+workspace)
+	run(t, cfg, newClock())
+	p := daemon.accept(t)
+	p.open(t)
+	p.send(t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: "tester", JJEmail: "tester@example.test", TimeoutMs: 10000})
+	got, ok := p.next(t).(shimwire.AdoptWorkingCopyResult)
+	if !ok || got.ID != "adopt" || got.OK {
+		t.Fatalf("the shim answered %#v, want the failed adoption", got)
+	}
+	// The shim keeps 4 KiB of a reason and a line that says what it cut (shim's cutAnswerError).
+	if len(got.Error) > 8<<10 {
+		t.Fatalf("the failed adoption's reason has %d bytes, want it cut to about 4 KiB", len(got.Error))
+	}
+	for _, want := range []string{
+		"Command failed (exit 1)",
+		"the working copy is stale",
+		"The shim cut",
+		"git lock " + lock + " was last written 31m",
+		"Run the command again in about 16 minutes.",
+	} {
+		if !strings.Contains(got.Error, want) {
+			t.Errorf("the failed adoption's reason %.300q ... %.300q does not say %q", got.Error, got.Error[max(len(got.Error)-300, 0):], want)
+		}
+	}
+	p.send(t, shimwire.GetState{ID: "after"})
+	if answer, ok := p.next(t).(shimwire.Response); !ok || answer.ID != "after" {
+		t.Fatalf("the shim sent %#v, want OMP's answer to the get_state after the adoption on the same connection", answer)
+	}
+}
+
+// The jj every role runs, and the one CI tests with, is the pin .github/ci-tools.yaml names
+// (.github/actions/install-jj installs it; the worker image's ARG JJ_TOOL names the same release):
+// a release of sjawhar/jj whose vendored gix-pack maps each pack as chunks kept resident up to a
+// budget, JJ_PACK_MAPPED_LIMIT, where upstream gix-pack maps it whole, and under gVisor the first
+// read of a pack mapped whole counts all of it as the process's memory (dispatch://INFRA-4036). A
+// pin of a release built without that patch, an older one or a later one whose gix raise leaves
+// its [patch.crates-io] entry unused, maps every pack whole again, and no other test sees it: on
+// the small repositories tests build, the two read alike. The variable tells them apart: the
+// patched mapping refuses a value that is not a budget at every pack open
+// (lib/chunked-mmap/src/chunked.rs, open), and an unpatched jj never reads it. So on a git
+// repository whose one commit sits in its one pack, the jj on PATH lists the commit's file under
+// JJ_PACK_MAPPED_LIMIT=512m and fails under JJ_PACK_MAPPED_LIMIT=not-a-number, where jj
+// 0.45.1-sami.20260910-043938 and v0.46.0-sami.20261008-234600 list the file both times. The
+// crate's own refusal names the variable, but it never reaches the user: gix-odb takes the pack it
+// could not open as absent, and jj reports the commit not found, so that is what the test asserts.
+// The chunked mapping is Linux's alone: on any other target the crate maps a pack whole and reads
+// no variable.
+func TestThePinnedJJCarriesTheChunkedPackPatch(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skipf("the chunked pack mapping is Linux's alone: on %s the patched jj reads no JJ_PACK_MAPPED_LIMIT", runtime.GOOS)
+	}
+	jj := fixturegit.CompiledJJ(t)
+	const file = "README.md"
+	home := t.TempDir()
+	repository := t.TempDir()
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(repository, fixturegit.InitWorkTree(repository, "main")...)
+	if err := os.WriteFile(filepath.Join(repository, file), []byte("smoke\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture.Run(repository, "git", "add", file)
+	fixture.Run(repository, "git", "commit", "--quiet", "-m", "the one commit")
+	fixture.Run(repository, "git", "repack", "-ad")
+	head := fixture.Run(repository, "git", "rev-parse", "HEAD")
+	// jj must read the commit from the pack: the patched mapping reads the variable as it opens a
+	// pack, and a loose copy of the commit is read with no pack opened at all.
+	packs, err := filepath.Glob(filepath.Join(repository, ".git", "objects", "pack", "*.pack"))
+	if err != nil || len(packs) != 1 {
+		t.Fatalf("git repack -ad left the packs %v (%v), want exactly one", packs, err)
+	}
+	loose := filepath.Join(repository, ".git", "objects", head[:2], head[2:])
+	if _, err := os.Lstat(loose); err == nil {
+		t.Fatalf("the commit %s is still a loose object (%s) after git repack -ad, want it in the pack alone", head, loose)
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	// The init takes no -R and opens no workspace, so with no Dir jj would walk up from the test
+	// process's directory to the closest .jj and write that repository.
+	fixture.Run(repository, append([]string{jj}, fixturegit.JJInit(repository, true)[1:]...)...)
+
+	// list lists the files of @-, HEAD's commit, under one JJ_PACK_MAPPED_LIMIT, which the command's
+	// own environment carries: fixtureenv.MustGuard took every JJ_ variable out of the test process.
+	list := func(limit string) (stdout, stderr string, err error) {
+		t.Helper()
+		var out, errOut strings.Builder
+		command := exec.Command(jj, "--ignore-working-copy", "file", "list", "-r", "@-")
+		command.Dir = repository
+		command.Env = append(fixtureenv.Isolated(home), "JJ_PACK_MAPPED_LIMIT="+limit)
+		command.Stdout, command.Stderr = &out, &errOut
+		err = command.Run()
+		return out.String(), errOut.String(), err
+	}
+	if stdout, stderr, err := list("512m"); err != nil || strings.TrimSpace(stdout) != file {
+		t.Fatalf("under JJ_PACK_MAPPED_LIMIT=512m, jj --ignore-working-copy file list -r @- ended %v and printed %q, on stderr %q; want exit 0 and %s listed, as every jj lists it under a budget: an unpatched jj lists it under not-a-number too, and only that run tells the two apart", err, stdout, stderr, file)
+	}
+	stdout, stderr, err := list("not-a-number")
+	if err == nil {
+		t.Fatalf("under JJ_PACK_MAPPED_LIMIT=not-a-number, jj --ignore-working-copy file list -r @- exited 0 and printed %q: this jj ignores the variable, as a jj without the chunked-pack patch does (jj 0.45.1-sami.20260910-043938 and v0.46.0-sami.20261008-234600 list %s here too), where the patched gix-pack refuses the value as it opens the pack and jj reports the commit %s not found", stdout, file, head)
+	}
+	if !strings.Contains(stderr, head) || !strings.Contains(stderr, "not found") {
+		t.Fatalf("under JJ_PACK_MAPPED_LIMIT=not-a-number, jj --ignore-working-copy file list -r @- ended %v and printed %q, on stderr %q; want the commit %s not found, which is how the patched gix-pack's refusal of the value reaches the user (gix-odb takes the pack as absent), where an unpatched jj lists %s", err, stdout, stderr, head, file)
 	}
 }
 
@@ -1638,4 +1765,76 @@ func TestTheShimLogsAnExtensionError(t *testing.T) {
 	daemon.accept(t).open(t)
 
 	sh.log.awaitLine(t, "extension_error /opt/legion/pi-legion/dist/legion.js session_start: LEGION_DAEMON_URL is required for Legion", 1)
+}
+
+// A tool call's summary is its arguments cut to 80 runes, the last of them "…" where the cut took
+// any (redact.Runes), and the URL rule runs on them before the cut: a cut inside a userinfo, before
+// its "@", would leave a start of the user name that no rule after it reads as a userinfo. Wherever
+// the cut of the arguments as written falls, inside the userinfo or inside the query, the summary
+// holds no part of either: it is the cut of the arguments the rule left.
+func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
+	const url = "https://legion-reader@github.com/o/r.git?token=planted-query-token-4463"
+	for _, tc := range []struct {
+		name string
+		cut  string // what the 80-rune cut of the arguments as written leaves of url
+	}{
+		{"the cut inside the userinfo", "https://legion"},
+		{"the cut inside the query", "https://legion-reader@github.com/o/r.git?token=planted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The command before the URL is padded so that the arguments' first 80 runes end in tc.cut.
+			head := `{"command":"` + strings.Repeat("x", 80-len(`{"command":" `)-len(tc.cut)) + " "
+			path := socketPath(t)
+			daemon := listen(t, path)
+			child := newOMP(t, "FAKE_OMP_TOOL_ARGS="+head+url+`"}`)
+			sh := run(t, config(t, path, child), newClock())
+			daemon.accept(t).open(t)
+
+			sh.log.await(t, shimwire.TypeToolExecutionStart+" ", 1)
+			for line := range strings.Lines(sh.log.String()) {
+				if strings.HasPrefix(line, shimwire.TypeToolExecutionStart+" ") && (strings.Contains(line, "legion") || strings.Contains(line, "planted")) {
+					t.Fatalf("the summary %q holds a part of the URL's user name or of its query", line)
+				}
+			}
+			left := []rune(head + `https://github.com/o/r.git"}`)
+			summary := string(left)
+			if len(left) > 80 {
+				summary = string(left[:79]) + "…"
+			}
+			sh.log.awaitLine(t, shimwire.TypeToolExecutionStart+" bash "+summary, 1)
+		})
+	}
+}
+
+// jjRun runs one jj command in the workspace it reads, as every jj a test starts must
+// (docs/testing.md).
+func jjRun(t *testing.T, home, dir string, args ...string) string {
+	t.Helper()
+	return workspaceCommand(t, home, dir, append([]string{"jj"}, args...))
+}
+
+// jjGit runs one git command in the workspace it reads, as jjRun runs a jj.
+func jjGit(t *testing.T, home, dir string, args ...string) string {
+	t.Helper()
+	return workspaceCommand(t, home, dir, append([]string{"git"}, args...))
+}
+
+// workspaceCommand runs one jj or git of a fixture's workspace under the isolated environment
+// this package's fixtures use (fixtureenv.Isolated), so no command of a test reads the git or jj
+// configuration, the credentials or the LEGION_ variables of whoever runs the tests — in a pod, of
+// the role whose live workspace this binary stands in. Isolated's own JJ_CONFIG names a file that
+// does not exist, which is what keeps the host's jj configuration out; the fixture writes none of
+// its own.
+//
+// home is the fixture's, and the shim under test is given the same one, so the two read one
+// configuration (docs/testing.md). It is outside the workspace: a fixture asserts on what the
+// workspace holds, and a home under it would put jj's and git's own files into the very change
+// under test.
+func workspaceCommand(t *testing.T, home, dir string, args []string) string {
+	t.Helper()
+	return fixturegit.Isolated(t, home).With(
+		"JJ_USER=tester", "JJ_EMAIL=tester@example.test",
+		"GIT_AUTHOR_NAME=tester", "GIT_AUTHOR_EMAIL=tester@example.test",
+		"GIT_COMMITTER_NAME=tester", "GIT_COMMITTER_EMAIL=tester@example.test",
+	).Run(dir, args...)
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // stateClock is the registry's clock for the tests below: the real time moved on by what the test
@@ -45,25 +46,30 @@ func (c *stateClock) advance(d time.Duration) {
 // where a stalled session's record still stands to be read as unresponsive.
 func stalledSessionsRig(t *testing.T) (*listenerDeps, *stateClock) {
 	t.Helper()
-	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
+	return stalledSessionsRigOn(t, testnats.URL(t))
+}
+
+// stalledSessionsRigOn is stalledSessionsRig on the server uri names, one the test can stop
+// answering under live connections (testnats.Server.Freeze).
+func stalledSessionsRigOn(t *testing.T, uri string) (*listenerDeps, *stateClock) {
+	t.Helper()
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the bus: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	waitForRegistry(t, registry)
 	now := &stateClock{}
-	sessions, err := session.OpenSessionRegistry(
-		client.Conn,
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn,
 		session.WithSessionReplicas(1),
 		session.WithSessionTTL(time.Hour),
 		session.WithSessionClock(now.Now),
 		session.WithSessionLiveWindow(time.Minute),
-		session.WithSessionGoneHorizon(2*time.Minute),
-	)
+		session.WithSessionGoneHorizon(2*time.Minute))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -92,19 +98,20 @@ func register(t *testing.T, d *listenerDeps, sessionID string, entry session.Ses
 // session was simply absent, and every caller reading that absence - a Legion controller looking
 // for a worker to replace among them - read it as dead.
 func TestAStalledSessionIsListedOnlyWhenTheCallerAsksForTheUnresponsiveOnes(t *testing.T) {
+	t.Parallel()
 	d, now := stalledSessionsRig(t)
 	stalledAt := register(t, d, "ses_stalled", session.SessionEntry{MachineID: "test-machine", Dir: "/test/stalled", SelfSubscribed: true})
 	now.advance(90 * time.Second)
 	register(t, d, "ses_live", session.SessionEntry{MachineID: "test-machine", Dir: "/test/live", SelfSubscribed: true})
 
-	listed := func(query string) []sessionInfo {
+	listed := func(query string) []listenerwire.SessionInfo {
 		t.Helper()
 		recorder := httptest.NewRecorder()
-		sessionsHandler(d.registry, d.sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions"+query, nil))
+		sessionsHandler(d.registry, d.sessions, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions"+query, nil))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("GET /v1/sessions%s: status %d, body %s", query, recorder.Code, recorder.Body.String())
 		}
-		var rows []sessionInfo
+		var rows []listenerwire.SessionInfo
 		if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
 			t.Fatalf("decode GET /v1/sessions%s: %v", query, err)
 		}
@@ -134,6 +141,7 @@ func TestAStalledSessionIsListedOnlyWhenTheCallerAsksForTheUnresponsiveOnes(t *t
 // that reads them can tell "stalled" from "gone". With include=unresponsive it answers the
 // session itself, which is how a caller that must still address it gets its port and its machine.
 func TestTheRegistryRouteAnswersAStalledSessionOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
 	d, now := stalledSessionsRig(t)
 	stalledAt := register(t, d, "ses_stalled", session.SessionEntry{MachineID: "test-machine", Dir: "/test/stalled", SelfSubscribed: true})
 	now.advance(90 * time.Second)
@@ -143,7 +151,7 @@ func TestTheRegistryRouteAnswersAStalledSessionOnlyWhenAsked(t *testing.T) {
 	if refused.Code != http.StatusNotFound {
 		t.Fatalf("GET /v1/registry/ses_stalled: status %d, body %s; want 404", refused.Code, refused.Body.String())
 	}
-	var refusal noLiveSessionRefusal
+	var refusal listenerwire.NoLiveSessionRefusal
 	if err := json.Unmarshal(refused.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", refused.Body.String(), err)
 	}
@@ -159,7 +167,7 @@ func TestTheRegistryRouteAnswersAStalledSessionOnlyWhenAsked(t *testing.T) {
 	if asked.Code != http.StatusOK {
 		t.Fatalf("GET /v1/registry/ses_stalled?include=unresponsive: status %d, body %s; want 200", asked.Code, asked.Body.String())
 	}
-	var info sessionInfo
+	var info listenerwire.SessionInfo
 	if err := json.Unmarshal(asked.Body.Bytes(), &info); err != nil {
 		t.Fatalf("decode the answer %s: %v", asked.Body.String(), err)
 	}
@@ -178,6 +186,7 @@ func TestTheRegistryRouteAnswersAStalledSessionOnlyWhenAsked(t *testing.T) {
 // lookup: one lookup used to be enough to lose the role, and a pass of the reaper used to end it
 // on the session cache's word alone.
 func TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas(t *testing.T) {
+	t.Parallel()
 	d, now := stalledSessionsRig(t)
 	const (
 		role   = "reviewer"
@@ -193,11 +202,11 @@ func TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas(t *tes
 
 	for attempt := range 5 {
 		recorder := httptest.NewRecorder()
-		roleGetHandler(d).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+		roleGetHandler(d, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 		if recorder.Code != http.StatusNotFound {
 			t.Fatalf("lookup %d: status %d, body %s; want 404", attempt, recorder.Code, recorder.Body.String())
 		}
-		var answer roleHolderError
+		var answer listenerwire.RoleRefusal
 		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 			t.Fatalf("decode lookup %d's answer %s: %v", attempt, recorder.Body.String(), err)
 		}
@@ -237,6 +246,7 @@ func TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas(t *tes
 // prefix a sender routes around the pane on, and names the state and the registration the
 // refusal was decided on.
 func TestASendIsStoredForAStalledSessionAndRefusedForAGoneOne(t *testing.T) {
+	t.Parallel()
 	d, now := stalledSessionsRig(t)
 	const sessionID = "ses_stalled_recipient"
 	registeredAt := register(t, d, sessionID, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -254,7 +264,7 @@ func TestASendIsStoredForAStalledSessionAndRefusedForAGoneOne(t *testing.T) {
 	if accepted.Code != http.StatusOK {
 		t.Fatalf("send to a stalled self-subscribed session: status %d, body %s; want 200", accepted.Code, accepted.Body.String())
 	}
-	var answer sendResponse
+	var answer listenerwire.SendResponse
 	if err := json.Unmarshal(accepted.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the send answer %s: %v", accepted.Body.String(), err)
 	}
@@ -267,7 +277,7 @@ func TestASendIsStoredForAStalledSessionAndRefusedForAGoneOne(t *testing.T) {
 	if refused.Code != http.StatusNotFound {
 		t.Fatalf("send to a gone session: status %d, body %s; want 404", refused.Code, refused.Body.String())
 	}
-	var refusal noLiveSessionRefusal
+	var refusal listenerwire.NoLiveSessionRefusal
 	if err := json.Unmarshal(refused.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", refused.Body.String(), err)
 	}
@@ -287,6 +297,7 @@ func TestASendIsStoredForAStalledSessionAndRefusedForAGoneOne(t *testing.T) {
 // A6). A session this rig holds no record and no remembered registration for is exactly the state
 // a restart leaves.
 func TestARefusalThatCannotNameTheLastRegistrationSaysSo(t *testing.T) {
+	t.Parallel()
 	d, _ := stalledSessionsRig(t)
 	const sessionID = "ses_reaped_before_the_restart"
 
@@ -296,7 +307,7 @@ func TestARefusalThatCannotNameTheLastRegistrationSaysSo(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("send to a session the listener holds nothing for: status %d, body %s; want 404", recorder.Code, recorder.Body.String())
 	}
-	var refusal noLiveSessionRefusal
+	var refusal listenerwire.NoLiveSessionRefusal
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
@@ -320,6 +331,7 @@ func TestARefusalThatCannotNameTheLastRegistrationSaysSo(t *testing.T) {
 // restart, that the raise took. Without the field, a deployment whose bucket still drops records
 // after five minutes looks exactly like one that keeps them for ninety.
 func TestHealthzReportsTheSessionMaxAgeInUseAndFollowsAChangeWithinOnePass(t *testing.T) {
+	t.Parallel()
 	d, _ := stalledSessionsRig(t)
 	maxAge := func() string {
 		t.Helper()
@@ -337,7 +349,7 @@ func TestHealthzReportsTheSessionMaxAgeInUseAndFollowsAChangeWithinOnePass(t *te
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := bus.SetKeyValueMaxAge(js, bus.SessionBucket, 90*time.Minute); err != nil {
+	if _, err := bus.SetKeyValueMaxAge(t.Context(), d.client.Conn, js, bus.SessionBucket, 90*time.Minute); err != nil {
 		t.Fatalf("another process raising the bucket's maximum age: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

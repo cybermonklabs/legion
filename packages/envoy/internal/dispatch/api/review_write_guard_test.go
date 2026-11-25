@@ -5,6 +5,8 @@
 
 package api
 
+//ci:reads packages/envoy/**/*.go !**/*_test.go internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata and all) and :83 parses every .go file it finds but the test files (:80), for the tests that ask it for the module's sources: lock_level_test.go:91, event_insert_guard_test.go:46, review_order_guard_test.go:49, TestOnlyQueueReviewWritesReviews, one_expression_guard_test.go:72, issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 also walks packages/envoy and reads every non-test file of it as text
+
 import (
 	"go/ast"
 	"go/parser"
@@ -28,9 +30,9 @@ var (
 	reviewUpdateStatement = regexp.MustCompile(`(?i)\bupdate\s+(?:only\s+)?` + reviewTable)
 )
 
-// TestOnlyWriteReviewWritesReviews enforces what docs.ReviewOrder's `event_seq desc nulls last`
+// TestOnlyQueueReviewWritesReviews enforces what docs.ReviewOrder's `event_seq desc nulls last`
 // rests on: every review committed after migration 0120 carries the sequence of its artifact.*
-// event, so a row without one is older than every row with one. docs.WriteReview inserts the row
+// event, so a row without one is older than every row with one. docs.QueueReview inserts the row
 // and then writes the sequence of the event it appended; the migration's trigger covers the
 // release before 0120 alone, and only when the inserting transaction appended that event on the
 // document's owner. A review inserted anywhere else, with no event or with the event appended
@@ -47,7 +49,8 @@ var (
 // A table name built at run time is beyond it. A test writes reviews directly on purpose -- the
 // previous release's insert, a row recorded before the column -- so test sources are outside it,
 // as are the migrations, which are SQL files the scan does not read.
-func TestOnlyWriteReviewWritesReviews(t *testing.T) {
+func TestOnlyQueueReviewWritesReviews(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
@@ -82,14 +85,14 @@ func TestOnlyWriteReviewWritesReviews(t *testing.T) {
 		}
 	}
 	if len(offences) > 0 {
-		t.Fatalf("only docs.WriteReview (%s) may write artifact_reviews, and these statements also do:\n\t%s\n"+
-			"Record a review through docs.WriteReview instead. It writes the sequence of the review's "+
+		t.Fatalf("only docs.QueueReview (%s) may write artifact_reviews, and these statements also do:\n\t%s\n"+
+			"Record a review through docs.QueueReview instead. It writes the sequence of the review's "+
 			"artifact.* event in the review's own transaction, and docs.ReviewOrder ranks a review "+
 			"without one below every review with one.", reviewWriter, strings.Join(offences, "\n\t"))
 	}
 	if inserts != 1 || updates != 2 {
 		t.Fatalf("%s holds %d review inserts and %d review updates the scan can see, want 1 insert and 2 updates: "+
-			"if WriteReview's statements moved or were written around a value this scan cannot "+
+			"if QueueReview's statements moved or were written around a value this scan cannot "+
 			"resolve, this guard now passes by seeing nothing", reviewWriter, inserts, updates)
 	}
 }
@@ -124,6 +127,7 @@ func reviewTableIdentifiers(file *ast.File, positions *token.FileSet) []int {
 // The patterns read the table under every name a statement can give it, and refuse no other
 // table whose name starts the same way.
 func TestTheReviewWriterPatternsReadEveryNameOfTheTable(t *testing.T) {
+	t.Parallel()
 	for _, statement := range []string{
 		`insert into artifact_reviews (id) values ($1)`,
 		`INSERT INTO public.artifact_reviews (id) values ($1)`,
@@ -153,6 +157,7 @@ func TestTheReviewWriterPatternsReadEveryNameOfTheTable(t *testing.T) {
 // A pgx.Identifier literal naming artifact_reviews, which a CopyFrom writes rows into, is found by
 // its line, and one naming another table is not.
 func TestTheReviewWriterScanFindsAnIdentifierNamingTheTable(t *testing.T) {
+	t.Parallel()
 	positions := token.NewFileSet()
 	file, err := parser.ParseFile(positions, "copy.go", `package x
 

@@ -66,8 +66,9 @@ func WithLogger(log *slog.Logger) Option {
 }
 
 // Open opens the registry's bucket on conn, creating it when it does not exist: file storage, no
-// TTL, one value per key, the replicas WithReplicas names.
-func Open(conn *nats.Conn, opts ...Option) (*Store, error) {
+// TTL, one value per key, the replicas WithReplicas names. ctx bounds the open's waits on the
+// cluster (bus.EnsureKeyValue).
+func Open(ctx context.Context, conn *nats.Conn, opts ...Option) (*Store, error) {
 	o := options{replicas: 1, now: time.Now, log: slog.Default()}
 	for _, opt := range opts {
 		opt(&o)
@@ -76,7 +77,7 @@ func Open(conn *nats.Conn, opts ...Option) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open legion agent registry JetStream: %w", err)
 	}
-	if _, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{
+	if _, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
 		Bucket:   bus.LegionAgentBucket,
 		History:  1,
 		Replicas: o.replicas,
@@ -84,7 +85,7 @@ func Open(conn *nats.Conn, opts ...Option) (*Store, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("open legion agent KV bucket: %w", err)
 	}
-	kv, err := openHandle(context.Background(), conn)
+	kv, err := openHandle(ctx, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +150,13 @@ func (s *Store) Get(ctx context.Context, sessionID string) (Agent, error) {
 	if err != nil {
 		return Agent{}, err
 	}
-	siblings, err := s.list(ctx, rolePrefix(entry.RoleToken))
+	// A session key holding another session's entry is no entry of this session (list).
+	if entry.SessionID != sessionID {
+		s.log.Warn("legion agent registry passed over an entry that names another key than the one it is stored under",
+			slog.String("key", sessionKey(sessionID)), slog.String("session_id", entry.SessionID))
+		return Agent{}, fmt.Errorf("%w %s", ErrNotFound, sessionID)
+	}
+	siblings, err := s.list(ctx, rolePrefix(entry.RoleToken), func(sibling Entry) bool { return sibling.RoleToken == entry.RoleToken })
 	if err != nil {
 		return Agent{}, err
 	}
@@ -164,7 +171,7 @@ func (s *Store) ByRoleToken(ctx context.Context, token string) ([]Agent, error) 
 	if err := ValidateRoleToken(token); err != nil {
 		return nil, err
 	}
-	entries, err := s.list(ctx, rolePrefix(token))
+	entries, err := s.list(ctx, rolePrefix(token), func(entry Entry) bool { return entry.RoleToken == token })
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +184,7 @@ func (s *Store) ByIssue(ctx context.Context, issue string) ([]Agent, error) {
 	if err := ValidateIssue(issue); err != nil {
 		return nil, err
 	}
-	entries, err := s.list(ctx, issuePrefix(issue))
+	entries, err := s.list(ctx, issuePrefix(issue), func(entry Entry) bool { return entry.Issue == issue })
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +215,13 @@ func (s *Store) read(ctx context.Context, sessionID string) (Entry, uint64, erro
 // The scan takes ctx, so the whole of it -- the watch's consumer create and every wait for the
 // next key -- ends with the caller's read, and its idle bound is ReadTimeout, so a scan under a
 // context that cannot end gives up no later than one of the store's other calls would.
-func (s *Store) list(ctx context.Context, prefix string) ([]Entry, error) {
+//
+// It answers only the entries of their keys: one stored under prefix and the session id it names,
+// which names what prefix names (of: the issue or the role token). The write stores each entry
+// under exactly those keys (putIndexKeys), but any writer of the bucket can store any entry under
+// any key, so an entry naming another issue, role token or session than its key is passed over and
+// logged, as no entry of the listing.
+func (s *Store) list(ctx context.Context, prefix string, of func(Entry) bool) ([]Entry, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -217,6 +230,12 @@ func (s *Store) list(ctx context.Context, prefix string) ([]Entry, error) {
 		var entry Entry
 		if err := json.Unmarshal(found.Value, &entry); err != nil {
 			return fmt.Errorf("decode legion agent key %s: %w", found.Key, err)
+		}
+		if found.Key != prefix+entry.SessionID || !of(entry) {
+			s.log.Warn("legion agent registry passed over an entry that names another key than the one it is stored under",
+				slog.String("key", found.Key), slog.String("session_id", entry.SessionID),
+				slog.String("issue", entry.Issue), slog.String("role_token", entry.RoleToken))
+			return nil
 		}
 		entries = append(entries, entry)
 		return nil

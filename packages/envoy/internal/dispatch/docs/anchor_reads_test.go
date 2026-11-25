@@ -29,7 +29,10 @@ type anchorRead struct {
 // from main as literals rather than built from this package's own helpers: built from the
 // helpers, an edit to a helper would move the oracle and the read together and the comparison
 // would pass whatever either said. Each is the read before this change added the uuid
-// comparison that its table's anchor index carries.
+// comparison that its table's anchor index carries. The last two keep main's `for share` and
+// their own names: this change dropped that lock from them, the caller holding the document
+// owner's lock instead (checkTableAnchorRows), and a row lock changes no row a read returns,
+// so each of them still returns exactly main's rows.
 const (
 	mainOpenAnchoredAsksQuery = `
 		select id::text, anchor, 'dispatchAsk'
@@ -108,14 +111,14 @@ func anchorReads() []anchorRead {
 			ordered: true,
 		},
 		{
-			name:    "lockTableAnchorRows asks",
-			query:   lockTableAskAnchorsQuery,
+			name:    "checkTableAnchorRows asks",
+			query:   tableAskAnchorsQuery,
 			oracle:  mainLockTableAskAnchorsQuery,
 			indexes: []string{asksAnchorTarget.index},
 		},
 		{
-			name:    "lockTableAnchorRows comments",
-			query:   lockTableCommentAnchorsQuery,
+			name:    "checkTableAnchorRows comments",
+			query:   tableCommentAnchorsQuery,
 			oracle:  mainLockTableCommentAnchorsQuery,
 			indexes: []string{commentsAnchorTarget.index},
 		},
@@ -136,6 +139,7 @@ var anchorReadParameters = []string{"text", "text[]"}
 // when a read's uuid comparison stops matching its index's expression, or when the clause that
 // makes the partial index eligible is dropped.
 func TestAnchorReadsSearchTheirTablesAnchorIndex(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	connection, err := database.Pool.Acquire(ctx)
@@ -264,6 +268,7 @@ func newAnchorFixture(t *testing.T) anchorFixture {
 // Every anchor read returns exactly the rows main's own statement returns over the same rows,
 // the upper-case and uncastable anchors of newAnchorFixture among them.
 func TestAnchorReadsReturnTheRowsMainsStatementsDo(t *testing.T) {
+	t.Parallel()
 	fixture := newAnchorFixture(t)
 	ctx := context.Background()
 	for _, read := range anchorReads() {
@@ -317,6 +322,7 @@ func anchorReadRows(t *testing.T, ctx context.Context, fixture anchorFixture, st
 // which would return it: take these rows out of the fixture and the comparison above passes
 // either way.
 func TestTheAnchorFixtureHoldsAnAnchorOutsideTheCanonicalForm(t *testing.T) {
+	t.Parallel()
 	fixture := newAnchorFixture(t)
 	var outside int
 	if err := fixture.database.Pool.QueryRow(context.Background(), `

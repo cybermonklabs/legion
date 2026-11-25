@@ -5,6 +5,7 @@ import { Link, useLocation } from "react-router-dom";
 import { ApiError } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
+import { DOCUMENT_SCROLL_ATTRIBUTE } from "../../hooks/useFootInset";
 import {
   linkHoverText,
   linkText,
@@ -15,8 +16,9 @@ import {
 import { type IssueRoute, parseIssuePath } from "../refs/routes";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { IssueContentsPane, PAGE_INSET } from "./contents-frame";
+import { useDrawerPage } from "./drawer-page";
 import type { SlotProps } from "./slot-props";
-import { ContentsSlot } from "./slots/contents";
 import { DetailsSlot } from "./slots/details";
 import { FootSlot } from "./slots/foot";
 import { HeaderSlot } from "./slots/header";
@@ -54,15 +56,20 @@ export function IssueOutlinePage(): ReactNode {
  */
 function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   const issue = useQuery(issueQuery(route.key));
+  // While the page is mounted, the shell's Details drawer draws its head in the page's words and
+  // lands an address on its cards by the page's rule.
+  useDrawerPage(issue.data);
 
   useDocumentTitle(
     issue.data === undefined ? "Dispatch" : `${issue.data.key} · ${issue.data.title} · Dispatch`
   );
 
+  // The shell gives the page's column no padding of its own (`app.tsx`), so what the page draws
+  // in place of its slots takes the inset its header would.
   if (issue.isError) {
     const notFound = issue.error instanceof ApiError && issue.error.status === 404;
     return (
-      <section>
+      <section className={`pt-2 ${PAGE_INSET}`}>
         <h1 className={`text-xl font-semibold ${textPrimaryOnCanvas}`}>
           {notFound ? "Issue not found" : "Couldn't load this issue"}
         </h1>
@@ -85,18 +92,35 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
     );
   }
   if (issue.data === undefined) {
-    return <p className={textMutedOnCanvas}>Loading issue…</p>;
+    return <p className={`pt-2 ${PAGE_INSET} ${textMutedOnCanvas}`}>Loading issue…</p>;
   }
 
+  // The slots, each given the same props: the header and the view row across the page; then the
+  // Contents pane against the rail with no view on (`contents-frame.tsx`), beside the one column
+  // that holds the stage and the foot, 10 px under the row and inset 28 px each side (14 px
+  // below 768 px), at least the screen's height so the foot stands at the screen's foot however
+  // short the stage is; then Details' slot, whose fill the shell draws in its drawer
+  // (R14). At 1440 px, beside the rail of 56 px, the page is 1384 px wide:
+  // under a view the stage has 1328 px inside its insets, and beside the 260 px pane 1068 px.
+  // The column carries `data-document-scroll`, so the foot's end room for the floats goes here
+  // (`FOOT_LAYERS` in `hooks/useFootInset.ts` says why).
   const props: SlotProps = { issue: issue.data, route };
   return (
     <ProvidersSlot {...props}>
       <HeaderSlot {...props} />
       <ViewRowSlot {...props} />
-      <StageSlot {...props} />
-      <FootSlot {...props} />
+      <div className="flex min-w-0 items-start">
+        <IssueContentsPane {...props} />
+        <div
+          className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}
+          data-testid="issue-column"
+          {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}
+        >
+          <StageSlot {...props} />
+          <FootSlot {...props} />
+        </div>
+      </div>
       <DetailsSlot {...props} />
-      <ContentsSlot {...props} />
     </ProvidersSlot>
   );
 }

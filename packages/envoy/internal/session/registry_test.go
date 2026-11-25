@@ -98,7 +98,7 @@ func TestSessionEntryTmuxPlaceSurvivesTheBucketAndIsOmittedWhenNil(t *testing.T)
 
 func TestSessionRegistry_PutAndGet(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestSessionRegistry_PutAndGet(t *testing.T) {
 // session list read back from the bucket names them.
 func TestSessionRegistry_PutAndGetKeepsThePluginAndItsVersion(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestSessionRegistry_PutAndGetKeepsThePluginAndItsVersion(t *testing.T) {
 // a predecessor can read whose instance that predecessor belongs to.
 func TestSessionRegistry_PutAndGetKeepsTheClientInstanceID(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestSessionRegistry_PutAndGetKeepsTheClientInstanceID(t *testing.T) {
 // than with another instance's id it no longer belongs to.
 func TestSessionRegistry_PutWithoutClientInstanceIDClearsTheStoredOne(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestSessionRegistry_PutWithoutClientInstanceIDClearsTheStoredOne(t *testing
 
 func TestSessionRegistry_GetNotFound(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestSessionRegistry_GetNotFound(t *testing.T) {
 
 func TestSessionRegistry_TTLExpiry(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestSessionRegistry_TTLExpiry(t *testing.T) {
 
 func TestSessionRegistry_PutRefreshesTTL(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestSessionRegistry_PutRefreshesTTL(t *testing.T) {
 
 func TestSessionRegistry_Delete(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -398,8 +398,7 @@ func TestSessionRegistryDeleteIf_RetriesOnceAfterALostCompareAndSwap(t *testing.
 	if err != nil {
 		t.Fatalf("encode the interleaved heartbeat: %v", err)
 	}
-	race := &interleavingSessionGetKeyValue{KeyValue: reg.watcher.KV().Legacy(), key: sessionID, value: heartbeat, interleaves: 1}
-	useKV(t, reg, race)
+	deletes := heartbeatBeforeDeletes(t, reg, sessionID, heartbeat, 1)
 
 	outcome, err := reg.DeleteIf(context.Background(), sessionID, DeleteConditions{ClientInstanceID: instanceID})
 	if err != nil {
@@ -408,8 +407,8 @@ func TestSessionRegistryDeleteIf_RetriesOnceAfterALostCompareAndSwap(t *testing.
 	if outcome != EntryDeleted {
 		t.Fatalf("DeleteIf = %s, want %s where its own heartbeat only lost it one compare-and-swap", outcome, EntryDeleted)
 	}
-	if got := race.reads(); got != 2 {
-		t.Fatalf("read the entry %d times, want the one retry (2)", got)
+	if got := deletes(); got != 2 {
+		t.Fatalf("made %d fenced deletes, want the one retry (2)", got)
 	}
 	if _, err := reg.watcher.KV().Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("read the deleted key: %v, want nats.ErrKeyNotFound", err)
@@ -466,8 +465,7 @@ func TestSessionRegistryDeleteIf_KeepsTheEntryAfterTwoLostCompareAndSwaps(t *tes
 	if err != nil {
 		t.Fatalf("encode the interleaved heartbeat: %v", err)
 	}
-	race := &interleavingSessionGetKeyValue{KeyValue: reg.watcher.KV().Legacy(), key: sessionID, value: heartbeat, interleaves: 2}
-	useKV(t, reg, race)
+	deletes := heartbeatBeforeDeletes(t, reg, sessionID, heartbeat, 2)
 
 	outcome, err := reg.DeleteIf(context.Background(), sessionID, DeleteConditions{ClientInstanceID: instanceID})
 	if err != nil {
@@ -476,11 +474,35 @@ func TestSessionRegistryDeleteIf_KeepsTheEntryAfterTwoLostCompareAndSwaps(t *tes
 	if outcome != EntryKeptAfterLostRace {
 		t.Fatalf("DeleteIf = %s, want %s after both compare-and-swaps lost", outcome, EntryKeptAfterLostRace)
 	}
-	if got := race.reads(); got != 2 {
-		t.Fatalf("read the entry %d times, want the one retry (2)", got)
+	if got := deletes(); got != 2 {
+		t.Fatalf("made %d fenced deletes, want the one retry (2)", got)
 	}
 	if _, err := reg.watcher.KV().Get(sessionID); err != nil {
 		t.Fatalf("read the entry that stayed: %v, want it still stored", err)
+	}
+}
+
+// heartbeatBeforeDeletes rebuilds reg over a handle on its bucket that writes heartbeat under
+// sessionID just before each of the first lost deletes through it (faultyDeleteKeyValue), so each
+// of those fenced deletes loses its compare-and-swap whichever read reported the revision it is
+// fenced on: DeleteIf's first read is a direct get and its retry's the stream leader's
+// (readForStop), and a write landed between either and its delete. It returns how many deletes
+// the handle has passed, one per DeleteIf attempt.
+func heartbeatBeforeDeletes(t *testing.T, reg *SessionRegistry, sessionID string, heartbeat []byte, lost int) func() int {
+	t.Helper()
+	race := &faultyDeleteKeyValue{KeyValue: reg.watcher.KV().Legacy()}
+	useKV(t, reg, race)
+	race.armFault(func(n int) error {
+		if n > lost {
+			return nil
+		}
+		_, err := race.KeyValue.Put(sessionID, heartbeat)
+		return err
+	})
+	return func() int {
+		race.mu.Lock()
+		defer race.mu.Unlock()
+		return race.deletes
 	}
 }
 
@@ -540,7 +562,7 @@ func TestSessionRegistryDeleteIf_DeletesARegistrationNoNewerThanTheMoment(t *tes
 func openRegistryForInstanceDelete(t *testing.T) *SessionRegistry {
 	t.Helper()
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
@@ -564,7 +586,7 @@ func putForInstanceDelete(t *testing.T, reg *SessionRegistry, sessionID, instanc
 
 func TestSessionRegistry_Ping_Healthy(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open: %v", err)
 	}
@@ -577,7 +599,7 @@ func TestSessionRegistry_Ping_ClosedConnReturnsError(t *testing.T) {
 	// A closed KV handle must remain observable through Ping so /healthz can
 	// report the unavailable dependency while NATS reconnects.
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open: %v", err)
 	}
@@ -594,7 +616,7 @@ func TestSessionRegistry_Ping_ClosedConnReturnsError(t *testing.T) {
 
 func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 	client := setupNATS(t)
-	registry, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	registry, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
 	}
@@ -648,7 +670,7 @@ func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
 	logs := captureSessionRegistryLogs(t)
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
@@ -682,7 +704,7 @@ func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
 
 func TestSessionRegistryPutDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
@@ -726,7 +748,7 @@ func TestSessionRegistryPutDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 
 func TestSessionRegistryDeleteHistoryFailureSuppressesStaleWatcherUpdate(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
@@ -786,6 +808,9 @@ func useKV(t *testing.T, r *SessionRegistry, kv natsgo.KeyValue) {
 	}
 }
 
+// interleavingSessionPutKeyValue writes through afterFirstPut once the first entry write has
+// landed, whichever call made it: PutWithin writes conditionally (Create over no entry, Update
+// over a revision), and an unconditional Put is counted the same way.
 type interleavingSessionPutKeyValue struct {
 	natsgo.KeyValue
 
@@ -794,11 +819,22 @@ type interleavingSessionPutKeyValue struct {
 }
 
 func (kv *interleavingSessionPutKeyValue) Put(key string, value []byte) (uint64, error) {
-	kv.puts++
-	revision, err := kv.KeyValue.Put(key, value)
+	return kv.wrote(kv.KeyValue.Put(key, value))
+}
+
+func (kv *interleavingSessionPutKeyValue) Create(key string, value []byte) (uint64, error) {
+	return kv.wrote(kv.KeyValue.Create(key, value))
+}
+
+func (kv *interleavingSessionPutKeyValue) Update(key string, value []byte, last uint64) (uint64, error) {
+	return kv.wrote(kv.KeyValue.Update(key, value, last))
+}
+
+func (kv *interleavingSessionPutKeyValue) wrote(revision uint64, err error) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	kv.puts++
 	if kv.puts == 1 {
 		kv.afterFirstPut()
 	}
@@ -807,9 +843,8 @@ func (kv *interleavingSessionPutKeyValue) Put(key string, value []byte) (uint64,
 
 // interleavingSessionGetKeyValue writes value under key after each of the first interleaves reads
 // of key, so whatever that reader does next loses its compare-and-swap: the revision it read is
-// no longer the last one by the time it deletes. One interleaved write is the heartbeat
-// DeleteIf retries past; two leave it no attempt that can land. Reads of any other key,
-// and reads that did not answer, pass straight through and are not counted.
+// no longer the last one by the time it writes. Reads of any other key, and reads that did not
+// answer, pass straight through and are not counted.
 type interleavingSessionGetKeyValue struct {
 	natsgo.KeyValue
 
@@ -817,8 +852,9 @@ type interleavingSessionGetKeyValue struct {
 	value       []byte
 	interleaves int
 
-	mu   sync.Mutex
-	gets int
+	mu       sync.Mutex
+	gets     int
+	firstGot []byte
 }
 
 func (kv *interleavingSessionGetKeyValue) Get(key string) (natsgo.KeyValueEntry, error) {
@@ -829,6 +865,9 @@ func (kv *interleavingSessionGetKeyValue) Get(key string) (natsgo.KeyValueEntry,
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	kv.gets++
+	if kv.firstGot == nil {
+		kv.firstGot = append([]byte(nil), entry.Value()...)
+	}
 	if kv.gets > kv.interleaves {
 		return entry, nil
 	}
@@ -838,11 +877,20 @@ func (kv *interleavingSessionGetKeyValue) Get(key string) (natsgo.KeyValueEntry,
 	return entry, nil
 }
 
-// reads is how often the key was read through this bucket, one per DeleteIf attempt.
+// reads is how often the key was read through this bucket.
 func (kv *interleavingSessionGetKeyValue) reads() int {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	return kv.gets
+}
+
+// firstGetValue is the raw record the first read of key returned to its caller, captured before
+// this seam wrote value over the key. It is what a reader's direct get actually saw, where Refresh
+// re-reads the cache after applying the read and so can answer the newer value this seam wrote.
+func (kv *interleavingSessionGetKeyValue) firstGetValue() []byte {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	return kv.firstGot
 }
 
 type historyFailSessionKeyValue struct {

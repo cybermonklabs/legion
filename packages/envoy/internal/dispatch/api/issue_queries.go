@@ -12,10 +12,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // issueStatusOrderSQL derives the SQL ordering from Dispatch's canonical lifecycle.
@@ -63,7 +65,7 @@ var (
 // the relation read, the inheritance walk it climbs and the columns' join, and answers the three
 // columns as the constants an issue with no relation reads as, so one scan and one argument list
 // serve both texts. Its one caller is the speed test that holds the relation read to twice the
-// time of the same page without it; every text the server runs passes true. The `advances`
+// work of the same page without it; every text the server runs passes true. The `advances`
 // filter term stays in both, because it is a filter rather than a read: a request that names no
 // `advances` key leaves its seed gated off (issueAdvancesFilterTerms), so the text without the
 // read measures the read alone. The move into `backlog` or `icebox` stays in both for the same
@@ -359,8 +361,6 @@ func issueSummaryJoins(readAdvances bool) string {
 }
 
 const (
-	maxIssueLabels  = 20
-	maxIssueLabel16 = 40
 	// unsetPriorityFilter is the `priority` query value that matches an issue with no priority.
 	unsetPriorityFilter = "none"
 	// noAdvancesFilter is the `advances` query value that matches an issue advancing no live
@@ -438,24 +438,6 @@ func parseAdvancesFilter(values []string) (ids []string, none, some bool, err er
 	}
 	slices.Sort(ids)
 	return slices.Compact(ids), none, some, nil
-}
-
-// microsecondCeiling is a listing's time bound as the statement compares it. Postgres stores a
-// timestamptz to the microsecond and pgx encodes a bound by truncating its nanoseconds, which
-// lowers it: an issue stored at the truncated microsecond, before the bound the caller named,
-// would be kept by `>= since` and dropped by `< before`. Every stored time is a whole
-// microsecond, so it is at or after a bound exactly when it is at or after the bound rounded up
-// to the next microsecond, and before the bound exactly when it is before that: rounding up keeps
-// both meanings. nil is no bound.
-func microsecondCeiling(bound *time.Time) *time.Time {
-	if bound == nil {
-		return nil
-	}
-	ceiling := bound.Truncate(time.Microsecond)
-	if ceiling.Before(*bound) {
-		ceiling = ceiling.Add(time.Microsecond)
-	}
-	return &ceiling
 }
 
 // claimScan reads an issue's two claim columns as one nullable claim. A row has both or
@@ -537,15 +519,15 @@ func (a *advancesScan) resolve() []model.IssueAdvance {
 }
 
 func normalizeIssueLabels(values []string) ([]string, error) {
-	if len(values) > maxIssueLabels {
-		return nil, countExceededError("LABELS_INPUT", "labels", len(values), maxIssueLabels)
+	if len(values) > contracts.MaxIssueLabels {
+		return nil, countExceededError("LABELS_INPUT", "labels", len(values), contracts.MaxIssueLabels)
 	}
 	labels := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		label := strings.TrimSpace(value)
-		if length := itemblocks.Units16(label); length == 0 || length > maxIssueLabel16 {
-			return nil, errorf(http.StatusBadRequest, "LABELS_INPUT", "each label must be 1 to %d characters", maxIssueLabel16)
+		if length := itemblocks.Units16(label); length == 0 || length > contracts.IssueLabelMax {
+			return nil, errorf(http.StatusBadRequest, "LABELS_INPUT", "each label must be 1 to %d characters", contracts.IssueLabelMax)
 		}
 		key := strings.ToLower(label)
 		if _, duplicate := seen[key]; duplicate {
@@ -643,8 +625,8 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// The move into `backlog` or `icebox` is read only when the request asks for it, and a row
 	// carries its two cells only then (model.IssueSummary's MovedAt and MovedBy).
 	moved := query.Get("moved") == "true"
-	arguments := []any{project, statuses, parent, microsecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
-		microsecondCeiling(closedSince), microsecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved}
+	arguments := []any{project, statuses, parent, store.MicrosecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
+		store.MicrosecondCeiling(closedSince), store.MicrosecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved}
 	if pinned {
 		arguments = append(arguments, login)
 	}
@@ -828,14 +810,15 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // counts, its children and its own backlink count, every one of them a connection taken and
 // given back in turn (store.sharedPoolSize says what that costs a loaded server).
 //
-// Batch 1 is everything keyed on the issue key alone: the issue row, its external links, its
-// artifacts, its open asks, its children and its backlink count. A key no issue carries is what
-// the issue row's callback records, answered as that row's pgx.ErrNoRows - 404 NOT_FOUND - once
-// the batch has closed: a callback that returned the error would close the batch on it, and pgx
-// invalidates every statement of a batch whose Close answers an error in the connection's
-// statement and description caches (invalidateCachesOnBatchResultsError), so one 404 would cost
-// that connection the whole read's prepared statements. The other callbacks run against an issue
-// with no row, answer empty lists, and readIssue drops them with the rest of the read.
+// Batch 1 is everything keyed on the issue key alone: the issue row, its external links, the
+// issues it blocks, its artifacts, its open asks, its children, its comment count and its backlink
+// count. A key no issue carries is what the issue row's callback records, answered as that row's
+// pgx.ErrNoRows - 404 NOT_FOUND - once the batch has closed: a callback that returned the error
+// would close the batch on it, and pgx invalidates every statement of a batch whose Close answers
+// an error in the connection's statement and description caches
+// (invalidateCachesOnBatchResultsError), so one 404 would cost that connection the whole read's
+// prepared statements. The other callbacks run against an issue with no row, answer empty lists,
+// and readIssue drops them with the rest of the read.
 //
 // Batch 2 is what only batch 1's answers name: every artifact's versions in one statement, the
 // documents' latest reviews and open approval requests, and the open asks' identity events and
@@ -850,10 +833,11 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // a statement of its own for the listener's stored answer (storedRouteRoster), and a shared listener
 // fetch only when that answer is stale, so a routed issue's read is one round trip more.
 func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
-	read, err := s.readIssue(r.Context(), r.PathValue("key"), wantsDisplayTrees(r))
+	read, err := s.readIssue(r.Context(), who, r.PathValue("key"), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -874,20 +858,35 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 // encoding all three answer.
 type issueDetail struct {
 	model.Issue
+	// Blocks is the keys of the issues whose blocked_by names this one, sorted, [] when none: the
+	// issue_links rows blocked_by reads, read by their target (issueBlocksStatement). It is this
+	// read's alone. model.Issue is also an issue event's payload and a write's answer, which a
+	// write of another issue never updates, and a listing row (model.IssueSummary) carries none.
+	// It comes before the lists below, so a reader that keeps only the start of a long read - an
+	// agent whose context cuts the rest, say - still has it. readIssue always sets it, so the read
+	// always writes it; omitzero leaves out only a nil list, and makes the field optional in the
+	// generated types, so a value typed before the field still type-checks.
+	Blocks []string `json:"blocks,omitzero"`
 	model.IssueRouteReach
 	// IssueClaimLiveness sits beside the issue rather than inside its claim: model.IssueClaim
 	// is the payload of issue.claimed and issue.released, and a state read at this moment
 	// must never be stored in one (model.IssueClaimLiveness carries the rest of the reason).
 	model.IssueClaimLiveness
-	Progress  model.IssueProgress `json:"progress"`
-	Artifacts []artifactRead      `json:"artifacts"`
-	OpenAsks  []issueOpenAsk      `json:"open_asks"`
-	Children  []model.IssueChild  `json:"children"`
+	Progress model.IssueProgress `json:"progress"`
+	// CommentCount is how many comments the issue holds, each one its comment list (GET
+	// /api/v1/issues/{key}/comments) answers, so a reader of the issue alone knows it has comments
+	// to read. An issue with none leaves it out. It comes before the lists below, so a reader that
+	// keeps only the start of a long read still has it.
+	CommentCount int                `json:"comment_count,omitempty"`
+	Artifacts    []artifactRead     `json:"artifacts"`
+	OpenAsks     []issueOpenAsk     `json:"open_asks"`
+	Children     []model.IssueChild `json:"children"`
 	// DesignGates is the document each of this issue's Legion design-gate steps records
-	// (design_gates, PUT /api/v1/issues/{key}/design-gates), in the order a gate runs the
-	// steps. An issue whose gates record nothing carries [], as the route's own answer does:
-	// the record Dispatch holds is part of the issue, and a missing list would say the read
-	// never asked rather than that no gate names a document here.
+	// (design_gates, PUT /api/v1/issues/{key}/design-gates), with whether the deployment's gate
+	// holds the issue's tree on that step (null where the daemon that published it said nothing
+	// of it), in the order a gate runs the steps. An issue whose gates record nothing carries [],
+	// as the route's own answer does: the record Dispatch holds is part of the issue, and a
+	// missing list would say the read never asked rather than that no gate names a document here.
 	DesignGates []issueDesignGate `json:"design_gates"`
 	// ReferencedByCount is what the header's `Referenced by (N)` control names. The page
 	// pays for it here, with the detail it already reads, instead of a graph request of
@@ -896,11 +895,12 @@ type issueDetail struct {
 }
 
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
-// loaders run - loadIssueWithProgress, loadArtifacts, queryOwnerAsks with issueOpenAsksOf,
-// issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
-// the same bytes. trees is what the request asked for (wantsDisplayTrees): the display trees of
-// the documents' approval reasons and of the open asks' texts, which only the dashboard reads.
-func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDetail, error) {
+// loaders run - loadIssueWithProgress, issueBlocksStatement, loadArtifacts, queryOwnerAsks with
+// issueOpenAsksOf, issueChildrenStatement with scanIssueChildren, issueCommentCountStatement and
+// refs.BacklinkCounts - so the two paths answer the same bytes. trees is what the request asked
+// for (wantsDisplayTrees): the display trees of the documents' approval reasons and of the open
+// asks' texts, which only the dashboard reads.
+func (s *server) readIssue(ctx context.Context, who model.Actor, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
 	var artifacts []model.Artifact
@@ -924,6 +924,9 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 		links = scanned
 		return err
 	})
+	first.Queue(issueBlocksStatement, key).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&read.Blocks)
+	})
 	first.Queue(issueArtifactsStatement, key).Query(func(rows pgx.Rows) error {
 		scanned, err := collectArtifacts(rows)
 		artifacts = scanned
@@ -944,7 +947,10 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 		read.DesignGates = scanned
 		return err
 	})
-	if err := refs.QueueBacklinkCounts(first, "issue", []string{key}, nil, issueCounts); err != nil {
+	first.Queue(issueCommentCountStatement, key).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&read.CommentCount)
+	})
+	if err := refs.QueueBacklinkCounts(first, who, "issue", []string{key}, nil, issueCounts); err != nil {
 		return issueDetail{}, err
 	}
 	if err := s.deps.Store.Pool.SendBatch(ctx, first).Close(); err != nil {
@@ -956,7 +962,7 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	read.Issue.ExternalLinks = links
 	read.ReferencedByCount = issueCounts[read.Issue.Key]
 
-	if err := s.readIssueDetails(ctx, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
+	if err := s.readIssueDetails(ctx, who, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
 		return issueDetail{}, err
 	}
 	// The approvals are read by the second batch, so their reasons are registered after it,
@@ -974,10 +980,10 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 // into the artifacts and asks it read, by the one queue-and-apply each of them has
 // (queueArtifactDetails, queueAskDetails). An issue with no artifact and no open ask names
 // nothing, so it queues nothing and sends no batch.
-func (s *server) readIssueDetails(ctx context.Context, artifacts []*model.Artifact, asks []*model.Ask) error {
+func (s *server) readIssueDetails(ctx context.Context, who model.Actor, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
 	applyArtifacts := queueArtifactDetails(batch, artifacts)
-	applyAsks := queueAskDetails(batch, asks)
+	applyAsks := queueAskDetails(batch, who, asks)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -1050,6 +1056,19 @@ var issueRowStatement = `
 // issueExternalLinksStatement reads an issue's external links, $1 its key, in the order the
 // response lists them; scanExternalLinks decodes them.
 const issueExternalLinksStatement = `select url, kind from issue_external_links where issue_key = $1 order by url`
+
+// issueBlocksStatement reads the keys of the issues an issue blocks, $1 its key: those whose
+// blocked_by names it, sorted as blocked_by is. It answers one row for any key, '{}' for none. Its
+// filter is the one issue_links_target (target_key, kind) indexes.
+const issueBlocksStatement = `
+		select coalesce(array_agg(issue_key order by issue_key), '{}')
+		from issue_links where target_key = $1 and kind = 'blocked_by'
+	`
+
+// issueCommentCountStatement counts an issue's comments, $1 its key: every comment its comment
+// list answers (loadOwnerComments with no ?artifact=), a reply to an ask and a comment on one of
+// its documents among them. It answers one row for any key, 0 for a key no issue carries.
+const issueCommentCountStatement = `select count(*) from comments where issue_key = $1`
 
 // scanIssueRow decodes one issueRowStatement row into the issue and the progress the read
 // carries beside it. ExternalLinks is left nil: issueExternalLinksStatement carries them, run
@@ -1135,8 +1154,8 @@ func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key strin
 
 // issueChildrenStatement reads the issue's direct children, $1 its key, each with a rollup over
 // its whole subtree (the child itself included, every status): done/total counts and the newest
-// updated_at. The recursive walk uses `union` with parentDepthCap like refs.Closure, so it
-// terminates even if a raced reparent ever commits a cycle. scanIssueChildren decodes its rows.
+// updated_at. The recursive walk uses `union` with parentDepthCap, so it terminates even if a
+// raced reparent ever commits a cycle. scanIssueChildren decodes its rows.
 //
 // The walk reads each subtree issue's row already, so it carries that row's status and
 // updated_at and the rollup counts them where it stands. Joining the walk's keys back to issues
@@ -1145,6 +1164,16 @@ func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key strin
 // statement's 8,097 buffers on the measurement database. The two columns are functionally
 // determined by the key the walk already carries, so `union` removes exactly the rows it
 // removed before.
+//
+// A child's `needs`, the keys of the issues it waits on, are one lateral over issue_links keyed
+// by the child's own key, which the table's primary key (issue_key, kind, target_key) leads
+// with, so the statement makes one keyed read per child and no read of the table by anything
+// else: this is the single-issue read, where issueProgressLateral counts one issue's children
+// the same way and the listing counts its whole page's in one grouped read instead
+// (issueSummaryJoins). Written as that grouped read, over the direct children the rollup
+// already names, the planner dropped the child keys from the condition and read issue_links by
+// kind alone. The claim is two columns of the child's own row, which this statement already
+// reads, so it costs no join at all.
 var issueChildrenStatement = `
 		with recursive subtree as (
 			select key as root, key, 1 as depth, status, updated_at from issues where parent_key = $1
@@ -1160,41 +1189,55 @@ var issueChildrenStatement = `
 			from subtree s
 			group by s.root
 		)
-		select c.key, c.title, c.status, r.done, r.total, r.active_at,
+		select i.key, i.title, i.status, r.done, r.total, r.active_at,
 		       coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
-		                 from issue_external_links l where l.issue_key = c.key), '[]')
-		from issues c join rollup r on r.root = c.key
-		where c.parent_key = $1 order by c.key
+		                 from issue_external_links l where l.issue_key = i.key), '[]'),
+		       blockers.keys,
+		       ` + issueClaimColumns + `
+		from issues i join rollup r on r.root = i.key
+		left join lateral (
+			select array_agg(l.target_key order by l.target_key) as keys
+			from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'
+		) blockers on true
+		where i.parent_key = $1 order by i.key
 	`
 
 // scanIssueChildren reads the rows issueChildrenStatement returns. An issue with no child keeps
-// a non-nil empty list, which the response carries as [].
+// a non-nil empty list, which the response carries as []. A child waiting on nothing scans a null
+// array, so its Needs stays nil and the answer leaves it out, as it does a claim nobody holds.
 func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 	children := []model.IssueChild{}
 	for rows.Next() {
 		var child model.IssueChild
 		var links []byte
-		if err := rows.Scan(&child.Key, &child.Title, &child.Status,
-			&child.SubtreeDone, &child.SubtreeTotal, &child.ActiveAt, &links); err != nil {
+		var claim claimScan
+		targets := []any{&child.Key, &child.Title, &child.Status,
+			&child.SubtreeDone, &child.SubtreeTotal, &child.ActiveAt, &links, &child.Needs}
+		if err := rows.Scan(append(targets, claim.targets()...)...); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(links, &child.ExternalLinks); err != nil {
 			return nil, err
 		}
+		claimed, err := claim.resolve(child.Key)
+		if err != nil {
+			return nil, err
+		}
+		child.Claim = claimed
 		children = append(children, child)
 	}
 	return children, rows.Err()
 }
 
-// issueDesignGatesStatement reads the documents an issue's design-gate steps record, $1 the
-// issue's key and $2 the steps in the order a gate runs them, which is the order the read
-// answers them in and the order PUT /api/v1/issues/{key}/design-gates answers its own write in
-// (issue_design_gates.go). The order is a parameter rather than a case expression built into
-// the text, so model.GatedStepsKnown stays the one place that order is written. A key no issue
-// carries returns no row, which is what the issue read's first batch requires of every
-// statement beside the issue row's.
+// issueDesignGatesStatement reads the documents an issue's design-gate steps record and whether
+// each holds the issue's tree, $1 the issue's key and $2 the steps in the order a gate runs them,
+// which is the order the read answers them in and the order PUT /api/v1/issues/{key}/design-gates
+// answers its own write in (issue_design_gates.go). The order is a parameter rather than a case
+// expression built into the text, so model.GatedStepsKnown stays the one place that order is
+// written. A key no issue carries returns no row, which is what the issue read's first batch
+// requires of every statement beside the issue row's.
 const issueDesignGatesStatement = `
-		select step, artifact_id from design_gates where issue = $1
+		select step, artifact_id, holds from design_gates where issue = $1
 		order by array_position($2::text[], step)
 	`
 
@@ -1204,7 +1247,7 @@ func scanIssueDesignGates(rows pgx.Rows) ([]issueDesignGate, error) {
 	gates := []issueDesignGate{}
 	for rows.Next() {
 		var gate issueDesignGate
-		if err := rows.Scan(&gate.Step, &gate.ArtifactID); err != nil {
+		if err := rows.Scan(&gate.Step, &gate.ArtifactID, &gate.Holds); err != nil {
 			return nil, err
 		}
 		gates = append(gates, gate)

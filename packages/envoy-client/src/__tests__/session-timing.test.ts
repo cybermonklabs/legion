@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
@@ -7,23 +7,29 @@ import {
   LISTENER_CALL_TIMEOUT_MS,
   SESSION_HEARTBEAT_MS,
 } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { readEnvoyConfig } from "../envoy-config";
 import { envoySettings } from "../envoy-settings";
 import { resolveCallTiming } from "../transport";
 
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
+
 const listener = {
   enabled: true,
   url: "http://listener.internal.example:9020/",
   natsUrls: ["nats://nats.internal.example:4222"],
-  token: "file-token",
+  token: fixtureSecret("file"),
   natsSeed: "SUFILESEED",
 };
 
 const makeDirectory = temporaryDirectories("session-timing");
 
 /** A configuration naming that listener, read from a file with no checkout file beside it. */
-function listenerConfig() {
+async function listenerConfig() {
   const dir = makeDirectory();
   const file = path.join(dir, "envoy.json");
   writeFileSync(file, JSON.stringify({ envoy: listener }));
@@ -34,8 +40,8 @@ function listenerConfig() {
  * of its own: the interval a pane refreshes its listener registration at, and what one whole
  * listener call costs. Three intervals plus one call fall strictly inside the live window,
  * which holds only while the client reads these numbers rather than numbers of its own. */
-test("CLIENTTEST the client resolves the declared refresh interval and call budget", () => {
-  const settings = envoySettings({}, listenerConfig());
+test("CLIENTTEST the client resolves the declared refresh interval and call budget", async () => {
+  const settings = await envoySettings({}, await listenerConfig());
   if (!settings.enabled) {
     throw new Error(`Envoy resolved as off: ${JSON.stringify(settings)}`);
   }

@@ -54,16 +54,6 @@ func standsIn(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string) {
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: at, Generation: 1, Status: status, Rank: "U"})
 }
 
-// marksConflictingFrom is the daemon's CONFLICTING read of head while the issue stands in a phase
-// after the implementer's: the one move the daemon makes on its own (TriggerConflict), which
-// sends the work back for the forward merge only the implementer can make.
-func marksConflictingFrom(t *testing.T, pool *pgxpool.Pool, engine *Engine, at phase.Phase, status, head string) {
-	t.Helper()
-	standsIn(t, pool, at, status)
-	applyRefusingNothing(t, pool, engine, intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42,
-		Base: "main", HeadSHA: head, Mergeable: record.MergeabilityConflicting})
-}
-
 // mergesForward is the implementer's answer to a conflicting head: the forward merge that moves
 // the pull request's own recorded head off the head the record holds conflicting, which is what
 // ends the exemption. The move names the head it came from, so the arrival chains onto the
@@ -90,10 +80,12 @@ func recordedHead(t *testing.T, pool *pgxpool.Pool) string {
 // own news, answered by one forward merge, and a tree reached the cap on three rounds of which
 // two were conflicts and none was a rejection (dispatch://INFRA-1265).
 //
-// Three moves are made at the conflicting head here, one for each way this release makes one: the
-// move the daemon makes on its own when its read of GitHub judges the head conflicting
-// (TriggerConflict), a tester's fail at that same head, and the review App's request for changes
-// at it. Each raises the implementer's pass, because a completion's key is built from that number
+// The conflict is a confirmed one, two CONFLICTING reads of the head a minute apart
+// (marksConflicting), and it moves no issue (dispatch://INFRA-4374 R1): every move at the
+// conflicting head is a role's. Three are made here, one for each way this release makes one: a
+// worker's own backward move (TriggerBackward, request_backward_move), here the architect's from
+// accepting, a tester's fail at that same head, and the review App's request for changes at it.
+// Each raises the implementer's pass, because a completion's key is built from that number
 // (record.PhaseRow.Pass, api/handoff.go), and the review's is the only one that opens a review
 // round at all - the cap counts rounds, and only a review that requested changes opens one
 // (recordRound). That round is a conflict round, so with review_round_cap=3 and two counted
@@ -118,14 +110,15 @@ func TestConflictRoundsCostTheCapNothing(t *testing.T) {
 	// round away: anything the three moves at the conflicting head counted would reach it.
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Rounds: 2})
 
-	// The daemon's own move: its read of GitHub judges the head conflicting, and the work goes
-	// back from the phase it stood in for the implementer to merge the base forward.
-	marksConflictingFrom(t, pool, engine, phase.Reviewing, "needs_review", conflictedHead)
-	if got := issuePhase(t, pool); got != phase.Implementing {
-		t.Fatalf("the conflicting read left the issue in %s, want implementing: a head GitHub will not merge is the implementer's to answer", got)
-	}
+	// The daemon's two reads of GitHub confirm the head conflicting while the issue stands in
+	// implementing, and the architect's own move back from accepting is the first move at it.
+	marksConflicting(t, pool, engine, conflictedHead)
 	if got := conflictingHead(t, pool); got != conflictedHead {
 		t.Fatalf("the record holds %q conflicting, want %q: the mark is what every move below is read against", got, conflictedHead)
+	}
+	architectMovesBack(t, pool, engine, phase.Implementing)
+	if got := issuePhase(t, pool); got != phase.Implementing {
+		t.Fatalf("the architect's move back left the issue in %s, want implementing", got)
 	}
 
 	// A tester's fail at that same head, and the review App's request for changes at it. The
@@ -137,7 +130,7 @@ func TestConflictRoundsCostTheCapNothing(t *testing.T) {
 		t.Fatalf("the three moves at the conflicting head counted %d passes, want 3: every move back raises the pass, a conflict round among them", pass)
 	}
 	if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != 3 || conflicts != 1 {
-		t.Fatalf("rounds = %d of which %d conflict rounds, want the seeded two plus the review's own round, that one excused: the daemon's move and the tester's fail open no review round at all", rounds, conflicts)
+		t.Fatalf("rounds = %d of which %d conflict rounds, want the seeded two plus the review's own round, that one excused: the architect's move and the tester's fail open no review round at all", rounds, conflicts)
 	}
 	if messages, blocked := capPosts(t, pool); len(messages) != 0 || blocked != 0 {
 		t.Fatalf("the moves at the conflicting head posted %q and %d pr-blocked notices, want neither: two rounds are counted, and the cap is 3", messages, blocked)
@@ -204,11 +197,11 @@ func TestConflictRoundsCostTheCapNothing(t *testing.T) {
 // GitHub answers while it computes one, and a read on the ladder behind it writes that answer over
 // the conflict.
 //
-// Every row makes the mark from implementing, the one phase with no row for the conflict trigger,
-// so the read records its judgement and moves nothing (workflow's mergeability): what the rounds
-// below are read against is the mark the record holds, not the move some other phase would have
-// made. The round itself is the review App's request for changes, because that is what opens a
-// review round at all in this release (recordRound).
+// Every row makes the mark from implementing, with a base that requires no check, where a
+// confirmed conflict needs no merge, so the two reads record their judgement and ask and move
+// nothing (workflow's mergeability, classify.ConflictNeedsMerge): what the rounds below are read
+// against is the mark the record holds. The round itself is the review App's request for changes,
+// because that is what opens a review round at all in this release (recordRound).
 func TestAConflictRoundCountsAgainstNoCapUntilTheMarkIsCleared(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -253,7 +246,7 @@ func TestAConflictRoundCountsAgainstNoCapUntilTheMarkIsCleared(t *testing.T) {
 				t.Fatalf("the record holds %q conflicting, want %q", got, conflictedHead)
 			}
 			if rounds := implementerRounds(t, pool); rounds != 0 {
-				t.Fatalf("the mark made in implementing counted %d rounds, want none: the phase the work is already in has no row for the conflict trigger, so the read moves nothing", rounds)
+				t.Fatalf("the mark made in implementing counted %d rounds, want none: a conflict moves no issue, so the reads count nothing", rounds)
 			}
 			if tc.clearing != nil {
 				applyRefusingNothing(t, pool, engine, tc.clearing)

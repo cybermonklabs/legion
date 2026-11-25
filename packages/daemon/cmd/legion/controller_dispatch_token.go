@@ -11,14 +11,23 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/sjawhar/envoy/brokerclient"
+	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/cipherclient"
+
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // controllerDispatchTradeWait bounds the one trade this start makes to prove the controller can
 // hold a Dispatch credential at all. A controller that cannot write to Dispatch cannot do its
 // work, so a broker that is down refuses the start rather than letting Oh My Pi come up with no
-// credential.
-const controllerDispatchTradeWait = 60 * time.Second
+// credential. It is a variable so that this package's tests can give it their own deadline
+// (programbound): a stand-in broker a loaded machine made slower than the minute would refuse
+// the start.
+var controllerDispatchTradeWait = 60 * time.Second
+
+func init() {
+	programbound.Register(&controllerDispatchTradeWait)
+}
 
 // controllerCheckSession is the session name this start's own trade writes under: a name of its
 // own, new on every start, as the controller session's own id is. It is never a name a session
@@ -41,7 +50,7 @@ func controllerCheckSession() string { return "legion-controller-start-" + uuid.
 //
 // Nothing of that credential is written to a file and no DISPATCH_TOKEN_FILE points at one.
 // Such a token is bound to the key its holder proves: Dispatch refuses it presented as a bearer
-// (RFC 9449 Section 7.2, `brokertoken.Presented`), so a pointer to it is a pointer the session
+// (RFC 9449 Section 7.2, `ciphertoken.Presented`), so a pointer to it is a pointer the session
 // cannot spend. controllerEnvironment hands the session DISPATCH_TOKEN_BROKER=1 instead, under
 // which its client reads no bearer from any source — not DISPATCH_TOKEN_FILE, not DISPATCH_TOKEN,
 // not the token the operator's envoy.json holds — and turns Dispatch off with an error when it
@@ -67,38 +76,42 @@ func controllerCheckSession() string { return "legion-controller-start-" + uuid.
 // refused.
 //
 // The trade declines the launcher credential this machine's identity holds
-// (brokerclient.Config.NoLauncherCredential): this check enrols no session and reads no secret,
+// (cipherclient.Config.NoLauncherCredential): this check enrols no session and reads no secret,
 // and its key dies with the call, so a credential minted for it would be a launcher_credentials
 // row and a token_login audit row on the operator's machine-logins list for every start, each
 // keyed by a thumbprint nothing holds afterwards. The controller's own session trades for
 // itself, and that trade asks for what it needs.
 func controllerDispatchBroker(ctx context.Context, stderr io.Writer) error {
-	identity, err := brokerclient.MachineIdentity(os.Getenv)
+	identity, err := cipherclient.MachineIdentity(os.Getenv)
 	if err != nil {
 		return err
 	}
 	if identity == nil {
 		return fmt.Errorf("dispatch_token_broker is set, so the controller's Dispatch credential is this machine's own identity, and %s names none",
-			brokerclient.IdentityVar)
+			cipherclient.IdentityVar)
 	}
-	broker := os.Getenv(brokerclient.BrokerURLVar)
-	if broker == "" {
+	// The address may carry a user name, a password, a query or a fragment, and this start names it
+	// in its refusal and on stderr, so it is held as a cipheraddr.Address from the moment it is read:
+	// each of those prints it through the Address, and only the token client reads its raw value, to
+	// build its request.
+	broker := cipheraddr.New(os.Getenv(cipherclient.BrokerURLVar))
+	if broker.Empty() {
 		return fmt.Errorf("%s names the identity this machine proves, so %s must name the secrets broker it proves it to",
-			brokerclient.IdentityVar, brokerclient.BrokerURLVar)
+			cipherclient.IdentityVar, cipherclient.BrokerURLVar)
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return fmt.Errorf("make the key the controller's trade is proved with: %w", err)
 	}
 	// A name of this start's own, new each time: nothing here can name the controller session's.
-	client, err := brokerclient.New(brokerclient.Config{
+	client, err := cipherclient.New(cipherclient.Config{
 		BrokerURL: broker, Key: key, Subject: identity, Session: controllerCheckSession(),
-		NoLauncherCredential: true, HTTP: brokerclient.HTTPClient(),
+		NoLauncherCredential: true, HTTP: cipherclient.HTTPClient(),
 	})
 	if err != nil {
 		return err
 	}
-	timed, cancel := context.WithTimeout(ctx, controllerDispatchTradeWait)
+	timed, cancel := context.WithTimeout(ctx, programbound.Of(&controllerDispatchTradeWait))
 	defer cancel()
 	token, err := client.Token(timed)
 	if err != nil {

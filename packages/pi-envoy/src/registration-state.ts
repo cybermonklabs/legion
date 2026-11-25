@@ -11,8 +11,8 @@ import {
   type SubscribeResult,
 } from "@legion/envoy-client/transport";
 import type { RoleRegainReason } from "@legion/pi-shared/role-claim-bridge";
-import type { NatsConnection } from "nats";
 import { createHandBackLedger } from "./hand-back-ledger";
+import type { SessionInbound } from "./session-inbound";
 
 /**
  * The registration and role state the Envoy extension's two serial queues write, the queues
@@ -21,7 +21,7 @@ import { createHandBackLedger } from "./hand-back-ledger";
  * A queued task never re-checks a fence before a step, and keeps {@link TaskHandle.check} for the
  * two things that are not steps: a catch-all that would otherwise swallow the refusal, and an
  * action outside the handle that a refused task must not take. `run` hands it a
- * {@link TaskHandle}, and every state write, listener request, NATS subscribe and NATS
+ * {@link TaskHandle}, and every state write, listener request, subscribe and inbound
  * connection it makes after a wait is a method of that handle. The handle refuses the step once
  * the task's deadline has fired, and, for a task bound to a session (`actFor`), once that
  * session stopped being the open session. The first refusal latches: a session that closes and
@@ -56,6 +56,12 @@ export function taskWasAbandoned(error: unknown): boolean {
  */
 class StepRefused extends Error {}
 
+/** Whether `error` is a step the task's handle refused (a task abandoned at its deadline, or one
+ *  whose session moved): no failure of the work, so no reason a notice may name. */
+export function stepWasRefused(error: unknown): boolean {
+  return error instanceof StepRefused;
+}
+
 /** Whether a topic served the session's role, and how many roles had ended, at one moment. */
 export interface RoleSnapshot {
   readonly roleBound: boolean;
@@ -85,9 +91,19 @@ export interface RegistrationStateLog {
   readonly warn: (message: string, context?: Record<string, unknown>) => void;
 }
 
+/** What a queued task's NATS dial may spend: the task's deadline, as a `performance.now()`
+ *  instant, and whether the task stopped acting (abandoned, refused, or its session moved), after
+ *  which the dial starts no further attempt. */
+export interface DialLimit {
+  readonly deadlineAt: number;
+  readonly stopped: () => boolean;
+}
+
 /**
  * Everything the module needs from its host, injected so the package's own unit tests exercise it
- * with plain fakes: no Oh My Pi host type is imported here.
+ * with plain fakes: no Oh My Pi host type is imported here. The connection is the session's inbound
+ * connection, NATS or the listener's relay socket (`SessionInbound`): the module closes one a
+ * refused task opened, and hands the host's own to a task.
  */
 export interface RegistrationStateDeps {
   /** The listener client, read at each call: it throws while Envoy is off for this session, as
@@ -110,15 +126,18 @@ export interface RegistrationStateDeps {
     readonly sessionID: string;
     readonly clientInstanceID: string;
   }) => void;
-  /** Opens a NATS connection, storing nothing: this module closes one a refused task opened. */
-  readonly dial: () => Promise<NatsConnection>;
+  /** Opens the session's inbound connection, storing nothing: this module closes one a refused
+   *  task opened. A queued task's dial is given the task's deadline and whether the task was
+   *  abandoned, so its redials end in time for the rest of the task; a dial outside a task gets
+   *  no limit. */
+  readonly dial: (limit?: DialLimit) => Promise<SessionInbound>;
   /**
-   * The session's one NATS connection, made with `dial` when it has none and kept by the host.
+   * The session's one inbound connection, made with `dial` when it has none and kept by the host.
    * The whole acquisition is the fenced step, not the dial alone: the host's own waits after the
    * dial (closing a connection another caller won the race with, and taking that caller's
    * connection instead) happen inside this call, and the handle checks the task again after it.
    */
-  readonly connect: (dial: () => Promise<NatsConnection>) => Promise<NatsConnection>;
+  readonly connect: (dial: () => Promise<SessionInbound>) => Promise<SessionInbound>;
   /**
    * Opens `topic`'s subjects over `connect`'s connection; answers whether any subjects were new.
    * A queued task is handed its own fenced `connect`, so a subscribe whose connection outran the
@@ -126,7 +145,7 @@ export interface RegistrationStateDeps {
    */
   readonly subscribeTopic: (
     topic: string,
-    connect: () => Promise<NatsConnection>
+    connect: () => Promise<SessionInbound>
   ) => Promise<boolean>;
   /**
    * Stops following the subjects this module no longer keeps open, the live subscriptions
@@ -235,13 +254,13 @@ export interface TaskHandle {
     warning: string
   ) => Promise<void>;
 
-  // — NATS —
+  // — the inbound connection —
   /**
-   * The session's one NATS connection, dialled if it has none. A connection this task dialled and
-   * was refused while the dial was in flight is closed here and never answered, and so is a step
-   * the acquisition itself outran: the task ends rather than acting on the connection.
+   * The session's one inbound connection, dialled if it has none. A connection this task dialled
+   * and was refused while the dial was in flight is closed here and never answered, and so is a
+   * step the acquisition itself outran: the task ends rather than acting on the connection.
    */
-  readonly connect: () => Promise<NatsConnection>;
+  readonly connect: () => Promise<SessionInbound>;
   /** Opens `topic`'s subjects; answers whether any were new. */
   readonly subscribe: (topic: string) => Promise<boolean>;
 }
@@ -299,8 +318,9 @@ export interface RegistrationState {
    *  registration accepted for another session, or none at all, reads as older than any age. */
   readonly registrationFresherThan: (sessionID: string, ms: number) => boolean;
   /** Deregisters the session at the listener, carrying this instance's client instance id so a
-   *  successor instance's registration under the same id is left alone. */
-  readonly deregister: (sessionID: string) => Promise<void>;
+   *  successor instance's registration under the same id is left alone; within `timeoutMs`,
+   *  where the caller has only that long (a shutdown's budget). */
+  readonly deregister: (sessionID: string, timeoutMs?: number) => Promise<void>;
   /** Forgets the role the listener refused to this session, so a pass may claim it again. */
   readonly clearRefusal: (sessionID: string) => void;
   /**
@@ -477,7 +497,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     readonly refusal: TaskRefusal;
   }
 
-  const createHandle = (live: () => boolean): RunningTask => {
+  const createHandle = (live: () => boolean, deadlineAt: number): RunningTask => {
     let bound: string | undefined;
     // Whether this task may still write: no step of it has been refused yet, its deadline has not
     // fired and, once bound, its session is still the open one. The one question every step below
@@ -718,15 +738,15 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     // The one dial a queued task makes, its own: a connection opened for a task that was refused
     // while the dial was in flight is closed here rather than left dangling, and the task ends.
     // Private: a task asks for the session's connection, not for a dial.
-    const dial = async (): Promise<NatsConnection> => {
+    const dial = async (): Promise<SessionInbound> => {
       guard();
-      const dialled = await deps.dial();
+      const dialled = await deps.dial({ deadlineAt, stopped: () => !acting() });
       if (!acting()) {
         await dialled.close().catch(() => {});
         refuse(
           live()
-            ? `the task acting for session ${bound} dialled NATS for a session that is no longer the open one; the connection it opened was closed`
-            : "the task that dialled NATS was abandoned at its deadline while the dial was in flight; the connection it opened was closed"
+            ? `the task acting for session ${bound} opened its ${dialled.name} for a session that is no longer the open one; the connection it opened was closed`
+            : `the task that opened the ${dialled.name} was abandoned at its deadline while it was being opened; the connection it opened was closed`
         );
       }
       return dialled;
@@ -737,14 +757,14 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     // answering with theirs, and a deadline or a session move during that wait would otherwise go
     // unseen — the task would open subjects and replace the stream control for a session it no
     // longer decides for. A connection this task did not open is left alone: it is the session's.
-    const connect = async (): Promise<NatsConnection> => {
+    const connect = async (): Promise<SessionInbound> => {
       guard();
       const connected = await deps.connect(dial);
       if (!acting()) {
         refuse(
           live()
-            ? `the task acting for session ${bound} connected to NATS for a session that is no longer the open one`
-            : "the task that connected to NATS was abandoned at its deadline while the connection was made"
+            ? `the task acting for session ${bound} took its ${connected.name} for a session that is no longer the open one`
+            : `the task that took the ${connected.name} was abandoned at its deadline while the connection was made`
         );
       }
       return connected;
@@ -860,6 +880,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
             new Promise<T | undefined>((resolve, reject) => {
               let abandoned = false;
               const taskDeadlineMs = deps.deadlineMs();
+              const deadlineAt = performance.now() + taskDeadlineMs;
               const timer = setTimeout(() => {
                 abandoned = true;
                 reject(
@@ -868,7 +889,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
                   )
                 );
               }, taskDeadlineMs);
-              const running = createHandle(() => !abandoned);
+              const running = createHandle(() => !abandoned, deadlineAt);
               // The task runs inside this promise so a synchronous throw is its rejection too.
               void (async () => task(running.handle))().then(
                 (value) => {
@@ -908,8 +929,12 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     refreshRegistration,
     registrationFresherThan: (sessionID, ms) =>
       registeredFor === sessionID && Date.now() - registeredAt < ms,
-    deregister: async (sessionID) => {
-      await deps.client().unregisterSession({ sessionID, clientInstanceID });
+    deregister: async (sessionID, timeoutMs) => {
+      await deps.client().unregisterSession({
+        sessionID,
+        clientInstanceID,
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      });
     },
     clearRefusal: (sessionID) => {
       refusedRoles.delete(sessionID);

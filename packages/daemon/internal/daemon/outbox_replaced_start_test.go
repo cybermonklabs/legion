@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -39,8 +40,8 @@ import (
 // failure that follows the delivery, and a worker that is not taking the task now — its shim is
 // not connected here, as a worker is handed nothing while the wake pacing holds back the relaunch
 // that replaces its process, until the pacing lets that launch run (supervise's sendPending,
-// launchWaits). The phase is then entered again, as a head that starts conflicting with its base
-// or a sign-off enters one, and the transition writes its start through workflow.StartOrOwe
+// launchWaits). The phase is then entered again, as a tester's fail or a worker's backward move
+// enters one, and the transition writes its start through workflow.StartOrOwe
 // exactly as the engine does.
 //
 // The negative control is the fix reverted — the later task written over the owed row in
@@ -48,6 +49,7 @@ import (
 // (record.Store.EnqueueStart): the start then finishes without giving the worker anything,
 // which this test reads at the claim's pending task.
 func TestAStartWrittenOverAnOwedRowStillReachesTheWorker(t *testing.T) {
+	t.Parallel()
 	const firstTask, nextTask = "Implement the plan.", "Implement it again. Reason: the checks went red."
 	const firstEntry, nextEntry int64 = 1, 2
 	ctx := context.Background()
@@ -94,7 +96,7 @@ func TestAStartWrittenOverAnOwedRowStillReachesTheWorker(t *testing.T) {
 	// way the engine writes one (workflow.Engine.started), both in its own transaction.
 	next := record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleImplementer,
 		Generation: issue.Generation, Phase: issue.Phase, Task: nextTask, Entry: nextEntry}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: token,
 			Entry: nextEntry, EntryTask: nextTask, EntryRaisedAt: clock}); err != nil {
 			return err

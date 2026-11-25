@@ -1,5 +1,7 @@
 package daemon
 
+//ci:reads packages/daemon/internal/stream/*.go !**/*_test.go endTurn Glob ../stream/*.go, and streamEventTypes parses each file it finds but the test files
+
 import (
 	"context"
 	"crypto/sha256"
@@ -34,9 +36,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 func architect() api.SpawnRequest {
@@ -46,6 +50,7 @@ func architect() api.SpawnRequest {
 // Everything the daemon refuses on is refused before it touches the store, naming the key the
 // operator has to change: nothing is recorded for a daemon that could never have served.
 func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name   string
 		change func(*config.Config, *overrides)
@@ -131,6 +136,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 // the listener is the runtime's connection directory, and its address is what every pane's shim
 // is told to dial (`--connect`).
 func TestRunBuildsTheRuntimeOverTheWorkerStream(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	var record built
 	startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &record))
@@ -151,6 +157,7 @@ func TestRunBuildsTheRuntimeOverTheWorkerStream(t *testing.T) {
 // none here, a daemon with no workflow, so the runtime makes the issue's own directory its
 // workspace.
 func TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.InstructionsPath = filepath.Join(t.TempDir(), "instructions.md")
 	if err := os.WriteFile(cfg.InstructionsPath, []byte("Never push to main.\n"), 0o600); err != nil {
@@ -210,6 +217,7 @@ func TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven(t *testing.T) 
 // which each runtime hands the agent behind a NATS_NKEY_SEED_FILE pointer, never as a value; and a
 // daemon with none hands none.
 func TestEveryLaunchCarriesTheNatsSeedTheDaemonResolved(t *testing.T) {
+	t.Parallel()
 	keySeed, envSeed := testnkeys.UserSeed(t), testnkeys.UserSeed(t)
 	for _, tc := range []struct {
 		name    string
@@ -246,6 +254,7 @@ func TestEveryLaunchCarriesTheNatsSeedTheDaemonResolved(t *testing.T) {
 // followed by the Go daemon parts, the role's own and the one every architect shares, so tmux can
 // concatenate them before addressing and deployment instructions into its single OMP flag.
 func TestRunLaunchesTheComposedGoRolePromptWhenSpawnHasNoPromptFile(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
@@ -266,6 +275,7 @@ func TestRunLaunchesTheComposedGoRolePromptWhenSpawnHasNoPromptFile(t *testing.T
 // operator's routes, the agent's routes, the worker stream's events (the hello, the turn, the
 // late refusal), and the runtime's sweep.
 func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	var record built
@@ -358,7 +368,9 @@ func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
 // heldClock is the machines' and the outbox's time held still until the test fires the timers
 // armed for one wait, so a daemon test sees the deadline it fires and nothing else. Its time is the
 // wall clock, or at when set, so a deadline the daemon names as a time is armed as an exact wait
-// from at; advance moves at, so a lease or a backoff the daemon measured from it lapses.
+// from at; advance moves at, so a lease or a backoff the daemon measured from it lapses. A timer
+// armed for a moment (At) keeps that moment, which fireAt fires it by; fire matches it by the wait
+// from the clock's time at the arm.
 type heldClock struct {
 	mu     sync.Mutex
 	at     time.Time
@@ -368,13 +380,20 @@ type heldClock struct {
 type heldTimer struct {
 	clock *heldClock
 	after time.Duration
-	f     func()
-	done  bool
+	// moment is the time an At timer was armed for, zero for an AfterFunc one.
+	moment time.Time
+	f      func()
+	done   bool
 }
 
 func (c *heldClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.nowLocked()
+}
+
+// nowLocked is Now for a caller that holds mu.
+func (c *heldClock) nowLocked() time.Time {
 	if !c.at.IsZero() {
 		return c.at
 	}
@@ -418,6 +437,14 @@ func (c *heldClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
 	return timer
 }
 
+func (c *heldClock) At(at time.Time, f func()) supervise.Cancel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timer := &heldTimer{clock: c, after: max(0, at.Sub(c.nowLocked())), moment: at, f: f}
+	c.timers = append(c.timers, timer)
+	return timer
+}
+
 func (t *heldTimer) Stop() bool {
 	t.clock.mu.Lock()
 	defer t.clock.mu.Unlock()
@@ -431,19 +458,31 @@ func (t *heldTimer) Stop() bool {
 // fire runs, once each, every timer armed for after that has neither fired nor been stopped, and
 // reports how many it ran. A timer one of them arms waits for the next fire.
 func (c *heldClock) fire(after time.Duration) int {
+	return c.run(func(timer *heldTimer) bool { return timer.after == after })
+}
+
+// fireAt is fire for the timers armed for the moment at (At), whatever wait the clock's time at
+// the arm made of it.
+func (c *heldClock) fireAt(at time.Time) int {
+	return c.run(func(timer *heldTimer) bool { return !timer.moment.IsZero() && timer.moment.Equal(at) })
+}
+
+// run runs, once each, every timer due matches that has neither fired nor been stopped, and
+// reports how many it ran.
+func (c *heldClock) run(due func(*heldTimer) bool) int {
 	c.mu.Lock()
-	var due []*heldTimer
+	var ran []*heldTimer
 	for _, timer := range c.timers {
-		if !timer.done && timer.after == after {
+		if !timer.done && due(timer) {
 			timer.done = true
-			due = append(due, timer)
+			ran = append(ran, timer)
 		}
 	}
 	c.mu.Unlock()
-	for _, timer := range due {
+	for _, timer := range ran {
 		timer.f()
 	}
-	return len(due)
+	return len(ran)
 }
 
 // An agent registered over the API that never says it is ready is relaunched at the deadline as
@@ -451,6 +490,7 @@ func (c *heldClock) fire(after time.Duration) int {
 // API, store, stream and machines. The relaunched agent's shim says hello, the agent registers and
 // says it is ready, and it is sent the task the claim held.
 func TestRunRelaunchesAClaimWhoseAgentRegisteredAndNeverSaidReady(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	var record built
@@ -523,6 +563,7 @@ func TestRunRelaunchesAClaimWhoseAgentRegisteredAndNeverSaidReady(t *testing.T) 
 // launched again, the claim keeps its state and incarnation, and the shim's reconnect hello — with
 // the boot token it has held since its launch — is accepted.
 func TestRunReadoptsEveryClaimWithALiveLocatorOnRestart(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	first := fake.NewRuntime()
 	var record built
@@ -588,6 +629,7 @@ func TestRunReadoptsEveryClaimWithALiveLocatorOnRestart(t *testing.T) {
 // ReleaseUncertainLaunch writes the release) and stopped before the relaunch wrote its next
 // generation (LEGION-650).
 func TestRunLaunchesAgainALaunchThePreviousDaemonDidNotFinish(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		state supervise.ClaimState
@@ -661,6 +703,7 @@ func refuseRelease(t *testing.T, cfg config.Config, token claim.Token) func() {
 // at each orphan sweep and relaunches the claim once the store takes it, rather than leave it
 // stranded until the next restart (LEGION-650).
 func TestRunRetriesAReleaseTheStoreRefusedAtTheNextOrphanSweep(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	token, _ := claim.NewToken(project, "LEGION-3", claim.RolePlanner)
@@ -700,6 +743,7 @@ func TestRunRetriesAReleaseTheStoreRefusedAtTheNextOrphanSweep(t *testing.T) {
 // persisted its locator. A failed orphan listing leaves that process unknown, not gone, so boot
 // must not open another pane. Once reconciliation succeeds, the queued launch can proceed.
 func TestRunWaitsToRelaunchAnUnfinishedClaimUntilOrphanReconciliationSucceeds(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	token, _ := claim.NewToken(project, "LEGION-4", claim.RoleReviewer)
@@ -800,6 +844,7 @@ func TestRunWaitsToRelaunchAnUnfinishedClaimUntilOrphanReconciliationSucceeds(t 
 // process was never recorded must clear the secret before it makes the claim launch_uncertain: the
 // old process cannot authenticate or mint a grant while boot waits for orphan reconciliation.
 func TestRunBootRepairRevokesAStaleSecretBeforeItMintsAGrant(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	token, _ := claim.NewToken(project, "LEGION-4", claim.RoleReviewer)
@@ -864,6 +909,7 @@ func (r *reconcileHold) release() { r.released.Store(true) }
 // that, so the attempt that succeeds is the first one whose claims are read after the suspension
 // committed: a retry that answered from the boot's snapshot would still miss the claim.
 func TestRunRetriesTheBootReconciliationWithTheClaimsAsTheyAreNow(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	unfinished, _ := claim.NewToken(project, "LEGION-4", claim.RoleReviewer)
@@ -919,6 +965,7 @@ func TestRunRetriesTheBootReconciliationWithTheClaimsAsTheyAreNow(t *testing.T) 
 // A pane's secret files live exactly as long as its process: boot removes every file no live
 // locator names, and a claim whose process ends — here, suspended — loses its own.
 func TestRunPrunesTheSecretFilesOfClaimsWithNoProcess(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	live, _ := claim.NewToken(project, "LEGION-1", claim.RoleArchitect)
@@ -959,6 +1006,7 @@ func TestRunPrunesTheSecretFilesOfClaimsWithNoProcess(t *testing.T) {
 // every pane's shim is pointed at — and boot's pruning of the pane secret files, which runs after,
 // leaves that directory alone: it is the daemon's, not any claim's.
 func TestRunResolvesProviderKeysAtBootAndKeepsThemThroughThePrune(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ProviderKeys = []config.ProviderKey{{Env: "AGENT_ENV", Secret: "AGENT_KEY"}}
 	bin := t.TempDir()
@@ -987,6 +1035,7 @@ func TestRunResolvesProviderKeysAtBootAndKeepsThemThroughThePrune(t *testing.T) 
 // The shipped daemon writes the one Dispatch bearer panes share before any pane can launch, and
 // boot's claim-secret prune leaves it alone because it belongs to the daemon rather than a claim.
 func TestPrepareWritesTheDispatchTokenFileAndBootPruneKeepsIt(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.DispatchURL = "http://127.0.0.1:18766"
 	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
@@ -1014,6 +1063,7 @@ func TestPrepareWritesTheDispatchTokenFileAndBootPruneKeepsIt(t *testing.T) {
 // the private server is reaped once it has idled past it; the processes the claims record are
 // always known.
 func TestRunReconcilesOrphansWhileItRuns(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
@@ -1042,6 +1092,7 @@ func TestRunReconcilesOrphansWhileItRuns(t *testing.T) {
 // known set with no locator; a retired claim leaves it. A runtime that deletes what no known claim owns — a sandbox's
 // Sandboxes, each issue's volume with them — therefore never deletes a claim that can still resume.
 func TestRunKnowsEverySuspendedClaimToTheOrphanSweep(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.LaunchFailureLimit = 1
 	rt := fake.NewRuntime()
@@ -1149,7 +1200,7 @@ func admitIssue(t *testing.T, cfg config.Config, issue string, role claim.Role, 
 	}
 	defer st.Close()
 	records := recordpkg.NewStore()
-	if err := st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		record := recordpkg.Issue{
 			Key: issue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Project: cfg.Project, Title: issue, Phase: phase.Admitted,
 			Generation: 1, Status: "in_progress",
@@ -1165,6 +1216,7 @@ func admitIssue(t *testing.T, cfg config.Config, issue string, role claim.Role, 
 
 // The budgets and the waits a machine runs on are the configuration's, not defaults of its own.
 func TestRunSupervisesWithTheConfiguredLimitsAndTimeouts(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.LaunchFailureLimit = 2
 	rt := fake.NewRuntime()
@@ -1188,6 +1240,7 @@ func TestRunSupervisesWithTheConfiguredLimitsAndTimeouts(t *testing.T) {
 // Every agent fact the worker stream reports reaches the claim's machine as its own event — the
 // late refusal included, which the stream added after the contract was first written.
 func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
+	t.Parallel()
 	const token = claim.Token("legion-legion-legion-1-tester")
 	cases := []struct {
 		in   stream.Event
@@ -1211,6 +1264,10 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 		{stream.LateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3},
 			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3}},
 		{stream.Closed{Claim: token}, supervise.StreamClosed{Claim: token}},
+		{stream.Answered{Claim: token, Provider: "second", Model: "second-model", Generation: 3},
+			supervise.StreamAnswered{Claim: token, Model: "second/second-model", Generation: 3}},
+		{stream.Answered{Claim: token, Model: "claude-sonnet-4-5", Generation: 4},
+			supervise.StreamAnswered{Claim: token, Model: "claude-sonnet-4-5", Generation: 4}},
 	}
 	mapped := map[string]bool{}
 	for _, testCase := range cases {
@@ -1220,8 +1277,9 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 			t.Errorf("superviseEvent(%#v) = %#v, %v; want %#v", testCase.in, got, err, testCase.want)
 		}
 	}
-	if sealed := streamEventTypes(t); len(sealed) != len(mapped) {
-		t.Fatalf("internal/stream seals %d event types %v; this test maps %d — map the new one", len(sealed), sealed, len(mapped))
+	// A Drained is no agent fact: the pump puts it behind the claim's events itself (pump).
+	if sealed := streamEventTypes(t); len(sealed) != len(mapped)+1 || !slices.Contains(sealed, "Drained") {
+		t.Fatalf("internal/stream seals %d event types %v; this test maps %d and the pump keeps Drained — map the new one", len(sealed), sealed, len(mapped))
 	}
 }
 
@@ -1338,6 +1396,7 @@ func secretFiles(t *testing.T, dir string) []string {
 // service at another address and re-adopted the pod) — relaunches its recorded session at once, and
 // the observation charges nothing: the daemon's own configuration moved, not a fault of the agent's.
 func TestRunRelaunchesAStaleAddressChargingNothing(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
@@ -1358,3 +1417,91 @@ func TestRunRelaunchesAStaleAddressChargingNothing(t *testing.T) {
 		t.Errorf("the stale address was charged: %+v", c.Budgets)
 	}
 }
+
+// An agent's own request — a completion, which ends its step — reaches the daemon on its HTTP
+// request, while the answer its model gave just before can still wait in the claim's inbox behind
+// an earlier frame the machine is deciding. Read then, the step's agent names no model, and the
+// record of the step it ends would keep none. The request first waits for the claim's machine to
+// handle what the stream had queued (supervision.awaitStream): while the machine still decides,
+// the wait runs out its bound and says so in one line naming the claim and how long it waited;
+// once the machine has handled the answer, the wait ends on the machine's mark, before its bound
+// and with no line logged, and the read names the model. A claim the daemon does not supervise
+// has nothing to wait for.
+func TestAnAgentsRequestWaitsForTheAnswerItsClaimsMachineHasNotHandled(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	held := &heldStepStore{outboxClaimStore: sup.deps.Store.(*outboxClaimStore), entered: make(chan struct{}), release: make(chan struct{})}
+	sup.deps.Store = held
+	t.Cleanup(held.open)
+	tester := mustClaimToken(t, "LEGION-208", claim.RoleTester)
+	machine, _, err := sup.Create(ctx, supervise.Claim{Token: tester, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
+		Role: claim.RoleTester, State: supervise.StateWorking, Session: "ses_tester", Generation: 3}, "")
+	if err != nil {
+		t.Fatalf("create the tester's claim: %v", err)
+	}
+	admitted(t, machine)
+	listening, stop := context.WithCancel(ctx)
+	t.Cleanup(stop)
+	listener, err := stream.Listen(listening, "tcp://127.0.0.1:0",
+		func(string) (claim.Token, uint64, bool, bool, error) { return "", 0, false, false, nil }, stream.Options{RPCTimeout: time.Second, Log: quietLogger()})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	logs := &testlog.Buffer{}
+	s := &supervision{stream: listener, supervisor: sup, log: slog.New(slog.NewTextHandler(logs, nil))}
+	go s.pump()
+	w := &workflowRuntime{log: quietLogger()}
+	w.attach(s)
+
+	sup.post(tester, supervise.StreamToolStep{Claim: tester, Tool: "bash", CallID: "toolu_1"})
+	testwait.Eventually(t, "the machine to decide the tool step", func() bool {
+		select {
+		case <-held.entered:
+			return true
+		default:
+			return false
+		}
+	})
+	sup.post(tester, supervise.StreamAnswered{Claim: tester, Model: "second/tester-model", Generation: 3})
+	if got := w.stepAgent(ctx, nil, tester); got.Model != "" {
+		t.Fatalf("the agent read while its answer waits behind the machine = %+v, want no model yet", got)
+	}
+	s.awaitStreamWithin(ctx, tester, 50*time.Millisecond)
+	if lines := strings.Split(strings.TrimSpace(logs.String()), "\n"); len(lines) != 1 ||
+		!strings.Contains(lines[0], "claim="+string(tester)) || !strings.Contains(lines[0], "waited=") {
+		t.Fatalf("the log of a wait the machine outlasted = %q, want one line naming the claim and how long it waited", logs.String())
+	}
+	logs.Reset()
+	held.open()
+	s.awaitStreamWithin(ctx, tester, time.Minute)
+	if logs.Len() != 0 {
+		t.Fatalf("the wait once the machine was free logged %q, want it ended by the machine's mark, not its bound", logs.String())
+	}
+	if got := w.stepAgent(ctx, nil, tester); got != (workflow.StepAgent{Session: "ses_tester", Model: "second/tester-model"}) {
+		t.Fatalf("the agent read after the wait = %+v, want its session and the model that answered", got)
+	}
+	s.awaitStreamWithin(ctx, mustClaimToken(t, "LEGION-208", claim.RoleReviewer), 50*time.Millisecond)
+	if logs.Len() != 0 {
+		t.Fatalf("the wait for a claim the daemon does not supervise logged %q, want it answered at once", logs.String())
+	}
+}
+
+// heldStepStore is outboxClaimStore with its write of a claim's step held: the write says it has
+// begun on entered, and waits for open, so the machine deciding it decides nothing else.
+type heldStepStore struct {
+	*outboxClaimStore
+	entered chan struct{}
+	release chan struct{}
+	began   sync.Once
+	opened  sync.Once
+}
+
+func (s *heldStepStore) PutClaimStep(ctx context.Context, token claim.Token, step supervise.StepRecord) (bool, error) {
+	s.began.Do(func() { close(s.entered) })
+	<-s.release
+	return s.outboxClaimStore.PutClaimStep(ctx, token, step)
+}
+
+// open lets every held write go on.
+func (s *heldStepStore) open() { s.opened.Do(func() { close(s.release) }) }

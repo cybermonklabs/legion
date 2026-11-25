@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/legionagents"
 )
@@ -44,12 +45,12 @@ import (
 // live. Such ends include a suspension, a stop or a failure whose claim write the database
 // refused, and a stop whose retirement of its round's ask failed.
 //
-// Each write replaces the issue's whole set under a lock of the issue row that a second write of
-// the same issue waits for, so the stored set is always one whole set, and each write answers the
-// set that it stored. Two writes of one issue at once store the set of the one that finishes
-// last. The daemon sends one write of an issue at a time: its outbox holds one role_holders_publish
-// row per issue, and a lane runs its issue's rows one at a time (packages/daemon's
-// internal/daemon/outbox_lanes.go, the lanes' comment).
+// Each write replaces the issue's whole set under the issue's owner lock (store.LockOwner), which
+// a second write of the same issue waits for, so the stored set is always one whole set, and each
+// write answers the set that it stored. Two writes of one issue at once store the set of the one
+// that finishes last. The daemon sends one write of an issue at a time: its outbox holds one
+// role_holders_publish row per issue, and a lane runs its issue's rows one at a time
+// (packages/daemon's internal/daemon/outbox_lanes.go, the lanes' comment).
 //
 // The write appends no issue event and publishes nothing, whether the set changed or not, for the
 // reasons a design-gate publication gives (issue_design_gates.go): the record is the daemon's own
@@ -72,7 +73,7 @@ type issueRoleHolderRecord struct {
 }
 
 // issueRoleHolders is the stored set both routes answer: the issue and its holders in the order of
-// legionagents.Roles, which is the order the workflow reaches the roles. An issue where no session
+// legionagents.Roles, the order of the default steps. An issue where no session
 // holds a role answers [].
 type issueRoleHolders struct {
 	Issue   string                  `json:"issue"`
@@ -88,12 +89,19 @@ type issueRoleHoldersInput struct {
 	Actor   *model.Actor       `json:"actor"`
 }
 
+// legionProjectOf is the project of the issue key: the key up to its first -, the daemon's own rule
+// (packages/daemon's dispatch.DaemonSession). No route moves an issue to another project, so it is
+// the issue row's project_key too.
+func legionProjectOf(key string) string {
+	project, _, _ := strings.Cut(key, "-")
+	return project
+}
+
 // legionDaemonSessionOf is the session the Legion daemon writes the issue key's project as:
-// legion-daemon:<the key up to its first ->, the daemon's own rule (packages/daemon's
+// legion-daemon:<legionProjectOf(key)>, the daemon's own rule (packages/daemon's
 // dispatch.DaemonSession).
 func legionDaemonSessionOf(key string) string {
-	project, _, _ := strings.Cut(key, "-")
-	return legionDaemonSessionPrefix + project
+	return legionDaemonSessionPrefix + legionProjectOf(key)
 }
 
 // heldRole is the role that session holds on issueKey, and "" when it holds none. An empty session
@@ -184,10 +192,9 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.PathValue("key")
 	if daemon := legionDaemonSessionOf(key); actor.Kind != "session" || actor.ID != daemon {
-		project, _, _ := strings.Cut(key, "-")
 		writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
 			"only the Legion daemon of project %s names the sessions that hold the roles of %s. That daemon writes as session %s.",
-			project, key, daemon))
+			legionProjectOf(key), key, daemon))
 		return
 	}
 	if input.Holders == nil {
@@ -235,14 +242,18 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The issue row is read in the write's own transaction, under a lock that a second write of the
-	// same issue waits for (`for no key update`), so the two replaces run one after the other: the
-	// second reads the rows that the first committed, and each answers the set that it stored. The
-	// lock is the one an issue's own writes take (ownerRowLock), and it does not stop a reader.
+	// The issue row is read in the write's own transaction, under the issue's owner lock, which a
+	// second write of the same issue waits for (store.LockOwner, the advisory lock every writer of
+	// the issue takes), so the two replaces run one after the other: the second reads the rows that
+	// the first committed, and each answers the set that it stored. The lock and the read are one
+	// batch, and the read is a plain select, so while no earlier build is in the fleet the
+	// transaction takes no row lock of an owner table and holds no transaction id until its first
+	// write (INFRA-636; beside an earlier build LockOwnerAndRead also takes the issue's row, as that
+	// build's writers do); it does not stop a reader.
 	var issue string
-	if err := tx.QueryRow(r.Context(), `
-		select key from issues where key = $1 for no key update
-	`, key).Scan(&issue); err != nil {
+	if err := store.LockOwnerAndRead(r.Context(), tx, store.IssueOwner(key), `
+		select key from issues where key = $1
+	`, []any{key}, &issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeRoleHoldersIssueNotFound(w, key)
 			return

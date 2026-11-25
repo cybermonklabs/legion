@@ -7,6 +7,7 @@ import { Link, MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -18,6 +19,7 @@ import type {
   IssueReferenceSummary,
 } from "../../api/types";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
+import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { shortForm } from "./routes";
 
@@ -291,6 +293,117 @@ test("a hover that ends before the delay, a touch pointer, or a held button neve
   }
 });
 
+/** The mark the new issue page's frame carries (`app.tsx`'s `<main>` and `Margin.tsx`'s Details
+ *  there): the references inside it open no card on hover. */
+const NO_HOVER_FRAME = { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" };
+
+// R6: the issue page opens nothing on hover, a reference included, because
+// its reader works it from the keyboard. Its frame carries the mark the host reads, so a
+// reference inside it opens no card for a resting pointer, the keyboard still opens that
+// reference's card, and a reference on any other page keeps its hover card.
+test("a reference on the issue page opens no card on hover, its keyboard focus does, and another page's hover still does", () => {
+  const getIssue = mockIssues();
+  jest.useFakeTimers();
+  const view = render(
+    <Harness>
+      <div {...NO_HOVER_FRAME}>
+        <Link to="/issues/CORE-2" {...referenceTriggerProps({ key: "CORE-2", kind: "issue" })}>
+          on the issue page
+        </Link>
+      </div>
+    </Harness>
+  );
+  try {
+    const inside = screen.getByRole("link", { name: "on the issue page" });
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+    fireEvent.pointerOver(inside, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS + 100);
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    // Leaving it: user-event's unhover names no pointerType either.
+    fireEvent.pointerOut(inside, { pointerType: "mouse" });
+
+    act(() => {
+      inside.focus();
+    });
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-2");
+    act(() => {
+      inside.blur();
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+    const elsewhere = screen.getByRole("link", { name: "first" });
+    // A hover-intent pointer on a reference outside the issue page's frame.
+    fireEvent.pointerOver(elsewhere, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-1");
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+/** A stand-in for the issue page's live document editor: an editable root whose link mark the
+ *  caret can stand in, which takes no focus of its own. */
+function EditableBody(): ReactNode {
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = root.current;
+    if (element === null) {
+      throw new Error("missing root");
+    }
+    element.innerHTML =
+      'See <a data-dispatch-href="dispatch://CORE-1" href="">the other issue</a> for context.';
+  }, []);
+  return <div contentEditable ref={root} suppressContentEditableWarning />;
+}
+
+// R6: a link inside the issue page's live editor takes no focus of its
+// own, so the keyboard reaches it by putting the caret in it - which opens its card, as focus
+// opens a card on any other link - and the caret leaving the link closes it again.
+test("on the issue page, the caret in an editor's link opens its card, and leaving the link closes it", () => {
+  const getIssue = mockIssues();
+  const view = render(
+    <Harness>
+      <div {...NO_HOVER_FRAME}>
+        <EditableBody />
+      </div>
+    </Harness>
+  );
+  try {
+    const link = view.container.querySelector<HTMLElement>("[data-dispatch-href]");
+    if (link === null) throw new Error("the editable body drew no link mark");
+    const caretAt = (node: Node, offset: number) => {
+      // One move of the caret, as a browser reports it: emptying the selection first would report
+      // a caret outside every link in between.
+      document.getSelection()?.collapse(node, offset);
+      // user-event has no form that moves the caret inside an editable root.
+      fireEvent(document, new Event("selectionchange"));
+    };
+    act(() => {
+      caretAt(link.firstChild as Node, 3);
+    });
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-1");
+    // Escape closes it, and the caret moving on inside the same link opens it no more.
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    act(() => {
+      caretAt(link.firstChild as Node, 4);
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    act(() => {
+      caretAt(link.parentElement?.lastChild as Node, 2);
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
 test("Escape closes the open card", async () => {
   const getIssue = mockIssues();
   jest.useFakeTimers();
@@ -308,6 +421,54 @@ test("Escape closes the open card", async () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   } finally {
     view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+// The Escape that ends an IME composition is the composition's (decision 325): the open card stays
+// open and the key goes on to the page, which the card's capture listener on `document` would
+// stop. An Escape after the composition closes the card and stops there.
+test("an Escape that ends an IME composition leaves the open card open", () => {
+  const getIssue = mockIssues();
+  jest.useFakeTimers();
+  const behind: KeyboardEvent[] = [];
+  const hearBehind = (event: KeyboardEvent) => behind.push(event);
+  window.addEventListener("keydown", hearBehind);
+  const view = render(<Harness />);
+  try {
+    const first = screen.getByRole("link", { name: "first" });
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+    fireEvent.pointerOver(first, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    // user-event has no form for a key that ends a composition, so the event is made by hand.
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          isComposing: true,
+          key: "Escape",
+        })
+      );
+    });
+    expect(
+      screen.queryByRole("tooltip"),
+      "the Escape that ended a composition closed the card"
+    ).toBeInTheDocument();
+    expect(behind.length, "the Escape that ended a composition stopped short of the page").toBe(1);
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
+      );
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(behind.length, "the card's Escape reached the page").toBe(1);
+  } finally {
+    view.unmount();
+    window.removeEventListener("keydown", hearBehind);
     getIssue.mockRestore();
   }
 });
@@ -547,6 +708,10 @@ test("scrolling under a hover-opened card closes it", () => {
       jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
     });
     expect(screen.getByRole("tooltip")).toBeTruthy();
+    // The reader turns the wheel over the reference, which makes the scroll after it theirs: a
+    // scroll with no input of the reader's behind it is the page moving by itself, which keeps
+    // the card. user-event has no wheel form.
+    fireEvent.wheel(first);
     // user-event has no scroll form.
     fireEvent.scroll(document);
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
@@ -862,9 +1027,10 @@ test("an unpinned block's card shows its current text, and a block that cannot b
 
 // An open card's block read is fetched again by an event that can change it (`blockQuery`). An
 // edit that deletes the block makes that read answer 404: the card drops the text it showed and
-// reads as a freshly loaded page's card for the same link, its short form. A pinned reference to
-// the removed block answers 200 with the pin's `removed` state and keeps the pinned text, and any
-// other failure leaves the text it last read.
+// reads as a freshly loaded page's card for the same link, its short form. A gone block of a
+// comment has the card read the comment, whose mark says whether its author deleted it; this one
+// stands. A pinned reference to the removed block answers 200 with the pin's `removed` state and
+// keeps the pinned text, and any other failure leaves the text it last read.
 test.each([
   [
     "a comment block deleted by its author",
@@ -897,6 +1063,7 @@ test.each([
   ],
 ] as const)("an open card of %s shows what the refresh leaves it", async (_case, route, refresh, kept) => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(summaryWithSpec());
+  const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead());
   const first = pinnedRead({ state: "unchanged", text: "Ship it on Friday." });
   const getReferences = spyOn(api, "getReferences")
     .mockResolvedValueOnce({
@@ -942,6 +1109,7 @@ test.each([
   } finally {
     view.unmount();
     getReferences.mockRestore();
+    getComment.mockRestore();
     getIssueSummary.mockRestore();
   }
 });
@@ -1234,6 +1402,241 @@ test("a comment card names its agent by its current title and state, without a s
   } finally {
     view.unmount();
     listAgents.mockRestore();
+    getComment.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("a comment card of a deleted comment reads as deleted and gives no part of its body", async () => {
+  const getIssue = mockIssues();
+  const commentRead: CommentRead = {
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "",
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+      deleted_at: "2026-09-09T01:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    },
+    replies: [],
+  };
+  const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead);
+  jest.useFakeTimers();
+  const view = render(
+    <Harness>
+      <Link
+        to="/issues/CORE-1/comments/comment-1"
+        {...referenceTriggerProps({ id: "comment-1", key: "CORE-1", kind: "comment" })}
+      >
+        the comment
+      </Link>
+    </Harness>
+  );
+  try {
+    // The hover card opens on a pointer, and only a real pointer event starts its open delay.
+    fireEvent.pointerOver(screen.getByRole("link", { name: "the comment" }), {
+      pointerType: "mouse",
+    });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    const card = screen.getByRole("tooltip");
+    jest.useRealTimers();
+    await waitFor(() => expect(card.textContent).toContain("Deleted by alice"));
+  } finally {
+    view.unmount();
+    getComment.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+/** A read of alice's comment `comment-1`, `Looks good.`, with the overrides given. */
+function commentRead(overrides: Partial<CommentRead["comment"]> = {}): CommentRead {
+  return {
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "Looks good.",
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+      ...overrides,
+    },
+    replies: [],
+  };
+}
+
+// A post's card heads with its author, and an edited post carries ` · edited` after it, as the
+// post's own byline does; a post nobody edited carries none.
+test("a comment or message card marks an edited post after its author, and a standing one not at all", async () => {
+  const message = "33333333-3333-4333-8333-333333333333";
+  const getIssue = mockIssues();
+  const getComment = spyOn(api, "getComment").mockResolvedValue(
+    commentRead({ edited_at: "2026-09-09T01:00:00Z" })
+  );
+  const getMessage = spyOn(api, "getMessage").mockResolvedValue({
+    message: {
+      author: { id: "bob", kind: "user" },
+      body: "Ship it.",
+      broadcast_id: null,
+      created_at: "2026-09-09T00:00:00Z",
+      deliveries: [],
+      ...messageCorrectionFields(),
+      id: message,
+      in_reply_to: null,
+      issue_key: "CORE-1",
+      reply_block: null,
+      target: "session:planner-session",
+    },
+    replies: [],
+  });
+  const view = render(
+    <Harness>
+      <Link to="/" {...referenceTriggerProps({ id: "comment-1", key: "CORE-1", kind: "comment" })}>
+        the comment
+      </Link>
+      <Link to="/" {...referenceTriggerProps({ id: message, key: "CORE-1", kind: "message" })}>
+        the message
+      </Link>
+    </Harness>
+  );
+  try {
+    act(() => {
+      screen.getByRole("link", { name: "the comment" }).focus();
+    });
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Looks good."));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("alice · edited");
+
+    act(() => {
+      screen.getByRole("link", { name: "the message" }).focus();
+    });
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Ship it."));
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent("edited");
+  } finally {
+    view.unmount();
+    getMessage.mockRestore();
+    getComment.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// A block of a comment or message carries its post's marks on its graph node: the card of a
+// block of an edited post marks it after the author, and a block of a post nobody edited does
+// not. A block of a deleted post has no node: the delete cleared it, and its read answers 404
+// `NOT_FOUND` as any gone block's does, in words the card does not read. The card reads the
+// post, and the post's mark decides: a block of a deleted comment says it is deleted, where a
+// gone block of a comment that stands still reads as its short form.
+test("a block card marks its post's edit, and a block of a deleted post says the post is deleted", async () => {
+  const comment = "11111111-1111-4111-8111-111111111111";
+  const standing = "44444444-4444-4444-8444-444444444444";
+  const getIssue = mockIssues();
+  const getComment = spyOn(api, "getComment").mockImplementation((id) =>
+    Promise.resolve(
+      id === comment
+        ? commentRead({
+            body: "",
+            deleted_at: "2026-09-09T02:00:00Z",
+            deleted_by: { id: "alice", kind: "user" },
+            id,
+          })
+        : commentRead({ id })
+    )
+  );
+  const blockNode = (block: string, editedAt: string | undefined) => ({
+    edges: [],
+    node: {
+      ...graphNodeFields(),
+      block_id: block,
+      edited_at: editedAt,
+      id: `comment/${comment}#${block}`,
+      issue_key: "CORE-1",
+      kind: "block",
+      made_by: [{ id: "alice", kind: "user" } as const],
+      parent: { id: comment, kind: "comment", ref: `dispatch://CORE-1/comment/${comment}` },
+      project: "CORE",
+      ref: `dispatch://CORE-1/comment/${comment}#b-${block}`,
+      text: `Text of ${block}.`,
+    },
+  });
+  const getReferences = spyOn(api, "getReferences").mockImplementation((reference) => {
+    if (reference.endsWith("#b-b1"))
+      return Promise.resolve(blockNode("b1", "2026-09-09T01:00:00Z"));
+    if (reference.endsWith("#b-b2")) return Promise.resolve(blockNode("b2", undefined));
+    return Promise.reject(new ApiError(404, { code: "NOT_FOUND", error: "block gone" }));
+  });
+  const blockLink = (item: string, block: string, name: string) => (
+    <Link
+      to="/"
+      {...referenceTriggerProps({
+        block: { id: block },
+        id: item,
+        key: "CORE-1",
+        kind: "comment",
+      })}
+    >
+      {name}
+    </Link>
+  );
+  const view = render(
+    <Harness>
+      {blockLink(comment, "b1", "the edited block")}
+      {blockLink(comment, "b2", "the standing block")}
+      {blockLink(comment, "b3", "the deleted block")}
+      {blockLink(standing, "b4", "the gone block")}
+    </Harness>
+  );
+  try {
+    act(() => {
+      screen.getByRole("link", { name: "the edited block" }).focus();
+    });
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Text of b1."));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-1 · Comment · alice · edited");
+
+    act(() => {
+      screen.getByRole("link", { name: "the standing block" }).focus();
+    });
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Text of b2."));
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent("edited");
+    expect(getComment).not.toHaveBeenCalled();
+
+    act(() => {
+      screen.getByRole("link", { name: "the deleted block" }).focus();
+    });
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Deleted by alice"));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-1 · Comment");
+    expect(getComment).toHaveBeenCalledWith(comment);
+
+    act(() => {
+      screen.getByRole("link", { name: "the gone block" }).focus();
+    });
+    await waitFor(() => expect(getComment).toHaveBeenCalledWith(standing));
+    await act(async () => {});
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      shortForm({ block: { id: "b4" }, id: standing, key: "CORE-1", kind: "comment" })
+    );
+  } finally {
+    view.unmount();
+    getReferences.mockRestore();
     getComment.mockRestore();
     getIssue.mockRestore();
   }

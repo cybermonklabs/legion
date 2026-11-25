@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// RoleConfigRoles are the roles `role_config_files` may name, in the order the workflow reaches
-// them: every issue role, then the controller, which only `controller: daemon` launches.
+// RoleConfigRoles are the roles `role_config_files` may name, in claim.Roles' order (the default
+// steps' order): every issue role, then the controller, which only `controller: daemon` launches.
 var RoleConfigRoles = append(slices.Clone(claim.Roles), claim.RoleController)
 
 // readRoleConfigFiles is `role_config_files`: a mapping of a Legion role (RoleConfigRoles) to the
@@ -87,7 +87,7 @@ func readOverlayFiles(value *yaml.Node, key, reader, owner string) ([]string, er
 // under runtime kubernetes, an overlay outside every runtime.kubernetes.pod mount
 // (checkRoleConfigMount), since a pod sees only the image and the operator's mounts, and a file the
 // image ships is no operator's. Under tmux a file the host lacks is refused at boot and by
-// `legion start --check-config`, which read the host (internal/daemon, readBoot); under kubernetes
+// `legion config check`, which read the host (internal/daemon, readBoot); under kubernetes
 // the image probe reads every role's overlays in the mounts a role sees.
 func checkRoleConfigFiles(cfg Config) error {
 	everyRole := operatorOverlays(cfg)

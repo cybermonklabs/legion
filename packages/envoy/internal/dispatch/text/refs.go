@@ -314,22 +314,22 @@ func parseArtifactSlug(value string) (string, bool) {
 // fails every write that indexes it. (A block's node id `<ref_key>#<block id>` holds the
 // document's unbounded ref_key too, so it is hash indexed, never a B-tree key.) Text citing a
 // longer id cites nothing (inBound), and the index makes no node of a block carrying one
-// (refs.IndexBlocks). It decides only which blocks the graph keys: a block whose id is longer is
+// (refs.PlanBlocks). It decides only which blocks the graph keys: a block whose id is longer is
 // written, stored, read and rendered as any other, and a request naming it (ParseRef) finds no
 // node. Its twin is MAX_BLOCK_ID_BYTES in @legion/contracts.
 const MaxBlockIDBytes = 256
 
 // MaxTargetBytes bounds a reference's target id in text, in bytes: TargetID, which refs.to_id and
-// block_refs.to_id store in B-tree keys (refs_pkey, refs_to, block_refs_pkey, block_refs_to) of
-// at most 2704 bytes. The grammar bounds no part of that id but a project key, and text no part
+// block_refs.to_id store in B-tree keys (refs_pkey, refs_to, block_refs_pkey, block_refs_to_source)
+// of at most 2704 bytes. The grammar bounds no part of that id but a project key, and text no part
 // but a block id (MaxBlockIDBytes), so text citing a target whose id is past this cites nothing
 // (inBound): Extract finds no reference there, and a live document page whose fragment names a
 // block past it names the document. The bound decides only what text indexes: data stored under
 // a longer name - a document whose ref_key is longer - is read and written all the same, and a
 // request naming it reads it (ParseRef). At the bound the widest of those keys, block_refs_pkey
-// with a citing block id of MaxBlockIDBytes, is about 2360 bytes, and refs_pkey with a uuid
-// source and a `component` target about 2120. Its twin is MAX_REFERENCE_TARGET_BYTES in
-// @legion/contracts.
+// with a citing block id of MaxBlockIDBytes, is about 2360 bytes, block_refs_to_source with the
+// citing document's uuid as text about 2130, and refs_pkey with a uuid source and a `component`
+// target about 2120. Its twin is MAX_REFERENCE_TARGET_BYTES in @legion/contracts.
 const MaxTargetBytes = 2048
 
 // TargetID is the durable id the reference graph stores an edge to ref under, refs.to_id and
@@ -450,13 +450,13 @@ func CanonicalBlockRef(value string) (Ref, bool) {
 // `PROJECT/artifact/<slug>/ask/<id>`), optionally pinned to revision N of the ask's parts, or a
 // block of a comment (`KEY/comment/<id>`, or a project document's
 // `PROJECT/artifact/<slug>/comment/<id>`), optionally pinned to revision N of that comment, or of
-// an issue's message (`KEY/message/<id>`). A message never changes, so a pinned message block is
-// no reference. The id is read with any valid percent-encoding (EncodeBlockID writes one), so
-// `%40` is an `@` in the id and a raw `@` is only ever the pin. Any other fragment, a raw `@` that
-// does not start a well-formed pin, a versioned document, an agent conversation's document, or an
-// id that is empty or does not decode names nothing. (Extract holds the block's id to
-// MaxBlockIDBytes and its whole target id to MaxTargetBytes in text, inBound.) A document version
-// shows only as an `@` in the document part: no key or slug holds one.
+// an issue's message (`KEY/message/<id>`). A message records no revisions, so a pinned message
+// block is no reference. The id is read with any valid percent-encoding (EncodeBlockID writes
+// one), so `%40` is an `@` in the id and a raw `@` is only ever the pin. Any other fragment, a raw
+// `@` that does not start a well-formed pin, a versioned document, an agent conversation's
+// document, or an id that is empty or does not decode names nothing. (Extract holds the block's id
+// to MaxBlockIDBytes and its whole target id to MaxTargetBytes in text, inBound.) A document
+// version shows only as an `@` in the document part: no key or slug holds one.
 func parseBlock(document, fragment string) (Ref, bool) {
 	encoded, ok := strings.CutPrefix(fragment, "b-")
 	if !ok || strings.Contains(document, "@") {

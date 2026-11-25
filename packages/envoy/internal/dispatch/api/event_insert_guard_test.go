@@ -5,6 +5,8 @@
 
 package api
 
+//ci:reads packages/envoy/**/*.go !**/*_test.go internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata and all) and :83 parses every .go file it finds but the test files (:80), for the tests that ask it for the module's sources: lock_level_test.go:91, review_order_guard_test.go:49, review_write_guard_test.go:53, one_expression_guard_test.go:72, issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 also walks packages/envoy and reads every non-test file of it as text
+
 import (
 	"path/filepath"
 	"regexp"
@@ -15,6 +17,11 @@ import (
 // brokerEventInsert is the one source file allowed to insert an event.
 const brokerEventInsert = "internal/dispatch/events/broker.go"
 
+// brokerEventInserts is how many event inserts that file holds: the one a write phase queues
+// (events.Broker.QueueAppendWithLogins). It keeps the invariants below, and the count is here so
+// that an insert moving out of this scan's reach reds rather than passing unseen.
+const brokerEventInserts = 1
+
 var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 
 // TestOnlyTheBrokerInsertsEvents enforces what every reader of the event log by id rests on: every
@@ -23,13 +30,14 @@ var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 // The writer invariant: Append's transaction holds its transaction id before the insert draws the
 // row's id from events_id_seq (lockEventOwner takes it with pg_current_xact_id). The safe horizon's
 // proof needs it (events/horizon.go): a transaction that drew an id at or below one an observer saw
-// committed holds a transaction id below the observer's own, so once no transaction id below the
-// observer's is running, that id is final. A bare insert, in a transaction that has written
-// nothing before it, takes its transaction id only as it writes the row, after its default drew the
-// id, so an observation taken between the two could prove a horizon above an id still open. The
-// relay (event_stream_relay.go), the delivery hub and `GET /references?since=` would then read past
-// that id, and its row, committed later, would reach no open subscription until the page subscribed
-// again -- a missing comment or ask on an open page, with nothing to show for it in any log.
+// committed holds a transaction id below the observer's own, so once no event writer holding a
+// transaction id below the observer's is open, that id is final. A bare insert, in a transaction
+// that has written nothing before it, takes its transaction id only as it writes the row, after its
+// default drew the id, so an observation taken between the two could prove a horizon above an id
+// still open. The relay (event_stream_relay.go), the delivery hub and `GET /references?since=`
+// would then read past that id, and its row, committed later, would reach no open subscription
+// until the page subscribed again -- a missing comment or ask on an open page, with nothing to show
+// for it in any log.
 //
 // Owner sequence allocation: Append locks the event's owner row and takes the owner's next seq under
 // that lock, so one owner's events commit in id order and their seqs run without a gap or a repeat.
@@ -41,6 +49,7 @@ var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 // of the module. A test inserts events directly on purpose -- a backlog to page through, a row
 // shape to serve -- so test sources are outside it, as they are outside that scan.
 func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
@@ -69,9 +78,9 @@ func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 			"behind a horizon that passed its id and reach no open subscription. It also allocates the "+
 			"owner's seq under the owner's row lock.", brokerEventInsert, strings.Join(offences, "\n\t"))
 	}
-	if broker != 1 {
-		t.Fatalf("%s holds %d event inserts the scan can see, want 1: if the insert moved or was "+
+	if broker != brokerEventInserts {
+		t.Fatalf("%s holds %d event inserts the scan can see, want %d: if an insert moved or was "+
 			"written around a value this scan cannot resolve, this guard now passes by seeing "+
-			"nothing", brokerEventInsert, broker)
+			"nothing", brokerEventInsert, broker, brokerEventInserts)
 	}
 }

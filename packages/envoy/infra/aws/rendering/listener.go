@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 const (
@@ -46,20 +47,29 @@ func WebhookOwner(webhooks []string, name string) Owner {
 // is made of. The component checks it and writes its Variables into the container definitions;
 // `envoy-infra render webhook-listener-env` checks and prints it the same way.
 type ListenerEnv struct {
-	MachineID      string
-	NatsUrls       []string
-	ListenHost     string
-	NatsReplicas   int
-	Webhooks       []string
-	ReviewerAppId  *string // written only with github
+	MachineID     string
+	NatsUrls      []string
+	ListenHost    string
+	NatsReplicas  int
+	Webhooks      []string
+	ReviewerAppId *string // written only with github
+	// VerdictAppId is the verdict App's id, ENVOY_VERDICT_APP_ID, whose own check suites the
+	// listener leaves out of the CI record. It is optional, and written only with github and only
+	// when given.
+	VerdictAppId   *string
 	MentionTrigger *string // written only with github
+	// The sender limit as the component's inputs give it, nil for an input left unset; Check
+	// refuses it by core.CheckSenderLimit.
+	SenderMessagesPerMinute *int
+	SenderMessageBurst      *int
 }
 
 // Check refuses what the component refuses of these inputs before it registers anything: every
 // one but NatsUrls, which may come from another resource and which Variables refuses. A webhook's
 // input is checked against Webhooks before the list itself, so each refusal is the one its input
 // earns: a listed webhook's missing input, an unlisted webhook's input, then a list this version
-// does not take. Each refusal is a core.InputError.
+// does not take. The sender limit comes next, by core.CheckSenderLimit. Each refusal is a
+// core.InputError.
 func (e ListenerEnv) Check() error {
 	set := func(v *string) bool { return v != nil && strings.TrimSpace(*v) != "" }
 	github := WebhookOwner(e.Webhooks, "github")
@@ -71,6 +81,20 @@ func (e ListenerEnv) Check() error {
 	}); err != nil {
 		return err
 	}
+	// The verdict App's id is optional: without it the listener leaves no App's suites out. Given,
+	// it is github's like the two above, a blank one would write an empty variable, and one that is
+	// not a GitHub App's id would stop the listener at start (webhook.LoadWebhookConfig).
+	if e.VerdictAppId != nil {
+		if !github.Present {
+			return core.InputErrorf("verdictAppId", "verdictAppId is given for %s, %s", github.Name, github.Absent)
+		}
+		if !set(e.VerdictAppId) {
+			return core.InputErrorf("verdictAppId", "verdictAppId is blank: give the verdict App's id, or leave it out")
+		}
+		if !contracts.IsGithubAppID(*e.VerdictAppId) {
+			return core.InputErrorf("verdictAppId", "verdictAppId %q is not a GitHub App id: a whole number above 0, with no leading zero", *e.VerdictAppId)
+		}
+	}
 	if !slices.ContainsFunc(supportedWebhooks, func(w []string) bool { return slices.Equal(e.Webhooks, w) }) {
 		supported := make([]string, len(supportedWebhooks))
 		for i, w := range supportedWebhooks {
@@ -78,7 +102,11 @@ func (e ListenerEnv) Check() error {
 		}
 		return core.InputErrorf("webhooks", "webhooks %q is not supported: this version takes %s", e.Webhooks, strings.Join(supported, " or "))
 	}
-	if err := e.config().Check(); err != nil {
+	config, err := e.config()
+	if err != nil {
+		return err
+	}
+	if err := config.Check(); err != nil {
 		return err
 	}
 	// The listener binds 127.0.0.1 when ENVOY_LISTEN_HOST is blank, where the target group cannot
@@ -99,12 +127,19 @@ func (e ListenerEnv) Check() error {
 
 // Variables returns the container's non-secret environment, as NAME=value in the order the
 // container definitions list it: core.ListenerConfig.Env's, which writes the listen host after the
-// port where the reference lists it, then the replicas and the webhooks: ENVOY_WEBHOOKS only when
-// one is listed, and the GitHub variables only with github. It refuses NatsUrls as Env does, and
-// expects the rest to have passed Check, which the component and the render command run first; it
-// runs no check of Check's itself, so the container definitions are written for any webhook list.
+// port where the reference lists it and the sender limit only when it is set, then the replicas
+// and the webhooks: ENVOY_WEBHOOKS only when one is listed, and the GitHub variables only with
+// github, ENVOY_VERDICT_APP_ID last and only when it is given. It refuses NatsUrls as Env does,
+// and the sender limit as Check does, since it reads the limit through the same rule; it expects
+// the rest to have passed Check, which the component and the render command run first, and runs
+// none of Check's other checks itself, so the container definitions are written for any webhook
+// list.
 func (e ListenerEnv) Variables() ([]string, error) {
-	variables, err := e.config().Env(e.NatsUrls)
+	config, err := e.config()
+	if err != nil {
+		return nil, err
+	}
+	variables, err := config.Env(e.NatsUrls)
 	if err != nil {
 		return nil, err
 	}
@@ -117,13 +152,24 @@ func (e ListenerEnv) Variables() ([]string, error) {
 			"ENVOY_GITHUB_MENTION_TRIGGER="+*e.MentionTrigger,
 			"ENVOY_REVIEWER_APP_ID="+*e.ReviewerAppId,
 		)
+		if e.VerdictAppId != nil {
+			variables = append(variables, "ENVOY_VERDICT_APP_ID="+*e.VerdictAppId)
+		}
 	}
 	return variables, nil
 }
 
-// config is the environment as core.ListenerConfig takes it, on the listener's fixed port.
-func (e ListenerEnv) config() core.ListenerConfig {
-	return core.ListenerConfig{MachineID: e.MachineID, Port: ListenerPort, ListenHost: e.ListenHost}
+// config is the environment as core.ListenerConfig takes it, on the listener's fixed port, with
+// the sender limit core.CheckSenderLimit answers, or that rule's refusal.
+func (e ListenerEnv) config() (core.ListenerConfig, error) {
+	rate, burst, err := core.CheckSenderLimit("", e.SenderMessagesPerMinute, e.SenderMessageBurst)
+	if err != nil {
+		return core.ListenerConfig{}, err
+	}
+	return core.ListenerConfig{
+		MachineID: e.MachineID, Port: ListenerPort, ListenHost: e.ListenHost,
+		SenderMessagesPerMinute: rate, SenderMessageBurst: burst,
+	}, nil
 }
 
 // SecretReadPolicy is the execution-role policy that reads the secret at arn into a container, as

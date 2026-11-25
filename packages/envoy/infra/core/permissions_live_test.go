@@ -2,6 +2,8 @@
 
 package core_test
 
+//ci:builds packages/envoy ./cmd/dispatch ./cmd/listener buildEnvoyCommand builds . in ../../cmd/<dispatch|listener> (root go.work)
+
 import (
 	"context"
 	"encoding/json"
@@ -26,6 +28,8 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
 // The live tests of the host grant: one nkey user holding HostPermissions, on the 2.10 image and on
 // the hub's, each run with the hub's own server arguments. This branch's listener connects as that
@@ -135,7 +139,11 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 					require.Equal(t, []string{"Publish", removed}, v[1:], "the server refused something else too: %s", v[0])
 				}
 				t.Logf("server violation (%d alike): %s", len(logged), logged[0][0])
-				require.Contains(t, process.Output.String(), "subscribe failed, retrying")
+				// No retry gets past the grant, so the start ends at the refusal with the line the
+				// durable-refused alarm pages on, naming the subject, rather than polling the bind.
+				require.Contains(t, process.Output.String(), "subscribe refused, shutting down")
+				require.Contains(t, process.Output.String(), `bus: NATS denied the publish to \"`+removed)
+				require.NotContains(t, process.Output.String(), "subscribe failed, retrying")
 			})
 		})
 	}

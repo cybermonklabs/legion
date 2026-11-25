@@ -1,8 +1,23 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type SetStateAction,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
-import { ApiError, api, apiErrorMessage, type WriteBounds } from "../../api/client";
+import {
+  ApiError,
+  api,
+  apiErrorMessage,
+  type WriteBounds,
+  type WriteMethod,
+} from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   AnswerAskInput,
   Ask,
@@ -14,14 +29,14 @@ import type {
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
-import { useAnswerDraft } from "./answer-drafts";
+import { setAnswerDraft, useAnswerDraft } from "./answer-drafts";
 import {
   clearPendingAskThreadInvalidation,
   hasPendingAskThreadInvalidation,
 } from "./ask-thread-freshness";
-import { useOutstandingAnswerWrite } from "./outstanding-answers";
+import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
 import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
@@ -51,13 +66,39 @@ interface AskAnswerFailure {
   retryable: boolean;
 }
 
+/** One press of the answer: the ask it is of (`AskPress`) and what it sends. */
+interface AnswerPress extends AskPress {
+  readonly input: AnswerAskInput;
+}
+
+/** Whether a press changes an answer the server has already recorded, which its input names by
+ *  that answer's time (`answerAskInput`). */
+function changesAnswer({ input }: AnswerPress): boolean {
+  return input.expected_answer_at !== undefined;
+}
+
+/** One press of a question back: the ask it is of (`AskPress`) and the text it posts. */
+interface ClarificationPress extends AskPress {
+  readonly text: string;
+}
+
 /**
  * The refusals the same answer is refused with again however often it is sent, and what the card
  * says for each: the ask was answered or closed elsewhere, its question changed (the card reloads
  * it, so the next answer is to the new wording), or writing even its server state would leave the
- * document's live state past what the server can decode. Any other failure may pass on a retry.
+ * document's live state past what the server can decode. An answer the reader stopped may have
+ * been saved, and the card's Retry makes that very press again (`retryLast`). Any other failure
+ * may pass on a retry.
  */
-function answerFailure(error: Error): AskAnswerFailure {
+function answerFailure(answer: {
+  readonly error: Error;
+  readonly method: WriteMethod | undefined;
+}): AskAnswerFailure {
+  const stopped = stoppedNote(answer, "your answer", "saved");
+  if (stopped !== undefined) {
+    return { message: stopped, retryable: true };
+  }
+  const { error } = answer;
   if (error instanceof ApiError) {
     switch (error.code) {
       case "ASK_ANSWER_CHANGED":
@@ -142,6 +183,22 @@ export function useAskAnswerForm({
   // and so does every thread on an issue whose claim or route moved while it was in flight.
   const refreshInitialThread =
     initialThread !== undefined && hasPendingAskThreadInvalidation(queryClient, ask);
+  // A view that reads this thread with no seed (the reading column's thread, `ThreadPane`) may
+  // already have a read of it out, asked at a time this card cannot know: perhaps before the Inbox
+  // read the seed comes from, so that it answers an older thread - the ask still open, say, after
+  // the seed showed it answered. TanStack puts the seed into that read's query, which holds no
+  // data yet, and leaves the read running, and its answer then replaces the seed with no compare
+  // of their ages. So the card notes on its first render, before `useQuery` puts the seed in,
+  // whether it seeds over such a read, and if it does, puts the seed over that read as every write
+  // goes over the reads still out (`replaceQueryData`).
+  const threadBeforeSeed = queryClient.getQueryState(["ask-thread", ask.id]);
+  const seedsOverRead = useRef(
+    initialThread !== undefined &&
+      !refreshInitialThread &&
+      threadBeforeSeed !== undefined &&
+      threadBeforeSeed.data === undefined &&
+      threadBeforeSeed.fetchStatus !== "idle"
+  );
   const threadQuery = useQuery<AskRead, Error>({
     initialData: refreshInitialThread ? undefined : initialThread,
     initialDataUpdatedAt: refreshInitialThread ? undefined : initialThreadUpdatedAt,
@@ -149,6 +206,19 @@ export function useAskAnswerForm({
     queryFn: () => getAskThread(ask.id),
     staleTime: Number.POSITIVE_INFINITY,
   });
+  // In a layout effect, so that no answer from the network lands between the commit that drew the
+  // seed and this write. Cancelling the read puts its query back as it stood before that read,
+  // with no data, so the seed is written after the cancel; and with a read cancelled,
+  // `replaceQueryData` asks the thread again, so the next answer is of a read asked after the seed.
+  useLayoutEffect(() => {
+    if (!seedsOverRead.current) return;
+    seedsOverRead.current = false;
+    replaceQueryData<AskRead>(
+      queryClient,
+      ["ask-thread", ask.id],
+      (current) => current ?? initialThread
+    );
+  }, [ask.id, initialThread, queryClient]);
   useEffect(() => {
     if (refreshInitialThread && threadQuery.data !== undefined) {
       clearPendingAskThreadInvalidation(queryClient, ask.id);
@@ -156,23 +226,42 @@ export function useAskAnswerForm({
   }, [ask.id, queryClient, refreshInitialThread, threadQuery.data]);
   const edits = threadQuery.data?.edits ?? [];
   const answers = threadQuery.data?.answers ?? [];
+  // What a press does to the card goes to the press's own ask. Its callbacks run with the newest
+  // render's values (`useKeyedWrite`), and a host may draw this form for one ask after another,
+  // so the state they set - the answer the card shows, the form it closes, the choice it clears -
+  // is set only while the form is drawn for the press's ask (`drawnFor`), and never on the ask
+  // the card shows by then; the reads they refresh are the press's ask's either way. Text a press
+  // addresses to its ask is this form's own while the form is drawn for that ask, and that ask's
+  // draft once a host has drawn the form for another (`setAnswerDraft`), so the text a landing
+  // clears, or an upload adds, is the press's ask's and never the one the card shows.
+  const drawnFor = (press: AskPress) => press.ask.id === ask.id;
+  const setAnswerTextOf = (askId: string, next: SetStateAction<string>) => {
+    if (askId === ask.id) setAnswerText(next);
+    else setAnswerDraft(askId, next);
+  };
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
   // Inbox, its restore on a refusal and the hold that keeps the question where the reader
-  // pressed it are the decline's too, and are written once beside the hold itself.
+  // pressed it are the decline's too, and are written once beside the hold itself. Each press
+  // carries the ask it answers: `retry()` runs the newest render's `write` and callbacks with the
+  // press's own values (`useKeyedWrite`), and a host may draw this card for one ask after
+  // another, so a Retry sends the stopped answer to its own ask under its key, and its landing
+  // reads that ask again.
   const mutation = useOutstandingAnswerWrite({
-    askId: ask.id,
-    label: () => `Answer to “${ask.question}”`,
-    write: (input: AnswerAskInput, bounds) => answer(ask.id, input, bounds),
+    label: (press: AnswerPress) => `Answer to “${press.ask.question}”`,
+    method: "POST",
+    write: (press: AnswerPress, bounds) => answer(press.ask.id, press.input, bounds),
     // A change to an answer the server has already recorded leaves the Inbox alone: the ask has
     // no open row there to take out.
-    removesRow: () => replacing.current === undefined,
-    onError: (error) => {
+    removesRow: (press) => !changesAnswer(press),
+    onError: (error, press) => {
       if (error instanceof ApiError && error.code === "ASK_EDITED") {
-        setAskChanged(true);
-        setSelected([]);
-        setOtherSelected(false);
-        void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+        if (drawnFor(press)) {
+          setAskChanged(true);
+          setSelected([]);
+          setOtherSelected(false);
+        }
+        void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
       }
       if (
         error instanceof ApiError &&
@@ -182,29 +271,35 @@ export function useAskAnswerForm({
       ) {
         // Each refusal meets the same change again, so the form it was sent from closes and the
         // card shows the thread's current answer, not one this card recorded earlier.
-        void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
-        replacing.current = undefined;
-        setJustAnswered(null);
-        setChanging(false);
+        void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
+        if (drawnFor(press)) {
+          replacing.current = undefined;
+          setJustAnswered(null);
+          setChanging(false);
+        }
       }
     },
     onSettled: () => {
       submitGuard.release();
     },
-    onSuccess: (updatedAsk) => {
-      const changed = replacing.current !== undefined;
-      replacing.current = undefined;
-      setChanging(false);
+    onSuccess: (updatedAsk, press) => {
+      const changed = changesAnswer(press);
+      if (drawnFor(press)) {
+        replacing.current = undefined;
+        setChanging(false);
+        // Answered either way; with no answer to give, the card reads the ask afresh instead of
+        // showing the one Dispatch would have handed back.
+        setJustAnswered(updatedAsk);
+      }
       // The text is the recorded answer now, not an unsent draft: a later card for this ask
       // starts empty, and nothing offers to copy what the server already took.
-      setAnswerText("");
-      // Answered either way; with no answer to give, the card reads the ask afresh instead of
-      // showing the one Dispatch would have handed back.
-      setJustAnswered(updatedAsk);
+      setAnswerTextOf(press.ask.id, "");
       if (changed || updatedAsk === null) {
         if (updatedAsk?.answer != null) {
           const changedAnswer = updatedAsk.answer;
-          queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
+          // Over any read of the thread still out, which was asked before the change and would
+          // put back the answer it replaced (`replaceQueryData`).
+          replaceQueryData<AskRead>(queryClient, ["ask-thread", press.ask.id], (current) =>
             current === undefined
               ? undefined
               : {
@@ -214,37 +309,39 @@ export function useAskAnswerForm({
                 }
           );
         }
-        void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+        void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
         void queryClient.invalidateQueries({ queryKey: ["me", "answers"] });
       }
-      if (!changed) onAnswered?.(ask.id);
-      invalidateOwnerReads(queryClient, ask);
+      if (!changed) onAnswered?.(press.ask.id);
+      invalidateOwnerReads(queryClient, press.ask);
     },
   });
+  // A question back carries its ask as an answer does, for the same reason.
   const clarification = useKeyedWrite({
     inline: true,
-    label: () => `Question back on “${ask.question}”`,
-    write: (text: string, bounds) => {
-      if (ask.issue_key === null) {
+    label: (press: ClarificationPress) => `Question back on “${press.ask.question}”`,
+    method: "POST",
+    write: (press: ClarificationPress, bounds) => {
+      if (press.ask.issue_key === null) {
         return api.createArtifactComment(
-          askArtifactId(ask),
-          { ask_id: ask.id, body: text },
+          askArtifactId(press.ask),
+          { ask_id: press.ask.id, body: press.text },
           bounds
         );
       }
-      return createReply(ask.issue_key, { ask_id: ask.id, body: text }, bounds);
+      return createReply(press.ask.issue_key, { ask_id: press.ask.id, body: press.text }, bounds);
     },
     onSettled: () => {
       submitGuard.release();
     },
-    onSuccess: () => {
-      setAnswerText("");
-      setQuestionChoice(false);
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+    onSuccess: (_comment, press) => {
+      setAnswerTextOf(press.ask.id, "");
+      if (drawnFor(press)) setQuestionChoice(false);
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
       // A clarification hands the turn to the asker: every surface that renders this ask from
       // its owner's list (a decision block reads `["asks", key]`) must see the new `waiting_on`,
       // not just the Inbox.
-      invalidateOwnerReads(queryClient, ask);
+      invalidateOwnerReads(queryClient, press.ask);
     },
   });
 
@@ -331,7 +428,10 @@ export function useAskAnswerForm({
   const sendAnswer = (text: string) => {
     submitGuard.guard(() => {
       const answerSelection = isApproval || hasOptions ? selected : [];
-      mutation.mutate(answerAskInput(displayedAsk, answerSelection, text, replacing.current));
+      mutation.mutate({
+        ask,
+        input: answerAskInput(displayedAsk, answerSelection, text, replacing.current),
+      });
     });
   };
 
@@ -382,7 +482,7 @@ export function useAskAnswerForm({
   const sendClarification = () => {
     const text = answerText.trim();
     if (text === "") return;
-    submitGuard.guard(() => clarification.mutate(text));
+    submitGuard.guard(() => clarification.mutate({ ask, text }));
   };
   const completed = changing ? null : recordedAsk;
   // What the reader typed and no form will ever send: the question closed under them - withdrawn,
@@ -392,7 +492,7 @@ export function useAskAnswerForm({
   const unsentAnswer = completed !== null && justAnswered === null ? answerText : "";
 
   return {
-    answerFailure: mutation.error === null ? null : answerFailure(mutation.error),
+    answerFailure: mutation.error === null ? null : answerFailure(mutation),
     answerFieldId,
     answerPlaceholder,
     answers,
@@ -418,6 +518,7 @@ export function useAskAnswerForm({
     sendAnswer,
     sendClarification,
     setAnswerText,
+    setAnswerTextOf,
     setQuestionChoice,
     startChanging,
     submitGuard,

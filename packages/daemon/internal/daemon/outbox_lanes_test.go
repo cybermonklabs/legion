@@ -35,7 +35,8 @@ import (
 // observe — Dispatch writes, publishes, Spawn calls, the rows left, the log — never on time.
 
 // runLanes starts runner.Run on clock and waits for its boot sweep to arm the first sweep timer,
-// so every row a test writes after it is one the boot sweep never saw. It returns the stop that
+// for the runner's own interval (sweepInterval), so every row a test writes after it is one the
+// boot sweep never saw. It returns the stop that
 // cancels Run and waits for it to return, run at cleanup too; the stop first runs every release
 // given, since a lane blocked in a gated call would hold Run's join forever.
 func runLanes(t *testing.T, runner *outbox, clock *heldClock, releases ...func()) func() {
@@ -59,7 +60,7 @@ func runLanes(t *testing.T, runner *outbox, clock *heldClock, releases ...func()
 	}
 	t.Cleanup(stop)
 	testwait.Eventually(t, "Run armed its sweep", func() bool {
-		live, _ := clock.armed(outboxLease)
+		live, _ := clock.armed(runner.sweepInterval())
 		return live == 1
 	})
 	return stop
@@ -128,8 +129,8 @@ func (g *gatedSpawn) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime
 	return g.Runtime.Spawn(ctx, spec)
 }
 
-// gatedPublisher is holderPublisher with every publish behind a gate: a notice blocked in it is a
-// lane blocked on the listener.
+// gatedPublisher is holderPublisher with every publish behind a gate, kept or not: a notice
+// blocked in it is a lane blocked on the listener.
 type gatedPublisher struct {
 	*holderPublisher
 	gate *gate
@@ -138,6 +139,11 @@ type gatedPublisher struct {
 func (g *gatedPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) error {
 	g.gate.enter()
 	return g.holderPublisher.Publish(ctx, topic, message, payload, key)
+}
+
+func (g *gatedPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
+	g.gate.enter()
+	return g.holderPublisher.PublishKept(ctx, topic, message, payload, key)
 }
 
 // postingDispatch is Dispatch as a message post meets it: the bodies posted, by issue, and no
@@ -187,13 +193,25 @@ func (d *postingDispatch) Approval(context.Context, string) (dispatch.Approval, 
 func (d *postingDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *postingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *postingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
+func (d *postingDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *postingDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
 func (d *postingDispatch) PutGatedSteps(context.Context, string, []string) error {
+	return nil
+}
+func (d *postingDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
+func (d *postingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *postingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
 func (d *postingDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
@@ -259,11 +277,17 @@ func (d *laneBoard) Approval(context.Context, string) (dispatch.Approval, error)
 func (d *laneBoard) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *laneBoard) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *laneBoard) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
-func (d *laneBoard) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *laneBoard) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *laneBoard) ApprovedVersionBefore(context.Context, string, int) (int, error)   { return 0, nil }
+func (d *laneBoard) PutGatedSteps(context.Context, string, []string) error             { return nil }
+func (d *laneBoard) PutStep(context.Context, string, string, dispatch.StepWrite) error { return nil }
+func (d *laneBoard) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *laneBoard) PutPlan(context.Context, string, string, dispatch.PlanWrite) error { return nil }
 func (d *laneBoard) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -337,6 +361,17 @@ func outboxRowsOf(t *testing.T, pool *store.Pool, issue string) int {
 	var rows int
 	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1", issue).Scan(&rows); err != nil {
 		t.Fatalf("count the outbox rows of %s: %v", issue, err)
+	}
+	return rows
+}
+
+// outboxRowsOfKind is how many rows of kind issue has left. A finished row is deleted
+// (record.Postgres.FinishOutbox).
+func outboxRowsOfKind(t *testing.T, pool *store.Pool, issue string, kind record.OutboxKind) int {
+	t.Helper()
+	var rows int
+	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1 and kind = $2", issue, string(kind)).Scan(&rows); err != nil {
+		t.Fatalf("count the %s rows of %s: %v", kind, issue, err)
 	}
 	return rows
 }
@@ -452,6 +487,7 @@ func (tree *laneTree) blocked(t *testing.T, when string) {
 // waits for the sweep: it is still queued once a row committed after it has posted, and posts
 // when the sweep's timer fires.
 func TestACommittedRowRunsOnItsLaneWithoutASweep(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	clock := microClock()
 	client := &postingDispatch{}
@@ -497,6 +533,7 @@ func (h enqueuingByID) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (int
 // written without one does: a catch-up that claims kept decisions (workflow.EnqueueNaming, the
 // hand-over's and the ready's) is published at once rather than after the next sweep.
 func TestARowWrittenWithItsIDRunsOnItsLaneWithoutASweep(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	clock := microClock()
 	client := &postingDispatch{}
@@ -539,13 +576,14 @@ func (h startingWorker) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (in
 // without that wake the worker whose phase has just been handed its work waits for the next
 // sweep, up to one outbox lease after the transition.
 func TestAWorkerStartRunsOnItsLaneWithoutASweep(t *testing.T) {
+	t.Parallel()
 	tree := startLaneTree(t, nil)
 	tree.spawn.gate.open()
 	ctx := context.Background()
 	// A phase worker's start waits while its issue holds no admission slot (StartOrOwe's
 	// NeedsSlot), so the slot is granted first, and through the bare store: projectRecords.PutSlot
 	// wakes the issue's lifecycle lane itself, and that wake would stand in for the one under test.
-	if err := pgx.BeginFunc(ctx, tree.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, tree.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutSlot(ctx, tx, record.Slot{Issue: tree.root.Key, Index: 0, AdmittedAt: tree.clock.Now()})
 	}); err != nil {
 		t.Fatalf("grant the admission slot of %s: %v", tree.root.Key, err)
@@ -567,6 +605,7 @@ func TestAWorkerStartRunsOnItsLaneWithoutASweep(t *testing.T) {
 // nothing due and arms one timer for the wait, and the row runs when that timer fires on the
 // clock, with no sweep in between.
 func TestARowDueLaterRunsWhenItsLanesTimerFires(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	clock := microClock()
 	client := &postingDispatch{}
@@ -598,6 +637,7 @@ func TestARowDueLaterRunsWhenItsLanesTimerFires(t *testing.T) {
 // expedite that makes it due wakes its lane as it commits, and the notice is published with no
 // timer fired — neither the lane's wait for the hour it was due at nor the sweep.
 func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	noticeTree(t, pool, record.NewStore(), false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -637,10 +677,61 @@ func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
 	}
 }
 
+func TestProjectRecordsExpediteWakesOnlyWhenItMovedARow(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	base := record.NewStore()
+	now := time.Date(2026, 11, 20, 2, 0, 0, 0, time.UTC)
+	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "wake once"}, now.Add(time.Hour))
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		id, err := base.EnqueueID(ctx, tx, row)
+		if err != nil {
+			return err
+		}
+		row.ID = id
+		return nil
+	}); err != nil {
+		t.Fatalf("enqueue the row: %v", err)
+	}
+	var wakes []string
+	records := projectRecords{Store: base, project: "LEGION", wake: func(issue string, kind record.OutboxKind) {
+		wakes = append(wakes, issue+":"+string(kind))
+	}, log: quietLogger()}
+	expedite := func(want bool) {
+		t.Helper()
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+			moved, err := records.ExpediteOutbox(ctx, tx, row, now)
+			if err != nil {
+				return err
+			}
+			if moved != want {
+				t.Fatalf("expedite moved %t, want %t", moved, want)
+			}
+			if len(wakes) != 0 {
+				t.Fatalf("expedite woke %v before its transaction committed", wakes)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("expedite the row: %v", err)
+		}
+	}
+	expedite(true)
+	if fmt.Sprint(wakes) != "[LEGION-208:dispatch_message]" {
+		t.Fatalf("wakes after the moved expedite = %v, want its one lane", wakes)
+	}
+	wakes = nil
+	expedite(false)
+	if len(wakes) != 0 {
+		t.Fatalf("wakes after a no-op expedite = %v, want none", wakes)
+	}
+}
+
 // A start blocked on the runtime holds only its own issue's lifecycle rows. Another issue's status
 // write made while it blocks lands at once; the issue's own second lifecycle row, written while
 // its start blocks, waits — the lanes run on around it — and runs once the start has returned.
 func TestAStartBlockedOnTheRuntimeHoldsOnlyItsOwnIssuesLifecycleLane(t *testing.T) {
+	t.Parallel()
 	tree := startLaneTree(t, nil)
 	tree.holdArchitectStart(t)
 
@@ -680,6 +771,7 @@ func TestAStartBlockedOnTheRuntimeHoldsOnlyItsOwnIssuesLifecycleLane(t *testing.
 // registers returns at once rather than waiting on the lane, so the fact is applied within a
 // bound, and the board row it wrote runs beside the blocked start.
 func TestACommitOnABlockedLifecycleLanesIssueReturnsAtOnceAndItsBoardRowRuns(t *testing.T) {
+	t.Parallel()
 	tree := startLaneTree(t, nil)
 	tree.holdArchitectStart(t)
 
@@ -701,6 +793,7 @@ func TestACommitOnABlockedLifecycleLanesIssueReturnsAtOnceAndItsBoardRowRuns(t *
 // runs them: the newer row waits behind the older while it backs off, and once the backoff's
 // timer fires the older lands and then the newer, nothing drained by hand.
 func TestTheLaneWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	clock := microClock()
@@ -711,7 +804,7 @@ func TestTheLaneWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: board, log: quietLogger()}
 	runLanes(t, runner, clock)
 
-	backoff := retryBackoff(0)
+	backoff := record.RetryBackoff(0)
 	testwait.Eventually(t, "the older row failed and its lane armed its backoff", func() bool {
 		live, _ := clock.armed(backoff)
 		return live == 1
@@ -735,6 +828,7 @@ func TestTheLaneWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.
 // (errNoticeWaits) on its first backoff, and once the older has gone and that backoff's timer
 // fires, the newer is published — after the older, never before it.
 func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	noticeTree(t, pool, record.NewStore(), false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -749,7 +843,7 @@ func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff
 	commitRows(t, pool, runner.records, "older", mustOutboxRow(t, "LEGION-2", notice, clock.Now()))
 	testwait.Eventually(t, "the older notice reached the publisher", func() bool { return publisher.gate.entries() == 1 })
 	commitRows(t, pool, runner.records, "newer", mustOutboxRow(t, "LEGION-3", notice, clock.Now()))
-	backoff := retryBackoff(0)
+	backoff := record.RetryBackoff(0)
 	testwait.Eventually(t, "the newer notice waited and its lane armed the backoff", func() bool {
 		live, _ := clock.armed(backoff)
 		return live == 1
@@ -783,6 +877,7 @@ func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff
 // One issue's lifecycle rows run one at a time, in id order: with two starts due, the second's
 // provision and launch begin only once the first has returned from the runtime.
 func TestALifecycleLaneRunsOneRowAtATimeInIdOrder(t *testing.T) {
+	t.Parallel()
 	tree := startLaneTree(t, nil)
 	tree.commit(t, "two-starts", tree.start(t, claim.RoleArchitect), tree.start(t, claim.RoleImplementer))
 	testwait.Eventually(t, "the architect's start reached Spawn", func() bool { return tree.spawn.gate.entries() == 1 })
@@ -805,6 +900,7 @@ func TestALifecycleLaneRunsOneRowAtATimeInIdOrder(t *testing.T) {
 // An issue's notice runs on its board lane beside its blocked lifecycle lane: the notice is
 // published to the issue's architect while that architect's start is still held in Spawn.
 func TestAnIssuesNoticePublishesWhileItsLifecycleRowBlocksOnTheRuntime(t *testing.T) {
+	t.Parallel()
 	tree := startLaneTree(t, nil)
 	tree.holdArchitectStart(t)
 
@@ -826,6 +922,7 @@ func TestAnIssuesNoticePublishesWhileItsLifecycleRowBlocksOnTheRuntime(t *testin
 // lease ahead, so the sweep that comes while it runs — at the very moment the first lease would
 // have lapsed — claims nothing again, and the row finishes once, with one write.
 func TestALaneRenewsItsRunningRowsLeaseAndNoSweepClaimsItAgain(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	clock := microClock()
@@ -877,6 +974,7 @@ func TestALaneRenewsItsRunningRowsLeaseAndNoSweepClaimsItAgain(t *testing.T) {
 // lapsed, on the sweep after the lapse, with no restart: the sweep before the lapse starts its
 // lane, which finds the row another's and exits.
 func TestTheSweepAfterALeasesLapseStartsItsLaneAgainWithoutARestart(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	clock := microClock()
@@ -902,11 +1000,42 @@ func TestTheSweepAfterALeasesLapseStartsItsLaneAgainWithoutARestart(t *testing.T
 	})
 }
 
+// An outbox given a sweep interval of its own (sweepEvery, which a whole daemon takes from
+// overrides.outboxSweep) arms each sweep for that interval, and the sweep it fires finds a lapsed
+// lease as the daemon's would: a whole-daemon test that lets a lease lapse behind the daemon waits
+// that interval for the row, not outboxLease of the wall clock.
+func TestRunSweepsAtTheOutboxsOwnInterval(t *testing.T) {
+	t.Parallel()
+	const every = 5 * time.Second
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	clock := microClock()
+	client := &blockingDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "todo"}}
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger(), sweepEvery: every}
+	runLanes(t, runner, clock)
+	if _, armed := clock.armed(outboxLease); armed != 0 {
+		t.Fatalf("sweep timers armed for outboxLease = %d, want none: the outbox names an interval of its own", armed)
+	}
+
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), clock.Now()))
+	if _, err := pool.Exec(context.Background(), "update outbox set lease_token = 'a-runner-that-died', lease_until = $1", clock.Now().Add(every/2)); err != nil {
+		t.Fatalf("leave a lease nobody holds on the row: %v", err)
+	}
+	clock.advance(every)
+	if fired := clock.fire(every); fired != 1 {
+		t.Fatalf("sweep timers fired = %d, want the one Run armed", fired)
+	}
+	testwait.Eventually(t, "the row ran at the sweep after its lease lapsed", func() bool {
+		return client.count() == 1 && outboxRows(t, pool) == 0
+	})
+}
+
 // The daemon's stop joins its lanes: Run, its context cancelled while a lane holds a row blocked in
 // Dispatch, returns only once that lane has. The row's write failed on the stop, so the row is
 // retried with its lease cleared, on a settle the stop's context does not cut short; until the
 // block lifts the row is still the lane's, under its lease.
 func TestRunReturnsOnlyAfterItsLanesAndSettlesTheRowAStopInterrupted(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	clock := microClock()
@@ -942,9 +1071,9 @@ func TestRunReturnsOnlyAfterItsLanesAndSettlesTheRowAStopInterrupted(t *testing.
 	released.Do(func() { close(release) })
 	<-done
 	retried := rowStateOf(t, pool, id)
-	if retried.leaseToken != "" || retried.attempts != 1 || !retried.nextAt.Equal(clock.Now().Add(retryBackoff(0))) {
+	if retried.leaseToken != "" || retried.attempts != 1 || !retried.nextAt.Equal(clock.Now().Add(record.RetryBackoff(0))) {
 		t.Fatalf("after Run returned the row is leased %q with %d attempts, due %v; want it retried unleased on its first backoff, due %v",
-			retried.leaseToken, retried.attempts, retried.nextAt, clock.Now().Add(retryBackoff(0)))
+			retried.leaseToken, retried.attempts, retried.nextAt, clock.Now().Add(record.RetryBackoff(0)))
 	}
 	if got := client.count(); got != 1 {
 		t.Fatalf("status writes = %d, want the one the stop interrupted", got)
@@ -976,46 +1105,63 @@ func heldWarnings(t *testing.T, logged string) [][2]int64 {
 
 // A lifecycle row that runs long is what an operator looks at when the issue's next start or stop
 // does not happen: its lease renewal logs each lifecycle row held behind it, once, when that row
-// has waited heldWarnAfter, naming the held row and the running one — and nothing before then.
+// has waited heldWarnAfter behind it, naming the held row and the running one — and nothing before
+// then. The wait is counted from the later of the held row's due time and the moment the running
+// row began its run: a row a project's pause held keeps the due time it had, which can be hours
+// before the row ahead of it began.
 func TestARunningLifecycleRowLogsEachRowHeldBehindItOnceItHasWaitedLong(t *testing.T) {
-	var logged syncBuffer
-	tree := startLaneTree(t, slog.New(slog.NewJSONHandler(&logged, nil)))
-	tree.holdArchitectStart(t)
-	tree.commit(t, "own-implementer", tree.start(t, claim.RoleImplementer))
-	ids := outboxIDs(t, tree.pool)
-	if len(ids) != 2 {
-		t.Fatalf("outbox rows = %v, want the running start and the one held behind it", ids)
-	}
-	running, held := ids[0], ids[1]
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// due is how long before the running row began its run the held row fell due.
+		due time.Duration
+	}{
+		{name: "a row due as the running row began"},
+		{name: "a row a pause held, due an hour before the running row began", due: time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged syncBuffer
+			tree := startLaneTree(t, slog.New(slog.NewJSONHandler(&logged, nil)))
+			tree.holdArchitectStart(t)
+			implementer := tree.start(t, claim.RoleImplementer)
+			implementer.NextAt = implementer.NextAt.Add(-tc.due)
+			tree.commit(t, "own-implementer", implementer)
+			ids := outboxIDs(t, tree.pool)
+			if len(ids) != 2 {
+				t.Fatalf("outbox rows = %v, want the running start and the one held behind it", ids)
+			}
+			running, held := ids[0], ids[1]
 
-	renewEvery := outboxLease / 3
-	tick := func() {
-		t.Helper()
-		tree.clock.advance(renewEvery)
-		if fired := tree.clock.fire(renewEvery); fired != 1 {
-			t.Fatalf("renewal timers fired = %d, want the running row's", fired)
-		}
-	}
-	ticks := int(heldWarnAfter / renewEvery)
-	for range ticks - 1 {
-		tick()
-	}
-	if got := heldWarnings(t, logged.String()); len(got) != 0 {
-		t.Fatalf("held rows logged %v after %s, want none before %s", got, heldWarnAfter-renewEvery, heldWarnAfter)
-	}
-	tick()
-	if got := heldWarnings(t, logged.String()); len(got) != 1 || got[0] != [2]int64{held, running} {
-		t.Fatalf("held rows logged %v after %s, want row %d held behind row %d, once", got, heldWarnAfter, held, running)
-	}
-	tick()
-	if got := heldWarnings(t, logged.String()); len(got) != 1 {
-		t.Fatalf("held rows logged %v after %s, want the one line, not one per tick", got, heldWarnAfter+renewEvery)
-	}
-	if lease := rowStateOf(t, tree.pool, running); lease.leaseUntil == nil || !lease.leaseUntil.Equal(tree.clock.Now().Add(outboxLease)) {
-		t.Fatalf("the running row's lease_until = %v, want renewed to a lease ahead of now", lease.leaseUntil)
-	}
-	tree.blocked(t, "after the held row was logged")
+			renewEvery := outboxLease / 3
+			tick := func() {
+				t.Helper()
+				tree.clock.advance(renewEvery)
+				if fired := tree.clock.fire(renewEvery); fired != 1 {
+					t.Fatalf("renewal timers fired = %d, want the running row's", fired)
+				}
+			}
+			ticks := int(heldWarnAfter / renewEvery)
+			for range ticks - 1 {
+				tick()
+			}
+			if got := heldWarnings(t, logged.String()); len(got) != 0 {
+				t.Fatalf("held rows logged %v after %s, want none before %s", got, heldWarnAfter-renewEvery, heldWarnAfter)
+			}
+			tick()
+			if got := heldWarnings(t, logged.String()); len(got) != 1 || got[0] != [2]int64{held, running} {
+				t.Fatalf("held rows logged %v after %s, want row %d held behind row %d, once", got, heldWarnAfter, held, running)
+			}
+			tick()
+			if got := heldWarnings(t, logged.String()); len(got) != 1 {
+				t.Fatalf("held rows logged %v after %s, want the one line, not one per tick", got, heldWarnAfter+renewEvery)
+			}
+			if lease := rowStateOf(t, tree.pool, running); lease.leaseUntil == nil || !lease.leaseUntil.Equal(tree.clock.Now().Add(outboxLease)) {
+				t.Fatalf("the running row's lease_until = %v, want renewed to a lease ahead of now", lease.leaseUntil)
+			}
+			tree.blocked(t, "after the held row was logged")
 
-	tree.spawn.gate.open()
-	testwait.Eventually(t, "both starts ran", func() bool { return outboxRows(t, tree.pool) == 0 })
+			tree.spawn.gate.open()
+			testwait.Eventually(t, "both starts ran", func() bool { return outboxRows(t, tree.pool) == 0 })
+		})
+	}
 }

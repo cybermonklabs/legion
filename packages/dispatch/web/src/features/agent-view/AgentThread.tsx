@@ -17,6 +17,7 @@ import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useS
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { RefusableButton } from "../../components/RefusableButton";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useFootInset } from "../../hooks/useFootInset";
 import {
   borderDefault,
   calloutDangerBorder,
@@ -41,6 +42,8 @@ import { PendingSendTurn } from "../conversation/PendingSendTurn";
 import type { SessionSends } from "../conversation/useSessionSends";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { DeletedBody, EditedMark } from "../refs/PostBody";
+import type { PostDeletion } from "../refs/post-marks";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { readDispatchMarks, turnKey } from "./dispatch-marks";
 import type { LivePlace } from "./live-views";
@@ -126,6 +129,30 @@ function useTurnKey(): string {
   return useAuiState((state) => turnKey(state.message.metadata.custom, state.message.id));
 }
 
+/**
+ * The marks the turn's stored Dispatch message carries once its author corrected it. Three
+ * selectors, each returning a string or the stored row's own actor, for the `Object.is` reason
+ * `AssistantMessage` gives: a rebuild of the transcript writes a new mark object, and reading
+ * the mark itself would re-render every turn on every store update.
+ */
+function useCorrection(): { deleted: PostDeletion | null; edited: string | undefined } {
+  const at = useAuiState((state) => readDispatchMarks(state.message.metadata.custom).deleted?.at);
+  const by = useAuiState((state) => readDispatchMarks(state.message.metadata.custom).deleted?.by);
+  const edited = useAuiState((state) => readDispatchMarks(state.message.metadata.custom).edited);
+  return { deleted: at === undefined ? null : { at, by: by ?? null }, edited };
+}
+
+/** A turn's own text, or the deleted line in its place once its author withdrew the Dispatch
+ *  message behind it: what `PostBody` is for a surface that renders a body itself, for the three
+ *  turns here whose text assistant-ui's own parts render. */
+function CorrectedParts({ deleted }: { deleted: PostDeletion | null }): ReactNode {
+  return deleted === null ? (
+    <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+  ) : (
+    <DeletedBody deleted={deleted} />
+  );
+}
+
 function UserMessage(): ReactNode {
   // A message someone other than the viewer sent the session, stored or taken as its own turn
   // (AgentRuntimeThread names them): it sits on the session's side of the thread with its author,
@@ -140,6 +167,7 @@ function UserMessage(): ReactNode {
   const issue = useAuiState(
     (state) => readDispatchMarks(state.message.metadata.custom).author?.issue
   );
+  const { deleted, edited } = useCorrection();
   const turn = useTurnKey();
   if (actor !== undefined) {
     return (
@@ -151,8 +179,9 @@ function UserMessage(): ReactNode {
         <p className={`mb-1 text-xs font-semibold ${textSecondaryOnCanvas}`}>
           <AgentName actor={actor} inline />
           {issue === undefined ? null : ` · ${issue}`}
+          <EditedMark at={edited} deleted={deleted} />
         </p>
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <CorrectedParts deleted={deleted} />
       </div>
     );
   }
@@ -161,7 +190,7 @@ function UserMessage(): ReactNode {
       <div
         className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${surfaceMutedBg} ${textPrimaryOnCanvas}`}
       >
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <CorrectedParts deleted={deleted} />
       </div>
     </div>
   );
@@ -185,6 +214,7 @@ function AssistantMessage(): ReactNode {
   // that calls a tool shows the tool card's own `running…`; this is the mark every other turn
   // has, including one that writes nothing but prose.
   const running = useAuiState((state) => state.message.status?.type === "running");
+  const { deleted, edited } = useCorrection();
   const turn = useTurnKey();
   if (fromDispatch) {
     return (
@@ -193,8 +223,11 @@ function AssistantMessage(): ReactNode {
         data-message-id={turn}
         data-testid="agent-dispatch-reply"
       >
-        <p className={`mb-1 text-xs font-semibold ${textSecondaryOnCanvas}`}>Reply via Dispatch</p>
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <p className={`mb-1 text-xs font-semibold ${textSecondaryOnCanvas}`}>
+          Reply via Dispatch
+          <EditedMark at={edited} deleted={deleted} />
+        </p>
+        <CorrectedParts deleted={deleted} />
       </div>
     );
   }
@@ -401,6 +434,7 @@ export function AgentThread({
   front,
   held,
   initialPlace,
+  notice,
   onPlace,
   ownSendCount,
   placeholder,
@@ -425,6 +459,10 @@ export function AgentThread({
   /** Where this session's reader was when its view last reported, which the view's entry in
    *  `live-views.ts` holds while the view sleeps, or `null` for one that was following. */
   initialPlace: LivePlace | null;
+  /** A line above the transcript saying why the session is silent, by the relay's word or the
+   *  session list's, or undefined for none. It shows only while the transcript holds a turn: with
+   *  none, `empty` says it. */
+  notice: string | undefined;
   /** Reports the place the transcript holds, for that entry to keep. */
   onPlace: (place: LivePlace | null) => void;
   /** Bumped once per message this viewer sent that the session accepted. */
@@ -454,6 +492,9 @@ export function AgentThread({
     replayCount,
     viewport,
   });
+  // What `ThreadPrimitive.Empty` below reads, so the line above the transcript and the empty slot
+  // turn on the same commit.
+  const threadEmpty = useAuiState((state) => state.thread.isEmpty);
   // An empty box is the one thing that refuses Send (INFRA-442): a message still out, late or
   // refused is a turn of its own, and the next message goes out behind it. A pending switch
   // disables Send and names why instead. A turn still streaming does not refuse: the session
@@ -469,6 +510,17 @@ export function AgentThread({
   const shownRefusal = refusedPress ? refusal : null;
   if (refusal === null && refusedPress) setRefusedPress(false);
   const hintId = useId();
+  // The composer sits at the foot of a page that fills the screen, in its flow, above the rows
+  // under it, and `Jump to latest` floats just above it while the reader is back in the
+  // transcript: both are in the foot's page layer (`hooks/useFootInset.ts` lists the foot's
+  // layers and the elements in each), so the floats of the layers above keep clear of their
+  // bands. The rows under the composer are an element of that layer of their own
+  // (`AgentConversationPage`). Only the view in front: one the shell keeps behind it is laid
+  // over the page, invisible.
+  const composerRef = useRef<HTMLFormElement>(null);
+  useFootInset(composerRef, front, "page");
+  const jumpRef = useRef<HTMLButtonElement>(null);
+  useFootInset(jumpRef, front && !follow.atEnd, "page");
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <ErrorBoundary region="this conversation" resetKey={resetKey}>
@@ -476,6 +528,18 @@ export function AgentThread({
             it changes neither `scrollHeight` nor `scrollTop`, the composer does not move, and it
             can never cover the composer's controls. */}
         <div className="relative flex min-h-0 flex-1 flex-col">
+          {/* Above the scroller and outside it, so it stays in view however far the reader
+              scrolls, and the viewport's first element child is still the transcript the follow
+              hook measures. assistant-ui's own `thread.isEmpty` decides it, as it decides the
+              empty slot below, so exactly one of the two says why while the session does not
+              answer. `contentIds` would not do: they carry a transcript one commit before
+              assistant-ui applies it in a passive effect (`useExternalStoreRuntime`), and for that
+              commit the line showed beside the empty slot. */}
+          {notice === undefined || threadEmpty ? null : (
+            <p className={`mt-3 text-sm ${textMutedOnCanvas}`} data-testid="agent-silence-line">
+              {notice}
+            </p>
+          )}
           {/* `mt-3`: the scroller clips a turn at its top edge, and without a gap that clipped
               line sat against the page's note above it and read as overlapping text. `pl-1`
               matches `pr-1` for the same reason on the left: a turn's numbered list hangs its
@@ -524,6 +588,7 @@ export function AgentThread({
               className={`absolute bottom-3 left-1/2 z-10 min-h-11 -translate-x-1/2 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg ${primaryButtonBg} ${primaryButtonHoverBg}`}
               data-testid="jump-to-latest"
               onClick={follow.jumpToEnd}
+              ref={jumpRef}
               type="button"
             >
               Jump to latest{follow.newCount === 0 ? "" : ` · ${follow.newCount} new`}
@@ -539,13 +604,18 @@ export function AgentThread({
         <ComposerPrimitive.Root
           className={`relative mt-3 flex flex-col gap-1 border-t pt-3 ${borderDefault}`}
           data-testid="agent-composer"
+          ref={composerRef}
         >
           {commands === undefined || commands.length === 0 ? null : (
             <SlashCommands commands={commands} />
           )}
           <div className="flex items-end gap-2">
+            {/* Never taller than 40% of the screen, scrolling inside past that: after a resize
+                the textarea's autosize can leave it far taller than its text (a load at a
+                phone's width, then a desktop's, left it 636px tall), and the composer then lay
+                over the row under it, so a press at Send reached that row. */}
             <ComposerPrimitive.Input
-              className={`min-h-11 flex-1 rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
+              className={`max-h-[40dvh] min-h-11 flex-1 overflow-y-auto rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
               placeholder={placeholder}
               rows={1}
               submitMode="enter"

@@ -23,12 +23,17 @@ for command in aws docker psql pg_restore; do
     exit 1
   }
 done
+# psql is given a URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$(dirname "$0")/lib/pg-url.sh"
 
+# The container's fixed dev password, which the printed DATABASE_URL keeps: it is a literal of
+# this script, and a reader pastes that line to reach the copy.
 readonly admin_url="postgres://postgres:dispatch@127.0.0.1:${port}/postgres?sslmode=disable"
 readonly database_url="postgres://postgres:dispatch@127.0.0.1:${port}/${database}?sslmode=disable"
 
 if [[ "$(docker container inspect --format '{{.State.Running}}' "$container" 2>/dev/null)" == true ]] &&
-  [[ "$(psql --quiet --tuples-only --no-align "$admin_url" -c "select 1 from pg_database where datname = '${database}'" 2>/dev/null)" == 1 ]]; then
+  [[ "$(pg_url_run "$admin_url" psql --quiet --tuples-only --no-align -c "select 1 from pg_database where datname = '${database}'" 2>/dev/null)" == 1 ]]; then
   printf '%s already holds %s; remove it with docker rm -f -v %s to restore a newer dump\n' "$container" "$database" "$container" >&2
   printf 'DATABASE_URL=%s\n' "$database_url"
   exit 0
@@ -55,12 +60,12 @@ else
   docker start "$container" >/dev/null
 fi
 for _ in $(seq 1 120); do
-  if psql --quiet "$admin_url" -c 'select 1' >/dev/null 2>&1; then
+  if pg_url_run "$admin_url" psql --quiet -c 'select 1' >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
-psql --quiet "$admin_url" -c 'select 1' >/dev/null
+pg_url_run "$admin_url" psql --quiet -c 'select 1' >/dev/null
 
 DISPATCH_ADMIN_URL="$admin_url" bash "$(dirname "$0")/restore-dispatch-dump.sh" "$dump" "$database" >/dev/null
 printf 'restored %s into %s; the downloaded dump is deleted\n' "$newest" "$container" >&2

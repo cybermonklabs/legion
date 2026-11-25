@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // stop sends sessionID's clean stop as every normal end of a session does, DELETE
@@ -72,6 +73,7 @@ func (rig *sessionConsumerReapRig) requireNoConsumer(t *testing.T, sessionID, wh
 // behind would stand for the whole of the stream's inactive threshold with no session to deliver
 // to. Another session's consumer is untouched: the stop names one session.
 func TestACleanStopDeletesTheStoppedSessionsConsumer(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerReapRig(t)
 	rig.register(t, "ses_clean_stop")
 	rig.register(t, "ses_still_here")
@@ -100,6 +102,7 @@ func TestACleanStopDeletesTheStoppedSessionsConsumer(t *testing.T) {
 // under is what keeps a WARN off the ordinary end of a session: one logged here would have an
 // operator look for messages lost to an older row's filter on every session that ever stopped.
 func TestACleanStopReportsNoFilterLeftOnTheSessionItTookAway(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_clean_stop_restore"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", "notifications.dispatch.issue.CLEANSTOPRESTORE.>"))
@@ -121,6 +124,7 @@ func TestACleanStopReportsNoFilterLeftOnTheSessionItTookAway(t *testing.T) {
 // session is receiving through, while a stop whose moment the stored registration is covered by
 // takes both.
 func TestAConditionalStopDeletesTheConsumerOnlyWhenItDeletesTheRecord(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerReapRig(t)
 	rig.register(t, "ses_relaunched")
 	registered, err := rig.sessions.Get("ses_relaunched")
@@ -132,7 +136,7 @@ func TestAConditionalStopDeletesTheConsumerOnlyWhenItDeletesTheRecord(t *testing
 	outlived := rig.stop(t, "ses_relaunched", fmt.Sprintf("if_not_registered_after=%d", registered.UpdatedAt-1))
 
 	kept := stopAnswer(t, outlived)
-	if kept.Deleted || kept.Reason != "the registration was written after the moment the delete belongs to" {
+	if kept.Deleted == nil || *kept.Deleted || kept.Reason != "the registration was written after the moment the delete belongs to" {
 		t.Fatalf("answer = %+v, want the registration kept with its reason", kept)
 	}
 	if _, err := rig.sessions.Get("ses_relaunched"); err != nil {
@@ -143,7 +147,7 @@ func TestAConditionalStopDeletesTheConsumerOnlyWhenItDeletesTheRecord(t *testing
 	covered := rig.stop(t, "ses_relaunched", fmt.Sprintf("if_not_registered_after=%d", registered.UpdatedAt))
 
 	deleted := stopAnswer(t, covered)
-	if !deleted.Deleted || deleted.Reason != "" {
+	if deleted.Deleted == nil || !*deleted.Deleted || deleted.Reason != "" {
 		t.Fatalf("answer = %+v, want the registration deleted", deleted)
 	}
 	if entry, err := rig.sessions.Get("ses_relaunched"); err == nil {
@@ -153,9 +157,9 @@ func TestAConditionalStopDeletesTheConsumerOnlyWhenItDeletesTheRecord(t *testing
 }
 
 // stopAnswer is the body a stop that named a condition answered.
-func stopAnswer(t *testing.T, recorder *httptest.ResponseRecorder) deleteSessionResponse {
+func stopAnswer(t *testing.T, recorder *httptest.ResponseRecorder) listenerwire.DeleteSessionResponse {
 	t.Helper()
-	var answer deleteSessionResponse
+	var answer listenerwire.DeleteSessionResponse
 	if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
 		t.Fatalf("decode the stop's answer: %v", err)
 	}
@@ -184,6 +188,7 @@ const keptStopSilence = 4 * relayRetryFirst
 // the sequence after the ack floor, so every frame the session holds unacked is sent to it
 // again, and the relay pulling the consumer that went relays nothing until its retry.
 func TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone(t *testing.T) {
+	t.Parallel()
 	const storedInstance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
 	const stoppingInstance = "0b7a4c1e9d3f5a2b0b7a4c1e9d3f5a2b"
 	for _, kept := range []struct {
@@ -223,7 +228,7 @@ func TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone(t *testing.T) 
 
 			answer := stopAnswer(t, stopSession(t, rig.mux, sessionID, kept.query(rig.entry(t, sessionID))))
 
-			if answer.Deleted || answer.Reason != kept.reason {
+			if answer.Deleted == nil || *answer.Deleted || answer.Reason != kept.reason {
 				t.Fatalf("answer = %+v, want the registration kept for the reason %q", answer, kept.reason)
 			}
 			if _, err := rig.harness.sessions.Get(sessionID); err != nil {
@@ -255,6 +260,7 @@ func TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone(t *testing.T) 
 // the lock only once the handler has deleted the record, and the request's context is cancelled
 // there, between the record delete and the consumer delete the route exists to make.
 func TestACleanStopDeletesTheConsumerOfACallerThatHungUpOnceItsRecordWasGone(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerReapRig(t)
 	const sessionID = "ses_hung_up"
 	rig.register(t, sessionID)

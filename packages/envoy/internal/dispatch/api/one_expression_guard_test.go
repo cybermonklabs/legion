@@ -1,6 +1,6 @@
 //go:build !race
 
-// An eighth static check beside the seven source guards, under the tag they carry and for the same
+// A ninth static check beside the eight source guards, under the tag they carry and for the same
 // saving: it reads text - the api package's parsed declarations, and the bytes of every non-test
 // .go file of the module - and opens no database and starts no goroutine, so the race detector
 // has nothing here to watch. Behind the tag the race build neither compiles it nor walks
@@ -18,7 +18,7 @@
 // job's own closure, or on none. Here it is the text-check job's to run by name
 // (ci_job_reads.py's TEXT_CHECK_TESTS, which also keeps it out of envoy-go's plain step), once
 // per run of the router, under a filter that names the whole module - the read
-// ci_job_reads.py's MODULE_SOURCES declares for this file.
+// this file's //ci:reads line below declares.
 //
 // What it holds is one of the two tests the Go half of dispatch://INFRA-1576's
 // c-one-expression-decides is written as: TestOneExpressionDecidesWhoWaitsInOneSpelling here,
@@ -31,6 +31,12 @@
 // test by name while the behaviour test runs with the package's Postgres-backed tests.
 
 package api
+
+// main's #3429 put this check in who_waits_test.go, a behaviour file of this package, where
+// the race job was the only one that ran it and the module walk under it was declared by
+// nobody. It is a file of its own under `//go:build !race` now, so the text-check job runs it
+// and the line below is the declaration that holds that job's filter to what it reads.
+//ci:reads packages/envoy/**/*.go !**/*_test.go internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata and all) and :83 parses every .go file it finds but the test files (:80), for the tests that ask it for the module's sources: lock_level_test.go:91, event_insert_guard_test.go:46, review_order_guard_test.go:49, review_write_guard_test.go:53, TestOneExpressionDecidesWhoWaitsInOneSpelling, issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 also walks packages/envoy and reads every non-test file of it as text
 
 import (
 	"fmt"
@@ -63,6 +69,7 @@ func namesTheExpression(node ast.Node) bool {
 // joins it reads over - is spelled once in the module. The precedent for reading the source
 // rather than the behaviour is api/lock_level_test.go.
 func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	declarations := map[string]ast.Node{}
 	for _, source := range sources {

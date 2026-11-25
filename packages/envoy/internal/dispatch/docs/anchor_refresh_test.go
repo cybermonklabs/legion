@@ -14,11 +14,11 @@ import (
 )
 
 // ownerLockedTrips is how many round trips the first connection to take an event owner's row lock
-// since mark (a `for no key update` read of the issue, artifact or project row, which
-// events.Broker.AppendAll takes, or the document's owner row a version write locks first) made
-// from that lock statement to its transaction's commit, both included, and whether it was seen
-// to commit. Every writer of an event of that owner waits for that row lock until the
-// transaction ends.
+// since mark (a `for no key update` read of the issue, artifact or project row, which an event
+// append's write phase takes (events.lockEventOwner), or the document's owner row a version
+// write locks first) made from that lock statement to its transaction's commit, both included,
+// and whether it was seen to commit. Every writer of an event of that owner waits for that row
+// lock until the transaction ends.
 func (t *statementTracer) ownerLockedTrips(since int) (int, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -254,6 +254,7 @@ func versionAnchorRefreshTrips(t *testing.T, changed int) int {
 // are written, cost what twenty do. And what the version leaves - the rows, the events, their
 // order among the issue's events - is what it was.
 func TestAVersionWritesChangedAnchorsInRoundTripsThatDoNotGrowWithTheirCount(t *testing.T) {
+	t.Parallel()
 	two := versionAnchorRefreshTrips(t, 2)
 	all := versionAnchorRefreshTrips(t, anchorRefreshMarks)
 	t.Logf("a version holding its owner's row lock: %d round trips with 2 changed anchors, %d with %d", two, all, anchorRefreshMarks)

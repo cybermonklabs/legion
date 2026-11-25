@@ -1,36 +1,65 @@
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
-import { lazy, type ReactNode, type RefObject, Suspense, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  type ReactNode,
+  type RefObject,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
+import { askSignInAgain } from "./api/query-client";
 import type { AuthenticatedUser } from "./api/types";
 import { useLiveViews } from "./features/agent-view/live-views";
 import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
 import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
+import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversation/unsent-drafts";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
+import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
+import { useIssuePageChoice } from "./features/issue-page/choice";
+import { IconRail } from "./features/issue-page/IconRail";
+import {
+  type MarginDrawer,
+  type MarginDrawerPage,
+  MarginSlotProvider,
+} from "./features/issue-page/margin-slot";
+import { ReferenceNamesProvider } from "./features/issue-page/reference-names";
+import {
+  type ShellNavigation,
+  ShellNavigationContext,
+} from "./features/issue-page/shell-navigation";
+import { ShortcutHelpOpener } from "./features/issue-page/shortcut-help-opener";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
+import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
   buildInboxPath,
+  buildPersonPath,
   buildProjectPath,
   liveViewSessionOf,
+  PERSON_PATH,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -58,6 +87,7 @@ import {
 } from "./features/shell/sign-in-channel";
 import {
   COMPACT_VIEWPORT_QUERY,
+  MD_VIEWPORT_QUERY,
   READING_PANE_QUERY,
   useDialog,
   useMediaQuery,
@@ -68,10 +98,11 @@ import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userP
 import { Sidebar } from "./features/sidebar/Sidebar";
 import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
+import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-write";
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
-import { useKeyedWrite } from "./features/writes/useKeyedWrite";
+import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
-import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
+import { DOCUMENT_SCROLL_ATTRIBUTE, useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
   badgeBlocking,
@@ -85,6 +116,7 @@ import {
   card,
   linkHoverText,
   linkText,
+  pagePaperBg,
   primaryButtonBg,
   primaryButtonHoverBg,
   railAccentHoverText,
@@ -162,6 +194,9 @@ const PipelinePage = lazy(() =>
 const AnswersPage = lazy(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
 );
+const PersonPage = lazy(() =>
+  import("./features/people/PersonPage").then((module) => ({ default: module.PersonPage }))
+);
 const SettingsPage = lazy(() =>
   import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
 );
@@ -192,7 +227,7 @@ function IssuePageFallback(): ReactNode {
           />
         </h1>
       </header>
-      {/* `overflow-hidden`: the nine labels are wider than a narrow window and this row neither
+      {/* `overflow-hidden`: the ten labels are wider than a narrow window and this row neither
           wraps nor scrolls, where the real tablist scrolls inside itself. Clipped, a chunk's load
           never scrolls the page sideways. */}
       <div className={`mb-4 flex gap-2 overflow-hidden border-b ${borderDefault}`} role="tablist">
@@ -203,6 +238,37 @@ function IssuePageFallback(): ReactNode {
           >
             {label}
           </span>
+        ))}
+      </div>
+      <div className="space-y-3">
+        {[0, 1, 2, 3].map((row) => (
+          <div className={`h-4 w-full animate-pulse rounded ${skeletonBg}`} key={row} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What the new issue page's frame holds while the page's code loads (R10):
+ * the header's two lines, the view row's five controls and the first rows, as boxes with no word
+ * in them, so no name of a control flashes on screen and none of today's nine tab names does.
+ * It takes the inset the page's own column takes, since the frame gives `<main>` no padding.
+ * `min-w-0` and `overflow-hidden`: the row of boxes neither wraps nor scrolls, so a chunk's load
+ * never makes the page wider than a phone's window. Every other reader keeps
+ * `IssuePageFallback`.
+ */
+function IssueFrameFallback(): ReactNode {
+  return (
+    <div aria-busy="true" className="px-3.5 pt-2 md:px-7">
+      <div className={`h-4 w-16 animate-pulse rounded ${skeletonBg}`} />
+      <div className={`mt-2 h-7 w-2/3 animate-pulse rounded ${skeletonBg}`} />
+      <div
+        className={`mt-4 mb-4 flex min-w-0 gap-2 overflow-hidden border-b pb-2 ${borderDefault}`}
+        role="toolbar"
+      >
+        {[0, 1, 2, 3, 4].map((box) => (
+          <span className={`h-5 w-16 shrink-0 animate-pulse rounded ${skeletonBg}`} key={box} />
         ))}
       </div>
       <div className="space-y-3">
@@ -318,6 +384,18 @@ function ShellSkeleton(): ReactNode {
   );
 }
 
+/** What the rail says of a sign-out that did not land, with its Retry beside it. One Dispatch
+ *  refused left the person signed in. One the reader stopped may have ended the session, which the
+ *  page cannot know: it says so, and that Retry - a sign-out of its own, which lands on finding
+ *  the session ended (`isNoIdentity`) - signs them out either way. Neither discarded a change. */
+function signOutFailure(error: Error): string {
+  return error instanceof SendStoppedError
+    ? stoppedWriteNote("the sign-out", "made", {
+        anew: "Every change is still here. Retry ends your session, or finds it ended, and signs you out here.",
+      })
+    : "The sign-out did not go through. You are still signed in, with every change.";
+}
+
 function NavigationContents({
   closeButtonRef,
   compact,
@@ -339,7 +417,8 @@ function NavigationContents({
   onOpenInboxDrawer: () => void;
   onSearch: () => void;
   onSignOut: () => void;
-  signOutError: boolean;
+  /** What the rail says of the last sign-out where it did not land (`signOutFailure`). */
+  signOutError: string | undefined;
   signOutPending: boolean;
   user: AuthenticatedUser;
 }): ReactNode {
@@ -392,7 +471,19 @@ function NavigationContents({
       {/* Identity is chrome: who you are and how to leave are read once, while the navigation
           above is read on every visit, so the footer sits under it rather than over it. */}
       <div className={`mt-auto border-t pt-4 ${railBorder}`}>
-        <p className={`px-2 text-sm ${railMutedText}`}>Signed in as {user.login}</p>
+        {/* The login is the way in to the reader's own page: what they wrote and what reached
+            them, which no other surface lists. The underline is what tells the link from the
+            text around it, which colour alone does not. */}
+        <p className={`px-2 text-sm ${railMutedText}`}>
+          Signed in as{" "}
+          <Link
+            className={`underline ${railAccentText} ${railAccentHoverText}`}
+            onClick={onClose}
+            to={buildPersonPath(user.login)}
+          >
+            {user.login}
+          </Link>
+        </p>
         <button
           className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
           disabled={signOutPending}
@@ -401,17 +492,49 @@ function NavigationContents({
         >
           Sign out
         </button>
-        {signOutError ? (
+        {signOutError === undefined ? null : (
           // A sign-out Dispatch did not answer as done discarded nothing: every write is as it was.
           <p className={`mt-1 px-2 text-sm ${railDangerText}`} role="alert">
-            The sign-out did not go through. You are still signed in, with every change.{" "}
+            {signOutError}{" "}
             <button className="font-medium underline" onClick={onSignOut} type="button">
               Retry
             </button>
           </p>
-        ) : null}
+        )}
       </div>
     </>
+  );
+}
+
+/**
+ * The providers the shell mounts around everything it draws: the margin's own, and the four the
+ * new issue page's frame reads (R12, R14). `drawer` is Details, which only
+ * the frame passes: with it undefined the margin is the column it has always been, and no page
+ * fills its slot. `navigation` is what the page's header draws its `☰` from, and `openHelp` what
+ * its Keys control opens. A page publishes the names it read for its references to everything
+ * under the shell, the margin beside the router among it (`ReferenceNamesProvider`).
+ */
+function ShellProviders({
+  children,
+  drawer,
+  navigation,
+  openHelp,
+}: {
+  children: ReactNode;
+  drawer: MarginDrawer | undefined;
+  navigation: ShellNavigation | undefined;
+  openHelp: () => void;
+}): ReactNode {
+  return (
+    <MarginProvider>
+      <ReferenceNamesProvider>
+        <MarginSlotProvider drawer={drawer} drawsSlot={drawer !== undefined}>
+          <ShellNavigationContext.Provider value={navigation}>
+            <ShortcutHelpOpener.Provider value={openHelp}>{children}</ShortcutHelpOpener.Provider>
+          </ShellNavigationContext.Provider>
+        </MarginSlotProvider>
+      </ReferenceNamesProvider>
+    </MarginProvider>
   );
 }
 
@@ -448,6 +571,41 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     String
   );
   const location = useLocation();
+  // The new issue page's frame (R1, R14), computed here once: an issue's
+  // address, for a reader who chose the new page. In it an icon rail of 56 px stands where the
+  // sidebar stands, from Tailwind's `md` up, and below that the page's header draws the control
+  // that opens the navigation (`ShellNavigationContext`); the margin is Details, a drawer over
+  // the page. The rail is drawn by the query that is `md` itself, in `rem`, because the room the
+  // page makes for it is `md:pl-14`: a pixel query draws the rail over the page wherever the two
+  // disagree, which is every width from 768 to 959 px at a 20 px default font. Every other page,
+  // and every other reader's issue page, keeps the shell below exactly as it was.
+  const [issuePageChoice] = useIssuePageChoice();
+  const issueFrame =
+    issuePageChoice === "outline" &&
+    parseIssuePath(location.pathname, location.search) !== undefined;
+  const railFits = useMediaQuery(MD_VIEWPORT_QUERY);
+  const iconRailShown = issueFrame && railFits;
+  // Whether Details is open, held for the issue it was opened on: every load opens it closed, and
+  // so does every move to another issue. Leaving the issue forgets it in the same render, so
+  // coming back to it - by a link or by Back - finds it closed, as a load does.
+  const detailsIssue = parseIssuePath(location.pathname)?.key;
+  const [detailsFor, setDetailsFor] = useState<string | undefined>(undefined);
+  if (detailsFor !== undefined && detailsFor !== detailsIssue) setDetailsFor(undefined);
+  // What the new page's root hands Details: its words and its address rule
+  // (`features/issue-page/drawer-page.ts`), so that this file imports neither.
+  const [drawerPage, setDrawerPage] = useState<MarginDrawerPage | undefined>(undefined);
+  const detailsDrawer = useMemo<MarginDrawer | undefined>(
+    () =>
+      issueFrame
+        ? {
+            open: detailsFor !== undefined && detailsFor === detailsIssue,
+            page: drawerPage,
+            setOpen: (open: boolean) => setDetailsFor(open ? detailsIssue : undefined),
+            setPage: setDrawerPage,
+          }
+        : undefined,
+    [detailsFor, detailsIssue, drawerPage, issueFrame]
+  );
   // The shell reserves a gutter for a rail only where that rail exists. The collapsed-margin
   // rail exists only where the route has a margin, so it is reserved from exactly the answer
   // `features/margin/Margin.tsx` renders from; two answers that disagree leave 80 px of
@@ -525,23 +683,36 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  // The status corner floats over the foot of the screen as the composers it sits above do, so
-  // it publishes its own reach the same way: a control floating at that foot - the
-  // Conversation's `Jump to latest` - rides above the whole corner rather than under the
-  // pending-writes indicator or the connection pill. An empty corner has no box, so it publishes
-  // nothing and the property is unset.
+  // The status corner is the one float of the foot's status layer (`hooks/useFootInset.ts` lists
+  // the foot's layers and the elements in each). The hook holds its height and its floor, so the
+  // top layer's floats keep clear of the whole corner rather than sit over the pending-writes
+  // indicator or the connection pill. An empty corner has no box, so it counts nothing.
   const statusCornerRef = useRef<HTMLDivElement>(null);
-  useFootInset(statusCornerRef, true, FOOT_STATUS_INSET_PROPERTY);
+  useFootInset(statusCornerRef, true, "status");
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
+  // In the frame the navigation's sheet is what the rail's foot control and the header's `☰`
+  // open over the page at every width, as the Menu control opens it below `xl` on every page.
   const drawer = useDialog<HTMLElement>({
     initialFocusRef: closeButtonRef,
     onClose: () => setNavigationOpen(false),
-    open: navigationOpen && isCompactViewport,
+    open: navigationOpen && (isCompactViewport || issueFrame),
   });
+  // What the page's header draws its `☰` from below `md`, where the frame draws neither the
+  // shell's bar nor the rail; undefined wherever the shell draws a control of its own.
+  const shellNavigation = useMemo<ShellNavigation | undefined>(
+    () =>
+      issueFrame && !railFits
+        ? { onOpen: () => setNavigationOpen(true), open: navigationOpen }
+        : undefined,
+    [issueFrame, navigationOpen, railFits]
+  );
   const navigate = useNavigate();
   // The registry as described when `?` fired (focus still on the caller); `null` while closed.
   const [helpSnapshot, setHelpSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
+  // What a page's own Keys control does (`features/issue-page/shortcut-help-opener.tsx`): what
+  // `?` does.
+  const openHelp = useCallback(() => setHelpSnapshot(appKeymap.describe()), []);
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
   useKeymap("global", [
@@ -609,30 +780,40 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       keys: "Shift+S",
       label: "Toggle sidebar",
       run: () => setSidebarHidden(!sidebarHidden),
-      // Below `xl` the sidebar is a sheet with its own Menu control, and the preference is inert.
-      when: () => !isCompactViewport,
+      // Below `xl` the sidebar is a sheet with its own Menu control, and the preference is inert;
+      // so it is in the new issue page's frame, whose navigation is its icon rail.
+      when: () => !isCompactViewport && !issueFrame,
     },
     {
-      id: "toggle-margin",
+      // In the new issue page's frame the margin is Details, which this key opens and closes at
+      // every width. Its id follows the gate, so that crossing it registers the binding again
+      // and the list of keys reads the label of the shell it is in.
+      id: detailsDrawer === undefined ? "toggle-margin" : "toggle-details",
       keys: "Shift+M",
-      label: "Toggle margin",
-      run: () => setMarginHidden(!marginHidden),
+      label: detailsDrawer === undefined ? "Toggle margin" : "Open or close Details",
+      run: () =>
+        detailsDrawer === undefined
+          ? setMarginHidden(!marginHidden)
+          : detailsDrawer.setOpen(!detailsDrawer.open),
       // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the preference
       // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
-      when: () => !isCompactViewport && hasMargin,
+      when: () => detailsDrawer !== undefined || (!isCompactViewport && hasMargin),
     },
   ]);
   const login = user.login;
+  // Each press signs out the person signed in when it was made, and carries their login: the
+  // channel's words of how it ended name that person, and its refusal is theirs alone (below).
   const signOut = useKeyedWrite({
     // A session that lapses while the sign-out is still out has ended as it asked: the sign-out
     // lands, and its landing discards (`Writes.signedIn`).
     endsWithSession: true,
     inline: true,
-    label: () => "Sign out",
+    keyed: false,
+    label: (_signingOut: string) => "Sign out",
     // Refused or stopped, the sign-out discarded nothing: the person is still signed in, and every
     // other tab lets their writes go on, as this one's store does (`Writes.release`).
-    onError: () => signIns.stillSignedIn(login),
-    onSuccess: () => {
+    onError: (_error, signingOut) => signIns.stillSignedIn(signingOut),
+    onSuccess: (_answer, signingOut) => {
       // `resetQueries` (not `clear`) forces the active `["whoami"]` observer in AuthGate to
       // refetch immediately — a signed-out user must land on sign-in without a manual reload.
       void queryClient.resetQueries({ queryKey: ["whoami"] });
@@ -640,9 +821,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       // Only now, with Dispatch's answer, are the person's writes discarded, in every tab of this
       // browser: none outlives their session, the next person to sign in here resumes nothing of
       // theirs and sees none of their refusals, and the page stops asking to confirm leaving.
-      writesOf(queryClient).clear();
-      signIns.signedOut(login);
+      // Their drafts go with them (`Writes.onSignedOut`, which `AuthGate` listens to).
+      writesOf(queryClient).signedOut(signingOut);
+      signIns.signedOut(signingOut);
     },
+    // A reload never takes the sign-out up again: no request of it goes through `api.send` to be
+    // kept.
+    method: "POST",
     // Dispatch's own 401 (`NO_IDENTITY`) says the session the sign-out would end is already gone
     // - an earlier attempt ended it and its answer was lost, or a sign-out in another browser
     // revoked it - so the sign-out has done what it was for, whatever the sign-in check can be
@@ -656,6 +841,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           isNoIdentity(error) ? { ok: true as const } : Promise.reject(error)
         ),
   });
+  // A sign-out's refusal, and the Retry beside it, are the person's it was pressed for, so they go
+  // once someone else is signed in: under their name the refusal would say a false thing, and its
+  // Retry would sign them out (`useRefusalOfSubject`). Another person signed in from another tab
+  // is drawn a shell of their own (`AuthGate`), which unmounts this one; the check holds the
+  // refusal to its person in any render that still draws it for someone else.
+  const signOutRefused = useRefusalOfSubject(signOut, (signingOut) => signingOut === login);
   // A page that goes while its sign-out is out says nothing of how it ended, because it does not
   // know: its `{gone}` leaves every other tab to read who is signed in and decide (`holderGone`).
   //
@@ -681,7 +872,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const navigation = (
     <NavigationContents
       closeButtonRef={closeButtonRef}
-      compact={isCompactViewport}
+      compact={isCompactViewport || issueFrame}
       onClose={() => setNavigationOpen(false)}
       onCreateIssue={() => setCreateOpen(true)}
       onHideSidebar={() => setSidebarHidden(true)}
@@ -710,10 +901,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           const question = signOutQuestion([...unsent.values()], elsewhere.unanswered);
           if (ask && !window.confirm(question)) return;
           signIns.signingOut(login);
-          signOut.mutate();
+          signOut.mutate(login);
         });
       }}
-      signOutError={signOut.isError}
+      signOutError={
+        signOutRefused && signOut.error !== null ? signOutFailure(signOut.error) : undefined
+      }
       signOutPending={signOut.isPending || askingTabs}
       user={user}
     />
@@ -729,7 +922,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   }`;
 
   return (
-    <MarginProvider>
+    <ShellProviders drawer={detailsDrawer} navigation={shellNavigation} openHelp={openHelp}>
       <div
         className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${canvasText}`}
         data-testid="app-shell"
@@ -740,17 +933,21 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         >
           Skip to content
         </a>
-        {/* The shell's status corner: the pending-writes indicator above the connection pill.
-            Above the highest composer fixed at the foot of the screen (`--foot-composer-inset`,
-            `useFootInset`), so neither sits over its controls; otherwise just above the phone's
-            bottom bar. Only what it shows takes the pointer. A socket Dispatch refuses carries no
-            status the page can read, so nothing in the pill is terminal: once reconnecting has
-            gone on for two minutes it offers a reload, and the page keeps trying underneath. */}
+        {/* The shell's status corner: the pending-writes indicator and the word on drafts the tab
+            cannot keep for a reload above the connection pill. It is a float of the foot's status
+            layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each): it
+            stands 1rem above the banner layer's property, which the hook chooses so the corner
+            lies over nothing else fixed or stuck at the foot of the screen, and never lower than
+            its floor (`--foot-floor`, which its classes set per breakpoint). Only what it shows
+            takes the pointer. A socket Dispatch refuses carries no status the page can read, so
+            nothing in the pill is terminal: once reconnecting has gone on for two minutes it
+            offers a reload, and the page keeps trying underneath. */}
         <div
-          className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
+          className="pointer-events-none fixed right-4 bottom-[max(var(--foot-floor),calc(var(--foot-banner-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 [--foot-floor:5rem] xl:[--foot-floor:0px] *:pointer-events-auto"
           ref={statusCornerRef}
         >
           <PendingWritesIndicator />
+          <DraftsNotKept />
           {connection === "stuck" ? (
             <p
               aria-live="polite"
@@ -772,7 +969,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </p>
           ) : null}
         </div>
-        {isCompactViewport ? (
+        {isCompactViewport && !issueFrame ? (
           <header
             className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
           >
@@ -819,7 +1016,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </button>
           </header>
         ) : null}
-        {isCompactViewport && navigationOpen ? (
+        {(isCompactViewport || issueFrame) && navigationOpen ? (
           <>
             <div
               aria-hidden="true"
@@ -837,7 +1034,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </aside>
           </>
         ) : null}
-        {isCompactViewport ? null : sidebarHidden ? (
+        {iconRailShown ? (
+          <IconRail
+            inboxCount={inboxCount}
+            navigationOpen={navigationOpen}
+            onOpenNavigation={() => setNavigationOpen(true)}
+            project={routeProject}
+            user={user}
+          />
+        ) : isCompactViewport || issueFrame ? null : sidebarHidden ? (
           <aside
             aria-label="Collapsed sidebar"
             className={`fixed inset-y-0 left-0 z-10 flex w-14 justify-center border-r p-2 ${railBorder} ${railBg} ${railText}`}
@@ -869,16 +1074,29 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto p-5">{navigation}</div>
           </aside>
         )}
+        {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
+            Contents pane and its column each keep the inset the prototype gives them, the pane
+            against the rail, which `md:pl-14` makes room for. Its references open no card on
+            hover (R6). Outside the frame, on a page that does not fill the screen, `main`
+            carries `data-document-scroll`, so the foot's end room goes here; in the frame the
+            column beside the Contents pane carries it (`IssueOutlinePage.tsx`; `FOOT_LAYERS` in
+            `hooks/useFootInset.ts` says why). */}
         <main
-          className={`min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`}
-          data-shell-layout={fullWidth ? "full-width" : "standard"}
+          className={
+            issueFrame
+              ? `min-h-dvh min-w-0 flex-1 outline-none md:pl-14 ${pagePaperBg}`
+              : `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`
+          }
+          data-shell-layout={issueFrame || fullWidth ? "full-width" : "standard"}
+          {...(issueFrame ? { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" } : {})}
+          {...(!issueFrame && !fillsViewport ? { [DOCUMENT_SCROLL_ATTRIBUTE]: "" } : {})}
           data-testid="main-content"
           id="main-content"
           ref={mainRef}
           tabIndex={-1}
         >
           <ErrorBoundary region="this page" resetKey={location.pathname}>
-            <Suspense fallback={<IssuePageFallback />}>
+            <Suspense fallback={issueFrame ? <IssueFrameFallback /> : <IssuePageFallback />}>
               <Routes>
                 <Route element={<InboxPage />} path="/" />
                 <Route element={<AnswersPage />} path={ANSWERS_PATH} />
@@ -909,6 +1127,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<SettingsPage />} path="/settings" />
                 <Route element={<DeliveryPage />} path="/delivery" />
                 <Route element={<PipelinePage />} path="/pipeline" />
+                <Route element={<PersonPage />} path={PERSON_PATH} />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>
             </Suspense>
@@ -934,7 +1153,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
         <RefPreviewHost />
       </div>
-    </MarginProvider>
+    </ShellProviders>
   );
 }
 
@@ -1030,7 +1249,7 @@ async function heldWritesOfGoneHolder(queryClient: QueryClient, login: string): 
   if (who === null) writes.dropLogin(login);
   else if (who === login) writes.releaseUnsettled(login, held);
   else writes.release(login, held);
-  if (who !== login) void queryClient.invalidateQueries({ queryKey: ["whoami"] });
+  if (who !== login) void askSignInAgain(queryClient);
 }
 
 export function AuthGate(): ReactNode {
@@ -1046,22 +1265,49 @@ export function AuthGate(): ReactNode {
     if (!signedOut) return;
     queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "whoami" });
   }, [queryClient, signedOut]);
+  // A sign-out that lands ends the person's session at this browser, whichever way it lands: this
+  // tab's, another tab's, or one a lapse lands (`Writes.onSignedOut`). Whoever signs in next here
+  // must find nothing they typed, so every draft store forgets their drafts, in the page and in
+  // the tab's storage, and takes none until someone signs in, the ones a field hands it as the
+  // shell goes among them (`DraftStore.signedOut`). It listens before the effect below tells the
+  // write store who is signed in, since a lapse that effect tells of can land a sign-out.
+  useEffect(
+    () => writesOf(queryClient).onSignedOut((person) => draftStoresSignedOut(queryClient, person)),
+    [queryClient]
+  );
   // A write belongs to the person who pressed it: once someone else is signed in here - in place,
   // from another tab - every write of another login is dropped and stops trying, and once no one
   // is (the session lapsed), every write stops trying and waits, kept, for the sign-in that
   // follows: the same person's takes them up again (`Writes.signedIn`). Every other tab of this
-  // browser is told to read who is signed in again, so it does the same.
+  // browser is told to read who is signed in again, so it does the same. A draft the person typed
+  // and has not sent is theirs too, in every draft store, which outlives the shell as the write
+  // store does and keeps each draft in the tab's storage for a reload: another person's sign-in
+  // forgets it there too, a lapse keeps it (a sign-out is no lapse, above), and the first sign-in
+  // of a page that loaded takes up only the drafts that person kept (`DraftStore.signedIn`).
   const login = signedOut ? undefined : whoAmI.data?.login;
   const known = signedOut || whoAmI.data !== undefined;
+  // Whose shell is drawn: only ever the person the stores were last told of, in the commit after
+  // they were told. What the person typed into a field on screen is held by the field, not by a
+  // store, and the shell would otherwise stay mounted for someone signed in from another tab,
+  // showing them those words; so another person's shell is drawn only once the stores have let go
+  // of what the person before kept: the one before unmounts the shell and every field in it, and
+  // the shell drawn next reads nothing of theirs. The first sign-in of a page waits the same one
+  // commit, since that is when the draft stores take up what the tab kept for the person before a
+  // reload (`DraftStore.signedIn`): a composer reads its field from the store as it mounts, and
+  // React runs this effect after its children's, so a shell drawn sooner could open a composer
+  // whose reads are cached on an empty field, before the store holds the draft the tab kept.
+  const [shellFor, setShellFor] = useState<string>();
   useEffect(() => {
     if (!known) return;
     writesOf(queryClient).signedIn(login);
+    draftStoresSignedIn(queryClient, login);
     signIns.signedIn(login ?? null);
+    if (login !== undefined) setShellFor(login);
   }, [known, login, queryClient]);
   useEffect(() => {
     const writes = writesOf(queryClient);
     return signIns.listen({
-      changed: () => void queryClient.invalidateQueries({ queryKey: ["whoami"] }),
+      changed: () => void askSignInAgain(queryClient),
       holderGone: (gone) => void heldWritesOfGoneHolder(queryClient, gone),
       // The person signed out in another tab: every write they pressed goes here too, its file
       // with it, so no tab holds a write whose file another tab let go of.
@@ -1082,7 +1328,11 @@ export function AuthGate(): ReactNode {
     return <SignInPage />;
   }
   if (whoAmI.data !== undefined) {
-    return <AuthenticatedApp user={whoAmI.data} />;
+    return shellFor === whoAmI.data.login ? (
+      <AuthenticatedApp user={whoAmI.data} />
+    ) : (
+      <ShellSkeleton />
+    );
   }
   return <ConnectionErrorPage onRetry={() => void whoAmI.refetch()} />;
 }

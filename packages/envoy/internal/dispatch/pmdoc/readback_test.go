@@ -15,6 +15,7 @@ import (
 // no reader of this package reads at all, which is refused by the shape's own name
 // (ErrRenderingRefused), since that is what its author can act on.
 func TestParseForWriteRefusesADocumentItsRenderingReadsBackOtherwise(t *testing.T) {
+	t.Parallel()
 	for markdown, want := range map[string]error{
 		"> [^n]: -\n> -\n":                    ErrMisreadRendering,
 		"> [^n]: *\n> 10. text x[^n]\n":       ErrMisreadRendering,
@@ -40,12 +41,13 @@ func TestParseForWriteRefusesADocumentItsRenderingReadsBackOtherwise(t *testing.
 // The padding is a normalisation the document write makes, not a reading of the markdown the
 // browser editor's parser shares: that parser reads a short row as the cells it writes, and
 // prosemirror-tables' fixTables pads it as this reader does the moment the document reaches an
-// editor (packages/envoy/AGENTS.md, "Milkdown's gfm preset"). What is stored is what both read
+// editor (PadTables in blocks.go says how). What is stored is what both read
 // alike, which is what this pins: the row is written out padded, and that markdown reads back as
 // the tree it was stored from. Measured against the engine over the 99 documents of this class
 // found in a 50,000-document sample: 99 of 99 of their stored renderings read alike in both
 // parsers (sjawhar/legion#2507).
 func TestParsePadsAShortRowAndStoresWhatReadsBackAlike(t *testing.T) {
+	t.Parallel()
 	markdown := "| a | b | c | d |\n| :--- | :---: | ---: | --- |\n| x |\n"
 	doc, err := Parse(markdown)
 	if err != nil {
@@ -85,6 +87,7 @@ func TestParsePadsAShortRowAndStoresWhatReadsBackAlike(t *testing.T) {
 // a URL holding a parenthesis, a backtick or `>`, which no bare URL is written with, is written as
 // a link both read back.
 func TestRenderKeepsABackslashInsideABareURL(t *testing.T) {
+	t.Parallel()
 	const chars = "!\"#$%&'()+,-./:;=>?@[]^_`{}~"
 	var markdowns []string
 	for _, char := range chars {
@@ -124,6 +127,7 @@ func TestRenderKeepsABackslashInsideABareURL(t *testing.T) {
 // writes it: the parser splits it as written, and the browser editor's parser reads the same
 // bytes as the same tree.
 func TestRenderKeepsAFusedRunThatReadsBack(t *testing.T) {
+	t.Parallel()
 	assertRenders(t, []struct{ markdown, want string }{
 		{"*x**b***\n", "*x****b***\n"},
 		{"_p x**b**_ q\n", "*p x****b*** q\n"},
@@ -141,6 +145,7 @@ func TestRenderKeepsAFusedRunThatReadsBack(t *testing.T) {
 // escaped bytes read back in both parsers, so a keep-open spelling tried first changed a document
 // that writer stores correctly.
 func TestRenderRespellsAFusedRunPlainlyBeforeKeepingMarksOpen(t *testing.T) {
+	t.Parallel()
 	assertRenders(t, []struct{ markdown, want string }{
 		{"- ****1**a__1***\n", "- \\*\\*\\**1****a\\_\\_1***\n"},
 		{"****b.**(c)***(c)\n", "\\*\\*\\**b.****(c)***(c)\n"},
@@ -154,6 +159,7 @@ func TestRenderRespellsAFusedRunPlainlyBeforeKeepingMarksOpen(t *testing.T) {
 // and opened again between them: open marks stay open, and a text opens first the marks the text
 // after it carries.
 func TestRenderKeepsAMarkOpenWhereAFusedRunDoesNotReadBack(t *testing.T) {
+	t.Parallel()
 	assertRenders(t, []struct{ markdown, want string }{
 		{"*a **b [l](https://e.com/u) c** d*\n", "*a **b [l](https://e.com/u) c** d*\n"},
 		{"*a **b***\n", "*a **b***\n"},
@@ -234,6 +240,7 @@ func assertRenders(t *testing.T, cases []struct{ markdown, want string }) {
 // and beside one whose read-back would pad more than a read-back's budget the write is refused,
 // naming the limit, rather than stored without the check.
 func TestRefuseMisreadWriteReadsStoredSpansBackOnABudgetOfTheirOwn(t *testing.T) {
+	t.Parallel()
 	paragraph := &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: "New."}}}
 	shortRow := spanTable([][2]int{{1, 1}, {1, 1}}, [][2]int{{1, 1}})
 	spanned := documentBesideSpannedTable(100, 60)

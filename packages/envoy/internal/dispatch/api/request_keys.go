@@ -22,7 +22,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -41,11 +43,22 @@ import (
 //     instead: a different request under the key is 422 KEY_REUSED, naming the request that used
 //     it; a first request still running (its lease, IdempotencyLease, renewed every
 //     keyedLeaseRenewal while it runs) is 409 KEY_IN_FLIGHT with Retry-After: 1; a finished one is
-//     replayed, its stored status and body with Idempotency-Replayed: ?1, and the handler does not
-//     run again. A repeat that arrives while its first request still runs is never spooled
-//     (requestKeyInFlight): its body is read off the connection and discarded, and the repeat is
-//     judged by its digest once that body has arrived, by what the key holds then
-//     (answerDrainedRepeat).
+//     answered with Idempotency-Replayed: ?1, and the handler does not run again. A route that
+//     commits a recovery point answers what it made, read now (keyedReplays), except the status
+//     change, which answers what its steps stored, each issue as its step's write answered it
+//     (replayStatusChange); a route whose answer is one comment or issue message answers that
+//     post, read now (keyedRereads); any other answers its stored status and body - unless that
+//     answer is a success holding a comment or a message that is deleted now, or a document
+//     version a delete renamed (answerEndedByDelete), whenever the delete began, and is then
+//     never replayed: a delete is timed from before it waited for the lock a keyed write may
+//     hold, so no time says which of the two read the post first. A repeat that arrives while its
+//     first request still runs is never spooled (requestKeyInFlight): its body is read off the
+//     connection and discarded, and the repeat is judged by its digest once that body has
+//     arrived, by what the key holds then (answerDrainedRepeat). A refusal the layer answers
+//     itself takes its route's shape (keyedRoute.refuse): the status change's carries changed,
+//     the entries of the request's recovery point for a KEY_IN_FLIGHT - the holder's, answered
+//     while it runs, and an abandoned run's for a freed key - and for an ANSWER_NOT_KEPT, and []
+//     for every other (refuseStatusChangeKey).
 //   - The handler finishes whatever its client does: it runs on the request's context with the
 //     client's cancellation taken off, bounded by keyedHandlerLimit and counted in the server's
 //     background wait, so a client that gives up and asks again waits on the first run rather than
@@ -64,19 +77,38 @@ import (
 //     its key commits nothing more: its next commit is refused.
 //   - A write that also delivers to sessions keeps its own recovery point (Brandur Leach,
 //     "Implementing Stripe-like Idempotency Keys in Postgres"): it commits what it made into the
-//     row in its own transaction (bindRequestKeyRecovery), and a repeat that finds that point is
+//     row in its own transaction (bindRequestKeyRecovery, or queueRequestKeyRecovery where that
+//     transaction sends its writes as one batch), and a repeat that finds that point is
 //     answered by its route's keyedReplay - whatever delivery is still owed put on its way, then
 //     what it made read again - rather than from the stored bytes or KEY_COMMITTED, however its
 //     first request ended: the single-session send, the broadcast, an issue message and a comment,
 //     whose mentions deliver it. Their first answer shows deliveries the repeat must report as they
 //     stand now. A delivery a dead process owed is made once whether anyone asks again or not: the
 //     delivery sweep resumes it (resumeOwedDeliveries), and a repeat only sooner.
+//   - A write made of steps that each commit in a transaction of their own, the status change
+//     (status_change.go), keeps its progress as its recovery point instead: each step adds what it
+//     made in its own transaction - the ids of its events and of the asks it withdrew to the head
+//     on the key's row, and its entry, with its issue as the step answered it, and what a step of
+//     an option changed, as a row of request_key_steps - and once the last step has run the write
+//     marks the point finished, with the answer's issue. A repeat that finds the point finished, or
+//     beside a stored success, is answered from it by the route's keyedReplay. A repeat that finds
+//     no answer and no mark, its holder gone, takes the key over as a new attempt, whatever the
+//     holder committed, and that attempt runs only the steps the point does not hold
+//     (keyedRoute.resumes). A stored answer that is not a success is replayed as it was stored.
+//     Every reader of a point reads it with the steps' entries and their moves (recoveryPointRead).
 //   - Every answer to a keyed request the layer judged carries the key back in the Idempotency-Key
 //     response header, a 5xx included: an earlier Dispatch ignores the header and answers without
-//     it, so a client retries a 5xx under its key only where the echo says the key was judged.
+//     it, so a check can tell a Dispatch that judges the key from one that does not. The agents'
+//     client reads no /healthz, and every Dispatch that carries b1c42d1d7d runs this layer, so it
+//     sends a failed write again under its key whatever the echo says. It reads the echo only to
+//     settle a refusal: a fresh 4xx, or a 422 KEY_REUSED, that echoes exactly its key is final
+//     (answerEvent, packages/envoy-client), so a change that drops or moves the echo turns such
+//     a refusal back into an unsettled write.
 //
 // A write without the header runs as it always did, unkeyed, and is logged at DEBUG: a script, a
-// test and the Legion daemon's outbox send writes that name no intent, and are expected to.
+// test and the Legion daemon's outbox send writes that name no intent, and are expected to. A write
+// with the header never runs unkeyed: a caller the layer cannot resolve is answered that refusal,
+// and a body past its route's limit the route's 413, and neither runs the handler.
 
 const (
 	// keyedAnswerKept is the largest answer a key keeps. A larger one is still answered in full, but
@@ -128,32 +160,127 @@ var errRequestKeyTakenOver = errorf(http.StatusConflict, contracts.IdempotencyKe
 // keyedReplay answers a repeat of a keyed write whose first run committed recovery
 // (bindRequestKeyRecovery): it puts on its way whatever the write still owes, then answers what the
 // write made as it stands now, with the status the route's write answers - a stale success, in
-// Google AIP-155's words, never a second write. stored is the first answer's body when the key kept
-// one and it was a success, and nil when the first request never answered or answered a refusal.
+// Google AIP-155's words, never a second write. The status change's replay answers what its steps
+// stored instead, each issue as its step's write answered it (replayStatusChange). stored is the
+// first answer's body, or nil in five cases: when the first request never answered, when it
+// answered a refusal, when it answered more than a key keeps (storedSuccess), when a delete ended
+// the success it answered (answerEndedByDelete), and on a route that resumes (answerHeldKey).
 type keyedReplay func(w http.ResponseWriter, r *http.Request, recovery json.RawMessage, stored []byte)
 
+// keyedRoute is what the keyed layer knows of a keyed route. For a route that commits a recovery
+// point, it holds the route's keyedReplay, and whether a repeat resumes the route's write
+// (resumes), which a write made of steps that each commit does. A repeat of such a route whose
+// holder is gone before the point's mark takes the key over as a new attempt, which runs the steps
+// the point does not hold, and a stored refusal is replayed as it was stored
+// (heldRequestKey.resumedState). It also holds how the route answers a refusal the layer decides
+// itself (refuse), and how it answers a repeat whose kept answer is a post (reread). The zero value
+// is a route that commits no recovery point, rereads no post, and answers those refusals as every
+// route does.
+type keyedRoute struct {
+	replay  keyedReplay
+	resumes bool
+	// refuse answers err, a refusal the keyed layer decides itself, in the route's own shape, with
+	// recovery the point the key held when the layer decided it. A KEY_IN_FLIGHT answered before
+	// the repeat's body is judged (answerDrainedRepeat's Expect: 100-continue and drain-error
+	// answers) names the running request's point whatever the repeat's body; elsewhere a point is
+	// passed only once the digest matched. recovery is nil where the layer read none, where the
+	// row is another request's (KEY_REUSED), and where it is past its window. A nil refuse answers
+	// as every route does (refuseKeyed).
+	refuse func(w http.ResponseWriter, err error, recovery json.RawMessage)
+	// reread is the route's row of keyedRereads, which keyedWrites sets; nil for a route that
+	// rereads no post.
+	reread keyedReread
+}
+
 // keyedReplays is every route whose write commits a recovery point, by method and pattern: the
-// writes that also deliver to sessions, whose deliveries a repeat finishes. Each key names a
-// registered route (TestEveryKeyedRouteTableNamesARoute).
-func (s *server) keyedReplays() map[string]keyedReplay {
-	return map[string]keyedReplay{
-		http.MethodPost + " /api/v1/agents/{session_id}/messages": replayRecovered(s, s.replayAgentMessage),
-		http.MethodPost + " /api/v1/broadcasts":                   replayRecovered(s, s.replayBroadcast),
-		http.MethodPost + " /api/v1/issues/{key}/messages":        replayRecovered(s, s.replayIssueMessage),
-		http.MethodPost + " /api/v1/issues/{key}/comments":        replayRecovered(s, s.replayComment),
-		http.MethodPost + " /api/v1/artifacts/{id}/comments":      replayRecovered(s, s.replayComment),
+// writes that also deliver to sessions, whose deliveries a repeat finishes, and the status change,
+// whose steps a repeat finishes. Each key names a registered route
+// (TestEveryKeyedRouteTableNamesARoute).
+func (s *server) keyedReplays() map[string]keyedRoute {
+	return map[string]keyedRoute{
+		http.MethodPost + " /api/v1/agents/{session_id}/messages": {replay: replayRecovered(s, s.replayAgentMessage)},
+		http.MethodPost + " /api/v1/broadcasts":                   {replay: replayRecovered(s, s.replayBroadcast)},
+		http.MethodPost + " /api/v1/issues/{key}/messages":        {replay: replayRecovered(s, s.replayIssueMessage)},
+		http.MethodPost + " /api/v1/issues/{key}/comments":        {replay: replayRecovered(s, s.replayComment)},
+		http.MethodPost + " /api/v1/artifacts/{id}/comments":      {replay: replayRecovered(s, s.replayComment)},
+		statusChangeRoute: {replay: replayRecovered(s, s.replayStatusChange), resumes: true, refuse: s.refuseStatusChangeKey},
 	}
 }
 
+// refuseKeyed answers err, a refusal the keyed layer decides itself, as route answers one
+// (keyedRoute.refuse), with recovery the point the key held when the layer decided it. A route
+// that sets no refuse answers it as every route does (writeAuthenticationError, which answers
+// every error that is not an identity's as writeHandlerError does).
+func (s *server) refuseKeyed(w http.ResponseWriter, route keyedRoute, err error, recovery json.RawMessage) {
+	if route.refuse != nil {
+		route.refuse(w, err, recovery)
+		return
+	}
+	s.writeAuthenticationError(w, err)
+}
+
+// keyedReread answers a repeat of a keyed write whose first answer the key kept and which is a
+// post, a comment or a message: it reads that post again, id, the one the stored answer names,
+// and answers it as it stands now in the first answer's shape and under its status (status),
+// keeping the replayKeptMembers of stored, the first answer's body (writeRefreshed). A post
+// deleted since its first answer is answered as every read of it gives it, with no body and
+// with its mark, and never as the stored answer holds it.
+type keyedReread func(s *server, w http.ResponseWriter, r *http.Request, id string, status int, stored []byte)
+
+// keyedRereads is every keyed route whose kept answer is one comment or one issue message, the
+// post the write acted on or made, by method and pattern, with the reread a repeat of its key is
+// answered by: an edit, the resolve, reopen, accept and reject of a comment, and a mentioned or
+// targeted session's reply. Such a post can be edited or deleted after the answer was kept, so the
+// bytes the key holds are not what a read of the post gives any more. Other routes' kept answers
+// can carry a post's text too - a related-item check's snippet, a write's advice, a document
+// version an accept named - and are never replayed once the post is deleted or the version
+// renamed (answerEndedByDelete). The creates are not here: each commits a recovery point and is
+// answered from it (keyedReplays). An answer that is no post - a delivery attempt, which a
+// delivery retry answers and a reply route answers for an error report - names its post by
+// comment_id or message_id and holds no body, and is replayed as it was kept (keyedAnswerPost),
+// its post deleted or not. So is the accept of a delivery, which holds the body of a direct
+// message: only a message on an issue is edited or deleted (lockedMessageForCorrection), so that
+// body is the one the message holds. Each key names a registered route
+// (TestEveryKeyedRouteTableNamesARoute).
+var keyedRereads = map[string]keyedReread{
+	http.MethodPatch + " /api/v1/comments/{id}":        (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/resolve": (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/reopen":  (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/accept":  (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/reject":  (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/reply":   (*server).rereadCommentReply,
+	http.MethodPatch + " /api/v1/messages/{id}":        (*server).rereadMessage,
+	http.MethodPost + " /api/v1/messages/{id}/reply":   (*server).rereadMessageReply,
+}
+
+// keyedAnswerPost is the id of the post a kept success answer is, and "" for any other answer:
+// none kept, or a delivery attempt, which names its post by comment_id or message_id and holds no
+// body. A post's answer carries both its id and its body, the empty body of a deleted post
+// included.
+func keyedAnswerPost(stored []byte) string {
+	var post struct {
+		ID   string          `json:"id"`
+		Body json.RawMessage `json:"body"`
+	}
+	if len(stored) == 0 || json.Unmarshal(stored, &post) != nil || post.Body == nil {
+		return ""
+	}
+	return post.ID
+}
+
 // replayKeptMembers are the members of a write's first answer a replay keeps beside the resource
-// as it stands now: what the write's answer carried that a read of the resource does not.
-var replayKeptMembers = []string{"advice", "ask_waiting_on"}
+// as it stands now: what the write's answer carried that a read of the resource does not - a
+// write's advice, a reply's ask_waiting_on, whether an accept's text was already gone from the
+// live document (lost), and whether a reply route posted nothing (duplicate). A recovery replay
+// keeps none of them from an answer a delete ended (answerHeldKey); a reread keeps them
+// from any, as none of a reread route's holds the text of a post.
+var replayKeptMembers = []string{"advice", "ask_waiting_on", "lost", "duplicate"}
 
 // writeRefreshed answers a keyed replay with fresh, the resource as it stands now, in the first
-// answer's shape: the replayKeptMembers stored holds and fresh does not (a write's advice, a reply's
-// ask_waiting_on) kept, and nothing else of stored, so a member the fresh read leaves out is never
-// answered stale. With no stored answer it answers fresh alone. Its status is the write's own 201.
-func (s *server) writeRefreshed(w http.ResponseWriter, stored []byte, fresh any) {
+// answer's shape: the replayKeptMembers stored holds and fresh does not kept, and nothing else of
+// stored, so a member the fresh read leaves out is never answered stale. With no stored answer it
+// answers fresh alone. Its status is the write's own, status.
+func (s *server) writeRefreshed(w http.ResponseWriter, status int, stored []byte, fresh any) {
 	encoded, err := json.Marshal(fresh)
 	if err != nil {
 		s.writeHandlerError(w, fmt.Errorf("encode a replayed resource: %w", err))
@@ -174,7 +301,7 @@ func (s *server) writeRefreshed(w http.ResponseWriter, stored []byte, fresh any)
 			}
 		}
 	}
-	WriteJSON(w, http.StatusCreated, current)
+	WriteJSON(w, status, current)
 }
 
 // keyedMethod reports whether register keys a route of this method: a POST or a PATCH. A PUT and a
@@ -218,8 +345,23 @@ type resolvedCaller struct {
 	err   error
 }
 
+// readOnlyCredential is the credential of the caller ctx carries (resolvedCallerKey) where that
+// caller resolved and its credential is read-only (model.Credential.ReadOnly), and nil otherwise,
+// as it is for a context that carries no caller. The read-only gate (refuseReadOnlyToken) and a
+// results read (newComparisonReader) both read the caller by it: the one the gate found decided
+// or resolved itself.
+func readOnlyCredential(ctx context.Context) *model.Credential {
+	caller, _ := ctx.Value(resolvedCallerKey{}).(resolvedCaller)
+	if caller.err != nil || caller.actor.Credential == nil || !caller.actor.Credential.ReadOnly {
+		return nil
+	}
+	return caller.actor.Credential
+}
+
 // keyedWrites wraps the handler of a POST or PATCH route, method and pattern, in the keyed path
-// above. replay is the route's keyedReplay, nil for a route that commits no recovery point.
+// above. route is the route's keyedRoute as keyedReplays gives it, the zero value for a route that
+// commits no recovery point and shapes no refusal of the layer's; keyedWrites sets its reread, the
+// route's row of keyedRereads.
 //
 // A keyed request's handler finishes on the server whatever its client does: it runs on its
 // request's context with the client's cancellation taken off (context.WithoutCancel), bounded by
@@ -231,10 +373,11 @@ type resolvedCaller struct {
 // died is taken over, once its lease lapses. A handler cut off with its client would roll its
 // transactions back and leave the next attempt to start again from nothing, so a write that takes
 // the server longer than the client waits could never land.
-func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, replay keyedReplay) http.HandlerFunc {
+func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, route keyedRoute) http.HandlerFunc {
 	wildcards := patternWildcards(pattern)
 	keepsAnswer := !answerHoldsSecret[method+" "+pattern]
-	bodyLimit, _ := routeBody(method, pattern)
+	route.reread = keyedRereads[method+" "+pattern]
+	bodyLimit, tooLarge := routeBody(method, pattern)
 	run := handler
 	if s.deps.TestHooksEnabled {
 		run = s.slowedByTestHook(handler)
@@ -247,18 +390,17 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 			return
 		}
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.refuseKeyed(w, route, err, nil)
 			return
 		}
 		actor, human, err := s.optionalActor(r)
 		if err != nil {
-			// The handler refuses a caller it cannot resolve as it always has, and nothing is kept.
-			handler(w, r)
+			s.refuseKeyed(w, route, err, nil)
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
 		if r.ContentLength > bodyLimit {
-			handler(w, r)
+			s.refuseKeyed(w, route, tooLarge, nil)
 			return
 		}
 		login := requestKeyLogin(actor, human)
@@ -268,14 +410,14 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		inFlight, err := s.requestKeyInFlight(r.Context(), login, key)
 		if err != nil {
 			w.Header().Set(contracts.IdempotencyKeyHeader, key)
-			s.writeHandlerError(w, err)
+			s.refuseKeyed(w, route, err, nil)
 			return
 		}
 		if inFlight {
 			if s.repeatFoundInFlight != nil {
 				s.repeatFoundInFlight()
 			}
-			s.answerDrainedRepeat(w, r, method, pattern, wildcards, login, key, replay)
+			s.answerDrainedRepeat(w, r, method, pattern, wildcards, login, key, route)
 			return
 		}
 		digest := sha256.New()
@@ -288,31 +430,31 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 			// Dispatch's own failure, not the request's: answered as a 5xx under the key, which
 			// nothing has claimed, so the client asks again under it.
 			w.Header().Set(contracts.IdempotencyKeyHeader, key)
-			s.writeHandlerError(w, err)
+			s.refuseKeyed(w, route, err, nil)
 			return
 		case err != nil:
-			writeError(w, "REQUEST_BODY_UNREADABLE", http.StatusBadRequest, "could not read the request body: "+err.Error())
+			s.refuseKeyed(w, route, errorf(http.StatusBadRequest, "REQUEST_BODY_UNREADABLE", "could not read the request body: %v", err), nil)
 			return
 		}
 		replayable, err := body.reader()
 		if err != nil {
 			w.Header().Set(contracts.IdempotencyKeyHeader, key)
-			s.writeHandlerError(w, fmt.Errorf("reread a keyed request's body: %w", err))
+			s.refuseKeyed(w, route, fmt.Errorf("reread a keyed request's body: %w", err), nil)
 			return
 		}
 		if body.size > bodyLimit {
-			r.Body = io.NopCloser(io.MultiReader(replayable, r.Body))
-			handler(w, r)
+			// A body that declared no length and ran past the limit as it was spooled: refused as
+			// the declared one is, and no handler runs without the key.
+			s.refuseKeyed(w, route, tooLarge, nil)
 			return
 		}
 		r.Body = io.NopCloser(replayable)
 
 		// Every answer from here on - run, replayed or refused, stored or not, a 5xx included - names
-		// the key back, so a client can tell a Dispatch that judged its key from one that ignored the
-		// header, and retries a 5xx under the key only against the first: an earlier Dispatch would
-		// run the write again.
+		// the key back, so a check can tell a Dispatch that judged its key from one that ignored the
+		// header.
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
-		claim, answered := s.claimRequestKey(w, r, login, key, hex.EncodeToString(digest.Sum(nil)), replay)
+		claim, answered := s.claimRequestKey(w, r, login, key, hex.EncodeToString(digest.Sum(nil)), route)
 		if answered {
 			return
 		}
@@ -355,7 +497,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 // write's own limit (handoffRequestLimit) for that one, the markdown round trip's
 // (markdownRoundTripLimit) for that one, and a JSON body (decodeJSON) for every other. The
 // limit is the most the keyed layer spools before its handler runs - a body past it is
-// refused by the route's handler whatever its key, so it runs unkeyed rather than spooled - and
+// refused whatever its key, so the layer answers the 413 itself rather than spool it - and
 // the most an early answer discards before it is written (drainBeforeAnswer). One answer serves
 // all three layers and the handler, so none of them can disagree with another.
 func routeBody(method, pattern string) (limit int64, tooLarge *apiError) {
@@ -672,7 +814,10 @@ func (m *boundaryMask) flush() {
 	m.pending = nil
 }
 
-// heldRequestKey is the row a repeat found under its key.
+// heldRequestKey is the row a repeat found under its key. finished says whether its recovery point
+// carries the mark that every step of the write ran (keyedRoute.resumes). It holds no time of the
+// key's claim: whether a delete ended the key's answer is not timed against it
+// (answerEndedByDelete says why).
 type heldRequestKey struct {
 	digest    string
 	method    string
@@ -683,6 +828,7 @@ type heldRequestKey struct {
 	response  []byte
 	kept      bool
 	recovery  json.RawMessage
+	finished  bool
 	committed bool
 	lapsed    bool
 	expired   bool
@@ -698,7 +844,8 @@ const (
 	// keyReused is a key another request used: refused 422 KEY_REUSED.
 	keyReused
 	// keyRecovered is a write that committed a recovery point its route replays, answered or
-	// abandoned by its holder: answered by the route's keyedReplay.
+	// abandoned by its holder: answered by the route's keyedReplay. On a route that resumes, it
+	// is a point beside a stored success, or a point that carries the mark with its holder gone.
 	keyRecovered
 	// keyAnswered is a key that holds its first answer: status is set.
 	keyAnswered
@@ -707,20 +854,23 @@ const (
 	// keyCommitted is a key whose holder is gone after committing a write it never answered:
 	// 409 KEY_COMMITTED.
 	keyCommitted
-	// keyAbandoned is a key whose holder is gone with nothing committed: taken over.
+	// keyAbandoned is a key whose holder is gone with nothing committed: taken over. On a route
+	// that resumes, it is a key whose holder is gone with no answer and no mark, whatever the
+	// holder committed: taken over as a new attempt, which runs what the point does not hold.
 	keyAbandoned
 )
 
-// state is what held's row says, for a repeat judged by digest on a route that replays a recovery
-// point when replays. The row's constraints (migration 0137) keep an answered row's lease released
-// and its response under its status.
-func (held heldRequestKey) state(digest string, replays bool) keyState {
+// state is what held's row says, for a repeat judged by digest on route. The row's constraints
+// (migration 0137) keep an answered row's lease released and its response under its status.
+func (held heldRequestKey) state(digest string, route keyedRoute) keyState {
 	switch {
 	case held.expired:
 		return keyExpired
 	case held.digest != digest:
 		return keyReused
-	case held.recovery != nil && replays && (held.status != nil || held.lapsed):
+	case route.resumes:
+		return held.resumedState()
+	case held.recovery != nil && route.replay != nil && (held.status != nil || held.lapsed):
 		return keyRecovered
 	case held.status != nil:
 		return keyAnswered
@@ -728,6 +878,29 @@ func (held heldRequestKey) state(digest string, replays bool) keyState {
 		return keyInFlight
 	case held.committed || held.recovery != nil:
 		return keyCommitted
+	default:
+		return keyAbandoned
+	}
+}
+
+// resumedState is state on a route that resumes (keyedRoute.resumes), whose write is made of steps
+// that each commit. A success beside a recovery point is answered from the point, and any other
+// stored answer, a refusal midway among them, as it was stored: a refusal hands a keyedReplay
+// nothing (storedSuccess). A holder still inside its lease is in flight. A holder gone after its
+// point's mark, which follows the last step, is answered from the point too. A holder gone with no
+// answer and no mark, whatever it committed, leaves its key to be taken over: the new attempt runs
+// the steps the point does not hold, since each step decides its write under its own lock and no
+// step's write is made twice.
+func (held heldRequestKey) resumedState() keyState {
+	switch {
+	case held.status != nil && held.recovery != nil && *held.status >= 200 && *held.status <= 299:
+		return keyRecovered
+	case held.status != nil:
+		return keyAnswered
+	case !held.lapsed:
+		return keyInFlight
+	case held.finished:
+		return keyRecovered
 	default:
 		return keyAbandoned
 	}
@@ -793,15 +966,21 @@ func (s *server) requestKeyAnswersItself(ctx context.Context, login, key string)
 // two of them sends this one round again. The statements run whatever the client does, bounded
 // by keyedBookkeeping: a claim the database made, cut off with its client before its answer was
 // read, would leave the key in flight with no handler behind it, and every repeat told
-// KEY_IN_FLIGHT until its lease lapsed.
+// KEY_IN_FLIGHT until its lease lapsed. route is the route's keyedRoute, which says how a key
+// whose holder is gone is judged and taken over, how a repeat is answered from what the key
+// holds (answerHeldKey), and how a refusal is answered.
 func (s *server) claimRequestKey(
-	w http.ResponseWriter, r *http.Request, login, key, digest string, replay keyedReplay,
+	w http.ResponseWriter, r *http.Request, login, key, digest string, route keyedRoute,
 ) (claim requestKeyClaim, answered bool) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), keyedBookkeeping)
 	defer cancel()
 	pool := s.deps.Store.Pool
+	// recovery is the point of the row the last round found and could not take over, which a
+	// KEY_IN_FLIGHT names once every round has found the row moved.
+	var recovery json.RawMessage
 	for range keyedClaimTries {
 		claim = requestKeyClaim{login: login, key: key}
+		recovery = nil
 		err := pool.QueryRow(ctx, `
 			insert into request_keys (login, idempotency_key, request_digest, method, path)
 			values ($1, $2, $3, $4, $5)
@@ -812,19 +991,19 @@ func (s *server) claimRequestKey(
 			return claim, false
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
-			s.writeHandlerError(w, fmt.Errorf("claim an idempotency key: %w", err))
+			s.refuseKeyed(w, route, fmt.Errorf("claim an idempotency key: %w", err), nil)
 			return claim, true
 		}
 		held, found, err := s.readHeldRequestKey(ctx, login, key)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.refuseKeyed(w, route, err, nil)
 			return claim, true
 		}
 		if !found {
 			continue
 		}
-		state := held.state(digest, replay != nil)
-		if answerHeldKey(w, r, key, held, state, replay) {
+		state := held.state(digest, route)
+		if s.answerHeldKey(w, r, key, held, state, route) {
 			return claim, true
 		}
 		if state == keyExpired {
@@ -832,20 +1011,35 @@ func (s *server) claimRequestKey(
 				delete from request_keys
 				where login = $1 and idempotency_key = $2 and created_at < now() - make_interval(secs => $3)
 			`, login, key, contracts.IdempotencyKeyTTL.Seconds()); err != nil {
-				s.writeHandlerError(w, fmt.Errorf("expire an idempotency key: %w", err))
+				s.refuseKeyed(w, route, fmt.Errorf("expire an idempotency key: %w", err), nil)
 				return claim, true
 			}
 			continue
 		}
 		// The holder's lease lapsed with nothing committed: its process died before its write did,
-		// so this attempt takes the key over and runs the request.
-		tag, err := pool.Exec(ctx, `
-			update request_keys set attempt = attempt + 1, leased_at = now()
-			where login = $1 and idempotency_key = $2 and attempt = $3
-			  and status is null and recovery is null and committed_at is null
-		`, login, key, held.attempt)
+		// so this attempt takes the key over and runs the request. On a route that resumes, the
+		// holder's lease lapsed with no answer and no mark, whatever it committed: this attempt
+		// takes the key over and runs the steps its point does not hold. The update requires the
+		// point to carry no mark still, so a slow holder that wrote the mark since the read leaves
+		// it no row, and the next round answers the key from its point. The row's digest is this
+		// request's, since a row of another request's was answered KEY_REUSED above.
+		recovery = held.recovery
+		var tag pgconn.CommandTag
+		if route.resumes {
+			tag, err = pool.Exec(ctx, `
+				update request_keys set attempt = attempt + 1, leased_at = now()
+				where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
+				  and (recovery is null or not coalesce((recovery->>'`+pointFinished+`')::boolean, false))
+			`, login, key, held.attempt)
+		} else {
+			tag, err = pool.Exec(ctx, `
+				update request_keys set attempt = attempt + 1, leased_at = now()
+				where login = $1 and idempotency_key = $2 and attempt = $3
+				  and status is null and recovery is null and committed_at is null
+			`, login, key, held.attempt)
+		}
 		if err != nil {
-			s.writeHandlerError(w, fmt.Errorf("take over an idempotency key: %w", err))
+			s.refuseKeyed(w, route, fmt.Errorf("take over an idempotency key: %w", err), nil)
 			return claim, true
 		}
 		if tag.RowsAffected() == 1 {
@@ -853,21 +1047,23 @@ func (s *server) claimRequestKey(
 			return claim, false
 		}
 	}
-	writeKeyInFlight(w, key)
+	s.writeKeyInFlight(w, route, key, recovery)
 	return claim, true
 }
 
-// readHeldRequestKey reads the row login's key holds; found is false when it holds none.
+// readHeldRequestKey reads the row login's key holds, its recovery point as every reader reads it
+// (recoveryPointRead); found is false when it holds none.
 func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (held heldRequestKey, found bool, err error) {
 	err = s.deps.Store.Pool.QueryRow(ctx, `
 		select request_digest, method, path, attempt, status, headers, response,
-		       response is not null, recovery, committed_at is not null,
+		       response is not null, `+recoveryPointRead+`, coalesce((recovery->>'`+pointFinished+`')::boolean, false),
+		       committed_at is not null,
 		       leased_at is null or leased_at < now() - make_interval(secs => $3),
 		       created_at < now() - make_interval(secs => $4)
 		from request_keys where login = $1 and idempotency_key = $2
 	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(
 		&held.digest, &held.method, &held.path, &held.attempt, &held.status, &held.headers,
-		&held.response, &held.kept, &held.recovery, &held.committed, &held.lapsed, &held.expired,
+		&held.response, &held.kept, &held.recovery, &held.finished, &held.committed, &held.lapsed, &held.expired,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return held, false, nil
@@ -880,26 +1076,55 @@ func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (hel
 
 // answerHeldKey answers a repeat from the row its key holds, in state, and reports that it did: a
 // different request under the key is refused, a recovery point replayed by its route, an answer
-// replayed, a first request still running told so, and a write that landed and lost its answer said
-// to have landed. A key past its window and one whose holder died with nothing committed answer
-// nothing: the repeat runs the request there.
-func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held heldRequestKey, state keyState, replay keyedReplay) bool {
+// replayed - the post it is read again where its route rereads one (replayAnswer) - a first
+// request still running told so, and a write that landed and lost its answer said to have landed.
+// A key past its window and one whose holder died with nothing committed answer nothing: the
+// repeat runs the request there. route is the route's keyedRoute, whose replay answers a recovery
+// point, whose reread a kept post (nil for a route that rereads no post), and whose refuse a
+// refusal.
+//
+// A recovery replay answers what the write made as it stands now and keeps beside it the
+// replayKeptMembers of the stored answer (writeRefreshed). An answer a delete ended
+// (answerEndedByDelete) lends it none of them: the replay is handed no stored answer, as when
+// the first request never answered. The status change's replay, on the one route that resumes,
+// answers what its steps stored instead, each issue as its step's write answered it
+// (replayStatusChange), and is handed no stored answer.
+func (s *server) answerHeldKey(
+	w http.ResponseWriter, r *http.Request, key string, held heldRequestKey, state keyState, route keyedRoute,
+) bool {
 	switch state {
 	case keyReused:
-		writeError(w, contracts.IdempotencyKeyReused, http.StatusUnprocessableEntity, fmt.Sprintf(
+		// Nothing ran under this request, and the row's point is another request's: it names none.
+		s.refuseKeyed(w, route, errorf(http.StatusUnprocessableEntity, contracts.IdempotencyKeyReused,
 			"%s %q was already used for %s %s with different content; this request was not run: a changed request needs a new key",
-			contracts.IdempotencyKeyHeader, key, held.method, held.path))
+			contracts.IdempotencyKeyHeader, key, held.method, held.path), nil)
 	case keyRecovered:
+		// A route that resumes answers from its point alone (replayStatusChange), so it is handed
+		// no stored answer and no delete is read for one.
+		var stored []byte
+		if !route.resumes {
+			stored = held.storedSuccess()
+		}
+		if stored != nil {
+			ended, err := s.answerEndedByDelete(r.Context(), held)
+			if err != nil {
+				s.refuseKeyed(w, route, err, nil)
+				return true
+			}
+			if ended {
+				stored = nil
+			}
+		}
 		w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
-		replay(w, r, held.recovery, held.storedSuccess())
+		route.replay(w, r, held.recovery, stored)
 	case keyAnswered:
-		replayStoredAnswer(w, held)
+		s.replayAnswer(w, r, route, held)
 	case keyInFlight:
-		writeKeyInFlight(w, key)
+		s.writeKeyInFlight(w, route, key, held.recovery)
 	case keyCommitted:
 		// The holder committed its write and its process died, or it failed, before its answer
 		// was kept: running the request again would make the write twice.
-		writeKeyCommitted(w, key, held)
+		s.writeKeyCommitted(w, route, key, held)
 	default:
 		return false
 	}
@@ -913,25 +1138,28 @@ func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held held
 // that takes a while to arrive outlives what the key held when it began: a first request that
 // answered meanwhile is replayed, a request whose body differs is 422 KEY_REUSED whether the first
 // has answered or not, and a first still running is 409 KEY_IN_FLIGHT. A key its first request
-// gave up meanwhile - released after a 5xx, its holder dead with nothing committed, its window past
-// - would run the request, which this one cannot, its body gone: it is told to ask again
-// (writeKeyFreed), and that ask runs it.
+// gave up meanwhile - released after a 5xx, its holder dead with nothing committed, on a route
+// that resumes its holder dead before its point's mark, its window past - would run the request,
+// which this one cannot, its body gone: it is told to ask again (writeKeyFreed), and that ask runs
+// it. route is the route's keyedRoute, so the key is judged and answered as claimRequestKey judges
+// and answers it.
 //
 // A client that asked to be told to continue before it sends its body (Expect: 100-continue) is
 // answered 409 KEY_IN_FLIGHT at once, with nothing read: it has sent nothing, so the answer is as
 // fresh as the key, and a read would ask it for its whole body only to judge it.
 //
 // The body is read for at most drainTime (readFor): one that stops arriving is answered 409
-// KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. A body past the
-// route's limit is answered as its route answers one (routeBody), unkeyed, as a request whose
-// body is past the limit runs unkeyed. Either keeps the read's deadline for net/http's own reads
-// after the answer; only a body read to its end lifts it.
+// KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. Neither of those
+// two answers reads the key again to judge the repeat; each names the recovery point the key holds
+// when it is answered (writeUnjudgedKeyInFlight). A body past the route's limit is answered the
+// route's 413 (routeBody), as a first request's body past it is. Either keeps the read's deadline
+// for net/http's own reads after the answer; only a body read to its end lifts it.
 func (s *server) answerDrainedRepeat(
-	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, replay keyedReplay,
+	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, route keyedRoute,
 ) {
 	if expectsContinue(r) {
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
-		writeKeyInFlight(w, key)
+		s.writeUnjudgedKeyInFlight(w, r, route, login, key)
 		return
 	}
 	limit, tooLarge := routeBody(method, pattern)
@@ -943,10 +1171,10 @@ func (s *server) answerDrainedRepeat(
 	case err != nil:
 		w.Header().Set("Connection", "close")
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
-		writeKeyInFlight(w, key)
+		s.writeUnjudgedKeyInFlight(w, r, route, login, key)
 		return
 	case size > limit:
-		writeError(w, tooLarge.code, tooLarge.status, tooLarge.message)
+		s.refuseKeyed(w, route, tooLarge, nil)
 		return
 	}
 	lift()
@@ -955,55 +1183,273 @@ func (s *server) answerDrainedRepeat(
 	defer cancel()
 	held, found, err := s.readHeldRequestKey(ctx, login, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.refuseKeyed(w, route, err, nil)
 		return
 	}
-	if found && answerHeldKey(w, r, key, held, held.state(hex.EncodeToString(digest.Sum(nil)), replay != nil), replay) {
-		return
+	// A key its own first request gave up names the point that request left, which the ask again
+	// resumes from; a key past its window names none, its point a request's long gone.
+	var freed json.RawMessage
+	if found {
+		state := held.state(hex.EncodeToString(digest.Sum(nil)), route)
+		if s.answerHeldKey(w, r, key, held, state, route) {
+			return
+		}
+		if state == keyAbandoned {
+			freed = held.recovery
+		}
 	}
-	writeKeyFreed(w, key)
+	s.writeKeyFreed(w, route, key, freed)
 }
 
 // writeKeyFreed answers a repeat whose body was read and not kept while its first request gave the
 // key up (answerDrainedRepeat): it was not run, and is told to ask again under the key, as a repeat
-// whose first request still runs is, so the client's retry runs it.
-func writeKeyFreed(w http.ResponseWriter, key string) {
-	w.Header().Set("Retry-After", "1")
-	writeError(w, contracts.IdempotencyKeyInFlight, http.StatusConflict, fmt.Sprintf(
+// whose first request still runs is, so the client's retry runs it. recovery is the point the key
+// held when it was read, for the route's refuse.
+func (s *server) writeKeyFreed(w http.ResponseWriter, route keyedRoute, key string, recovery json.RawMessage) {
+	refusal := errorf(http.StatusConflict, contracts.IdempotencyKeyInFlight,
 		"the first request under %s %q ended while this one's body arrived, and this one, whose body was not kept, was not run: ask again under the same key",
-		contracts.IdempotencyKeyHeader, key))
+		contracts.IdempotencyKeyHeader, key)
+	refusal.retryAfter = 1
+	s.refuseKeyed(w, route, refusal, recovery)
 }
 
-// writeKeyInFlight answers a repeat whose first request still holds the key.
-func writeKeyInFlight(w http.ResponseWriter, key string) {
-	w.Header().Set("Retry-After", "1")
-	writeError(w, contracts.IdempotencyKeyInFlight, http.StatusConflict, fmt.Sprintf(
+// writeKeyInFlight answers a repeat whose first request still holds the key. recovery is the point
+// the key held when it was read, for the route's refuse.
+func (s *server) writeKeyInFlight(w http.ResponseWriter, route keyedRoute, key string, recovery json.RawMessage) {
+	refusal := errorf(http.StatusConflict, contracts.IdempotencyKeyInFlight,
 		"the first request under %s %q is still running; this one was not run: ask again under the same key",
-		contracts.IdempotencyKeyHeader, key))
+		contracts.IdempotencyKeyHeader, key)
+	refusal.retryAfter = 1
+	s.refuseKeyed(w, route, refusal, recovery)
+}
+
+// writeUnjudgedKeyInFlight answers a repeat 409 KEY_IN_FLIGHT before its digest is judged
+// (answerDrainedRepeat's Expect: 100-continue and drain-error answers), naming the recovery point
+// login's key holds as it answers, as every reader reads it (recoveryPointRead), whatever the
+// repeat's body; nil when the key holds no row. Only a route that shapes its refusals
+// (keyedRoute.refuse) reads the point, and a read that fails is answered as the layer's other
+// failed reads are. The read runs whatever the client does, bounded by keyedBookkeeping, as the
+// drained repeat's read of the key does: net/http cancels the request's context once a read of its
+// connection fails, which the drain-error answer follows.
+func (s *server) writeUnjudgedKeyInFlight(w http.ResponseWriter, r *http.Request, route keyedRoute, login, key string) {
+	var recovery json.RawMessage
+	if route.refuse != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), keyedBookkeeping)
+		defer cancel()
+		err := s.deps.Store.Pool.QueryRow(ctx, `
+			select `+recoveryPointRead+` from request_keys where login = $1 and idempotency_key = $2
+		`, login, key).Scan(&recovery)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			s.refuseKeyed(w, route, fmt.Errorf("read the recovery point of an idempotency key: %w", err), nil)
+			return
+		}
+	}
+	s.writeKeyInFlight(w, route, key, recovery)
 }
 
 // writeKeyCommitted answers a repeat whose first request committed its write and lost its answer:
 // Dispatch does not run the request again, and has nothing to replay (Google AIP-155's lost
-// answer; a route that commits a recovery point answers the resource instead).
-func writeKeyCommitted(w http.ResponseWriter, key string, held heldRequestKey) {
-	writeError(w, contracts.IdempotencyKeyCommitted, http.StatusConflict, fmt.Sprintf(
+// answer; a route that commits a recovery point answers the resource instead). It names no point:
+// nothing ran under this request.
+func (s *server) writeKeyCommitted(w http.ResponseWriter, route keyedRoute, key string, held heldRequestKey) {
+	s.refuseKeyed(w, route, errorf(http.StatusConflict, contracts.IdempotencyKeyCommitted,
 		"the write under %s %q (%s %s) landed, but Dispatch lost its answer, so it is not run again and has no answer to replay: read what it wrote",
-		contracts.IdempotencyKeyHeader, key, held.method, held.path))
+		contracts.IdempotencyKeyHeader, key, held.method, held.path), nil)
+}
+
+// replayAnswer answers a repeat whose key holds its first request's answer (keyAnswered). A kept
+// success that is a post, on a route that rereads one (route.reread, its row of keyedRereads), is
+// answered by that reread: every header the handler set, then the post as it stands now under the
+// first answer's status. Every other answer is replayed as it was kept (replayStoredAnswer),
+// unless it is a success a delete ended (answerEndedByDelete). route is the route's keyedRoute,
+// whose refuse answers every refusal the replay decides.
+func (s *server) replayAnswer(w http.ResponseWriter, r *http.Request, route keyedRoute, held heldRequestKey) {
+	if route.reread != nil {
+		if id := keyedAnswerPost(held.storedSuccess()); id != "" {
+			w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
+			maps.Copy(w.Header(), held.headers)
+			route.reread(s, w, r, id, *held.status, held.response)
+			return
+		}
+	}
+	ended, err := s.answerEndedByDelete(r.Context(), held)
+	if err != nil {
+		s.refuseKeyed(w, route, err, nil)
+		return
+	}
+	s.replayStoredAnswer(w, route, held, ended)
 }
 
 // replayStoredAnswer answers a repeat with the first request's stored answer: its status, every
-// header its handler set, and its body. held is keyAnswered, so its status is set.
-func replayStoredAnswer(w http.ResponseWriter, held heldRequestKey) {
+// header its handler set, and its body. held is keyAnswered, so its status is set. An answer the
+// key did not keep, and one a delete ended (ended, answerEndedByDelete), is answered
+// ANSWER_NOT_KEPT under the first answer's status instead, saying which of the two it is and
+// what the request did as its key records it (committed, markRequestKeyCommitted): a request that
+// wrote ran, and its caller reads what it wrote to see the answer, where one that wrote nothing
+// can be sent again under a new key and answered afresh. A client takes a replayed 2xx reading
+// that code for a write that ran, and asks a call that wrote nothing again under a new key
+// (answerNotKept, packages/contracts). Each ANSWER_NOT_KEPT is refused through the route's refuse,
+// with the row's point, which is this request's: the key's digest matched.
+func (s *server) replayStoredAnswer(w http.ResponseWriter, route keyedRoute, held heldRequestKey, ended bool) {
 	w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
-	if !held.kept {
-		writeError(w, contracts.IdempotencyAnswerNotKept, *held.status, fmt.Sprintf(
-			"Dispatch ran this request and answered %d, but its answer was larger than the %d bytes a key keeps, so it is not replayed: read what the request wrote to see it",
-			*held.status, keyedAnswerKept))
+	if held.kept && !ended {
+		maps.Copy(w.Header(), held.headers)
+		w.WriteHeader(*held.status)
+		_, _ = w.Write(held.response)
 		return
 	}
-	maps.Copy(w.Header(), held.headers)
-	w.WriteHeader(*held.status)
-	_, _ = w.Write(held.response)
+	cause := fmt.Sprintf("it was larger than the %d bytes a key keeps", keyedAnswerKept)
+	if ended {
+		cause = "it holds a comment or a message that was deleted, or a document version name a delete replaced"
+	}
+	if held.committed {
+		s.refuseKeyed(w, route, errorf(*held.status, contracts.IdempotencyAnswerNotKept,
+			"Dispatch ran this request and answered %d, but that answer is not replayed, since %s: read what the request wrote to see it",
+			*held.status, cause), held.recovery)
+		return
+	}
+	s.refuseKeyed(w, route, errorf(*held.status, contracts.IdempotencyAnswerNotKept,
+		"Dispatch answered %d to this request, but that answer is not kept, since %s: the request wrote nothing, so it may be sent again under a new %s",
+		*held.status, cause, contracts.IdempotencyKeyHeader), held.recovery)
+}
+
+// answerEndedQuery is answerEndedByDelete's statement: $1 is the id of every object the kept
+// answer holds, and $2 and $3, pairwise, the document and the number of every version it lists
+// (answerHoldings). It reads no time: a post deleted now, and a version a delete renamed, ends
+// the answer whenever the delete began (answerEndedByDelete says why). Each arm reads by an
+// index: the two primary keys, and artifact_versions' unique (artifact_id, number).
+const answerEndedQuery = `
+	select exists (select 1 from comments where id = any($1::uuid[]) and deleted_at is not null)
+	    or exists (select 1 from messages where id = any($1::uuid[]) and deleted_at is not null)
+	    or exists (
+	        select 1 from unnest($2::uuid[], $3::bigint[]) held (artifact_id, number)
+	        join artifact_versions v on v.artifact_id = held.artifact_id and v.number = held.number
+	        where v.renamed_by_delete is not null
+	    )
+`
+
+// answerEndedByDelete reports whether a delete ended the answer held's key kept. R3 of
+// dispatch://INFRA-1523 holds every read of a deleted comment or issue message, and every read
+// that quotes one, to no part of its body, and a replay answers its caller as a read does; so an
+// answer that holds text a delete withdrew is never replayed (replayStoredAnswer, answerHeldKey),
+// whatever route kept it.
+//
+// Only a kept success can end. A refusal names a post by its id at most, in its words, and is
+// replayed as it was given. A success is read as JSON (answerHoldingsOf) at the repeat itself,
+// so a delete that commits after the first answer was kept ends it all the same and the delete
+// writes nothing to any key. It is ended when it holds:
+//
+//   - an object whose own id is a comment or a message that is deleted: the post itself, or a
+//     related-item check's hit standing for it with its snippet (model.WriteSuggestion), in a
+//     check of its own or in a write's advice;
+//   - a version, listed in its document's versions, that a delete renamed
+//     (artifact_versions.renamed_by_delete, renameAcceptedVersion): an accept named it after the
+//     suggestion's body (acceptedVersionName), and the answer holds that name.
+//
+// An id that stands only in a text - a citation in markdown, a link - or in a member that names a
+// post from another object (reply_to, comment_id) holds no part of the post, and ends nothing; a
+// document named in an answer ends nothing either: its text, a deleted insert suggestion's words
+// included, is the document's history, which a delete leaves (comment_delete.go). The block text
+// a reply carries of the post it answers (reply_block) is left out: every keyed route whose answer
+// can hold one answers a repeat with the post read again (keyedRereads, keyedReplays;
+// TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh).
+//
+// It reads no time, neither the delete's nor the key's. A delete's deleted_at is when its
+// transaction began (clearDeletedPostBody), before it waited for the owner's lock
+// (lockedCommentForCorrection, lockedMessageForCorrection), so a keyed write that claimed its key
+// after that, took the lock first and read the post before the delete committed keeps the body
+// under a key newer than the delete. An answer kept after a delete committed holds the post
+// without its body, or the version under its new name, so ending it as well costs only its
+// replay: the stored answer is answered ANSWER_NOT_KEPT, and a recovery replay keeps none of its
+// replayKeptMembers.
+func (s *server) answerEndedByDelete(ctx context.Context, held heldRequestKey) (bool, error) {
+	holdings := answerHoldingsOf(held.storedSuccess())
+	if len(holdings.ids) == 0 {
+		return false, nil
+	}
+	var ended bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, answerEndedQuery,
+		holdings.ids, holdings.versionDocuments, holdings.versionNumbers,
+	).Scan(&ended); err != nil {
+		return false, fmt.Errorf("read whether a delete ended a kept answer: %w", err)
+	}
+	return ended, nil
+}
+
+// answerHoldings is what a kept answer holds that a delete can withdraw text from
+// (answerEndedByDelete): the own id of every object in it, and every version a document in it
+// lists, by the document's id and the version's number, pairwise.
+type answerHoldings struct {
+	ids              []string
+	versionDocuments []string
+	versionNumbers   []int64
+}
+
+// answerHoldingsOf is what stored, a kept answer's bytes, holds, read as JSON. An answer that is
+// no JSON, none kept included, holds no object, and so no post and no version.
+func answerHoldingsOf(stored []byte) answerHoldings {
+	var holdings answerHoldings
+	decoder := json.NewDecoder(bytes.NewReader(stored))
+	decoder.UseNumber()
+	var answer any
+	if decoder.Decode(&answer) == nil {
+		holdings.hold(answer)
+	}
+	return holdings
+}
+
+// hold adds what value, a part of the answer decoded with json.Decoder.UseNumber, holds. An
+// object's own id is its `id` - a comment's, a message's, a related-item hit's - except for the
+// accept of a delivery (acceptedDelivery), which carries a message's `body` beside its attempt
+// and names the message by `message_id`. A document lists its versions in `versions`, each by
+// its `number`. A value that is no uuid is the id of nothing a delete reaches, and is left out.
+func (h *answerHoldings) hold(value any) {
+	switch value := value.(type) {
+	case []any:
+		for _, item := range value {
+			h.hold(item)
+		}
+	case map[string]any:
+		id, named := answerID(value["id"])
+		if _, carriesBody := value["body"]; !named && carriesBody {
+			id, named = answerID(value["message_id"])
+		}
+		if named {
+			h.ids = append(h.ids, id)
+			versions, _ := value["versions"].([]any)
+			for _, version := range versions {
+				if number, numbered := versionNumber(version); numbered {
+					h.versionDocuments = append(h.versionDocuments, id)
+					h.versionNumbers = append(h.versionNumbers, number)
+				}
+			}
+		}
+		for _, member := range value {
+			h.hold(member)
+		}
+	}
+}
+
+// answerID is value as the uuid it spells, and whether it spells one.
+func answerID(value any) (string, bool) {
+	text, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	id, err := uuid.Parse(text)
+	return id.String(), err == nil
+}
+
+// versionNumber is the number of version, one entry of a document's versions, and whether it
+// carries one.
+func versionNumber(version any) (int64, bool) {
+	fields, _ := version.(map[string]any)
+	number, ok := fields["number"].(json.Number)
+	if !ok {
+		return 0, false
+	}
+	value, err := number.Int64()
+	return value, err == nil
 }
 
 // storedStatus reports whether an answer of this status is a key's answer. A 5xx says nothing of
@@ -1066,14 +1512,15 @@ func (s *server) releaseRequestKey(ctx context.Context, claim requestKeyClaim) {
 // markRequestKeyCommitted is the step every transaction of claim's handler takes before its COMMIT
 // (store.WithBeforeCommit), while running holds: a transaction that wrote - it holds the ROW
 // EXCLUSIVE lock an INSERT, UPDATE, DELETE or MERGE takes on its target table, on any table but
-// request_keys, and holds it until it ends - marks the key committed in that same transaction, so
-// the mark commits with the request's write or not at all, and a repeat that finds the key in
-// flight and its holder gone is answered KEY_COMMITTED instead of running the write again. A
-// transaction that only read marks nothing, and nor does one that only locked rows: a SELECT ...
-// FOR UPDATE is given a transaction id as a write is, but takes ROW SHARE, and a request whose
-// claim's lock committed before its write failed has made nothing a repeat must not make again. A
-// holder whose key a repeat has taken over is refused (errRequestKeyTakenOver) and its write rolls
-// back, so the request's write is made once.
+// request_keys and request_key_steps, the key's own bookkeeping (a status change's point is both),
+// and holds it until it ends - marks the key committed in that same transaction, so the mark
+// commits with the request's write or not at all, and a repeat that finds the key in flight and its
+// holder gone is answered KEY_COMMITTED instead of running the write again. A transaction that only
+// read marks nothing, and nor does one that only locked rows: a SELECT ... FOR UPDATE is given a
+// transaction id as a write is, but takes ROW SHARE, and a request whose claim's lock committed
+// before its write failed has made nothing a repeat must not make again. A holder whose key a
+// repeat has taken over is refused (errRequestKeyTakenOver) and its write rolls back, so the
+// request's write is made once.
 //
 // running ends when the handler returns: a delivery the handler detached commits after its
 // answer, and is no write of the request's.
@@ -1097,7 +1544,7 @@ func markRequestKeyCommitted(claim requestKeyClaim, running *atomic.Bool) store.
 				select txid_current_if_assigned() is not null and exists (
 					select 1 from pg_locks l join pg_class c on c.oid = l.relation
 					where l.pid = pg_backend_pid() and l.locktype = 'relation' and l.mode = 'RowExclusiveLock'
-					  and c.relkind in ('r', 'p') and c.oid <> 'request_keys'::regclass
+					  and c.relkind in ('r', 'p') and c.oid not in ('request_keys'::regclass, 'request_key_steps'::regclass)
 				) as yes
 			), marked as (
 				update request_keys set committed_at = coalesce(committed_at, now())
@@ -1130,35 +1577,96 @@ func outlivingTheClient(r *http.Request) context.Context {
 
 // recoveryPoint is every value a keyed write commits as its key's recovery point: the message a
 // send to one session or an issue message made, the broadcast, the comment whose mentions deliver
-// it. A route binds one (bindRequestKeyRecovery) and its keyedReplay reads the same type back
-// (replayRecovered), so the two cannot disagree about the point's shape.
+// it, and the progress of a status change. A route binds one (bindRequestKeyRecovery) and its
+// keyedReplay reads the same type back (replayRecovered), so the two cannot disagree about the
+// point's shape. A status change's point is a head on the key's row - the ids of the events and
+// the asks its steps made, then the mark and the answer's issue - and one row per step in
+// request_key_steps holding the step's entry and what a step of an option changed, which every
+// reader reads back under changed and moved (recoveryPointRead); status_change_recovery.go
+// names each member once (pointChanged and the others). Each step writes its part in its own
+// transaction, right after its write phase's batch (queueStatusChangeStep, which writeIssue
+// queues through docs.Ledger.AfterWrites), since the step's issue as its write answered it is
+// known only once that batch has run, and the call marks the point finished in the transaction
+// that ends it, with the comment on the named issue where it owes one (statusChangeRun.finish,
+// markStatusChangeFinished).
 type recoveryPoint interface {
-	messageRecovery | broadcastRecovery | commentRecovery
+	messageRecovery | broadcastRecovery | commentRecovery | statusChangeRecovery
+}
+
+// recoveryPointRead is a request_keys row's recovery point as every reader of it reads it: the
+// point the row holds, with, for a status change, the entry of each step that committed under
+// pointChanged and the move of each step that holds one under pointMoved, each in the order the
+// steps committed (request_key_steps, migration 20261121043859). A row that holds no point reads
+// null, and one no step row names - every other route's - reads as it is stored. It is an
+// expression over request_keys, which a statement that reads it names unaliased.
+const recoveryPointRead = `recovery || coalesce((
+		select jsonb_build_object(
+			'` + pointChanged + `', jsonb_agg(s.entry order by s.id),
+			'` + pointMoved + `', coalesce(jsonb_agg(s.moved order by s.id) filter (where s.moved is not null), '[]'))
+		from request_key_steps s
+		where s.login = request_keys.login and s.idempotency_key = request_keys.idempotency_key
+		having count(*) > 0), '{}')`
+
+// requestKeyRecoveryUpdate is the one statement a recovery point is bound with, run at once
+// (bindRequestKeyRecovery) or queued in a write phase (queueRequestKeyRecovery). It writes the
+// point only while the key is still this request's: a row another attempt took over, answered or
+// bound already matches nothing, and no row affected is that refusal.
+const requestKeyRecoveryUpdate = `
+	update request_keys set recovery = $4
+	where login = $1 and idempotency_key = $2 and attempt = $3 and status is null and recovery is null
+`
+
+// requestKeyRecoveryArgs are requestKeyRecoveryUpdate's arguments for point under the keyed request
+// ctx carries; keyed is false for a request without a key, which binds nothing.
+func requestKeyRecoveryArgs[T recoveryPoint](ctx context.Context, point T) (args []any, keyed bool, err error) {
+	claim, ok := ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
+	if !ok {
+		return nil, false, nil
+	}
+	encoded, err := json.Marshal(point)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode a recovery point: %w", err)
+	}
+	return []any{claim.login, claim.key, claim.attempt, encoded}, true, nil
 }
 
 // bindRequestKeyRecovery commits point as the recovery point of the keyed request ctx carries, in
 // tx, the transaction that commits what the request made, so the two commit together or not at all.
 // A request without a key binds nothing. A request whose key a repeat has taken over is refused
 // (errRequestKeyTakenOver), and its transaction must roll back: the repeat makes the write instead.
+// A transaction that writes in two phases queues the same statement in its write phase instead
+// (queueRequestKeyRecovery), since this one would take a transaction id in the read phase.
 func bindRequestKeyRecovery[T recoveryPoint](ctx context.Context, tx pgx.Tx, point T) error {
-	claim, ok := ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
-	if !ok {
-		return nil
+	args, keyed, err := requestKeyRecoveryArgs(ctx, point)
+	if err != nil || !keyed {
+		return err
 	}
-	encoded, err := json.Marshal(point)
-	if err != nil {
-		return fmt.Errorf("encode a recovery point: %w", err)
-	}
-	tag, err := tx.Exec(ctx, `
-		update request_keys set recovery = $4
-		where login = $1 and idempotency_key = $2 and attempt = $3 and status is null and recovery is null
-	`, claim.login, claim.key, claim.attempt, encoded)
+	tag, err := tx.Exec(ctx, requestKeyRecoveryUpdate, args...)
 	if err != nil {
 		return fmt.Errorf("commit a recovery point: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return errRequestKeyTakenOver
 	}
+	return nil
+}
+
+// queueRequestKeyRecovery is bindRequestKeyRecovery for a transaction whose writes go out as one
+// pipelined batch (INFRA-636): the same statement, queued at the place the write makes it, whose
+// refusal the batch reports as it reads that statement's result. The refusal comes back from the
+// write phase rather than before it, so the statements queued after it have run by then and the
+// transaction the caller abandons rolls them back with this one.
+func queueRequestKeyRecovery[T recoveryPoint](ctx context.Context, b *store.WriteBatch, point T) error {
+	args, keyed, err := requestKeyRecoveryArgs(ctx, point)
+	if err != nil || !keyed {
+		return err
+	}
+	b.Queue("commit a recovery point", requestKeyRecoveryUpdate, args...).Exec(func(tag pgconn.CommandTag) error {
+		if tag.RowsAffected() == 0 {
+			return errRequestKeyTakenOver
+		}
+		return nil
+	})
 	return nil
 }
 

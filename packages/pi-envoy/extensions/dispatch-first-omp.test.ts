@@ -12,6 +12,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // The dispatch-first skill's insertion on the real Oh My Pi (src/dispatch-first.ts): Oh My Pi keeps
 // nothing a `context` handler returns, so what reaches the model can only be read off the requests
@@ -19,6 +20,8 @@ import {
 // fork pin CI's pi-envoy job installs. A run without one skips, except on GitHub Actions.
 const omp = process.env.LEGION_TEST_OMP;
 const onActions = process.env.GITHUB_ACTIONS === "true";
+/** The Dispatch token a session with Dispatch is handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** One thing the session is told over RPC, in order: a user prompt, or a manual compaction. */
 type Step = { readonly prompt: string } | { readonly compact: true };
@@ -97,7 +100,7 @@ async function runSession(
       sessions,
       env: {
         ENVOY_URL: base,
-        ...(options.dispatch ? { DISPATCH_URL: base, DISPATCH_TOKEN: "dispatch-first-token" } : {}),
+        ...(options.dispatch ? { DISPATCH_URL: base, DISPATCH_TOKEN } : {}),
       },
       onFrame: (frame) => {
         if (settle?.(frame)) {

@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -41,10 +43,18 @@ const mainIssueChildrenQuery = `
 
 // issueChildrenFixture is a root with two children, one of which carries a subtree three levels
 // deep holding a done issue and an issue with external links: the rollup counts, the newest
-// updated_at and the links are each decided by a different row, so a wrong rollup shows.
+// updated_at and the links are each decided by a different row, so a wrong rollup shows. One
+// child waits on two issues and holds no claim, the other is claimed and waits on nothing, so
+// each of the two values a child now carries is decided by a different row as well.
 type issueChildrenFixture struct {
 	database *store.Store
+	handler  http.Handler
 	root     string
+	// branch is the claimed child, with the subtree and the external links; leaf is the child
+	// waiting on blockers, whose keys are blockers, sorted as the read answers them.
+	branch   string
+	leaf     string
+	blockers []string
 }
 
 func newIssueChildrenFixture(t *testing.T) issueChildrenFixture {
@@ -71,7 +81,18 @@ func newIssueChildrenFixture(t *testing.T) issueChildrenFixture {
 	branch := create("Branch", map[string]any{"parent": root.Key})
 	grandchild := create("Grandchild", map[string]any{"parent": branch.Key})
 	create("Great-grandchild", map[string]any{"parent": grandchild.Key})
-	create("Leaf", map[string]any{"parent": root.Key})
+	leaf := create("Leaf", map[string]any{"parent": root.Key})
+	blockers := []string{create("First blocker", nil).Key, create("Second blocker", nil).Key}
+	slices.Sort(blockers)
+	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+leaf.Key, map[string]any{
+		"blocked_by": blockers,
+	}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("block the leaf: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+branch.Key+"/claim",
+		map[string]any{}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("claim the branch: status=%d body=%s", response.Code, response.Body.String())
+	}
 	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+branch.Key, map[string]any{
 		"external_links": []map[string]string{
 			{"url": "https://github.com/owner/repo/pull/12", "kind": "github_pr"},
@@ -85,13 +106,19 @@ func newIssueChildrenFixture(t *testing.T) issueChildrenFixture {
 	}, "alice"); response.Code != http.StatusOK {
 		t.Fatalf("close the grandchild: status=%d body=%s", response.Code, response.Body.String())
 	}
-	return issueChildrenFixture{database: database, root: root.Key}
+	return issueChildrenFixture{
+		database: database, handler: handler, root: root.Key,
+		branch: branch.Key, leaf: leaf.Key, blockers: blockers,
+	}
 }
 
-// issueChildrenRows runs one children statement and returns its rows as text, one string per
-// row in the order the statement gave them, which is how the two statements' answers are
-// compared here.
-func issueChildrenRows(t *testing.T, database *store.Store, statement, key string) []string {
+// issueChildrenRows runs one children statement and returns the values of the first columns of
+// each row as text, one string per row in the order the statement gave them, which is how the
+// two statements' answers are compared here. The children statement answers three columns
+// main's did not — the child's needs, the array of the keys it waits on, and the two of its
+// claim, claimed_by and claimed_at — so the comparison takes the columns both answer and the
+// test below checks the new ones against the read itself.
+func issueChildrenRows(t *testing.T, database *store.Store, statement, key string, columns int) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), statement, key)
 	if err != nil {
@@ -104,7 +131,10 @@ func issueChildrenRows(t *testing.T, database *store.Store, statement, key strin
 		if err != nil {
 			t.Fatalf("read a child row: %v", err)
 		}
-		read = append(read, fmt.Sprint(values...))
+		if len(values) < columns {
+			t.Fatalf("a child row answered %d columns, fewer than the %d compared: %v", len(values), columns, values)
+		}
+		read = append(read, fmt.Sprint(values[:columns]...))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the children: %v", err)
@@ -115,14 +145,18 @@ func issueChildrenRows(t *testing.T, database *store.Store, statement, key strin
 // The children statement answers, row for row and in the same order, what main's statement
 // answered over the same issues: the same subtree counts, the same newest updated_at and the
 // same external links. A leaf with no descendant is read as well as a branch with a subtree,
-// because the walk now carries the columns the rollup counts.
+// because the walk now carries the columns the rollup counts. The needs and the claim this
+// statement adds are the three columns past main's seven, the needs array and the claim's two,
+// which the issue read's own test checks.
 func TestTheIssueChildrenAnswerWhatMainsStatementDid(t *testing.T) {
+	t.Parallel()
 	fixture := newIssueChildrenFixture(t)
-	want := issueChildrenRows(t, fixture.database, mainIssueChildrenQuery, fixture.root)
+	const mainColumns = 7
+	want := issueChildrenRows(t, fixture.database, mainIssueChildrenQuery, fixture.root, mainColumns)
 	if len(want) != 2 {
 		t.Fatalf("main's children statement answered %v; want the branch and the leaf", want)
 	}
-	if got := issueChildrenRows(t, fixture.database, issueChildrenStatement, fixture.root); !slices.Equal(got, want) {
+	if got := issueChildrenRows(t, fixture.database, issueChildrenStatement, fixture.root, mainColumns); !slices.Equal(got, want) {
 		t.Fatalf("the children statement answered\n%v\nwant main's rows\n%v", got, want)
 	}
 }
@@ -135,6 +169,7 @@ func TestTheIssueChildrenAnswerWhatMainsStatementDid(t *testing.T) {
 // key, and on a fixture this small it keys them and the whole-table read hides. Naming the
 // index holds the statement to one read of each issue either way.
 func TestTheIssueChildrenReadEveryIssueThroughTheParentIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newIssueChildrenFixture(t)
 	plan := planWithoutSeqScans(t, fixture.database, issueChildrenStatement, fixture.root)
 	if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
@@ -157,4 +192,80 @@ func TestTheIssueChildrenReadEveryIssueThroughTheParentIndex(t *testing.T) {
 	if !walked {
 		t.Errorf("the children statement reads no issue through %s:\n%s", index, plan)
 	}
+}
+
+// Each child of the issue read carries what it waits on and who holds it: the child waiting on
+// two issues answers their keys sorted as `needs` and no claim, the claimed child answers the
+// claim and no `needs`, and both answers are what that child's own issue read gives — the
+// elements of its `blocked_by` and its `claim` — so the page reads a child as it reads an issue.
+// A child with nothing to say for either leaves the field out rather than sending it empty.
+func TestTheIssueChildrenCarryWhatBlocksThemAndWhoHoldsThem(t *testing.T) {
+	t.Parallel()
+	fixture := newIssueChildrenFixture(t)
+	children := map[string]model.IssueChild{}
+	for _, child := range readIssueChildren(t, fixture.handler, fixture.root) {
+		children[child.Key] = child
+	}
+	if len(children) != 2 {
+		t.Fatalf("the root answered %d children, want the branch and the leaf", len(children))
+	}
+
+	blocked := children[fixture.leaf]
+	if !slices.Equal(blocked.Needs, fixture.blockers) {
+		t.Errorf("the blocked child's needs = %v, want %v", blocked.Needs, fixture.blockers)
+	}
+	if blocked.Claim != nil {
+		t.Errorf("the blocked child's claim = %#v, want none: nobody claimed it", blocked.Claim)
+	}
+
+	claimed := children[fixture.branch]
+	if claimed.Needs != nil {
+		t.Errorf("the claimed child's needs = %v, want none: it waits on nothing", claimed.Needs)
+	}
+	if claimed.Claim == nil || claimed.Claim.Actor.Kind != "user" || claimed.Claim.Actor.ID != "alice" {
+		t.Fatalf("the claimed child's claim = %#v, want alice's", claimed.Claim)
+	}
+
+	for _, child := range []model.IssueChild{blocked, claimed} {
+		own := readTestIssue(t, fixture.handler, child.Key)
+		if !slices.Equal(child.Needs, own.BlockedBy) {
+			t.Errorf("%s needs %v as a child and is blocked by %v as an issue", child.Key, child.Needs, own.BlockedBy)
+		}
+		if !reflect.DeepEqual(child.Claim, own.Claim) {
+			t.Errorf("%s is claimed by %#v as a child and %#v as an issue", child.Key, child.Claim, own.Claim)
+		}
+	}
+
+	response := dispatchRequest(t, fixture.handler, http.MethodGet, "/api/v1/issues/"+fixture.root, nil, "alice")
+	fields := map[string]map[string]json.RawMessage{}
+	for _, child := range decodeBody[struct {
+		Children []map[string]json.RawMessage `json:"children"`
+	}](t, response).Children {
+		var key string
+		if err := json.Unmarshal(child["key"], &key); err != nil {
+			t.Fatalf("read a child's key: %v", err)
+		}
+		fields[key] = child
+	}
+	if _, sent := fields[fixture.leaf]["claim"]; sent {
+		t.Errorf("the unclaimed child sends claim %s, want the field left out", fields[fixture.leaf]["claim"])
+	}
+	if _, sent := fields[fixture.branch]["needs"]; sent {
+		t.Errorf("the child waiting on nothing sends needs %s, want the field left out", fields[fixture.branch]["needs"])
+	}
+	if _, sent := fields[fixture.leaf]["blocked_by"]; sent {
+		t.Errorf("a child sends blocked_by %s, which is the issue's own name and no child's", fields[fixture.leaf]["blocked_by"])
+	}
+}
+
+// readIssueChildren is the children of key's issue read.
+func readIssueChildren(t *testing.T, handler http.Handler, key string) []model.IssueChild {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("read %s: status=%d body=%s", key, response.Code, response.Body.String())
+	}
+	return decodeBody[struct {
+		Children []model.IssueChild `json:"children"`
+	}](t, response).Children
 }

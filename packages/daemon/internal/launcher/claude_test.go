@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -113,12 +113,14 @@ func (c *claudeRig) row(path string) (string, bool) {
 	return string(content), ok
 }
 
-// awaitRow waits, past a few saves, for the table to hold want at path.
+// awaitRow waits for the table to hold want at path. The keeper saves every saveInterval, and no
+// case reads how many saves that takes, so the wait is for the row under the test's hang guard; a
+// database read a time, at a pace of its own.
 func (c *claudeRig) awaitRow(path, want string) {
 	c.t.Helper()
 	var got string
 	var ok bool
-	if !testwait.Holds(4*saveInterval, 20*time.Millisecond, func() bool {
+	if !testwait.Holds(beforeDeadline(c.t), 20*time.Millisecond, func() bool {
 		got, ok = c.row(path)
 		return ok && got == want
 	}) {
@@ -229,12 +231,11 @@ func TestAClaudeSaveStopsWhenAnotherWriterMovedTheRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendTo(t, c.transcript, "{\"n\":2}\n")
-	deadline := time.Now().Add(4 * saveInterval)
-	for !strings.Contains(c.stderr.String(), "stops saving "+c.transcript) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the launcher logged %q, want it to say it stops saving %s", c.stderr.String(), c.transcript)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The keeper says so at its next save; when that comes is not the claim.
+	if !testwait.Holds(beforeDeadline(t), 20*time.Millisecond, func() bool {
+		return strings.Contains(c.stderr.String(), "stops saving "+c.transcript)
+	}) {
+		t.Fatalf("the launcher logged %q, want it to say it stops saving %s", c.stderr.String(), c.transcript)
 	}
 	c.stop(1)
 	if got, _ := c.row(c.transcript); got != "{\"n\":1}\n"+other {
@@ -379,7 +380,7 @@ func TestAClaudeFinalSaveAtTheFloorGraceLandsOrKeepsTheLastPeriodicSave(t *testi
 // Under a session database of the pod's own the launcher keeps the session through its
 // generation's proxy socket, the one the child's URL file names in the agent's spelling.
 func TestAClaudeSaveReachesTheTableThroughTheGenerationsProxy(t *testing.T) {
-	dsn := testdb.Database(t, "legion_launcher_claude_proxy_test")
+	dsn := testdb.PlainDatabase(t, "legion_launcher_claude_proxy_test")
 	database, dialer := sessionDatabaseAt(t, dsn)
 	g := newSessionRig(t, Config{SessionDatabase: database, SessionDialer: dialer.build})
 	file := filepath.Join(t.TempDir(), "OMP_SESSION_SQL_DSN")
@@ -400,16 +401,20 @@ func TestAClaudeSaveReachesTheTableThroughTheGenerationsProxy(t *testing.T) {
 const launcherProcessEnv = "LEGION_LAUNCHER_TEST_PROCESS"
 
 // TestLauncherProcess runs a launcher in a process of its own, so a test can kill it with
-// SIGKILL as a node does a pod's.
+// SIGKILL as a node does a pod's. Its stdin is a pipe only the test binary that started it holds
+// (processRig), so the end of that pipe, whether the binary returned, panicked at its deadline or
+// was killed, ends the launcher too: no launcher outlives its test to redial the next listener on
+// its port with a hello the daemon end takes.
 func TestLauncherProcess(t *testing.T) {
 	if os.Getenv(launcherProcessEnv) != "1" {
 		return
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer cancel()
+	go func() { _, _ = io.Copy(io.Discard, os.Stdin); cancel() }()
 	err := Run(ctx, Config{
 		Connect: os.Getenv("LEGION_LAUNCHER_TEST_ADDRESS"), PrivateDir: os.Getenv("LEGION_LAUNCHER_TEST_PRIVATE"),
-		Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
+		Token: os.Getenv("LEGION_LAUNCHER_TEST_TOKEN"), Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
 	})
 	if err != nil && ctx.Err() == nil {
 		t.Fatal(err)
@@ -419,19 +424,16 @@ func TestLauncherProcess(t *testing.T) {
 // processRig is a launcher in a process of its own, and kill its SIGKILL.
 func processRig(t *testing.T) (g *rig, kill func()) {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
+	token := ownToken("launcher-token")
+	listener := listenForLauncher(t, token)
 	private := shortTempDir(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(self, "-test.run=^TestLauncherProcess$")
+	command := exec.Command(self, reentry(t, "TestLauncherProcess")...)
 	command.Env = append(os.Environ(), launcherProcessEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(),
-		"LEGION_LAUNCHER_TEST_PRIVATE="+private)
+		"LEGION_LAUNCHER_TEST_PRIVATE="+private, "LEGION_LAUNCHER_TEST_TOKEN="+token)
 	// The launcher's output goes to a file rather than a pipe: its child inherits it, and a pipe
 	// would hold the launcher's Wait open for as long as the child outlives the launcher.
 	output, err := os.Create(filepath.Join(t.TempDir(), "launcher.log"))
@@ -440,11 +442,19 @@ func processRig(t *testing.T) (g *rig, kill func()) {
 	}
 	t.Cleanup(func() { _ = output.Close() })
 	command.Stdout, command.Stderr = output, output
+	// The pipe stays open as long as this binary holds it, and Wait closes it (TestLauncherProcess).
+	if _, err := command.StdinPipe(); err != nil {
+		t.Fatal(err)
+	}
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
 	exited := make(chan struct{})
-	go func() { _ = command.Wait(); close(exited) }()
+	go func() {
+		err := command.Wait()
+		listener.codeReturned(err)
+		close(exited)
+	}()
 	kill = func() {
 		_ = command.Process.Signal(syscall.SIGKILL)
 		<-exited
@@ -709,4 +719,129 @@ func TestAClaudeSaveTakesEverySaveThatMayHaveLandedAsSavedWhenTheRowMovedToIt(t 
 			t.Errorf("the keeper logged %q, want it to say it stops saving %s", c.log.String(), c.record)
 		}
 	})
+}
+
+// A Claude Code session's files are the role's, and the keeper that restores and saves them runs
+// in the launcher, its container's PID 1, so it never waits on what a role put at their paths and
+// never reads more of them than it needs. A fifo where a resume restores the transcript, where a
+// save opens it, or at the transcript's .legion-saved marker (SavedMarkerSuffix), which a fresh
+// transcript's first save writes, is refused in words naming it and left a fifo (refusesFifo),
+// where a plain open would wait for a writer (a reader, for the marker's write-only open) for as
+// long as none comes. A file longer than its row, here the row, one more line and a 64 MiB hole,
+// is taken as an extension of the row and left as it is, with no more of it read than one byte
+// past the row: the restore allocates a small fraction of what a read of the whole file would
+// hold in memory.
+func TestAClaudeRestoreAndSaveRefuseAFifoAndReadNoFurtherThanTheRow(t *testing.T) {
+	ctx := context.Background()
+	_, dsnFile := testdb.DSNFile(t, "legion_launcher_keeper_test")
+	conn, err := ompsessions.Connect(ctx, dsnFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	if err := ompsessions.CreateTables(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	k := &claudeKeeper{log: io.Discard, session: claudeSession, conn: conn,
+		appendRow: ompsessions.Append, replaceRow: ompsessions.Replace}
+	row := "{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n"
+	// transcript is a transcript at a path of the subtest's own, nothing saved of it yet, whose
+	// row the table holds as row when seeded.
+	transcript := func(t *testing.T, seeded bool) *keptFile {
+		t.Helper()
+		f := &keptFile{path: filepath.Join(t.TempDir(), claudeSession+".jsonl"), lines: true, keptState: keptState{saved: ompsessions.Absent}}
+		if seeded {
+			if err := ompsessions.Replace(ctx, conn, f.path, ompsessions.Absent, []byte(row), time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return f
+	}
+
+	t.Run("a fifo where the transcript should be", func(t *testing.T) {
+		f := transcript(t, true)
+		refusesFifo(t, f.path, "the restore", func() error { return k.restore(ctx, f) })
+	})
+
+	t.Run("a fifo the save opens", func(t *testing.T) {
+		// No row: the save meets the file before it asks the table anything.
+		f := transcript(t, false)
+		refusesFifo(t, f.path, "the save", func() error { return k.saveChanges(ctx, f) })
+	})
+
+	t.Run("a fifo at the transcript's .legion-saved marker", func(t *testing.T) {
+		f := transcript(t, false)
+		refusesFifo(t, f.path+SavedMarkerSuffix, "the marker's write", func() error { return writeMarker(f.path) })
+	})
+
+	t.Run("a file longer than the row", func(t *testing.T) {
+		f := transcript(t, true)
+		head := row + "{\"n\":4}\n"
+		write(t, f.path, head, time.Now())
+		// A hole costs the disk nothing, and a whole read of the file 64 MiB of memory.
+		size := int64(len(head)) + 64<<20
+		if err := os.Truncate(f.path, size); err != nil {
+			t.Fatal(err)
+		}
+		allocated := func() uint64 {
+			var stats runtime.MemStats
+			runtime.ReadMemStats(&stats)
+			return stats.TotalAlloc
+		}
+		before := allocated()
+		err := k.restore(ctx, f)
+		spent := allocated() - before
+		t.Logf("the restore over a file of %d bytes and a row of %d allocated %d bytes", size, len(row), spent)
+		if err != nil {
+			t.Fatalf("the restore over a file longer than its row: %v", err)
+		}
+		if !f.extends || f.saved != int64(len(row)) {
+			t.Errorf("the restore left extends %t and %d bytes saved, want the file taken as an extension of the row's %d", f.extends, f.saved, len(row))
+		}
+		file, err := os.Open(f.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		first := make([]byte, len(head))
+		if _, err := io.ReadFull(file, first); err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() != size || string(first) != head {
+			t.Errorf("after the restore the file is %d bytes beginning %q, want it left at %d bytes beginning %q", info.Size(), first, size, head)
+		}
+		if spent >= 1<<20 {
+			t.Errorf("the restore allocated %d bytes over a file of %d and a row of %d: it read the file further than one byte past the row", spent, size, len(row))
+		}
+	})
+}
+
+// refusesFifo makes a fifo at path and fails the test unless call, the keeper's step that opens
+// path (what names it in the failures), refuses it in words naming it and leaves it a fifo. The
+// verdict is that refusal, and its wait has no span of its own (testwait.Receive): a call that
+// waits on the fifo, as a plain open of one waits for a writer (a write-only one for a reader),
+// fails the test by name before the test binary's deadline, left blocked in that open, where it
+// touches nothing a later row uses.
+func refusesFifo(t *testing.T, path, what string, call func() error) {
+	t.Helper()
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	answer := make(chan error, 1)
+	go func() { answer <- call() }()
+	err := testwait.Receive(t, what+" over the fifo "+path, answer)
+	if want := path + " is a fifo"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("%s answered %v, want a refusal saying %q", what, err, want)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeNamedPipe == 0 {
+		t.Errorf("after %s %s is %v, want the fifo it was", what, path, info.Mode())
+	}
 }

@@ -14,7 +14,6 @@ package shim
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +30,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -79,7 +80,17 @@ const (
 // launcher SIGKILLs the shim at the stop grace (endGeneration, internal/launcher/process.go),
 // which would leave the lease behind. With the defaults, 10 s − 5 s − 1 s = 4 s.
 func warmUpDrain(stopGrace, grace time.Duration) time.Duration {
-	return max(stopGrace-grace-DrainTimeout, MinWarmUpDrain)
+	return max(stopGrace-grace-DrainTimeout, programbound.Of(&warmUpDrainFloor))
+}
+
+// warmUpDrainFloor is MinWarmUpDrain as warmUpDrain reads it, through programbound: a variable so
+// that cmd/legion's tests can give it their own deadline, since a warm-up a loaded machine makes
+// slow to release its lease is not left at 3 s there. MinWarmUpDrain stays the constant
+// internal/config sizes MinStopGrace by.
+var warmUpDrainFloor = MinWarmUpDrain
+
+func init() {
+	programbound.Register(&warmUpDrainFloor)
 }
 
 // Clock is the time the shim waits on: the backoff between dials and the grace before a kill.
@@ -105,7 +116,7 @@ type Config struct {
 	Env []string
 	// ProviderEnv is NAME=value pairs for OMP's environment only (--provider-env-dir).
 	ProviderEnv []string
-	// AgentSecrets is the pod's enrollment with the secrets broker (agentsecrets.go); nil on a
+	// AgentSecrets is the pod's enrollment with the secrets broker (cipher.go); nil on a
 	// tmux pane, which is never enrolled.
 	AgentSecrets *AgentSecrets
 	// WarmCodegraph, when set, is started once with the workspace the shim's LEGION_WORKSPACE
@@ -125,8 +136,10 @@ type Config struct {
 	// spawnOnce reads (leakguard.Installed) before the wrapped process is started; empty is
 	// leakguard.InstallDir. The launcher installs the check the daemon served once for the pod,
 	// before any role starts, so the shim only reads it: with a pin in the environment
-	// (leakguard.TagVariable, which the worker image sets and a tmux pane does not) a role whose
-	// install is absent or of another tag runs no agent.
+	// (leakguard.TagVariable, which the worker image sets and a tmux pane does not) and the
+	// deployment's checker (leakguard.CheckerVar, which the runtime tells a role of a deployment
+	// that runs a shared leak check), a role whose install is absent or of another tag runs no
+	// agent.
 	//
 	// The installed check's path is what the shim names in PUBLIC_LEAK_CHECK for everything it
 	// starts, where the environment names none of its own (spawnOnce): the runtime's own value
@@ -213,7 +226,7 @@ type shim struct {
 	started time.Time
 
 	// commands is what every git and jj the shim starts builds its budget on (runAdoption,
-	// runBundle), each keeping a budget of its own on top of it. Each of those commands
+	// readWorkspaceWork), each keeping a budget of its own on top of it. Each of those commands
 	// runs in a process group of its own now (internal/procgroup), which is a group the SIGHUP a
 	// tmux kill-pane gives every process of the pane does not reach, so the shim's own end is what
 	// passes that stop on: a command left on context.Background() runs on against a clone every
@@ -258,7 +271,7 @@ type shim struct {
 	thumbprint  string // agent-secrets keygen's thumbprint, generated once per shim
 	renewing    bool   // the agent-secrets renewer goroutine has been started
 
-	// renewers is the agent-secrets renewer goroutine (agentsecrets.go's startRenewer), reaped by
+	// renewers is the agent-secrets renewer goroutine (cipher.go's startRenewer), reaped by
 	// Run's deferred Wait before it returns.
 	renewers sync.WaitGroup
 
@@ -335,8 +348,9 @@ func (s *shim) connect() (acked bool, err error) {
 			break
 		}
 		// Nothing the daemon sends before its ack is meant for a child that does not exist yet
-		// (cmdWorkerShimConnect's onLine before hello_ack, worker-shim.ts).
-		s.log.Printf("[worker-shim] ignoring a frame received before hello_ack: %.80s", line)
+		// (cmdWorkerShimConnect's onLine before hello_ack, worker-shim.ts). The line is the far
+		// side's, so the URL rule reads it whole before it is cut (redact.Runes).
+		s.log.Printf("[worker-shim] ignoring a frame received before hello_ack: %s", redact.Runes(string(line), 80))
 	}
 	// Spawned here, before the next line is read: the daemon's first RPC frame may share a read
 	// with the ack, and it must find a child to go to (cmdWorkerShimConnect's ack, worker-shim.ts).
@@ -363,7 +377,7 @@ func (s *shim) fromDaemon(line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
 		switch typ := frameType(line); typ {
-		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
+		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeWorkspaceWork, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
 			// The daemon is its only sender, and it is never OMP's to read.
 			s.log.Printf("[worker-shim] refusing a malformed %s frame: %v", typ, err)
 			return
@@ -378,8 +392,8 @@ func (s *shim) fromDaemon(line []byte) {
 	case shimwire.AdoptWorkingCopy:
 		s.answer(func() { s.adopt(f) })
 		return
-	case shimwire.BundleWorkspace:
-		s.answer(func() { s.bundleWorkspace(f) })
+	case shimwire.WorkspaceWork:
+		s.answer(func() { s.workspaceWork(f) })
 		return
 	case shimwire.AgentSecretsEnrollment:
 		s.enroll(f)
@@ -428,9 +442,10 @@ func (s *shim) toDaemon(frame shimwire.Frame) {
 //
 // The pod's launcher installs the check the daemon served once for the pod, before it starts any
 // role, so the shim reads it and installs nothing (leakguard.Installed, at Config.LeakCheckDir).
-// With no pin in the environment, which is every tmux pane, nothing is read and nothing refused.
-// With a pin, an install that is absent or of another tag ends the shim with exit 1 and runs no
-// agent.
+// With no pin in the environment, which is every tmux pane, and with no deployment checker in it
+// (leakguard.CheckerVar), which is every role of a deployment that runs no shared leak check,
+// nothing is read and nothing refused. With both, an install that is absent or of another tag
+// ends the shim with exit 1 and runs no agent.
 //
 // The read is here, and before the start, for two orderings this placement guarantees. The
 // harness is started after it, so no turn of the agent reaches a write path before the check its
@@ -675,34 +690,6 @@ func (s *shim) finish(code int, err error) {
 	})
 }
 
-// toDaemonChunked sends a frame that may be larger than one line: under the limit it is one line,
-// and over it the rpc_chunk sequence the daemon's reader reassembles (shimwire.SplitChunks). The
-// bundle result is this shim's one frame that can be: everything else fits a line.
-func (s *shim) toDaemonChunked(frame shimwire.Frame) {
-	line, err := json.Marshal(frame)
-	if err != nil {
-		s.log.Printf("[worker-shim] could not encode a %s frame: %v", frame.FrameType(), err)
-		return
-	}
-	if len(line) < shimwire.MaxFrameBytes {
-		s.out.send(line)
-		return
-	}
-	chunks, err := shimwire.SplitChunks(rand.Text(), line)
-	if err != nil {
-		s.log.Printf("[worker-shim] could not chunk a %s frame of %d bytes: %v", frame.FrameType(), len(line), err)
-		return
-	}
-	for _, chunk := range chunks {
-		encoded, err := json.Marshal(chunk)
-		if err != nil {
-			s.log.Printf("[worker-shim] could not encode an rpc_chunk frame: %v", err)
-			return
-		}
-		s.out.send(encoded)
-	}
-}
-
 // envValue is name's value in env, the last assignment winning as it does for a process started
 // with env; empty when env assigns none.
 func envValue(env []string, name string) string {
@@ -736,7 +723,8 @@ func summarize(frame shimwire.Frame) string {
 			args.Reset()
 			args.WriteString("{}")
 		}
-		return shimwire.TypeToolExecutionStart + " " + tool + " " + truncate(args.String(), 80)
+		// The rule before the cut: a userinfo cut before its "@" is one the log's rule cannot find.
+		return shimwire.TypeToolExecutionStart + " " + tool + " " + redact.Runes(args.String(), 80)
 	case shimwire.Raw:
 		switch f.Type {
 		case "error":
@@ -760,13 +748,6 @@ func summarize(frame shimwire.Frame) string {
 		}
 	}
 	return ""
-}
-
-func truncate(s string, n int) string {
-	if runes := []rune(s); len(runes) > n {
-		return string(runes[:n])
-	}
-	return s
 }
 
 // outbox is every frame bound for the daemon: written to the connection when one is attached,

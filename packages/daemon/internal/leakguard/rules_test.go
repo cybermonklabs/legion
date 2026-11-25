@@ -50,13 +50,114 @@ func TestTheRulesPassWhatTheyAreWrittenToPass(t *testing.T) {
 		{Label: "docs/testing.md", Text: "a line of ordinary prose"},
 		{Label: "ref legion/INVENTED-1", Text: "legion/INVENTED-1"},
 	}
-	lines, err := engine.scan(context.Background(), clean)
-	if err != nil {
-		t.Fatal(err)
+	pass := &pass{ctx: context.Background(), engine: engine}
+	for _, record := range clean {
+		if err := pass.add(record); err != nil {
+			t.Fatal(err)
+		}
 	}
+	lines := pass.report.lines
 	if len(lines) != 0 {
 		t.Errorf("the report is %q, want nothing", lines)
 	}
+}
+
+// The host rule reads a host, not a Lean or OCaml name. A name holding a capital letter, then a
+// segment spelled exactly Internal, passes: Lake's and Rocq's module paths (src/lake/Lake/Build of
+// leanprover/lean4, kernel/indTyping.ml of rocq-prover/rocq), and a Lean function's own namespace.
+// So does Lean's own option of the cmdline snapshots under its Lean namespace (as
+// src/Lean/Elab/Frontend.lean of leanprover/lean4 sets it), and no name near it. Every other host
+// is refused, whatever the case of its labels: at the start of a record, on a later line, in
+// italics, right after a reserved example host, and with a capital letter in its first label while
+// the segment is not spelled Internal. The texts are assembled from pieces, as every refusable
+// literal of these tests is, so that no line of this file names one whole, and so that a guard
+// still reading a namespace as a host passes the file too.
+func TestThePrivateHostRuleReadsAHostNotANamespace(t *testing.T) {
+	engine, err := compiled()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		label   = "internal"
+		capital = "Internal"
+		upper   = "INTERNAL"
+		class   = "names a private internal host"
+	)
+	scan := func(t *testing.T, record Record) []string {
+		t.Helper()
+		var rep report
+		if err := engine.scan(context.Background(), record, &rep); err != nil {
+			t.Fatal(err)
+		}
+		return rep.lines
+	}
+	t.Run("a namespace passes", func(t *testing.T) {
+		for _, text := range []string{
+			"import Std." + capital + ".UV.System",
+			"open Std." + capital + ".UV in",
+			"  if Environ." + capital + ".is_above_prop env q then",
+			"  let invert = Inductiveops." + capital + ".should_invert_case env sigma ci in",
+			"  (Environ." + capital + ".View.view answer_env).Environ." + capital + ".View.env_modtypes",
+			"      Classes." + capital + ".add_instance ~locality inst",
+			"import Std.Async",
+			// The lines of leanprover/lean4's src the namespace alone would leave refused: a
+			// function's namespace (Init/Internal/Order/While.lean, twice, and both
+			// SpecLemmas.lean of Std's Do and WP), and the option (Lean/Elab/Frontend.lean).
+			"This module proves the one-step unfolding lemma `repeatM." + capital + ".eq_of_monadTail`,",
+			"  rw [repeatM." + capital + ".eq_of_monadTail]; unfold repeatM.body; rw [bind_assoc]",
+			"    rw [_root_.repeatM." + capital + ".eq_of_monadTail (f := f) a]",
+			"  let opts := Lean." + label + ".cmdlineSnapshots.setIfNotSet opts incrSaveFileName?.isNone",
+		} {
+			if lines := scan(t, Record{Label: "the body", Text: text}); len(lines) != 0 {
+				t.Errorf("%q: the report is %q, want nothing", text, lines)
+			}
+		}
+	})
+	t.Run("a reserved example host and the vendored property pass", func(t *testing.T) {
+		for _, record := range []Record{
+			{Label: "the body", Text: "https://listener." + label + ".example"},
+			{Label: "the body", Text: "listener." + label + ".example"},
+			{Label: "the body", Text: "line one\nlistener." + label + ".example"},
+			{Label: "the body", Text: "nats://nats." + label + ".example.com:4222"},
+			{Label: "the body", Text: "Point it at api." + label + ".example."},
+			{Label: "the body", Text: "now https://ENVOY." + upper + ".EXAMPLE"},
+			{Label: "packages/claude-envoy/dist/envoy-channel.js", Text: "        this." + label + ".push(sv);"},
+		} {
+			if lines := scan(t, record); len(lines) != 0 {
+				t.Errorf("%q: the report is %q, want nothing", record.Text, lines)
+			}
+		}
+	})
+	t.Run("a host is refused", func(t *testing.T) {
+		for _, text := range []string{
+			"https://beacon." + label + ".quietforge",
+			"https://beacon." + upper + ".quietforge",
+			"https://beacon." + capital + ".quietforge",
+			"https://BEACON." + upper + ".QUIETFORGE",
+			"https://beacon." + label + ".Quietforge.Net",
+			"beacon." + label + ".quietforge",
+			"line one\nbeacon." + label + ".quietforge",
+			"see _beacon." + label + ".quietforge_ in italics",
+			"NATS_URLS=a." + label + ".example,b." + label + ".quietforge",
+			"ip-10-0-0-7." + label + ".quietforge.net:443",
+			"https://dispatch." + label + ".quietforge.com/",
+			"this." + label + ".push(value)",
+			"Beacon." + label + ".quietforge answers on 443.",
+			"BEACON." + label + ".quietforge",
+			"fooBar." + label + ".quietforge",
+			"Beacon." + upper + ".quietforge",
+			// Near names of the one Lean option the rule allows: another option, a longer name,
+			// a name glued in front, and a host after its method.
+			"Lean." + label + ".otherName",
+			"Lean." + label + ".cmdlineSnapshotsX.get opts",
+			"xLean." + label + ".cmdlineSnapshots",
+			"Lean." + label + ".cmdlineSnapshots.get.beacon",
+		} {
+			if lines, want := scan(t, Record{Label: "the body", Text: text}), []string{"the body: " + class}; !slices.Equal(lines, want) {
+				t.Errorf("%q: the report is %q, want %q", text, lines, want)
+			}
+		}
+	})
 }
 
 // Each record is scanned on its own: a record that names something private is reported against
@@ -68,14 +169,17 @@ func TestARecordIsReportedAgainstItselfAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines, err := engine.scan(context.Background(), []Record{
+	pass := &pass{ctx: context.Background(), engine: engine}
+	for _, record := range []Record{
 		{Label: "the first record", Text: "a host at " + theHost},
 		{Label: "the second record", Text: "nothing of ours"},
 		{Label: "the third record", Text: "nothing of ours either"},
-	})
-	if err != nil {
-		t.Fatal(err)
+	} {
+		if err := pass.add(record); err != nil {
+			t.Fatal(err)
+		}
 	}
+	lines := pass.report.lines
 	if want := []string{"the first record: " + theClass}; !slices.Equal(lines, want) {
 		t.Errorf("the report is %q, want %q", lines, want)
 	}
@@ -91,7 +195,7 @@ func TestARuleScanThatRanOutOfTimeRefuses(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := engine.scan(ctx, []Record{{Label: "the title", Text: "a host at " + theHost}}); err == nil {
+	if err := engine.scan(ctx, Record{Label: "the title", Text: "a host at " + theHost}, &report{}); err == nil {
 		t.Fatal("a scan under a context that ended answered no error")
 	}
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
@@ -106,13 +210,18 @@ func TestARuleScanThatRanOutOfTimeRefuses(t *testing.T) {
 // one that names no repository on github.com names none, and the guard scans such a write as if
 // it were public rather than skipping it. A URL whose two names are no repository GitHub serves
 // names none either: the guard refuses a slug its exemption could not cover (Guard.scanThrough),
-// so a URL that answered one would refuse the push over the spelling of its remote.
+// so a URL that answered one would refuse the push over the spelling of its remote. The host is
+// read from the URL's authority alone, which ends at the first "/", "?" or "#", as git's
+// credential code and curl end it, and from scp syntax only where git reads that syntax: a path,
+// a query or a fragment that holds "@github.com", on another host or on this machine, names no
+// repository there, and neither does a file URL.
 func TestRepoFromURL(t *testing.T) {
 	for _, tc := range []struct{ url, want string }{
 		{"https://github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"https://github.com/invented-org/invented-repo", "invented-org/invented-repo"},
 		{"https://x-access-token:secret@github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"ssh://git@github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
+		{"git+ssh://git@github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"git@github.com:invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"https://github.com/invented-org/invented-repo/", "invented-org/invented-repo"},
 		{"https://example.invalid/invented-org/invented-repo.git", ""},
@@ -120,6 +229,13 @@ func TestRepoFromURL(t *testing.T) {
 		{"https://github.com/invented-org", ""},
 		{"https://github.com/-invented-org/invented-repo", ""},
 		{"https://github.com/invented-org/../invented-repo", ""},
+		{"https://example.invalid/a@github.com/invented-org/invented-repo.git", ""},
+		{"file:///a/local/path/@github.com/invented-org/invented-repo.git", ""},
+		{"file://github.com/invented-org/invented-repo.git", ""},
+		{"/a/local/path@github.com:invented-org/invented-repo.git", ""},
+		{"https://example.invalid?@github.com/invented-org/invented-repo.git", ""},
+		{"https://example.invalid#@github.com/invented-org/invented-repo.git", ""},
+		{"http://example.invalid?x=@github.com/invented-org/invented-repo.git", ""},
 	} {
 		if got := RepoFromURL(tc.url); got != tc.want {
 			t.Errorf("RepoFromURL(%q) = %q, want %q", tc.url, got, tc.want)

@@ -20,7 +20,7 @@ import type {
   IssueSummary,
   MessageRead,
 } from "@legion/contracts";
-import type { RequestCredential } from "@legion/envoy-client/bearer";
+import { credentialDeadline, type RequestCredential } from "@legion/envoy-client/bearer";
 import { type DispatchEnvironment, dispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { envoyConfigPath, readEnvoyConfig } from "@legion/envoy-client/envoy-config";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -65,17 +65,20 @@ export interface DispatchCredentials {
 /**
  * Dispatch as the calling session finds it (`dispatchSettings` over the envoy.json that
  * `envoyConfigPath("command", env)` chooses, and the checkout's `.envoy/envoy.json` under `cwd`).
- * Throws `Dispatch is not configured: <why>` when no server or no token resolves. The message
+ * Rejects `Dispatch is not configured: <why>` when no server or no token resolves. The message
  * names the file or the variable that is missing, never a token.
  */
-export function resolveDispatch(env: DispatchEnvironment, cwd: string): DispatchCredentials {
+export async function resolveDispatch(
+  env: DispatchEnvironment,
+  cwd: string
+): Promise<DispatchCredentials> {
   let file: string;
   try {
     file = envoyConfigPath("command", env);
   } catch (error) {
     throw new Error(`Dispatch is not configured: ${messageFor(error)}`);
   }
-  const resolution = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+  const resolution = await dispatchSettings(env, await readEnvoyConfig(file, env, { cwd }));
   if (!resolution.enabled) {
     throw new Error(`Dispatch is not configured: ${resolution.error ?? resolution.notice}`);
   }
@@ -176,14 +179,21 @@ export class ProductionDispatch {
       let response: Response;
       let text: string;
       try {
-        // One deadline for the credential and the read: a broker credential waiting on a pod's
-        // missing registration stops at it, naming the session.
+        // One deadline for the credential and the read, 60 s, the credential waiting on all of
+        // it but the read's 1 s reserve (`credentialDeadline`): a broker credential waiting on a
+        // pod's missing registration stops there, and one that hands over its live token leaves
+        // the read that reserve.
         const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         response = await this.#fetch(url.toString(), {
           method: "GET",
           headers: {
             Accept: "application/json",
-            ...(await this.#credential.headers("GET", url.toString(), undefined, deadline)),
+            ...(await this.#credential.headers(
+              "GET",
+              url.toString(),
+              undefined,
+              credentialDeadline(deadline, REQUEST_TIMEOUT_MS)
+            )),
           },
           signal: deadline,
         });

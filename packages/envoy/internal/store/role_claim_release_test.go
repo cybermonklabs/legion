@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -126,43 +127,51 @@ func TestAReleaseFreesNoClaimOfAnotherSession(t *testing.T) {
 	assertInterestTopicsForSession(t, reg, holder, releaseKeptTopic, contracts.RoleTopicPrefix+role)
 }
 
-// A claim that names no process - one an earlier build wrote, before its holder's registration
-// adopts it (RenewRoleClaims) - keeps the rule it was written under: its holder's own session
-// deregistration frees it, on the session match alone. That is the carve-out
-// (RoleReleaseAuthority.frees) that keeps every claim standing at the deploy from waiting out
-// the role claim reaper, and it closes nothing, since no claim written before this build named
-// a process for a release to be weighed against.
-func TestAClaimThatNamesNoProcessIsFreedByItsSessionsOwnRelease(t *testing.T) {
+// A claim that names no process - one whose claimant stated none: a client of an older build, or
+// a session pod's claim of its launch role - names no process a release could match, so no
+// deregistration of its session frees it but the administrator's force
+// (RoleReleaseAuthority.frees): a release naming a process and one naming none read exactly like
+// a second process of that session, and leave the claim exactly as it stands. The
+// deregistration deletes the session's interest record either way.
+func TestAClaimThatNamesNoProcessIsFreedByNoReleaseButTheForce(t *testing.T) {
 	const (
 		role   = "legion-controller"
 		holder = "ses_releasing_unnamed_process"
 	)
-	for name, authority := range map[string]RoleReleaseAuthority{
-		"a release naming a process":         releasedByItsProcess,
+	for name, tc := range map[string]struct {
+		authority RoleReleaseAuthority
+		frees     bool
+	}{
+		"a release naming a process":         {authority: releasedByItsProcess},
 		"a release that names none":          {},
-		"the administrator's forced release": {Force: true},
+		"the administrator's forced release": {authority: RoleReleaseAuthority{Force: true}, frees: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			reg := releasableRoleClaim(t, role, holder, "")
-			if claim := storedRoleClaim(t, reg, role); claim.ClientInstanceID != "" {
-				t.Fatalf("the seeded claim names the process %q, want none", claim.ClientInstanceID)
+			seeded := storedRoleClaim(t, reg, role)
+			if seeded.ClientInstanceID != "" {
+				t.Fatalf("the seeded claim names the process %q, want none", seeded.ClientInstanceID)
 			}
 
-			if _, err := reg.Remove(context.Background(), holder, nil, authority); err != nil {
+			if _, err := reg.Remove(context.Background(), holder, nil, tc.authority); err != nil {
 				t.Fatalf("release every interest of %s: %v", holder, err)
 			}
 
-			assertRoleHolder(t, reg, role, "")
+			if tc.frees {
+				assertRoleHolder(t, reg, role, "")
+			} else if stood := storedRoleClaim(t, reg, role); stood != seeded {
+				t.Fatalf("the claim after the release is %+v, want it exactly as it stood, %+v: an absent process matches nothing in a release", stood, seeded)
+			}
 			assertInterestMissing(t, reg, holder)
 		})
 	}
 }
 
-// RoleReleaseAuthority.frees is the whole rule, and it is asked here record by record: against a
-// claim that names the process holding it an absent instance is no match, where
-// session.InstanceMatches, written for a soft claim's predecessor, admits one; a claim that
-// names no process is freed by its own session's release, whatever process asks; a force frees
-// whatever the session holds; and no release reaches a claim of another session.
+// RoleReleaseAuthority.frees is the whole rule, and it is asked here record by record: an absent
+// instance is no match on either side, where session.InstanceMatches, written for a soft claim's
+// predecessor, admits one, so a release that names no process frees nothing and a claim that
+// names no process is freed by no process; a force frees whatever the session holds; and no
+// release reaches a claim of another session.
 func TestWhichClaimsAReleaseAuthorityFrees(t *testing.T) {
 	const (
 		holder = "ses_frees_holder"
@@ -179,8 +188,8 @@ func TestWhichClaimsAReleaseAuthorityFrees(t *testing.T) {
 		"the process the claim names":                     {authority: releasedByItsProcess, claim: named, sessionID: holder, want: true},
 		"another process of the claim's session":          {authority: RoleReleaseAuthority{ClientInstanceID: roleClaimSecondInstance}, claim: named, sessionID: holder},
 		"a release that names no process":                 {authority: RoleReleaseAuthority{}, claim: named, sessionID: holder},
-		"a named process against a claim that names none": {authority: releasedByItsProcess, claim: unnamed, sessionID: holder, want: true},
-		"no process against a claim that names none":      {authority: RoleReleaseAuthority{}, claim: unnamed, sessionID: holder, want: true},
+		"a named process against a claim that names none": {authority: releasedByItsProcess, claim: unnamed, sessionID: holder},
+		"no process against a claim that names none":      {authority: RoleReleaseAuthority{}, claim: unnamed, sessionID: holder},
 		"a force against the claim's session":             {authority: RoleReleaseAuthority{Force: true}, claim: named, sessionID: holder, want: true},
 		"a force against a claim that names no process":   {authority: RoleReleaseAuthority{Force: true}, claim: unnamed, sessionID: holder, want: true},
 		"a force against another session's claim":         {authority: RoleReleaseAuthority{Force: true}, claim: named, sessionID: other},
@@ -257,12 +266,12 @@ func raceReleaseWith(t *testing.T, reg *Registry, role string, races int, wins f
 //
 // The administrator's forced release takes the same path, over the same renewal.
 //
-// The release names the role's own lane topic, which is the hand-back a client sends: a
+// The release names the role's own lane topic, which is the hand-back a client sends. A
 // deregistration of every interest at once, on this registry whose role claim view cannot be
-// served (coldRegistry), would reach the claim twice, through the record's role and then through
-// the scan of the role bucket a refusing view falls back to (Registry.releaseAllRoleClaims), and
-// the scan - which reads the claim again for its own reasons - would free what the first release
-// lost.
+// served (coldRegistry), releases the record's role the same way, and the scan of the role bucket
+// a refusing view falls back to (Registry.releaseAllRoleClaims) then leaves that role alone
+// (TestADeregistrationLeavesAGrantMadeSinceTheRowsReadStanding), so the deletes counted here
+// would be the release's own either way.
 func TestAReleaseThatRacesItsOwnHoldersRenewalFreesTheClaim(t *testing.T) {
 	const (
 		role   = "legion-controller"
@@ -329,6 +338,209 @@ func TestAReleaseThatRacesAnotherClaimantFreesNothing(t *testing.T) {
 			assertRoleHolder(t, reg, role, winner.session)
 			if claim := storedRoleClaim(t, reg, role); claim.ClientInstanceID != winner.instance {
 				t.Fatalf("the standing claim names the process %q, want the winner's %q", claim.ClientInstanceID, winner.instance)
+			}
+		})
+	}
+}
+
+// The race a release cannot tell from its holder's renewal by the process alone: the role is
+// granted again between the release's read of the claim and its conditional delete, so the
+// delete loses its condition and the record the release reads again is a fresh grant. That grant
+// is no claim the release read, whoever made it - the very process the release states, a second
+// process under the holder's session id, or another session - and it stands exactly as its
+// claimant wrote it, on each of the three paths a release reaches a claim by and under the
+// holder's own release and the administrator's force alike: the claimant's grant landed after
+// the release had read the claim it frees, so it is the later word. A release frees the grant it
+// read as the holder's renewals (TestAReleaseThatRacesItsOwnHoldersRenewalFreesTheClaim) and the
+// adoption of a claim that names no process
+// (TestAForcedReleaseThatRacesTheAdoptionOfAClaimNamingNoProcessFreesIt) leave it, and the
+// hand-back's mark leaves a fresh grant standing for the same reason
+// (TestAMarkThatRacesAFreshGrantByItsOwnProcessMarksNothing).
+//
+// The grant is stamped a second after the claim the release read, so it differs from that claim
+// in both its grant id and the moment it was claimed at.
+func TestAReleaseLeavesAClaimGrantedSinceItsReadStanding(t *testing.T) {
+	releaseUnderAFreshGrant(t, "ses_released_under_a_grant", "ses_granted_under_a_release", time.Second)
+}
+
+// The same race with the grant stamped in the very millisecond of the claim the release read,
+// so the moment it was claimed at cannot tell the two apart: the grant id each grant draws does
+// (RoleClaim.GrantID, RoleClaim.sameGrant), and the grant stands as it does a second later.
+func TestAReleaseLeavesAClaimGrantedInTheMillisecondOfItsReadStanding(t *testing.T) {
+	releaseUnderAFreshGrant(t, "ses_released_under_a_same_moment_grant", "ses_granted_in_the_same_moment", 0)
+}
+
+// releaseUnderAFreshGrant runs the race of a grant landing between a release's read of the
+// claim and its conditional delete, on each of the three release paths, under the holder's own
+// release and the administrator's force, for a grant to the process the release states, to a
+// second process under holder's id, and to the session another. The grant is stamped
+// grantAfter past the claim the release read on the registry's clock; zero stamps it in that
+// claim's own millisecond.
+func releaseUnderAFreshGrant(t *testing.T, holder, another string, grantAfter time.Duration) {
+	t.Helper()
+	const role = "legion-controller"
+	winners := []struct {
+		name     string
+		session  string
+		instance string
+	}{
+		{name: "the process the release states", session: holder, instance: roleClaimInstance},
+		{name: "a second process under the holder's id", session: holder, instance: roleClaimSecondInstance},
+		{name: "another session", session: another, instance: roleClaimSecondInstance},
+	}
+	authorities := []struct {
+		name      string
+		authority RoleReleaseAuthority
+	}{
+		{name: "the holder's own process", authority: releasedByItsProcess},
+		{name: "the administrator's force", authority: RoleReleaseAuthority{Force: true}},
+	}
+	for _, path := range claimReleasePaths {
+		t.Run(path.name, func(t *testing.T) {
+			for _, by := range authorities {
+				t.Run(by.name, func(t *testing.T) {
+					for _, winner := range winners {
+						t.Run(winner.name, func(t *testing.T) {
+							reg, advance := claimForRelease(t, path, role, holder, roleClaimInstance)
+							read := storedRoleClaim(t, reg, role)
+							advance(grantAfter)
+							var granted RoleClaim
+							racing := raceReleaseWith(t, reg, role, 1, func() {
+								claimRoleAs(t, reg, winner.session, "example-host", role, winner.instance)
+								granted = storedRoleClaim(t, reg, role)
+							})
+
+							releaseClaimOn(t, reg, path, holder, role, by.authority)
+
+							stood := storedRoleClaim(t, reg, role)
+							t.Logf("the grant to %s as %q, id %q claimed at %d, over the claim read with id %q at %d: standing after the release: %t (the record: %+v)",
+								winner.session, winner.instance, granted.GrantID, granted.ClaimedAt, read.GrantID, read.ClaimedAt, stood == granted, stood)
+							if granted.ClaimedAt-read.ClaimedAt != grantAfter.Milliseconds() {
+								t.Fatalf("the grant was claimed at %d and the claim the release read at %d, want the grant %d ms past it", granted.ClaimedAt, read.ClaimedAt, grantAfter.Milliseconds())
+							}
+							if granted.GrantID == "" || granted.GrantID == read.GrantID {
+								t.Fatalf("the grant carries the id %q and the claim the release read %q, want an id of the grant's own", granted.GrantID, read.GrantID)
+							}
+							if racing.deletes != 1 {
+								t.Fatalf("the release sent %d conditional deletes, want one: a claim granted since the read is never deleted", racing.deletes)
+							}
+							if stood != granted {
+								t.Fatalf("the claim after the release is %+v, want the grant %+v untouched: the release read no claim this grant made", stood, granted)
+							}
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
+// The edge's release of a role its registration refuses (ReleaseRefusedRoleClaims) is a forced
+// release, so it frees the grant it read and no grant made after that read: the session's claim
+// granted again between that release's read and its delete stands after the release, which names
+// no role and answers no error, and the next release, which reads that grant, frees it - at the
+// edge, the session's next registration. It meets the same race whether the role claim copy names
+// the role or, while the copy cannot be served, the scan of the role bucket does, and also where
+// the session's stored row names the role while the copy cannot be served: the release of the
+// row's role is then the one read of that role, and the scan that follows leaves the role alone
+// rather than read the new grant as its own. Controls: with the delete freeing whatever the
+// session holds (the force before grant ids decided it), the first release frees the new grant
+// and names the role on every path; with the scan reading again a role the row's release weighed,
+// it does so where the row names the role.
+func TestARefusedRoleReleaseLeavesAGrantMadeSinceItsReadToTheNextRelease(t *testing.T) {
+	const (
+		role   = "legion-infra-infra-9-reviewer"
+		holder = "ses_refused_release_under_a_grant"
+	)
+	refusesEvery := func(string) bool { return false }
+	for _, path := range []claimReleasePath{
+		{name: "the role claim copy names the role", viewed: true},
+		{name: "the scan while the copy cannot be served"},
+		{name: "the stored row names the role while the copy cannot be served", handsBack: true},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			reg, advance := claimForRelease(t, path, role, holder, roleClaimInstance)
+			read := storedRoleClaim(t, reg, role)
+			advance(time.Second)
+			var granted RoleClaim
+			racing := raceReleaseWith(t, reg, role, 1, func() {
+				claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
+				granted = storedRoleClaim(t, reg, role)
+			})
+
+			released, err := reg.ReleaseRefusedRoleClaims(context.Background(), holder, refusesEvery)
+			if err != nil || len(released) != 0 {
+				t.Fatalf("the release under a new grant answered %q, %v; want no role released and no error", released, err)
+			}
+			if granted.GrantID == "" || granted.GrantID == read.GrantID {
+				t.Fatalf("the new grant carries the id %q and the claim the release read %q, want an id of the grant's own", granted.GrantID, read.GrantID)
+			}
+			if racing.deletes != 1 {
+				t.Fatalf("the release sent %d conditional deletes, want one: a claim granted since its read is never deleted", racing.deletes)
+			}
+			if stood := storedRoleClaim(t, reg, role); stood != granted {
+				t.Fatalf("the claim after the release is %+v, want the new grant %+v untouched", stood, granted)
+			}
+
+			released, err = reg.ReleaseRefusedRoleClaims(context.Background(), holder, refusesEvery)
+			if err != nil || len(released) != 1 || released[0] != role {
+				t.Fatalf("the next release answered %q, %v; want %s released and no error", released, err, role)
+			}
+			assertClaimFreed(t, reg, role)
+		})
+	}
+}
+
+// A deregistration while the role claim copy cannot be served releases the roles the session's
+// stored row names and then scans the role bucket for the claims the row does not name
+// (Registry.releaseAllRoleClaims). The row here names the role, and the role is granted again to
+// the very process the release states between the release of the row's role reading the claim
+// and its conditional delete. That release leaves the new grant standing, as every release
+// leaves a grant made since its read (releaseUnderAFreshGrant), and the scan that follows leaves
+// the role alone rather than read the new grant as its own and free it in the same call: one
+// conditional delete, no error, and the new grant standing, under the holder's own release and
+// the administrator's force alike. Control: with the scan reading again a role the row's release
+// weighed, the deregistration sends a second delete and frees the new grant.
+func TestADeregistrationLeavesAGrantMadeSinceTheRowsReadStanding(t *testing.T) {
+	const (
+		role   = "legion-controller"
+		holder = "ses_deregistered_under_a_grant"
+	)
+	// handsBack keeps the role's lane topic on the stored row (claimForRelease), and no view
+	// leaves the copy unservable; the deregistration below names no topic all the same.
+	path := claimReleasePath{name: "the stored row names the role while the copy cannot be served", handsBack: true}
+	for _, by := range []struct {
+		name      string
+		authority RoleReleaseAuthority
+	}{
+		{name: "the holder's own process", authority: releasedByItsProcess},
+		{name: "the administrator's force", authority: RoleReleaseAuthority{Force: true}},
+	} {
+		t.Run(by.name, func(t *testing.T) {
+			reg, advance := claimForRelease(t, path, role, holder, roleClaimInstance)
+			if viewErr := reg.RoleViewErr(); !errors.Is(viewErr, ErrRoleViewNotReady) {
+				t.Fatalf("the registry's role claim view refuses with %v, want ErrRoleViewNotReady: a view that answers takes no scan, and the row would control nothing", viewErr)
+			}
+			read := storedRoleClaim(t, reg, role)
+			advance(time.Second)
+			var granted RoleClaim
+			racing := raceReleaseWith(t, reg, role, 1, func() {
+				claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
+				granted = storedRoleClaim(t, reg, role)
+			})
+
+			if _, err := reg.Remove(context.Background(), holder, nil, by.authority); err != nil {
+				t.Fatalf("the deregistration under a new grant: %v, want no error", err)
+			}
+
+			if granted.GrantID == "" || granted.GrantID == read.GrantID || granted.ClientInstanceID != roleClaimInstance {
+				t.Fatalf("the new grant is %+v over the claim the release read, %+v; want a grant id of its own, to the process %q", granted, read, roleClaimInstance)
+			}
+			if racing.deletes != 1 {
+				t.Fatalf("the deregistration sent %d conditional deletes, want one: the row's release, which a grant made since its read beat; the scan leaves a role the row's release weighed alone", racing.deletes)
+			}
+			if stood := storedRoleClaim(t, reg, role); stood != granted {
+				t.Fatalf("the claim after the deregistration is %+v, want the new grant %+v untouched", stood, granted)
 			}
 		})
 	}
@@ -426,27 +638,6 @@ func TestOnlyAHandBackStatingNoProcessMarksAClaimItCannotFree(t *testing.T) {
 	}
 }
 
-// A hand-back stating no process against a claim that names none frees that claim and marks
-// nothing: the claim keeps the rule it was written under (RoleReleaseAuthority.frees), so a
-// client built before claims named a process still gives its role up at once rather than
-// leaving a marked claim for the reaper to clear a live window and up to one reap interval later.
-func TestAHandBackFreesAClaimThatNamesNoProcessAndMarksNothing(t *testing.T) {
-	const (
-		role   = "legion-controller"
-		holder = "ses_handing_back_unnamed"
-	)
-	reg := releasableRoleClaim(t, role, holder, "")
-
-	if _, err := reg.Remove(context.Background(), holder, []string{contracts.RoleTopicPrefix + role}, RoleReleaseAuthority{}); err != nil {
-		t.Fatalf("hand %s's role back from a release stating no process: %v", role, err)
-	}
-
-	assertRoleHolder(t, reg, role, "")
-	if claim := storedRoleClaim(t, reg, role); claim.Revision != 0 {
-		t.Fatalf("the claim stands at revision %d as %+v, want the role free: a claim naming no process is freed, never marked", claim.Revision, claim)
-	}
-}
-
 // The mark meets the race the delete meets: pi-envoy registers outside the task queue a queued
 // task hands the role back in, so the holder's own renewal lands between the release's read of
 // the claim and the conditional write of the mark. That write loses its condition, and the
@@ -515,43 +706,51 @@ func TestAMarkThatRacesAnotherProcessMarksNothing(t *testing.T) {
 // hand-back has ever released - and marking it would take back a role the holder has just been
 // given, through a mark its own registration can no longer clear.
 //
-// The claim's own ClaimedAt tells the two apart, because a grant moves it and a renewal leaves
-// it exactly as the claim that took the role left it (Registry.renewRoleClaim). A claim whose
-// ClaimedAt moved is another claim, so it is left alone and is no error, exactly as a claim
-// another process won is.
+// The grant's own id tells the two apart (RoleClaim.GrantID), because every grant writes a new
+// one and a renewal leaves it exactly as the claim that took the role left it
+// (Registry.renewRoleClaim). The grant's moment cannot: a grant stamped in the very millisecond
+// of the claim the release read carries that claim's ClaimedAt. A claim whose grant id is not
+// the one read is another claim, so it is left alone and is no error, exactly as a claim another
+// process won is.
 func TestAMarkThatRacesAFreshGrantByItsOwnProcessMarksNothing(t *testing.T) {
 	const (
 		role   = "legion-controller"
 		holder = "ses_marked_under_its_own_grant"
 	)
-	reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
-	seeded := storedRoleClaim(t, reg, role)
-	// The grant that wins the race is stamped an hour on, so the moment it was claimed at is one
-	// the seeded claim cannot share: a grant inside the same millisecond as the claim the
-	// release read would read as that very claim, and this row is about telling them apart.
-	reg.now = func() time.Time { return time.Now().Add(time.Hour) }
-	var granted RoleClaim
-	racing := &racingUpdateKeyValue{KeyValue: reg.roleKV.Legacy()}
-	racing.beforeFirstUpdate = func() {
-		claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
-		granted = storedRoleClaim(t, reg, role)
-	}
-	reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	for name, later := range map[string]time.Duration{
+		// An hour on, so the moment the grant was claimed at is one the seeded claim cannot share.
+		"a grant in a later millisecond": time.Hour,
+		// No time on: the grant carries the seeded claim's ClaimedAt, its process and its session.
+		"a grant in the same millisecond": 0,
+	} {
+		t.Run(name, func(t *testing.T) {
+			reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
+			seeded := storedRoleClaim(t, reg, role)
+			reg.now = func() time.Time { return time.UnixMilli(seeded.ClaimedAt).Add(later) }
+			var granted RoleClaim
+			racing := &racingUpdateKeyValue{KeyValue: reg.roleKV.Legacy()}
+			racing.beforeFirstUpdate = func() {
+				claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
+				granted = storedRoleClaim(t, reg, role)
+			}
+			reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
 
-	if _, err := reg.Remove(context.Background(), holder, []string{contracts.RoleTopicPrefix + role}, RoleReleaseAuthority{}); err != nil {
-		t.Fatalf("hand %s's role back under its own process's fresh grant: %v", role, err)
-	}
+			if _, err := reg.Remove(context.Background(), holder, []string{contracts.RoleTopicPrefix + role}, RoleReleaseAuthority{}); err != nil {
+				t.Fatalf("hand %s's role back under its own process's fresh grant: %v", role, err)
+			}
 
-	if racing.updates != 1 {
-		t.Fatalf("the release sent %d conditional writes, want one: a claim granted since the read is never marked", racing.updates)
+			if racing.updates != 1 {
+				t.Fatalf("the release sent %d conditional writes, want one: a claim granted since the read is never marked", racing.updates)
+			}
+			if want := seeded.ClaimedAt + later.Milliseconds(); granted.ClaimedAt != want {
+				t.Fatalf("the grant was claimed at %d and the claim the release read at %d, want the grant at %d", granted.ClaimedAt, seeded.ClaimedAt, want)
+			}
+			if stood := storedRoleClaim(t, reg, role); stood != granted {
+				t.Fatalf("the claim after the hand-back is %+v, want the grant %+v untouched: the hand-back released no claim this grant made", stood, granted)
+			}
+			assertRoleHolder(t, reg, role, holder)
+		})
 	}
-	if granted.ClaimedAt <= seeded.ClaimedAt {
-		t.Fatalf("the grant was claimed at %d and the claim the release read at %d, want the grant's moment past it", granted.ClaimedAt, seeded.ClaimedAt)
-	}
-	if stood := storedRoleClaim(t, reg, role); stood != granted {
-		t.Fatalf("the claim after the hand-back is %+v, want the grant %+v untouched: the hand-back released no claim this grant made", stood, granted)
-	}
-	assertRoleHolder(t, reg, role, holder)
 }
 
 // racingEachUpdateKeyValue runs a hook before each of the first racedUpdates conditional updates
@@ -618,129 +817,38 @@ func TestAHandBackLeavesAClaimRenewedUnderEveryWriteUnmarked(t *testing.T) {
 	assertRoleHolder(t, reg, role, holder)
 }
 
-// The adoption race: the claim names no process, which every release of its own session may
-// free, and the first registration of the very process the release is made for adopts it
-// (Registry.renewRoleClaim writes that process's instance in) between the release's read and
-// its conditional delete. The delete loses its condition, and the record the re-read finds
-// names a process where the claim first read named none.
+// The adoption race under the administrator's force: the claim names no process, which only the
+// force frees, and the first registration of its session that states a process adopts it
+// (Registry.renewRoleClaim writes that process's instance in) between the release's read and its
+// conditional delete. The delete loses its condition, and the record the re-read finds names a
+// process where the claim first read named none. That is still the claim the force was sent to
+// free, so the release sends its delete again at the revision the adoption left: a release that
+// compared the re-read with the claim it first met would stop there and answer success over a
+// claim still standing.
 //
-// A release that compared the re-read against the claim it first met stopped there and answered
-// success over a claim still standing - the adopted claim is this very release's to free, by
-// the process it names or by the administrator's force, so the release sends its delete again
-// at the revision the adoption left. A hand-back that states no process may no longer free the
-// adopted claim, and that is not success either: it is the claim it met, under a process now
-// named, so it is marked handed back, which is the one thing a hand-back leaves on a claim it
-// cannot free.
-func TestAReleaseThatRacesTheAdoptionOfAClaimNamingNoProcess(t *testing.T) {
+// A hand-back that states no process frees neither record, so its first write is the mark, and
+// the mark follows the adoption onto the claim it read (markRoleClaimHandedBack);
+// TestARoleClaimThatNamesNoProcess holds that side of the race, beside the holder's renewal and a
+// fresh grant.
+func TestAForcedReleaseThatRacesTheAdoptionOfAClaimNamingNoProcessFreesIt(t *testing.T) {
 	const (
 		role   = "legion-controller"
 		holder = "ses_released_under_adoption"
 	)
-	roleTopic := contracts.RoleTopicPrefix + role
-	for name, tc := range map[string]struct {
-		authority RoleReleaseAuthority
-		frees     bool
-		deletes   int
-	}{
-		"the process that adopts it":         {authority: releasedByItsProcess, frees: true, deletes: 2},
-		"the administrator's forced release": {authority: RoleReleaseAuthority{Force: true}, frees: true, deletes: 2},
-		"a hand-back stating no process":     {authority: RoleReleaseAuthority{}, deletes: 1},
-	} {
-		t.Run(name, func(t *testing.T) {
-			reg := releasableRoleClaim(t, role, holder, "")
-			if seeded := storedRoleClaim(t, reg, role); seeded.ClientInstanceID != "" {
-				t.Fatalf("the seeded claim names the process %q, want none: there is nothing to adopt", seeded.ClientInstanceID)
-			}
-			racing := raceReleaseWith(t, reg, role, 1, func() {
-				if _, err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
-					t.Errorf("the registration that adopts the claim under the release: %v", err)
-				}
-			})
+	reg := releasableRoleClaim(t, role, holder, "")
+	racing := raceReleaseWith(t, reg, role, 1, func() {
+		if _, err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
+			t.Errorf("the registration that adopts the claim under the release: %v", err)
+		}
+	})
 
-			if _, err := reg.Remove(context.Background(), holder, []string{roleTopic}, tc.authority); err != nil {
-				t.Fatalf("release %s's claim of %s under its adoption: %v", holder, role, err)
-			}
-
-			if racing.deletes != tc.deletes {
-				t.Fatalf("the release sent %d conditional deletes, want %d", racing.deletes, tc.deletes)
-			}
-			stood := storedRoleClaim(t, reg, role)
-			if tc.frees {
-				if stood.Revision != 0 {
-					t.Fatalf("the claim stands at revision %d as %+v, want the release to have followed the adoption and freed it", stood.Revision, stood)
-				}
-				assertRoleHolder(t, reg, role, "")
-				assertInterestTopicsForSession(t, reg, holder, releaseKeptTopic)
-				return
-			}
-			if !stood.HandedBack {
-				t.Fatalf("the claim after the hand-back is %+v, want it marked: a hand-back whose delete lost to an adoption still leaves its mark, and answering success over a standing unmarked claim is the defect", stood)
-			}
-			if stood.HolderSessionID != holder || stood.ClientInstanceID != roleClaimInstance {
-				t.Fatalf("the marked claim is held by %q of process %q, want %q of the adopting process %q", stood.HolderSessionID, stood.ClientInstanceID, holder, roleClaimInstance)
-			}
-			assertRoleHolder(t, reg, role, holder)
-			assertInterestTopicsForSession(t, reg, holder, releaseKeptTopic, roleTopic)
-		})
+	if _, err := reg.Remove(context.Background(), holder, []string{contracts.RoleTopicPrefix + role}, RoleReleaseAuthority{Force: true}); err != nil {
+		t.Fatalf("force %s's claim of %s free under its adoption: %v", holder, role, err)
 	}
-}
 
-// The other record a release's lost delete can meet over a claim that names no process, which
-// reads exactly like the adoption above and is not it: a process of that session was granted
-// the role outright between this release's read and its delete. The re-read names a process,
-// so a hand-back stating none may no longer free it - and marking it would take back a role
-// its holder has just been given, through a mark that holder's own registration can no longer
-// clear, since no registration renews a marked claim (Registry.renewRoleClaim). A holder that
-// re-claims at its next heartbeat has the role back; one whose build does not loses it a
-// window later, over a claim it never handed back.
-//
-// The grant is told from the adoption by the claim's own ClaimedAt, as markRoleClaimHandedBack
-// tells the two apart over its own write: a grant writes a fresh record, and a renewal -
-// adoption included - carries the moment the claim was taken over untouched. The grant stands
-// unmarked, and the release reports no failure, exactly as it reports none over a claim
-// another session holds.
-func TestAHandBackThatRacesAFreshGrantOverAClaimNamingNoProcessMarksNothing(t *testing.T) {
-	const (
-		role   = "legion-controller"
-		holder = "ses_released_under_a_fresh_grant"
-	)
-	roleTopic := contracts.RoleTopicPrefix + role
-	for name, instance := range map[string]string{
-		"the session's own process":        roleClaimInstance,
-		"a second process of that session": roleClaimSecondInstance,
-	} {
-		t.Run(name, func(t *testing.T) {
-			reg := releasableRoleClaim(t, role, holder, "")
-			seeded := storedRoleClaim(t, reg, role)
-			if seeded.ClientInstanceID != "" {
-				t.Fatalf("the seeded claim names the process %q, want none: this is the claim every release of its session may free", seeded.ClientInstanceID)
-			}
-			// The grant that wins the race is stamped an hour on, so the moment it was claimed
-			// at is one the seeded claim cannot share: a grant inside the same millisecond as
-			// the claim the release read would read as that very claim, and this row is about
-			// telling them apart.
-			reg.now = func() time.Time { return time.Now().Add(time.Hour) }
-			var granted RoleClaim
-			racing := raceReleaseWith(t, reg, role, 1, func() {
-				claimRoleAs(t, reg, holder, "example-host", role, instance)
-				granted = storedRoleClaim(t, reg, role)
-			})
-
-			if _, err := reg.Remove(context.Background(), holder, []string{roleTopic}, RoleReleaseAuthority{}); err != nil {
-				t.Fatalf("hand %s's role back under a fresh grant of it: %v", role, err)
-			}
-
-			if racing.deletes != 1 {
-				t.Fatalf("the release sent %d conditional deletes, want one: the record the re-read found is a claim this hand-back may not free", racing.deletes)
-			}
-			if granted.ClaimedAt <= seeded.ClaimedAt {
-				t.Fatalf("the grant was claimed at %d and the claim the release read at %d, want the grant's moment past it", granted.ClaimedAt, seeded.ClaimedAt)
-			}
-			if stood := storedRoleClaim(t, reg, role); stood != granted {
-				t.Fatalf("the claim after the hand-back is %+v, want the grant %+v untouched and unmarked: the hand-back released no claim this grant made", stood, granted)
-			}
-			assertRoleHolder(t, reg, role, holder)
-			assertInterestTopicsForSession(t, reg, holder, releaseKeptTopic, roleTopic)
-		})
+	if racing.deletes != 2 {
+		t.Fatalf("the release sent %d conditional deletes, want two: the one the adoption beat and the one at the revision it left", racing.deletes)
 	}
+	assertClaimFreed(t, reg, role)
+	assertInterestTopicsForSession(t, reg, holder, releaseKeptTopic)
 }

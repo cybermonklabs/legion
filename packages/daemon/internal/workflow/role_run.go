@@ -10,21 +10,25 @@ import (
 
 // StopActs is whether a queued stop, row id, still acts on its claim when the outbox runs it, with
 // lastStart the newest start the outbox ran against the claim (its last_start_row), and root the
-// issue's tree root as recorded, read only for a tree close. The outbox executor asks it of every
-// suspend, issue close and tree close, and StartFor of every queued stop, so all read one rule. A
-// tree close acts while its tree lingers at the root generation it names (record.Issue.LingersAt):
-// never once re-admission has moved the root on. A suspend — an issue's close, a child's leave, or
-// a re-entered child's interrupted run — a release — the idle pod's, which keeps the session and
-// the phase — and an issue close — a child's leave as done — act unless
-// a newer start has already run: that start replaced the run the stop was written for, so acting
-// would stop the run it began and retire the task with it, whatever the retry timing was. A row
-// with no id is not older than anything: the store gives every row one, and an unknown id must not
-// silently drop a stop. Any other operation is not a stop.
+// issue's tree root as recorded, read only for a tree close. The outbox asks it of every suspend
+// and issue close of the issue's own tree, of every step stop, and of a tree close whose tree holds
+// no cleanup reservation. StartFor asks it of every queued stop, so all read one rule. The other
+// executor fences are listed on record.SuperviseRequest.Generation. A reserved cleanup close still
+// retires its claim and drives the cleanup however stale its generation (reservedTreeClose). A tree
+// close acts while its tree lingers at the root generation it names (record.Issue.LingersAt): never
+// once re-admission has moved the root on. A suspend — an issue's close, a child's leave, or a
+// re-entered child's interrupted run — a step stop — the process of the step a stopped task ran
+// (stopTask) — a release — the idle pod's, which keeps the session and the phase — and an issue
+// close — a child's leave as done — act unless a newer start has already run: that start replaced
+// the run the stop was written for, so acting would stop the run it began and retire the task with
+// it, whatever the retry timing was. A row with no id is not older than anything: the store gives
+// every row one, and an unknown id must not silently drop a stop. Any other operation is not a
+// stop.
 func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *record.Issue) bool {
 	switch stop.Op {
 	case "tree_close":
 		return root != nil && root.LingersAt(stop.Linger)
-	case "suspend", "release", "issue_close":
+	case "suspend", "step_stop", "release", "issue_close":
 		return id <= 0 || id >= lastStart
 	default:
 		return false
@@ -103,7 +107,8 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 
 // queuedStartActs is whether a queued start of run acts on the claim (startActs). StartFor,
 // unpromptedPhaseWorker and catch_up.go's queuedRowCovers all read it, so they answer that term
-// alike.
+// alike, and effects.go's architectStartQueued reads it with a stop of 0, which every row's id is
+// above (the outbox's ids start at one), so any queued start for current counts.
 func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 	for _, queued := range run.Queued {
 		if startActs(queued, stop, current) {
@@ -115,9 +120,31 @@ func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 
 // startActs is whether queued is a start for current with an id above stop, the newest stop that
 // still acts (actingStop), which is a start that will reach the claim. queuedStartActs and
-// ArchitectRelaunchOf both read it, so they count the same starts.
+// ArchitectRelaunchOf both read it, so they count the same starts. A start queued for news alone
+// is no such start (startsWork): it finishes without acting at a claim that failed or retired, so
+// it is no relaunch of an architect's claim either.
 func startActs(queued record.QueuedSupervise, stop int64, current phase.Phase) bool {
-	return queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop
+	return startsWork(queued.Request) && queued.Request.Phase == current && queued.ID > stop
+}
+
+// startsWork says whether a queued supervise row is a start that brings its role the work it
+// names: every start but one queued for news of the approved design alone
+// (record.SuperviseRequest.News). Such a start names the member's phase only so that it finishes
+// once the member has left that phase. It carries no task of the phase and no entry. It reaches
+// only a claim that was already given the phase's current entry, and it finishes without acting at
+// a claim that failed, retired or an operator suspended (the daemon's newsOnlyRefusal), and
+// wherever the record owes nothing when it runs. So every rule that asks whether a queued start
+// will bring a role its phase's work reads the role's queued rows through this: the ready worker's
+// task (queuedRowCovers), a promotion's start and the report of the claims nothing will wake
+// (StartFor), the silence repair (unpromptedPhaseWorker), the second stall arm's next move for a
+// root architect's claim (ArchitectRelaunchOf), the root's wait on its architect's work and the
+// sweep's reading of a root architect's start on its way (owed, queuedStart), and the cutover's
+// start of a stopped merger (oweCutoverMerger). Counted as a start, such a row would turn each of
+// them off for as long as it waits, and a merger's waits for the whole time its design gate stays
+// closed. An architect's would hold back the sweep's start of the entry its row names while the
+// news waits behind a turn of the architect's own.
+func startsWork(request record.SuperviseRequest) bool {
+	return request.Op == "start" && !request.News
 }
 
 // OwedEntry is whether a role is owed the work the entry its phases row names stands for: entry
@@ -172,12 +199,13 @@ func GivenEntry(run record.RoleRun) int64 {
 	return run.Claim.GivenEntry
 }
 
-// queuedStart says whether a start of the role still waits in the outbox, which is one arm of
-// owed and the only one the sweep's own reading keeps for a role with no claim at all
-// (ArchitectStartPending).
+// queuedStart says whether a start of the role that brings it work still waits in the outbox
+// (startsWork), which is one arm of owed and the only one the sweep's own reading keeps for a role
+// with no claim at all (ArchitectStartPending). A start queued for news alone is not one: it
+// reaches no claim that does not exist, and it hands no entry's work to one that does.
 func queuedStart(run record.RoleRun) bool {
 	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" {
+		if startsWork(queued.Request) {
 			return true
 		}
 	}

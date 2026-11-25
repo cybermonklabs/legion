@@ -5,15 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ctxlock"
+	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/store"
 )
@@ -81,8 +82,11 @@ const (
 // that registered within KnownSessionRetention, whether it is registered now or not. Its Topics
 // are the topics the session's interest row stores (store.Interest.Topics), which are the topics
 // its session consumer's filter holds: a registration drops every topic that reaches no session,
-// one no stream subject captures and no role lane (splitUncapturedTopics, cmd/listener/api.go),
-// so a record counts exactly the sessions a stored publish reaches.
+// one no stream subject captures and no role lane (splitUncapturedTopics, cmd/listener/api.go).
+// A record can still name a topic that filter's rule drops since it was written, the notice lane
+// of a controller role its session no longer holds among them, which no write rewrites while the
+// session is stopped, so a publish's count judges each record's topics by that rule
+// (cmd/listener's recipientCounts, store.LaneHolders.Keeps).
 //
 // The record holds nothing else, and not the client instance id in particular, which only a role
 // claim's arbitration reads (cmd/listener/role_holder.go), and that reads the live session entry.
@@ -167,12 +171,22 @@ type KnownSessions struct {
 	retryMax     time.Duration
 	watchOptions []kvwatch.Option
 
-	// mu guards records and topics, which are kept in step: every record the copy stores or
-	// removes for the bucket's sake is indexed or unindexed through its rows (newKnownSessions),
-	// and the sweep removes from both.
+	// mu guards records, chunks, markers and topics, which are kept in step: every record the copy
+	// stores or removes for the bucket's sake is indexed or unindexed through its rows
+	// (newKnownSessions), and the sweep removes from both. chunks is the copy of the bucket's
+	// chunks (kvchunk.Chunks), fed and swept by the same reads as records: the copy joins a record
+	// stored in chunks from it, and the sweep collects from it the chunks no record names. markers
+	// is the chunk keys the watcher delivered as removed, which the marker pass purges
+	// (purgeChunkMarkers).
 	mu      sync.RWMutex
-	records kvwatch.Copy[KnownSession]
+	records kvwatch.Copy[knownRow]
+	chunks  *kvchunk.Chunks
+	markers *kvchunk.Markers
 	topics  *store.TopicMatcher
+	// markerPurgeFailed is set once a marker pass that failed has been logged, so a NATS user
+	// without STREAM.PURGE on the bucket says so once per process rather than every pass, and
+	// cleared by a pass that purged.
+	markerPurgeFailed atomic.Bool
 
 	// openMu guards conn, watcher, asked and covered. The watcher is installed when the bucket
 	// opens, which is at OpenKnownSessions for a listener whose user may open it and at a later
@@ -231,25 +245,18 @@ func newKnownSessions(conn *nats.Conn, opts knownSessionsOpts) *KnownSessions {
 		retryMax:     opts.retryMax,
 		watchOptions: opts.watch,
 		topics:       store.NewTopicMatcher(),
+		chunks:       kvchunk.NewChunks(opts.now),
+		markers:      kvchunk.NewMarkers(),
 		conn:         conn,
 		wake:         make(chan struct{}, 1),
 		stopped:      make(chan struct{}),
 	}
-	s.records = kvwatch.NewCopy(kvwatch.Rows[KnownSession]{
-		Decode:  decodeKnownSession,
-		Stored:  func(key string, record KnownSession) { s.topics.Set(key, record.Topics) },
-		Removed: func(key string, _ KnownSession) { s.topics.Remove(key) },
+	s.records = kvwatch.NewCopy(kvwatch.Rows[knownRow]{
+		Decode:  s.decodeKnownLocked,
+		Stored:  func(key string, row knownRow) { s.topics.Set(key, row.Topics) },
+		Removed: func(key string, _ knownRow) { s.topics.Remove(key) },
 	})
 	return s
-}
-
-// decodeKnownSession is the record a put of the bucket leaves in the copy.
-func decodeKnownSession(entry kvwatch.Entry) (KnownSession, bool, error) {
-	var record KnownSession
-	if err := json.Unmarshal(entry.Value, &record); err != nil {
-		return KnownSession{}, false, err
-	}
-	return record, true, nil
 }
 
 // OpenKnownSessions opens the envoy_known_sessions bucket, creating it with a 30-day TTL
@@ -262,8 +269,8 @@ func decodeKnownSession(entry kvwatch.Entry) (KnownSession, bool, error) {
 // background until one succeeds (repairUntilStopped), at once after each connection event
 // (Rewatch). The error is the JetStream context's alone, which leaves no store to open anything
 // with; the caller then runs on a nil *KnownSessions, which answers as this store does and never
-// opens.
-func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownSessions, error) {
+// opens. ctx bounds the first attempt, the one the start waits on (openKnownBucket).
+func OpenKnownSessions(ctx context.Context, conn *nats.Conn, options ...KnownSessionsOption) (*KnownSessions, error) {
 	opts := knownSessionsOpts{
 		replicas:   1,
 		now:        time.Now,
@@ -280,7 +287,7 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 		return nil, err
 	}
 	s := newKnownSessions(conn, opts)
-	kv, err := openKnownBucket(context.Background(), conn, opts.replicas)
+	kv, err := openKnownBucket(ctx, conn, opts.replicas)
 	if err != nil {
 		s.logger().Warn("the known-session bucket is not open; this listener answers no session's 30-day record and writes none until an attempt of its own opens the bucket",
 			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
@@ -303,10 +310,13 @@ func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
 //
 // The attempt asks for the bucket with one request first, waiting knownBucketOpenWait, and only a
 // bucket the server says it does not hold goes through bus.EnsureKeyValue's create. That function
-// sends a lookup the server leaves unanswered up to three times (its sentAgain) and reads a
-// refusal only on a connection a bus.Client owns, so a user whose grant does not carry the bucket
-// would cost an attempt three waits, or more, rather than one; the one request costs a denied
-// attempt what it costs, the wait, and a granted one an answer.
+// sends a lookup the server leaves unanswered again until ctx ends or the start's hang guard
+// passes (its sentAgain), and reads a refusal only on a connection a bus.Client owns, so a user
+// whose grant does not carry the bucket would cost an attempt that whole wait rather than one
+// send; the one request costs a denied attempt what it costs, the wait, and a granted one an
+// answer. A create the server answers only at the bucket's first leader election is waited for
+// the same way, so an election slower than a few of these 2 s sends opens the bucket on this
+// attempt rather than leaving the store to write nothing until a retry does.
 //
 // The handle it returns is opened on a context with the wait every other store of the listener
 // gives its bucket calls, since the store's writes and its cache watcher go through that handle
@@ -319,7 +329,7 @@ func openKnownBucket(ctx context.Context, conn *nats.Conn, replicas int) (bus.Ke
 		return bus.KeyValue{}, err
 	}
 	if _, err := opening.KeyValue(bus.KnownSessionBucket); errors.Is(err, nats.ErrBucketNotFound) {
-		if _, err := bus.EnsureKeyValue(conn, opening, &nats.KeyValueConfig{
+		if _, err := bus.EnsureKeyValue(ctx, conn, opening, &nats.KeyValueConfig{
 			Bucket:   bus.KnownSessionBucket,
 			TTL:      KnownSessionRetention,
 			Replicas: replicas,
@@ -449,11 +459,14 @@ func (s *KnownSessions) repairUntilStopped() {
 // retryRepair is the background retry's attempt (attemptRepair), which retires the retry when it
 // found nothing left to repair. The retirement is made in the same hold as that reading, so no
 // second retry is armed between this goroutine's last attempt and its end, and no attempt of
-// another caller's lands between them either.
+// another caller's lands between them either. The attempt runs until the store stops
+// (untilStopped), so a stop ends an open that waits on the cluster (bus.EnsureKeyValue).
 func (s *KnownSessions) retryRepair() (repairResult, error) {
 	s.repairMu.Lock()
 	defer s.repairMu.Unlock()
-	result, err := s.attemptRepair(context.Background())
+	ctx, cancel := s.untilStopped()
+	defer cancel()
+	result, err := s.attemptRepair(ctx)
 	if err == nil && result == repairNothing {
 		s.repairing = false
 	}
@@ -669,20 +682,22 @@ func (s *KnownSessions) Get(sessionID string) (KnownSession, bool) {
 	if !s.Opened() {
 		return KnownSession{}, false
 	}
-	return s.cached(sessionID)
+	row, ok := s.cached(sessionID)
+	return row.KnownSession, ok
 }
 
-// cached is the record the copy holds for sessionID within the retention, whether or not the
-// store answers: what a write compares against and a clean stop rewrites. Callers hold no lock.
-func (s *KnownSessions) cached(sessionID string) (KnownSession, bool) {
+// cached is the row the copy holds for sessionID within the retention, whether or not the store
+// answers: what a write compares against, replaces and a clean stop rewrites. Callers hold no
+// lock.
+func (s *KnownSessions) cached(sessionID string) (knownRow, bool) {
 	cutoff := s.cutoff()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	record, ok := s.records.Get(sessionID)
-	if !ok || record.LastSeen < cutoff {
-		return KnownSession{}, false
+	row, ok := s.records.Get(sessionID)
+	if !ok || row.LastSeen < cutoff {
+		return knownRow{}, false
 	}
-	return record, true
+	return row, true
 }
 
 // MatchEach calls visit with each record whose topics match topic (routing.Match's rules), once
@@ -705,8 +720,8 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	s.topics.Match(topic, func(key string) {
-		if record, ok := s.records.Get(key); ok && record.LastSeen >= cutoff {
-			visit(record)
+		if row, ok := s.records.Get(key); ok && row.LastSeen >= cutoff {
+			visit(row.KnownSession)
 		}
 	})
 }
@@ -722,6 +737,11 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // it: the throttle holds across every listener that serves the session once each one's watcher
 // has delivered the others' writes, and a write made before that compares an older copy, which
 // costs at most one write of a record the bucket already holds.
+//
+// A record whose encoding is past one NATS message is written in chunks and a manifest naming
+// them (kvchunk.Write), and the chunks of the record it replaces, as this listener's copy holds
+// it, are deleted once it lands; the store's sweep collects what a write that stopped part way
+// left (collectChunks).
 //
 // A store whose bucket is not open writes nothing and answers nil, as a nil store does: its
 // reads answer no record either, so nothing it could write would be read.
@@ -747,13 +767,14 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	if err != nil {
 		return err
 	}
-	if held, ok := s.cached(record.SessionID); throttled && ok && now.UnixMilli()-held.LastSeen < KnownSessionRefreshAge.Milliseconds() {
+	held, ok := s.cached(record.SessionID)
+	if throttled && ok && now.UnixMilli()-held.LastSeen < KnownSessionRefreshAge.Milliseconds() {
 		// What the skip asks is whether this write would store the record already there, so it
 		// compares the two encodings rather than the fields one by one: a field added to
 		// KnownSession, and the difference between a null and an empty list, are then covered by
 		// the encoding itself. The stored record is stamped with this write's last_seen, the one
 		// field a write of unchanged content would move.
-		unchanged := held
+		unchanged := held.KnownSession
 		unchanged.LastSeen = record.LastSeen
 		stored, err := json.Marshal(unchanged)
 		if err != nil {
@@ -764,10 +785,20 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		}
 	}
 	kv, epoch := watcher.Handle()
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Put(record.SessionID, buf) })
-	if !answered {
-		return fmt.Errorf("write the known-session record of %s: %w", record.SessionID, err)
+	// A chunked record's manifest carries the record with the topics it can fit in place of its
+	// full list (store.ChunkedRecordView), which a listener of an earlier build reads as this
+	// session: such a listener does not join chunks, and would otherwise know nothing of a session
+	// whose topics outgrew one message.
+	view := func(room int) ([]byte, error) {
+		return store.ChunkedRecordView(room, record.Topics, func(topics []string) ([]byte, error) {
+			seen := record
+			seen.Topics = topics
+			return json.Marshal(seen)
+		})
 	}
+	written, err := kvchunk.Write(ctx, kv, record.SessionID, buf, view, s.ownLayout(record.SessionID, held.stored()), func(head []byte) (uint64, error) {
+		return kv.Put(record.SessionID, head)
+	}, s.now, s.logger(), knownRecord)
 	if err != nil {
 		return err
 	}
@@ -779,7 +810,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	// listener - and putting this record back over it would answer the older one until the next
 	// write of the key. A write through a handle on a bucket since recreated is dropped there too.
 	s.mu.Lock()
-	s.records.Put(watcher, epoch, record.SessionID, record, revision)
+	s.records.Put(watcher, epoch, record.SessionID, newKnownRow(record, written.Layout), written.Revision)
 	s.mu.Unlock()
 	return nil
 }
@@ -802,7 +833,7 @@ func (s *KnownSessions) TouchWithin(ctx context.Context, sessionID string) error
 	if !ok {
 		return nil
 	}
-	return s.writeWithin(ctx, held, false)
+	return s.writeWithin(ctx, held.KnownSession, false)
 }
 
 // Rewatch moves the cache's watcher and the handle the store writes through to conn
@@ -924,46 +955,31 @@ func (s *KnownSessions) cutoff() int64 {
 	return s.now().Add(-KnownSessionRetention).UnixMilli()
 }
 
-// knownCache is the store as the cache its watcher feeds (kvwatch.Cache). The hooks are its own
-// type's, not the store's methods, so nothing but the watcher calls them.
-type knownCache struct{ s *KnownSessions }
-
-// BeginRead starts a read of the bucket (kvwatch.Copy.BeginRead). Every record stays through it.
-func (c knownCache) BeginRead(read kvwatch.Read) {
-	c.s.mu.Lock()
-	defer c.s.mu.Unlock()
-	c.s.records.BeginRead(read)
-}
-
-// Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a value it could
-// not decode, which removed the session's record.
-func (c knownCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
-	c.s.mu.Lock()
-	defer c.s.mu.Unlock()
-	if err := c.s.records.Delivered(entry); err != nil {
-		c.s.logger().Warn("known session store evicted a malformed record",
-			slog.String("key", entry.Key), slog.Uint64("revision", entry.Revision), slog.String("error", err.Error()))
-	}
-}
-
-// CompleteRead removes every record the read found no evidence of, and its topics from the index:
-// the bucket no longer holds that session's record.
-func (c knownCache) CompleteRead(kvwatch.Read) {
-	c.s.mu.Lock()
-	defer c.s.mu.Unlock()
-	c.s.records.CompleteRead()
-}
-
-// sweepUntilStopped runs the one periodic pass until the store is stopped.
+// sweepUntilStopped runs the store's two periodic passes until the store is stopped. Every hour:
+// the sweep of the records that aged out, then the collection of the chunks no record names
+// (collectChunks). Every kvchunk.MarkerGrace: the purge of the chunk markers past that grace
+// (purgeChunkMarkers), so the bucket holds a chunk key's marker for at most two of those periods
+// rather than for its 30-day MaxAge. Each of their bucket calls waits no longer than the store's
+// stop. A pass that failed is logged, and the next pass tries again.
 func (s *KnownSessions) sweepUntilStopped() {
 	ticker := time.NewTicker(knownSessionSweepInterval)
 	defer ticker.Stop()
+	markerTicker := time.NewTicker(kvchunk.MarkerGrace)
+	defer markerTicker.Stop()
+	ctx, cancel := s.untilStopped()
+	defer cancel()
 	for {
 		select {
 		case <-s.stopped:
 			return
 		case <-ticker.C:
 			s.sweep()
+			if collected, err := s.collectChunks(ctx); err != nil {
+				s.logger().Warn("the known-session store could not collect the chunks no record names",
+					slog.Int("chunks_collected", collected), slog.String("error", err.Error()))
+			}
+		case <-markerTicker.C:
+			_, _ = s.purgeChunkMarkers(ctx)
 		}
 	}
 }

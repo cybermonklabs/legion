@@ -27,7 +27,7 @@ const troubleshootingExtract = "troubleshooting_refusals_extract.txt"
 const daemonWillNotStart = "## The daemon will not start"
 
 // refusalFixtures is every row of that table a fixture drives: the row's refusal text, as the
-// `It says` cell writes it, and a fixture that makes `legion start --check-config` — the loader
+// `It says` cell writes it, and a fixture that makes `legion config check` — the loader
 // (config.LoadForValidation) and the boot gate (daemon.CheckStart) behind it — print a message
 // the row matches. A row whose wording the code no longer produces fails here, printing the row
 // and the message, which is the whole point of the table: an operator reads the row and greps the
@@ -63,6 +63,29 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	},
 	"postgres_dsn is required (or set LEGION_POSTGRES_DSN)": func(t *testing.T) string {
 		return refusalFile{drop: []string{"postgres_dsn:"}}.refuse(t)
+	},
+	"<LEGION_LEAK_CHECK_REPOSITORY or leak_check.repository> is set and the manifest sha256 is not: …": func(t *testing.T) string {
+		// A daemon whose environment names the leak check's repository and not its manifest
+		// digest, as a deployment that set one of its two variables starts it.
+		t.Setenv("LEGION_LEAK_CHECK_REPOSITORY", "example-org/deployment")
+		t.Setenv("LEGION_LEAK_CHECK_MANIFEST_SHA256", "")
+		return refusalFile{}.refuse(t)
+	},
+	"connect to Postgres at …: default_query_exec_mode=<mode> is refused: the store's text rule needs the type of each parameter, which pgx learns from the server only in cache_statement, cache_describe and describe_exec": func(t *testing.T) string {
+		// The store's refusal, made from the DSN alone (store.PoolConfig, which daemon.CheckStart
+		// runs as store.Open does): it names the DSN's address and never its password. The same
+		// DSN in a mode in which pgx learns each parameter's type passes the check.
+		dsn := "postgres_dsn: postgres://legion:dsn-not-a-secret@127.0.0.1:1/legion?default_query_exec_mode="
+		accepted := refusalFile{drop: []string{"postgres_dsn:"}, top: dsn + "describe_exec\n"}.write(t)
+		var out, errb bytes.Buffer
+		if code := run(context.Background(), []string{"legion", "config", "check", "--config", accepted}, &out, &errb); code != 0 {
+			t.Fatalf("legion config check of a DSN in describe_exec = %d, stderr %q; want 0: only exec and simple_protocol are refused", code, errb.String())
+		}
+		says := refusalFile{drop: []string{"postgres_dsn:"}, top: dsn + "exec\n"}.refuse(t)
+		if strings.Contains(says, "dsn-not-a-secret") {
+			t.Fatalf("the refusal %q names the DSN's password", says)
+		}
+		return says
 	},
 	"unknown key <key>": func(t *testing.T) string {
 		return refusalFile{top: "worker_backend: {}\n"}.refuse(t)
@@ -136,6 +159,9 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"projects.<KEY>.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {memory: {unit: issue, variants: [{name: memory}, {name: none}]}}\n"}.refuse(t)
 	},
+	"projects.<KEY>.experiments.memory names plan: the memory experiment never sets how an issue is done, since a draw of it is the tree's memory group, so take plan out of its variants and set it on an experiment of its own": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {memory: {mode: random, variants: [{name: memory, plan: owner}, {name: none, plan: default}]}}\n"}.refuse(t)
+	},
 	"projects.<KEY>.experiments must be a mapping of an experiment's name to its block": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: [plan-length]\n"}.refuse(t)
 	},
@@ -180,6 +206,23 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 		return refusalFile{project: "    experiments: {plan-length: {mode: random, variants: [{name: long, config_files: [" +
 			overlay + "], instructions: " + missing + "}, {name: control}]}}\n"}.refuse(t)
 	},
+	// An experiment that sets how each issue is done: each arm's `plan`.
+	`projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan must be owner or default (got "…")`: func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: alone}, {name: b, plan: default}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet.": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: owner-alone}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM> names no plan: each variant of an experiment that sets plan names how its issues are done": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME> sets plan and is unit <unit>: an experiment that sets how an issue is done draws for each issue, so write unit: issue": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: tree, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME> and projects.<KEY>.experiments.<NAME> both set plan: one experiment sets how an issue is done": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}," +
+			" steps: {mode: random, unit: issue, variants: [{name: c, plan: owner}, {name: d, plan: default}]}}\n"}.refuse(t)
+	},
 	`projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    commit_issue_trailer_repos: [acme]\n"}.refuse(t)
 	},
@@ -190,10 +233,10 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 }
 
 // refusalsNoFixtureDrives is every row of that table no fixture can drive, and why. Neither is a
-// refusal the configuration's own read makes, which is all `legion start --check-config` runs.
+// refusal the configuration's own read makes, which is all `legion config check` runs.
 var refusalsNoFixtureDrives = map[string]string{
 	"<PROJECT> is already running (pid <n>)": "`legion start` itself prints it, from this machine's registry of running daemons, " +
-		"after the configuration is read: a fixture would have to register a daemon, and --check-config, which claims no team, never reads the registry",
+		"after the configuration is read: a fixture would have to register a daemon, and `legion config check`, which claims no team, never reads the registry",
 	`capability <name> is open: <detail>; to record a decision, add to legion.yaml: capabilities.decided.<name>: "<reason>"`: "the row marks it a report rather than a refusal: " +
 		"the check prints it after the Config OK line and exits 0, so no fixture makes it the message a refusal carries",
 }
@@ -347,10 +390,10 @@ func troubleshootingRows(t *testing.T) []string {
 	return rows
 }
 
-// refusalFile is the legion.yaml one fixture writes: a file `legion start --check-config` passes,
+// refusalFile is the legion.yaml one fixture writes: a file `legion config check` passes,
 // minus every base line drop names and plus the fixture's own keys, so a fixture's refusal is the
 // one thing it asks for. Its Postgres is unreachable and its App keys are never run, as every
-// check-config fixture's are: the base is the one main_test.go's own passing fixtures are built
+// `legion config check` fixture's are: the base is the one main_test.go's own passing fixtures are built
 // from (tmuxCheckKeys, kubernetesCheckKeys, kubernetesCheckRuntime, checkConfigKubeconfig), so a
 // key a passing file needs is written once for both.
 type refusalFile struct {
@@ -361,17 +404,17 @@ type refusalFile struct {
 	project    string   // extra lines of projects.DEMO, four spaces in
 }
 
-// refuse runs the real `legion start --check-config` over the file and answers the one refusal it
-// printed, without the `legion start: ` the command prefixes it with.
+// refuse runs the real `legion config check` over the file and answers the one refusal it
+// printed, without the `legion config check: ` the command prefixes it with.
 func (f refusalFile) refuse(t *testing.T) string {
 	t.Helper()
 	config := f.write(t)
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-	const prefix = "legion start: "
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+	const prefix = "legion config check: "
 	says := errb.String()
 	if code != 1 || out.Len() != 0 || !strings.HasPrefix(says, prefix) || !strings.HasSuffix(says, "\n") {
-		t.Fatalf("legion start --check-config = %d, stdout %q, stderr %q; want 1, nothing, and one refusal", code, out.String(), says)
+		t.Fatalf("legion config check = %d, stdout %q, stderr %q; want 1, nothing, and one refusal", code, out.String(), says)
 	}
 	return strings.TrimSuffix(strings.TrimPrefix(says, prefix), "\n")
 }

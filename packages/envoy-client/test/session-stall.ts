@@ -25,6 +25,7 @@ import { z } from "zod";
 import { createConsumerDelivery } from "../src/consumer-delivery";
 import { createDeliveryLedger } from "../src/delivery-ledger";
 import { createEnvoyClient, type EnvoyClient, type SessionState } from "../src/transport";
+import { delivered } from "./delivered";
 import {
   type EnvoyStack,
   envoyStackEnabled,
@@ -513,12 +514,14 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
   test("a stalled session keeps its role claim through any number of lookups, and a send to it is stored and arrives when it answers again", async () => {
     const { envoyUrl, claims, child, client } = rig();
     const live = `stall-live-${crypto.randomUUID()}`;
-    const sentLive = await client.send({
-      source: "agent",
-      sourceSessionID: OBSERVER_SESSION,
-      targetSessionID: child.sessionID,
-      message: live,
-    });
+    const sentLive = delivered(
+      await client.send({
+        source: "agent",
+        sourceSessionID: OBSERVER_SESSION,
+        targetSessionID: child.sessionID,
+        message: live,
+      })
+    );
     expect(sentLive.recipientState).toBe("live");
     await until(`${live} to reach the live session`, Date.now() + 30_000, () =>
       child.messages().includes(live)
@@ -554,12 +557,14 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     // (5) A send to it is taken and stored, naming the state it was taken for, and reaches the
     // session when it answers again — which is what a stalled pane must find waiting for it.
     const missed = `stall-missed-${crypto.randomUUID()}`;
-    const sentStalled = await client.send({
-      source: "agent",
-      sourceSessionID: OBSERVER_SESSION,
-      targetSessionID: child.sessionID,
-      message: missed,
-    });
+    const sentStalled = delivered(
+      await client.send({
+        source: "agent",
+        sourceSessionID: OBSERVER_SESSION,
+        targetSessionID: child.sessionID,
+        message: missed,
+      })
+    );
     expect(sentStalled.recipientState).toBe("unresponsive");
     expect(child.messages()).not.toContain(missed);
 

@@ -83,6 +83,28 @@ func withTriggersOff(t *testing.T, database *store.Store, fn func(q querier)) {
 	fn(conn)
 }
 
+// withTableTriggersOff runs fn in one transaction that disables every user trigger of table
+// before it and enables them again after it, then commits: what fn writes to table fires none of
+// table's triggers, the embedding triggers included, as a restore's or a replication's writes do.
+// No other session sees the triggers off, since the two ALTERs commit with the writes. It needs
+// only ownership of table, which the test login holds over every table of the database
+// storetest.Open makes, where withTriggersOff's session_replication_role needs a superuser.
+func withTableTriggersOff(t *testing.T, database *store.Store, table string, fn func(q querier)) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that turns %s's triggers off: %v", table, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	mustExec(t, tx, "alter table "+table+" disable trigger user")
+	fn(tx)
+	mustExec(t, tx, "alter table "+table+" enable trigger user")
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the writes to %s with its triggers off: %v", table, err)
+	}
+}
+
 func mustExec(t *testing.T, q querier, sql string, args ...any) {
 	t.Helper()
 	if _, err := q.Exec(context.Background(), sql, args...); err != nil {
@@ -102,9 +124,9 @@ type seededItems struct {
 // texts chosen to catch a coverage text that is not the indexer's: Unicode, a comment longer
 // than embed's maxInputChars (32,000 runes, stored whole and cut only when sent), an unanswered
 // and an answered ask both with options, and a project document whose latest version is the one
-// that counts. It writes no window: a document's are its version write's to write
-// (refs.IndexBlocks) and an item's the block-index tick's window arm's
-// (refs.WriteItemWindows), and seedEveryKind writes them as those writers would.
+// that counts. It writes no window: every owner's windows are the block-index tick's window
+// arm's to write now (refs.WriteDocumentWindows, refs.WriteItemWindows), and seedEveryKind
+// writes them as that arm would.
 func seedItems(t *testing.T, q querier, project string) seededItems {
 	t.Helper()
 	ctx := context.Background()
@@ -613,9 +635,7 @@ func TestCoverKeepsATriggerWriteThatLandsBetweenItsReadAndItsUpdate(t *testing.T
 	go func() {
 		passDone <- Cover(ctx, Deps{Store: storetest.SecondProcess(t, database), Embedder: newPlaceEmbedder(configuredIdentity)})
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, writer, 1, 10*time.Second); waiting < 1 {
-		t.Fatal("the pass never waited on the live write's row; the interleaving did not happen")
-	}
+	storetest.WaitForLockWaiters(t, writer, 1)
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the live write: %v", err)
 	}

@@ -1,11 +1,13 @@
 //go:build e2e
 
 // The runtime a live proof uses when it needs a real Oh My Pi pane and the host has no tmux. A
-// Legion pod carries no tmux and may not have one added for a test (a sixth client in the worker
-// image is an image change, skill://legion-worker/references/tools.md), so
+// Legion pod on a worker image from before dispatch://INFRA-3257 carries no tmux and may not have
+// one added for a test (a tool the worker image lacks is an image change,
+// skill://legion-worker/references/tools.md), and LINUX's worker-lean image, which copies the
+// worker image's /usr/local/bin and not its /usr/bin, carries none either. So
 // provider_error_retry_live_test.go — the one proof that must watch a real agent's turns fail —
 // starts each worker as a child process group of the test process instead of as a pane on the
-// daemon's private tmux server.
+// daemon's private tmux server, wherever it runs.
 //
 // Everything below the pane is the real thing: the command is the one a pane runs,
 // `legion worker-shim --connect unix://<the daemon's stream socket> --boot-token-file <file> --
@@ -109,8 +111,11 @@ type localRuntime struct {
 	// (role_config_files) in production; this proof routes each claim to a stand-in of its own, and
 	// two claims of the proof share a role, so the choice is per claim here.
 	overlays func(claim.Token) []string
-	conns    runtime.Conns
-	stream   string
+	// environment is what a proof gives its panes beyond what a pane is told: the model key of a
+	// proof whose panes call a real model, which reaches the pane's process and nothing else.
+	environment []string
+	conns       runtime.Conns
+	stream      string
 	// paneLogs is the directory each worker's stdout and stderr is written under, one file per
 	// launch, kept for the run's evidence.
 	paneLogs string
@@ -362,6 +367,10 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workDir
 	cmd.Env = r.paneEnvironment(variables, workDir)
+	// A resume is held to its session as every runtime holds it (runtime.SessionExclusiveVariable).
+	if spec.ResumeSessionFile != "" {
+		cmd.Env = append(cmd.Env, runtime.SessionExclusiveVariable+"="+runtime.SessionExclusiveValue)
+	}
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	// Its own process group: one signal ends the shim, Oh My Pi and whatever Oh My Pi started.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -409,10 +418,10 @@ func (r *localRuntime) workDir(issue string) string {
 // paneEnvironment is the child's whole environment: the variables a pane is told, the PATH a pane
 // is told (the daemon's launcher directory first, as workerbin.Path puts it), the HOME and
 // OMP_PROFILE that select the run's own Oh My Pi profile — which under tmux reach a pane from the
-// daemon's own environment through the tmux server — and TMPDIR. Nothing of the test process's own
-// environment rides through: this test runs inside a Legion pod, whose environment names that
-// pod's workspace, daemon and credentials, and a pane that inherited them would register with the
-// wrong daemon.
+// daemon's own environment through the tmux server — TMPDIR, and what the proof gives its panes
+// itself (environment). Nothing of the test process's own environment rides through: this test
+// runs inside a Legion pod, whose environment names that pod's workspace, daemon and credentials,
+// and a pane that inherited them would register with the wrong daemon.
 func (r *localRuntime) paneEnvironment(variables []string, workDir string) []string {
 	env := []string{
 		"PATH=" + workerbin.Path(os.Getenv("PATH"), r.stateDir),
@@ -422,7 +431,7 @@ func (r *localRuntime) paneEnvironment(variables []string, workDir string) []str
 		"LANG=C.UTF-8",
 	}
 	_ = os.MkdirAll(filepath.Join(workDir, "tmp"), 0o700)
-	return append(env, variables...)
+	return append(append(env, r.environment...), variables...)
 }
 
 func (r *localRuntime) Suspend(ctx context.Context, loc runtime.Locator) error {

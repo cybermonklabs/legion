@@ -72,6 +72,8 @@ const (
 	rkAskAnswer     = "ask-answer"
 	rkAskResolve    = "ask-resolve"
 	rkClaim         = "claim"
+	rkCommentDelete = "comment-delete"
+	rkMessageDelete = "message-delete"
 
 	rkRead       = "read"
 	rkDocRead    = "docread"
@@ -241,11 +243,15 @@ func loadReplay(o replayOptions) (*replayBundle, *replayPlan, error) {
 // --- the plan --------------------------------------------------------------------------------------
 
 // replayRef names a logged object: kind is issue, artifact, comment or ask (the kinds of
-// public.loadtest_replay_ids).
+// public.loadtest_replay_ids), or message, which the seed never writes (the state holds no
+// message), so only the run's own create of it can resolve one.
 type replayRef struct {
 	Kind   string
 	Logged string
 }
+
+// idMessage is replayRef's kind of an issue message.
+const idMessage = "message"
 
 // replayArg is a path placeholder's value: a local id (Ref), the dispatch:// URI of an issue (Ref,
 // URI) or of a comment of it (Ref, Sub, URI), query-escaped; the last event sequence an earlier
@@ -261,6 +267,10 @@ type replayArg struct {
 // replayPrevEditedAt in a body is the edited_at an earlier response of the action carried (the
 // ask an answer must name as expected_edited_at).
 type replayPrevEditedAt struct{}
+
+// replayDocToken in a body is the document token an earlier read of the same action carried: the
+// base a whole-document upload names (its `precondition`).
+type replayDocToken struct{}
 
 // replayFile is a multipart upload's file: deterministic bytes of the logged size.
 type replayFile struct {
@@ -287,6 +297,10 @@ type replayReq struct {
 	// Tolerate is a status that does not fail the action (the 404 of architecture-sources at
 	// 35efd326).
 	Tolerate int
+	// ReadsBase marks the read that carries an upload's base (replayDocToken): it waits for the
+	// planned write before it on the document, as the upload itself does, so the token it reads
+	// is the one the upload meets.
+	ReadsBase bool
 }
 
 // replayAction is one CLI call: its stages run in order, the requests of a stage in parallel.
@@ -392,6 +406,10 @@ type replayPlanCounts struct {
 	// size (first_version) or of the window's created documents' median first version
 	// (created_docs_median).
 	SpecSizes map[string]int `json:"spec_sizes"`
+	// DeletedBodies counts, by event type, the comment and message creates sent with
+	// deletedPostBody: their author deleted the post since, so the log serves them without a
+	// body.
+	DeletedBodies map[string]int `json:"deleted_bodies"`
 }
 
 // --- planning --------------------------------------------------------------------------------------
@@ -426,6 +444,9 @@ type replayPlanner struct {
 	// logged comment id; askDoc the document of each typed ask block, by logged ask id.
 	threadDoc map[string]string
 	askDoc    map[string]string
+	// messages are the logged messages a planned write creates: the only ones a message.deleted
+	// can name, since the seed writes no message.
+	messages map[string]bool
 }
 
 // planReplay plans the bundle's window under o.
@@ -434,12 +455,12 @@ func planReplay(b *replayBundle, o replayOptions) (*replayPlan, error) {
 		b: b, o: o, at: b.State.At,
 		p: &replayPlan{Project: b.State.Project, BaseDocs: map[string]string{}, Counts: replayPlanCounts{
 			WritesByKind: map[string]int{}, ReadsByKind: map[string]int{}, RequestsByRoute: map[string]int{},
-			NotSent: map[string]int{}, SpecSizes: map[string]int{},
+			NotSent: map[string]int{}, SpecSizes: map[string]int{}, DeletedBodies: map[string]int{},
 		}},
 		artifacts: map[string]*replayArtifact{}, docs: map[string]*rpDoc{}, issueDocs: map[string][]string{},
 		issueComments: map[string][]string{}, snap: map[string]map[string]json.RawMessage{}, stateIssue: map[string]*replayIssue{},
 		claim: map[string]*replayActor{}, firstSize: map[string]int{}, bornAt: map[string]time.Duration{},
-		threadDoc: map[string]string{}, askDoc: map[string]string{},
+		threadDoc: map[string]string{}, askDoc: map[string]string{}, messages: map[string]bool{},
 	}
 	pl.key = func(k string) bool { return keepIssue(o.rngSeed, k, o.rate) && (o.keys == nil || o.keys[k]) }
 	kept := map[string]bool{}
@@ -731,12 +752,15 @@ type rpAnchor struct {
 	BlockID    *string `json:"block_id"`
 }
 
+// rpComment is a comment.* payload; DeletedAt is the delete mark of a comment its author deleted
+// since, whose events then carry no body.
 type rpComment struct {
-	ID      string    `json:"id"`
-	Body    string    `json:"body"`
-	ReplyTo *string   `json:"reply_to"`
-	AskID   *string   `json:"ask_id"`
-	Anchor  *rpAnchor `json:"anchor"`
+	ID        string     `json:"id"`
+	Body      string     `json:"body"`
+	ReplyTo   *string    `json:"reply_to"`
+	AskID     *string    `json:"ask_id"`
+	Anchor    *rpAnchor  `json:"anchor"`
+	DeletedAt *time.Time `json:"deleted_at"`
 }
 
 type rpVersion struct {
@@ -771,8 +795,11 @@ type rpIssueCreated struct {
 	Claim             *replayClaim `json:"claim"`
 }
 
+// rpMessage is a message.* payload; DeletedAt is as rpComment's.
 type rpMessage struct {
-	Body string `json:"body"`
+	ID        string     `json:"id"`
+	Body      string     `json:"body"`
+	DeletedAt *time.Time `json:"deleted_at"`
 }
 
 // rpClaimed is the claim an issue.claimed or issue.updated payload carries.
@@ -842,7 +869,10 @@ func (pl *replayPlanner) planWrite(ev replayEvent, offset time.Duration) (*repla
 		if err != nil {
 			return nil, "", err
 		}
-		body := withActor(map[string]any{"body": c.Body}, actor)
+		if c.DeletedAt != nil {
+			pl.p.Counts.DeletedBodies[ev.Type]++
+		}
+		body := withActor(map[string]any{"body": loggedBody(c.Body, c.DeletedAt)}, actor)
 		post := &replayReq{Method: "POST", Path: "/api/v1/issues/{key}/comments", Params: keyParams(key), Body: body, Person: person,
 			Produces: []replayProduce{{Ref: replayRef{idComment, c.ID}, Field: "id"}}}
 		switch {
@@ -933,8 +963,16 @@ func (pl *replayPlanner) planWrite(ev replayEvent, offset time.Duration) (*repla
 		switch {
 		case upload:
 			act.Kind = rkUpload
-			act.Stages = [][]*replayReq{{{Method: "POST", Path: "/api/v1/issues/{key}/artifacts", Params: keyParams(key), Person: person,
-				Body: withActor(map[string]any{"name": v.Name, "content": next, "summary": summary}, actor)}}}
+			// The upload replaces a document that exists, so it names the base it replaces: the
+			// read ahead of it carries the document's token into its precondition, and waits,
+			// as the write does, for the planned write before it on this document to return.
+			read := map[string]replayArg{"id": refArg(replayRef{idArtifact, v.ArtifactID})}
+			act.Stages = [][]*replayReq{
+				{{Method: "GET", Path: "/api/v1/artifacts/{id}/text", Params: read, ReadsBase: true}},
+				{{Method: "POST", Path: "/api/v1/issues/{key}/artifacts", Params: keyParams(key), Person: person,
+					Body: withActor(map[string]any{"name": v.Name, "content": next, "summary": summary,
+						"precondition": map[string]any{"document": replayDocToken{}}}, actor)}},
+			}
 		default:
 			act.Kind = rkEdit
 			body := withActor(map[string]any{"ops": ops}, actor)
@@ -1106,13 +1144,33 @@ func (pl *replayPlanner) planWrite(ev replayEvent, offset time.Duration) (*repla
 		}
 		act.Stages = [][]*replayReq{{r}}
 		act.Doc = pl.threadDoc[c.ID]
+	case evCommentDeleted:
+		c, err := decodePayload[rpComment](ev)
+		if err != nil {
+			return nil, "", err
+		}
+		// The delete projects the thread's margin mark again, so it is a write on its anchored
+		// thread's document, as a resolve is.
+		act.Kind = rkCommentDelete
+		r := &replayReq{Method: "DELETE", Path: "/api/v1/comments/{id}", Params: map[string]replayArg{"id": refArg(replayRef{idComment, c.ID})}, Person: person}
+		if actor != nil {
+			r.Body = map[string]any{"actor": actor}
+		}
+		act.Stages = [][]*replayReq{{r}}
+		act.Doc = pl.threadDoc[c.ID]
 	case evMessageCreated:
 		m, err := decodePayload[rpMessage](ev)
 		if err != nil {
 			return nil, "", err
 		}
 		post := &replayReq{Method: "POST", Path: "/api/v1/issues/{key}/messages", Params: keyParams(key), Person: person,
-			Body: withActor(map[string]any{"body": m.Body}, actor)}
+			Body: withActor(map[string]any{"body": loggedBody(m.Body, m.DeletedAt)}, actor)}
+		if m.DeletedAt != nil {
+			// Only a message its author deleted since can be named by a later message.deleted.
+			pl.p.Counts.DeletedBodies[ev.Type]++
+			post.Produces = []replayProduce{{Ref: replayRef{idMessage, m.ID}, Field: "id"}}
+			pl.messages[m.ID] = true
+		}
 		if strings.HasPrefix(ev.Actor.ID, replayDaemonPrefix) {
 			act.Kind = rkDaemonMessage
 			act.Stages = [][]*replayReq{{{Method: "GET", Path: "/api/v1/issues/{key}/events?order=desc&limit=200", Params: keyParams(key)}}, {post}}
@@ -1120,6 +1178,22 @@ func (pl *replayPlanner) planWrite(ev replayEvent, offset time.Duration) (*repla
 			act.Kind = rkMessage
 			act.Stages = [][]*replayReq{{post}}
 		}
+	case evMessageDeleted:
+		m, err := decodePayload[rpMessage](ev)
+		if err != nil {
+			return nil, "", err
+		}
+		// A message no planned write creates - one written before the window, which the seed
+		// never writes, or outside the sub-window - has no copy on the stack to delete.
+		if !pl.messages[m.ID] {
+			return nil, "unseeded_message:" + ev.Type, nil
+		}
+		act.Kind = rkMessageDelete
+		r := &replayReq{Method: "DELETE", Path: "/api/v1/messages/{id}", Params: map[string]replayArg{"id": refArg(replayRef{idMessage, m.ID})}, Person: person}
+		if actor != nil {
+			r.Body = map[string]any{"actor": actor}
+		}
+		act.Stages = [][]*replayReq{{r}}
 	case evAskOpened, evAskAnswered, evAskResolved:
 		a, err := decodePayload[rpAsk](ev)
 		if err != nil {

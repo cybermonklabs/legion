@@ -7,16 +7,17 @@ import (
 	"sync/atomic"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // checkInstall is the pod's one install of the shared public leak check, shared by every role
-// manager of the launcher's container as bundleRestore is, the controller's single role included.
-// The daemon reads the check at the tag the launcher's hello names (its own environment's pin,
-// leakguard.TagVariable) and pushes it in launcher_leak_check slices before it starts a role; this
-// holds the slices of one sequence in memory, checks the whole body's digest, and installs it once
-// for the process (leakguard.InstallServed), so no role of the pod reads GitHub for it and each
-// role's shim only reads the install (leakguard.Installed).
+// manager of the launcher's container, the controller's single role included. The daemon reads the
+// check at the tag the launcher's hello names (its own environment's pin, leakguard.TagVariable)
+// and pushes it in launcher_leak_check slices before it starts a role; this holds the slices of one
+// sequence in memory, checks the whole body's digest, and installs it once for the process
+// (leakguard.InstallServed), so no role of the pod reads GitHub for it and each role's shim only
+// reads the install (leakguard.Installed).
 //
 // The install runs under mu, which every role's connection takes for every slice, so two roles
 // the daemon pushes the same check to install it once: the second finds the tag and digest
@@ -25,6 +26,9 @@ type checkInstall struct {
 	// pin is the launcher's own pin, "" when its environment names none; dir is where the check
 	// is installed, never "" (leakguard.InstallDir unless Config.LeakCheckDir names another).
 	pin, dir string
+	// start starts the install's run of the check (leakguard.ServedInstall.Start): the launcher's
+	// pidGuard, which holds that run out of PID 1's reaper until its own wait has read its exit.
+	start procgroup.Starter
 	// done is whether this process has installed its pin, which every hello says
 	// (LauncherHello.LeakCheckInstalled). It is read apart from mu, so a role's reconnect is not
 	// held up by another role's install in progress.
@@ -43,12 +47,16 @@ type checkInstall struct {
 }
 
 // newCheckInstall is the install of a launcher whose environment pins tag pin ("" for none), into
-// dir ("" for leakguard.InstallDir).
-func newCheckInstall(pin, dir string) *checkInstall {
+// dir ("" for leakguard.InstallDir), whose run of the check start starts. A nil start panics here,
+// at the launcher's start, rather than at the pod's first install.
+func newCheckInstall(pin, dir string, start procgroup.Starter) *checkInstall {
+	if start == nil {
+		panic("launcher: the leak-check install was given no starter")
+	}
 	if dir == "" {
 		dir = leakguard.InstallDir
 	}
-	return &checkInstall{pin: pin, dir: dir}
+	return &checkInstall{pin: pin, dir: dir, start: start}
 }
 
 // hello is what a hello says of the check: the launcher's pin, and whether this process has
@@ -100,12 +108,12 @@ func (c *checkInstall) receive(ctx context.Context, frame shimwire.LauncherLeakC
 		return shimwire.LauncherLeakCheckResult{ID: frame.ID, Index: frame.Index, OK: true}
 	}
 	c.sequence, c.count, c.digest, c.slices = "", 0, "", nil
-	if got := shimwire.BundleDigest(body); got != frame.SHA256 {
+	if got := shimwire.SequenceDigest(body); got != frame.SHA256 {
 		return refuse(leakguard.Cause(fmt.Sprintf("the check the daemon served rebuilt to sha256 %s, not the %s its slices declared",
 			got, frame.SHA256), nil))
 	}
 	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{
-		Dir: c.dir, Tag: frame.Tag, Body: body,
+		Dir: c.dir, Tag: frame.Tag, Body: body, Start: c.start,
 		Log: func(format string, args ...any) { logf("launcher: "+format, args...) },
 	}); err != nil {
 		return refuse(leakguard.Cause(err.Error(), nil))
@@ -115,4 +123,21 @@ func (c *checkInstall) receive(ctx context.Context, frame shimwire.LauncherLeakC
 	logf("launcher: installed the shared public leak check %s at %s, served by the daemon (sha256 %s)",
 		frame.Tag, c.dir, frame.SHA256[:12])
 	return shimwire.LauncherLeakCheckResult{ID: frame.ID, Index: frame.Index, OK: true, Installed: true}
+}
+
+// joined is a slice sequence's whole body once every slice has arrived, and nil while one has
+// not.
+func joined(slices [][]byte) []byte {
+	size := 0
+	for _, slice := range slices {
+		if slice == nil {
+			return nil
+		}
+		size += len(slice)
+	}
+	body := make([]byte, 0, size)
+	for _, slice := range slices {
+		body = append(body, slice...)
+	}
+	return body
 }

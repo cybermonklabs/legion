@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -154,7 +155,10 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	if logOut == nil {
 		logOut = io.Discard
 	}
-	b := &bridge{cfg: cfg, log: log.New(logOut, "[claude-bridge] ", 0)}
+	// The bridge's own lines pass the URL rule: a turn report's failure quotes the daemon's URL,
+	// its user name among it. Claude Code's stderr is logOut itself, below, so a file stays the
+	// file Claude Code writes to and exec's Wait copies nothing.
+	b := &bridge{cfg: cfg, log: log.New(redact.Writer(logOut), "[claude-bridge] ", 0)}
 	b.frames = shimwire.NewWriter(&b.encoded)
 	b.reports = startTurnReports(cfg, b.log)
 	// stop ends the outputs' writers and every reader's send, once Run returns. It does not
@@ -166,7 +170,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// inboxStop releases a delivery's send blocked on the loop and closes every inbox connection,
 	// so each client's handler returns and inbox.close's wait for them ends.
 	inboxStop := make(chan struct{})
-	inbox, err := listenInbox(events, inboxStop, b.log)
+	inbox, err := listenInbox(events, inboxStop, cfg.clock(), b.log)
 	if err != nil {
 		return 1, err
 	}
@@ -253,7 +257,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 				return status, nil
 			}
 			if stopping && flushBound == nil {
-				flushBound = time.After(flushTimeout)
+				flushBound = cfg.clock().After(flushTimeout)
 			}
 		}
 		claudeIn := (<-chan []byte)(claudeLines)
@@ -303,7 +307,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		case <-claudeExit:
 			claudeExit, exited = nil, true
 			if drained != nil {
-				drainBound = time.After(drainTimeout)
+				drainBound = cfg.clock().After(drainTimeout)
 			}
 		case <-drained:
 			drained, drainBound = nil, nil
@@ -330,7 +334,7 @@ func (b *bridge) end(ctx context.Context, claude *os.Process, inputEnded, exited
 		}
 		b.log.Printf("%s: sending SIGTERM to Claude Code", why)
 		_ = claude.Signal(syscall.SIGTERM)
-		killAt = time.After(Grace)
+		killAt = b.cfg.clock().After(Grace)
 	}
 	done := ctx.Done()
 	for {
@@ -345,7 +349,7 @@ func (b *bridge) end(ctx context.Context, claude *os.Process, inputEnded, exited
 			terminate("Claude Code stopped reading its input")
 		case <-inputEnded:
 			inputEnded = nil
-			inputBound = time.After(Grace)
+			inputBound = b.cfg.clock().After(Grace)
 		case <-inputBound:
 			inputBound = nil
 			terminate(fmt.Sprintf("Claude Code is still running %v after its input ended", Grace))
@@ -491,15 +495,19 @@ func (b *bridge) step(message string, blocks []json.RawMessage) {
 // fromClaude acts on one stream-json line of Claude Code's.
 func (b *bridge) fromClaude(line []byte) {
 	var head struct {
-		Type        string          `json:"type"`
-		Subtype     string          `json:"subtype"`
-		Message     json.RawMessage `json:"message"`
-		IsReplay    bool            `json:"isReplay"`
-		RequestID   string          `json:"request_id"`
-		IsError     bool            `json:"is_error"`
-		Errors      []string        `json:"errors"`
-		CommandUUID string          `json:"command_uuid"`
-		State       string          `json:"state"`
+		Type     string          `json:"type"`
+		Subtype  string          `json:"subtype"`
+		Message  json.RawMessage `json:"message"`
+		IsReplay bool            `json:"isReplay"`
+		// ParentToolUseID names the tool call an assistant line of a subagent serves; a line of
+		// the main conversation carries null ("Follow subagent messages" of Claude Code's headless
+		// docs). A subagent can run on a model of its own, so its lines name no model of the worker.
+		ParentToolUseID string   `json:"parent_tool_use_id"`
+		RequestID       string   `json:"request_id"`
+		IsError         bool     `json:"is_error"`
+		Errors          []string `json:"errors"`
+		CommandUUID     string   `json:"command_uuid"`
+		State           string   `json:"state"`
 		// TerminalReason is what a result says ended the turn: the prompt_result carries an
 		// error only for the one value a provider failure takes, `api_error` (result). It is a
 		// member of the result line itself, measured on the pinned Claude Code
@@ -518,7 +526,7 @@ func (b *bridge) fromClaude(line []byte) {
 	}
 	switch head.Type {
 	case "assistant":
-		b.assistant(head.Message)
+		b.assistant(head.Message, head.ParentToolUseID != "")
 	case "user":
 		// A user message Claude Code took from stdin comes back marked isReplay; the others are
 		// its own, which the bridge does not read: tool results.
@@ -656,11 +664,23 @@ func blocksOf(message json.RawMessage) []contentBlock {
 	return m.Content
 }
 
-// assistant shows each tool call of the message on the pane through the shim. Nothing else of it
-// is read: the phase machine runs in the pane's `legion` MCP server, driven by Claude Code's own
-// hooks, and the bridge is transport.
-func (b *bridge) assistant(message json.RawMessage) {
-	for _, block := range blocksOf(message) {
+// assistant shows each tool call of the message on the pane through the shim, and names the model
+// that wrote the message as Oh My Pi's message_end does (message.provider and message.model), which
+// is what the daemon records as the model that served a step. A message no model wrote names none:
+// Claude Code marks its own answer to a provider's refusal `<synthetic>`
+// (testdata/api-error-429.jsonl:4). A subagent's message names none either: the subagent runs
+// beside the worker's conversation, possibly on another model, and the step's model is the
+// worker's. Nothing else of the message is read: the phase machine runs in the pane's `legion` MCP
+// server, driven by Claude Code's own hooks, and the bridge is transport.
+func (b *bridge) assistant(message json.RawMessage, subagent bool) {
+	// One decode for both: an error leaves what did decode, as blocksOf's does, so the model a
+	// message names is read even where its content is not a list of blocks.
+	var m struct {
+		Content []contentBlock `json:"content"`
+		Model   string         `json:"model"`
+	}
+	_ = json.Unmarshal(message, &m)
+	for _, block := range m.Content {
 		if block.Type != "tool_use" {
 			continue
 		}
@@ -669,6 +689,10 @@ func (b *bridge) assistant(message json.RawMessage) {
 			args = json.RawMessage("{}")
 		}
 		b.emitRaw(map[string]any{"type": "tool_execution_start", "toolName": block.Name, "args": args})
+	}
+	if m.Model != "" && m.Model != shimwire.SyntheticModel && !subagent {
+		b.emitRaw(map[string]any{"type": "message_end", "message": map[string]any{
+			"role": "assistant", "provider": "anthropic", "model": m.Model}})
 	}
 }
 
@@ -785,7 +809,10 @@ func (b *bridge) result(res resultLine) {
 	refusal := b.refusal
 	b.inRun, b.refusal = false, ""
 	b.emit(shimwire.AgentEnd{})
-	b.reports.turnEnded(refusal)
+	// The turn is the daemon's prompt's while promptRun names it, which the prompt_result below
+	// says to the daemon; a turn with none ran no prompt of the daemon's, and its report alone is
+	// what the daemon judges it by (turnReports).
+	b.reports.turnEnded(refusal, res.httpStatus, b.promptRun != "")
 	if prompt := b.promptRun; prompt != "" {
 		// The turn that ran the daemon's prompt is over, and this is what says it was that
 		// prompt's: an agent_end names no prompt, and a turn Claude Code started by itself when a

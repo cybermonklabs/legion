@@ -71,17 +71,18 @@ type CapabilityRow struct {
 // ReadyForUpdateRequest is the worker's answer to its update round's ask: it has pushed
 // everything it wants kept, and the process holding this claim may now be replaced. The daemon
 // opens an update round over a pod whose configuration has drifted, and asks every claim of the
-// round, on its own role topic, to push and answer here. The round replaces the pod once every
-// claim it asks has answered and no turn runs, or at its bound (pod_update_grace_minutes)
-// whatever the claims answered, so an answer only brings the replacement forward. A role's own
-// push is what keeps its work: the disk the replacement deletes takes all work not pushed before
-// the pod goes, which is why the round's ask tells the worker to push every commit it wants kept
-// and to put scratch evidence on Dispatch before it answers. `Round` is the round the worker
+// round, on its own role topic, to do the steps of its update message (supervise.UpdateTask) and
+// answer here. The round replaces the pod once every claim it asks has answered, no turn runs and
+// no claim's activity report holds it (internal/daemon's roundEnd.holding), or at its bound
+// (pod_update_grace_minutes) whatever the claims answered, so an answer only brings the
+// replacement forward. A role's own push is what keeps its work: the disk the replacement deletes
+// takes all work not pushed before the pod goes, which is why every step that pushes work comes
+// before the answer in the round's ask (supervise.UpdateTask). `Round` is the round the worker
 // answers for, as the ask it read named it: an answer counts only for the round whose ask the
 // worker has in front of it, so the daemon refuses one that names any other round
 // (supervise.ErrForeignUpdateRound). `Head` is the commit the worker
 // reports as the head of its issue branch at `origin`, empty when the branch is not there (a
-// planner before its first push).
+// planner step that runs before the branch's first push).
 // The daemon records the worker's word and verifies nothing, exactly as
 // `api.HandoffCompleteRequest.Commit` is the worker's report of the commit it completed at.
 type ReadyForUpdateRequest struct {
@@ -151,6 +152,22 @@ func (c BootCaller) named() bool { return c.BootToken != "" }
 // own place, and the run of refused turns the daemon derives is the same either way. Message is
 // what the provider said about a refusal, and is left out of a clean turn.
 //
+// HTTPStatus is the HTTP status the provider answered a refused turn with, where the producer's
+// provider library gives one: Oh My Pi's `errorStatus` on the assistant message that ended the
+// turn, the same field its prompt_result's `httpStatus` is copied from, and Claude Code's
+// `api_error_status`. It is 0 (absent) for a clean turn and for a refusal whose status cannot be
+// read, such as a content filter's. The daemon reads no status out of Message, and it takes a
+// number outside 100 to 599 as no status, with a warning that names it (api's turnOutcome).
+//
+// Unprompted says the turn ran no prompt the daemon sent: the plugin started it itself (a phase
+// reminder), another extension did (an Envoy message), or the host did (a background job's
+// result). No prompt result comes for such a turn, so the daemon judges it from this report alone
+// (supervise's turnOutcome). A turn the daemon's prompt ran leaves it false, and so does every
+// producer from before the field: that turn's prompt result judges a refusal of it, so a refused
+// report without the mark is never judged a second time, whichever of the two arrives first. A
+// clean report, marked or not, ends the claim's run of provider-error turns when no later turn's
+// report has reached the daemon before it.
+//
 // The caller is exactly one of AgentCaller and BootCaller, embedded so that each is a shape of
 // its own on the wire as well as in Go (@legion/contracts' LegionTurnOutcomeRequest is the same
 // union).
@@ -161,6 +178,8 @@ type TurnOutcomeRequest struct {
 	Sequence   uint64 `json:"sequence"`
 	Outcome    string `json:"outcome"`
 	Message    string `json:"message,omitempty"`
+	HTTPStatus int    `json:"httpStatus,omitempty"`
+	Unprompted bool   `json:"unprompted,omitempty"`
 }
 
 // Caller is the identity the body named, and false when it named both or neither: each says who
@@ -176,10 +195,19 @@ func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
 }
 
 // TurnOutcomeResponse is what the daemon made of the report: the run of refused turns the claim's
-// reports now end with (RefusedRun), and whether this report took that run to the launch failure
-// limit and failed the claim. A producer acts on neither — its turn is over — but a pane's log
-// saying the daemon has counted three refusals in a row is the one place an operator sees the
-// count that failed the claim being made.
+// reports now end with (RefusedRun), counted up to the launch failure limit, which the daemon
+// answers each report with and which decides nothing. A producer acts on neither field — its turn
+// is over — but a pane's log saying the daemon has counted three refusals in a row is the one
+// place an operator sees the count being made.
+//
+// Failed is whether this report failed the claim. A run of refused turns fails no claim
+// (dispatch://INFRA-4508), so only one report does: that of a turn that ran no prompt of the
+// daemon's (TurnOutcomeRequest.Unprompted) and that the provider refused with a status that
+// cannot clear, a 4xx other than 401, 403, 408 and 429, which fails the claim at once and holds
+// the issue for its architect, as such a prompt's result does. A daemon from before
+// dispatch://INFRA-4508 set it when the report took the run to the launch failure limit. This is
+// where the rule is stated, with its TypeScript mirror (LegionTurnOutcomeResponse in
+// packages/contracts/src/legion-api.ts); every other reader of Failed points here.
 type TurnOutcomeResponse struct {
 	RefusedRun int  `json:"refusedRun"`
 	Failed     bool `json:"failed"`
@@ -269,6 +297,71 @@ var (
 	// was issued — or names a claim the daemon does not hold.
 	InvalidSecret = Refusal{Status: http.StatusForbidden, Message: "Invalid session secret"}
 )
+
+// SessionHeldRefusal refuses a registration or a resume under a name of a session another claim of
+// this daemon recorded first: its id, its file's path or name, or an id its file's name gives (the
+// name is what session is). Each name is held to the first claim that recorded it, whatever that
+// claim's state since (supervise's holdRecorded): the daemon enrolls the session a registration
+// records with the secrets broker, whose enrollment takes over the grants of every other enrollment
+// of the same pod account and session, and resumes the session the record names at every
+// relaunch, so a role that registered a sibling's session, or an ended claim's, would take that
+// session's secrets and its transcript (plan E's t-e-54). It names no other claim's token: the
+// caller is told only that the name is not its own, and the daemon's log names the claim that
+// holds it. It is a 409, as the same-agent rule's refusal is, and every caller of the registration
+// exits on it.
+func SessionHeldRefusal(session string) Refusal {
+	return Refusal{Status: http.StatusConflict, Message: fmt.Sprintf(
+		"session %s is recorded for another claim of this daemon; a claim registers only a session it recorded itself, or one no claim has recorded", session)}
+}
+
+// MaxSessionNameBytes is the longest a name of a session may be: a session id, or the base name of a
+// session file, in bytes. The daemon holds every name of a session in claim_sessions, whose primary
+// key a PostgreSQL btree indexes, and a btree row holds at most 2,704 bytes (SQLSTATE 54000 past
+// it), so a name without a bound could stop the migration or the boot that holds it. 255 is the
+// longest file name Linux allows (NAME_MAX), and a real name is a uuid or such a file name.
+const MaxSessionNameBytes = 255
+
+// SessionNameTooLong refuses a registration whose session id, or whose session file's base name,
+// is longer than MaxSessionNameBytes. It is a 400: the request is malformed, whoever sends it.
+func SessionNameTooLong(what string, bytes int) Refusal {
+	return Refusal{Status: http.StatusBadRequest, Message: fmt.Sprintf(
+		"the %s is %d bytes; a session id, and a session file's name, are at most %d bytes", what, bytes, MaxSessionNameBytes)}
+}
+
+// SessionFileNotClean refuses a registration whose session file is not the clean path it names
+// (filepath.Clean of it differs): a `.` part, a `..` part after a name or at the root, a doubled or
+// trailing `/`. Clean keeps a `..` that leads a relative path, so such a path is clean and is not
+// refused. A last part of `.` or `..` gives a base name that is not the session's file name, so the
+// file-name hold would hold the wrong name; the rest is refused too, so that one file has one
+// recorded spelling. It is a 400: the plugins send the clean path of the file they wrote.
+func SessionFileNotClean(file string) Refusal {
+	return Refusal{Status: http.StatusBadRequest, Message: fmt.Sprintf(
+		"the session file %q is not a clean path; a session file is the path of the file the agent writes, as filepath.Clean writes it: no `.` part, no `..` part but at the start of a relative path, and no doubled or trailing `/`", file)}
+}
+
+// SessionNameUnheldRefusal refuses a claim that records a session name the daemon cannot hold: one
+// longer than MaxSessionNameBytes, or a session file that is not a clean path, which only a daemon
+// from before the hold could have recorded. Nothing holds such a name, so it is treated as held for
+// no claim: the claim resumes, enrolls and registers nothing under it until an operator gives it a
+// new session (`legion claims forget-session`). It is a 409, as SessionHeldRefusal is.
+func SessionNameUnheldRefusal(what string) Refusal {
+	return Refusal{Status: http.StatusConflict, Message: fmt.Sprintf(
+		"this claim records a %s this daemon cannot hold, so it takes nothing under it; an operator gives the claim a new session", what)}
+}
+
+// HeldNamesCapRefusal refuses a registration whose new session names would take its claim past
+// the most one claim may hold, max (supervise.MaxHeldNamesPerClaim): a hold ends only by an
+// operator's release, so without a bound one role could grow the daemon's record of held names
+// without end. It is a 409, as SessionHeldRefusal is: the request is well formed, but the claim's
+// own record refuses it. Nothing of the registration is recorded, and the claim keeps every name it
+// holds. So a claim that records a session still resumes that one, but a claim that needs a new
+// session, one that records none after a fresh start, starts none until an operator frees the
+// names of its other sessions with `legion claims release-names` (supervise.Machine.ReleaseNames,
+// which the daemon's log line names).
+func HeldNamesCapRefusal(max int) Refusal {
+	return Refusal{Status: http.StatusConflict, Message: fmt.Sprintf(
+		"this claim holds the most session names one claim may (%d), so it registers no new session: a session it records still resumes, but a new one waits until an operator frees the names of its other sessions (`legion claims release-names`, which the daemon's log names)", max)}
+}
 
 // staleContract renders the opening sentence a stale-caller refusal shares: got is the contract
 // the plugin declared, 0 when it declared none; want is the daemon's own (api.DaemonAPIVersion,

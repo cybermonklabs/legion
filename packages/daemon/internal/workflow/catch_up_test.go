@@ -17,8 +17,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// An admitted root's architect has no turn of its own: admission's start launches it with no task.
-// Once its claim is ready, the daemon tells it what its tree holds, which is its first instruction.
+// An admitted root's architect is launched with the start admission queues, which carries its
+// first task (workflow.ArchitectStartTask). Once its claim is ready, the daemon also tells it what
+// its tree holds.
 // Each launch's ready tells it again, as the TypeScript daemon sends the catch-up at every ready of
 // an active root: a relaunch in the same generation may be an architect that died during its first
 // turn, or a fresh agent whose workspace was lost, and neither was woken. A ready is one fact per
@@ -179,12 +180,14 @@ func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 	return *got
 }
 
-// An issue in accepting waits for its tree architect alone: no worker runs there, and the one
-// phase-finished notice that moved it there is ended undelivered when the architect's claim has
+// An issue in accepting waits for the architect that owns it alone: no worker runs there, and the
+// one phase-finished notice that moved it there reaches no architect whose claim has failed: it
+// passes a child's failed architect for the one above, and ends undelivered when a root's has
 // failed (the outbox's notice), so a retried architect was never told. Its catch-up is its only
-// wake, and it names every issue of the tree in accepting, whatever each is waiting for: the
-// acceptance itself is refused while an issue beneath it is still in the workflow (signOff), and
-// the catch-up is what tells the architect the issue is there to be decided.
+// wake, and it names every issue in accepting whose acceptance is that architect's, whatever each
+// is waiting for: the acceptance itself is refused while an issue beneath it is still in the
+// workflow (signOff), and the catch-up is what tells the architect the issue is there to be
+// decided.
 func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) {
 	const base = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
 	awaiting := func(keys string) string {
@@ -222,9 +225,41 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 	}
 }
 
-// Only a live tree's root architect is told its tree. A tree that lingers or has left the
-// workflow is told nothing, nor is a sub-architect, nor a phase worker on the root.
-func TestOnlyALiveTreesRootArchitectIsToldItsTree(t *testing.T) {
+// A Verification document its architect registered as criteria beside a deployment of spec alone
+// holds the tree as the spec does, so the catch-up states it as a step of its own, after the
+// spec and gated as the spec is. A root that registered none is told the spec alone, as before.
+func TestACatchUpStatesARegisteredVerificationDocumentAsAGatedStep(t *testing.T) {
+	spec := record.CatchUpGate{Step: record.DesignStepSpec, Gated: true, Artifact: "artifact-1", Version: 4, Approved: 4, Open: true}
+	for _, tc := range []struct {
+		name     string
+		criteria bool
+		want     []record.CatchUpGate
+	}{
+		{name: "a criteria row registered", criteria: true, want: []record.CatchUpGate{spec,
+			{Step: record.DesignStepCriteria, Gated: true, Artifact: "artifact-1-verification", Version: 2}}},
+		{name: "no criteria row", want: []record.CatchUpGate{spec}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedAdmittedTree(t, pool, 1)
+			seedGate(t, pool, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1",
+				LatestVersion: 4, ApprovedVersion: new(4)})
+			if tc.criteria {
+				seedGate(t, pool, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepCriteria, ArtifactID: "artifact-1-verification",
+					LatestVersion: 2})
+			}
+			claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), "LEGION-1", claim.RoleArchitect, 1)
+			if got := lastCatchUp(t, pool).Gates; fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Fatalf("the catch-up states %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Only a live tree's architects are told their issues. A tree that lingers or has left the
+// workflow is told nothing, nor is a phase worker on the root; a child's own architect is told
+// the child and the issues under it, with no gate.
+func TestOnlyALiveTreesArchitectsAreToldTheirIssues(t *testing.T) {
 	// A lingering root set back to todo still lingers until admission takes it again: only its
 	// linger, not its status, says the tree has left the workflow.
 	lingering := func(root *record.Issue) {
@@ -236,11 +271,13 @@ func TestOnlyALiveTreesRootArchitectIsToldItsTree(t *testing.T) {
 		root  func(*record.Issue)
 		issue string
 		role  claim.Role
+		want  []string
 	}{
-		{"a lingering tree set back to todo", lingering, "LEGION-1", claim.RoleArchitect},
-		{"a tree moved to backlog", func(root *record.Issue) { root.Status = "backlog" }, "LEGION-1", claim.RoleArchitect},
-		{"a sub-architect", func(*record.Issue) {}, "LEGION-2", claim.RoleArchitect},
-		{"a phase worker on the root", func(*record.Issue) {}, "LEGION-1", claim.RolePlanner},
+		{"a lingering tree set back to todo", lingering, "LEGION-1", claim.RoleArchitect, nil},
+		{"a tree moved to backlog", func(root *record.Issue) { root.Status = "backlog" }, "LEGION-1", claim.RoleArchitect, nil},
+		{"a sub-architect", func(*record.Issue) {}, "LEGION-2", claim.RoleArchitect, []string{
+			"gen=1 launch=1 gates= issues=LEGION-2 reason=the issues under LEGION-2, which you own, at generation 1 as the daemon records them now; start or resume your issue as your role says"}},
+		{"a phase worker on the root", func(*record.Issue) {}, "LEGION-1", claim.RolePlanner, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -248,8 +285,8 @@ func TestOnlyALiveTreesRootArchitectIsToldItsTree(t *testing.T) {
 			tc.root(&root)
 			seedIssue(t, pool, root)
 			claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), tc.issue, tc.role, 1)
-			if got := catchUps(t, pool); len(got) != 0 {
-				t.Fatalf("catch-ups %v; want none", got)
+			if got := catchUps(t, pool); fmt.Sprint(got) != fmt.Sprint(tc.want) || len(got) != len(tc.want) {
+				t.Fatalf("catch-ups %v; want %v", got, tc.want)
 			}
 		})
 	}

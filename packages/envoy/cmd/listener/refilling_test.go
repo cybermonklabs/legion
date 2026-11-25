@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // staleBound is the kvwatch stale bound the listener's session and interest copies run with: their
@@ -113,26 +114,66 @@ type heldScanWatcher struct {
 
 func (w *heldScanWatcher) Updates() <-chan jetstream.KeyValueEntry { return w.updates }
 
-// replaceWatcher ends the cache watcher of owner (a *session.SessionRegistry or *store.Registry)
-// and puts in its place a new one named name, watching through the jetstream handle wrap makes of
-// the old one's, feeding the same cache, built with options, and started: its first read is the
-// copy's first. It runs before anything else reads owner. The stores take no clock or watch option
-// for their watchers, so this is how a test injects one, as stallSessionReads swaps the session
-// handle.
-func replaceWatcher(t *testing.T, owner any, name string, wrap func(jetstream.KeyValue) jetstream.KeyValue, options ...kvwatch.Option) {
+// replaceWatcher ends the cache watcher in owner's field named field (the watcher of a
+// *session.SessionRegistry, a *store.Registry or a *session.KnownSessions, or a *store.Registry's
+// roleWatcher) and puts in its place a new one named name, watching through the jetstream handle
+// wrap makes of the old one's, feeding the same cache, built with options, and started: its first
+// read is the copy's first. It runs before anything else reads owner. The stores take no clock or
+// watch option for their watchers, so this is how a test injects one, as stallSessionReads swaps
+// the session handle. The field is read and written under the lock owner's other readers of it
+// hold (watcherGuard), and the old watcher is ended outside that lock, as the session package's
+// own swap does (useKV).
+func replaceWatcher(t *testing.T, owner any, field, name string, wrap func(jetstream.KeyValue) jetstream.KeyValue, options ...kvwatch.Option) {
 	t.Helper()
-	field := reflect.ValueOf(owner).Elem().FieldByName("watcher")
-	slot := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+	slotField := reflect.ValueOf(owner).Elem().FieldByName(field)
+	slot := reflect.NewAt(slotField.Type(), unsafe.Pointer(slotField.UnsafeAddr())).Elem()
+	guard := watcherGuard(t, owner)
+	guard.Lock()
 	old := slot.Interface().(*kvwatch.Watcher)
+	guard.Unlock()
 	cacheField := reflect.ValueOf(old).Elem().FieldByName("cache")
 	cache := reflect.NewAt(cacheField.Type(), unsafe.Pointer(cacheField.UnsafeAddr())).Elem().Interface().(kvwatch.Cache)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	old.End(ctx)
 	replacement := kvwatch.New(name, bus.NewKeyValue(old.KV().Legacy(), wrap(old.KV().WatchHandle()), old.KV().Streams()), cache, options...)
+	guard.Lock()
 	slot.Set(reflect.ValueOf(replacement))
+	guard.Unlock()
 	replacement.Start()
 }
+
+// watcherGuard is the lock owner's own readers of its watcher fields hold on other goroutines: a
+// *session.KnownSessions's openMu, which every read of its watcher takes, and a
+// *session.SessionRegistry's mu, under which its consumes' deliveries, its expiry timers and its
+// reaper read the watcher (following). A *store.Registry reads its two fields with no lock, since
+// production writes them once, at its open, so the swap there takes none.
+func watcherGuard(t *testing.T, owner any) sync.Locker {
+	t.Helper()
+	var lock string
+	switch owner.(type) {
+	case *session.KnownSessions:
+		lock = "openMu"
+	case *session.SessionRegistry:
+		lock = "mu"
+	case *store.Registry:
+		return noLock{}
+	default:
+		t.Fatalf("replaceWatcher does not know which lock guards the watcher of a %T", owner)
+	}
+	field := reflect.ValueOf(owner).Elem().FieldByName(lock)
+	return reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Interface().(*sync.RWMutex)
+}
+
+// noLock is the sync.Locker of a field no lock guards (watcherGuard).
+type noLock struct{}
+
+func (noLock) Lock()   {}
+func (noLock) Unlock() {}
+
+// unwrappedKV is the wrap of a replaced watcher that watches through the old one's own jetstream
+// handle (replaceWatcher).
+func unwrappedKV(kv jetstream.KeyValue) jetstream.KeyValue { return kv }
 
 // listRig is an in-process listener over its own NATS server: the interest and session stores, the
 // /v1 routes behind the start gate main opens, the list gauges on /metrics, and the connection
@@ -165,11 +206,11 @@ func newListRig(t *testing.T, options listRigOptions) *listRig {
 		t.Fatalf("connect bus: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest store: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session store: %v", err)
 	}
@@ -189,12 +230,12 @@ func newListRig(t *testing.T, options listRigOptions) *listRig {
 		if err := owner.WaitForCacheReady(ctx); err != nil {
 			t.Fatalf("warm the %s cache: %v", name, err)
 		}
-		wrap := func(kv jetstream.KeyValue) jetstream.KeyValue { return kv }
+		wrap := unwrappedKV
 		if release, ok := options.release[name]; ok {
 			wrap = func(kv jetstream.KeyValue) jetstream.KeyValue { return heldScanKV{KeyValue: kv, release: release} }
 		}
 		watcherName := map[string]string{"interest": "interest registry", "session": "session registry"}[name]
-		replaceWatcher(t, owner, watcherName, wrap, kvwatch.WithNow(rig.clock.Now))
+		replaceWatcher(t, owner, "watcher", watcherName, wrap, kvwatch.WithNow(rig.clock.Now))
 	}
 	t.Cleanup(func() {
 		registry.StopWatch()
@@ -240,7 +281,7 @@ func (rig *listRig) get(path string) *http.Response {
 func (rig *listRig) sessionIDs(t *testing.T) []string {
 	t.Helper()
 	response := rig.get("/v1/sessions")
-	var rows []sessionInfo
+	var rows []listenerwire.SessionInfo
 	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&rows) != nil {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("GET /v1/sessions: status %d %s, want a 200 list", response.StatusCode, body)
@@ -398,6 +439,7 @@ func newRelease(t *testing.T) (<-chan struct{}, func()) {
 // waits for the session copy's too; once both reads complete, both lists answer 200 with every
 // record and the gauges count them.
 func TestListsRefuseUntilTheirCopiesCompleteAFirstRead(t *testing.T) {
+	t.Parallel()
 	interestHeld, releaseInterest := newRelease(t)
 	sessionHeld, releaseSession := newRelease(t)
 	rig := newListRig(t, listRigOptions{release: map[string]<-chan struct{}{"interest": interestHeld, "session": sessionHeld}})
@@ -427,6 +469,7 @@ func TestListsRefuseUntilTheirCopiesCompleteAFirstRead(t *testing.T) {
 // list alone; a stale interest copy refuses both, since every session row joins it. A read that
 // completes serves both lists again.
 func TestListsRefuseAfterTheBoundWithAStaleCopy(t *testing.T) {
+	t.Parallel()
 	for _, stale := range []string{"session", "interest"} {
 		t.Run(stale+" copy", func(t *testing.T) {
 			rig := newListRig(t, listRigOptions{})
@@ -466,6 +509,7 @@ func TestListsRefuseAfterTheBoundWithAStaleCopy(t *testing.T) {
 // A complete read of an empty bucket is a complete empty list: 200 [] from both routes, and gauges
 // that read 0, the one case a 0 means no sessions.
 func TestACompleteEmptyCopyListsNothingAndCountsZero(t *testing.T) {
+	t.Parallel()
 	rig := newListRig(t, listRigOptions{})
 	rig.awaitServed(t, 5*time.Second, "both lists over empty buckets")
 	for _, path := range []string{"/v1/sessions", "/v1/interests/"} {
@@ -495,7 +539,7 @@ func TestTheListsMakeNoNATSReadWhileNATSStalls(t *testing.T) {
 	defer thaw()
 	started := time.Now()
 	response := rig.get("/v1/sessions")
-	var rows []sessionInfo
+	var rows []listenerwire.SessionInfo
 	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&rows) != nil {
 		t.Fatalf("GET /v1/sessions while NATS stalls: status %d, want a 200 list", response.StatusCode)
 	}
@@ -506,9 +550,9 @@ func TestTheListsMakeNoNATSReadWhileNATSStalls(t *testing.T) {
 	for _, row := range rows {
 		topics[row.SessionID] = row.Topics
 	}
-	want := map[string][]string{"ses_stall_joined": {contracts.LegacyAgentSubject("ses_stall_joined")}, "ses_stall_unsubscribed": nil}
+	want := map[string][]string{"ses_stall_joined": {contracts.LegacyAgentSubject("ses_stall_joined")}, "ses_stall_unsubscribed": {}}
 	if !reflect.DeepEqual(topics, want) {
-		t.Fatalf("GET /v1/sessions while NATS stalls listed topics %v, want %v", topics, want)
+		t.Fatalf("GET /v1/sessions while NATS stalls listed topics %#v, want %#v", topics, want)
 	}
 	if got := rig.interestIDs(t); !slices.Equal(got, []string{"ses_stall_joined"}) {
 		t.Fatalf("GET /v1/interests/ while NATS stalls lists %v, want [ses_stall_joined]", got)
@@ -542,6 +586,7 @@ func (c unreadRewatch) Rewatch(context.Context, *natsgo.Conn) error {
 // every bucket again and the lists answer 200 with every session. A reconnect whose Rewatch failed
 // leaves the copies needing a read, which the self-health monitor's next connected tick makes.
 func TestListsRefuseAfterTheBoundWhileNATSIsDown(t *testing.T) {
+	t.Parallel()
 	ids := []string{"ses_down_a", "ses_down_b", "ses_down_c"}
 	refuseWhileDown := func(t *testing.T, rig *listRig) {
 		t.Helper()
@@ -580,7 +625,7 @@ func TestListsRefuseAfterTheBoundWhileNATSIsDown(t *testing.T) {
 		}
 		var probeErr error
 		waitFor(t, 10*time.Second, "the self-health probe to report a copy that needs a read", func() bool {
-			probeErr = checkSelfHealth(rig.caches, nil)
+			probeErr = checkSelfHealth(rig.caches, nil, nil)
 			return errors.Is(probeErr, errCacheNeedsRead)
 		})
 		for _, c := range rig.caches {
@@ -594,7 +639,7 @@ func TestListsRefuseAfterTheBoundWhileNATSIsDown(t *testing.T) {
 		rig.assertBothListsRefilling(t)
 
 		monitorUntilRecovered(t, "the copies the reconnect left unread", 10*time.Second, 10*time.Millisecond,
-			func() error { return checkSelfHealth(rig.caches, nil) },
+			func() error { return checkSelfHealth(rig.caches, nil, nil) },
 			func(err error) bool { return isUnrecoverableSelfHealthFailure(err, rig.client, rig.caches) },
 			rig.client.Connected,
 			func() error {

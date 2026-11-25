@@ -21,6 +21,9 @@ export interface ReviewSeed {
   readonly project: string;
   /** A machine of the seeded registry, which `/machines/:machine` is opened on. */
   readonly machine: string;
+  /** The login whose `/people/:login` page is opened: the person every human write of the
+   *  corpus is made as, so their page lists what they wrote rather than its empty state. */
+  readonly person: string;
   readonly broadcast: string;
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
@@ -32,6 +35,17 @@ export interface ReviewSeed {
   readonly deliveryQuery: string;
   /** The `?at=` value the Pipeline page pins its seven days to. */
   readonly pipelineAt: string;
+  /** The read marks the seed wrote before any row (`markWhatTheShotPagesRead`), which the visual
+   *  rows' guard lets a page write again only exactly as they stand (`e2e/visual-guard.ts`). */
+  readonly readMarks: SeededReadMarks;
+}
+
+/** The read marks a seed wrote: each session's replies marked read, by session id, and each
+ *  document's read version, by document id. A page's write of a mark is a repeat that moves
+ *  nothing only when it names replies the seed marked and the version the seed wrote. */
+export interface SeededReadMarks {
+  readonly agents: Readonly<Record<string, readonly string[]>>;
+  readonly documents: Readonly<Record<string, number>>;
 }
 
 /** The seed the containerised visual review reads, which is `e2e/visual-seed.ts`'s output. A
@@ -173,10 +187,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // spec block `e2e/review-seed.ts` points the decision at.
     //
     // The margin is a column beside the document at the wide layout's width and a bottom sheet
-    // below it, shut until a button opens it (`packages/dispatch/AGENTS.md`, "Phone
-    // acceptance"), so the card is on the screen at a desktop width and nowhere narrower. The
-    // phone row of this page waits on the dot alone, as the Inbox row waits on its heading
-    // alone.
+    // below it, shut until a button opens it (`web/src/features/margin/MarginSheet.tsx`), so the
+    // card is on the screen at a desktop width and nowhere narrower. The phone row of this page
+    // waits on the dot alone, as the Inbox row waits on its heading alone.
     ready: (page) => {
       const connected = page.getByRole("status", { name: "connected" });
       const wideEnoughForMargin = wideLayout(page);
@@ -414,6 +427,30 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
+    // Shot in light and dark as well as scanned, which is what `c-person-page` requires of the
+    // page this child adds: a scan reads the DOM, so a page drawn wrongly passes it. The two
+    // baselines under `e2e/__screenshots__/visual/` were written by the `visual` job's own
+    // container, the only renderer whose pixels this comparison is ever against.
+    layers: bothLayers,
+    name: "person",
+    path: (seed) => `/people/${encodeURIComponent(seed.person)}`,
+    pattern: "/people/:login",
+    // The page's own region, exact because the empty state draws
+    // `<section aria-label="Person empty state">` inside it and a substring match would then
+    // find two (the agents row reads its region for the same reason). And one row's own words,
+    // which is what says the store answered: until it does, `PersonPage.tsx` draws a loading
+    // skeleton, and an answer holding nothing draws that empty state - both of which a page
+    // read on the region alone would accept. The words are the comment `e2e/workspace.ts`
+    // writes as this person, so a change to that corpus fails this row rather than a scan.
+    ready: (page) => [
+      page.getByRole("region", { exact: true, name: "Person" }),
+      page
+        .getByRole("list", { name: "Person nodes" })
+        .getByText("Thanks - the order the sender ticked is the whole point."),
+    ],
+  },
+  {
+    kind: "reviewed",
     layers: bothLayers,
     name: "not-found",
     path: () => "/no-such-page",
@@ -516,7 +553,7 @@ export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
  *  and the `visual-phone` project runs. Derived from the layer each entry carries, as
  *  `shotRoutes` is, so a page joins this set by saying so in its own row.
  *
- *  A phone width is one under 768 px (`packages/dispatch/AGENTS.md`, "Phone acceptance"), where
+ *  A phone width is one under 768 px (`packages/dispatch/README.md`, "Projects"), where
  *  the shell hides the sidebar behind the navigation drawer and shows the compact top bar. That
  *  alone changes every page, so the entries that carry `shoot-phone` are those whose own content
  *  the width rearranges rather than only its frame: the Inbox becomes the compact row list with
@@ -546,13 +583,20 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  names everything its page draws only once its data is in, which is the half of this wait
  *  that is a route's own.
  *
- *  The other half is page-wide and belongs to no row, and it is two waits. No element may be
+ *  The other half is page-wide and belongs to no row, and it is three waits. No element may be
  *  left carrying `data-markdown-pending`, the mark a body wears while the parse worker owes its
  *  formatting (`web/src/features/refs/MarkdownBody.tsx`, `MarkdownPreview.tsx`). A body that
  *  long holds its own literal text until the answer lands, so a page read in between is a page
  *  of unformatted source, and it is cheap to rule out for every row at once rather than to argue
- *  per row about which bodies cross the threshold. And the shell's one Inbox number must have
- *  stopped moving (`waitForInboxCountSettled` below), which every page draws and no row names.
+ *  per row about which bodies cross the threshold. No artifact header may still wear the ring it
+ *  draws for 2 s after a link lands on its artifact (`ArtifactHeader.tsx`'s `highlighted`): a
+ *  shot inside those 2 s draws it and one after does not, so a scheme shot after a slower settle
+ *  lost it while the other kept it (CI runs 44308307388 and 44323538727 read the dark
+ *  `issue-artifact` row without it and with it). It is counted, as the pending mark is, because
+ *  most pages draw no artifact header: an assertion on the header itself waits for one to exist,
+ *  and timed out every row of a page without one (run 44326108595). And the shell's one Inbox
+ *  number must have stopped moving (`waitForInboxCountSettled` below), which every page draws
+ *  and no row names.
  *
  *  Both layers wait on this, and for the same reason. The visual one would otherwise commit a
  *  baseline of a state that lasted a few hundred milliseconds and compare every later run
@@ -565,6 +609,7 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
     await expect(locator).toBeVisible();
   }
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
+  await expect(page.locator('[data-testid="artifact-header"].ring-2')).toHaveCount(0);
   await waitForInboxCountSettled(page);
 }
 
@@ -600,6 +645,17 @@ export function railInboxLink(page: Page): Locator {
   return page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name: /^Inbox/ });
 }
 
+/** The compact top bar's Inbox badge, which carries the shell's one Inbox number below the wide
+ *  layout (`web/src/app.tsx`), where the rail is not drawn. From the wide layout up the top bar is
+ *  not drawn and this matches nothing. The settle wait below reads the number through it, and the
+ *  visual review masks it as it masks the rail's entry (e2e/visual.e2e.ts says why). */
+export function topBarInboxBadge(page: Page): Locator {
+  return page
+    .locator("header")
+    .first()
+    .getByText(/^Inbox( \d+)?$/);
+}
+
 /** Waits until the shell's Inbox number has settled: none of the requests that feed it or move it
  *  is still waiting for its answer, and the number has then held one value for
  *  `INBOX_COUNT_QUIET_MS`. The number is drawn on every page, by the sidebar's entry from the wide
@@ -607,34 +663,33 @@ export function railInboxLink(page: Page): Locator {
  *  it is the sum of reads that answer on their own time, so a page whose own content has settled
  *  can still draw a count that is about to change.
  *
- *  Measured on the review corpus: the broadcast page marks the planner's reply read as it draws
- *  it, and the rail's 7 becomes 6 once that write's event refetches the unread total. Three runs
- *  of the shot rows, waiting only for the page's own content, read that row as 7 in light and 6
- *  in dark, as 7 in both, and as 6 in both.
+ *  Measured on the review corpus while the broadcast page's read mark was still its own: the page
+ *  marked the planner's reply read as it drew it, and the rail's 7 became 6 once that write's event
+ *  refetched the unread total. Three runs of the shot rows, waiting only for the page's own
+ *  content, read that row as 7 in light and 6 in dark, as 7 in both, and as 6 in both. The seed
+ *  now writes that mark first (`e2e/review-seed.ts`), so the page's own write moves nothing; the
+ *  wait stays, since any page's number is still the sum of reads that answer on their own time.
  *
  *  A stable value alone is not enough, because a value can hold for any window while the read
  *  that will change it is in flight; an idle network alone is not enough either, because the
  *  refetch a write causes is sent only once the socket's event arrives. So both are asked for,
  *  and the window restarts whenever either fails. The requests come from `page.requests()`, the
- *  page's latest hundred, which holds every request recent enough to still be waiting. */
+ *  page's latest hundred, which holds every request recent enough to still be waiting, and only
+ *  those that can still answer count: the ones the page's current document sent
+ *  (`requestsOfThisDocument`), each until Playwright has heard that it ended (`stillAnswering`). */
 async function waitForInboxCountSettled(page: Page): Promise<void> {
-  const count = wideLayout(page)
-    ? railInboxLink(page)
-    : page
-        .locator("header")
-        .first()
-        .getByText(/^Inbox( \d+)?$/);
+  const count = wideLayout(page) ? railInboxLink(page) : topBarInboxBadge(page);
   let held: string | undefined;
   let heldSince = Date.now();
   await expect
     .poll(
       async () => {
-        const waiting = (await page.requests()).some(
-          (request) =>
-            feedsInboxCount(request) &&
-            request.existingResponse() === null &&
-            request.failure() === null
-        );
+        // Every request is asked, not only those up to the first still in flight, so the next
+        // poll has heard of each one that has already ended.
+        let waiting = false;
+        for (const request of await requestsOfThisDocument(page)) {
+          if (feedsInboxCount(request) && stillAnswering(request)) waiting = true;
+        }
         const reading = (await count.allTextContents()).join(" | ");
         if (waiting || reading !== held) {
           held = reading;
@@ -648,4 +703,60 @@ async function waitForInboxCountSettled(page: Page): Promise<void> {
       }
     )
     .toBeGreaterThanOrEqual(INBOX_COUNT_QUIET_MS);
+}
+
+/** The requests of `page.requests()`'s list, in the order they were sent, that the document
+ *  `page` shows now sent: those after the last navigation request of its main frame. A request
+ *  sent before that belongs to a document that is gone, so it can no longer answer, and nothing
+ *  may say so: Chromium can cancel a request of a document being replaced with neither
+ *  `requestfinished` nor `requestfailed` (e2e/two-builds.multiprocess.e2e.ts met it), and a
+ *  request no one reports ended would hold `stillAnswering`, and this wait, for ever. The app's
+ *  own history navigations send no navigation request and keep their document, so the requests
+ *  sent around them stay this document's. */
+async function requestsOfThisDocument(page: Page): Promise<readonly Request[]> {
+  const requests = await page.requests();
+  const mainFrame = page.mainFrame();
+  let first = 0;
+  for (const [index, request] of requests.entries()) {
+    if (request.isNavigationRequest() && request.frame() === mainFrame) first = index + 1;
+  }
+  return requests.slice(first);
+}
+
+/** Each request `stillAnswering` has asked Playwright's server about: false until the server
+ *  has reported its end, and true after. */
+const endedOnServer = new WeakMap<Request, boolean>();
+
+/** Whether `request` can still answer: neither its response nor its failure has come.
+ *
+ *  Its own `existingResponse()` and `failure()` do not say so on their own. Measured in
+ *  Playwright 1.64.1, a `Request` records its failure only if the test already held that object,
+ *  or something listened for `requestfailed`, when it failed: Playwright's server sends the
+ *  failure of no other request, and `page.requests()` hands a request over with the response it
+ *  has but never with its failure. So a read the page aborted before this wait first listed it
+ *  read as neither answered nor failed for as long as it stayed among the page's latest hundred,
+ *  and the wait never saw its quiet window: 20 of 20 aborted `/api/v1/inbox` reads read back with
+ *  neither, and on `/answers` one read aborted in the page failed this wait after 15,131 ms where
+ *  a `requestfailed` listener let it settle in 935 ms. (A read cut off by a navigation away, which
+ *  `openWithFloats` (e2e/foot-floats.ts) makes two of per route, belongs to a document that is
+ *  gone: `requestsOfThisDocument` leaves it out, and it never reaches this function.) The server
+ *  does hold the end: `request.response()` answers at once with the response of an answered
+ *  request and with null for a failed one. So each request that shows neither is asked once, and
+ *  it counts as in flight until that answer comes. The wait asks every such request of a poll in
+ *  that poll, so however many of them have already ended, they cost it one poll. Asking needs no
+ *  listener installed before the page opens, so every layer that waits here is covered as it
+ *  stands. */
+function stillAnswering(request: Request): boolean {
+  if (request.existingResponse() !== null || request.failure() !== null) return false;
+  const ended = endedOnServer.get(request);
+  if (ended === true) return false;
+  if (ended === undefined) {
+    endedOnServer.set(request, false);
+    const end = () => {
+      endedOnServer.set(request, true);
+    };
+    // Rejected only once the page has closed, which ends the request too.
+    void request.response().then(end, end);
+  }
+  return true;
 }

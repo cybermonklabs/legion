@@ -15,6 +15,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // denyThenDrop serves a NATS client: it answers the handshake, then answers the first publish's
@@ -24,7 +25,7 @@ import (
 // with it true it serves the client's next connection, so the reconnect completes.
 func denyThenDrop(t *testing.T, subject string, reconnectable bool) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -82,6 +83,7 @@ func serveFake(conn net.Conn, deny string) {
 // reconnect clears the recorded violation before it has counted itself, so the connection's last
 // error and reconnect count read exactly as they did before the publish.
 func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
+	t.Parallel()
 	subject := "notifications.role.reviewer"
 	var once sync.Once
 	disconnected := make(chan struct{})
@@ -119,6 +121,7 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 // is not confirmed either: the connection reads as connected again with no error, and only its
 // reconnect count shows the violation may have gone with the old connection.
 func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) {
+	t.Parallel()
 	subject := "notifications.role.reviewer"
 	var once sync.Once
 	reconnected := make(chan struct{})
@@ -158,6 +161,7 @@ func (sliceError) Error() string { return "slice error" }
 
 // sameError never panics on a value that cannot be compared, and counts it as a change.
 func TestSameErrorTreatsAValueThatCannotBeComparedAsChanged(t *testing.T) {
+	t.Parallel()
 	if sameError(sliceError{[]int{1}}, sliceError{[]int{1}}) {
 		t.Fatal("two incomparable error values read as the same error")
 	}
@@ -169,13 +173,14 @@ func TestSameErrorTreatsAValueThatCannotBeComparedAsChanged(t *testing.T) {
 
 // answeringServer serves one NATS client and stays up: it answers every flush that follows a
 // publish with the permissions violation for deny, when deny is not empty, and then the PONG,
-// and, when stored is true, then sends the notification stream's acknowledgement to the publish's
-// reply subject, as a captured agent subject answers a forward. A publish with headers (HPUB, as
-// a forward with its Nats-Msg-Id is) is read whole by its length, since its header block spans
+// and, when ack is not empty, then sends each line of ack, in order, to the publish's reply
+// subject as a reply of its own, as the notification stream's acknowledgement of a captured agent
+// subject answers a forward (storedAck is a stored copy's). A publish with headers (HPUB, as a
+// forward with its Nats-Msg-Id is) is read whole by its length, since its header block spans
 // lines.
-func answeringServer(t *testing.T, deny string, stored bool) *nats.Conn {
+func answeringServer(t *testing.T, deny string, ack string) *nats.Conn {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -224,9 +229,10 @@ func answeringServer(t *testing.T, deny string, stored bool) *nats.Conn {
 					fmt.Fprintf(conn, "-ERR 'Permissions Violation for Publish to %q'\r\n", deny)
 				}
 				fmt.Fprint(conn, "PONG\r\n")
-				if sid, ok := sids[reply]; ok && stored {
-					const ack = `{"stream":"ENVOY_NOTIFICATIONS","seq":1}`
-					fmt.Fprintf(conn, "MSG %s %s %d\r\n%s\r\n", reply, sid, len(ack), ack)
+				if sid, ok := sids[reply]; ok && ack != "" {
+					for _, frame := range strings.Split(ack, "\n") {
+						fmt.Fprintf(conn, "MSG %s %s %d\r\n%s\r\n", reply, sid, len(frame), frame)
+					}
 				}
 				published = false
 			case len(fields) == 1 && fields[0] == "PING":
@@ -245,8 +251,9 @@ func answeringServer(t *testing.T, deny string, stored bool) *nats.Conn {
 // The state a publish is judged against is read before the publish: a violation the server reports
 // while the publish call is still running is this publish's denial, not a state it started from.
 func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
+	t.Parallel()
 	subject := "notifications.role.reviewer"
-	conn := answeringServer(t, subject, false)
+	conn := answeringServer(t, subject, "")
 	client := &Client{Conn: conn}
 	// A publish whose own flush has the server's violation recorded before it returns.
 	answered := func(msg *nats.Msg) error {
@@ -268,14 +275,15 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 // during it - still counts as delivered when the stream's acknowledgement arrives, since it
 // proves the forward reached the stream.
 func TestAnUnconfirmedForwardTheStreamStoredIsDelivered(t *testing.T) {
-	conn := answeringServer(t, "notifications.other", true)
+	t.Parallel()
+	conn := answeringServer(t, "notifications.other", storedAck)
 	client := &Client{Conn: conn}
 
 	forward, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 2*time.Second)
 	if err != nil {
 		t.Fatalf("an unconfirmed forward was refused outright: %v", err)
 	}
-	if err := forward.Wait(); err != nil {
+	if _, err := forward.Wait(); err != nil {
 		t.Fatalf("an unconfirmed forward the stream acknowledged returned %v, want nil", err)
 	}
 }
@@ -283,15 +291,56 @@ func TestAnUnconfirmedForwardTheStreamStoredIsDelivered(t *testing.T) {
 // An unconfirmed forward the stream never acknowledged is not stored, and says why it is
 // unconfirmed: the listener reports it delivery_failed rather than delivered.
 func TestAnUnconfirmedForwardWithoutTheStreamsAcknowledgementIsNotStored(t *testing.T) {
-	conn := answeringServer(t, "notifications.other", false)
+	t.Parallel()
+	conn := answeringServer(t, "notifications.other", "")
 	client := &Client{Conn: conn}
 
 	forward, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 300*time.Millisecond)
 	if err != nil {
 		t.Fatalf("an unconfirmed forward was refused outright: %v", err)
 	}
-	err = forward.Wait()
+	_, err = forward.Wait()
 	if !errors.Is(err, ErrPublishUnconfirmed) || !errors.Is(err, ErrForwardNotStored) {
 		t.Fatalf("an unconfirmed forward with no acknowledgement returned %v, want the unconfirmed error wrapped by ErrForwardNotStored", err)
+	}
+}
+
+// storedAck is the notification stream's acknowledgement of a copy it stored at sequence 1.
+const storedAck = `{"stream":"ENVOY_NOTIFICATIONS","seq":1}`
+
+// A forward's Wait returns the stream's acknowledgement: a duplicate's sequence and verdict, which
+// a role send answers the stored forward by. A stream's duplicate that names no sequence is no
+// stored forward: Wait says so at once, as ErrForwardNotStored wrapping
+// ErrDuplicateWithoutSequence, rather than wait out the forward's window for an answer that does
+// not come; the check is that Wait returned before the forward's own deadline, which a wait for
+// the window's end cannot. A reply that names no stream is no acknowledgement, whatever else it
+// says, and Wait passes it over for the stream's acknowledgement after it.
+func TestAForwardsWaitReturnsTheStreamsVerdict(t *testing.T) {
+	// window is long beside any answer's time on a loaded runner, so only a wait that does not end
+	// on the answer reaches it.
+	const window = 30 * time.Second
+	forward := func(t *testing.T, ack string) (StoredAck, bool, error) {
+		t.Helper()
+		client := &Client{Conn: answeringServer(t, "", ack)}
+		pending, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), window)
+		if err != nil {
+			t.Fatalf("the forward was refused outright: %v", err)
+		}
+		got, err := pending.Wait()
+		return got, time.Now().Before(pending.deadline), err
+	}
+	if got, _, err := forward(t, `{"stream":"ENVOY_NOTIFICATIONS","seq":7,"duplicate":true}`); err != nil || got != (StoredAck{Sequence: 7, Duplicate: true}) {
+		t.Fatalf("a duplicate forward's wait = %+v (%v), want sequence 7 and Duplicate", got, err)
+	}
+	got, beforeDeadline, err := forward(t, `{"stream":"ENVOY_NOTIFICATIONS","seq":0,"duplicate":true}`)
+	if !errors.Is(err, ErrForwardNotStored) || !errors.Is(err, ErrDuplicateWithoutSequence) || got != (StoredAck{}) {
+		t.Fatalf("a duplicate with no sequence = %+v (%v), want ErrForwardNotStored wrapping ErrDuplicateWithoutSequence", got, err)
+	}
+	if !beforeDeadline {
+		t.Fatalf("the wait for a duplicate with no sequence ended at its %s window's deadline, want it to end on that answer", window)
+	}
+	got, _, err = forward(t, `{"stream":"","seq":7,"duplicate":true}`+"\n"+`{"seq":0,"duplicate":true}`+"\n"+`{"stream":"ENVOY_NOTIFICATIONS","seq":7,"duplicate":true}`)
+	if err != nil || got != (StoredAck{Sequence: 7, Duplicate: true}) {
+		t.Fatalf("a duplicate forward's wait behind a reply that names no stream = %+v (%v), want the stream's sequence 7 and Duplicate", got, err)
 	}
 }

@@ -2,6 +2,8 @@ package storetest
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // reopenedPool opens a second pool on pool's database, from the configuration pool was opened
@@ -27,7 +30,7 @@ func reopenedPool(t testing.TB, pool *store.Pool, configure func(*pgxpool.Config
 		t.Fatalf("open a second pool on the same database: %v", err)
 	}
 	reopened := store.NewPool(opened)
-	t.Cleanup(reopened.Close)
+	testcleanup.Add(t, reopened.Close)
 	return reopened
 }
 
@@ -127,4 +130,75 @@ func (r *StatementRecorder) Statements() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.sql...)
+}
+
+// CommitBetweenReads runs the commit it was armed with, once, the moment the first statement
+// naming one of its tables ends on the pool it traces (Traced), and holds every other statement
+// naming one of them from starting until that commit has returned: a commit landing between a
+// reader's statements on those tables, whether they run in turn or side by side, made without
+// timing. The commit runs on a pool it does not trace, since a statement of its own naming one of
+// the tables would wait for it.
+type CommitBetweenReads struct {
+	tables   []string
+	mu       sync.Mutex
+	commit   func()
+	inFlight bool
+	done     chan struct{}
+	fired    bool
+}
+
+// NewCommitBetweenReads is a CommitBetweenReads on the statements whose SQL names one of tables.
+func NewCommitBetweenReads(tables ...string) *CommitBetweenReads {
+	return &CommitBetweenReads{tables: tables}
+}
+
+// commitsAtEnd marks the context of the statement whose end runs the armed commit.
+type commitsAtEnd struct{}
+
+func (c *CommitBetweenReads) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if !slices.ContainsFunc(c.tables, func(table string) bool { return strings.Contains(data.SQL, table) }) {
+		return ctx
+	}
+	c.mu.Lock()
+	if c.commit == nil {
+		c.mu.Unlock()
+		return ctx
+	}
+	if c.inFlight {
+		done := c.done
+		c.mu.Unlock()
+		<-done
+		return ctx
+	}
+	c.inFlight = true
+	c.mu.Unlock()
+	return context.WithValue(ctx, commitsAtEnd{}, true)
+}
+
+func (c *CommitBetweenReads) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	if ctx.Value(commitsAtEnd{}) == nil {
+		return
+	}
+	c.mu.Lock()
+	commit, done := c.commit, c.done
+	c.mu.Unlock()
+	commit()
+	c.mu.Lock()
+	c.commit, c.inFlight, c.fired = nil, false, true
+	c.mu.Unlock()
+	close(done)
+}
+
+// Arm sets the commit the next statement naming one of the tables ends with.
+func (c *CommitBetweenReads) Arm(commit func()) {
+	c.mu.Lock()
+	c.commit, c.done, c.fired = commit, make(chan struct{}), false
+	c.mu.Unlock()
+}
+
+// Fired is whether the armed commit ran.
+func (c *CommitBetweenReads) Fired() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.fired
 }

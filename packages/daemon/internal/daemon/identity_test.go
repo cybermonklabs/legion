@@ -21,6 +21,7 @@ import (
 // launch carries the six git identity variables every worker pane gets, nothing else of the Apps,
 // and a launch whose identity cannot be resolved does not happen.
 func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (Unset).
 	stateDir := t.TempDir()
 	token, err := claim.NewToken("s1", "S1-1", claim.RoleImplementer)
 	if err != nil {
@@ -39,7 +40,7 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 	fixtureenv.Unset(t, slices.Concat(stallLimitVariables, refusalCooldownVariables)...)
 	bot := runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
 	var asked []string
-	s := specs{stateDir: stateDir, project: "s1", repositories: noRepositoriesView,
+	s := specs{stateDir: stateDir, project: "s1", appOwners: noAppOwners,
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			return ghrepo.MustParse("zeta/tools"), "main", nil
 		},

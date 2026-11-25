@@ -14,6 +14,7 @@ import (
 // in the item's spread as well as in the ask's server state. The answer is still no edit of
 // theirs, and the sweep sends no notice (serverStateOnly, stripListSpread).
 func TestEditNoticeAnAnswerInAnItemStoredSpacedSendsNone(t *testing.T) {
+	t.Parallel()
 	const spaced = "- Listed.\n  :::ask{#decision urgency=\"high\" multiple=\"false\" state=\"open\"}\n" +
 		"  Which one?\n\n  - A\n  - B\n  :::\n- Second.\n"
 	const answered = "- Listed.\n  :::ask{#decision urgency=\"high\" multiple=\"false\" state=\"answered\"" +

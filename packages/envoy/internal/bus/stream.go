@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -62,14 +63,16 @@ const (
 	// the proof's 'jti' and target URI, so a captured proof presented a second time inside its
 	// acceptance window is refused by whichever listener of a deployment receives it
 	// (cmd/listener/brokerauth.go). Its records are the only ones Envoy keeps on a bucket TTL
-	// alone: nothing reads a record back, and a key that has outlived the window its proof could
-	// be presented in says nothing, so each key expires rather than being deleted.
+	// alone: nothing but a create of the same key reads a record back, and a key that has outlived
+	// the window its proof could be presented in says nothing, so each key expires rather than being
+	// deleted, except the record an edge listener deletes to give a proof back after a 503 it
+	// answered before serving anything (proofSpend.release in cmd/listener).
 	DPoPProofBucket = "envoy_dpop_proofs"
 	// WebhookRedeliveryBucket holds the cursor and records of Dispatch's sweep of the GitHub App
 	// webhook's failed deliveries (internal/dispatch/redeliver).
 	WebhookRedeliveryBucket = "envoy_webhook_redelivery"
 	// PrivateProjectsBucket holds one key per private project, its value the repositories
-	// Dispatch maps to it, and a key exists exactly while its project is private: Dispatch writes
+	// Dispatch names for it, and a key exists exactly while its project is private: Dispatch writes
 	// it and the listeners read it to hold each session to its token's projects
 	// (dispatch://INFRA-3862). It is deliberately in no list of the buckets a static grant
 	// reaches (ListenerBuckets): only the auth service grants its calls, so a hub that runs none
@@ -81,10 +84,11 @@ const (
 // them: the interest and role-claim buckets (internal/store), the session registry and the
 // known-session store (internal/session), the Legion agent registry (internal/legionagents), the
 // CI state bucket, which only a listener with the GitHub webhook route opens (internal/cistore),
-// and the spent-proof bucket, which only a listener that takes broker access tokens opens
-// (cmd/listener/brokerauth.go). The listener's keeper raises each of them (WithKeptBuckets), and
-// envoy-infra grants the listener and the host each one's calls
-// (packages/envoy/infra/core/permissions.go), so a bucket named here is both kept and granted.
+// and the spent-proof bucket, which every listener opens at its start so an edge listener, whose
+// grant creates no bucket, finds it (cmd/listener/brokerauth.go). The listener's keeper raises
+// each of them (WithKeptBuckets), and envoy-infra grants the listener and the host each one's
+// calls (packages/envoy/infra/core/permissions.go), so a bucket named here is both kept and
+// granted.
 // A bucket named here is granted to the host and Dispatch users too; the note on that file's
 // ListenerBuckets loop (listenerGrant) says where what that widens is written down.
 // Each call returns a fresh slice, so no caller changes another's list.
@@ -144,9 +148,61 @@ const DeliverSubjectPrefix = NotificationTopicPrefix + "envoy.deliver."
 // DeliverSubject is the relay subject of session sessionID: the subject the listener that owns the
 // session publishes each message of its consumer (SessionConsumerName) on, and the session
 // subscribes to. Every message a session on NATS gets travels on it: no session takes a message
-// from a plain NATS subscription of its own ("Session consumers" in packages/envoy/AGENTS.md).
+// from a plain NATS subscription of its own (packages/envoy/docs/architecture.md, "Session
+// consumers" under "Runtime shape").
 func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
+}
+
+// RelayReplyPrefix begins the receipt family of the edge listeners: an edge machine's relay frame
+// receipts are this prefix and its machine id, then a nuid, the session id and a token
+// (relayreply.<machine>.<nuid>.<session id>.<token>; natsgrant.EdgeRelayReplyPrefix).
+// Its grant subscribes only its own machine's and publishes every machine's, since the listener
+// serving a session's relay socket answers on the family of the machine holding the session's
+// consumer (natsgrant.Edge). The edge's session relay names its frames' receipts here, and the
+// relay socket publishes each receipt its client sends on the subject the frame named
+// (cmd/listener's startSessionRelays and relay_socket.go). No stream subject captures it
+// (StreamCaptures), so a receipt travels over core NATS, as the frame does, and the stream stores
+// none.
+const RelayReplyPrefix = NotificationTopicPrefix + "envoy.relayreply."
+
+// SessionReplySubject is the reply subject of one request made of session sessionID,
+// <inbox>.<session id>.<token>: inbox a reply inbox of the requester's own (nats.NewInbox), then
+// the session's id, then a token of 128 random bits (crypto/rand.Text, 26 base32 characters).
+// Every request a session answers carries one - the relay's frames (cmd/listener's
+// sessionRelays), the listener's connection probe and Dispatch's agent stream replay
+// (internal/dispatch/agentstream). The id is there so that a grant can admit a session's own
+// replies alone (SessionReplies) and the relay can refuse a reply that names another session
+// than its frame's; the token is random so that no session can guess the subject of a request
+// made of another, since it is derived from nothing a session can see, and a session's grant
+// reads no other session's relay or control subject. A session's own grant, the one the NATS auth
+// service gives it (natsgrant.Session), publishes SessionReplies in place of every _INBOX.
+// subject, so a session on that grant can neither answer a request made of another session nor
+// guess the subject of one. The relay moves a frame only on a reply whose subject names the
+// session the frame was sent to (sessionRelays.onReply), and logs the first reply that names
+// another at WARN, then at most one a minute. A holder of the shared session user or of a host
+// user reads every session's relay subject and may publish to every _INBOX. subject, so none of
+// this holds against it: the relay reads the session a reply subject names, not who published the
+// reply. sessionID is one subject token, as every session with a consumer's is
+// (SessionConsumerName).
+func SessionReplySubject(inbox, sessionID string) string {
+	return inbox + "." + sessionID + "." + rand.Text()
+}
+
+// SessionReplies is the one publish entry under _INBOX. a grant of session sessionID needs: it
+// admits every reply subject SessionReplySubject makes for that session, and none it makes for
+// another, nor a requester's plain inbox (_INBOX.<id> or nats.go's _INBOX.<id>.<token>).
+//
+// sessionID must be one subject token: no dot, no wildcard (* or >) and no whitespace, the rule
+// SessionConsumerName holds a session's id to. SessionReplies does not check it, so its caller
+// must: an id of * admits every session's replies, and since the entry ends in >, the entry of an
+// id also admits the replies of every id that extends it by a dot (a's entry admits a.b's, and
+// a.b's admits a.b.c's), so no session id may hold a dot. An id such as a* is one plain token and
+// admits nothing extra. The one builder of a session grant checks it first: natsgrant.Session
+// calls natsgrant.SessionToken before it calls SessionReplies, and the NATS auth service refuses
+// such an id as bad_session_id (natscallout's decideSession).
+func SessionReplies(sessionID string) string {
+	return nats.InboxPrefix + "*." + sessionID + ".>"
 }
 
 // ConnectionProbeHeader is the one header the listener's connection probe carries on a session's
@@ -234,14 +290,16 @@ var streamSubjects = []string{
 
 // listenerOwnStreamLanes are the subjects the stream carries for the listener itself: the kept
 // lane, holding the role messages it could not deliver and the per-role drain cursors over them
-// (KeptTopicPrefix), and the resume lane, holding where each deleted session consumer stopped
-// (SessionResumeSubjectPrefix). Each is the stream's alone and no consumer filter takes one
-// (consumerFilterSubjects): a kept copy still carries its role topic in the envelope, so a
-// consumer handed one would deliver it as a role message and re-trigger role delivery on every
-// listener, and a drain cursor and a resume record are no envelope at all. The listener reads
-// both lanes itself instead (cmd/listener/role_keep.go, SessionConsumers). A lane added here is
-// carried by the stream and kept out of every consumer's filter by that one list.
-var listenerOwnStreamLanes = []string{KeptTopicPrefix + ">", SessionResumeSubjectPrefix + ">"}
+// (KeptTopicPrefix), the resume lane, holding where each deleted session consumer stopped
+// (SessionResumeSubjectPrefix), and the takeover lane, holding each role a session took from
+// another and how far the copy of the other's role messages has gone (TakeoverSubjectPrefix).
+// Each is the stream's alone and no consumer filter takes one (consumerFilterSubjects): a kept
+// copy still carries its role topic in the envelope, so a consumer handed one would deliver it as
+// a role message and re-trigger role delivery on every listener, and a drain cursor, a resume
+// record and a takeover record are no envelope at all. The listener reads the lanes itself instead
+// (cmd/listener/role_keep.go, cmd/listener/role_takeover.go, SessionConsumers). A lane added here
+// is carried by the stream and kept out of every consumer's filter by that one list.
+var listenerOwnStreamLanes = []string{KeptTopicPrefix + ">", SessionResumeSubjectPrefix + ">", TakeoverSubjectPrefix + ">"}
 
 // ListenerOwnLanes reports the lanes the stream carries for the listener itself
 // (listenerOwnStreamLanes), each as the prefix every topic of that lane begins with
@@ -315,6 +373,10 @@ var privateStreamSubjects = []string{
 	// the stream sequence its delivery stopped at (SessionResumeSubject): no session may
 	// register a topic under it and no replay hands one out.
 	SessionResumeSubjectPrefix + ">",
+	// A role a session took from another, which names both sessions and how far the copy of the
+	// previous holder's role messages has read (TakeoverSubject): the listener alone reads the
+	// lane, and no session may register a topic under it.
+	TakeoverSubjectPrefix + ">",
 }
 
 // ControllerNoticeRole reports the Legion role token whose holder topic's notices are for, and
@@ -336,6 +398,26 @@ func ControllerNoticeRole(topic string) (string, bool) {
 		return "", false
 	}
 	return contracts.ControllerRoleToken(project), true
+}
+
+// ControllerNoticeLane is ControllerNoticeRole read backwards: the notice lane whose holder role
+// is, and whether role is a Legion project's controller role at all. The project is read out of
+// role by the shape contracts.ControllerRoleToken gives it, taken from that func itself, and the
+// lane built from it must name role again, so a role token of any other shape names no lane.
+func ControllerNoticeLane(role string) (string, bool) {
+	prefix, suffix, _ := strings.Cut(contracts.ControllerRoleToken("\x00"), "\x00")
+	project, found := strings.CutPrefix(role, prefix)
+	if !found {
+		return "", false
+	}
+	if project, found = strings.CutSuffix(project, suffix); !found {
+		return "", false
+	}
+	lane := contracts.LegionNoticeTopicPrefix + project + contracts.ControllerNoticeSuffix
+	if named, isLane := ControllerNoticeRole(lane); !isLane || named != role {
+		return "", false
+	}
+	return lane, true
 }
 
 // NamesControllerNoticeLane reports whether any of topics is a controller notice lane
@@ -367,7 +449,7 @@ func NamesControllerNoticeLane(topics []string) bool {
 // holding `*` or `>` makes a wildcard of its "own" agent subject, which is no session's alone and
 // counts too.
 func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
-	if !slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) }) {
+	if !OverlapsPrivateStreamSubject(topic) {
 		return false
 	}
 	if role, lane := ControllerNoticeRole(topic); lane {
@@ -376,6 +458,14 @@ func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
 	own := contracts.LegacyAgentSubject(sessionID)
 	twin, _ := contracts.LegacyTwin(topic)
 	return (topic != own && twin != own) || strings.ContainsAny(sessionID, "*>")
+}
+
+// OverlapsPrivateStreamSubject reports whether topic overlaps a private stream subject
+// (privateStreamSubjects) under NATS wildcard rules, whoever's that subject is: the first question
+// ReachesPrivateStreamSubject asks, so a topic it answers false for reaches no session's private
+// subject, whatever session or roles a caller would weigh it for.
+func OverlapsPrivateStreamSubject(topic string) bool {
+	return slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) })
 }
 
 // StreamSubjects reports the notification subjects the stream carries, excluding the role lanes
@@ -448,7 +538,7 @@ func readStreamSubjects(js nats.JetStreamContext) ([]string, error) {
 // (keepStream), so while two builds run, the older one never reverts what the newer one set.
 // The consumer cap (streamMaxConsumers) takes none: like the copies and the byte limit it is
 // only ever raised, so two builds that compile different caps never lower each other's.
-const streamConfigGeneration = 4
+const streamConfigGeneration = 5
 
 // streamGenerationKey is the stream metadata key that holds the generation of its settings. A
 // stream without it was last set by a build before generations: generation 0.
@@ -781,8 +871,32 @@ func (r streamReconciliation) log() {
 	}
 }
 
-// ensureStreamWithConfig creates the stream with cfg, under a fresh StreamIDMetadataKey, or
-// reconciles the deployed one towards cfg, and returns the subjects the stream carries afterwards.
+// streamEnsure is who ensures the stream (ensureStreamWithConfig), which decides whether the
+// ensure waits for the leader of a stream it finds with none: one that another program created or
+// raised a moment ago, or that lost its leader.
+type streamEnsure int
+
+const (
+	// atStart is a program's start in the foreground (install): a write it sends to a stream in its
+	// first election draws no answer, so it waits for the leader, as the start that created or
+	// raised the stream does.
+	atStart streamEnsure = iota + 1
+	// atReconnect is the reconnect hook (ensureStreamOn), a background start's first ensure
+	// included: the hooks after it rewatch the program's state, and a stream a connection event
+	// finds with no leader may stay so past the hang guard, as one whose members are lost does, so
+	// it waits for no election it did not cause. A stream it must reconcile is still updated, and
+	// while the cluster has no quorum that update fails at once and so does the run, as at main,
+	// which recovery runs again once the quorum is back. A create or a raise it makes itself is
+	// still followed by a wait for the leader, as at a start; no publish waits for the run
+	// (WithConnectInBackground, onReconnect), so a run that wait ends at the guard holds no write,
+	// only the hooks after it, which recovery runs again after its backoff.
+	atReconnect
+)
+
+// ensureStreamWithConfig ensures the stream for at, the caller that ensures it (streamEnsure): a
+// program's start (atStart) or the reconnect hook (atReconnect). It creates the stream with cfg,
+// under a fresh StreamIDMetadataKey, or reconciles the deployed one towards cfg, and returns the
+// subjects the stream carries afterwards.
 // cfg's Replicas is the deployment's replica count and its MaxBytes the deployment's byte limit, 0
 // when it sets none. defaultsAnUnsetCap is what the connected server is, read from the version it
 // answers (serverDefaultsAnUnsetCap): whether a deployed stream with no consumer cap is one the
@@ -845,10 +959,26 @@ func (r streamReconciliation) log() {
 // (AddStream answers ErrStreamNameAlreadyInUse, as its config's id differs). Two that both find no
 // id write the same one, derived from what both read. A third race is settled here: a server that
 // leaves one of two starts' stream reads or creates unanswered, which each request below is sent
-// again for (sentAgain), since a start that returns such an error ends the program.
-func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
+// again for (sentAgain), since a start that returns such an error ends the program. Those sends go
+// on until the server answers, ctx ends or the start's hang guard passes (startHangGuard): the
+// first send of a create of a stream of more than one copy is answered only once its group has
+// elected a leader, however long the election takes. A request that drew no answer by then is
+// named in the error, `ENVOY_NOTIFICATIONS STREAM.CREATE: 3 sends drew no answer when the wait
+// ended: ...`. A create sent again while that election runs is answered before it ends, with the
+// stream still leaderless, and so is a raise of the stream's copies, at once (as a bucket's
+// raise is, awaitReplicasCurrent): so a create of more than one copy, and an update that raises
+// the copies, are followed by a wait for the stream's leader (awaitStreamLeader). Measured with
+// nats-server v2.15.1: a start whose stream's first election was held 11 s and 30 s answered
+// after its second send at 10 s, and its first publish then failed "no response from stream"; a
+// start that raised the stream from one copy to three answered at once, and its first publish,
+// with no election held, drew no answer within its 5 s.
+func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool, at streamEnsure) ([]string, error) {
+	ctx, cancel := hangGuard(ctx, startHangGuard)
+	defer cancel()
+	ctx = withReadLimit(ctx)
+	read, create := Stream+" STREAM.INFO", Stream+" STREAM.CREATE"
 	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
-	info, err := sentAgain("STREAM.INFO", readStream)
+	info, err := readAgain(ctx, read, readLimitOf(ctx), readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		created := *cfg
 		created.Metadata = stampGeneration(cfg.Metadata)
@@ -859,22 +989,39 @@ func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, de
 		// jsClusteredStreamRequest, "This is an equal assignment"), so the start goes on; only
 		// another start's create, which carries another id, draws ErrStreamNameAlreadyInUse, which
 		// this branch reads as such and follows with the read below.
-		_, err = sentAgain("STREAM.CREATE", func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
+		_, err = sentAgain(ctx, create, func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
 		if err == nil {
+			if created.Replicas > 1 {
+				err = awaitStreamLeader(ctx, js, afterCreate, Stream)
+			}
+			if err != nil {
+				return nil, err
+			}
 			return created.Subjects, nil
+		}
+		if unanswered(err) || ctx.Err() != nil {
+			return nil, namedRequest(create, err)
 		}
 		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return nil, refusedSettings(err, nil, &created)
 		}
-		info, err = sentAgain("STREAM.INFO", readStream)
+		info, err = readAgain(ctx, read, readLimitOf(ctx), readStream)
+	}
+	if unanswered(err) || ctx.Err() != nil {
+		return nil, namedRequest(read, err)
 	}
 	if err != nil {
 		return nil, err
 	}
-	deployedGeneration := MetadataGeneration(info.Config.Metadata, streamGenerationKey)
-	if deployedGeneration > streamConfigGeneration {
-		slog.Info("envoy nats stream settings belong to a newer build, so this build leaves them as they are",
-			slog.Int("deployed_generation", deployedGeneration), slog.Int("own_generation", streamConfigGeneration))
+	if leaderless(info) && at == atStart {
+		// The stream another start created or raised a moment ago is still in its first election:
+		// that start's own wait does not reach this one, and a write sent now draws no answer.
+		if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
+			return nil, err
+		}
+	}
+	if newerBuild(info) {
+		logLeftToNewerBuild(info)
 		return info.Config.Subjects, nil
 	}
 	desired, reconciliation := reconciledStream(info, cfg, defaultsAnUnsetCap)
@@ -882,23 +1029,79 @@ func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, de
 		reconciliation.log()
 		return info.Config.Subjects, nil
 	}
+	// The migrate and the purge below are requests a server can leave unanswered, and each is
+	// abandoned when ctx ends (Bounded), so the ensure ends at ctx or the start's hang guard like
+	// every other wait of it, naming the write that was in flight. The update bounds itself
+	// (updateStream).
+	written := func(step string, write func() error) error {
+		_, answered, err := Bounded(ctx, func() (struct{}, error) { return struct{}{}, write() })
+		if !answered {
+			return fmt.Errorf("%s %s: no answer when the wait ended: %w", step, Stream, context.Cause(ctx))
+		}
+		return err
+	}
 	migratingRoleLanes := streamCapturesRoleLanes(info.Config.Subjects) && !streamCapturesRoleLanes(desired.Subjects)
-	if err := migrateRoleLanesOffStream(js, &info.Config, &desired); err != nil {
+	if err := written("migrate", func() error { return migrateRoleLanesOffStream(js, &info.Config, &desired) }); err != nil {
 		return nil, err
 	}
-	if err := updateStream(js, &desired, func(again *nats.StreamInfo) bool {
-		reconciled, _ := reconciledStream(again, cfg, defaultsAnUnsetCap)
-		return reflect.DeepEqual(reconciled, again.Config)
-	}); err != nil {
-		return nil, refusedSettings(err, &info.Config, &desired)
+	// An update sent again is reconciled from the stream as its read found it, and none is sent
+	// onto a stream a newer build stamped while this one's update went unanswered (updateStream).
+	reconcile := func(current *nats.StreamInfo) (nats.StreamConfig, bool) {
+		if newerBuild(current) {
+			return nats.StreamConfig{}, false
+		}
+		reconciled, _ := reconciledStream(current, cfg, defaultsAnUnsetCap)
+		return reconciled, true
 	}
+	update, err := updateStream(ctx, js, info, reconcile, func(again *nats.StreamInfo) bool {
+		reconciled, write := reconcile(again)
+		return write && reflect.DeepEqual(reconciled, again.Config)
+	})
+	switch {
+	case err != nil && ctx.Err() != nil:
+		// updateStream ends on a silence only when ctx does, and a silence refused no setting.
+		return nil, fmt.Errorf("update %s: %w", Stream, err)
+	case err != nil:
+		return nil, refusedSettings(err, &update.from.Config, &update.sent)
+	case update.declined:
+		// A newer build's start wrote the stream while this one's update was unanswered: its
+		// settings stand, as on a first read that finds them, and so does its new election.
+		if leaderless(update.from) && at == atStart {
+			if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
+				return nil, err
+			}
+		}
+		logLeftToNewerBuild(update.from)
+		return update.from.Config.Subjects, nil
+	}
+	_, reconciliation = reconciledStream(update.from, cfg, defaultsAnUnsetCap)
 	reconciliation.log()
-	if migratingRoleLanes {
-		if err := purgeLegacyRoleMessages(js); err != nil {
+	if update.sent.Replicas > info.Config.Replicas {
+		if err := awaitStreamLeader(ctx, js, afterRaise, Stream); err != nil {
 			return nil, err
 		}
 	}
-	return desired.Subjects, nil
+	if migratingRoleLanes {
+		if err := written("purge", func() error { return purgeLegacyRoleMessages(js) }); err != nil {
+			return nil, err
+		}
+	}
+	return update.sent.Subjects, nil
+}
+
+// newerBuild reports whether info's stream carries the settings of a newer build, one that stamped
+// a generation above this build's (streamGenerationKey), which this build leaves exactly as they
+// are: its start (ensureStreamWithConfig) and its keeper (keepStream) ask it of every read they
+// would write from, the first one and each one after an update that drew no answer.
+func newerBuild(info *nats.StreamInfo) bool {
+	return MetadataGeneration(info.Config.Metadata, streamGenerationKey) > streamConfigGeneration
+}
+
+// logLeftToNewerBuild logs that a start found info's stream carrying a newer build's settings and
+// leaves them as they are (newerBuild).
+func logLeftToNewerBuild(info *nats.StreamInfo) {
+	slog.Info("envoy nats stream settings belong to a newer build, so this build leaves them as they are",
+		slog.Int("deployed_generation", MetadataGeneration(info.Config.Metadata, streamGenerationKey)), slog.Int("own_generation", streamConfigGeneration))
 }
 
 // MetadataGeneration is the generation metadata holds under key, as a stream or a durable consumer
@@ -1015,13 +1218,34 @@ func keptSubjects(deployed, own []string) []string {
 	return kept
 }
 
-// updateStream sends update, a whole stream configuration, and succeeds when the server accepts
-// it. Two other answers come of another update of the same stream landing at once rather than of
-// update itself, and after either the stream update names is read again, the update succeeding
-// when the stream holds what the caller asked for (holds):
-//   - an answer that never came (unanswered): nats-server can leave one of two replica changes
-//     proposed at once unanswered (seen with v2.10.29). That update may still land, so it is not
-//     sent again, and a stream that does not hold it returns the update's own error;
+// streamUpdate is what updateStream came to: from, the read of the stream its last decision was
+// made on (the caller's own read, or the read after a send that drew no answer or an overlap
+// refusal); sent, the update it sent from that read, which the caller's error names
+// (refusedSettings) and a keeper's line reports against from (restoredFields); and declined, true
+// when change declined to write the stream as from found it, so nothing was sent from it.
+type streamUpdate struct {
+	from     *nats.StreamInfo
+	sent     nats.StreamConfig
+	declined bool
+}
+
+// updateStream writes change, the update a caller makes of a stream given a read of it, starting
+// from info, the caller's own read, and succeeds when the server accepts it or when the stream,
+// read again, holds what the caller asked for (holds). change may decline a read (false), and the
+// call then sends nothing more and reports it declined (streamUpdate): the stream ensure and the
+// keeper decline a stream a newer build stamped (newerBuild). Two answers say nothing of whether
+// the update landed, and after either the stream is read again:
+//   - an answer that never came (unanswered): nats-server v2.15.1 drops an update with no answer
+//     when its metadata proposal fails because the term moved (jsClusteredStreamUpdateRequestLocked,
+//     server/jetstream_cluster.go), and v2.10.29 was seen to leave one of two replica changes
+//     proposed at once unanswered. A stream that holds what was asked for has taken the update; one
+//     that does not is sent it again, for as long as ctx lasts, so an update the server dropped
+//     cannot fail the step at the caller's JetStream wait. Each send waits that MaxWait, a hang
+//     guard of one send, and the step ends on a server that never answers only when ctx does,
+//     which every caller bounds: a start's or a keeper pass's hang guard (startHangGuard), the
+//     session reaper's RequestTimeout. An update sent again while the one before it is still
+//     proposed is checked against that proposal (streamAssignmentOrInflight, v2.15.1), so a raise
+//     sent again stacks on the raise in flight rather than choosing another peer set;
 //   - a refusal of the update's subjects as overlapping an existing stream (overlapRefused), which
 //     every nats-server before v2.12.5 can give the later of two updates of one stream: the server
 //     reads the stream's assignment, releases its lock to check the new configuration, and then
@@ -1030,28 +1254,54 @@ func keptSubjects(deployed, own []string) []string {
 //     (jsClusteredStreamUpdateRequest, v2.10.29 server/jetstream_cluster.go; nats-server commit
 //     cb1afd68d014, first released in v2.12.5, skips by name). Nothing was written, so a stream
 //     that does not hold the update is sent it again, the write a server without that race would
-//     have taken after the other, up to overlapSends sends in all. A stream another stream really
-//     does overlap is refused every send, and the last refusal is returned.
+//     have taken after the other, up to overlapSends refused sends in all. A stream another stream
+//     really does overlap is refused every send, and the last refusal is returned.
 //
-// Any other refusal is the update's own error.
-func updateStream(js nats.JetStreamContext, update *nats.StreamConfig, holds func(*nats.StreamInfo) bool) error {
-	settled := func() bool {
-		again, err := js.StreamInfo(update.Name)
-		return err == nil && holds(again)
-	}
-	var err error
-	for range overlapSends {
-		if _, err = js.UpdateStream(update); !overlapRefused(err) {
-			break
+// Each update sent again is change applied to the stream as the read before it found it, so it
+// changes only what the caller changes and never writes back what another writer changed since
+// the caller's read, and none is sent onto a stream that read finds change declines, such as one
+// a newer build wrote while this update went unanswered. It goes bucketAppliedInterval after that
+// read, as sentAgain pauses between two sends. Any other refusal is the update's own error. A
+// send in flight when ctx ends is abandoned, its answer dropped (Bounded), and the step ends
+// naming ctx's cause.
+//
+// The read after the update is a read of a stream's state, sent again while the server leaves it
+// unanswered, each send up to its read limit, for as long as ctx lasts (readAgain): an update
+// sent while the stream's group elects a leader can draw no answer, and a read sent then can be
+// lost too, so a read sent once could leave a raise that landed reported as one that failed.
+func updateStream(ctx context.Context, js nats.JetStreamContext, info *nats.StreamInfo, change func(*nats.StreamInfo) (nats.StreamConfig, bool), holds func(*nats.StreamInfo) bool) (streamUpdate, error) {
+	name := info.Config.Name
+	result := streamUpdate{from: info}
+	for overlaps := 0; ; {
+		update, write := change(result.from)
+		if !write {
+			result.declined = true
+			return result, nil
 		}
-		if settled() {
-			return nil
+		result.sent = update
+		_, answered, err := Bounded(ctx, func() (*nats.StreamInfo, error) { return js.UpdateStream(&update) })
+		switch {
+		case !answered:
+			return result, fmt.Errorf("the update drew no answer when the wait ended: %w", context.Cause(ctx))
+		case overlapRefused(err):
+			overlaps++
+		case !unanswered(err):
+			return result, err
 		}
+		again, readErr := readAgain(ctx, name+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(name) })
+		switch {
+		case readErr == nil && holds(again):
+			return result, nil
+		case readErr != nil:
+			return result, fmt.Errorf("%w, and the read after it: %w", err, readErr)
+		case overlaps == overlapSends:
+			return result, err
+		}
+		if ended := pause(ctx, bucketAppliedInterval); ended != nil {
+			return result, fmt.Errorf("%w, and the wait ended before it was sent again: %w", err, ended)
+		}
+		result.from = again
 	}
-	if unanswered(err) && settled() {
-		return nil
-	}
-	return err
 }
 
 // overlapSends bounds the sends of one update the server refuses as overlapping an existing stream
@@ -1096,84 +1346,6 @@ func unanswered(err error) bool {
 	return errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// unansweredSends bounds how many times a caller sends one JetStream request the server left
-// unanswered (sentAgain): the stream read and the create of ensureStreamWithConfig, the handle
-// open EnsureKeyValue makes, and EnsureKeyValue's lookup of a KV bucket and its create
-// (internal/bus/kv.go). A wait that runs out is either a request the server will never answer,
-// on one of the paths sentAgain lists below, or one it is still working on, and either is safe
-// to send again: a read changes nothing, and a second identical create is deduplicated and
-// carries the same id as the one that may have landed, so no second send can contradict the
-// send before it (an update is read again rather than sent again, updateStream). A longer wait
-// buys nothing for an answer that is never coming. Three sends, because a start that lost two in
-// a row has a bus that is not serving JetStream at all, which is a start that must end. Each
-// send carries the wait of each request it makes, so this count times that wait is a caller's
-// worst case only where the server answers nothing at all and every send ends at its first
-// request; a step whose earlier requests do answer costs more, which EnsureKeyValue's doc counts.
-const unansweredSends = 3
-
-// sentAgain is what send answers, sent again while the server leaves it unanswered (unanswered)
-// and at most unansweredSends times, with request naming it in the line each further send logs.
-// Any answer, the server's refusal included, is returned at once, so a refused create is sent
-// once. A refusal the server reports on the connection rather than in the request's answer
-// arrives here as an answer too, because EnsureKeyValue's lookup and create read the connection's
-// record of it before they hand this function a request's silence (refusedSend): on a connection
-// a client owns, a request of theirs the grant does not cover is sent once. The handle open and
-// ensureStreamWithConfig's read and create read no such record, so a request of theirs the grant
-// does not cover is sent unansweredSends times; for a bucket's handle open that cannot happen,
-// since the lookup before it publishes to the same subject and ends the call at its first refused
-// send.
-//
-// Two programs starting at once each reconcile the one ENVOY_NOTIFICATIONS stream, and the start
-// that loses the answer to its own stream read is the listener that dies ten seconds after it
-// binds its port, serving nothing: cmd/listener's role-lane row
-// (TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy), whose fatal line was
-// the bare "context deadline exceeded" of the JetStream context's own ten-second wait.
-// Nor is it the in-process server's own fault: the production server leaves a JetStream request
-// unanswered too while its meta leader changes.
-//
-// A request that draws no answer never draws one later, because neither side sends it again:
-// nats.go publishes each JetStream request exactly once and waits (nats.go@v1.53.1
-// js.go:3559-3578), and nats-server v2.15.1 returns from several paths these requests take with
-// no response to the requester:
-//   - the account $JS.API.INFO nats.go sends before a KV create (nats.go@v1.53.1 kv.go:432-434)
-//     and a STREAM.CREATE, each at a member that is not the metadata leader
-//     (server/jetstream_api.go:1461-1474 and :1550-1563), and a STREAM.INFO of a stream this
-//     member holds no assignment for (a bucket not yet created, or one whose create this member
-//     has not yet applied) at such a member (:2087-2093). Each of those answers
-//     JSClusterNotAvailError instead once js.isLeaderless() is true, which it is only once the
-//     metadata group is older than lostQuorumInterval and the member holds no leader
-//     (jetstream_cluster.go:1481-1497); so the silence is a young metadata group, or a member
-//     that has not yet seen its leader go. That error is an answer and is not sent again. The
-//     STREAM.INFO handler sends its own 500 ms late (sendDelayedAPIErrResponse, errRespDelay at
-//     jetstream_api.go:1211), to let the leader answer first;
-//   - a STREAM.INFO of an existing bucket at a member that is not its stream's leader, while
-//     that member does not yet see the stream's group as leaderless (:2100-2133): only the
-//     stream's leader answers it;
-//   - a STREAM.CREATE whose metadata proposal is refused because the term moved
-//     (jetstream_cluster.go:11110-11112, with raft.go:1046-1060);
-//   - every request pending in the JetStream API queue (a STREAM.CREATE) or the info queue (a
-//     STREAM.INFO, the account $JS.API.INFO) when a push reaches that queue's limit, 10,000 by
-//     default: the server drains that queue, answers none of them, logs a rate-limited warning
-//     and publishes JSAdvisoryAPILimitReached to the system account
-//     (jetstream_api.go:1029-1045), which is no answer to the caller.
-//
-// So a start that opens a bucket through a member in one of those states waits its whole bound
-// out and ends the program over one send that was never going to be answered.
-func sentAgain[T any](request string, send func() (T, error)) (T, error) {
-	var answer T
-	var err error
-	for sends := 1; sends <= unansweredSends; sends++ {
-		if answer, err = send(); !unanswered(err) {
-			return answer, err
-		}
-		if sends < unansweredSends {
-			slog.Warn("envoy nats stream request unanswered; sending it again",
-				slog.String("request", request), slog.Int("sent", sends), slog.String("error", err.Error()))
-		}
-	}
-	return answer, err
-}
-
 // refusedSettings is err, the server's answer to request, a create (deployed nil) or an update of
 // the stream deployed, named with each deployment setting whose value request changes:
 // ReplicasEnvVar when it sets more than one copy the stream does not have (a create, or a raise),
@@ -1181,7 +1353,10 @@ func sentAgain[T any](request string, send func() (T, error)) (T, error) {
 // numbers and not where they came from, so the names are those of the settings every deployed
 // program reads them from (WithReplicas, WithStreamMaxBytes). One copy is never named: a server
 // refuses no stream for having one. nil, and a refusal of a request that changes none of them, are
-// returned as they are.
+// returned as they are, and so is an error that is no answer of the server's at all: a request the
+// server left unanswered (unanswered) or one whose wait ended (context.Canceled, or the hang
+// guard's cause, which wraps context.DeadlineExceeded), since a server that answered nothing
+// refused no setting.
 //
 // An update that changes the deployed stream's consumer cap names the cap too, under the name
 // nats-server spells it (max_consumers), with the value this binary asks for; the cap is compiled
@@ -1195,8 +1370,8 @@ func sentAgain[T any](request string, send func() (T, error)) (T, error) {
 // cap needs is nothing to an operator whose update was refused for another reason. A create is
 // never named: a create carries the cap on every nats-server.
 func refusedSettings(err error, deployed, request *nats.StreamConfig) error {
-	if err == nil {
-		return nil
+	if err == nil || unanswered(err) || errors.Is(err, context.Canceled) {
+		return err
 	}
 	var settings []string
 	if request.Replicas > 1 && (deployed == nil || request.Replicas != deployed.Replicas) {

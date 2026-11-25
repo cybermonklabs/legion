@@ -1,7 +1,23 @@
 package textcheck
 
+//ci:reads packages/daemon/internal/api/waiting_line_contract_extract.txt readExtract reads it as ../api/waiting_line_contract_extract.txt
+//ci:reads packages/daemon/internal/workflow/waiting_line_words_extract.txt readExtract reads it as ../workflow/waiting_line_words_extract.txt
+//ci:reads packages/daemon/cmd/legion/awaiting_summary_extract.txt readExtract reads it as ../../cmd/legion/awaiting_summary_extract.txt
+//ci:reads packages/daemon/cmd/legion/waiting_line_block_extract.txt readExtract reads it as ../../cmd/legion/waiting_line_block_extract.txt
+//ci:reads docs/site/src/content/docs/legion/concepts.md shippedText reads it under ../../../..
+//ci:reads docs/site/src/content/docs/legion/running-legion.md shippedText reads it under ../../../..
+//ci:reads docs/site/src/content/docs/legion/troubleshooting.md shippedText reads it under ../../../..
+//ci:reads packages/contracts/src/legion-api.ts shippedText reads it under ../../../..
+//ci:reads packages/pi-legion/AGENTS.md shippedText reads it under ../../../..
+//ci:reads packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml shippedText reads that one fragment under ../../../..
+//ci:reads packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml shippedText reads that one fragment under ../../../..
+//ci:reads packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml shippedText reads that one fragment under ../../../..
+
 import (
+	"errors"
+	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -37,6 +53,12 @@ import (
 // What they do not prove: that a sentence around a quoted name is true, which stays a reader's
 // to judge; that the copies say what the daemon declares, which is the product half's - a
 // renamed constant fails there and not here; and anything of a text these lists do not name.
+//
+// Each Markdown text is held twice: as written, which an agent or an editor reads, and as the
+// rendered page shows it (visibleMarkdown), which a person reads. A quotation, a sample line or a
+// window only an HTML comment holds is then one no reader of the page sees, and fails rather than
+// passing; a banned phrase fails in either reading, whether a comment holds it or splits it. A
+// text outside Markdown has the one reading, since an HTML comment hides nothing there.
 //
 // This file imports no product package of packages/daemon and writes out as literals the
 // strings it needs from one. That is the rule the split is made of: importing internal/api or
@@ -75,7 +97,7 @@ const (
 	// constant, holds the files of packages/daemon to it directly and holds every quotation of
 	// the copy to it too, so the rename fails there while the quotations here stay the texts'
 	// own words.
-	waitingLineBand = "among the issues whose work came back, oldest first"
+	waitingLineBand = "within its priority, among the issues whose work came back, oldest first"
 	// The one form word a section marker of the workflow package's copy carries, and the only
 	// one either reader of that copy knows: a body in that form is the quoted file's prose on
 	// one line. TestEveryWaitingLineWordsExtractSectionIsCollapsed below is what holds the copy
@@ -104,16 +126,14 @@ var waitingLineContractTexts = []string{
 // rather than read from that test, which this file may not import, and it is what the committed
 // copy is held to: a section deleted there would otherwise take that file's coverage with it,
 // since the product half reads the sections and no longer the files. It is also what the ban
-// below reads, over the whole of each file.
+// below reads, over the whole of each file. The controller skill's two references leave the
+// list while the priority's band words reach them in a change of their own, which puts them
+// back with their sections.
 var waitingLineBandTexts = []string{
-	"AGENTS.md",
 	runningLegionGuide,
 	"docs/site/src/content/docs/legion/troubleshooting.md",
 	"packages/contracts/src/legion-api.ts",
-	"skills/legion-controller/references/admission.md",
 	"docs/site/src/content/docs/legion/concepts.md",
-	"skills/legion-architect/references/acceptance.md",
-	"skills/legion-controller/references/wakes.md",
 }
 
 // quotedText is one section of a committed copy: the repository-relative path it was taken from
@@ -139,25 +159,33 @@ func TestTheWaitingLineContractExtractIsEveryWindowOfTheShippedTexts(t *testing.
 		}
 		return quotedText{path: marker}, true
 	})
-	if slices.Equal(got, want) {
-		return
-	}
-	differs := waitingLineContractExtract
-	for i := range max(len(got), len(want)) {
-		if i >= len(got) || i >= len(want) || got[i] != want[i] {
-			if i < len(want) {
-				differs = want[i].path
-			} else {
-				differs = got[i].path
+	if !slices.Equal(got, want) {
+		differs := waitingLineContractExtract
+		for i := range max(len(got), len(want)) {
+			if i >= len(got) || i >= len(want) || got[i] != want[i] {
+				if i < len(want) {
+					differs = want[i].path
+				} else {
+					differs = got[i].path
+				}
+				break
 			}
-			break
+		}
+		t.Errorf("%s is not what the shipped texts say, from %s on: the windows a text yields are read "+
+			"by internal/api's TestTheShippedTextsNameTheWaitingLinesOwnContract out of this copy and "+
+			"never out of the text, so the two answer for the texts only while they are equal. Replace "+
+			"everything under that file's `#` header with:\n\n%s",
+			waitingLineContractExtract, differs, renderQuotedTexts(want))
+	}
+	named := regexp.MustCompile(waitingLineNamed)
+	for _, name := range waitingLineContractTexts {
+		if err := contractWindowsShownAsWritten(named, name, shippedText(t, name)); err != nil {
+			t.Errorf("%s: %v\nthe copy %s holds its windows as written, which is where internal/api's "+
+				"TestTheShippedTextsNameTheWaitingLinesOwnContract reads them, so a window the rendered page "+
+				"does not show as written tells its reader nothing the check holds", name, err,
+				waitingLineContractExtract)
 		}
 	}
-	t.Errorf("%s is not what the shipped texts say, from %s on: the windows a text yields are read "+
-		"by internal/api's TestTheShippedTextsNameTheWaitingLinesOwnContract out of this copy and "+
-		"never out of the text, so the two answer for the texts only while they are equal. Replace "+
-		"everything under that file's `#` header with:\n\n%s",
-		waitingLineContractExtract, differs, renderQuotedTexts(want))
 }
 
 // waitingLineContractWindows is every window the seven texts yield under the rule internal/api's
@@ -177,6 +205,32 @@ func waitingLineContractWindows(t *testing.T) []quotedText {
 	return windows
 }
 
+// contractWindowsShownAsWritten holds the windows text, the file called name, yields
+// (waitingLineContractWindowsIn, named being waitingLineNamed compiled) as the rendered page shows
+// it (visibleMarkdown) to the ones it yields as written, which are the copy's. A mention only an
+// HTML comment holds yields a window as written and none on the page, and a comment within a
+// window's bytes makes it one the page shows otherwise: either is refused for the comment
+// (errCommented), naming the first window that differs. A text outside Markdown has the one
+// reading.
+func contractWindowsShownAsWritten(named *regexp.Regexp, name, text string) error {
+	if path.Ext(name) != ".md" {
+		return nil
+	}
+	written, shown := waitingLineContractWindowsIn(named, name, text), waitingLineContractWindowsIn(named, name, visibleMarkdown(text))
+	for i := range max(len(written), len(shown)) {
+		if i < len(written) && i < len(shown) && written[i] == shown[i] {
+			continue
+		}
+		if i < len(written) {
+			return fmt.Errorf("the window as written\n%s\nis not one the rendered page shows, its HTML comments "+
+				"hidden: %w", written[i].body, errCommented)
+		}
+		return fmt.Errorf("the rendered page shows the window\n%s\nwhich is none as written: %w", shown[i].body,
+			errCommented)
+	}
+	return nil
+}
+
 // Every quotation of the workflow package's copy is still in the file it names, in the one-line
 // form the copy quotes it in, and every file of the band list still has a section. The product
 // half reads this copy and not the files, so a sentence reworded in a text and not here leaves
@@ -185,10 +239,11 @@ func waitingLineContractWindows(t *testing.T) []quotedText {
 func TestTheWaitingLineWordsExtractIsWhatTheShippedTextsSay(t *testing.T) {
 	sections := waitingLineWordsSections(t)
 	for _, section := range sections {
-		if !strings.Contains(onOneLine(shippedText(t, section.path)), section.body) {
+		if err := passageHeld(section.path, shippedText(t, section.path), section.body, onOneLine); err != nil {
 			t.Errorf("%s no longer carries the quotation %s is holding internal/workflow's check "+
-				"to:\n  %s\nquote the file as it reads now, on one line, in the same commit as the "+
-				"edit that moved it", section.path, waitingLineWordsExtract, section.body)
+				"to (%v):\n  %s\nquote the file as it reads now, on one line, or take out the comment the "+
+				"failure names, in the same commit as the edit that moved it", section.path,
+				waitingLineWordsExtract, err, section.body)
 		}
 	}
 	for _, file := range waitingLineBandTexts {
@@ -267,10 +322,11 @@ func TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample(t *testing.T) {
 		t.Fatalf("%s carries nothing under its `#` header: cmd/legion's check of the sample has "+
 			"nothing to find its line in", awaitingSummaryExtract)
 	}
-	if !strings.Contains(shippedText(t, runningLegionGuide), sample) {
-		t.Errorf("%s is no longer in %s, which cmd/legion's TestTheShippedWordsNameTheWaitingLineCount "+
-			"reads it for:\n%s\nquote the guide's sample as it prints now, in the same commit as the "+
-			"edit that changed it", awaitingSummaryExtract, runningLegionGuide, sample)
+	if err := passageHeld(runningLegionGuide, shippedText(t, runningLegionGuide), sample, verbatim); err != nil {
+		t.Errorf("%s is no longer in %s (%v), which cmd/legion's TestTheShippedWordsNameTheWaitingLineCount "+
+			"reads it for:\n%s\nquote the guide's sample as it prints now, or take out the comment the "+
+			"failure names, in the same commit as the edit that changed it", awaitingSummaryExtract,
+			runningLegionGuide, err, sample)
 	}
 }
 
@@ -288,10 +344,11 @@ func TestTheWaitingLineBlockExtractIsTheGuidesWaitingLineBlock(t *testing.T) {
 		}
 		return quotedText{path: marker}, true
 	}) {
-		if !strings.Contains(guide, passage.body) {
-			t.Errorf("%s is no longer in %s, which cmd/legion's TestTheShippedWordsNameTheWaitingLineBlock "+
-				"reads it for:\n%s\nquote the guide's passage as it reads now, in the same commit as the "+
-				"edit that changed it", waitingLineBlockExtract, runningLegionGuide, passage.body)
+		if err := passageHeld(runningLegionGuide, guide, passage.body, verbatim); err != nil {
+			t.Errorf("%s is no longer in %s (%v), which cmd/legion's TestTheShippedWordsNameTheWaitingLineBlock "+
+				"reads it for:\n%s\nquote the guide's passage as it reads now, or take out the comment the "+
+				"failure names, in the same commit as the edit that changed it", waitingLineBlockExtract,
+				runningLegionGuide, err, passage.body)
 		}
 	}
 }
@@ -305,33 +362,82 @@ func TestTheWaitingLineBlockExtractIsTheGuidesWaitingLineBlock(t *testing.T) {
 // placed at the moment its gate opened, and never the position that placement gives an issue,
 // which depends on what else waits.
 //
-// What it proves: no file of the list carries one of the four wordings that claim a position.
+// What it proves: no file of the list carries one of the four wordings that claim a position
+// (positionClaims), as written or, for a Markdown file, as its rendered page shows it.
 // What it does not: whether what a file says instead is true, which stays a reader's to judge,
 // and a wrong wording nobody has written yet, since the list holds the phrases these texts used
 // and no more. internal/workflow keeps the same ban over the files of packages/daemon, which
 // are its own job's inputs either way.
 func TestNoShippedTextClaimsAPositionInTheWaitingLine(t *testing.T) {
-	// Lower case, since the text is lower-cased before the comparison: a sentence that opens on
-	// one of these is banned as the one that carries it mid-sentence is.
-	banned := []string{
-		"front of the waiting line",
-		"front of the line",
-		"front of the whole line",
-		"never first in",
-	}
 	for _, file := range waitingLineBandTexts {
-		text := strings.ToLower(onOneLine(shippedText(t, file)))
-		for _, phrase := range banned {
-			if !strings.Contains(text, phrase) {
-				continue
-			}
-			t.Errorf("%s says %q, which no text the waiting line's checks list may say: such a "+
-				"text states where the line puts an issue - %q, a tree root's own first phase "+
-				"placed at the moment its gate opened - and never the position that gives it, "+
-				"which depends on what else waits.", file, phrase, waitingLineBand)
+		if err := positionClaimsIn(file, shippedText(t, file)); err != nil {
+			t.Errorf("%s: %v; no text the waiting line's checks list may say one: such a text states where "+
+				"the line puts an issue - %q, a tree root's own first phase placed at the moment its gate "+
+				"opened - and never the position that gives it, which depends on what else waits.", file, err,
+				waitingLineBand)
 		}
 	}
 }
+
+// positionClaims are the wordings that claim a position in the waiting line, lower case, since a
+// text is lower-cased before the comparison: a sentence that opens on one of these is banned as
+// the one that carries it mid-sentence is.
+var positionClaims = []string{
+	"front of the waiting line",
+	"front of the line",
+	"front of the whole line",
+	"never first in",
+}
+
+// errClaimsAPosition is why positionClaimsIn refuses a text: it says one of positionClaims.
+var errClaimsAPosition = errors.New("a wording that claims a position in the waiting line")
+
+// positionClaimsIn refuses text, the file called name, for each of positionClaims it says on one
+// line (onOneLine), in both its readings for a Markdown file (bothReadings): as written, where an
+// agent or an editor reads a phrase an HTML comment holds, and as the rendered page shows it
+// (visibleMarkdown), where a person reads a phrase a comment splits as whole.
+func positionClaimsIn(name, text string) error {
+	says := func(reading string) error {
+		lower := strings.ToLower(onOneLine(reading))
+		var said []error
+		for _, phrase := range positionClaims {
+			if strings.Contains(lower, phrase) {
+				said = append(said, fmt.Errorf("it says %q, %w", phrase, errClaimsAPosition))
+			}
+		}
+		return errors.Join(said...)
+	}
+	written := says(text)
+	if path.Ext(name) != ".md" {
+		return written
+	}
+	return bothReadings(written, says(visibleMarkdown(text)))
+}
+
+// errPassageMissing is why passageHeld refuses a text: the passage does not stand in it.
+var errPassageMissing = errors.New("the passage does not stand in it")
+
+// passageHeld holds text, the file called name, to carry passage in form: its prose on one line
+// (onOneLine), or the text as it is (verbatim). A Markdown file is held in both its readings
+// (bothReadings), as written and as the rendered page shows it (visibleMarkdown), so that a
+// passage only an HTML comment holds, fenced or not, fails for the comment; any other file is held
+// as written, since an HTML comment hides nothing there.
+func passageHeld(name, text, passage string, form func(string) string) error {
+	carries := func(reading string) error {
+		if strings.Contains(form(reading), passage) {
+			return nil
+		}
+		return errPassageMissing
+	}
+	written := carries(text)
+	if path.Ext(name) != ".md" {
+		return written
+	}
+	return bothReadings(written, carries(visibleMarkdown(text)))
+}
+
+// verbatim is a text as it is: the form passageHeld holds a passage quoted byte for byte in.
+func verbatim(text string) string { return text }
 
 // quotedSections reads a committed copy into its sections. A line that opens with `# ` is a
 // section marker when section says it is one, and every line under it, to the next marker, is
@@ -469,6 +575,64 @@ func TestAContractNumberWrappedOntoTheNextLineYieldsItsWindow(t *testing.T) {
 		if len(got) != wrapped.windows {
 			t.Errorf("%s yields %d windows under %s, want %d: %q", wrapped.shape, len(got), waitingLineNamed,
 				wrapped.windows, wrapped.text)
+		}
+	}
+}
+
+// Each read of a waiting-line text holds it where a reader sees it. A quotation or a fenced sample
+// only an HTML comment holds, a contract mention only a comment holds, a comment within a window's
+// bytes, and a comment that splits a quotation each leave the text as written and the rendered
+// page disagreeing, and fail for the comment; a banned phrase fails both when a comment holds it,
+// which an agent reading the file still reads, and when a comment splits it, which the page shows
+// whole. A "<!--" inside a fenced block hides nothing, and outside Markdown, in TypeScript or a
+// YAML fragment, a "<!--" is no comment at all. The quotation is prose, the sample a fenced block,
+// the mention prose: each case is in the shape the shipped texts write it in.
+func TestAWaitingLineTextIsHeldWhereAReaderSeesIt(t *testing.T) {
+	named := regexp.MustCompile(waitingLineNamed)
+	const sample = "  waiting line: 2\n    WIDGETS-14 1 of 2, returned: Its work came back."
+	const mention = "A daemon older than contract 58 serves no `waitingLine`, so that count reads 0."
+	filler := strings.Repeat("A sentence that names nothing. ", 10)
+	quotation := func(name, text string) error { return passageHeld(name, text, waitingLineBand, onOneLine) }
+	fencedSample := func(name, text string) error { return passageHeld(name, text, sample, verbatim) }
+	windows := func(name, text string) error { return contractWindowsShownAsWritten(named, name, text) }
+	for _, text := range []struct {
+		shape, name, text string
+		check             func(name, text string) error
+		err               error
+	}{
+		{"a quotation a reader sees", "guide.md",
+			"It stands within its priority,\namong the issues whose work came back,\noldest first, until it resumes.", quotation, nil},
+		{"a quotation inside a comment", "guide.md",
+			"It stands <!--\nwithin its priority, among the issues whose work came back,\noldest first, --> until it resumes.", quotation,
+			errCommented},
+		{"a comment inside a quotation", "guide.md",
+			"It stands within its priority, among the issues <!-- a note --> whose work came back, oldest first.", quotation, errCommented},
+		{"a quotation of TypeScript inside a \"<!--\"", "legion-api.ts",
+			"/** It stands <!-- within its priority, among the issues whose work came back, oldest first --> */", quotation, nil},
+		{"no quotation", "guide.md", "It stands among the issues, oldest first.", quotation, errPassageMissing},
+		{"a fenced sample a reader sees", "guide.md",
+			"- **What is it doing?**\n\n  ```text\n  legion WIDGETS\n" + sample + "\n  ```\n", fencedSample, nil},
+		{"a comment around the fenced sample", "guide.md",
+			"- **What is it doing?**\n\n  <!--\n  ```text\n  legion WIDGETS\n" + sample + "\n  ```\n  -->\n", fencedSample,
+			errCommented},
+		{"a fenced sample after a fenced block holding a comment's opening", "guide.md",
+			"```html\n<!--\n```\n\n  ```text\n" + sample + "\n  ```\n", fencedSample, nil},
+		{"a mention a reader sees", "guide.md", filler + mention + filler, windows, nil},
+		{"a mention inside a comment beyond its window", "guide.md",
+			"<!--\n" + filler + mention + filler + "\n-->\n", windows, errCommented},
+		{"a comment within a mention's window", "guide.md", mention + " <!-- a note -->", windows, errCommented},
+		{"a mention of YAML inside a \"<!--\"", "change.yaml", "body: '<!-- " + mention + " -->'\n", windows, nil},
+		{"no claim of a position", "guide.md", "It stands among the issues whose work came back.", positionClaimsIn, nil},
+		{"a claim a reader sees", "guide.md", "It goes to the front of the line.", positionClaimsIn, errClaimsAPosition},
+		{"a claim inside a comment", "guide.md", "<!-- It goes to the front of the line. -->", positionClaimsIn,
+			errCommented},
+		{"a comment that splits a claim", "guide.md", "It goes to the front of <!-- the whole --> the line.",
+			positionClaimsIn, errCommented},
+		{"a claim of TypeScript split by a \"<!--\"", "legion-api.ts", "/** front of <!-- a --> the line */",
+			positionClaimsIn, nil},
+	} {
+		if err := text.check(text.name, text.text); !errors.Is(err, text.err) {
+			t.Errorf("%s: the check answers the error %v, want %v: %q", text.shape, err, text.err, text.text)
 		}
 	}
 }

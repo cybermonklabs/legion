@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -800,6 +802,12 @@ func (s *server) relatedSearch(
 	if len(excluded) > 0 {
 		query, args = statement.excluding, append(args, excluded)
 	}
+	// The acting credential, last of the parameters each statement declares. The check runs off
+	// the write that triggered it, on a context of its own and with no credential of that
+	// writer's to hand, so it reads as one that proves no author (graphstore.ProvesAuthor): a
+	// node reserved for its author is suggested to nobody, which is the answer that can mislead
+	// no reader.
+	args = append(args, refs.VisibilityArg(model.Actor{}))
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return model.SearchResponse{}, err
@@ -1045,8 +1053,9 @@ const relatedCheckInsert = `
 // (persistSuggestions). Every source with a project and an owner gets one related_checks row: its
 // outcome, search mode, reason, the lexemes it searched for, the stages' and the whole check's
 // times and how many items it listed. A check whose project could not be resolved has no row to
-// write, since the row belongs to a project. The rows go in one round trip (store.Pool.SendBatch),
-// so an edit's decision blocks beyond decisionBlockCheckLimit, however many, cost one.
+// write, since the row belongs to a project. The rows go in one transaction of the same few round
+// trips however many there are (insertRelatedChecks), so an edit's decision blocks beyond
+// decisionBlockCheckLimit, however many, cost no more than one.
 //
 // related_checks rows the first attempt could not write are tried once more in the background
 // (retryRecord). Each row's id is chosen here and the insert does nothing where it exists, since
@@ -1119,17 +1128,27 @@ func (s *server) retryRecord(err error, write func(context.Context) error, messa
 	})
 }
 
-// insertRelatedChecks writes inserts' related_checks rows in one round trip. A batch is built for
-// each attempt: pgx keeps what it learned of a statement on the batch's queued queries, which
-// belongs to the connection that sent it. The rows are no write of the request that ran the
-// check: they record a write that has already committed and marked its key, so they are made
-// outside its transaction, and a failure is only logged.
+// insertRelatedChecks writes inserts' related_checks rows in a transaction of its own, in one
+// round trip between its BEGIN and its COMMIT. A batch is built for each attempt: pgx keeps what it
+// learned of a statement on the batch's queued queries, which belongs to the connection that sent
+// it. The rows are no write of the request that ran the check: they record a write that has
+// already committed and marked its key, so they are made outside its transaction, under a context
+// with the request's commit step taken off (store.WithoutBeforeCommit), so that the record never
+// marks the request's Idempotency-Key, and a failure is only logged.
 func (s *server) insertRelatedChecks(ctx context.Context, inserts [][]any) error {
+	tx, err := s.deps.Store.Pool.Begin(store.WithoutBeforeCommit(ctx))
+	if err != nil {
+		return fmt.Errorf("begin the related_checks rows: %w", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
 	batch := &pgx.Batch{}
 	for _, args := range inserts {
 		batch.Queue(relatedCheckInsert, args...)
 	}
-	return s.deps.Store.Pool.SendBatch(ctx, batch).Close()
+	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // relatedRecordRetryable says whether a related_checks insert that failed may succeed when tried

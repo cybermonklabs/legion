@@ -3,12 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -37,14 +42,18 @@ func expectAssignee(t *testing.T, got *string, want string) {
 		}
 		return
 	}
-	if got == nil || *got != want {
-		t.Fatalf("assignee = %v, want %q", got, want)
+	if got == nil {
+		t.Fatalf("assignee = null, want %q", want)
+	}
+	if *got != want {
+		t.Fatalf("assignee = %q, want %q", *got, want)
 	}
 }
 
 // A human who creates an issue is its assignee. Every identity names a person by lowercase
 // email, so the assignee is lowercase even when the identity header that named them was not.
 func TestCreateIssueByHumanAssignsCreatorLowercased(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -58,6 +67,7 @@ func TestCreateIssueByHumanAssignsCreatorLowercased(t *testing.T) {
 
 // A personal token acts for its owner: an issue it creates is assigned to that human.
 func TestCreateIssueByPersonalTokenAssignsOwner(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	minted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "planner"}, "Bob")
@@ -80,6 +90,7 @@ func TestCreateIssueByPersonalTokenAssignsOwner(t *testing.T) {
 // that issue reaches the default like any other create with nobody above it
 // (TestCreateIssueFallsBackToProjectDefaultAssignee). An explicit assignee always wins.
 func TestCreateIssueBySharedTokenInheritsParentOrTakesTheDefault(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	root := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -131,6 +142,7 @@ func TestCreateIssueBySharedTokenInheritsParentOrTakesTheDefault(t *testing.T) {
 }
 
 func TestIssueAssigneeRejectsUnlistedAndMalformedLogins(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -174,6 +186,7 @@ func TestIssueAssigneeRejectsUnlistedAndMalformedLogins(t *testing.T) {
 // open issue only to the person it is assigned to; a write that moves neither the status nor the
 // assignee carries no thread_logins at all.
 func TestPatchIssueReassignsClearsAndLeavesAssigneeAlone(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createAssigneeProject(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -282,9 +295,11 @@ func TestPatchIssueReassignsClearsAndLeavesAssigneeAlone(t *testing.T) {
 // sorted. Through a request the status half is empty whenever an assignee rides with it: only a
 // close or a reopen names anybody, a close withdraws the issue's open asks before this read, and
 // a closed issue refuses an assignee, so a reopen carries none. The union of two sets that both
-// have members is pinned on issueWriteThreadLogins itself, over an issue whose open ask alice
-// holds a Replies row on: alice is in both sets and is named once.
+// have members is pinned on the read the event's own insert makes (events.IssueLoginsOf, the
+// assignees the write moved unioned into the logins of the issue's open asks), over an issue
+// whose open ask alice holds a Replies row on: alice is in both sets and is named once.
 func TestPatchMovingStatusAndAssigneeNamesBothMovesLogins(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Handed over", "A spec")
 	ask := createAnswerListAsk(t, handler, issue.Key, "Still needed?")
@@ -307,8 +322,9 @@ func TestPatchMovingStatusAndAssigneeNamesBothMovesLogins(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	logins, err := issueWriteThreadLogins(context.Background(), tx, issue.Key, true, true, []*string{new("alice"), new("carol")})
-	if err != nil {
+	query, args := events.IssueLoginsOf(issue.Key, movedLogins(nil, "alice", "carol")...).SQL(1)
+	logins := []string{}
+	if err := tx.QueryRow(context.Background(), query, args...).Scan(&logins); err != nil {
 		t.Fatalf("read the write's logins: %v", err)
 	}
 	if want := []string{"alice", "carol"}; !slices.Equal(logins, want) {
@@ -322,6 +338,7 @@ func TestPatchMovingStatusAndAssigneeNamesBothMovesLogins(t *testing.T) {
 // names them beside the new assignee; naming only the new one would leave the default's open
 // Inbox holding a row the server no longer gives them.
 func TestAssigningAnIssueNobodyHeldNamesTheProjectDefault(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	// CORE is created by alice, so she is the person its unowned work lands on.
 	createAssigneeProject(t, handler)
@@ -343,6 +360,7 @@ func TestAssigningAnIssueNobodyHeldNamesTheProjectDefault(t *testing.T) {
 // A summary carries the issue's assignee: the person who filed it, and null for an issue nobody
 // holds, which only a PATCH clearing its assignee leaves (a create always lands on a person).
 func TestListIssuesSummariesCarryAssignee(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -376,6 +394,7 @@ func TestListIssuesSummariesCarryAssignee(t *testing.T) {
 // the person scope, so the deployment's shared token is turned away and a person's own token
 // reads the same list their browser reads.
 func TestListUsersReturnsSignedInPeopleToThePersonScope(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/users", nil, "alice")
 	if response.Code != http.StatusOK {
@@ -402,6 +421,7 @@ func TestListUsersReturnsSignedInPeopleToThePersonScope(t *testing.T) {
 
 // With nobody in `people`, GET /users is an empty list, never null: the picker maps over it.
 func TestListUsersAnswersAnEmptyListWhenNobodyHasSignedIn(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), Deps{
 		Store:    storetest.Open(t),
@@ -417,6 +437,7 @@ func TestListUsersAnswersAnEmptyListWhenNobodyHasSignedIn(t *testing.T) {
 // casing the identity header carried, a personal token by its owner, the shared token by a null
 // owner.
 func TestWhoamiNamesHumanPersonalTokenOwnerAndSharedToken(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	type whoami struct {
 		Kind  string  `json:"kind"`
@@ -461,6 +482,7 @@ func TestWhoamiNamesHumanPersonalTokenOwnerAndSharedToken(t *testing.T) {
 // not say". A personal token holding the person scope is still kind `agent`, since the kind
 // names the credential and the owner names the person it acts for.
 func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t)})
 	for _, test := range []struct {
@@ -536,6 +558,109 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 	}
 }
 
+// GET /whoami names read among the scopes of every read-only credential, read off the
+// credential's read-only mark and never stored among the scopes it holds, and answers the cut it
+// reads at, null for none: the read entry's token, a token narrowed from each kind of trade the
+// broker narrows (the golden file the broker's own test holds its narrowed answers to), and among
+// them the machine login's narrowed token with a cut, and a read-only personal token of each set
+// such a token may hold (readOnlyPersonalTokens). A read-person token that names its person, and a
+// personal token holding person beside read, are told person beside read, and no read-only token
+// is told approve. No read-only token is told that a person must sign in (sign_in_required
+// false), though several name a service and no person as a machine nobody signed in on does: no
+// sign-in lets a read-only token write. The control is a token that writes, told neither read nor
+// a cut.
+//
+// Each token is sent through the mounted handler, as a client sends it: the read-only gate lets
+// every read-only token through to whoami, a token that carries a cut included, and the request
+// resolves its token once (decideBrokerToken), so the sign-in decision whoami answers reads the
+// same caller its scopes and cut are read from. A handler called with no such request would
+// resolve the token a second time on a spent proof and read no caller there at all.
+func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const session = "ses_narrowed"
+	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	read := []string{model.ScopeRead}
+	personAndRead := []string{model.ScopePerson, model.ScopeRead}
+	wantScopes := map[string][]string{
+		"pod-entry":                     read,
+		"pod-entry-no-person":           read,
+		"read-entry":                    read,
+		"workflow-entry":                read,
+		"google-identity-no-person":     read,
+		"google-identity-with-a-person": read,
+		"person-sign-in":                personAndRead,
+		"machine-login":                 personAndRead,
+		"machine-login-with-a-cut":      personAndRead,
+	}
+	if kinds := slices.Sorted(maps.Keys(answers)); !slices.Equal(kinds, slices.Sorted(maps.Keys(wantScopes))) {
+		t.Fatalf("the golden file answers for %v, and this test names the scopes of %v", kinds, slices.Sorted(maps.Keys(wantScopes)))
+	}
+	type row struct {
+		name   string
+		answer ciphertoken.Introspection
+		// bearer is a personal token, presented as a bearer, and empty for a token the stub
+		// broker answers for with answer.
+		bearer string
+		scopes []string
+		// cut is the cut whoami answers, empty for null.
+		cut string
+	}
+	rows := []row{
+		{name: "the read entry's token", answer: readOnlyToken(caller.jkt), scopes: read},
+		{name: "a token that writes", answer: liveNamedToken(caller.jkt), scopes: []string{}},
+	}
+	for _, kind := range slices.Sorted(maps.Keys(answers)) {
+		rows = append(rows, row{name: "a token narrowed from a " + kind, answer: answers[kind], scopes: wantScopes[kind], cut: answers[kind].AsOf})
+	}
+	if !slices.ContainsFunc(rows, func(r row) bool { return r.cut != "" }) {
+		t.Fatal("no row names a cut, and one must")
+	}
+	for index, personal := range readOnlyPersonalTokens(t, rig) {
+		rows = append(rows, row{name: personal.name, bearer: personal.token, scopes: readOnlyPersonalTokenSets[index].whoami})
+	}
+
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			request := brokerRequest(t, http.MethodGet, "/api/v1/whoami", nil, "Bearer "+row.bearer, "")
+			if row.bearer == "" {
+				token := "a-token-of-" + strings.ReplaceAll(row.name, " ", "-")
+				rig.broker.Says(token, row.answer)
+				request = caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil)
+			}
+			response := rig.serve(request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("whoami: status=%d body=%s", response.Code, response.Body.String())
+			}
+			var members map[string]json.RawMessage
+			if err := json.Unmarshal(response.Body.Bytes(), &members); err != nil {
+				t.Fatalf("decode whoami: %v: %s", err, response.Body.String())
+			}
+			var got struct {
+				Kind   string    `json:"kind"`
+				Scopes *[]string `json:"scopes"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode whoami: %v: %s", err, response.Body.String())
+			}
+			if got.Kind != "agent" || got.Scopes == nil || !slices.Equal(*got.Scopes, row.scopes) {
+				t.Fatalf("whoami = %s, want kind agent and scopes %v", response.Body.String(), row.scopes)
+			}
+			wantCut := "null"
+			if row.cut != "" {
+				wantCut = `"` + row.cut + `"`
+			}
+			if answered, present := members["cut"]; !present || string(answered) != wantCut {
+				t.Fatalf("whoami cut = %s (present %v), want %s: %s", answered, present, wantCut, response.Body.String())
+			}
+			if answered, present := members["sign_in_required"]; !present || string(answered) != "false" {
+				t.Fatalf("whoami sign_in_required = %s (present %v), want false: %s", answered, present, response.Body.String())
+			}
+		})
+	}
+}
+
 // createSharedTokenIssue creates an issue as the shared token, which acts for nobody: the chain
 // then rests on the parent and the project's default.
 func createSharedTokenIssue(t *testing.T, handler http.Handler, body map[string]any) assigneeIssue {
@@ -566,6 +691,7 @@ func unassignIssue(t *testing.T, handler http.Handler, key string) model.Issue {
 // assignee, under no parent, goes to it. A parent whose assignee was cleared has nobody on it, so
 // its child reaches the default too.
 func TestCreateIssueFallsBackToProjectDefaultAssignee(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	putDefaultAssignee(t, handler, "CORE", "Bob")
@@ -586,6 +712,7 @@ func TestCreateIssueFallsBackToProjectDefaultAssignee(t *testing.T) {
 // Every earlier step of the chain wins over the project's default, in order, and a create that
 // sends a null assignee names nobody, so it reaches the default as one that sends none does.
 func TestProjectDefaultAssigneeYieldsToEveryEarlierChainStep(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	putDefaultAssignee(t, handler, "CORE", "bob")

@@ -2,7 +2,8 @@
 # packages/envoy/loadtest/cluster/cluster.test.sh
 #
 # Proves cluster.sh's behaviour without a cluster and without a network (but for (h)'s fresh render,
-# below, whose go fetches helm): fakes `kubectl`, `gh`, `curl`, `go`, `git`, `uv`, `dispatch`,
+# below, whose go fetches helm where no helm of the pinned version is on PATH): fakes `kubectl`,
+# `gh`, `curl`, `go`, `git`, `uv`, `dispatch`,
 # `hostname` and `sleep` on PATH. The fake kubectl records
 # every call and answers from files the test writes (the run's pods, the lock ConfigMap, cpu.max,
 # the errors an apply fails with), and runs the stored-order check's runner script on the fake
@@ -66,17 +67,34 @@
 # one factor and then an empty one, runs exactly one refinement step <factor>x; (d) up retries an
 # apply the namespace's ResourceQuota race refuses ("the object has been modified") 3 s later and
 # goes on, stops at once on any other apply error, naming the manifest and showing the error, and
-# stops after five races in a row; (e) every manifest renders with no placeholder left and every
-# image by digest, and a value of the wrong shape is refused; (f) a container restart between the
+# stops after five races in a row; (c) up reads no issuer of the cluster's, mints the copy's own
+# (loadgen oidc-mint with the listener's issuer, audience and principal, its token file removed),
+# applies its discovery document and key set inside the namespace before the listener and waits
+# for it before the listener starts, gives Dispatch the minted token from the run's Secret, and
+# checks from Dispatch's container that the listener takes a send's role mark from it; (d2) up
+# stops after one send, naming the answer, when the listener answers that check 403 or 401, sends
+# again every 3 s while it answers 503 and stops once a 503 outlasts the check's 120 s bound (41
+# sends and 40 waits of 3 s on a fake clock, none after the deadline), naming it as a listener still
+# starting or one that cannot read its issuer, makes a send that did not run again 3 s later and
+# goes on, stops once such sends outlast the bound, checks nothing at a listener that names no
+# Dispatch principal, stops before any manifest when the mint fails or answers a token of another
+# shape, refuses before the lock a loadgen that answers no oidc-mint -sub, and db-size and redeploy
+# refuse a run whose state.json holds no oidc_key before they change anything; (e) every manifest
+# renders with no placeholder left and every
+# image by digest, and a value of the wrong shape is refused (an issuer outside the namespace or
+# of another namespace among them, and a token, redacted); (f) a container restart between the
 # before and after reads writes step-failed.json with kind restart; (g) the sampler writes an
 # error line with no number when its exec fails, and a numeric line when it reads; (h)
 # render-nats.sh refuses its vendored chart archive with one byte changed, naming it and both
 # sha256s, before it runs go or writes a render, and, when go is on PATH, re-renders nats.yaml from
-# the unchanged archive with no curl call, equal to the committed file (else it says it skipped
-# that). That render runs helm through `go run`, so it needs go's module proxy, or offline
-# GOPROXY=file://$(go env GOMODCACHE)/cache/download with helm in the module cache; it fails rather
-# than skips without one, so that a helm pin go cannot fetch fails CI; (i) the run's residual
-# notes are replay-residual.md's lines, then the seed
+# the unchanged archive on a PATH with no curl and no jq, with no call that bash's search of that
+# PATH could not find, equal to the committed file (else it says it skipped that). That render
+# runs the helm on PATH where it answers the version render-nats.sh's HELM pins, as CI's
+# .github/actions/install-helm installs it, and needs no network; otherwise it runs helm through
+# `go run`, so it needs go's module proxy, or offline
+# GOPROXY=file://$(go env GOMODCACHE)/cache/download with helm in the module cache; it
+# fails rather than skips without one, so that a helm pin go cannot fetch fails CI; (i) the run's
+# residual notes are replay-residual.md's lines, then the seed
 # check's anchors by placement rule (with the share on the nearest surviving block) and its
 # sign-flipped versions, a count the check lacks written as "not recorded"; (j) stored-order.json
 # holds the checker's fields and a clean run's and a mismatching run's counts, and nulls (never 0)
@@ -161,7 +179,11 @@
 # giving no exit status, so a whole step command whose runner pod stops answering exec ends
 # non-zero within that bound and its heartbeat renews the lock no more, while a TERM that lands
 # between the disk watcher's failed act and its next nap leaves it without a second act, and one
-# that lands inside the watcher's read of the volume leaves it without acting at all.
+# that lands inside the watcher's read of the volume leaves it without acting at all; (ff) up
+# waits for each daemon it starts until that daemon writes its pidfile, however many naps a
+# loaded machine holds the daemon's start for, start_daemon ends non-zero, naming the daemon's
+# end, once a daemon has ended without writing it, and a shell with job control on starts a
+# daemon that lives.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -241,9 +263,38 @@ for a in "$@"; do
 done
 $has_ns || printf '%s\n' "$*" >>"$FAKE_DIR/kubectl-no-ns.log"
 c=${cmd[*]:-}
+# credential_reader JOB DIR LOG: the job a call that carries the copy's credentials starts here
+# (runner_start -c, replay_checksum) in place of loadgen: one line per file of DIR, "JOB FILE MODE
+# DIR-MODE CONTENT", appended to LOG -- what the job would read, and how the runner kept it.
+# shellcheck disable=SC2016 # expanded by the runner's sh
+credential_reader='for f in "$2"/*; do printf "%s %s %s %s %s\n" "$1" "${f##*/}" "$(stat -c %a "$f")" "$(stat -c %a "$2")" "$(cat "$f")"; done >>"$3"'
+# flags_name_dir DIR ARG...: every -token-file, -listener-token-file and -pg-file of the job's
+# command ARG... names a file in DIR, the directory its start claims, and there is one at least:
+# a job whose flags named another directory would open no file at all.
+flags_name_dir() {
+  local dir=$1 prev="" a n=0
+  shift
+  for a in "$@"; do
+    case $prev in
+      -token-file | -listener-token-file | -pg-file)
+        ((++n))
+        [ "${a%/*}" = "$dir" ] || { echo "fake kubectl exec: the start claims $dir, and its job's $prev names $a" >&2; return 1; }
+        ;;
+    esac
+    prev=$a
+  done
+  ((n > 0)) || { echo "fake kubectl exec: a start given credentials gives its job no -…-file flag" >&2; return 1; }
+}
 case $verb in
   get)
     case "$*" in
+      *"get deployment listener -o jsonpath="*ENVOY_DISPATCH_PRINCIPAL*)
+        # check_dispatch_identity's read of the listener's principal: the value up applied in
+        # manifests/listener.yaml, or none with FAKE_LISTENER_NO_PRINCIPAL, as a listener rendered
+        # without it has.
+        [ -n "${FAKE_LISTENER_NO_PRINCIPAL:-}" ] ||
+          awk '$1 == "-" && $2 == "name:" && $3 == "ENVOY_DISPATCH_PRINCIPAL" { getline; print $2; exit }' "$FAKE_DIR/applied.yaml"
+        ;;
       *"configmap dispatch-loadtest-lock"*)
         # FAKE_LOCK_GET_FAIL: a read of the lock fails with a refused API server connection once
         # the lock exists, so the command that takes it goes on and every read after that fails.
@@ -335,7 +386,37 @@ case $verb in
           printf 'usage_usec 123456\nthrottled_usec 0\ncpu_max 1600000 100000\nmemory_current 1048576\ninactive_file 4096\nend\n'
         fi
         ;;
-      "sh -c name="*) printf '%s\n' "${cmd[*]:4}" >>"$FAKE_DIR/runner-starts" ;;
+      # A runner job's start (runner_start). One started with the copy's credentials (-c) runs the
+      # runner's own script here, on the fake runner's /work with this call's standard input, so
+      # the script itself writes the credentials and its job's EXIT trap removes them; the job it
+      # starts is credential_reader, in place of the loadgen command the start line names.
+      "sh -c name="*)
+        printf '%s\n' "${cmd[*]:4}" >>"$FAKE_DIR/runner-starts"
+        if [[ ${cmd[2]} == *'read -r v'* ]]; then
+          mkdir -p "$FAKE_DIR/runner/work"
+          # The directory the start claims is in its script (runner_start -c DIR), and it is the
+          # one the job's -…-file flags name.
+          [[ ${cmd[2]} =~ secrets=\'(/work/secrets/[A-Za-z0-9._-]+)\' ]] || { echo "fake kubectl exec: a start given credentials names no directory: $c" >&2; exit 1; }
+          claimed=${BASH_REMATCH[1]}
+          flags_name_dir "$claimed" "${cmd[@]:5}" || exit 1
+          sh -c "${cmd[2]//\/work/$FAKE_DIR/runner/work}" sh "${cmd[4]}" \
+            sh -c "$credential_reader" sh "${cmd[4]}" "$FAKE_DIR/runner$claimed" "$FAKE_DIR/runner-credentials" || exit $?
+        fi
+        ;;
+      # replay_checksum: the runner's own script too, with credential_reader and then the checksum
+      # line standing in for loadgen replay-checksum.
+      'sh -c secrets=$1; '*)
+        if [ "${cmd[5]:-} ${cmd[6]:-}" != "/work/loadgen replay-checksum" ]; then
+          echo "fake kubectl exec: unexpected command given the copy's credentials: $c" >&2
+          exit 1
+        fi
+        flags_name_dir "${cmd[4]}" "${cmd[@]:5}" || exit 1
+        mkdir -p "$FAKE_DIR/runner/work"
+        sh -c "${cmd[2]//\/work/$FAKE_DIR/runner/work}" sh "$FAKE_DIR/runner${cmd[4]}" \
+          sh -c "$credential_reader"' && echo "{\"issues\": 1047, \"md5\": \"fakemd5\"}"' \
+          sh replay-checksum "$FAKE_DIR/runner${cmd[4]}" "$FAKE_DIR/runner-credentials"
+        exit $?
+        ;;
       # The job a stop names (runner_stop, runner_wait's bound, typing_stop) and, in a file of
       # its own so that every exact check of runner-stops keeps reading one job name per line,
       # the job a SIGKILL names (runner_wait past its grace), with the second that SIGKILL was
@@ -383,8 +464,32 @@ case $verb in
       # A replay step: the runner's directories, the bundle copied in and verified there.
       "sh -c rm -rf /work/bundle"*) ;;
       "tar -C /work -xf -") cat >/dev/null ;;
-      "/work/loadgen replay-checksum "*) echo '{"issues": 1047, "md5": "fakemd5"}' ;;
       "/work/loadgen replay-verify-bundle "*) echo '{"files": 28}' ;;
+      # check_dispatch_identity: the listener's answer to Dispatch's send marked with a role no
+      # claim can name, which is the 400 naming the role, or FAKE_IDENTITY_ANSWER's (its body and
+      # status, as IDENTITY_PROBE_SCRIPT prints them). The status EXIT is a send that did not run:
+      # its body goes to standard error as kubectl's or curl's words, and the call exits 7. The
+      # container the call names goes into identity-probes, and the fake clock's second, where a
+      # test made FAKE_DIR/clock, into identity-probe-times.
+      'sh -c printf "Authorization: Bearer %s\n" "$(cat "$ENVOY_ACCOUNT_TOKEN_FILE")" |'*)
+        printf '%s\n' "$ctr" >>"$FAKE_DIR/identity-probes"
+        [ ! -f "$FAKE_DIR/clock" ] || cat -- "$FAKE_DIR/clock" >>"$FAKE_DIR/identity-probe-times"
+        # FAKE_DIR/identity-answers: answers used up first, one a line, "STATUS BODY".
+        if [ -s "$FAKE_DIR/identity-answers" ]; then
+          first=$(head -n1 "$FAKE_DIR/identity-answers")
+          sed -i 1d "$FAKE_DIR/identity-answers"
+          answer_status=${first%% *} answer_body=${first#* }
+        elif [ -n "${FAKE_IDENTITY_ANSWER:-}" ]; then
+          answer_status=${FAKE_IDENTITY_ANSWER##*$'\n'} answer_body=${FAKE_IDENTITY_ANSWER%$'\n'*}
+        else
+          answer_status=400 answer_body='{"error":"role \"-identity-probe\" is no role a claim can name","expected":["role"]}'
+        fi
+        if [ "$answer_status" = EXIT ]; then
+          printf '%s\n' "$answer_body" >&2
+          exit 7
+        fi
+        printf '%s\n%s' "$answer_body" "$answer_status"
+        ;;
       *"/healthz")
         echo '{"ok":true,"nats":true,"schema_version":121}'
         # FAKE_QUIET: two good reads of an idle Dispatch, 40 s apart, after any quiet check's start.
@@ -702,6 +807,18 @@ DISPATCH
 fi
 cat >"$out" <<'LOADGEN'
 #!/usr/bin/env bash
+# up's check that loadgen mints (loadgen_mints): oidc-mint -h prints the usage loadgen's own does,
+# or, with FAKE_LOADGEN_NO_MINT, the refusal of a loadgen from before oidc-mint. It goes into
+# mint-help.log alone, so loadgen.log keeps one line per run of a subcommand.
+if [ "$*" = "oidc-mint -h" ]; then
+  printf '%s\n' "$*" >>"$FAKE_DIR/mint-help.log"
+  if [ -n "${FAKE_LOADGEN_NO_MINT:-}" ]; then
+    printf 'loadgen: unknown command "oidc-mint"\n' >&2
+    exit 2
+  fi
+  echo 'usage: loadgen oidc-mint -issuer <url> -audience <aud> -lifetime <duration> -sub <subject>=<file> [-sub <subject>=<file>]...' >&2
+  exit 0
+fi
 printf '%s\n' "$*" >>"$FAKE_DIR/loadgen.log"
 if [ "${FAKE_LOADGEN_FAIL:-}" = "$1" ]; then
   echo "fake loadgen: $1 failed" >&2
@@ -756,6 +873,18 @@ case $1 in
     done
     ;;
   codepaths) echo '# Code paths' >"$out/CODEPATHS.md" ;;
+  # The fake oidc-mint: for each -sub <subject>=<file>, a token of the shape loadgen's own writes
+  # (three dot-joined segments), or FAKE_MINT_TOKEN's, written to that file by printf, a builtin, so
+  # the token is in no argument jq-argv.log could record; then the key id and point it prints (43
+  # base64url characters each).
+  oidc-mint)
+    prev=""
+    for a in "$@"; do
+      [ "$prev" != -sub ] || printf '%s' "${FAKE_MINT_TOKEN-fake-jose-header.fake-mint-claims.fake-mint-signature}" >"${a#*=}"
+      prev=$a
+    done
+    printf '{"kid":"%s","x":"%s","y":"%s"}\n' "$(printf 'K%.0s' {1..43})" "$(printf 'X%.0s' {1..43})" "$(printf 'Y%.0s' {1..43})"
+    ;;
 esac
 exit 0
 LOADGEN
@@ -832,7 +961,9 @@ EOF
 # The fake sleep: apply_manifest's 3 s wait between tries, and a wait of any of FAKE_FAST_SLEEP's
 # seconds (space-separated: kube_read's 5 s, the daemons' 60 s, runner_wait's 15 s and the disk
 # watcher's 30 s, where a test sets them), are recorded and return at once; every other sleep (the
-# daemons' loops, their start waits) is the real one.
+# daemons' loops, their start waits) is the real one. FAKE_DIR/clock, where a test makes it, is a
+# fake epoch second that each recorded wait moves forward by its seconds: a cluster.sh whose now()
+# the test replaced reads its bound on it, so a bound of minutes costs the test no real second.
 #
 # FAKE_SLEEP_GATE=FILE holds the daemons' 60 s until FILE exists. A daemon removes its own pidfile
 # when it stops, and with FAKE_FAST_SLEEP's fast periods it stops as soon as the last command of
@@ -841,17 +972,71 @@ EOF
 # and with their pidfiles, until the case has read their pids and made FILE. The wait is in real
 # 0.05 s naps, and it ends too once FAKE_DIR is gone, so a daemon the suite's cleanup missed does
 # not wait for ever.
+#
+# Every call, fast or real, of any length, is also a line "CALLER SECONDS" in naps.log, CALLER being
+# the pid of the shell that napped: how many naps one shell has taken, whatever their length (naps_by).
 real_sleep=$(PATH=$real_path command -v sleep)
 cat >"$bin/sleep" <<EOF
 #!/usr/bin/env bash
+[ -z "\${FAKE_DIR:-}" ] || [ ! -d "\$FAKE_DIR" ] || printf '%s %s\n' "\$PPID" "\$*" >>"\$FAKE_DIR/naps.log"
 if [ "\$*" = 60 ] && [ -n "\${FAKE_SLEEP_GATE:-}" ]; then
   until [ -e "\$FAKE_SLEEP_GATE" ] || [ ! -d "\$FAKE_DIR" ]; do $real_sleep 0.05; done
 fi
 if [ "\$*" = 3 ] || [[ " \${FAKE_FAST_SLEEP:-none} " == *" \$* "* ]]; then
   printf '%s\n' "\$*" >>"\$FAKE_DIR/sleep.log"
+  if [ -f "\$FAKE_DIR/clock" ] && [[ \$* =~ ^[0-9]+\$ ]]; then
+    printf '%s\n' "\$((\$(<"\$FAKE_DIR/clock") + \$*))" >"\$FAKE_DIR/clock"
+  fi
   exit 0
 fi
 exec $real_sleep "\$@"
+EOF
+
+# The jq stand-in: every jq call of cluster.sh and of the fakes, its arguments recorded in
+# jq-argv.log, one call a line, then the real jq. An argument is what every user of the pod reads
+# (/proc/<pid>/cmdline), so no_credential_in_args reads this log as it reads kubectl.log.
+#
+# FAKE_DAEMON_START_NAPS=N holds a daemon's start, as a loaded machine does: the first jq call of a
+# `cluster.sh _heartbeat` or `_sampler` on its run's state.json, which use_run makes before the
+# daemon writes its pidfile, waits until the shell that started the daemon (the waiter, the first
+# process above the daemon that is not the daemon) has taken N more naps through the fake sleep,
+# of any length (naps.log), as start_daemon naps while it waits; or until that shell is gone, as
+# a start_daemon that gave up is. Each held start is a line "NAME RUN_DIR" in daemon-start-holds,
+# and its end a line "NAME RUN_DIR NAPS" in daemon-start-releases, NAPS the naps the waiter took
+# meanwhile or "gone". The hold polls in real 0.01 s naps, and it ends too once FAKE_DIR is gone.
+real_jq=$(PATH=$real_path command -v jq)
+cat >"$bin/jq" <<EOF
+#!/usr/bin/env bash
+[ -z "\${FAKE_DIR:-}" ] || [ ! -d "\$FAKE_DIR" ] || printf '%s\n' "\$*" >>"\$FAKE_DIR/jq-argv.log"
+if [ -n "\${FAKE_DAEMON_START_NAPS:-}" ] && [[ \${!#} == */state.json ]]; then
+  case \$(tr '\0' ' ' <"/proc/\$PPID/cmdline" 2>/dev/null) in
+    *" _heartbeat --namespace "*) held=heartbeat ;;
+    *" _sampler --namespace "*) held=sampler ;;
+    *) held="" ;;
+  esac
+  run_dir=\${!#}
+  run_dir=\${run_dir%/state.json}
+  if [ -n "\$held" ] && [ ! -e "\$run_dir/\$held.pid" ] && ! grep -qxF -- "\$held \$run_dir" "\$FAKE_DIR/daemon-start-holds" 2>/dev/null; then
+    printf '%s %s\n' "\$held" "\$run_dir" >>"\$FAKE_DIR/daemon-start-holds"
+    # The waiter: up from jq's parent past every process that runs the daemon's command line (the
+    # daemon, and a subshell of it where the call is a command substitution).
+    waiter=\$PPID
+    while tr '\0' ' ' <"/proc/\$waiter/cmdline" 2>/dev/null | grep -q -- " _\$held --namespace "; do
+      stat=\$(<"/proc/\$waiter/stat")
+      read -r _ waiter _ <<<"\${stat##*) }"
+    done
+    naps() { awk -v p="\$waiter" '\$1 == p { n++ } END { print n + 0 }' "\$FAKE_DIR/naps.log" 2>/dev/null || echo 0; }
+    from=\$(naps)
+    released=gone
+    while [ -d "/proc/\$waiter" ] && [ -d "\$FAKE_DIR" ]; do
+      n=\$(naps)
+      if ((n >= from + FAKE_DAEMON_START_NAPS)); then released=\$((n - from)); break; fi
+      $real_sleep 0.01
+    done
+    [ ! -d "\$FAKE_DIR" ] || printf '%s %s %s\n' "\$held" "\$run_dir" "\$released" >>"\$FAKE_DIR/daemon-start-releases"
+  fi
+fi
+exec $real_jq "\$@"
 EOF
 chmod +x "$bin"/*
 
@@ -863,7 +1048,8 @@ unset FAKE_EXEC_FAIL FAKE_SAMPLE FAKE_PROD_MAJOR FAKE_LOADGEN_FAIL FAKE_APPLY_FA
   FAKE_EXEC_ERRORS FAKE_FAST_SLEEP FAKE_TYPING_RC FAKE_DISPATCH_BUILD_ERROR FAKE_COPY_BACK_FAIL \
   FAKE_PG_DF_SEQ FAKE_PG_DF_DELAY FAKE_RC_UNTIL_STOP FAKE_RC_UNTIL_KILL FAKE_HEAP_COPY_FAIL FAKE_HEAP_EXISTS_FAIL FAKE_HEAP_KEEP_REMOVE_FAIL \
   FAKE_LOCK_GET_FAIL FAKE_LOCK_GET_FAIL_TIMES FAKE_LOCK_GET_OK_TIMES FAKE_LOCK_GET_DELAY \
-  FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_SLEEP_GATE
+  FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_SLEEP_GATE \
+  FAKE_IDENTITY_ANSWER FAKE_LISTENER_NO_PRINCIPAL FAKE_MINT_TOKEN FAKE_LOADGEN_NO_MINT FAKE_DAEMON_START_NAPS
 export DISPATCH_URL=http://dispatch.invalid DISPATCH_TOKEN_FILE=$fake/token
 # The manifest names no issue: the operator does, and replay-prepare refuses without it.
 export LOADTEST_REPLAY_ISSUE=INFRA-639
@@ -970,11 +1156,13 @@ write_pods() {
 }
 
 reset_fake() {
-  rm -f -- "$fake/lock.json" "$fake/applied.yaml" "$fake/kubectl.log" "$fake/kubectl-calls.log" "$fake/seeded" "$fake/runner-starts" "$fake/dispatch.log" "$fake/loadgen.log" "$fake"/refine.[0-9]* \
+  rm -f -- "$fake/lock.json" "$fake/applied.yaml" "$fake/kubectl.log" "$fake/kubectl-calls.log" "$fake/jq-argv.log" "$fake/seeded" "$fake/runner-starts" "$fake/runner-credentials" "$fake/dispatch.log" "$fake/loadgen.log" "$fake"/refine.[0-9]* \
     "$fake/runner-stops" "$fake/runner-kills" "$fake/runner-kill-times" "$fake/rc-polls" "$fake/rc-kill-polls" "$fake/df-seq" "$fake/runner-heap-kept" "$fake/lock-get-fails" "$fake/lock-get-oks" \
     "$fake/sleep.log" "$fake/apply-errors" "$fake/replay-template" "$fake/restores" "$fake/pod-dump" \
     "$fake/stored-order.log" "$fake/go-dispatch.log" "$fake/go-browsertype.log" "$fake/git.log" \
-    "$fake/go-dispatch-tree.log" "$fake/go-subcommands.go" "$fake/runner-exec-fail" "$fake/pg-df-started" "$fake/pg-df-go"
+    "$fake/go-dispatch-tree.log" "$fake/go-subcommands.go" "$fake/runner-exec-fail" "$fake/pg-df-started" "$fake/pg-df-go" \
+    "$fake/identity-probes" "$fake/identity-probe-times" "$fake/identity-answers" "$fake/mint-help.log" "$fake/clock" \
+    "$fake/naps.log" "$fake/daemon-start-holds" "$fake/daemon-start-releases"
   rm -rf -- "$fake/runner" "$fake/bundle-fixture"
   write_pods
   echo '1600000 100000' >"$fake/cpu.max"
@@ -984,6 +1172,24 @@ reset_fake() {
 run_cluster() {
   set +e
   bash "$cluster" "$@" >"$tmp/out" 2>&1
+  RC=$?
+  set -e
+}
+
+# run_cluster_fake_clock ARGS: run_cluster ARGS with cluster.sh's now() on a fake clock:
+# FAKE_DIR/clock, which starts at clock_start and moves only by the fake sleep's waits. A bound the
+# command reads by now() then costs a test no real second, and a time it measures from now() is
+# the one the test set up, however long a loaded machine takes to run the command.
+readonly clock_start=1800000000
+cat >"$tmp/cluster-fake-clock.sh" <<EOF
+source "$cluster"
+now() { printf %s "\$(<"\$FAKE_DIR/clock")"; }
+main "\$@"
+EOF
+run_cluster_fake_clock() {
+  printf '%s\n' "$clock_start" >"$fake/clock"
+  set +e
+  bash "$tmp/cluster-fake-clock.sh" "$@" >"$tmp/out" 2>&1
   RC=$?
   set -e
 }
@@ -1222,11 +1428,15 @@ write_lock() {
 readonly other_run=lt-20261028t080000-beef
 
 reset_fake
-write_lock "$other_run" "$(date -u -d '-120 seconds' +%Y-%m-%dT%H:%M:%SZ)"
-run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+# Own the clock: up reads the heartbeat's age by now(), here the fake clock at clock_start, and the
+# heartbeat was written 120 s before clock_start, so the age up reports is exactly 120 s however
+# long a loaded machine takes between this write and up's read of the lock -- the window the
+# wall-clock form left it (120-159 s) was that read's slack.
+write_lock "$other_run" "$(date -u -d "@$((clock_start - 120))" +%Y-%m-%dT%H:%M:%SZ)"
+run_cluster_fake_clock up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC == 2)) || fail "up while the lock exists exited $RC, not 2"
 grep -q 'holder pod other-worker-3' "$tmp/out" || fail "up's lock refusal does not name the holder"
-grep -qE 'last heartbeat [^ ]+, 1[2-5][0-9] s ago' "$tmp/out" || fail "up's lock refusal does not give the heartbeat's age"
+grep -qE 'last heartbeat [^ ]+, 120 s ago' "$tmp/out" || fail "up's lock refusal does not give the heartbeat's age"
 ! grep -q stale "$tmp/out" || fail "up called a 2-minute-old heartbeat stale"
 no_create || fail "up created something while the lock existed"
 [ -z "$(find "$LOADTEST_CLUSTER_ROOT" -maxdepth 1 -name '.checker.*' 2>/dev/null)" ] || fail "up left the checker's scratch directory after the lock refused it"
@@ -1278,6 +1488,110 @@ jq -e '.browsertype == null' "$run_dir/state.json" >/dev/null || fail "state.jso
   fail "up did not copy envoy-dispatch into the runner"
 pg_password=$(jq -r .secrets.pg_password "$run_dir/state.json")
 
+# copy_credentials: the three credentials of the run in run_dir as a runner job reads them, one a
+# line in RUNNER_CREDENTIALS' order and with its file's name: dispatch-token, listener-token,
+# pg-url. A run whose state.json lacks one fails here, so no check below compares against nothing.
+copy_credentials() {
+  local dt lt pw
+  dt=$(jq -r '.secrets.dispatch_token // empty' "$run_dir/state.json")
+  lt=$(jq -r '.secrets.listener_token // empty' "$run_dir/state.json")
+  pw=$(jq -r '.secrets.pg_password // empty' "$run_dir/state.json")
+  [ -n "$dt" ] && [ -n "$lt" ] && [ -n "$pw" ] || fail "$run_dir/state.json lacks a credential of the copy"
+  printf '%s\n' "dispatch-token $dt" "listener-token $lt" "pg-url postgres://dispatch:$pw@postgres.$ns.svc:5432/dispatch?sslmode=disable"
+}
+
+# job_credentials JOB: the runner job JOB read the copy's three credentials from files of mode 600
+# in a directory of mode 700 of its own, each holding the copy's own value (credential_reader's
+# record), and that directory is gone once the job has ended: the EXIT trap of the runner sh that
+# waited on the job removed it. A detached job's removal lands a moment after its start returned.
+job_credentials() {
+  local job=$1 naps=0 file value creds
+  creds=$(copy_credentials)
+  while compgen -G "$fake/runner/work/secrets/$job.*" >/dev/null; do
+    ((++naps <= 200)) || fail "runner job $job's credentials are still in the runner after it ended: $(ls -ld "$fake/runner/work/secrets/$job".*)"
+    sleep 0.05
+  done
+  while read -r file value; do
+    grep -qxF -- "$job $file 600 700 $value" "$fake/runner-credentials" 2>/dev/null ||
+      fail "runner job $job read no $file of mode 600, in a directory of mode 700, holding the copy's own value: $(grep "^$job " "$fake/runner-credentials" 2>/dev/null)"
+  done <<<"$creds"
+}
+
+# no_credential_in_args: no kubectl call and no jq call so far carries a credential of the copy
+# among its arguments, where every user of this pod can read it (/proc/<pid>/cmdline).
+no_credential_in_args() {
+  local log name value
+  for log in "$fake/kubectl.log" "$fake/jq-argv.log"; do
+    # A log no call wrote cannot show a credential in a call, so the check would prove nothing.
+    [ -s "$log" ] || fail "no call wrote $log, so no_credential_in_args can see no argument in it"
+  done
+  # All five of the copy's secrets, as up made them; the Postgres password stands for the URL
+  # that holds it, whose rest is no secret, and the account token is Dispatch's identity token
+  # that loadgen oidc-mint signed. A state.json without one fails here, so no check below
+  # compares against nothing.
+  while read -r name value; do
+    [ -n "$value" ] || fail "$run_dir/state.json has no $name"
+    for log in "$fake/kubectl.log" "$fake/jq-argv.log"; do
+      ! grep -qF -- "$value" "$log" ||
+        fail "a ${log##*/} call carries the copy's $name on its command line: $(grep -m1 -F -- "$value" "$log" | cut -c1-300)"
+    done
+  done < <(jq -r '.secrets | to_entries[] | "\(.key) \(.value)"' "$run_dir/state.json")
+  [ "$(jq '.secrets | length' "$run_dir/state.json")" = 5 ] || fail "$run_dir/state.json does not hold the copy's five secrets"
+}
+
+# up made the copy's five secrets and wrote them into state.json: no call of up carried one as an
+# argument (the logs hold only up's calls here, since reset_fake ran before it).
+no_credential_in_args
+pass "up writes the copy's five secrets into state.json with no kubectl or jq call carrying one as an argument"
+
+# Dispatch's identity at the copy's listener. applied_env NAME: the value of the first env entry
+# NAME up applied; configmap_doc KEY: the oidc-issuer ConfigMap's KEY as up applied it.
+applied_env() { awk -v n="$1" '$1 == "-" && $2 == "name:" && $3 == n { getline; sub(/^ *value: */, ""); print; exit }' "$fake/applied.yaml"; }
+configmap_doc() { sed -n "s/^  $1: '\\(.*\\)'\$/\\1/p" "$fake/applied.yaml" | head -n1; }
+issuer=http://oidc-issuer.$ns.svc:8080
+! grep -q -- ' get --raw ' "$fake/kubectl.log" || fail "up still reads the cluster's own token issuer, which no pod of the copy can reach: $(grep -m1 -- ' get --raw ' "$fake/kubectl.log")"
+[ "$(grep -c '^oidc-mint ' "$fake/loadgen.log")" = 1 ] || fail "up did not run loadgen oidc-mint once: $(grep '^oidc-mint' "$fake/loadgen.log")"
+# The token's claims are the listener's settings as up applied them, so the listener admits it as
+# Dispatch's principal, and its file is one of the run's own of mode 600.
+want="oidc-mint -issuer $(applied_env ENVOY_OIDC_ISSUER) -audience $(applied_env ENVOY_OIDC_AUDIENCE) -lifetime 168h -sub $(applied_env ENVOY_DISPATCH_PRINCIPAL)=$run_dir/tmp/account-token."
+mint_line=$(grep '^oidc-mint ' "$fake/loadgen.log")
+[[ $mint_line == "$want"?????? && ${#mint_line} == $((${#want} + 6)) ]] ||
+  fail "loadgen oidc-mint was not given the listener's issuer, audience and principal, and a token file of the run's: $mint_line, want $want<6 characters>"
+[ "$(applied_env ENVOY_OIDC_ISSUER)" = "$issuer" ] && [ "$(applied_env ENVOY_DISPATCH_PRINCIPAL)" = "system:serviceaccount:$ns:default" ] ||
+  fail "the listener does not verify against the copy's own issuer $issuer for system:serviceaccount:$ns:default"
+jq -e --arg i "$issuer" '.oidc_issuer == $i and .oidc_key == {kid: ("K" * 43), x: ("X" * 43), y: ("Y" * 43)}' "$run_dir/state.json" >/dev/null ||
+  fail "state.json does not record the copy's issuer and the minted key: $(jq -c '{oidc_issuer, oidc_key}' "$run_dir/state.json")"
+[ "$(jq -r .secrets.account_token "$run_dir/state.json")" = fake-jose-header.fake-mint-claims.fake-mint-signature ] ||
+  fail "state.json does not keep the minted token as secrets.account_token"
+[ -z "$(find "$run_dir/tmp" -name 'account-token.*')" ] || fail "up left the file loadgen oidc-mint wrote Dispatch's token to in $run_dir/tmp"
+# The issuer serves the minted key under the copy's own issuer, on the Service the issuer's URL names.
+jq -e --arg i "$issuer" '. == {issuer: $i, jwks_uri: ($i + "/jwks"), response_types_supported: ["id_token"], subject_types_supported: ["public"], id_token_signing_alg_values_supported: ["ES256"]}' \
+  <<<"$(configmap_doc openid-configuration)" >/dev/null || fail "the issuer's discovery document does not name $issuer: $(configmap_doc openid-configuration)"
+jq -e '.keys == [{kty: "EC", crv: "P-256", alg: "ES256", use: "sig", kid: ("K" * 43), x: ("X" * 43), y: ("Y" * 43)}]' <<<"$(configmap_doc jwks)" >/dev/null ||
+  fail "the issuer's key set is not the minted key: $(configmap_doc jwks)"
+awk '/^kind: Service$/ { s = 1 } s && /^  name: oidc-issuer$/ { n = 1 } n && /port: 8080$/ { found = 1 } /^---$/ { s = n = 0 } END { exit !found }' "$fake/applied.yaml" ||
+  fail "no Service oidc-issuer on port 8080, the one $issuer names"
+# Dispatch's token is the minted one, from the run's Secret; no kubelet projection of the cluster's.
+grep -qxF '  ENVOY_ACCOUNT_TOKEN: fake-jose-header.fake-mint-claims.fake-mint-signature' "$fake/applied.yaml" ||
+  fail "the run's Secret does not hold the minted token as ENVOY_ACCOUNT_TOKEN"
+! grep -q serviceAccountToken "$fake/applied.yaml" || fail "a manifest still projects the cluster's ServiceAccount token, whose issuer no pod of the copy can reach"
+grep -A5 -- '- name: envoy-listener-token$' "$fake/applied.yaml" | tr -d ' \n' | grep -qF -- '-name:envoy-listener-tokensecret:secretName:dispatch-credentialsitems:-key:ENVOY_ACCOUNT_TOKENpath:token' ||
+  fail "Dispatch's envoy-listener-token volume is not the run's Secret's ENVOY_ACCOUNT_TOKEN as file token"
+# The issuer before the listener, which reads it when it starts; the check once Dispatch is up.
+issuer_at=$(grep -n -m1 '^# oidc-issuer.yaml:' "$fake/applied.yaml" | cut -d: -f1)
+listener_at=$(grep -n -m1 '^# listener.yaml:' "$fake/applied.yaml" | cut -d: -f1)
+[ -n "$issuer_at" ] && [ -n "$listener_at" ] && ((issuer_at < listener_at)) || fail "up did not apply manifests/oidc-issuer.yaml before manifests/listener.yaml"
+rollout_at=$(grep -n -m1 -- 'rollout status deployment/oidc-issuer' "$fake/kubectl.log" | cut -d: -f1)
+scale_at=$(grep -n -m1 -- 'scale deployment listener --replicas 1' "$fake/kubectl.log" | cut -d: -f1)
+probe_at=$(grep -n -m1 -- 'printf "Authorization: Bearer' "$fake/kubectl.log" | cut -d: -f1)
+dispatch_at=$(grep -n -m1 -- 'scale deployment dispatch --replicas 1' "$fake/kubectl.log" | cut -d: -f1)
+[ -n "$rollout_at" ] && [ -n "$scale_at" ] && ((rollout_at < scale_at)) || fail "up did not wait for the issuer's rollout before it scaled the listener"
+[ -n "$probe_at" ] && [ -n "$dispatch_at" ] && ((dispatch_at < probe_at)) || fail "up did not check Dispatch's identity once Dispatch was up"
+[ "$(cat "$fake/identity-probes")" = envoy-dispatch ] || fail "up did not check Dispatch's identity once, from Dispatch's container: $(cat "$fake/identity-probes" 2>/dev/null)"
+grep -qF "the listener takes a send's role mark from Dispatch's token: system:serviceaccount:$ns:default, issued by $issuer" "$tmp/out" ||
+  fail "up did not say the listener takes the role mark from Dispatch's token"
+pass "up mints the copy's own token issuer, serves its key inside the namespace before the listener starts, gives Dispatch the minted token for the listener's issuer, principal and audience, and checks the listener takes the role mark from it"
+
 run_cluster seed --namespace "$ns"
 ((RC == 0)) || fail "seed exited $RC"
 [ -f "$run_dir/seed.json" ] || fail "seed kept no seed.json in the run directory"
@@ -1289,6 +1603,23 @@ for k in artifact_versions ref_targets ref_target_versions ref_sources artifact_
   jq -e --arg k "$k" '.counts | has($k)' "$run_dir/seed.meta.json" >/dev/null ||
     fail "seed.meta.json's counts lack $k, which common.sh's SEED_COUNTS_SQL counts: $(jq -c .counts "$run_dir/seed.meta.json" 2>/dev/null)"
 done
+# Each of the seed's loadgen jobs is given the -…-file forms of its credentials, naming files the
+# runner wrote for that job alone, and no kubectl call carries a credential.
+for job in seed seed-refs seed-finish; do
+  start=$(grep "^$job /work/loadgen " "$fake/runner-starts") || fail "the seed started no loadgen $job in the runner"
+  wants=("-pg-file /work/secrets/$job\.[0-9a-f]+/pg-url ")
+  [ "$job" = seed-finish ] ||
+    wants+=("-token-file /work/secrets/$job\.[0-9a-f]+/dispatch-token " "-listener-token-file /work/secrets/$job\.[0-9a-f]+/listener-token ")
+  for want in "${wants[@]}"; do
+    [[ "$start " =~ \ $want ]] || fail "loadgen $job is not given '$want': $start"
+  done
+  for gone in "-token " "-listener-token " "-pg "; do
+    [[ "$start " != *" $gone"* ]] || fail "loadgen $job is still given ${gone% } as a value: $start"
+  done
+  job_credentials "$job"
+done
+no_credential_in_args
+pass "seed's loadgen jobs read the copy's credentials from files of mode 600 the runner writes for each job alone and removes when it ends, and no kubectl call carries one"
 
 run_cluster step --namespace "$ns" smoke 1 --duration 1m
 ((RC == 0)) || fail "step exited $RC"
@@ -1302,9 +1633,15 @@ cmp -s "$fake/stepdir/heap.txt" "$run_dir/steps/smoke/heap.txt" || fail "heap.tx
 grep -q -- 'gzip -1 -c /work/steps/smoke/heap.txt' "$fake/kubectl.log" || fail "heap.txt did not come back by its own stream"
 start=$(grep '^step-smoke ' "$fake/runner-starts") || fail "the step started no loadgen run in the runner"
 for want in "run -allow-foreign" "-events 4 " "-sessions 400 " "-requests 60 " "-duration 1m " "-warmup 30s " "-grace 20s " \
-  "-rng-seed 1 " "-copy-meta /work/meta/smoke.json" "-nats-server-name nats-0" "-pg postgres://dispatch:"; do
+  "-rng-seed 1 " "-copy-meta /work/meta/smoke.json" "-nats-server-name nats-0"; do
   [[ $start == *"$want"* ]] || fail "the step's loadgen run lacks '$want': $start"
 done
+[[ $start =~ \ -token-file\ (/work/secrets/step-smoke\.[0-9a-f]+)/dispatch-token\  ]] || fail "the step's loadgen run has no -token-file of a directory of its own: $start"
+for want in "-listener-token-file ${BASH_REMATCH[1]}/listener-token " "-pg-file ${BASH_REMATCH[1]}/pg-url "; do
+  [[ $start == *"$want"* ]] || fail "the step's loadgen run lacks '$want': $start"
+done
+job_credentials step-smoke
+no_credential_in_args
 jq -e '.namespace == "'"$ns"'" and .postgres.version != "" and .postgres.settings_sha256 != "" and .node_cpu_model.dispatch == "Fake CPU @ 2.00GHz" and (.pods | length) == 8' \
   "$run_dir/steps/smoke/copy-meta.json" >/dev/null || fail "copy-meta.json lacks a field: $(cat "$run_dir/steps/smoke/copy-meta.json")"
 # The phase and the reads-only flag, which loadgen curves reads to place the step in the curves.
@@ -1467,6 +1804,18 @@ for want in "env LOADTEST_ROOT=/work/root LOADTEST_GOMAXPROCS=16 /work/loadgen r
   "-copy-meta /work/meta/r16.json" "-pprof http://dispatch-pprof.$ns.svc:6061" "-nats-server-name nats-0"; do
   [[ $start == *"$want"* ]] || fail "replay r16's loadgen run lacks '$want': $start"
 done
+[[ $start =~ \ -token-file\ (/work/secrets/replay-r16\.[0-9a-f]+)/dispatch-token\  ]] || fail "replay r16's loadgen run has no -token-file of a directory of its own: $start"
+for want in "-listener-token-file ${BASH_REMATCH[1]}/listener-token " "-pg-file ${BASH_REMATCH[1]}/pg-url "; do
+  [[ $start == *"$want"* ]] || fail "replay r16's loadgen run lacks '$want': $start"
+done
+# The replay and the checksums replay-prepare and its reset read (replay_checksum) take the copy's
+# credentials as the seed and the step do, and still no kubectl call carries one.
+job_credentials replay-r16
+job_credentials replay-checksum
+grep -qE -- "sh /work/secrets/replay-checksum\.[0-9a-f]+ /work/loadgen replay-checksum -allow-foreign -url http://dispatch\.$ns\.svc:8766 -token-file /work/secrets/replay-checksum\.[0-9a-f]+/dispatch-token " "$fake/kubectl.log" ||
+  fail "no loadgen replay-checksum was given its credentials' files: $(grep -F 'replay-checksum' "$fake/kubectl.log" | tail -n1)"
+no_credential_in_args
+pass "replay and replay-checksum read the copy's credentials from files the runner writes for each and removes when it ends, and no kubectl or jq call of up, seed, step, replay-prepare or replay carries one"
 for f in reset.json replay-prepared.json last-reset.json envoy-dispatch.json pg-stats-before.json pg-stats-after.json summary.json CODEPATHS.md; do
   [ -f "$run_dir/steps/r16/$f" ] || fail "the replay step directory has no $f"
 done
@@ -1779,10 +2128,14 @@ bt_start=$(grep -F 'typing-10x-typing /work/browsertype ' "$fake/runner-starts")
   fail "a kubectl call of the typing path wrote a token into the runner: $(grep -F 'cat >"$1/token"' "$fake/kubectl.log" | tail -n1)"
 [ ! -e "$fake/runner/work/typing/token" ] ||
   fail "the typing path left a token in the runner: $(cat "$fake/runner/work/typing/token")"
-# (loadgen run's own command line carries -token; browsertype's calls are those naming it, its
-# job or its runner directory.)
+# (browsertype's calls are those naming it, its job or its runner directory.) The step's own
+# loadgen run reads the copy's credentials from the runner, which shows the record below can hold
+# a job's; browser typing reads none (runner_start without -c).
 grep -E 'browsertype|/work/typing|sh typing-' "$fake/kubectl.log" >"$tmp/typing-calls" || fail "kubectl.log holds no browsertype call"
 ! grep -qF -- "$dispatch_token" "$tmp/typing-calls" || fail "a browsertype kubectl call carries the agent token on its command line"
+job_credentials step-10x-typing
+! grep -q '^typing-' "$fake/runner-credentials" ||
+  fail "a browsertype job was given the copy's credentials: $(grep '^typing-' "$fake/runner-credentials")"
 ! grep -rqF -- "$dispatch_token" "$tdir" || fail "a file under the step directory holds the agent token: $(grep -rlF -- "$dispatch_token" "$tdir")"
 ! grep -qF -- "$dispatch_token" "$tmp/out" || fail "step --typing printed the agent token"
 # The order in kubectl.log: the document list copied in, browsertype's start, loadgen's start
@@ -1923,7 +2276,7 @@ FAKE_APPLY_FAIL=nats.yaml run_cluster up "${up_args[@]}" --dispatch-commit "$com
 grep -qF 'kubectl apply of manifests/nats.yaml: the quota was updated under it (try 1 of 5); retrying in 3 s' "$tmp/out" ||
   fail "up's log does not name the retry of nats.yaml"
 [ "$(cat "$fake/sleep.log" 2>/dev/null)" = 3 ] || fail "up did not wait 3 s exactly once before the retry: $(cat "$fake/sleep.log" 2>/dev/null)"
-[ "$(applies)" = 6 ] || fail "up made $(applies) applies, not the five manifests' and one retry"
+[ "$(applies)" = 7 ] || fail "up made $(applies) applies, not the six manifests' and one retry"
 [ "$(grep -c '^# nats.yaml:' "$fake/applied.yaml")" = 1 ] || fail "nats.yaml was not applied once after the race"
 grep -q '^# dispatch.yaml:' "$fake/applied.yaml" || fail "up did not go on to the manifests after nats.yaml"
 grep -q 'the copy is up' "$tmp/out" || fail "up did not finish after the retry"
@@ -1961,6 +2314,189 @@ run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down after the failed up exited $RC"
 pass "up stops after five quota races in a row on one manifest"
 
+# ---- (d2) Dispatch's identity at the copy's listener: up's refusals ---------------------------------
+
+# A listener that does not take the role mark from Dispatch's token stops up, naming its answer.
+for answer in $'{"error":"role is taken from Dispatch\'s own principal alone, and this request\'s credential proves no principal","expected":["role"]}\n403' \
+  $'{"error":"unauthorized"}\n401'; do
+  reset_fake
+  FAKE_IDENTITY_ANSWER=$answer run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+  ((RC == 1)) || fail "up whose listener answered ${answer##*$'\n'} to Dispatch's role-marked send exited $RC, not 1"
+  grep -qF "the listener does not take a send's role mark from Dispatch's token" "$tmp/out" &&
+    grep -qF "was answered ${answer##*$'\n'} ${answer%$'\n'*}" "$tmp/out" ||
+    fail "up's refusal does not name the listener's ${answer##*$'\n'} answer"
+  ! grep -q 'the copy is up' "$tmp/out" || fail "up said the copy is up after the listener refused Dispatch's role mark"
+  [ "$(wc -l <"$fake/identity-probes")" = 1 ] ||
+    fail "up sent Dispatch's role-marked send $(wc -l <"$fake/identity-probes") times to a listener that answered ${answer##*$'\n'}, not once"
+  run_cluster down --namespace "$ns"
+  ((RC == 0)) || fail "down after the refused up exited $RC"
+done
+pass "up stops when the listener answers Dispatch's role-marked send 403 or 401, after one send, naming the answer"
+
+# A listener rendered without ENVOY_DISPATCH_PRINCIPAL takes no role mark at all: nothing to check.
+reset_fake
+FAKE_LISTENER_NO_PRINCIPAL=1 run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up whose listener names no ENVOY_DISPATCH_PRINCIPAL exited $RC"
+grep -qF "the listener names no ENVOY_DISPATCH_PRINCIPAL, so it takes no send's role mark from anyone: Dispatch's identity is not checked" "$tmp/out" ||
+  fail "up did not say it checks no identity of a listener that names no principal"
+[ ! -e "$fake/identity-probes" ] || fail "up checked Dispatch's identity at a listener that names no principal"
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down after the up without a principal exited $RC"
+pass "up checks no identity at a listener that names no Dispatch principal, and says so"
+
+# A listener still starting answers 503 (its readiness passes on /healthz's "starting"): up sends
+# again 3 s later and goes on once it is taken.
+reset_fake
+printf '%s\n' '503 {"error":"service starting"}' >"$fake/identity-answers"
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up whose listener answered 503 once before it took Dispatch's role mark exited $RC"
+[ "$(wc -l <"$fake/identity-probes")" = 2 ] || fail "up did not send Dispatch's role-marked send again after a 503: $(cat "$fake/identity-probes")"
+grep -qx 3 "$fake/sleep.log" || fail "up did not wait 3 s before it sent again: $(cat "$fake/sleep.log" 2>/dev/null)"
+grep -q 'the copy is up' "$tmp/out" || fail "up did not finish once the listener took Dispatch's role mark"
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down after the up with a starting listener exited $RC"
+pass "up sends Dispatch's role-marked send again 3 s after a starting listener's 503, and goes on once it is taken"
+
+# The identity check's rows on the fake clock (run_cluster_fake_clock): the check keeps its real
+# 120 s bound (deadline clock_start + 120), costs no real second, and is judged by counts alone.
+# identity_sends_span_the_bound WHAT: the check's sends were 41, at clock_start and after each of
+# 40 waits of 3 s, and none came after its deadline.
+identity_sends_span_the_bound() {
+  local late probes
+  late=$(awk -v d=$((clock_start + 120)) '$1 > d' "$fake/identity-probe-times" 2>/dev/null | tr '\n' ' ')
+  [ -z "$late" ] || fail "up made Dispatch's role-marked send to $1 after the check's deadline, fake second $((clock_start + 120)): at $late"
+  probes=$(wc -l <"$fake/identity-probes")
+  ((probes == 41)) ||
+    fail "up made Dispatch's role-marked send to $1 $probes times over the check's 120 s, not 41 (one at its start and one after each 3 s wait up to its deadline)"
+  [ "$(grep -cx 3 "$fake/sleep.log" || true)" = 40 ] && [ "$(wc -l <"$fake/sleep.log")" = 40 ] ||
+    fail "up waited '$(tr '\n' ' ' <"$fake/sleep.log" 2>/dev/null)' between its sends to $1, not 40 waits of 3 s"
+}
+
+# A listener that cannot read its issuer answers Dispatch's token 503 for as long as it cannot:
+# up sends again every 3 s until IDENTITY_CHECK_SECONDS (120 s) have passed, then stops, naming
+# the 503 as a listener still starting or one that cannot read its issuer.
+reset_fake
+FAKE_IDENTITY_ANSWER=$'{"error":"this identity token could not be checked; try again in a minute"}\n503' \
+  run_cluster_fake_clock up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 1)) || fail "up whose listener answered Dispatch's role-marked send 503 past the check's bound exited $RC, not 1"
+grep -qF "the listener does not take a send's role mark from Dispatch's token" "$tmp/out" &&
+  grep -qF 'was answered 503 {"error":"this identity token could not be checked; try again in a minute"}' "$tmp/out" &&
+  grep -qF 'and a 503 for all of 120 s a listener still starting or one that cannot read its issuer' "$tmp/out" ||
+  fail "up's refusal of a listener that answered 503 past the check's bound does not name the 503 as a listener still starting or one that cannot read its issuer: $(cat "$tmp/out")"
+! grep -q 'the copy is up' "$tmp/out" || fail "up said the copy is up after the listener answered 503 past the check's bound"
+identity_sends_span_the_bound 'a listener that kept answering 503'
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down after the up whose listener kept answering 503 exited $RC"
+pass "up sends Dispatch's role-marked send again every 3 s while the listener answers 503, 41 sends over its 120 s bound and none after it, then stops, naming the 503 as a listener still starting or one that cannot read its issuer"
+
+# A send that did not run (kubectl's or curl's error) wrote nothing: up makes it again 3 s later
+# and goes on once it is answered, and stops once sends that do not run outlast the check's bound,
+# naming the bound.
+reset_fake
+printf '%s\n' 'EXIT curl: (7) Failed to connect to listener port 8080 after 0 ms: Couldn'"'"'t connect to server' >"$fake/identity-answers"
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up whose first identity send did not run exited $RC, not 0: it gave up on a send that wrote nothing"
+[ "$(wc -l <"$fake/identity-probes")" = 2 ] ||
+  fail "up made Dispatch's role-marked send $(wc -l <"$fake/identity-probes") times after one that did not run, not 2"
+[ "$(cat "$fake/sleep.log" 2>/dev/null)" = 3 ] || fail "up did not wait 3 s once before it sent again: $(cat "$fake/sleep.log" 2>/dev/null)"
+grep -qF "the check of Dispatch's identity at the listener did not run in dispatch-5d9c (kubectl's or curl's words above); trying again in 3 s" "$tmp/out" &&
+  grep -qF 'curl: (7) Failed to connect to listener port 8080' "$tmp/out" ||
+  fail "up did not show curl's words and say it sends again: $(cat "$tmp/out")"
+grep -q 'the copy is up' "$tmp/out" || fail "up did not finish once the send ran and the listener took Dispatch's role mark"
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down after the up whose first identity send did not run exited $RC"
+reset_fake
+FAKE_IDENTITY_ANSWER=$'curl: (28) Operation timed out after 10002 milliseconds with 0 bytes received\nEXIT' \
+  run_cluster_fake_clock up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 1)) || fail "up whose identity sends never ran exited $RC, not 1"
+grep -qF "the check of Dispatch's identity at the listener did not run in dispatch-5d9c within 120 s (kubectl's or curl's words above)" "$tmp/out" ||
+  fail "up's refusal after identity sends that never ran does not name the check's bound: $(cat "$tmp/out")"
+! grep -q 'the copy is up' "$tmp/out" || fail "up said the copy is up although no identity send ran"
+identity_sends_span_the_bound 'a listener no send reached'
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down after the up whose identity sends never ran exited $RC"
+pass "up makes an identity send that did not run again 3 s later and goes on once it runs; sends that never run stop it after 41 tries over its 120 s bound, naming the bound"
+
+# A listener built before role marks reads no mark and refuses the send's missing target: it
+# admitted Dispatch's token, and up goes on, saying so.
+reset_fake
+printf '%s\n' '400 {"error":"target_session is required","expected":["target_session"]}' >"$fake/identity-answers"
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up whose listener reads no role mark and admitted Dispatch's token exited $RC"
+grep -qF "the listener admits Dispatch's token (system:serviceaccount:$ns:default, issued by http://oidc-issuer.$ns.svc:8080); its build reads no send's role mark" "$tmp/out" ||
+  fail "up did not say the listener admits Dispatch's token and reads no role mark"
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down after the up with a listener that reads no role mark exited $RC"
+pass "up goes on at a listener built before role marks that admits Dispatch's token, and says it reads no mark"
+
+# A mint that fails, or answers a token of another shape, stops up before any manifest.
+for case_ in fail shape; do
+  reset_fake
+  if [ "$case_" = fail ]; then
+    FAKE_LOADGEN_FAIL=oidc-mint run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+    want="up: loadgen oidc-mint failed, so the copy has no token issuer for its listener"
+  else
+    FAKE_MINT_TOKEN=not-a-token run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+    want="up: loadgen oidc-mint answered no P-256 key id, point and token of the shapes the copy's issuer serves"
+    ! grep -qF not-a-token "$tmp/out" || fail "up's refusal of the minted token repeats it"
+  fi
+  ((RC == 1)) || fail "up with a mint that $case_ exited $RC, not 1"
+  grep -qF "$want" "$tmp/out" || fail "up's refusal of a mint that $case_ does not say: $want"
+  # The lock is the one thing up creates before the mint.
+  ! grep -q "^-n $ns apply " "$fake/kubectl.log" && [ ! -s "$fake/applied.yaml" ] || fail "up applied a manifest after a mint that $case_"
+  mint_run_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
+  [ -d "$mint_run_dir/tmp" ] && [ -z "$(find "$mint_run_dir/tmp" -name 'account-token.*')" ] ||
+    fail "up left the file for Dispatch's minted token in $mint_run_dir/tmp after a mint that $case_"
+  run_cluster down --namespace "$ns"
+  ((RC == 0)) || fail "down after the up whose mint $case_ exited $RC"
+done
+pass "up stops before any manifest when loadgen oidc-mint fails or answers a token of another shape, leaving no answer file"
+
+# A loadgen that answers no oidc-mint -sub (one from before oidc-mint, as a prebuilt one can be) is
+# refused before the lock: after it, up would stop at the mint with the lock taken.
+reset_fake
+FAKE_LOADGEN_NO_MINT=1 run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 1)) || fail "up with a loadgen that answers no oidc-mint exited $RC, not 1"
+grep -qF "answers no 'oidc-mint -sub <subject>=<file>', which mints the copy's token issuer once the lock is taken" "$tmp/out" ||
+  fail "up's refusal of a loadgen that answers no oidc-mint does not say so"
+[ "$(cat "$fake/mint-help.log" 2>/dev/null)" = "oidc-mint -h" ] || fail "up did not ask the loadgen for oidc-mint -h once: $(cat "$fake/mint-help.log" 2>/dev/null)"
+[ ! -f "$fake/lock.json" ] && no_create || fail "up took the lock or created something before it refused a loadgen that answers no oidc-mint"
+[ -z "$(find "$LOADTEST_CLUSTER_ROOT" -maxdepth 2 \( -name '.checker.*' -o -name '.build-src.*' \))" ] ||
+  fail "up left its scratch directory after it refused a loadgen that answers no oidc-mint"
+pass "up refuses, before it takes the lock or creates anything, a loadgen that answers no oidc-mint -sub, leaving no scratch directory"
+
+# A run that a cluster.sh from before the copy's own issuer started: its state.json holds the
+# cluster's https issuer and no oidc_key or account token, so none of its manifests renders. db-size
+# and redeploy refuse it before they change anything (no scale, no apply, state.json as it was),
+# naming down and then up.
+reset_fake
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up exited $RC: $(cat "$tmp/out")"
+old_state=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")/state.json
+jq '.oidc_issuer = "https://container.googleapis.com/v1/projects/p/locations/l/clusters/c" | del(.oidc_key, .secrets.account_token)' \
+  "$old_state" >"$tmp/old-state.json"
+cat -- "$tmp/old-state.json" >"$old_state"
+rm -f -- "$tmp/old-state.json"
+old_state_before=$(cat -- "$old_state")
+for sub in db-size redeploy; do
+  case $sub in
+  db-size) old_args=(db-size --namespace "$ns" 4 15Gi) ;;
+  redeploy) old_args=(redeploy --namespace "$ns" --dispatch-commit "$commit_ok") ;;
+  esac
+  mark=$(own_calls_mark)
+  run_cluster "${old_args[@]}"
+  ((RC == 1)) || fail "$sub of a run whose state.json holds no oidc_key exited $RC, not 1"
+  grep -qF "$sub: run $(jq -r .run "$old_state")'s state.json holds no oidc_key" "$tmp/out" &&
+    grep -qF "Nothing was changed. Take it down and start a new run: cluster.sh down --namespace $ns, then cluster.sh up" "$tmp/out" ||
+    fail "$sub's refusal of a run whose state.json holds no oidc_key does not name down then up: $(cat "$tmp/out")"
+  writes=$(own_calls_since "$mark" | grep -E -- "^-n $ns (scale|apply|create|delete) " || true)
+  [ -z "$writes" ] || fail "$sub changed the copy before it refused a run whose state.json holds no oidc_key: $writes"
+  [ "$(cat -- "$old_state")" = "$old_state_before" ] || fail "$sub rewrote state.json before it refused a run whose state.json holds no oidc_key"
+done
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down of the run whose state.json holds no oidc_key exited $RC"
+pass "db-size and redeploy refuse a run whose state.json a cluster.sh from before the copy's own issuer wrote, before any scale, apply or state change, naming down then up"
+
 # ---- (e) templates ---------------------------------------------------------------------------------
 
 (
@@ -1969,13 +2505,16 @@ pass "up stops after five quota races in a row on one manifest"
   NS=$ns
   digest=sha256:$(printf '%064d' 7)
   values=(NAMESPACE=loadtest RUN_ID=lt-20261028t120000-abcd STORAGE_CLASS=premium-rwo
+    "OIDC_ISSUER=http://oidc-issuer.$ns.svc:8080"
     "ENVOY_IMAGE=ghcr.io/cybermonklabs/legion/envoy@$digest" "LISTENER_IMAGE=ghcr.io/cybermonklabs/legion/envoy@$digest"
     "PG_IMAGE=mirror.gcr.io/pgvector/pgvector@$digest" "SOCAT_IMAGE=mirror.gcr.io/alpine/socat@$digest"
     "RUNNER_IMAGE=mirror.gcr.io/library/debian@$digest")
   mapfile -t -O "${#values[@]}" values < <(pg_tier 16 60 | jq -r '"PG_TIER=\(.tier)", "PG_CPU=\(.cpu)", "PG_MEMORY=\(.memory)",
     (.settings | to_entries[] | "PG_\(.key | ascii_upcase)=\(.value)")')
-  values+=(PG_VOLUME=100Gi "PG_PASSWORD=$(random_hex 24)" "DISPATCH_TOKEN=$(random_hex 32)" "LISTENER_TOKEN=$(random_hex 32)" "SIGNING_KEY=$(random_hex 32)")
-  for m in secrets.yaml.tmpl postgres.yaml nats.yaml listener.yaml dispatch.yaml runner.yaml; do
+  values+=(PG_VOLUME=100Gi "PG_PASSWORD=$(random_hex 24)" "DISPATCH_TOKEN=$(random_hex 32)" "LISTENER_TOKEN=$(random_hex 32)" "SIGNING_KEY=$(random_hex 32)"
+    "ACCOUNT_JWT=fake-jose-header.fake-claims.fake-signature" "OIDC_KEY_ID=$(printf 'k%.0s' {1..43})"
+    "OIDC_KEY_X=$(printf 'x%.0s' {1..43})" "OIDC_KEY_Y=$(printf 'y%.0s' {1..43})")
+  for m in secrets.yaml.tmpl postgres.yaml nats.yaml oidc-issuer.yaml listener.yaml dispatch.yaml runner.yaml; do
     out=$(render_manifest "$MANIFESTS/$m" "${values[@]}") || fail "$m did not render"
     ! grep -qE '__[A-Z][A-Z0-9_]*__' <<<"$out" || fail "$m keeps a placeholder once rendered"
     if grep -E '^[[:space:]]*image:' <<<"$out" | grep -vqE '@sha256:[0-9a-f]{64}$'; then
@@ -1990,8 +2529,28 @@ pass "up stops after five quota races in a row on one manifest"
   if (render_manifest "$MANIFESTS/runner.yaml" NAMESPACE=loadtest) 2>/dev/null; then
     fail "render accepted a manifest with placeholders left"
   fi
+  # The listener's issuer is the copy's own, inside the namespace: the cluster's, which no pod of
+  # the copy can reach, is refused, and so is a token or a key of another shape, the token without
+  # its value in the refusal.
+  if (render_manifest "$MANIFESTS/listener.yaml" "${values[@]}" \
+    OIDC_ISSUER=https://container.googleapis.com/v1/projects/example-project/locations/us-west1/clusters/example) 2>/dev/null; then
+    fail "render accepted a listener issuer outside the namespace"
+  fi
+  # Another namespace's issuer, of the same shape, is refused too: the listener would verify against
+  # keys outside the copy's namespace.
+  refusal=$( (render_manifest "$MANIFESTS/listener.yaml" "${values[@]}" OIDC_ISSUER=http://oidc-issuer.kube-system.svc:8080) 2>&1) &&
+    fail "render accepted another namespace's issuer, http://oidc-issuer.kube-system.svc:8080"
+  [[ $refusal == *"OIDC_ISSUER value 'http://oidc-issuer.kube-system.svc:8080' is not a valid issuer"* ]] ||
+    fail "render's refusal of another namespace's issuer does not name it: $refusal"
+  if (render_manifest "$MANIFESTS/oidc-issuer.yaml" "${values[@]}" "OIDC_KEY_X=x'y") 2>/dev/null; then
+    fail "render accepted a key coordinate that is not 43 base64url characters"
+  fi
+  refusal=$( (render_manifest "$MANIFESTS/secrets.yaml.tmpl" "${values[@]}" 'ACCOUNT_JWT=a.b.c|x') 2>&1) &&
+    fail "render accepted an account token that is not three base64url segments"
+  [[ $refusal == *"ACCOUNT_JWT value '<redacted>' is not a valid jwt"* && $refusal != *'a.b.c|x'* ]] ||
+    fail "render's refusal of an account token does not name it redacted: $refusal"
 )
-pass "every manifest renders with no placeholder left and every image by digest; a tag or a missing value is refused"
+pass "every manifest renders with no placeholder left and every image by digest; a tag, a missing value, an issuer outside the namespace or of another namespace, and a key or token of another shape are refused, the token redacted"
 
 # ---- (f) a restart between the two reads ------------------------------------------------------------
 
@@ -2044,6 +2603,85 @@ pass "a restart between the before and after container reads writes step-failed.
 )
 pass "the sampler writes an error line with no number when its exec fails, and a numeric line when it reads"
 
+# ---- (g2) a runner job's credential directory ----------------------------------------------------
+
+# The runner's own scripts (RUNNER_CREDENTIALS, RUNNER_SECRETS_CLEANUP), run here under dash, the
+# runner image's sh, against a directory under this test's own root standing in for /work/secrets.
+# Without dash this section cannot run them as the runner does, so it fails naming dash rather than
+# blaming the scripts for a 127.
+command -v dash >/dev/null ||
+  fail "(g2) needs dash, the runner image's sh, to run the runner's credential scripts as the runner does; install dash (Debian and Ubuntu: apt-get install dash)"
+(
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
+  source "$cluster"
+  NS=$ns
+  secrets_root=$tmp/secrets-work/secrets
+  creds=$'agent-token\nlistener-token\npostgres://dispatch:pw@postgres/dispatch'
+  # Two starts of one job name -- this command's, or another command's of the same run -- are
+  # given two directories, so neither's end removes the other's credentials.
+  endpoints seed
+  first=$JOB_SECRETS
+  endpoints seed
+  [[ $first == /work/secrets/seed.* && $JOB_SECRETS == /work/secrets/seed.* && $first != "$JOB_SECRETS" ]] ||
+    fail "two starts of the job seed were given the directories $first and $JOB_SECRETS, not one of their own each"
+  # A start claims its directory with one mkdir: given one that is there, it writes nothing into
+  # it, removes nothing of it and ends with 1, so its job is never started.
+  mkdir -p "$secrets_root/seed.taken"
+  printf 'keep\n' >"$secrets_root/seed.taken/dispatch-token"
+  rc=0
+  # shellcheck disable=SC2016 # expanded by dash
+  dash -c 'secrets=$1; '"$RUNNER_CREDENTIALS"'; echo started' sh "$secrets_root/seed.taken" <<<"$creds" >"$tmp/claim.out" 2>&1 || rc=$?
+  ((rc == 1)) || fail "a start given a directory that is there ended with $rc, not 1"
+  [ "$(cat "$secrets_root/seed.taken/dispatch-token")" = keep ] || fail "a start wrote into a directory another start holds"
+  ! grep -q started "$tmp/claim.out" || fail "a start whose claim failed went on to start its job"
+  # The shell that waits on a job -- in the foreground, as replay_checksum's, or with the job in
+  # the background, as runner_start's -- removes the directory on a TERM or a HUP of its own, on
+  # which dash otherwise ends without running its EXIT trap.
+  # shellcheck disable=SC2016 # expanded by dash
+  for case in foreground:TERM foreground:HUP detached:TERM detached:HUP detached:INT; do
+    wrapper=${case%:*} sig=${case#*:}
+    dir=$secrets_root/job-$wrapper-$sig
+    case $wrapper in
+      foreground) script='secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; '"$RUNNER_SECRETS_CLEANUP"'"$@"' ;;
+      detached) script='secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; trap - HUP INT TERM; '"$RUNNER_SECRETS_CLEANUP"'"$@" & wait $!' ;;
+    esac
+    dash -c "$script" sh "$dir" sleep 2 <<<"$creds" &
+    pid=$!
+    naps=0
+    until [ -f "$dir/pg-url" ]; do
+      ((++naps <= 200)) || fail "the $wrapper shell wrote no credentials into $dir"
+      sleep 0.05
+    done
+    [ "$(stat -c %a "$dir")" = 700 ] && [ "$(stat -c %a "$dir/pg-url")" = 600 ] ||
+      fail "the $wrapper shell's directory is mode $(stat -c %a "$dir") and its pg-url $(stat -c %a "$dir/pg-url"), not 700 and 600"
+    kill -"$sig" "$pid"
+    rc=0
+    if [ "$sig" = INT ]; then
+      # A background job of a non-interactive sh ignores INT, the runner's detached wait shell as
+      # much as this one, so an INT ends neither it nor its job: the directory stays while the job
+      # runs and goes when it ends.
+      sleep 0.3
+      { kill -0 "$pid" 2>/dev/null && [ -d "$dir" ]; } ||
+        fail "an INT ended the detached shell or removed its job's credentials while the job ran"
+      wait "$pid" || rc=$?
+      ((rc == 0)) || fail "the detached shell ended with $rc once its job did, not 0"
+    else
+      wait "$pid" || rc=$?
+      ((rc == 143)) || fail "the $wrapper shell ended with $rc on a $sig, not 143"
+    fi
+    [ ! -e "$dir" ] || fail "the $wrapper shell left its job's credentials in $dir after a $sig"
+  done
+  # An INT that reaches a foreground shell, one not started ignoring it, ends it through the
+  # cleanup too.
+  dir=$secrets_root/job-foreground-INT
+  rc=0
+  # shellcheck disable=SC2016 # expanded by dash
+  timeout -s INT 0.5 dash -c 'secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; '"$RUNNER_SECRETS_CLEANUP"'"$@"' sh "$dir" sleep 2 <<<"$creds" || rc=$?
+  ((rc == 124)) || fail "the foreground shell given an INT by timeout ended with $rc, not timeout's 124"
+  [ ! -e "$dir" ] || fail "the foreground shell left its job's credentials in $dir after an INT"
+)
+pass "two starts of one runner job name get directories of their own, a start never writes into or removes one it did not claim, and the shell that waits on a job removes its directory on a TERM or a HUP, and a foreground one on an INT, while an INT leaves a detached one running until its job ends"
+
 # ---- (h) nats.yaml against a fresh render of the vendored chart ---------------------------------
 
 # A copy of render-nats.sh's tree whose vendored chart has its last byte changed. render-nats.sh
@@ -2078,25 +2716,62 @@ pass "the sampler writes an error line with no number when its exec fails, and a
 )
 pass "render-nats.sh refuses its vendored chart with one byte changed, naming it and both sums, before it runs go or writes a render"
 
-# The render runs on the real PATH for go, behind a curl that records each call and fails it: with
-# --pin-from it fetches nothing but helm, which go fetches itself through its module proxy.
+# The render runs on the real PATH with curl and jq taken off it: with --pin-from it reads no
+# registry, so it needs neither, and the one thing it may fetch is helm. Where the helm on PATH
+# answers the version render-nats.sh's HELM pins, as CI's .github/actions/install-helm installs
+# it, it fetches nothing; otherwise go fetches the helm module itself, through its module proxy.
+# Each directory of the real PATH that holds curl or jq gives way, in its place,
+# to one that links each of its other entries, and every other directory stays as it is, so a
+# wrapper that runs the next command of its name on PATH still finds it. The render's bash, and
+# each bash it starts, runs a command_not_found_handle that logs each command its PATH search
+# could not find, whatever that call's output was sent to, and the log must stay empty.
 # shellcheck disable=SC2031 # (e) to (g) source cluster.sh in subshells; its here and tmp stay there
 if PATH=$real_path command -v go >/dev/null; then
-  mkdir -p "$tmp/no-curl"
-  cat >"$tmp/no-curl/curl" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$FAKE_DIR/no-curl.log"
-exit 1
-EOF
-  chmod +x "$tmp/no-curl/curl"
-  status=0
-  PATH=$tmp/no-curl:$real_path bash "$here/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/nats.yaml" 2>"$tmp/out" ||
-    status=$?
-  [ ! -s "$fake/no-curl.log" ] || fail "render-nats.sh --pin-from ran curl, which reads the network: $(cat "$fake/no-curl.log")"
-  [ "$status" = 0 ] || fail "render-nats.sh failed; if go could not fetch helm with no network, run with GOPROXY=file://$(PATH=$real_path go env GOMODCACHE)/cache/download"
-  diff -u "$here/manifests/nats.yaml" "$tmp/nats.yaml" >"$tmp/out" ||
-    fail "manifests/nats.yaml differs from a fresh render; run render-nats.sh and commit its output"
-  pass "manifests/nats.yaml equals a fresh render of the vendored chart with nats-values.yaml, which ran no curl"
+  (
+    path="" farms=0
+    IFS=: read -ra dirs <<<"$real_path"
+    for dir in "${dirs[@]}"; do
+      if [ -e "${dir:-.}/curl" ] || [ -e "${dir:-.}/jq" ]; then
+        farms=$((farms + 1))
+        mkdir -p "$tmp/no-registry/$farms"
+        dir=$(cd -- "${dir:-.}" && pwd)
+        links=()
+        for entry in "$dir"/*; do
+          case ${entry##*/} in
+            curl | jq) ;;
+            *) if [ -e "$entry" ]; then links+=("$entry"); fi ;;
+          esac
+        done
+        [ ${#links[@]} -eq 0 ] || ln -s -- "${links[@]}" "$tmp/no-registry/$farms/"
+        dir=$tmp/no-registry/$farms
+      fi
+      path+=${path:+:}$dir
+    done
+    PATH=$path command -v curl jq >"$tmp/out" || true
+    [ ! -s "$tmp/out" ] || fail "the PATH built for the render still finds curl or jq"
+    export RENDER_MISSING=$tmp/render-missing.log
+    : >"$RENDER_MISSING"
+    # Bash runs this, in a child of the shell that searched PATH, in place of its own "command not
+    # found" error. It logs the command whatever the call sent its error output to, and each bash
+    # that inherits it from the environment runs it too.
+    # shellcheck disable=SC2329 # bash itself calls command_not_found_handle
+    command_not_found_handle() {
+      printf '%s\n' "$1" >>"$RENDER_MISSING"
+      printf '%s: command not found\n' "$1" >&2
+      return 127
+    }
+    export -f command_not_found_handle
+    status=0
+    PATH=$path bash "$here/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/nats.yaml" 2>"$tmp/out" ||
+      status=$?
+    [ ! -s "$RENDER_MISSING" ] ||
+      fail "render-nats.sh --pin-from ran $(sort -u -- "$RENDER_MISSING" | paste -sd, -), which its PATH does not hold; curl and jq read a registry"
+    [ "$status" = 0 ] ||
+      fail "render-nats.sh --pin-from failed on a PATH with no curl and no jq; if go could not fetch helm with no network, run with GOPROXY=file://$(PATH=$real_path go env GOMODCACHE)/cache/download"
+    diff -u "$here/manifests/nats.yaml" "$tmp/nats.yaml" >"$tmp/out" ||
+      fail "manifests/nats.yaml differs from a fresh render; run render-nats.sh and commit its output"
+  )
+  pass "manifests/nats.yaml equals a fresh render of the vendored chart with nats-values.yaml, on a PATH with no curl and no jq"
 else
   printf 'SKIP: go is not on PATH, so manifests/nats.yaml was not compared with a fresh render\n'
 fi
@@ -3060,8 +3735,8 @@ pass "with the lock naming another run, runner_stop, runner_step_remove and typi
 
 # (z) The daemons' lock read. cmd__heartbeat and cmd__sampler come through use_run any-run,
 # which reads no lock when --run names their run, as the daemons' own --run does; only after
-# that do they write the pidfile that start_daemon waits about 5 s for. So a refused API server
-# connection, or a round trip longer than that wait, would kill both daemons and the command
+# that do they write the pidfile that start_daemon waits for. So a refused API server
+# connection would kill both daemons and the command
 # that started them -- up right after it took the lock, every later command at ensure_daemons --
 # although the parent read the lock already and the heartbeat's own loop was built to outlive
 # exactly these errors (its patch tests the lock's run id, and a lock that names another run
@@ -3755,3 +4430,138 @@ rm -f -- "$unreach_fail"
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down exited $RC: $(cat "$tmp/out")"
 pass "a runner pod that stops answering exec bounds the wait past its deadline, after its TERM, after the SIGKILL it could not send and after the SIGKILL the pod took before it went, each end naming the runner pod and giving no exit status, so the step command ends and its heartbeat stops renewing the lock, while a TERM between the disk watcher's failed act and its next nap leaves it without a second act, and one inside its read of the volume leaves it without acting at all"
+
+# (ff) A daemon's start that a loaded machine holds. start_daemon gave a daemon 50 naps of 0.1 s to
+# write its pidfile and then refused, "the heartbeat daemon did not start", though the daemon was
+# still starting: on a loaded machine the heartbeat's start took longer than that, and the case
+# whose up it was failed for it. Here the fake jq holds each daemon before its pidfile until the
+# shell that started it has napped FAKE_DAEMON_START_NAPS more times, of any length (naps.log), or
+# has gone, so a wait that counts its naps refuses the daemon at any count below that, however fast
+# or slow the machine is, and one that waits for the pidfile takes it; the naps are fast ones
+# (FAKE_FAST_SLEEP=0.1). A daemon that ends without writing its pidfile -- here one whose run has
+# no state.json, which use_run refuses -- ends that wait, which then names the daemon's end without
+# a shell error for the /proc entry that is gone. And a shell with job control on (as
+# SHELLOPTS=monitor or a sourcing interactive shell gives it) still starts a daemon that lives: its
+# background job leads a process group of its own, so setsid would fork, and a wait that took the
+# exiting launcher for the daemon would call a live daemon ended. Those two starts are judged by
+# start_daemon's naps as well (judged_start): once the fact it waits for holds, it may nap
+# start_spare more times and no more, so no wall clock decides any part of this case.
+reset_fake
+export LOADTEST_CLUSTER_ROOT=$tmp/root-slowstart
+readonly start_naps=100 start_spare=20
+# Gated as in (o), and never opened: down below stops both daemons, and until then they stay in
+# their first period.
+FAKE_FAST_SLEEP=0.1 FAKE_DAEMON_START_NAPS=$start_naps FAKE_SLEEP_GATE=$fake/root-slowstart.gate \
+  run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) ||
+  fail "up gave up on a daemon whose start was held for $start_naps of start_daemon's naps, though it was still starting: $(cat "$tmp/out")"
+slow_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
+for daemon in heartbeat sampler; do
+  grep -qxF -- "$daemon $slow_dir" "$fake/daemon-start-holds" 2>/dev/null ||
+    fail "the fake jq held no start of the $daemon daemon of $slow_dir, so this case proved nothing of up's wait for it: $(cat "$fake/daemon-start-holds" 2>/dev/null)"
+  released=$(awk -v d="$daemon" -v r="$slow_dir" '$1 == d && $2 == r { print $3 }' "$fake/daemon-start-releases" 2>/dev/null)
+  [[ $released =~ ^[0-9]+$ ]] && ((released >= start_naps)) ||
+    fail "the fake jq let the $daemon daemon's start go after '${released:-nothing}', not after $start_naps of start_daemon's naps: the hold did not hold"
+  kill -0 "$(cat -- "$slow_dir/$daemon.pid" 2>/dev/null)" 2>/dev/null ||
+    fail "the $daemon daemon up waited for is not running: $(cat "$slow_dir/logs/$daemon.log" 2>/dev/null)"
+done
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down exited $RC: $(cat "$tmp/out")"
+
+# naps_by PID: the naps the shell PID has taken through the fake sleep, of any length (naps.log).
+naps_by() { awk -v p="$1" '$1 == p { n++ } END { print n + 0 }' "$fake/naps.log" 2>/dev/null || echo 0; }
+# proc_live PID: PID is a process that has not ended (a zombie has).
+proc_live() {
+  local stat
+  read -r stat 2>/dev/null <"/proc/$1/stat" || return 1
+  stat=${stat##*) }
+  [ "${stat%% *}" != Z ]
+}
+# live_child PID TEXT: a live child of PID has a command line that holds TEXT.
+live_child() {
+  local kid
+  for kid in $(cat /proc/"$1"/task/*/children 2>/dev/null); do
+    proc_live "$kid" && tr '\0' ' ' 2>/dev/null <"/proc/$kid/cmdline" | grep -qF -- "$2" && return 0
+  done
+  return 1
+}
+# pidfile_live FILE: FILE names a live process.
+pidfile_live() {
+  local pid
+  pid=$(cat -- "$1" 2>/dev/null) && [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+# judged_start PID FACT...: waits on start_daemon, running in the background as PID, until it ends,
+# and returns its status. Once FACT holds, start_daemon has nothing left to wait for, so after
+# start_spare more naps of its own it is killed and the status is 124: its wait does not end on
+# that fact. Each poll here is a real 0.05 s nap; what decides is start_daemon's own count.
+judged_start() {
+  local pid=$1 from="" rc=0
+  shift
+  while proc_live "$pid"; do
+    if [ -z "$from" ] && "$@"; then from=$(naps_by "$pid"); fi
+    if [ -n "$from" ] && (($(naps_by "$pid") - from > start_spare)); then
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 0.05
+  done
+  wait "$pid" || rc=$?
+  return "$rc"
+}
+# The daemon that ends first.
+readonly dead_run=lt-20261122t000000-dead
+mkdir -p "$LOADTEST_CLUSTER_ROOT/$dead_run/logs"
+(
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
+  source "$cluster"
+  NS=$ns
+  set_run "$dead_run"
+  export FAKE_FAST_SLEEP=0.1
+  start_daemon heartbeat
+) 2>"$tmp/dead-start.err" &
+dead_start=$!
+# dead_daemon_ended: the daemon logged use_run's refusal, and no live child of the starting shell
+# runs it any more.
+dead_daemon_ended() {
+  grep -qF "no $LOADTEST_CLUSTER_ROOT/$dead_run/state.json" "$LOADTEST_CLUSTER_ROOT/$dead_run/logs/heartbeat.log" 2>/dev/null &&
+    ! live_child "$dead_start" "_heartbeat --namespace $ns --run $dead_run"
+}
+dead_rc=0
+judged_start "$dead_start" dead_daemon_ended || dead_rc=$?
+((dead_rc != 124)) ||
+  fail "start_daemon napped $start_spare more times after its daemon had ended without writing its pidfile: its wait does not end on the daemon's end: $(cat "$tmp/dead-start.err")"
+((dead_rc != 0)) || fail "start_daemon returned 0 for a daemon that ended without writing its pidfile"
+grep -qF "the heartbeat daemon ended before this command saw its pidfile name it running" "$tmp/dead-start.err" ||
+  fail "start_daemon's refusal of a daemon that ended does not name its end: $(cat "$tmp/dead-start.err")"
+! grep -q 'No such file' "$tmp/dead-start.err" ||
+  fail "start_daemon's check of a daemon that had gone printed the shell's error for its /proc entry: $(cat "$tmp/dead-start.err")"
+grep -qF "no $LOADTEST_CLUSTER_ROOT/$dead_run/state.json" "$LOADTEST_CLUSTER_ROOT/$dead_run/logs/heartbeat.log" ||
+  fail "the daemon did not end where this case ends it, at use_run's refusal of a run with no state.json: $(cat "$LOADTEST_CLUSTER_ROOT/$dead_run/logs/heartbeat.log")"
+# The shell with job control on, starting a daemon whose run has the state.json it needs. Its
+# heartbeat is gated as in (o), and never opened: it stays in its first period until it is killed
+# below.
+readonly monitor_run=lt-20261122t000000-0b0e
+monitor_dir=$LOADTEST_CLUSTER_ROOT/$monitor_run
+mkdir -p "$monitor_dir/logs"
+jq -n --arg ns "$ns" '{namespace: $ns}' >"$monitor_dir/state.json"
+(
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
+  source "$cluster"
+  NS=$ns
+  set_run "$monitor_run"
+  export FAKE_FAST_SLEEP=0.1 FAKE_SLEEP_GATE=$fake/root-slowstart.gate
+  set -m
+  start_daemon heartbeat
+) 2>"$tmp/monitor-start.err" &
+monitor_start=$!
+monitor_rc=0
+judged_start "$monitor_start" pidfile_live "$monitor_dir/heartbeat.pid" || monitor_rc=$?
+((monitor_rc != 124)) ||
+  fail "start_daemon with job control on napped $start_spare more times after its daemon had written its pidfile and was running: $(cat "$tmp/monitor-start.err")"
+((monitor_rc == 0)) ||
+  fail "start_daemon with job control on refused a daemon it had started: $(cat "$tmp/monitor-start.err")"
+monitor_hb=$(cat -- "$monitor_dir/heartbeat.pid" 2>/dev/null) && kill -0 "$monitor_hb" 2>/dev/null ||
+  fail "the heartbeat start_daemon started with job control on is not running: $(cat "$monitor_dir/logs/heartbeat.log" 2>/dev/null)"
+kill -TERM -- "-$monitor_hb" 2>/dev/null || true
+pass "up waits for each daemon until it writes its pidfile, however many naps its start is held for, start_daemon ends non-zero, naming the daemon's end, once a daemon has ended without writing it, and a shell with job control on starts a daemon that lives"

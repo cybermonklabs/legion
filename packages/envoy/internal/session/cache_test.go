@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // --- Unit tests (no NATS — operate on a pre-populated cache) ---
@@ -43,17 +45,42 @@ func TestExpiryFor_ZeroTTLNeverExpires(t *testing.T) {
 
 // followingRegistry opens a registry on the test's own session bucket and waits for its first read
 // to complete, so the copy follows the bucket and its rows expire at their deadlines (expireDue).
-// The bucket is empty, so a test puts rows in the cache itself.
-func followingRegistry(t *testing.T) *SessionRegistry {
+// The bucket is empty, so a test puts rows in the cache itself. options are added to the
+// registry's own (a test's clock, WithSessionClock).
+func followingRegistry(t *testing.T, options ...SessionRegistryOption) *SessionRegistry {
 	t.Helper()
 	client := setupNATS(t)
-	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(5*time.Minute))
+	r, err := OpenSessionRegistry(t.Context(), client.Conn, append([]SessionRegistryOption{WithSessionReplicas(1), WithSessionTTL(5 * time.Minute)}, options...)...)
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
 	t.Cleanup(r.StopWatch)
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	waitFollowing(t, r)
 	return r
+}
+
+// waitFollowing waits until r's copy follows its bucket (kvwatch.Watcher.Following), a read of it
+// having completed. Its one bound is the test binary's deadline (testwait.Until): a loaded machine
+// that is slow to finish the read is not a failure.
+func waitFollowing(t *testing.T, r *SessionRegistry) {
+	t.Helper()
+	testwait.Until(t, "the session cache's read to complete", func() (bool, bool) {
+		following := r.watcher.Following()
+		return following, following
+	})
+}
+
+// cacheReady waits for r's first read to end (WaitForCacheReady) and fails the test when that wait
+// returns an error. Its one bound is the test binary's deadline (testwait.Receive).
+func cacheReady(t *testing.T, r *SessionRegistry) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan error, 1)
+	go func() { ready <- r.WaitForCacheReady(ctx) }()
+	if err := testwait.Receive(t, "the session cache's first read to end", ready); err != nil {
+		t.Fatalf("WaitForCacheReady: %v", err)
+	}
 }
 
 // hold puts rows in r's cache as a read delivers them (sessionCache.Apply), each at revision 1 and
@@ -103,11 +130,17 @@ func TestList_ExpiredEntryReadsAbsentAndLeavesAtItsDeadline(t *testing.T) {
 	}
 }
 
+// The registry reads a clock the test holds (heldClock), so the row it writes stays before its
+// deadline for as long as the test holds the clock, however long the machine takes between two
+// lines. The expiry timer measures its wait on that clock too (armExpiryLocked), so the row leaves
+// once the test moves the clock past its deadline.
 func TestGet_ExpiredEntryReadsAbsentAndLeavesAtItsDeadline(t *testing.T) {
 	const ttl = 300 * time.Millisecond
+	clock := &heldClock{now: time.Now()}
 	r := newTestRegistry(ttl)
+	r.now = clock.Now
 	hold(t, r, map[string]cachedSession{
-		"ses_expired": {entry: SessionEntry{Port: 2}, expiresAt: time.Now().Add(-time.Second)},
+		"ses_expired": {entry: SessionEntry{Port: 2}, expiresAt: clock.Now().Add(-time.Second)},
 	})
 	if _, err := r.Get("ses_expired"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("expected ErrKeyNotFound for expired entry, got %v", err)
@@ -117,11 +150,13 @@ func TestGet_ExpiredEntryReadsAbsentAndLeavesAtItsDeadline(t *testing.T) {
 	waitForCacheSize(t, r, 0)
 
 	// An entry the watcher delivers leaves at its deadline too, one TTL after it was written.
-	created := time.Now()
+	created := clock.Now()
 	r.applyWatched(watchedPut(t, "ses_short", 1, created, SessionEntry{Port: 3, UpdatedAt: created.UnixMilli()}))
 	if _, err := r.Get("ses_short"); err != nil {
 		t.Fatalf("Get(ses_short) before its deadline: %v", err)
 	}
+	// Past the row's deadline, and short of its last-seen record's, one TTL after that.
+	clock.advance(ttl + ttl/2)
 	waitForCacheSize(t, r, 0)
 	if _, err := r.Get("ses_short"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("Get(ses_short) after its deadline = %v, want ErrKeyNotFound", err)
@@ -131,11 +166,16 @@ func TestGet_ExpiredEntryReadsAbsentAndLeavesAtItsDeadline(t *testing.T) {
 	}
 }
 
+// The registry reads a clock the test holds (heldClock), so the row the test puts in its cache is
+// before its deadline however long the machine takes to open the registry and complete its first
+// read. On the machine's clock a row due a minute after the test began was past due by the Get
+// when those took longer than a minute: "Get failed: nats: key not found" after 65.48 s, in a
+// -race run at a load of 1,100 to 2,100.
 func TestGet_ValidReturnsEntry(t *testing.T) {
-	now := time.Now()
-	r := followingRegistry(t)
+	clock := &heldClock{now: time.Now()}
+	r := followingRegistry(t, WithSessionClock(clock.Now))
 	hold(t, r, map[string]cachedSession{
-		"ses_ok": {entry: SessionEntry{Port: 99, MachineID: "m1"}, expiresAt: now.Add(time.Minute)},
+		"ses_ok": {entry: SessionEntry{Port: 99, MachineID: "m1"}, expiresAt: clock.Now().Add(time.Minute)},
 	})
 	got, err := r.Get("ses_ok")
 	if err != nil {
@@ -146,12 +186,17 @@ func TestGet_ValidReturnsEntry(t *testing.T) {
 	}
 }
 
+// The registry reads a clock the test holds (heldClock), so the record a session leaves is within
+// its retention until the test moves the clock past it, however long the machine takes between
+// two lines.
 func TestExpiredLastSeenReadsZeroAndLeavesAtItsDeadline(t *testing.T) {
 	const ttl = 200 * time.Millisecond
+	clock := &heldClock{now: time.Now()}
 	r := newTestRegistry(ttl)
+	r.now = clock.Now
 	r.lastSeen["ses_lapsed"] = lastSeenSession{
-		lastSeen:  time.Now().Add(-2 * time.Minute).UnixMilli(),
-		expiresAt: time.Now().Add(-time.Minute),
+		lastSeen:  clock.Now().Add(-2 * time.Minute).UnixMilli(),
+		expiresAt: clock.Now().Add(-time.Minute),
 	}
 	if got := r.LastSeen("ses_lapsed"); got != 0 {
 		t.Fatalf("LastSeen(ses_lapsed) = %d, want 0 for an expired record", got)
@@ -162,12 +207,13 @@ func TestExpiredLastSeenReadsZeroAndLeavesAtItsDeadline(t *testing.T) {
 
 	// A record the registry writes when a session leaves leaves lastSeen at its own deadline, one
 	// TTL later, with no read and no Ping.
-	created := time.Now()
+	created := clock.Now()
 	r.applyWatched(watchedPut(t, "ses_gone", 1, created, SessionEntry{Port: 1, UpdatedAt: created.UnixMilli()}))
 	r.applyWatched(watchedDelete("ses_gone", 2))
 	if got := r.LastSeen("ses_gone"); got != created.UnixMilli() {
 		t.Fatalf("LastSeen(ses_gone) = %d, want %d", got, created.UnixMilli())
 	}
+	clock.advance(2 * ttl)
 	waitUntil(t, func() bool { return !lastSeenHeld(r, "ses_gone") })
 	if got := r.LastSeen("ses_gone"); got != 0 {
 		t.Fatalf("LastSeen(ses_gone) after its deadline = %d, want 0", got)
@@ -211,32 +257,24 @@ func TestLastSeenRetentionDoesNotRestoreLiveSession(t *testing.T) {
 
 // --- Integration tests (a real NATS server, shared via setupNATS) ---
 
-// pollSessionList retries List() until len matches want or timeout fires.
-func pollSessionList(t *testing.T, r *SessionRegistry, want int, timeout time.Duration) []ListEntry {
+// pollSessionList asks List until it answers want entries, and returns that answer. Its one bound
+// is the test binary's deadline (testwait.Until), and its failure prints the last answer.
+func pollSessionList(t *testing.T, r *SessionRegistry, want int) []ListEntry {
 	t.Helper()
-	deadline := time.After(timeout)
-	for {
+	return testwait.Until(t, fmt.Sprintf("List to answer %d entries", want), func() ([]ListEntry, bool) {
 		got, err := r.List()
 		if err != nil {
 			t.Fatalf("List failed: %v", err)
 		}
-		if len(got) == want {
-			return got
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("timed out waiting for List to return %d entries (got %d)", want, len(got))
-		default:
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
+		return got, len(got) == want
+	})
 }
 
 func TestSessionWatch_BootstrapPopulatesExistingKeys(t *testing.T) {
 	client := setupNATS(t)
 	// Pre-populate via a first registry, then open a second to simulate a
 	// listener restart against existing KV state.
-	reg1, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	reg1, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("first open: %v", err)
 	}
@@ -244,15 +282,11 @@ func TestSessionWatch_BootstrapPopulatesExistingKeys(t *testing.T) {
 		t.Fatalf("put: %v", err)
 	}
 
-	reg2, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	reg2, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("second open: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg2.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("WaitForCacheReady: %v", err)
-	}
+	cacheReady(t, reg2)
 	// Immediately after readiness, the pre-populated entry must be visible.
 	entries, err := reg2.List()
 	if err != nil {
@@ -265,7 +299,7 @@ func TestSessionWatch_BootstrapPopulatesExistingKeys(t *testing.T) {
 
 func TestSessionWatch_PropagatesExternalPut(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -277,7 +311,7 @@ func TestSessionWatch_PropagatesExternalPut(t *testing.T) {
 	if _, err := reg.watcher.KV().Put("ses_ext", buf); err != nil {
 		t.Fatalf("kv put: %v", err)
 	}
-	entries := pollSessionList(t, reg, 1, 5*time.Second)
+	entries := pollSessionList(t, reg, 1)
 	if entries[0].SessionID != "ses_ext" || entries[0].Port != 5 {
 		t.Fatalf("unexpected entry: %+v", entries[0])
 	}
@@ -285,43 +319,43 @@ func TestSessionWatch_PropagatesExternalPut(t *testing.T) {
 
 func TestSessionWatch_PropagatesDelete(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	if err := reg.Put("ses_d", SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	pollSessionList(t, reg, 1, 5*time.Second)
+	pollSessionList(t, reg, 1)
 
 	// Delete directly via KV (bypassing write-through) so we exercise the
 	// watcher's delete handling specifically.
 	if err := reg.watcher.KV().Delete("ses_d"); err != nil {
 		t.Fatalf("kv delete: %v", err)
 	}
-	pollSessionList(t, reg, 0, 5*time.Second)
+	pollSessionList(t, reg, 0)
 }
 
 func TestSessionWatch_PropagatesPurge(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	if err := reg.Put("ses_p", SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	pollSessionList(t, reg, 1, 5*time.Second)
+	pollSessionList(t, reg, 1)
 
 	if err := reg.watcher.KV().Purge("ses_p"); err != nil {
 		t.Fatalf("kv purge: %v", err)
 	}
-	pollSessionList(t, reg, 0, 5*time.Second)
+	pollSessionList(t, reg, 0)
 }
 
 func TestSessionPut_WriteThroughVisibleImmediately(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -348,7 +382,7 @@ func TestSessionPut_WriteThroughVisibleImmediately(t *testing.T) {
 
 func TestSessionDelete_WriteThroughRemovesImmediately(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -368,23 +402,23 @@ func TestSessionList_CacheOnlyAfterNATSShutdown(t *testing.T) {
 	// After WaitForCacheReady, List must serve from cache even when NATS is gone
 	// — no per-key Get() round-trips that would hang on a dead/slow link. This
 	// is the core regression: the old List() did Keys()+per-key Get() and timed
-	// out on a remote KV leader.
+	// out on a remote KV leader. The session the Put wrote through is in the cache
+	// whether or not the watcher has delivered its record by then: the first read
+	// keeps it through its sweep (kvwatch.Copy.BeginRead), so the connection may
+	// close before that record arrives.
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	if err := reg.Put("ses_cache", SessionEntry{Port: 3, MachineID: "m1"}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("WaitForCacheReady: %v", err)
-	}
+	cacheReady(t, reg)
 
 	client.Close()
 
+	// A List that hung would fail the row by name at the test binary's deadline.
 	done := make(chan struct{})
 	go func() {
 		entries, err := reg.List()
@@ -396,24 +430,20 @@ func TestSessionList_CacheOnlyAfterNATSShutdown(t *testing.T) {
 		}
 		close(done)
 	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("List() hung after NATS shutdown — cache-only invariant broken")
-	}
+	testwait.Receive(t, "List to answer from its cache after NATS shutdown", done)
 }
 
 func TestOpenSessionRegistry_PrunesUsingBucketTTL(t *testing.T) {
 	client := setupNATS(t)
 	// Create the bucket with a 2-minute TTL — deliberately different from the
 	// 5-minute hardcoded default in OpenSessionRegistry.
-	if _, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Minute)); err != nil {
+	if _, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Minute)); err != nil {
 		t.Fatalf("create bucket: %v", err)
 	}
 	// Open a second registry WITHOUT a TTL option, so opts.ttl is the 5-minute
 	// default. It must adopt the bucket's real 2-minute TTL via Status(), not
 	// the default — otherwise pruning is computed against the wrong window.
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -421,7 +451,7 @@ func TestOpenSessionRegistry_PrunesUsingBucketTTL(t *testing.T) {
 		t.Fatalf("expected registry to adopt bucket TTL 2m, got %v", ttl)
 	}
 	// Rows are pruned for their age only once the copy follows the bucket (pruneLocked).
-	waitFor(t, 5*time.Second, reg.watcher.Following)
+	waitFollowing(t, reg)
 	// An entry created 3 minutes ago is past the real 2-minute TTL but still
 	// within the 5-minute default. Pruning against the bucket TTL drops it;
 	// pruning against the default would wrongly keep it live.
@@ -443,15 +473,11 @@ func TestOpenSessionRegistry_PrunesUsingBucketTTL(t *testing.T) {
 
 func TestSessionWatch_DeadWatcherFailsPing(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("WaitForCacheReady: %v", err)
-	}
+	cacheReady(t, reg)
 	// Healthy watcher: no error yet.
 	if err := reg.WatchErr(); err != nil {
 		t.Fatalf("expected no watch error while healthy, got %v", err)
@@ -462,15 +488,10 @@ func TestSessionWatch_DeadWatcherFailsPing(t *testing.T) {
 	// the frozen cache is no longer reported as healthy.
 	client.Close()
 
-	deadline := time.After(5 * time.Second)
-	for reg.WatchErr() == nil {
-		select {
-		case <-deadline:
-			t.Fatal("watch error was never set after Updates() closed post-scan")
-		default:
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
+	testwait.Until(t, "the watcher to record its end after Updates() closed post-scan", func() (error, bool) {
+		err := reg.WatchErr()
+		return err, err != nil
+	})
 	if err := reg.Ping(); err == nil {
 		t.Fatal("expected Ping to fail once the watcher is dead")
 	}

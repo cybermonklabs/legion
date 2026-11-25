@@ -1,0 +1,10 @@
+{
+  "event_id": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+  "source": "github",
+  "source_event_id": "00000000-e278-11f1-8336-000000000001",
+  "topic": "notifications.github.sjawhar.legion.comment",
+  "dedupe_key": "github.00000000-e278-11f1-8336-000000000001",
+  "issued_at": 1794914183621,
+  "payload_summary": "status ",
+  "trace_id": "f0e1d2c3b4a5968778695a4b3c2d1e0f"
+}

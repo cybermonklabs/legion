@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // keptPublishAnswer is the publish route's 202 for a role message it kept: the envelope as it was
@@ -128,6 +129,7 @@ func publishToRole(t *testing.T, d *listenerDeps, role, body string) (*httptest.
 // lane for whoever claims the role next, and answers its sender 202 saying so. The stored copy
 // keeps its own role topic, so the next holder is handed the message as its sender sent it.
 func TestAPublishToAnUnheldRoleIsKeptAndAnsweredWithItsReason(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	const role = "kept-unclaimed"
 
@@ -164,6 +166,7 @@ func TestAPublishToAnUnheldRoleIsKeptAndAnsweredWithItsReason(t *testing.T) {
 // the role live, and the claim still stands: nothing but the role reaper releases one
 // (dispatch://INFRA-392).
 func TestAPublishToALapsedClaimIsKeptAndTheClaimStands(t *testing.T) {
+	t.Parallel()
 	const role = "kept-lapsed"
 	for _, tc := range []struct {
 		name   string
@@ -251,6 +254,7 @@ func TestAPublishToALapsedClaimIsKeptAndTheClaimStands(t *testing.T) {
 // live it gets the 404 holder_lapsed naming the holder, with the claim retained, the refusal's
 // exception on the role topic's exception lane, and nothing stored for a later holder.
 func TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	const (
 		role   = "kept-lapsed-opted-out"
@@ -273,7 +277,7 @@ func TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing(t *testing.
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("publish with keep: false to a lapsed claim: status %d, body %s; want 404 with nothing kept", recorder.Code, recorder.Body.String())
 	}
-	var refusal roleHolderError
+	var refusal listenerwire.RoleRefusal
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
@@ -301,6 +305,7 @@ func TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing(t *testing.
 // answer: the 404 naming the state, with nothing stored for a later holder. The flag is this
 // route's own request field, read by its give-up alone (roleSend.noHolder).
 func TestAPublishWithKeepFalseToAnUnheldRoleIsRefusedAndKeepsNothing(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	const role = "kept-opted-out"
 
@@ -317,13 +322,14 @@ func TestAPublishWithKeepFalseToAnUnheldRoleIsRefusedAndKeepsNothing(t *testing.
 
 // A clustered stream refuses a publish whose message id another publish still has in process
 // (bus.ErrDuplicateInProcess, nats-server's 10158), with no sequence to read a copy at. The keep
-// publishes again under the same id roleKeepInProcessPause later, until an answer names the copy,
+// publishes again under the same id inProcessPause later, until an answer names the copy,
 // all inside its one window (storeKeptRoleCopy): a stream that refuses twice and then stores the
 // copy is a keep that kept it, under KeptMsgID each time, with its hour counted from the copy's
 // store time. A stream that refuses until the window has run out is a keep that failed, and the
 // lane holds nothing. No cluster gives the refusal on demand, so the keep is passed a publish that
 // answers it, which the keep takes in the stream's place.
 func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
+	t.Parallel()
 	const role = "kept-in-process"
 	inProcess := fmt.Errorf("%w: %w", bus.ErrDuplicateInProcess,
 		&natsgo.APIError{Code: 409, ErrorCode: 10158, Description: "duplicate message id is in process"})
@@ -351,8 +357,8 @@ func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
 		if !slices.Equal(ids, []string{msgID, msgID, msgID}) {
 			t.Fatalf("the keep published under %v, want %s three times: the in-process refusal is retried under the id it refused", ids, msgID)
 		}
-		if elapsed < 2*roleKeepInProcessPause {
-			t.Fatalf("the keep took %s over two refusals, want at least two pauses of %s between its publishes", elapsed, roleKeepInProcessPause)
+		if elapsed < 2*inProcessPause {
+			t.Fatalf("the keep took %s over two refusals, want at least two pauses of %s between its publishes", elapsed, inProcessPause)
 		}
 		stored, at, ok := readKeptRoleCopy(t, harness.client, role)
 		if !ok || stored.EventID != item.EventID || kept.item.EventID != item.EventID {
@@ -369,12 +375,41 @@ func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
 		publish := func(context.Context, string, contracts.Envelope, string) (bus.StoredAck, error) {
 			return bus.StoredAck{}, inProcess
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 4*roleKeepInProcessPause)
+		ctx, cancel := context.WithTimeout(context.Background(), 4*inProcessPause)
 		defer cancel()
 		if _, err := storeKeptRoleCopy(ctx, harness.config, role, item, publish); !errors.Is(err, bus.ErrDuplicateInProcess) || !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("a keep refused as in process until its window ended = %v, want a failed keep naming the refusal and the window", err)
 		}
 		assertNothingKept(t, harness.client, role)
+	})
+
+	// A first send that went out unanswered and whose resend the stream refused as in process
+	// (bus.ErrUnacknowledged beside bus.ErrDuplicateInProcess, as sendStored names it) may have
+	// stored the copy itself. Here it did, so the next send is answered a duplicate of it: the
+	// keep's own copy, inside its hour, which is no repeat (publishPastInProcess answers it
+	// Resent), so a role send that kept it is charged as a copy it stored (roleSend.kept).
+	t.Run("its own unanswered send stored the copy", func(t *testing.T) {
+		harness := newListenerDeliveryHarness(t)
+		const ownRole = role + "-own-send"
+		item := listenerTestEnvelope(contracts.RoleTopicPrefix+ownRole, "kept-in-process-own-send")
+		sends := 0
+		publish := func(ctx context.Context, subject string, envelope contracts.Envelope, msgID string) (bus.StoredAck, error) {
+			sends++
+			ack, err := harness.client.PublishStoredAck(ctx, subject, envelope, msgID)
+			if sends == 1 && err == nil {
+				return bus.StoredAck{}, fmt.Errorf("%w: %w", bus.ErrUnacknowledged, inProcess)
+			}
+			return ack, err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), roleKeepPublishWindow)
+		defer cancel()
+		kept, err := storeKeptRoleCopy(ctx, harness.config, ownRole, item, publish)
+		if err != nil {
+			t.Fatalf("a keep whose first send stored the copy unanswered: %v; want the copy", err)
+		}
+		if sends != 2 || kept.item.EventID != item.EventID || kept.repeat {
+			t.Fatalf("after %d sends the keep answered event %s, repeat %t; want two sends, event %s and no repeat: the copy is the keep's own", sends, kept.item.EventID, kept.repeat, item.EventID)
+		}
 	})
 }
 
@@ -418,6 +453,7 @@ func assertNoKeepKey(t *testing.T, what string, body []byte) {
 // it gives the sender - which would otherwise tell the holder of every daemon notice and every
 // phase reminder "keep": false about a message it has just been handed.
 func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	uri := testnats.URL(t)
 	const (
@@ -476,6 +512,7 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 // the copy once, under the role forward's dedupe key and carrying the time it was kept, and the
 // cursor the drain leaves means a second claim of the same role forwards nothing again.
 func TestAClaimForwardsEachKeptRoleMessageToItsNewHolderExactlyOnce(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	uri := testnats.URL(t)
 	const (
@@ -537,6 +574,7 @@ func TestAClaimForwardsEachKeptRoleMessageToItsNewHolderExactlyOnce(t *testing.T
 // The age is measured against the stream's own store time, which no caller may choose, so the test
 // moves the drain's clock rather than holding a copy for an hour.
 func TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-expired"
@@ -553,8 +591,8 @@ func TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt(
 		return nil
 	}
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-expired-1")
-	kept, ok := keepRoleMessage(cfg, role, item)
-	if !ok {
+	kept, err := keepRoleMessage(cfg, role, item)
+	if err != nil {
 		t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -610,6 +648,7 @@ func TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt(
 // copy lies on a subject no consumer filter carries (bus.StreamSubjects), so the durable never
 // delivers it back and it is never counted received a second time.
 func TestTheRoleLaneKeepsAMessageNoLiveHolderTakesWithNoException(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		role string
@@ -688,6 +727,7 @@ func TestTheRoleLaneKeepsAMessageNoLiveHolderTakesWithNoException(t *testing.T) 
 // either: the stream stored its forward on its agent subject, which is the whole of a forward's
 // outcome (startRoleForward).
 func TestADeliveredSendAndADeafHoldersSendBothKeepNothing(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	uri := testnats.URL(t)
 
@@ -732,6 +772,7 @@ func TestADeliveredSendAndADeafHoldersSendBothKeepNothing(t *testing.T) {
 // handed the role's new holder nothing while every sender had been answered 202 kept. The walk
 // is bounded by roleKeepScanMax instead, so a claim forwards every copy still inside the window.
 func TestADrainSpendsItsBudgetOnForwardsRatherThanOnExpiredCopies(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-drain-budget"
@@ -752,7 +793,7 @@ func TestADrainSpendsItsBudgetOnForwardsRatherThanOnExpiredCopies(t *testing.T) 
 	var fresh []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-budget-%02d", i))
-		if _, kept := keepRoleMessage(cfg, role, item); !kept {
+		if _, err := keepRoleMessage(cfg, role, item); err != nil {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
 		if !expired(i + 1) {
@@ -784,6 +825,7 @@ func TestADrainSpendsItsBudgetOnForwardsRatherThanOnExpiredCopies(t *testing.T) 
 // the claim stops there; a cursor written once at the end of the walk let both of them forward
 // everything they had read.
 func TestTwoDrainsOfOneRoleHandEachKeptCopyToExactlyOneHolder(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-two-drains"
@@ -793,7 +835,7 @@ func TestTwoDrainsOfOneRoleHandEachKeptCopyToExactlyOneHolder(t *testing.T) {
 	var keys []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-two-drains-%02d", i))
-		if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+		if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
 		keys = append(keys, roleForwardDedupePrefix+item.DedupeKey)
@@ -870,6 +912,7 @@ func TestTwoDrainsOfOneRoleHandEachKeptCopyToExactlyOneHolder(t *testing.T) {
 // not forwarded either. Each is passed over with the cursor already past it, so the role's next
 // claim is not handed it again.
 func TestTheDrainJudgesAKeptCopyByTheRulesEveryForwardPathApplies(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		role string
@@ -906,7 +949,7 @@ func TestTheDrainJudgesAKeptCopyByTheRulesEveryForwardPathApplies(t *testing.T) 
 			})
 			item := listenerTestEnvelope(contracts.RoleTopicPrefix+tc.role, tc.role+"-1")
 			tc.prepare(&item, holder)
-			if _, kept := keepRoleMessage(cfg, tc.role, item); !kept {
+			if _, err := keepRoleMessage(cfg, tc.role, item); err != nil {
 				t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 			}
 			claimRoleWith(t, harness, holder, tc.role, tc.entry)
@@ -942,6 +985,7 @@ func TestTheDrainJudgesAKeptCopyByTheRulesEveryForwardPathApplies(t *testing.T) 
 // A kept copy carries its sender: the publish route stamps the sender onto the envelope before it
 // is kept, so the holder handed the copy later reads the same stamp a live delivery carries.
 func TestAKeptRoleMessageCarriesTheSenderThePublishStamped(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	uri := testnats.URL(t)
 	const (
@@ -984,6 +1028,7 @@ func TestAKeptRoleMessageCarriesTheSenderThePublishStamped(t *testing.T) {
 // claim, so a copy kept under it would expire unread. Keeping is off for it, and its sender gets
 // the 404 it can act on, with nothing stored.
 func TestAPublishToARoleNoClaimCanNameIsRefusedAndKeepsNothing(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	const role = "legion-infra-INFRA-839-architect"
 
@@ -1011,6 +1056,7 @@ func TestAPublishToARoleNoClaimCanNameIsRefusedAndKeepsNothing(t *testing.T) {
 // (keepForNextHolder, runKeptRoleDrain). The claim and its drain are made here before the keep,
 // which is the order that race leaves behind, and no second claim follows.
 func TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-claimed-under-the-keep"
@@ -1054,6 +1100,7 @@ func TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep(t *testing.T) {
 // (TestAPublishWithKeepFalseToAnUnheldRoleIsRefusedAndKeepsNothing). So an ordinary raw role
 // publish is kept and raises no exception.
 func TestTheRoleLaneKeepsARawRolePublishForTheRolesNextHolder(t *testing.T) {
+	t.Parallel()
 	const role = "lane-keep-raw"
 	harness := newListenerDeliveryHarness(t)
 	topic := contracts.RoleTopicPrefix + role
@@ -1079,6 +1126,7 @@ func TestTheRoleLaneKeepsARawRolePublishForTheRolesNextHolder(t *testing.T) {
 // that registers again inside that grace, or a successor that claims the role, is handed it. No
 // delivery exception goes out, the kept line names the holder, and the claim is left as it is.
 func TestTheRoleLaneKeepsAMessageForAClaimTheRestartGraceRetained(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "kept-retained-claim"
 		holder = "ses_kept_retained_holder"
@@ -1087,7 +1135,7 @@ func TestTheRoleLaneKeepsAMessageForAClaimTheRestartGraceRetained(t *testing.T) 
 	// The claim is written before the listener's own registry opens, which is what a restart
 	// leaves behind: that registry restores the claim and gives it one session TTL of grace
 	// (store.ExpiredRoleClaimRetained) even while its holder's session registration is gone.
-	writer, err := store.Open(client.Conn, store.WithReplicas(1))
+	writer, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry that writes the claim: %v", err)
 	}
@@ -1124,6 +1172,7 @@ func TestTheRoleLaneKeepsAMessageForAClaimTheRestartGraceRetained(t *testing.T) 
 // through the route would let any bearer holder rewind a role's drain or put a copy of its own on
 // the lane, so the route refuses that prefix as it refuses agent topics, and stores nothing.
 func TestAPublishToTheListenersKeptLaneIsRefused(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	const role = "kept-lane-guard"
 	for _, subject := range []string{bus.KeptRoleSubject(role), bus.KeptRoleCursorSubject(role)} {

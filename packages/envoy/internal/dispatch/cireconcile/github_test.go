@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -21,9 +22,10 @@ import (
 
 // fakeGitHub is an httptest stand-in for the GitHub App and REST APIs a reconcile pass calls,
 // built on the shape of delivery's own newFakeGitHub: it mounts the installation lookup and the
-// token mint, and over them the four reads this package makes -- a repository's identity, its
-// open pull requests, and a commit's check runs and check suites -- each paged as GitHub pages
-// them, each answered with an ETag of its own, and each recorded.
+// token mint, and over them the five reads this package makes -- a repository's identity, its
+// open pull requests, and a commit's check runs, check suites and commit statuses -- each paged
+// as GitHub pages them, each answered with an ETag of its own, and each recorded with the route
+// it was answered by.
 //
 // Its ETag is a digest of the body the URL (path and query together) would answer with, so the
 // ETag of a URL changes exactly when a test changes what that URL answers, and a request whose
@@ -41,11 +43,20 @@ type fakeGitHub struct {
 	// is not always the full_name the answer gives: a repository read under a name it has been
 	// renamed from answers with the name GitHub gives it now.
 	repos map[string]fakeRepository
-	// pulls, runs and suites are keyed by the owner/repo the request names, and runs and suites
-	// by "owner/repo@sha".
-	pulls  map[string][]fakePull
-	runs   map[string][]object
-	suites map[string][]object
+	// pulls, runs, suites and statuses are keyed by the owner/repo the request names, and runs,
+	// suites and statuses by "owner/repo@sha".
+	pulls    map[string][]fakePull
+	runs     map[string][]object
+	suites   map[string][]object
+	statuses map[string][]object
+	// tokenPermissions is what every token the stand-in mints from now on holds, as GitHub's
+	// mint answers it, and minted what each token it has minted holds: a read of commit statuses
+	// with a token that holds no Commit statuses is refused, as GitHub refuses it.
+	// refusedStatuses is the commits whose statuses are refused whatever the token holds, which
+	// is a grant of Commit statuses taken away while a token minted with it lives.
+	tokenPermissions map[string]string
+	minted           map[string]map[string]string
+	refusedStatuses  map[string]struct{}
 	// etags is the ETag the stand-in last answered each URL with, so a test can read one.
 	etags map[string]string
 	// requests is every request the stand-in received, oldest first.
@@ -54,9 +65,15 @@ type fakeGitHub struct {
 	// more requests to one path so, and no others.
 	limitEverything bool
 	limitOnce       map[string]int
+	// failOnce answers that many more requests to one path with GitHub's 502, which is no rate
+	// limit and no answer about anything: GitHub's own trouble (failNext).
+	failOnce map[string]int
 	// stalls is how long one path's answer is held back before it is given, which is how a test
 	// makes GitHub slower than the pass's own bound (stall).
 	stalls map[string]time.Duration
+	// answerCodes is the status one path is answered with in place of its route's answer, which
+	// is how a test makes GitHub give up on or refuse that one read (answerStatus).
+	answerCodes map[string]int
 	// The state the GraphQL stand-in holds beside the REST one (graphql_test.go): the queries
 	// it was asked, the heads whose Checks fields it refuses, the heads whose node or head
 	// commit it answers null, the pages of one repository it refuses whole, the rate limits it
@@ -97,34 +114,56 @@ type fakePull struct {
 }
 
 // fakeRequest is one request the stand-in received: the URL is the path and query together, as
-// an ETag is held by.
+// an ETag is held by, and route is the pattern of the stand-in's own mux that answered it.
 type fakeRequest struct {
 	method      string
 	url         string
+	route       string
 	ifNoneMatch string
 }
+
+// The routes of the stand-in's mux, which a test counts requests by (fakeGitHub.byRoute).
+const (
+	installationRoute = "GET /repos/{owner}/{repo}/installation"
+	tokenRoute        = "POST /app/installations/{id}/access_tokens"
+	repositoryRoute   = "GET /repos/{owner}/{repo}"
+	pullsRoute        = "GET /repos/{owner}/{repo}/pulls"
+	checkRunsRoute    = "GET /repos/{owner}/{repo}/commits/{sha}/check-runs"
+	checkSuitesRoute  = "GET /repos/{owner}/{repo}/commits/{sha}/check-suites"
+	statusRoute       = "GET /repos/{owner}/{repo}/commits/{sha}/status"
+	graphQLRoute      = "POST /graphql"
+)
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
 	t.Helper()
 	f := &fakeGitHub{
-		t:             t,
-		mux:           http.NewServeMux(),
-		installID:     1,
-		repos:         map[string]fakeRepository{},
-		pulls:         map[string][]fakePull{},
-		runs:          map[string][]object{},
-		suites:        map[string][]object{},
-		etags:         map[string]string{},
-		limitOnce:     map[string]int{},
-		stalls:        map[string]time.Duration{},
-		refusedChecks: map[string]struct{}{},
-		nulled:        map[string]nulledHead{},
-		refusedPages:  map[string]map[int]struct{}{},
-		graphQLStalls: map[string]time.Duration{},
-		cursorsGiven:  map[string]queryAfter{},
+		t:         t,
+		mux:       http.NewServeMux(),
+		installID: 1,
+		repos:     map[string]fakeRepository{},
+		pulls:     map[string][]fakePull{},
+		runs:      map[string][]object{},
+		suites:    map[string][]object{},
+		statuses:  map[string][]object{},
+		// The permissions the installation lookup below answers, with metadata, which GitHub
+		// gives every token: no Commit statuses, so a pass reads no status unless a test grants
+		// one (setTokenPermissions).
+		tokenPermissions: map[string]string{"checks": "read", "contents": "read", "metadata": "read", "pull_requests": "read"},
+		minted:           map[string]map[string]string{},
+		refusedStatuses:  map[string]struct{}{},
+		etags:            map[string]string{},
+		limitOnce:        map[string]int{},
+		failOnce:         map[string]int{},
+		stalls:           map[string]time.Duration{},
+		answerCodes:      map[string]int{},
+		refusedChecks:    map[string]struct{}{},
+		nulled:           map[string]nulledHead{},
+		refusedPages:     map[string]map[int]struct{}{},
+		graphQLStalls:    map[string]time.Duration{},
+		cursorsGiven:     map[string]queryAfter{},
 	}
-	f.mux.HandleFunc("POST /graphql", f.answerQuery)
-	f.mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
+	f.mux.HandleFunc(graphQLRoute, f.answerQuery)
+	f.mux.HandleFunc(installationRoute, func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		_, known := f.repos[r.PathValue("owner")+"/"+r.PathValue("repo")]
 		installID := f.installID
@@ -141,15 +180,21 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 			"permissions": map[string]string{"checks": "read", "pull_requests": "read", "contents": "read"},
 		})
 	})
-	f.mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+	f.mux.HandleFunc(tokenRoute, func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.mints++
 		token := fmt.Sprintf("ghs_fake_%s_%d", r.PathValue("id"), f.mints)
+		permissions := maps.Clone(f.tokenPermissions)
+		f.minted[token] = permissions
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
-		f.encode(w, map[string]any{"token": token, "expires_at": time.Now().Add(time.Hour).Format(time.RFC3339Nano)})
+		f.encode(w, map[string]any{
+			"token":       token,
+			"expires_at":  time.Now().Add(time.Hour).Format(time.RFC3339Nano),
+			"permissions": permissions,
+		})
 	})
-	f.mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
+	f.mux.HandleFunc(repositoryRoute, func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		repository, known := f.repos[r.PathValue("owner")+"/"+r.PathValue("repo")]
 		f.mu.Unlock()
@@ -159,7 +204,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		}
 		f.answer(w, r, map[string]any{"full_name": repository.fullName, "id": repository.id})
 	})
-	f.mux.HandleFunc("GET /repos/{owner}/{repo}/pulls", func(w http.ResponseWriter, r *http.Request) {
+	f.mux.HandleFunc(pullsRoute, func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		pulls := f.pulls[r.PathValue("owner")+"/"+r.PathValue("repo")]
 		f.mu.Unlock()
@@ -173,21 +218,71 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		}
 		f.answer(w, r, payload)
 	})
-	f.mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", func(w http.ResponseWriter, r *http.Request) {
+	f.mux.HandleFunc(checkRunsRoute, func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		runs := f.runs[commitKey(r)]
 		f.mu.Unlock()
 		page := onePage(r, runs)
 		f.answer(w, r, map[string]any{"total_count": len(runs), "check_runs": page})
 	})
-	f.mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-suites", func(w http.ResponseWriter, r *http.Request) {
+	f.mux.HandleFunc(checkSuitesRoute, func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		suites := f.suites[commitKey(r)]
 		f.mu.Unlock()
 		page := onePage(r, suites)
 		f.answer(w, r, map[string]any{"total_count": len(suites), "check_suites": page})
 	})
+	f.mux.HandleFunc(statusRoute, func(w http.ResponseWriter, r *http.Request) {
+		if !f.statusesReadable(r, r.PathValue("owner")+"/"+r.PathValue("repo"), r.PathValue("sha")) {
+			// GitHub's answer to a read of statuses the token may not make.
+			http.Error(w, `{"message":"Resource not accessible by integration"}`, http.StatusForbidden)
+			return
+		}
+		f.mu.Lock()
+		statuses := f.statuses[commitKey(r)]
+		f.mu.Unlock()
+		// GitHub's combined status: the newest status of each context, and the state it makes of
+		// them, which the pass does not read.
+		f.answer(w, r, map[string]any{
+			"state":       combinedState(statuses),
+			"sha":         r.PathValue("sha"),
+			"total_count": len(statuses),
+			"statuses":    onePage(r, statuses),
+		})
+	})
 	return f
+}
+
+// statusesReadable reports whether the request's token may read one commit's statuses: the token
+// holds Commit statuses at read or write, and the stand-in was not told to refuse that commit's
+// statuses (refuseStatuses), which is a grant taken away while the token lives.
+func (f *fakeGitHub) statusesReadable(r *http.Request, repository, sha string) bool {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, refused := f.refusedStatuses[repository+"@"+sha]; refused {
+		return false
+	}
+	held := f.minted[token]["statuses"]
+	return held == "read" || held == "write"
+}
+
+// combinedState is GitHub's state of a commit's statuses taken together: failure where any is a
+// failure or an error, pending where any is pending or none was posted, and success otherwise.
+func combinedState(statuses []object) string {
+	state := "success"
+	if len(statuses) == 0 {
+		return "pending"
+	}
+	for _, status := range statuses {
+		switch status["state"] {
+		case "failure", "error":
+			return "failure"
+		case "pending":
+			state = "pending"
+		}
+	}
+	return state
 }
 
 // commitKey is the key a commit's check objects are held under: "owner/repo@sha".
@@ -195,13 +290,15 @@ func commitKey(r *http.Request) string {
 	return r.PathValue("owner") + "/" + r.PathValue("repo") + "@" + r.PathValue("sha")
 }
 
-// serve records one request, answers it as a rate limit when a test asked for that, and
-// otherwise hands it to the routes above.
+// serve records one request, answers it as a rate limit, as GitHub's own failure, or with its
+// path's status when a test asked for that, and otherwise hands it to the routes above.
 func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
+	_, route := f.mux.Handler(r)
 	f.mu.Lock()
 	f.requests = append(f.requests, fakeRequest{
 		method:      r.Method,
 		url:         r.URL.RequestURI(),
+		route:       route,
 		ifNoneMatch: r.Header.Get("If-None-Match"),
 	})
 	limited := f.limitEverything
@@ -209,7 +306,13 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		f.limitOnce[r.URL.Path] = left - 1
 		limited = true
 	}
+	failed := false
+	if left := f.failOnce[r.URL.Path]; left > 0 {
+		f.failOnce[r.URL.Path] = left - 1
+		failed = true
+	}
 	stall := f.stalls[r.URL.Path]
+	status := f.answerCodes[r.URL.Path]
 	f.mu.Unlock()
 	if stall > 0 {
 		// GitHub is slower to answer this than the pass has left. The caller giving up on the
@@ -228,6 +331,18 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10))
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+		return
+	}
+	if failed {
+		http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
+		return
+	}
+	if status != 0 {
+		// No rate limit: the answer carries no limit header and no wording of one, so the
+		// client reads the status alone.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		fmt.Fprintf(w, `{"message":%q}`, http.StatusText(status))
 		return
 	}
 	f.mux.ServeHTTP(w, r)
@@ -335,6 +450,33 @@ func (f *fakeGitHub) setCheckSuites(repository, sha string, suites ...object) {
 	f.suites[repository+"@"+sha] = suites
 }
 
+// setStatuses makes the commit statuses of one commit exactly these, each the newest of its
+// context as GitHub's combined status lists it, which changes the ETag of the URL that lists them.
+func (f *fakeGitHub) setStatuses(repository, sha string, statuses ...object) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statuses[repository+"@"+sha] = statuses
+}
+
+// setTokenPermissions makes every token the stand-in mints from now on hold exactly these
+// permissions, as GitHub's mint answers them: the permissions the App's installation grants. A
+// token minted before keeps the permissions it was minted with.
+func (f *fakeGitHub) setTokenPermissions(permissions map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tokenPermissions = maps.Clone(permissions)
+}
+
+// refuseStatuses makes GitHub refuse one commit's statuses whatever the token holds: the query
+// answers that head's status field null with an errors entry against its path, and the REST
+// read of its statuses answers 403. It is a grant of Commit statuses taken away while a token
+// minted with it lives.
+func (f *fakeGitHub) refuseStatuses(repository, sha string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refusedStatuses[repository+"@"+sha] = struct{}{}
+}
+
 // rateLimitEverything answers every request from now on as GitHub answers an exhausted limit.
 func (f *fakeGitHub) rateLimitEverything() {
 	f.mu.Lock()
@@ -349,6 +491,13 @@ func (f *fakeGitHub) rateLimitNext(path string) {
 	f.limitOnce[path]++
 }
 
+// failNext answers the next request to path with GitHub's 502 Bad Gateway, and no other request.
+func (f *fakeGitHub) failNext(path string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failOnce[path]++
+}
+
 // stall holds back every answer to path by wait, as GitHub answering a poller slowly does. A
 // wait of zero answers it as fast as every other path again.
 func (f *fakeGitHub) stall(path string, wait time.Duration) {
@@ -359,6 +508,19 @@ func (f *fakeGitHub) stall(path string, wait time.Duration) {
 		return
 	}
 	f.stalls[path] = wait
+}
+
+// answerStatus answers every request to path with status and GitHub's short message for it,
+// in place of what its route would answer, as GitHub answers a read it gave up on (a 5xx) or
+// refused (a 4xx). A status of zero answers the path from its route again.
+func (f *fakeGitHub) answerStatus(path string, status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if status == 0 {
+		delete(f.answerCodes, path)
+		return
+	}
+	f.answerCodes[path] = status
 }
 
 // received is every request the stand-in has been sent, oldest first.
@@ -382,6 +544,16 @@ func (f *fakeGitHub) countPath(path string) int {
 		if before, _, _ := strings.Cut(request.url, "?"); before == path {
 			sent++
 		}
+	}
+	return sent
+}
+
+// byRoute is how many of the requests the stand-in has been sent each of its routes answered,
+// keyed by the route's pattern: what one pass costs GitHub, read one kind of request at a time.
+func (f *fakeGitHub) byRoute() map[string]int {
+	sent := map[string]int{}
+	for _, request := range f.received() {
+		sent[request.route]++
 	}
 	return sent
 }

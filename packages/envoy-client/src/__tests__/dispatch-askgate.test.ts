@@ -10,6 +10,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { keepStore, MARKER_MAX_AGE_MS, mintMarker, setRecordMode } from "../askgate-marker";
 import { cliRefusals, runDispatchCli } from "../dispatch-cli";
@@ -68,8 +70,9 @@ const server = Bun.serve({
         advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
       });
     }
+    // A refusal, so a write this stub has no route for is answered once and never asked again.
     record();
-    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
+    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 400 });
   },
 });
 afterAll(() => server.stop(true));
@@ -81,6 +84,8 @@ const postsTo = (route: string) => posts.filter((p) => p.method === "POST" && p.
 const messagePosts = () => postsTo(MESSAGES);
 
 const makeDirectory = temporaryDirectories("dispatch-askgate");
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
 let stateDir = "";
 beforeEach(() => {
   posts.length = 0;
@@ -163,9 +168,10 @@ function environment(
   extra: Record<string, string | undefined>
 ): Record<string, string | undefined> {
   return {
+    ...bunCacheOff,
     HOME: stateDir,
     DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-    DISPATCH_TOKEN: "test-token",
+    DISPATCH_TOKEN: TOKEN,
     DISPATCH_STATE_DIR: stateDir,
     ...extra,
   };
@@ -596,6 +602,25 @@ describe("AskGate at the dispatch CLI", () => {
       [["issue", "--project", "DSP", "--title", "t", "--spec", "# Spec"], "issue"],
       [["artifact", "--issue", "DSP-1", "--name", "brief.md", "--content", "# Brief"], "artifact"],
       [["artifact", "--issue", "DSP-1", "--name", "notes", "--path", "notes.markdown"], "artifact"],
+    ] as const) {
+      const { code, stdout } = await run(argv);
+      expect(code).toBe(1);
+      expect(stdout).toStartWith(`dispatch ${command} was not called: AskGate is on`);
+    }
+    expect(posts).toHaveLength(0);
+  });
+
+  // A correction writes or takes down the text of a post the gate reviewed when it was posted,
+  // so the CLI asks for a marker for each of the four, as it does for a comment or a message.
+  test("the four post corrections are gated, each refused before any request", async () => {
+    writeRecord();
+    const comment = "cccccccc-0000-4000-8000-000000000050";
+    const message = "dddddddd-0000-4000-8000-000000000050";
+    for (const [argv, command] of [
+      [["edit-comment", "--comment", comment, "--body", "Corrected: 72 hours."], "edit-comment"],
+      [["delete-comment", "--comment", comment], "delete-comment"],
+      [["edit-message", "--message", message, "--body", "Corrected: 02:00 UTC."], "edit-message"],
+      [["delete-message", "--message", message], "delete-message"],
     ] as const) {
       const { code, stdout } = await run(argv);
       expect(code).toBe(1);

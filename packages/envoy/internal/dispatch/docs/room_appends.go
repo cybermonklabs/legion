@@ -172,9 +172,10 @@ func (p *PgVersioned) appendUpdates(ctx context.Context, room string, updates []
 // checkpoint:
 //
 //  1. pg_advisory_lock, begin and the gate's read (queueAppendGate), with one more round trip,
-//     the prune's rest and the gate read again, on the rare append whose gate read finds a
-//     checkpoint (appendGateRead.pruneCeiling, recoverPruneTx's two statements);
-//  2. once the gate has passed (gateAppend), the append's writes (appendWrites) and commit;
+//     the gate read again under the ceiling an interrupted prune's checkpoint names, on the rare
+//     append whose gate read finds one (appendGateRead.pruneCeiling);
+//  2. once the gate has passed (gateAppend), the prune's rest where one stands, the append's
+//     writes (appendWrites) and commit;
 //  3. pg_advisory_unlock on its own, once the commit's bookkeeping is done: each stored class
 //     marked stored with its credit held at its version (RoomFlush.markStored),
 //     afterAppendCommit, the room instance's cursor advanced once per version and the room's
@@ -182,6 +183,24 @@ func (p *PgVersioned) appendUpdates(ctx context.Context, room string, updates []
 //     committed transaction notes its last version to the compaction queue (PgVersioned.noted).
 //     A path that returns before its commit spends one trip more than the list says: the
 //     rollback of what it left open goes out ahead of the unlock, under the unlock's own bound.
+//
+// Its transaction holds no transaction id outside pipeline 2: pipeline 1 takes a session-level
+// advisory lock, begins and reads, none of which assigns one, and the document work between the
+// two pipelines - the run read off the room's queue, the gate's verdict and the decode a
+// replaced history costs it (gateAppend, storedHistoryHolds) - runs before the first write. That
+// is why a standing prune's deletes are queued with the writes rather than run between the gate
+// reads: a delete is a write, and run there it would hold the transaction's id across that
+// decode (INFRA-636). The re-read they make necessary is a read bounded by the ceiling instead
+// (readAppendGate's ceiling, appendGateRead.after's rule for a transaction that queues its
+// writes).
+//
+// The xid rig reads a transaction from the BEGIN and COMMIT its backend sent as statements of
+// their own (storetest.XidShape), and this one sends both inside pipelines, so the rig sees no
+// transaction of it and the window is asserted over the round trips it sent instead
+// (TestARoomsAppendBatchHoldsItsXidForItsWritesPipelineAlone, appendXidWindowFailure). That
+// assertion is fed by hand the round-trip sequences this transaction must not send - a commit
+// sent a round trip after the writes among them - and reds on each of them
+// (TestTheRoomAppendXidCheckRedsOnAFedSequence).
 //
 // No pg_advisory_xact_lock is taken: the session already holds the document's lock on this very
 // connection, so a second acquisition would grant what the session has (appendUpdatesTx's rule
@@ -286,7 +305,7 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 	opening := &pgx.Batch{}
 	opening.Queue(`select pg_advisory_lock(hashtext($1))`, room)
 	opening.Queue(`begin`)
-	gate := queueAppendGate(opening, room)
+	gate := queueAppendGate(opening, room, nil)
 	// The opening pipeline is what takes the session lock and opens the transaction, so the end
 	// is deferred around it rather than before it, as lockRoom defers its unlock only once its
 	// lock statement has answered. pgx answers a batch whose context has already ended without a
@@ -309,16 +328,18 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 	if err != nil {
 		return 0, err
 	}
+	var pruneCeiling *int64
 	if read.pruneCeiling != nil {
-		// A prune its crash left half done: the rest of it (recoverPruneTx's two statements), and
-		// the gate read again on the head that leaves, cost this append one more round trip
-		// (takePruneCheckpointStatement's comment says why the first pipeline does not hold the
-		// delete).
-		finishing := &pgx.Batch{}
-		store.QueueExec(finishing, takePruneCheckpointWhat, takePruneCheckpointStatement, room)
-		store.QueueExec(finishing, finishPruneWhat, finishPruneStatement, room, *read.pruneCeiling)
-		gate = queueAppendGate(finishing, room)
-		if err := send(ctx, finishing); err != nil {
+		// A prune its crash left half done. Its rest - the checkpoint taken and the rows above
+		// the ceiling deleted - is queued with the append's writes below, since a delete run here
+		// would give the transaction its id before the gate's verdict and the decode that verdict
+		// can cost (storedHistoryHolds). What this pipeline runs is the gate read again, bounded
+		// by the ceiling, which reads the history those deletes leave, and it costs the append
+		// one more round trip.
+		pruneCeiling = read.pruneCeiling
+		rereading := &pgx.Batch{}
+		gate = queueAppendGate(rereading, room, pruneCeiling)
+		if err := send(ctx, rereading); err != nil {
 			return 0, fmt.Errorf("finish the document's prune: %w", err)
 		}
 		if read, err = gate.result(); err != nil {
@@ -354,18 +375,31 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 	updates = updates[:admitted]
 	taking = taking[:min(admitted, len(taking))]
 	first = persistence.Version(head + 1)
-	statements, last, err := p.appendWrites(ctx, room, head, updates, owes)
+	// No transaction: this batch commits on its own connection, not in a caller's transaction,
+	// so the helpers that queue the author statements record no ledger overlay for it
+	// (queuePendingAuthors, queueAskAuthors, queueFor).
+	plan, err := p.appendWrites(ctx, nil, room, head, updates, owes)
 	if err != nil {
 		return 0, err
 	}
 	second := &pgx.Batch{}
-	for _, statement := range statements {
+	// A half-done prune's rest goes first of the writes, so the rows above the ceiling are gone
+	// before the insert lands its own at the head the ceiling-bounded read gave
+	// (takePruneCheckpointStatement's comment says why the first pipeline does not hold them).
+	if pruneCeiling != nil {
+		store.QueueExec(second, takePruneCheckpointWhat, takePruneCheckpointStatement, room)
+		store.QueueExec(second, finishPruneWhat, finishPruneStatement, room, *pruneCeiling)
+	}
+	for _, statement := range plan.statements {
 		statement.queue(second)
 	}
+	// The commit ends the writes pipeline, so the transaction's whole id window is that one
+	// round trip.
 	second.Queue(`commit`)
 	if err := send(ctx, second); err != nil {
 		return 0, fmt.Errorf("commit document update: %w", err)
 	}
+	last := plan.last
 	open, stored = false, int64(last)
 	if p.afterAppendCommit != nil {
 		for version := head + 1; version <= int64(last); version++ {

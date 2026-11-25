@@ -8,7 +8,9 @@ import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { correction } from "../../__tests__/correction-feed";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
@@ -17,7 +19,9 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
+import { markCorrectedPost } from "../../api/corrected-post";
 import type {
   Agent,
   ArtifactText,
@@ -32,6 +36,7 @@ import type {
   Subscriber,
   UserIssueState,
 } from "../../api/types";
+import type { ConnectionCallbacks } from "../doc/connection";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -237,9 +242,9 @@ function stubIssuePage(
 }
 
 /**
- * The reads the issue page's own panels make: the header's repository and component lines, the
- * Spec tab's requirements, the Artifacts tab's lists, the issue's references, and each
- * document's own record, text, blocks and versions, with the decisions and read marks
+ * The reads the issue page's own panels make: the header's component line, the Spec tab's
+ * requirements, the Artifacts tab's lists, the issue's references, and each document's own
+ * record, text, blocks and versions, with the decisions and read marks
  * `decisionsAndReadMarkHandlers` answers. Each is answered with the API's empty shape, so a
  * panel renders its loaded-empty state rather than its error state. A test that asserts one of
  * these spies the `api` method that fetches it (`spyOn(api, "getArtifactText")`) and never
@@ -247,7 +252,6 @@ function stubIssuePage(
  */
 function answerIssuePageReads(): void {
   answerRequests(
-    http.get("/api/v1/settings/repo-projects", () => Response.json([])),
     http.get("/api/v1/projects/:project/architecture-sources", () => Response.json([])),
     http.get("/api/v1/issues/:key/coverage", ({ params }) =>
       Response.json({
@@ -260,7 +264,12 @@ function answerIssuePageReads(): void {
     ),
     http.get("/api/v1/issues/:key/artifacts", () => Response.json([])),
     http.get("/api/v1/issues/:key/references", () =>
-      Response.json({ members: [], truncated: false } satisfies IssueReferences)
+      Response.json({
+        linked_from: [],
+        links: [],
+        members: [],
+        truncated: false,
+      } satisfies IssueReferences)
     ),
     http.get("/api/v1/references", ({ request }) =>
       Response.json({
@@ -307,6 +316,18 @@ function renderIssuePage(
   })
 ) {
   const runtime = fakeDocumentRuntime({ text: seedText });
+  // Each document connection is told once that it has synced: by the timer below if the page has
+  // opened it by then, else by a row that waits for the connection and then calls
+  // `syncOpenedDocuments` itself. The page opens a document's connection only once that document's
+  // reads have answered, which can be after the timer.
+  const told = new Set<ConnectionCallbacks>();
+  const syncOpenedDocuments = () => {
+    for (const callbacks of runtime.callbacks) {
+      if (told.has(callbacks)) continue;
+      told.add(callbacks);
+      callbacks.onSynced();
+    }
+  };
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   const view = render(
     <MemoryRouter initialEntries={[path]}>
@@ -327,8 +348,8 @@ function renderIssuePage(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  window.setTimeout(runtime.sync);
-  return { ...view, runtime };
+  window.setTimeout(syncOpenedDocuments);
+  return { ...view, runtime, syncOpenedDocuments };
 }
 
 async function openSubscribedAgents(count: number) {
@@ -675,7 +696,9 @@ test("IssuePage lists project labels with issue labels selected and filters them
     const input = await screen.findByRole("combobox", { name: "Search or create label" });
     await waitFor(() => expect(listIssues).toHaveBeenCalledWith({ project: "CORE" }));
     expect(screen.getByRole("option", { name: "bug" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("option", { name: "frontend" })).toHaveAttribute(
+    // "frontend" is a label of the project's list, which the picker draws once that request has
+    // answered, not when it is made; "bug" is the issue's own and is drawn at once.
+    expect(await screen.findByRole("option", { name: "frontend" })).toHaveAttribute(
       "aria-selected",
       "false"
     );
@@ -1192,6 +1215,61 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
   }
 });
 
+// `s` is the Spec's and `t` starts the chord, so the Steps tab takes the next letter of its name.
+test("IssuePage opens the Steps tab with the t e chord", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const steps = spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] });
+  const view = renderIssuePage("/issues/CORE-1/spec");
+
+  try {
+    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await user.keyboard("t");
+    await user.keyboard("e");
+
+    await screen.findByRole("tab", { name: "Steps", selected: true });
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/steps");
+    await screen.findByText("No step of this issue has run in Legion.");
+    expect(steps).toHaveBeenCalledWith("CORE-1");
+  } finally {
+    view.unmount();
+    steps.mockRestore();
+    restore();
+  }
+});
+
+// The page keeps the Steps tab mounted once shown and hides its panel, so the page tells the tab
+// when it is shown: a Steps tab the reader left reads nothing more, however long the page stays
+// open, and catches up once it is shown again.
+test("IssuePage stops the Steps tab's reads while another tab is shown, and restarts them when Steps is", async () => {
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    const restore = stubIssuePage(issue);
+    const steps = spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] });
+    const view = renderIssuePage("/issues/CORE-1/steps");
+    try {
+      await tick(0);
+      expect(screen.getByRole("tab", { name: "Steps", selected: true })).toBeDefined();
+      expect(steps).toHaveBeenCalledTimes(1);
+
+      await user.click(screen.getByRole("tab", { name: "Activity" }));
+      await tick(0);
+      expect(screen.getByRole("tab", { name: "Activity", selected: true })).toBeDefined();
+      const left = steps.mock.calls.length;
+      await tick(600_000, 1_000);
+      expect(steps).toHaveBeenCalledTimes(left);
+
+      await user.click(screen.getByRole("tab", { name: "Steps" }));
+      await tick(300_000, 1_000);
+      expect(steps).toHaveBeenCalledTimes(left + 7);
+    } finally {
+      view.unmount();
+      steps.mockRestore();
+      restore();
+    }
+  });
+});
+
 test("IssuePage opens the Collaborators tab with the t o chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
@@ -1254,6 +1332,10 @@ test("IssuePage keeps the Spec mounted across tabs", async () => {
 
   try {
     await screen.findByRole("tab", { name: "Spec", selected: true });
+    // The document draws its text once its connection has synced, and the page opens that
+    // connection only once the document's reads have answered.
+    await waitFor(() => expect(view.runtime.connections).toHaveLength(1));
+    act(() => view.syncOpenedDocuments());
     await waitFor(() =>
       expect(within(view.container).getByRole("article")).toHaveTextContent(
         "The mounted specification"
@@ -1948,18 +2030,20 @@ test("IssuePage updates whose turn when a human clarification is latest", async 
 
   try {
     expect(await screen.findByText("Waiting on you (1)")).not.toBeNull();
-    queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
-      ...waitingIssue,
-      open_asks: [
-        {
-          ...openIssueAsk,
-          last_reply: {
-            author: { id: "alice", kind: "user" },
-            created_at: "2026-09-11T01:00:00Z",
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...waitingIssue,
+        open_asks: [
+          {
+            ...openIssueAsk,
+            last_reply: {
+              author: { id: "alice", kind: "user" },
+              created_at: "2026-09-11T01:00:00Z",
+            },
+            waiting_on: "agent",
           },
-          waiting_on: "agent",
-        },
-      ],
+        ],
+      });
     });
     expect(await screen.findByText("Waiting on agents (1)")).not.toBeNull();
   } finally {
@@ -2057,6 +2141,36 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
       within(stateActions).queryAllByRole("button", { name: "Awaiting approval" }).length
     ).toBe(1);
     expect(within(stateActions).queryAllByRole("button", { name: "Approve" }).length).toBe(1);
+  } finally {
+    view.unmount();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage draws the steps of a root whose parent is in another project", async () => {
+  // CORE-1 under OTHR-6 is a root of CORE: a parent of another project passes nothing on, so the
+  // issue stands in CORE's gate and the header reads the projects to draw it.
+  const restore = stubIssuePage({ ...issue, parent: "OTHR-6" });
+  const gated: Project = {
+    created_at: "2026-09-09T00:00:00Z",
+    gated_steps: ["decisions", "criteria", "spec"],
+    open_asks: 0,
+    key: "CORE",
+    name: "Core",
+  };
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
+  const view = renderIssuePage("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    expect(
+      Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
+        step.getAttribute("data-approval-step")
+      )
+    ).toEqual(["decisions", "criteria", "spec"]);
   } finally {
     view.unmount();
     listProjects.mockRestore();
@@ -2527,6 +2641,141 @@ test("IssuePage lists a match the reader cannot open by its kind alone, with no 
     if (unreadable === undefined) throw new Error("the unreadable match is not listed");
     expect(unreadable.textContent?.trim()).toBe("Message");
     expect(unreadable.querySelector("a")).toBeNull();
+  } finally {
+    view.unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// A match that is a post prints the post's first line, so it carries the post's marks: a deleted
+// comment has no first line left and its link reads as the deleted line, not its bare id; an
+// edited one carries ` · edited` where it stands; one that stands unedited carries neither.
+test("IssuePage lists a deleted match as deleted and marks an edited one", async () => {
+  const restore = stubIssuePage(issue);
+  const thirdId = "4c9f3e12-9999-4aaa-8bbb-cccccccccccc";
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(409, {
+      candidates: [
+        // The deleted match was edited first, so ` · edited` can be drawn, and only the list's
+        // own reading of the delete keeps it off.
+        {
+          deleted_at: "2026-09-09T03:00:00Z",
+          deleted_by: { id: "alice", kind: "user" },
+          edited_at: "2026-09-09T01:00:00Z",
+          id: WHOLE_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+        },
+        {
+          edited_at: "2026-09-09T02:00:00Z",
+          first_line: "The edited note",
+          id: OTHER_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${OTHER_ID}`,
+        },
+        {
+          first_line: "The standing note",
+          id: thirdId,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${thirdId}`,
+        },
+      ],
+      code: ID_AMBIGUOUS,
+      error: `the id prefix "${SHORT_ID}" names 3 items; write more of the id`,
+    })
+  );
+  const view = renderIssuePage(`/issues/CORE-1/comments/${SHORT_ID}`);
+
+  try {
+    await screen.findByText("Several items match that link");
+    const match = (href: string) => {
+      const link = view.container.querySelector(`a[href="${href}"]`);
+      const row = link?.closest("li");
+      if (link === null || row === null || row === undefined) throw new Error(`${href} unlisted`);
+      return { link, row };
+    };
+    const deleted = await waitFor(() => match(`/issues/CORE-1/comments/${WHOLE_ID}`));
+    await waitFor(() => expect(deleted.link.textContent).toContain("Deleted by alice"));
+    expect(deleted.link.textContent).not.toContain(WHOLE_ID);
+    expect(deleted.row.textContent).not.toContain("edited");
+    const edited = match(`/issues/CORE-1/comments/${OTHER_ID}`);
+    expect(edited.row.textContent).toContain("CORE-1 · edited");
+    expect(edited.link.textContent).toBe("The edited note");
+    const standing = match(`/issues/CORE-1/comments/${thirdId}`);
+    expect(standing.row.textContent).not.toContain("edited");
+    expect(standing.row.querySelector("[data-post-deleted]")).toBeNull();
+  } finally {
+    view.unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Census row 7.13 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-21 03:47Z: the
+// list of an id's matches is drawn from Dispatch's refusal, which the page holds as the read's
+// error, not its answer. A match deleted after the list was drawn, and another edited, are
+// corrected there as every other copy of a post is (`markCorrectedPost`): the deleted one draws
+// the deleted line and none of its first line, the edited one its mark, with no read of the
+// prefix since, and the list stays drawn.
+test("IssuePage marks a match deleted, and another edited, once their corrections reach the list it drew before them", async () => {
+  const restore = stubIssuePage(issue);
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(409, {
+      candidates: [
+        {
+          first_line: "The first note",
+          id: WHOLE_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+        },
+        {
+          first_line: "The other note",
+          id: OTHER_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${OTHER_ID}`,
+        },
+      ],
+      code: ID_AMBIGUOUS,
+      error: `the id prefix "${SHORT_ID}" names 2 items; write more of the id`,
+    })
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = renderIssuePage(
+    `/issues/CORE-1/comments/${SHORT_ID}`,
+    undefined,
+    undefined,
+    queryClient
+  );
+  const row = (id: string) =>
+    view.container.querySelector(`a[href="/issues/CORE-1/comments/${id}"]`)?.closest("li");
+
+  try {
+    await screen.findByRole("link", { name: "The first note" });
+    const reads = getReferences.mock.calls.length;
+    act(() => {
+      markCorrectedPost(queryClient, correction("comment", WHOLE_ID, false));
+      markCorrectedPost(queryClient, correction("comment", OTHER_ID, true));
+    });
+    await waitFor(() => expect(row(WHOLE_ID)?.textContent).toContain("Deleted by alice"));
+    expect({
+      deletedWords: view.container.textContent?.includes("The first note"),
+      edited: row(OTHER_ID)?.textContent,
+      list: screen.queryByText("Several items match that link") !== null,
+      reads: getReferences.mock.calls.length,
+    }).toEqual({
+      deletedWords: false,
+      edited: "CommentCORE-1 · editedThe other note",
+      list: true,
+      reads,
+    });
   } finally {
     view.unmount();
     getReferences.mockRestore();

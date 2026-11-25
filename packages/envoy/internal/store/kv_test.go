@@ -24,28 +24,46 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // --- Unit Tests (no NATS needed — test Match() against pre-populated cache) ---
 
 // holding is a registry with no watcher whose cache holds interests, each delivered as a read
-// delivers it (interestCache.Apply).
+// delivers it (interestCache.Apply) and each a row of its key (interestFixture).
 func holding(t *testing.T, interests map[string]Interest) *Registry {
 	t.Helper()
 	r := &Registry{index: newSubjectIndex()}
 	r.cache = newInterestCopy(r)
 	for sessionID, item := range interests {
-		value, err := json.Marshal(item)
-		if err != nil {
-			t.Fatalf("encode %s: %v", sessionID, err)
-		}
-		interestCache{r}.Apply(kvwatch.Entry{Key: sessionID, Value: value, Revision: 1}, kvwatch.Read{})
+		interestCache{r}.Apply(kvwatch.Entry{Key: sessionID, Value: interestFixture(t, sessionID, item), Revision: 1}, kvwatch.Read{})
 	}
 	return r
+}
+
+// interestFixture is item encoded as the row the registry writes under key: one naming key, a
+// machine and the time of its write (boundInterest). A fixture naming no time is stamped now, the
+// time a write made now carries; one naming a time keeps it, which is how a case states the row's
+// age. A fixture that is still no row of key fails the test here, so a case written over a
+// session's row never runs over a record every reader drops.
+func interestFixture(t testing.TB, key string, item Interest) []byte {
+	t.Helper()
+	if item.UpdatedAt == 0 {
+		item.UpdatedAt = time.Now().UnixMilli()
+	}
+	value, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("encode %s's interest row: %v", key, err)
+	}
+	if _, err := boundInterest(key, value); err != nil {
+		t.Fatalf("the fixture stored under %s is no row of its key: %v", key, err)
+	}
+	return value
 }
 
 func TestMatch_FiltersByMachineID(t *testing.T) {
@@ -83,7 +101,7 @@ func TestMatchAllMachinesReturnsEachMatchingSessionOnceWhateverItsMachine(t *tes
 	r := holding(t, map[string]Interest{
 		"ses_a":     {SessionID: "ses_a", MachineID: "machine-A", Topics: []string{"notifications.team.x.>"}},
 		"ses_b":     {SessionID: "ses_b", MachineID: "machine-B", Topics: []string{"notifications.team.x.>", "notifications.team.*.update"}},
-		"ses_c":     {SessionID: "ses_c", MachineID: "", Topics: []string{"notifications.team.x.update"}},
+		"ses_c":     {SessionID: "ses_c", MachineID: "machine-C", Topics: []string{"notifications.team.x.update"}},
 		"ses_other": {SessionID: "ses_other", MachineID: "machine-A", Topics: []string{"notifications.team.y.>"}},
 	})
 
@@ -441,6 +459,30 @@ func TestMergeForUpsertKeepsTheStoredMachineIDForARequestThatCarriesNone(t *test
 	}
 }
 
+// A plan's Withheld topics leave the stored row, and every other stored topic is kept beside the
+// plan's own: the write merges into the row it read, less what the caller's rule withheld.
+func TestMergeForUpsertTakesAPlansWithheldTopicsOutOfTheStoredRow(t *testing.T) {
+	cur := Interest{
+		SessionID: "ses_withheld",
+		MachineID: "m1",
+		Topics:    []string{"notifications.agent.ses_withheld", "notifications.github.acme.other.issues", "notifications.team.kept"},
+	}
+	item := Interest{SessionID: "ses_withheld", MachineID: "m1"}
+	plan := InterestPlan{
+		Topics:   []string{"notifications.agent.ses_withheld", "notifications.team.added"},
+		Withheld: []string{"notifications.github.acme.other.issues"},
+	}
+
+	result, err := mergeForUpsert(cur, nil, item, 303, plan)
+	if err != nil {
+		t.Fatalf("mergeForUpsert returned unexpected error: %v", err)
+	}
+	want := []string{"notifications.agent.ses_withheld", "notifications.team.added", "notifications.team.kept"}
+	if !slices.Equal(result.Topics, want) {
+		t.Errorf("Topics = %v, want %v: the withheld topic out, the stored and the planned ones in", result.Topics, want)
+	}
+}
+
 // --- Integration Tests (a real NATS server) ---
 
 // connectNATS connects to the package's shared NATS server, in the JetStream account
@@ -451,13 +493,11 @@ func connectNATS(t *testing.T) (*natsgo.Conn, func()) {
 	return conn, conn.Close
 }
 
+// putInterest stores item under its own session's key, straight to the bucket, as the row the
+// registry writes (interestFixture).
 func putInterest(t *testing.T, kv natsgo.KeyValue, item Interest) {
 	t.Helper()
-	buf, err := json.Marshal(item)
-	if err != nil {
-		t.Fatalf("failed to marshal interest: %v", err)
-	}
-	if _, err := kv.Put(item.SessionID, buf); err != nil {
+	if _, err := kv.Put(item.SessionID, interestFixture(t, item.SessionID, item)); err != nil {
 		t.Fatalf("failed to put interest: %v", err)
 	}
 }
@@ -494,7 +534,7 @@ func TestOpen_WatchPopulatesExistingKeys(t *testing.T) {
 	putInterest(t, kv, Interest{SessionID: "ses_preload", MachineID: "m1", Topics: []string{"notifications.>"}})
 
 	// Open registry — watch() populates cache asynchronously
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -510,7 +550,7 @@ func TestWatch_PropagatesUpsert(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -548,7 +588,7 @@ func TestWatch_PropagatesDelete(t *testing.T) {
 	}
 	putInterest(t, kv, Interest{SessionID: "ses_del", MachineID: "m1", Topics: []string{"notifications.>"}})
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -580,7 +620,7 @@ func TestWatch_PropagatesPurge(t *testing.T) {
 	}
 	putInterest(t, kv, Interest{SessionID: "ses_purge", MachineID: "m1", Topics: []string{"notifications.>"}})
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -614,7 +654,7 @@ func TestMatch_IndependentOfKVAfterStartup(t *testing.T) {
 	}
 	putInterest(t, kv, Interest{SessionID: "ses_survive", MachineID: "m1", Topics: []string{"notifications.>"}})
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -640,7 +680,7 @@ func TestOpen_EmptyBucketSucceeds(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed on empty bucket: %v", err)
 	}
@@ -678,6 +718,7 @@ func coldRegistry(t *testing.T, conn *natsgo.Conn) (*Registry, natsgo.KeyValue) 
 	}
 	r := &Registry{roleKV: roles, now: time.Now, index: newSubjectIndex()}
 	r.cache = newInterestCopy(r)
+	r.chunks = kvchunk.NewChunks(r.now)
 	handle, err := bus.WrapKeyValue(conn, kv)
 	if err != nil {
 		t.Fatalf("wrap the KV bucket: %v", err)
@@ -1123,7 +1164,7 @@ func clockedRegistry(t *testing.T, clock *manualClock) (*Registry, natsgo.KeyVal
 	t.Helper()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
-	reg, err := Open(conn, WithReplicas(1), WithClock(clock.Now))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -1311,7 +1352,7 @@ func TestRemove_ColdCacheReadsFromKV(t *testing.T) {
 func TestPlanInterestKeepsTheControllerLaneAHeartbeatOmits(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1390,7 +1431,7 @@ func storedInterest(t *testing.T, conn *natsgo.Conn, sessionID string) Interest 
 func TestUpsertPlannedKeepsAnUnsubscribeThatOutranItsPlan(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -2206,7 +2247,7 @@ func TestPing_HealthyConnReturnsNil(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -2222,7 +2263,7 @@ func TestPing_ClosedConnReturnsError(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -2248,7 +2289,7 @@ func TestWaitForCacheReady_ReturnsAfterInitialScan(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -2269,7 +2310,7 @@ func TestWaitForCacheReady_PrePopulatedKVIsVisibleAfterReady(t *testing.T) {
 
 	// Pre-populate KV via a temporary registry, then Close conn to release
 	// any watcher state.
-	reg1, err := Open(conn, WithReplicas(1))
+	reg1, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("first Open failed: %v", err)
 	}
@@ -2284,7 +2325,7 @@ func TestWaitForCacheReady_PrePopulatedKVIsVisibleAfterReady(t *testing.T) {
 
 	// Second registry on the same bucket — simulates listener restart against
 	// existing KV state.
-	reg2, err := Open(conn, WithReplicas(1))
+	reg2, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("second Open failed: %v", err)
 	}
@@ -2435,9 +2476,9 @@ func TestSetRoleRollsBackWhenInterestUpsertFails(t *testing.T) {
 	assertInterestMissing(t, reg, newSession)
 }
 
-// A hard claim's role write is unconditional (store.Registry.SetRoleWithPrevious), so a genuine
-// failure of it is still a failure: the claim is refused, the old holder keeps the role, and the
-// claimant's role topic is rolled back.
+// A hard claim writes with the revision of the record it read (store.Registry.SetRoleWithPrevious)
+// and retries only a conflict, so a genuine failure of that write is still a failure: the claim is
+// refused, the old holder keeps the role, and the claimant's role topic is rolled back.
 func TestSetRoleLeavesInterestWhenRoleWriteFails(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -2459,9 +2500,9 @@ func TestSetRoleLeavesInterestWhenRoleWriteFails(t *testing.T) {
 	}
 
 	reg.roleKV = bus.NewKeyValue(&failingKeyValue{
-		KeyValue:  reg.roleKV.Legacy(),
-		failPutAt: 1,
-		err:       errors.New("injected role write failure"),
+		KeyValue:     reg.roleKV.Legacy(),
+		failUpdateAt: 1,
+		err:          errors.New("injected role write failure"),
 	}, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
 	if _, err := reg.SetRole(newSession, "example-host", role, false); err == nil {
 		t.Fatal("SetRole must return the failed role update")
@@ -2548,7 +2589,7 @@ func TestWatcherEvictsMalformedValue(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -2922,7 +2963,7 @@ func TestRemoveDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -3093,7 +3134,7 @@ func TestTheRegistryClockStampsWhatItRecords(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	at := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
-	reg, err := Open(conn, WithReplicas(1), WithClock(func() time.Time { return at }))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(func() time.Time { return at }))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -3188,7 +3229,7 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 func TestARewatchThatCannotOpenTheRoleBucketMovesNothing(t *testing.T) {
 	first, closeFirst := connectNATS(t)
 	defer closeFirst()
-	reg, err := Open(first, WithReplicas(1))
+	reg, err := Open(t.Context(), first, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -3230,7 +3271,7 @@ func TestARewatchThatCannotOpenTheRoleBucketMovesNothing(t *testing.T) {
 func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
 	first, closeFirst := connectNATS(t)
 	defer closeFirst()
-	reg, err := Open(first, WithReplicas(1))
+	reg, err := Open(t.Context(), first, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -3317,7 +3358,7 @@ func TestOpeningTheRegistryReadsEveryRoleRevisionWithoutAGetPerKey(t *testing.T)
 		t.Fatalf("flush the watches: %v", err)
 	}
 
-	registry, err := Open(conn, WithReplicas(1))
+	registry, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -3414,7 +3455,7 @@ func TestOpeningTheRegistryLogsHowManyRoleClaimsItRestored(t *testing.T) {
 	}
 
 	logs := captureRegistryLogs(t)
-	registry, err := Open(conn, WithReplicas(1))
+	registry, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -3598,7 +3639,7 @@ func (h *holdAfter) release() {
 // the URL to connect to.
 func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.Duration) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -3696,7 +3737,7 @@ func TestOpenFailsWhenTheRoleRevisionScanStalls(t *testing.T) {
 	stalled := testnats.Connect(t, proxy.String())
 	defer stalled.Close()
 
-	registry, err := Open(stalled, WithReplicas(1))
+	registry, err := Open(t.Context(), stalled, WithReplicas(1))
 	// The link has to have come back before Open's outcome means anything: a stall that stays down
 	// fails every build, main by its per-key Gets timing out, so this run could not tell them
 	// apart. Assert it rather than trusting the hold, since load can end a run before the release

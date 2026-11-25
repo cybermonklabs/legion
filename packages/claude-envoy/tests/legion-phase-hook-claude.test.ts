@@ -2,8 +2,12 @@ import { afterAll, afterEach, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { LegionStateResponse } from "@legion/contracts/legion-api"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
+import { readStandinBody } from "@legion/test-fixtures/standin-body"
 import { phaseStallFile } from "../src/legion-phase-hook"
 import { FakeNatsServer } from "./fake-nats-server"
 
@@ -110,11 +114,15 @@ function serveStandin(answer: (url: URL, body: Record<string, unknown>) => Respo
   const requests: Request[] = []
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    // An address of its own, out of reach of a client of another test that still dials this port
+    // at 127.0.0.1 (`loopbackHost`); the worker's URLs are built from `base` below.
+    hostname: loopbackHost(),
     async fetch(request) {
       const url = new URL(request.url)
-      const text = request.method === "POST" ? await request.text() : ""
-      const body = text === "" ? {} : (JSON.parse(text) as Record<string, unknown>)
+      // A body that is no JSON object is refused by name, and is neither recorded nor handed to
+      // `answer` (`readStandinBody`).
+      const { body, refusal } = await readStandinBody(request)
+      if (refusal !== undefined) return refusal
       requests.push({ path: url.pathname, body })
       return answer(url, body)
     },
@@ -122,7 +130,7 @@ function serveStandin(answer: (url: URL, body: Record<string, unknown>) => Respo
   cleanup.push(async () => {
     await server.stop(true)
   })
-  return { requests, base: `http://127.0.0.1:${server.port}` }
+  return { requests, base: server.url.origin }
 }
 
 // The phase reminder's Claude Code half on the real Claude Code binary (src/legion-phase-hook.ts,
@@ -165,6 +173,9 @@ const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
  * works this phase and the `Stop` earns its reminder. */
 const ISSUE = "LEGION-208"
 const CLAIM_TOKEN = `legion-legion-${ISSUE.toLowerCase()}-implementer`
+/** The registration secret the stand-in daemon answers, and the boot token the pane starts with. */
+const REGISTRATION_SECRET = fixtureSecret("reg")
+const BOOT_TOKEN = fixtureSecret("boot")
 
 /** The package root, whose `scripts/build.ts` builds the plugin a worker loads. */
 const PACKAGE = resolve(import.meta.dir, "..")
@@ -280,6 +291,8 @@ interface WorkerRun {
   readonly events: readonly Record<string, unknown>[]
   /** The Messages requests the stand-in gateway answered, in order. */
   readonly turns: readonly Request[]
+  /** Every daemon route this run asked for, in order. */
+  readonly daemonPaths: readonly string[]
   /** Every hook Claude Code ran, in order. */
   readonly hooks: readonly HookRun[]
   /** The `<server>/<tool>` each `mcp_tool` hook call named, in order. */
@@ -327,7 +340,7 @@ async function runWorker(options: {
   await mkdir(configDir, { recursive: true })
   await mkdir(workspace, { recursive: true })
   const tokenFile = join(root, "boot-token")
-  await writeFile(tokenFile, "boot-token-from-the-pane\n")
+  await writeFile(tokenFile, `${BOOT_TOKEN}\n`)
 
   const broker = new FakeNatsServer()
   cleanup.push(() => broker.stop())
@@ -365,14 +378,19 @@ async function runWorker(options: {
         issue: ISSUE,
         role: "implementer",
         generation: 1,
-        secret: "Y2xhdWRlLXBhbmU=",
+        secret: REGISTRATION_SECRET,
       })
     }
     if (url.pathname === "/legion/v1/claims/ready") {
       ready.resolve()
       return new Response(null, { status: 204 })
     }
-    if (url.pathname === "/legion/v1/state") return Response.json(state)
+    // The reminder's record check reads this issue's record, never the project
+    // (dispatch://INFRA-2694).
+    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
+      return Response.json(LegionStateResponse.parse(state).issues[ISSUE])
+    }
+    if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 })
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 })
     }
@@ -447,7 +465,7 @@ async function runWorker(options: {
         CLAUDE_CODE_DISABLE_CRON: "1",
         // The stand-in Anthropic API drives the model, and nothing else may reach a real one.
         ANTHROPIC_BASE_URL: base,
-        ANTHROPIC_API_KEY: "standin-key",
+        ANTHROPIC_API_KEY: fixtureSecret("standin"),
         ANTHROPIC_MODEL: "standin-model",
         DISABLE_AUTOUPDATER: "1",
         DISABLE_TELEMETRY: "1",
@@ -522,6 +540,10 @@ async function runWorker(options: {
   return {
     events,
     turns: requests.filter((request) => request.path === "/v1/messages"),
+    /** Every daemon route this run asked for, in order. */
+    daemonPaths: requests
+      .map(({ path }) => path)
+      .filter((path) => path.startsWith("/legion/") || path === "/healthz"),
     hooks: hookRuns(debug),
     mcpHookCalls: debug.split("\n").flatMap((line) => {
       const match = /Hooks: mcp_tool calling (\S+) with \d+ arg\(s\)$/.exec(line)
@@ -627,6 +649,11 @@ test.skipIf(claude === undefined)(
       reported: false,
       lastMessage: "Still going.",
     })
+
+    // 5. The record check the server wires reads this issue's record and never the whole
+    // project body (dispatch://INFRA-2694).
+    expect(run.daemonPaths).toContain(`/legion/v1/issues/${ISSUE}/record`)
+    expect(run.daemonPaths).not.toContain("/legion/v1/state")
   },
   180_000,
 )

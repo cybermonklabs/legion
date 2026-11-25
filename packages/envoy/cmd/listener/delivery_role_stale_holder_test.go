@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // storeSessionHeartbeat registers sessionID with the heartbeat the test chose, by writing its
@@ -126,6 +127,7 @@ func (r staleHolderRig) settled(t *testing.T, role string) (exceptionReason stri
 // message: the state of its record is what separates the two, and nothing else about the two
 // deliveries differs.
 func TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "reviewer"
 		holder = "ses_role_heartbeat"
@@ -193,6 +195,7 @@ func TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating(t *testing.T) {
 // TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing covers - nothing is kept and
 // the answer is the 404 naming unclaimed, which the Legion daemon reads as notify.ErrNoHolder.
 func TestAPublishWithKeepFalseToAnUnclaimedRoleIsRefusedAndKeepsNothing(t *testing.T) {
+	t.Parallel()
 	const role = "reviewer"
 	harness := newListenerDeliveryHarness(t)
 
@@ -204,7 +207,7 @@ func TestAPublishWithKeepFalseToAnUnclaimedRoleIsRefusedAndKeepsNothing(t *testi
 	if refusal.Code != http.StatusNotFound {
 		t.Fatalf("publish with keep: false to an unclaimed role: status %d, body %s; want 404", refusal.Code, refusal.Body.String())
 	}
-	var answer roleHolderError
+	var answer listenerwire.RoleRefusal
 	if err := json.Unmarshal(refusal.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the refusal %s: %v", refusal.Body.String(), err)
 	}

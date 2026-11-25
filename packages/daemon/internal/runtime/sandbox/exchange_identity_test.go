@@ -11,23 +11,31 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// testExchangeAudience is the audience production's broker trades a pod's identity at: agent-infra
+// testExchangeAudience is the audience production's broker trades a pod's identity at: deployment
 // shared/broker.ExchangeAudience, which the broker sets as BROKER_EXCHANGE_K8S_AUDIENCE
 // (dispatch://INFRA-748's R1) and legion.yaml renders as agent_secrets.exchange_audience.
 const testExchangeAudience = "legion-broker-exchange"
 
 // The two variables a pod's broker clients read to decide which identity the machine proves and
-// where its token is (packages/broker-client/src/environment.ts, IDENTITY_VAR and
+// where its token is (packages/cipher-client/src/environment.ts, IDENTITY_VAR and
 // MACHINE_TOKEN_FILE_VAR).
 const (
 	identityVariable  = "AGENT_SECRETS_MACHINE_IDENTITY"
 	tokenFileVariable = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
 )
 
-// exchangeEnrolled is the broker enrollment of the root-enrolled golden with the exchange identity
-// turned on.
+// rootEnrolled is the enrollment an agent_secrets block that names only url and token_file settles
+// on: the loader's default audience, `cipher`, and its default hour (config's
+// TestKubernetesAudienceDefaultsToCipher). The root-enrolled golden pins its pod.
+func rootEnrolled() *AgentSecrets {
+	return &AgentSecrets{URL: testBrokerURL, Audience: "cipher", TokenExpiry: time.Hour}
+}
+
+// exchangeEnrolled is rootEnrolled with the exchange identity turned on.
 func exchangeEnrolled() *AgentSecrets {
-	return &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour, ExchangeAudience: testExchangeAudience}
+	enrolled := rootEnrolled()
+	enrolled.ExchangeAudience = testExchangeAudience
+	return enrolled
 }
 
 // exchangeTokenVolumes are the pod's volumes that project a ServiceAccount token for audience.
@@ -179,7 +187,7 @@ func TestAKeptPodWithoutTheExchangeTokenIsToldNoIdentity(t *testing.T) {
 	if env["AGENT_SECRETS_URL"] != keptBrokerURL {
 		t.Errorf("the role's generation is told AGENT_SECRETS_URL=%q, want the enrollment its pod carries, %s", env["AGENT_SECRETS_URL"], keptBrokerURL)
 	}
-	if drifted := driftOf(t, g.ctx, r2, loc); !slices.ContainsFunc(drifted, func(d string) bool { return strings.HasPrefix(d, agentSecretsExchangeVolume+" ") }) {
+	if drifted := driftOf(t, g, r2, loc); !slices.ContainsFunc(drifted, func(d string) bool { return strings.HasPrefix(d, agentSecretsExchangeVolume+" ") }) {
 		t.Errorf("PodDrift = %q, want the missing exchange token among it, so the update round replaces the pod", drifted)
 	}
 }
@@ -194,9 +202,7 @@ var exchangeDeployments = []struct {
 	exchanges    bool
 }{
 	{"no agent_secrets block", func() *AgentSecrets { return nil }, false},
-	{"agent_secrets with no exchange_audience", func() *AgentSecrets {
-		return &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-	}, false},
+	{"agent_secrets with no exchange_audience", rootEnrolled, false},
 	{"exchange_audience set", exchangeEnrolled, true},
 }
 

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // senderTestSessions are the live sessions the mention sender's stand-in listener knows, each
@@ -48,7 +50,11 @@ type mentionListener struct {
 	// (dropRepeats); delivered holds the keys it has taken.
 	dedupe    bool
 	delivered map[string]struct{}
-	arrived   chan string
+	// landed, when set, is called with each send the listener hands its recipient - recorded,
+	// neither refused nor answered as a repeat - while the listener's lock is held, so a test can
+	// place it in one order with copies that reach the recipient some other way.
+	landed  func(mentionListenerSend)
+	arrived chan string
 }
 
 // mentionStall is one held-back send: reached is closed when that send arrives at the listener,
@@ -99,6 +105,23 @@ func newMentionListener(t *testing.T) (*httptest.Server, *mentionListener) {
 			writeSessionRecord(t, w, senderTestSessions, strings.TrimPrefix(r.URL.Path, "/v1/registry/"))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
 			_, _ = w.Write([]byte(`{"role":"reviewer","holder":"s1","title":"planner","capabilities":["steer"]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/unheld":
+			// The listener's own refusal for a role no session claims (writeRoleHolderError).
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no holder for role unheld","reason":"unclaimed"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/lapsed":
+			// The listener's own refusal for a role whose holder the registry calls gone
+			// (writeRoleHolderError, reason holder_lapsed).
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"holder ses_gone of role lapsed is gone","reason":"holder_lapsed","holder":"ses_gone","holder_state":"gone"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/unreadable":
+			// The listener's 500 for a claim record it cannot decode (writeRoleClaimUnreadable).
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"envoy: the claim record of role unreadable is unreadable: decode role claim"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/broken":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/garbled":
+			_, _ = w.Write([]byte(`{"role":`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
 			_, _ = w.Write([]byte(senderTestSessions))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
@@ -131,10 +154,14 @@ func newMentionListener(t *testing.T) (*httptest.Server, *mentionListener) {
 				_, repeat = state.delivered[frame]
 				state.delivered[frame] = struct{}{}
 			}
-			state.sends = append(state.sends, mentionListenerSend{
+			landedSend := mentionListenerSend{
 				session: request.TargetSession, body: request.Message,
 				key: request.IdempotencyKey, duplicate: repeat,
-			})
+			}
+			state.sends = append(state.sends, landedSend)
+			if state.landed != nil && !refused && !repeat {
+				state.landed(landedSend)
+			}
 			gate := state.held[request.TargetSession]
 			answer := state.answers[request.TargetSession]
 			delete(state.answers, request.TargetSession)
@@ -248,22 +275,69 @@ func (l *mentionListener) holdLookups(path string) func() {
 	return sync.OnceFunc(func() { close(gate) })
 }
 
-// awaitSend waits for the next send to arrive and returns the session it is for.
+// listenerLookupPath is the path the mention stand-in answers a lookup of target on: a role's
+// holder for role:<name>, else the session's registry record.
+func listenerLookupPath(target string) string {
+	if role, isRole := strings.CutPrefix(target, "role:"); isRole {
+		return "/v1/roles/" + role
+	}
+	return "/v1/registry/" + strings.TrimPrefix(target, "session:")
+}
+
+// pastAnyRun is a lookup bound or a listener client window no test run reaches: a server built
+// with it leaves the end of each such call to the listener's answer, never to the machine's speed.
+const pastAnyRun = 24 * time.Hour
+
+// lookupBoundPastAnyRun is a comment's lookup bound (testServerOptions.mentionLookupBound) that
+// no run reaches for any target, so every lookup the listener answers counts as answered.
+func lookupBoundPastAnyRun(string) time.Duration { return pastAnyRun }
+
+// postMentionedCommentInBackground posts the comment as postMentionedComment does, on a goroutine
+// of its own, and answers the channel its response arrives on, for a test that waits for that
+// response with testwait.Receive. The request is built here, on the test's goroutine, so the one
+// that serves it calls nothing that can fail the test.
+func postMentionedCommentInBackground(
+	t *testing.T, handler http.Handler, issueKey string, input map[string]any,
+) <-chan *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("encode the comment: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/issues/"+issueKey+"/comments", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Dispatch-User", "alice")
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		answered <- response
+	}()
+	return answered
+}
+
+// awaitSend waits for the next send to arrive and returns the session it is for. Its one bound is
+// the test binary's deadline (testwait.Receive).
 func (l *mentionListener) awaitSend(t *testing.T) string {
 	t.Helper()
-	select {
-	case session := <-l.arrived:
-		return session
-	case <-time.After(10 * time.Second):
-		t.Fatal("no mention send reached the listener")
-		return ""
-	}
+	return testwait.Receive(t, "a mention send to reach the listener", l.arrived)
 }
 
 func (l *mentionListener) sent() []mentionListenerSend {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return slices.Clone(l.sends)
+}
+
+// bodiesTo is the body of every send the listener took for session, in the order it took them.
+func (l *mentionListener) bodiesTo(session string) []string {
+	bodies := []string{}
+	for _, send := range l.sent() {
+		if send.session == session {
+			bodies = append(bodies, send.body)
+		}
+	}
+	return bodies
 }
 
 // unclaimedPending reports whether the comment's attempt for target is pending with no sender's
@@ -320,25 +394,24 @@ func allSent(attempts []model.CommentDelivery) bool {
 
 // The listener calls a mention's send makes - the recheck and the send itself, each up to the
 // listener client's window - run after the comment's response. A comment mentioning three
-// sessions whose sends are all held answers at once, with its attempts pending, and they settle
-// once the sends are released.
+// sessions whose sends are all held answers while they are held, with its attempts pending, and
+// they settle once the sends are released. The client's window here is past any run, so a held
+// send ends only when the test releases it: a comment that waited for its sends would not answer
+// at all, and no clock decides the verdict.
 func TestMentionSendsRunAfterTheCommentHasAnswered(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: pastAnyRun})
 	release := state.hold("s1", "s2", "s3")
 	defer release()
 	issue := createInteractionIssue(t, handler, "TEST", "Mentions after the answer", "before")
 
-	started := time.Now()
-	response := postMentionedComment(t, handler, issue.Key, map[string]any{
+	answered := postMentionedCommentInBackground(t, handler, issue.Key, map[string]any{
 		"body":     "All three of you.",
 		"mentions": []map[string]any{{"target": "session:s1"}, {"target": "session:s2"}, {"target": "session:s3"}},
 	})
-	answered := time.Since(started)
-	created := decodeMentionedComment(t, response)
-	if answered >= time.Second {
-		t.Fatalf("the comment answered after %v with its mention sends held, want under 1s", answered)
-	}
+	created := decodeMentionedComment(t, testwait.Receive(t,
+		"the comment's answer while its three mention sends are held at the listener", answered))
 	if len(created.Deliveries) != 3 {
 		t.Fatalf("the create answered deliveries %#v, want the three attempts", created.Deliveries)
 	}
@@ -363,6 +436,7 @@ func TestMentionSendsRunAfterTheCommentHasAnswered(t *testing.T) {
 // same lane. While the first comment's send is held, the second's attempt waits on that lane
 // under this process's claim, with its send not started.
 func TestMentionSendsReachOneRecipientInTheOrderItsCommentsWereAccepted(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	release := state.hold("s1")
@@ -397,6 +471,7 @@ func TestMentionSendsReachOneRecipientInTheOrderItsCommentsWereAccepted(t *testi
 // A recipient whose send is held - a slow or unanswering session - does not hold back the
 // sends to anyone else.
 func TestABlockedMentionRecipientDoesNotHoldBackAnother(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	release := state.hold("s1")
@@ -427,55 +502,63 @@ func TestABlockedMentionRecipientDoesNotHoldBackAnother(t *testing.T) {
 }
 
 // A comment's mention lookups all run at once, so its mentions cost the comment one listener
-// round trip rather than one each: three lookups of 200 ms each, seen from the listener, all
-// finish within 400 ms of the first one starting.
+// round trip rather than one each. The listener holds each session's first lookup until all three
+// have reached it, and the server's lookup bound and client window are past any run, so a comment
+// that looked its mentions up one after another would wait on its first lookup for good: the
+// comment answers only when the three lookups were in flight together, however loaded the machine.
 func TestMentionLookupsOfOneCommentRunAtOnce(t *testing.T) {
-	const lookup = 200 * time.Millisecond
+	t.Parallel()
 	var mu sync.Mutex
 	looked := map[string]bool{}
-	var first, last time.Time
+	together := make(chan struct{})
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/"):
 			session := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
 			mu.Lock()
-			slow := !looked[session]
+			first := !looked[session]
 			looked[session] = true
-			if slow && first.IsZero() {
-				first = time.Now()
+			if first && len(looked) == 3 {
+				close(together)
 			}
 			mu.Unlock()
-			// Only the comment's own lookup of each session is slow; the recheck its send makes
-			// later is not this test's.
-			if slow {
-				time.Sleep(lookup)
+			// Only the comment's own lookup of each session waits for the others; the recheck its
+			// send makes later is not this test's. A test that has ended lets a held lookup go,
+			// so its cleanups do not wait on it.
+			if first {
+				select {
+				case <-together:
+				case <-r.Context().Done():
+					return
+				case <-t.Context().Done():
+					return
+				}
 			}
 			writeSessionRecord(t, w, senderTestSessions, session)
-			if slow {
-				mu.Lock()
-				last = time.Now()
-				mu.Unlock()
-			}
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A cleanup, not a defer: it runs once the test's context has ended, which lets a held lookup go.
+	t.Cleanup(listener.Close)
+	handler, database, _ := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: pastAnyRun, mentionLookupBound: lookupBoundPastAnyRun,
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent lookups", "before")
 
-	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+	answered := postMentionedCommentInBackground(t, handler, issue.Key, map[string]any{
 		"body":     "Three lookups.",
 		"mentions": []map[string]any{{"target": "session:s1"}, {"target": "session:s2"}, {"target": "session:s3"}},
-	}))
+	})
+	created := decodeMentionedComment(t, testwait.Receive(t,
+		"the comment to answer, which it does only once its three mention lookups have reached the listener together", answered))
 	settledCommentDeliveries(t, database, created.ID)
 	mu.Lock()
 	defer mu.Unlock()
-	if span := last.Sub(first); len(looked) != 3 || span >= 2*lookup {
-		t.Fatalf("three %v lookups took %v from the first start to the last answer (%d sessions looked up), want under %v",
-			lookup, span, len(looked), 2*lookup)
+	if len(looked) != 3 {
+		t.Fatalf("the listener was asked for %d sessions, want the comment's three mentions", len(looked))
 	}
 }
 
@@ -499,17 +582,32 @@ type unansweredLookup struct {
 }
 
 // commentWithAnUnansweredLookup posts the comment lookup describes. It checks that the comment
-// answers within mentionLookupTimeout's bound with its attempt pending - with the mention
-// unresolved, or pinned to s1 when lookup.pinned - then lets the listener answer, waits for the
+// answers while the listener still holds the lookup of lookup.hungPath - the listener answers it
+// only once letAnswer runs, after the response - with its attempt pending: with the mention
+// unresolved, or pinned to s1 when lookup.pinned. Then it lets the listener answer, waits for the
 // mention sender to send the attempt to s1, and runs the outbox until it has published
 // comment.created. The listener resolves every session of senderTestSessions, and role:reviewer
 // to s1.
+//
+// Only the held lookup runs on production's bound (mentionLookupTimeout), which is what ends it
+// and lets the comment answer. Every other lookup of the comment, and the listener client's
+// window, are past any run: a lookup the listener answers always counts as answered, so whether
+// the mention is pinned is never the machine's speed, and a comment that waited for the held
+// lookup instead of its bound would not answer at all.
 func commentWithAnUnansweredLookup(t *testing.T, lookup unansweredLookup) unansweredLookupComment {
 	t.Helper()
 	listener, state := newMentionListener(t)
 	letAnswer := state.holdLookups(lookup.hungPath)
 	defer letAnswer()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	handler, database, _ := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: pastAnyRun,
+		mentionLookupBound: func(target string) time.Duration {
+			if listenerLookupPath(target) == lookup.hungPath {
+				return mentionLookupTimeout
+			}
+			return pastAnyRun
+		},
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "An unanswered lookup", "before")
 	if lookup.route != "" {
 		if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
@@ -526,13 +624,9 @@ func commentWithAnUnansweredLookup(t *testing.T, lookup unansweredLookup) unansw
 		input["reply_to"] = decodeMentionedComment(t, root).ID
 	}
 
-	started := time.Now()
-	response := postMentionedComment(t, handler, issue.Key, input)
-	answered := time.Since(started)
-	created := decodeMentionedComment(t, response)
-	if bound := mentionLookupTimeout + 500*time.Millisecond; answered >= bound {
-		t.Fatalf("the comment answered after %v with a lookup unanswered, want under %v", answered, bound)
-	}
+	answered := postMentionedCommentInBackground(t, handler, issue.Key, input)
+	created := decodeMentionedComment(t, testwait.Receive(t,
+		"the comment to answer while the listener holds its lookup of "+lookup.hungPath, answered))
 	pinnedTo := func(sessionID *string) bool {
 		if lookup.pinned {
 			return sessionID != nil && *sessionID == "s1"
@@ -588,6 +682,7 @@ func commentWithAnUnansweredLookup(t *testing.T, lookup unansweredLookup) unansw
 // one session, so the event suppresses the route by that string and the session hears the
 // comment once, from the mention.
 func TestAnUnansweredMentionOfTheRouteItselfSuppressesTheRouteCopy(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		route: "session:s1", mention: "session:s1", hungPath: "/v1/registry/s1",
 	})
@@ -611,6 +706,7 @@ func TestAnUnansweredMentionOfTheRouteItselfSuppressesTheRouteCopy(t *testing.T)
 // sender pins s1 on the attempt row when it sends, and the outbox reads that row rather than the
 // payload, so the route copy to s1 is left to the mention and s1 hears the comment once.
 func TestAnUnansweredMentionOfAnotherStringForTheRouteIsLeftToThatMention(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		route: "session:s1", mention: "role:reviewer", hungPath: "/v1/roles/reviewer",
 	})
@@ -631,6 +727,7 @@ func TestAnUnansweredMentionOfAnotherStringForTheRouteIsLeftToThatMention(t *tes
 // s1's lookup goes unanswered: the comment's mentions name s1, so the author route leaves s1 to
 // the mention, and s1 hears the reply once, from it.
 func TestAnUnansweredSessionMentionOfTheRootAuthorSuppressesTheAuthorCopy(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		mention: "session:s1", hungPath: "/v1/registry/s1", replyToS1: true,
 	})
@@ -648,6 +745,7 @@ func TestAnUnansweredSessionMentionOfTheRootAuthorSuppressesTheAuthorCopy(t *tes
 // row when it sends, which is what the author route reads, so s1 is left to the mention there
 // too and hears the reply once.
 func TestAnUnansweredRoleMentionHeldByTheRootAuthorIsLeftToThatMention(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		mention: "role:reviewer", hungPath: "/v1/roles/reviewer", replyToS1: true,
 	})
@@ -664,6 +762,7 @@ func TestAnUnansweredRoleMentionHeldByTheRootAuthorIsLeftToThatMention(t *testin
 // to s1 under another string - role:reviewer, which s1 holds - suppresses the route copy for s1:
 // s1 hears the comment once, from the mention.
 func TestARouteWhoseOwnLookupGoesUnansweredIsSuppressedForTheSessionItNames(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		route: "session:s1", mention: "role:reviewer", hungPath: "/v1/registry/s1", pinned: true,
 	})
@@ -681,17 +780,45 @@ func TestARouteWhoseOwnLookupGoesUnansweredIsSuppressedForTheSessionItNames(t *t
 	}
 }
 
-// A listener that answers no lookup at all delays a mentioned comment by at most
-// mentionLookupTimeout, also on an issue whose route is not one of the comment's mentions: the
-// route's own lookup runs beside the mentions' lookups, not after them, so the two timeouts do not
-// add up.
+// A listener that answers no lookup at all delays a mentioned comment by one lookup bound
+// (mentionLookupTimeout), also on an issue whose route is not one of the comment's mentions: the
+// route's own lookup runs beside the mentions' lookups, not after them, so the two bounds do not
+// add up. A lookup takes its bound as it starts (commentLookupBound), and here that read waits
+// until both the mention's and the route's lookups have started, so both bounds run from the same
+// moment. A comment that looked the route up only after the mention's lookup ended would never
+// start the route's lookup while the mention's waits, and so would never answer, however fast or
+// slow the machine. The listener holds both lookups until after the response, so the comment
+// answered with neither answered.
 func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	letMentionAnswer := state.holdLookups("/v1/registry/s1")
 	defer letMentionAnswer()
 	letRouteAnswer := state.holdLookups("/v1/registry/s2")
 	defer letRouteAnswer()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	var mu sync.Mutex
+	started := map[string]bool{}
+	reads := 0
+	together := make(chan struct{})
+	meet := sync.OnceFunc(func() { close(together) })
+	handler, database, _ := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: pastAnyRun,
+		mentionLookupBound: func(target string) time.Duration {
+			mu.Lock()
+			started[target] = true
+			reads++
+			if reads == 2 {
+				meet()
+			}
+			mu.Unlock()
+			// A test that has ended lets the lookup go, so its cleanups do not wait on it.
+			select {
+			case <-together:
+			case <-t.Context().Done():
+			}
+			return mentionLookupTimeout
+		},
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "A silent listener", "before")
 	if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
 		"route": "session:s2",
@@ -699,15 +826,18 @@ func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *t
 		t.Fatalf("set the route: status=%d body=%s", patched.Code, patched.Body.String())
 	}
 
-	started := time.Now()
-	response := postMentionedComment(t, handler, issue.Key, map[string]any{
+	answered := postMentionedCommentInBackground(t, handler, issue.Key, map[string]any{
 		"body": "Is anyone there?", "mentions": []map[string]any{{"target": "session:s1"}},
 	})
-	answered := time.Since(started)
-	created := decodeMentionedComment(t, response)
-	if answered >= 2*mentionLookupTimeout {
-		t.Fatalf("the comment answered after %v with no lookup answered, want under %v: the route's lookup ran after the mention's",
-			answered, 2*mentionLookupTimeout)
+	created := decodeMentionedComment(t, testwait.Receive(t,
+		"the comment to answer, which it does only once the route's lookup started beside the mention's", answered))
+	mu.Lock()
+	bounds, targets := reads, len(started)
+	mu.Unlock()
+	// Exactly two bounds: a comment that waited a second bound after the first - a second
+	// resolution round, a lookup taken again - fails here, as the old two-bound wall-clock limit did.
+	if bounds != 2 || targets != 2 {
+		t.Fatalf("the comment's lookups read %d bounds for %d targets, want one each for the mention and the route", bounds, targets)
 	}
 
 	letMentionAnswer()
@@ -731,6 +861,7 @@ func ageAttempts(t *testing.T, database *store.Store, commentIDs ...string) {
 // claim. The next process's delivery sweep sends such an attempt once it has waited a claim
 // lease, and leaves alone one whose claim is live, which another process's sender holds.
 func TestTheSweepSendsAMentionAStoppedProcessLeftAndLeavesALiveClaimAlone(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	stopping, stop := context.WithCancel(t.Context())
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, lifetime: stopping})
@@ -780,6 +911,7 @@ func TestTheSweepSendsAMentionAStoppedProcessLeftAndLeavesALiveClaimAlone(t *tes
 // refused by the old process's sender and its attempt stays pending with no claim. The
 // successor's delivery sweep sends it, once.
 func TestARollingUpdatesSuccessorSendsTheMentionTheOldProcessAcceptedWhileDraining(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	stopping, stop := context.WithCancel(t.Context())
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, lifetime: stopping})
@@ -821,6 +953,7 @@ func TestARollingUpdatesSuccessorSendsTheMentionTheOldProcessAcceptedWhileDraini
 // meanwhile leaves each of them to it and each reaches its recipient once, in the order its
 // comment was accepted.
 func TestTheSweepLeavesABusySendersUnstartedSendsToIt(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	issue := createInteractionIssue(t, handler, "TEST", "A busy sender", "before")
@@ -858,12 +991,14 @@ func TestTheSweepLeavesABusySendersUnstartedSendsToIt(t *testing.T) {
 
 // A mention past the sender's queue bound is not queued: the claim its attempt committed with is
 // given back, so the attempt is pending and unclaimed, and the delivery sweep, once the queue has
-// room and the attempt has waited a claim lease, sends it, once.
+// room and the attempt has waited a claim lease, sends it, once. The bound counts the send in
+// flight as well as the queued one (mentionSender.held), so a capacity of two holds both.
 func TestAMentionPastTheQueueBoundIsSentOnceTheQueueDrains(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	served.mentions.mu.Lock()
-	served.mentions.capacity = 1
+	served.mentions.capacity = 2
 	served.mentions.mu.Unlock()
 	release := state.hold("s1")
 	defer release()
@@ -907,6 +1042,58 @@ func TestAMentionPastTheQueueBoundIsSentOnceTheQueueDrains(t *testing.T) {
 	}
 }
 
+// The queue's bound holds at a capacity of one: the send in flight takes the one place
+// (mentionSender.held), so a second mention, accepted while the first is in flight, is not
+// queued. The claim its attempt committed with is given back, so the attempt is pending and
+// unclaimed, and the delivery sweep sends it once it has waited a claim lease: once, after the
+// first.
+func TestAQueueOfOneRefusesASecondSendWhileTheFirstIsInFlight(t *testing.T) {
+	t.Parallel()
+	listener, state := newMentionListener(t)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
+	served.mentions.mu.Lock()
+	served.mentions.capacity = 1
+	served.mentions.mu.Unlock()
+	release := state.hold("s1")
+	defer release()
+	issue := createInteractionIssue(t, handler, "TEST", "A queue of one", "before")
+	post := func(body string) string {
+		return decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+			"body": body, "mentions": []map[string]any{{"target": "session:s1"}},
+		})).ID
+	}
+
+	sending := post("in flight")
+	state.awaitSend(t)
+	refused := post("past the bound")
+	queued, inflight := queuedAndInFlight(served.mentions)
+	t.Logf("with the first send in flight: queued %d, in flight %d, of a capacity of 1", queued, inflight)
+	if !unclaimedPending(t, database, refused, "session:s1") {
+		t.Fatal("the second attempt, accepted while the first send was in flight, kept the claim it committed with: the queue took it past its capacity of 1")
+	}
+	if queued+inflight > 1 {
+		t.Fatalf("the queue holds %d sends and %d in flight, past its capacity of 1", queued, inflight)
+	}
+
+	release()
+	if settled := settledCommentDeliveries(t, database, sending); !allSent(settled) {
+		t.Fatalf("comment %s attempts = %#v, want it sent", sending, settled)
+	}
+	if !unclaimedPending(t, database, refused, "session:s1") {
+		t.Fatal("the attempt past the bound was taken before it waited a claim lease")
+	}
+	ageAttempts(t, database, refused)
+	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
+		t.Fatalf("resume the owed deliveries: %v", err)
+	}
+	if settled := settledCommentDeliveries(t, database, refused); !allSent(settled) {
+		t.Fatalf("comment %s attempts = %#v, want it sent by the delivery sweep", refused, settled)
+	}
+	if sent := state.sent(); len(sent) != 2 || sent[0].body != "in flight" || sent[1].body != "past the bound" {
+		t.Fatalf("sends = %#v, want each comment sent once, in order", sent)
+	}
+}
+
 // runOutboxBeside runs the outbox beside the test, as a Dispatch process runs it beside its API,
 // publishing through publisher every event it decides on, until the test ends.
 func runOutboxBeside(t *testing.T, deps Deps, publisher outbox.Publisher) {
@@ -933,22 +1120,44 @@ func runOutboxBeside(t *testing.T, deps Deps, publisher outbox.Publisher) {
 func withMentionClaimRefresh(t *testing.T, served *server, period time.Duration) {
 	t.Helper()
 	served.mentions.wait()
-	served.mentions = newMentionSender(served.lifetime, period,
-		served.sendCommentMention, served.refreshMentionClaims, served.releaseMentionClaims)
+	served.mentions = newMentionSender(served.lifetime, period, served.sendCommentMention,
+		served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
+}
+
+// rereadNone is the reread of a fake mention sender whose refresh never fails, so the sender never
+// asks it: it answers no row's claim as the sender's.
+func rereadNone(context.Context, []mentionClaim) ([]mentionClaim, error) { return nil, nil }
+
+// queuedAndInFlight is how many sends sender holds on its lanes, not started yet, and how many it
+// holds in flight.
+func queuedAndInFlight(sender *mentionSender) (queued, inflight int) {
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	for _, sends := range sender.lanes {
+		queued += len(sends)
+	}
+	return queued, len(sender.held) - queued
 }
 
 // ageQueuedClaims moves every claim the sender holds on a send that has not started back by by,
 // on the attempt row and in the sender's own record together: what a lane held that long leaves
-// behind when nothing writes those claims again. It holds the sender's lock throughout, so no
-// refresh records anything until every row and its record agree again.
+// behind when nothing writes those claims again. A send in flight is left as it is, its try having
+// claimed its row for itself. It holds the sender's lock throughout, so no refresh records
+// anything until every row and its record agree again.
 func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender, by time.Duration) {
 	t.Helper()
 	sender.mu.Lock()
 	defer sender.mu.Unlock()
-	if len(sender.claims) == 0 {
+	var queued []mentionKey
+	for _, sends := range sender.lanes {
+		for _, send := range sends {
+			queued = append(queued, send.key())
+		}
+	}
+	if len(queued) == 0 {
 		t.Fatal("the mention sender holds no queued send whose claim could age")
 	}
-	for key := range sender.claims {
+	for _, key := range queued {
 		// A refresh whose statement ran but whose result is not recorded yet leaves the row newer
 		// than the map (refreshHeldClaims), so the claim aged is the one the row carries, and the
 		// map is set to it: that refresh then finds the map changed and records nothing over it.
@@ -960,31 +1169,30 @@ func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender,
 		`, key.comment, key.target, key.attempt, by.Seconds()).Scan(&aged); err != nil {
 			t.Fatalf("age the claim on the queued attempt of %s for %s: %v", key.comment, key.target, err)
 		}
-		sender.claims[key] = aged
+		state := sender.held[key]
+		state.claimed = aged
+		sender.held[key] = state
 	}
 }
 
-// awaitRefreshedClaims waits until every comment's attempt for target is under a live claim
-// again, for at most 10 s: the sender's refresh loop has written the claims it holds.
+// awaitRefreshedClaims waits until every comment's attempt for target is under a claim written in
+// the last 5 s: the sender's refresh loop has written the claims it holds again. Its one bound is
+// the test binary's deadline (testwait.UntilPolling), and its failure prints how many of the
+// attempts were under a claim written again when it last read them.
 func awaitRefreshedClaims(t *testing.T, database *store.Store, commentIDs []string, target string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		refreshed := 0
-		for _, comment := range commentIDs {
-			if claimedPending(t, database, comment, target) {
-				refreshed++
-			}
+	what := fmt.Sprintf("the sender's refresh loop to write the claims of the %d queued attempts again (the attempts under a claim written again)", len(commentIDs))
+	testwait.UntilPolling(t, 10*time.Millisecond, what, func() (int, bool) {
+		var refreshed int
+		if err := database.Pool.QueryRow(context.Background(), `
+			select count(*) from comment_deliveries
+			where comment_id = any($1::uuid[]) and target = $2 and attempt = 1 and state = 'pending'
+			  and claimed_at > now() - interval '5 seconds'
+		`, commentIDs, target).Scan(&refreshed); err != nil {
+			t.Fatalf("read the claims on the queued attempts: %v", err)
 		}
-		if refreshed == len(commentIDs) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d of %d queued attempts are still under a lapsed claim: nothing wrote the sender's claims again",
-				len(commentIDs)-refreshed, len(commentIDs))
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return refreshed, refreshed == len(commentIDs)
+	})
 }
 
 // postMentionOfS1 posts a comment on the issue mentioning s1 and answers its id.
@@ -1000,8 +1208,13 @@ func postMentionOfS1(t *testing.T, handler http.Handler, issueKey, body string) 
 // committed with, and the sender's refresh loop (keepClaims) writes each of those claims again
 // before it lapses, so a lane held longer than a claim lease keeps them: a delivery sweep pass
 // that runs while every attempt is old enough to be owed takes none of them and sends nothing
-// past the send in flight.
+// past the send in flight. The claims age to fifteen seconds short of a lease, which leaves the
+// refresh loop, ticking every 20 ms here, fifteen seconds to write them again, so a refresh a
+// loaded machine runs late still lands: one a lease old with no refresh committed has lapsed, and
+// the refresh no longer writes it (refreshMentionClaims), which
+// TestALostRefreshNeverRevivesALapsedClaim covers.
 func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -1024,10 +1237,11 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 		}
 	}
 	// The lane has now been held longer than a claim lease: every attempt was opened that long
-	// ago, and the claims the sender took on the sends waiting on it are that old too.
+	// ago, and the claims the sender took on the sends waiting on it were last written all but a
+	// lease ago, so they lapse within fifteen seconds unless the refresh writes them again.
 	comments := append([]string{sending}, queued...)
 	ageAttempts(t, database, comments...)
-	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse+time.Second)
+	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse-15*time.Second)
 	awaitRefreshedClaims(t, database, queued, "session:s1")
 	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
 		t.Fatalf("resume the owed deliveries: %v", err)
@@ -1050,6 +1264,7 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 // the lane fall to the delivery sweep as soon as their claims lapse, and its pass sends them past
 // the send still in flight, out of the order the comments were accepted.
 func TestASweepTakesTheQueuedMentionsOfALaneWhoseClaimsLapsed(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -1103,6 +1318,7 @@ func TestASweepTakesTheQueuedMentionsOfALaneWhoseClaimsLapsed(t *testing.T) {
 // already holds: its next refresh writes that claim again, so the attempt stays this process's
 // and the delivery sweep leaves it alone. The repeat queues no second send.
 func TestAKeyedRepeatOfAQueuedMentionLeavesTheSenderHoldingTheNewClaim(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -1156,6 +1372,7 @@ func TestAKeyedRepeatOfAQueuedMentionLeavesTheSenderHoldingTheNewClaim(t *testin
 // latest, so the lane sends nothing, settles it failed as superseded and gives its claim back:
 // the recipient is handed one copy, the Retry's.
 func TestARetryWhileTheFirstAttemptIsQueuedLeavesTheRecipientOneCopy(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -1217,17 +1434,20 @@ func unclaimedSettled(t *testing.T, database *store.Store, commentID, target str
 // so the attempts are left pending and unclaimed for the next delivery sweep pass rather than
 // held by a claim nothing writes again.
 func TestTheMentionDrainGivesBackItsClaimsAfterItsSendContextIsCancelled(t *testing.T) {
+	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	defer stop()
 	started, finish := make(chan struct{}), make(chan struct{})
 	var released []mentionClaim
 	var releaseErr error
 	sender := newMentionSender(lifetime, time.Hour,
-		func(context.Context, mentionSend) {
+		func(context.Context, mentionSend) (mentionSend, bool) {
 			close(started)
 			<-finish
+			return mentionSend{}, false
 		},
 		func(context.Context, []mentionClaim) ([]mentionClaim, error) { return nil, nil },
+		rereadNone,
 		func(ctx context.Context, held []mentionClaim) error {
 			releaseErr = ctx.Err()
 			released = append(released, held...)

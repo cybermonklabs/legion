@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A settlement already past its entry check when a transaction opens its write can reach the
@@ -18,6 +19,7 @@ import (
 // the committed write while the durable cursor includes it, so a version written then would
 // stand without the write. It must settle again after the publish instead.
 func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -39,7 +41,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 		defer close(settled)
 		service.settleRoom(artifactID, generation)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		select {
 		case <-resume:
 		default:
@@ -99,6 +101,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 // A commit that returns an error may still have committed. Failing the room instead of
 // discarding its write makes the room reload whatever the durable document holds.
 func TestFailedLiveWritesReloadTheDurableDocument(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -110,6 +113,11 @@ func TestFailedLiveWritesReloadTheDurableDocument(t *testing.T) {
 	joined, ledger := service.Join(ctx, tx)
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{Op: "replace", Find: "before", With: "after"}}, model.Actor{Kind: "user", ID: "alice"}, nil); err != nil {
 		t.Fatalf("apply joined edit: %v", err)
+	}
+	// The commit Ledger.commit makes: its write phase, with the settlement credit, then the
+	// transaction's commit.
+	if err := ledger.runQueue(ctx, ledger.recordSettlementCredit); err != nil {
+		t.Fatalf("run the edit's write phase: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit edit transaction: %v", err)
@@ -123,6 +131,7 @@ func TestFailedLiveWritesReloadTheDurableDocument(t *testing.T) {
 // A transaction that does not commit credits no one: the next settled version names only the
 // actor whose write reached the document, and so does the version's event.
 func TestARolledBackWriteIsNoAuthorOfTheNextVersion(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -132,7 +141,7 @@ func TestARolledBackWriteIsNoAuthorOfTheNextVersion(t *testing.T) {
 	}
 	joined, ledger := service.Join(ctx, tx)
 	rolledBack := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
-	if _, err := service.ReplaceText(joined, artifactID, "rolled back", rolledBack); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "rolled back", rolledBack, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("replace text in the transaction: %v", err)
 	}
 	if err := tx.Rollback(ctx); err != nil {
@@ -163,6 +172,7 @@ func TestARolledBackWriteIsNoAuthorOfTheNextVersion(t *testing.T) {
 // version the transaction writes names only its writer, as a write that reaches the room
 // directly does, and a version settled after the browser left names only its own editor.
 func TestAJoinedWritesVersionNamesItsWriterNotAConnectedBrowser(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -218,10 +228,11 @@ func TestAJoinedWritesVersionNamesItsWriterNotAConnectedBrowser(t *testing.T) {
 // - the margin's re-anchor after a refused send (packages/dispatch/e2e/compose-wait.e2e.ts) - was
 // otherwise refused, or marked orphaned by the refresh of the stale fork's anchors.
 func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	appends := &heldStore{VersionedStore: NewPgVersioned(database), room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
-	t.Cleanup(appends.let)
+	testcleanup.Add(t, appends.let)
 	service := newShutdownTestService(t, database, appends)
 	seedServiceText(t, service, artifactID, "First.\n")
 	settleCurrentGeneration(t, service, artifactID)
@@ -250,9 +261,12 @@ func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *t
 		}
 		// What the write below meets: the snapshot stored the browser's held update in this
 		// transaction, and the room's cursor has not moved over it, since that happens only when
-		// the transaction commits. Without both, the write would fork the room either way.
+		// the transaction commits. Without both, the write would fork the room either way. The
+		// head is the transaction's own (transactionHead): its flush is queued on the write
+		// phase, so doc_updates holds no row of it until the commit, and what the transaction's
+		// later reads stand on is the head its queue leaves (pendingRoom).
 		tx, _ := txFromContext(ctx)
-		head, err := currentUpdateCursor(ctx, tx, artifactID)
+		head, err := transactionHead(ctx, tx, artifactID)
 		if err != nil {
 			return fmt.Errorf("read the transaction's head: %w", err)
 		}
