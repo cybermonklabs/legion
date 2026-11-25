@@ -23,6 +23,7 @@
       "!!packages/envoy/internal/dispatch/textversions/testdata",
       "!!packages/envoy/infra/scripts/testdata",
       "!!packages/envoy/internal/cipher/approval/templates",
+      "!!packages/envoy/internal/cipher/secretstore/onepassword/testdata",
       "!!packages/daemon/docker/language-servers/package-lock.json",
       "!!docs/research/internet-of-cognition/published",
       "!!docs/research/internet-of-cognition/evidence",
