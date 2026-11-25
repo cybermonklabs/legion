@@ -10,10 +10,12 @@ import type { DispatchEvent } from "./types";
  * time and a copy's source from: the asks of the document's owner, `["asks", <issue>]` for an
  * issue's documents and `["artifact", <id>, "asks"]` for a project document's, and, for a copy on
  * a project document, whose source no route lists, the document's live text
- * (`["artifact", <id>, "text"]`), which renders it. A person's answer is held on the ask, and the
- * one version it writes changes only the server-owned attributes of the ask's block (R3), which the
- * card does not read, so the card learns of it through the ask's own events - an answer, a
- * resolution, an opening - and never through the document.
+ * (`["artifact", <id>, "text"]`), which renders it. A person's answer is held on the ask. When the
+ * answer is the whole change of the one version it writes (the server's changesAskAttributesAlone:
+ * text a person was editing in the browser can settle into the same version), that version changes
+ * only the server-owned attributes of the ask's block (R3), which the card does not read. So the
+ * card learns of it through the ask's own events - an answer, a resolution, an opening - and never
+ * through the document.
  */
 
 /** An event of `type` about the ask `id`, whose block is on the document `artifact`. */
