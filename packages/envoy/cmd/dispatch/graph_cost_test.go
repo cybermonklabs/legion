@@ -4,10 +4,11 @@
 
 package main
 
-// The two cost measurements of this change share this file: c-write-cost (write_cost_test.go)
-// and c-read-cost (read_cost_test.go). What they share is the pair of arms they compare, the
-// corpus writer that seeds each arm through that arm's own API, the clock, the order statistic
-// and the table every reading is printed in.
+// The harness a cost tool of this tag builds on: the pair of arms it compares, the corpus writer
+// that seeds each arm through that arm's own API, the clock, the order statistic and the table
+// every reading is printed in. #3178's two cost checks that first used it, c-write-cost and
+// c-read-cost, are gone from main; the readers they used stay in read_cost_test.go and
+// write_cost_test.go, and the INFRA-1098 tree's branches build their own cost tools on this file.
 //
 // # The two arms, and why each has a database of its own
 //

@@ -4,12 +4,12 @@
 
 package main
 
-// This change's check c-write-cost: no write path this child changes gets slower.
-//
-// This file holds the corpus the check writes and the paths it measures (writeCostPaths).
-// graph_cost_test.go holds the two arms, the clock and the order statistic the cost
-// measurements share. cost_bounds_test.go, which carries no build tag, holds the 8,001-block
-// path's allowance (writeCostOverAllowance) to its rule with no database and no arm.
+// The write corpus and paths a write cost tool of this tag uses: the corpus, the document
+// generator, and the paths measured (writeCostPaths). #3178's check c-write-cost, which drove
+// them, is gone from main; the INFRA-1098 tree's branches use writeCostNesting and
+// costStoreCounts. graph_cost_test.go holds the two arms, the clock and the order statistic.
+// cost_bounds_test.go, which carries no build tag, holds the 8,001-block path's allowance
+// (writeCostOverAllowance) to its rule with no database and no arm.
 
 import (
 	"context"

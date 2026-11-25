@@ -4,16 +4,12 @@
 
 package main
 
-// This change's check c-read-cost: no read this child changes gets slower, and no event
-// outruns its node.
-//
-// This file holds the four corpora the check writes, what each shape is held to, the state
-// before the backfill it puts this child's arm in, and the eight reads it measures over each
-// shape in each state (readCostMeasure). The second half of the check, that no event outruns its
-// node, is TestNoEventOutrunsItsNode (internal/dispatch/api/no_event_outruns_test.go), which holds
-// the server's own comment write at its seam. graph_cost_test.go holds the two arms, the clock
-// and the order statistic the cost measurements share, and write_cost_test.go the document
-// generator and the corpus writers both use.
+// The read corpora and readers a read cost tool of this tag uses: the four corpora, what each
+// shape is held to, the state before the backfill the head's arm is put in, and the eight reads
+// measured over each shape in each state (readCostMeasure). #3178's check c-read-cost, which drove
+// them, is gone from main; the INFRA-1098 tree's branches use readCostEdges, readCostOther and
+// readCostPointerAt. graph_cost_test.go holds the two arms, the clock and the order statistic,
+// and write_cost_test.go the document generator and the corpus writers.
 
 import (
 	"context"

@@ -1,9 +1,10 @@
 package main
 
 // The bounds the 8,001-block document version is held to, and the rule that takes the lower of
-// them. This file carries no build tag, unlike the cost measurements that read these bounds
-// (graph_cost_test.go, read_cost_test.go and write_cost_test.go, behind basebuild), so every run
-// of this package's tests holds the rule, with no database and no base build.
+// them. This file carries no build tag, unlike the basebuild cost helpers that read these bounds
+// (read_cost_test.go reads costBudget, write_cost_test.go writeCostOverRatio and
+// writeCostOverAllowance), so every run of this package's tests holds the rule, with no database
+// and no base build.
 
 import (
 	"testing"
@@ -11,11 +12,11 @@ import (
 )
 
 const (
-	// costBudget is what c-read-cost holds every read to: a read whose p99 rises by more than
-	// this much above the same read at the commit before this child fails. c-write-cost holds
-	// its request paths to ratios instead (write_cost_test.go, writeCostEditRatio and the two
-	// beside it, and writeCostOverRatio), and the 8,001-block version to this rise beside its
-	// ratio, the lower allowance deciding (writeCostOverAllowance).
+	// costBudget is the most a read's p99 may rise above the same read at the base before a read
+	// cost tool fails it (read_cost_test.go's readCostMeasure). The write cost readers hold their
+	// request paths to ratios instead (write_cost_test.go, writeCostEditRatio and the two beside
+	// it, and writeCostOverRatio), and the 8,001-block version to this rise beside its ratio, the
+	// lower allowance deciding (writeCostOverAllowance).
 	costBudget = 100 * time.Millisecond
 	// writeCostOverRatio is the 8,001-block version's ratio bound, measured as the other ratio
 	// bounds are, over three clean runs (write_cost_test.go, beside writeCostEditRatio).

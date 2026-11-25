@@ -1,29 +1,29 @@
 //go:build basebuild
 
 // The basebuild tag holds per-change tools, not standing tests. Each is run at a child's head
-// against that child's own base, which the child's Verification document names, never on main's
-// own head: this file's TestTheStoreCensusReadsZeroDifferences, and the predicate-and-lens read
-// cost of the INFRA-1098 tree's branches (predicate_lens_read_cost_test.go, which only those
-// branches carry). Each builds the server at the commit BASELINE_SHA names (baseBuild,
-// testbaseline.Commit) and compares it with this build, so it needs a checkout that holds that
-// commit, and takes from 2 to 45 minutes on an issue pod. graph_cost_test.go holds the two arms,
-// the clock and the order statistic they share, and write_cost_test.go the document generator and
-// corpus writers; the cost tests that drove those on this tree's branches are gone from main (no
-// Verification of an open child names them), and their helpers stay for those branches to rewrite.
+// against a base its Verification document names, never on its own as a check of main: this
+// file's TestTheStoreCensusReadsZeroDifferences, and the predicate-and-lens read cost of the
+// INFRA-1098 tree's branches (predicate_lens_read_cost_test.go, which only those branches carry).
+// Each builds the server at the commit BASELINE_SHA names (baseBuild, testbaseline.Commit) and
+// compares it with this build, so it needs a checkout that holds that commit, and takes from 2 to
+// 45 minutes on an issue pod. graph_cost_test.go holds the two arms, the clock and the order
+// statistic a cost tool builds on, and read_cost_test.go and write_cost_test.go the corpora and
+// readers; the cost tests of #3178 that drove them are gone from main (no Verification of an open
+// child names them), and the helpers stay for the INFRA-1098 tree's branches.
 //
-// Pick BASELINE_SHA as the child's Verification does: the fork point with main for a branch that
-// lands on main, the parent's head for a child stacked on it (testbaseline). On main's own head,
-// where the store already exists, the census tool refuses by name at the growth pass
-// (requireTheSizingRunsBeforeTheMigration): it reads a store over a database the base build has
-// already migrated to the store, so no kind is absent to read. cybermonklabs/legion#4173 carries
-// the product change that lets the census read the store only over a database migrated to the
-// build under test (graphcensus.storeAbsence); until it lands, run the census tool against a
-// pre-store base.
+// The census tool refuses by name at its first step (requireTheSizingRunsBeforeTheMigration)
+// against any base that already holds the store, whatever the head: on such a base the census
+// reads graph_nodes as a store, and finds no row of the kinds the older build cannot write
+// (graphcensus's verdict). That is every fork point with main after #3178 until
+// cybermonklabs/legion#4173 lands, which lets the census read the store only over a database
+// migrated to the build under test (graphcensus.storeAbsence). Until then, give the census tool a
+// base from before the store: 62110c253b58ea2c852b60b85a7cd371f4951eac, the parent of #3178. A
+// branch that carries #4173 can use its own fork point with main, as the INFRA-1098 tree's do.
 //
 // They carry a build tag of their own and no CI job runs it: each is run on the pod, one at a
 // time and by name, as
 //
-//	BASELINE_SHA=$(git merge-base origin/main HEAD) go test -tags basebuild ./cmd/dispatch/ -run '^TestTheStoreCensusReadsZeroDifferences$' -count=1 -v
+//	BASELINE_SHA=62110c253b58ea2c852b60b85a7cd371f4951eac go test -tags basebuild ./cmd/dispatch/ -run '^TestTheStoreCensusReadsZeroDifferences$' -count=1 -v
 
 package main
 
