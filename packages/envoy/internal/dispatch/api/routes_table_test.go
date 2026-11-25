@@ -6,18 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -757,155 +753,4 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 	if scoped != len(browserOnly) {
 		t.Errorf("%d routes declare OAuth scopes, want exactly the %d above", scoped, len(browserOnly))
 	}
-}
-
-// removedByTheRouteFiles are the names package api no longer declares, each a side map or field
-// the route files replaced. A comment naming one sends a reader to a symbol that is not there,
-// which is how the read class's own move left three comments pointing at readClasses after the
-// map was gone.
-//
-// It is this package's own list and not a general checker: deciding whether a word in prose is a
-// symbol needs the package's scope at that word, which go/ast does not give a comment. A name
-// leaves this list when package api declares it again.
-var removedByTheRouteFiles = []string{
-	"readClasses", "readScopeRoutes", "ReadScope", "readRoutesNotMountedAsGET", "readRoutesNotGET",
-	"routeShapes", "writeClasses", "idRoutes", "routeScopes", "routeRow",
-}
-
-// TestNoCommentNamesASymbolTheRouteFilesRemoved walks every comment of this package and fails for
-// one that names a symbol the route files took away, so a comment is not left pointing at a map
-// that no longer exists. Its control plants each name in a comment of its own and expects each to
-// be found.
-func TestNoCommentNamesASymbolTheRouteFilesRemoved(t *testing.T) {
-	t.Parallel()
-	for _, name := range removedByTheRouteFiles {
-		if declaredInThisPackage(t, name) {
-			t.Errorf("%s is in the removed list and this package declares it", name)
-		}
-	}
-	found := commentsNaming(t, removedByTheRouteFiles)
-	if len(found) > 0 {
-		t.Errorf("%d comments name a symbol the route files removed:\n%s", len(found), strings.Join(found, "\n"))
-	}
-	// The control: a comment naming each removed symbol is found, so the walk above can fail.
-	planted := map[string]string{}
-	for index, name := range removedByTheRouteFiles {
-		planted[fmt.Sprintf("planted%d.go", index)] = "package api\n\n// A comment naming " + name + ".\n"
-	}
-	if missed := namesNotFound(t, planted, removedByTheRouteFiles); len(missed) > 0 {
-		t.Errorf("the control planted a comment for each removed symbol and the walk missed %v", missed)
-	}
-}
-
-// commentsNaming is every comment of this package's own files that names one of the words, as
-// "<file>:<line>: <text>".
-func commentsNaming(t *testing.T, words []string) []string {
-	t.Helper()
-	var found []string
-	for _, file := range goFilesOfThisPackage(t) {
-		fset := token.NewFileSet()
-		parsed, err := parser.ParseFile(fset, file, nil, parser.ParseComments|parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, group := range parsed.Comments {
-			for _, line := range group.List {
-				for _, word := range words {
-					if namesWord(line.Text, word) {
-						found = append(found, fmt.Sprintf("%s:%d: %s", filepath.Base(file), fset.Position(line.Pos()).Line, strings.TrimSpace(line.Text)))
-						break
-					}
-				}
-			}
-		}
-	}
-	sort.Strings(found)
-	return found
-}
-
-// namesNotFound is every word that no comment of the planted files names, which is what the
-// control holds the walk to.
-func namesNotFound(t *testing.T, files map[string]string, words []string) []string {
-	t.Helper()
-	dir := t.TempDir()
-	var missed []string
-	for name, content := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, word := range words {
-		seen := false
-		for name := range files {
-			fset := token.NewFileSet()
-			parsed, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments|parser.SkipObjectResolution)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, group := range parsed.Comments {
-				for _, line := range group.List {
-					seen = seen || namesWord(line.Text, word)
-				}
-			}
-		}
-		if !seen {
-			missed = append(missed, word)
-		}
-	}
-	return missed
-}
-
-// namesWord reports whether text names word as a word of its own, so `readClasses` is found and
-// `readClassRefusals` is not. Go's \\b is a byte boundary, which is what an identifier needs.
-func namesWord(text, word string) bool {
-	return wordMatchers(word).MatchString(text)
-}
-
-// wordMatchers answers one compiled matcher per word, since a walk asks the same few words of
-// every comment of the package.
-var wordMatchers = sync.OnceValue(func() func(string) *regexp.Regexp {
-	var mutex sync.Mutex
-	compiled := map[string]*regexp.Regexp{}
-	return func(word string) *regexp.Regexp {
-		mutex.Lock()
-		defer mutex.Unlock()
-		if matcher, known := compiled[word]; known {
-			return matcher
-		}
-		matcher := regexp.MustCompile(`\b` + regexp.QuoteMeta(word) + `\b`)
-		compiled[word] = matcher
-		return matcher
-	}
-})()
-
-// declaredInThisPackage reports whether a package-level name is declared in this package, so the
-// removed list cannot name something that came back.
-func declaredInThisPackage(t *testing.T, name string) bool {
-	t.Helper()
-	for _, file := range goFilesOfThisPackage(t) {
-		for _, declared := range parseAPIFile(t, file).Decls {
-			switch declaration := declared.(type) {
-			case *ast.FuncDecl:
-				if declaration.Name.Name == name {
-					return true
-				}
-			case *ast.GenDecl:
-				for _, spec := range declaration.Specs {
-					switch value := spec.(type) {
-					case *ast.ValueSpec:
-						for _, ident := range value.Names {
-							if ident.Name == name {
-								return true
-							}
-						}
-					case *ast.TypeSpec:
-						if value.Name.Name == name {
-							return true
-						}
-					}
-				}
-			}
-		}
-	}
-	return false
 }

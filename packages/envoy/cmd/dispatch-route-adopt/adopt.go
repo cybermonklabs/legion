@@ -92,9 +92,9 @@ func (r *adoptReport) print(w io.Writer) {
 	}
 }
 
-// adopt resolves the merge in progress in repo (see the package comment).
-func adopt(repo gitRepo) (*adoptReport, error) {
-	sides, err := repo.sides()
+// adopt makes the merge of into and resolves its route layer (see the package comment).
+func adopt(repo gitRepo, into string) (*adoptReport, error) {
+	sides, err := repo.startMerge(into)
 	if err != nil {
 		return nil, err
 	}
@@ -138,26 +138,9 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("split %s's routes: %w", report.oldSide, err)
 	}
-	// The step runs once per merge, because it takes routes_table.go and routes_shapes.go whole
-	// from the new side and a second run would overwrite what the person carried into them by
-	// hand. It has not run while either of two things is true: one of those files still stands in
-	// conflict, which is how the merge leaves them and what the step resolves; or a route the
-	// branch adds, changes or removes is one the step would still write or delete
-	// (routesNotAdopted). Each is needed. A person may resolve the two files before running this,
-	// and the branch's routes are then in no file yet; and a branch whose every route change is
-	// one the step leaves alone still needs the two files taken from the new side.
-	unresolved, err := repo.sharedFilesInConflict()
-	if err != nil {
-		return nil, err
-	}
-	pending, err := routesNotAdopted(filepath.Join(repo.root, apiDir), baseFiles, branchFiles, gitTree{repo, newRev})
-	if err != nil {
-		return nil, err
-	}
-	if !unresolved && len(pending) == 0 {
-		return nil, fmt.Errorf("%s and %s are resolved and every route %s adds or changes is already as the step would leave it: this merge needs no adoption, or the step has run on it already, and a second run would overwrite what was carried into those two files by hand",
-			tableFile, shapesFile, report.oldSide)
-	}
+	// No guard against a second run: startMerge refuses a tree that is mid-merge or holds a
+	// change, so this always begins from a tree nobody has touched, and after it the tree is
+	// mid-merge. A run over this run's own output cannot happen.
 	dir := filepath.Join(repo.root, apiDir)
 	var stage, remove []string
 	labels := [3]string{"main (" + report.newSide + ")", "merge base", "branch (" + report.oldSide + ")"}
@@ -252,8 +235,12 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 		// A conflict this step cannot resolve is written into the index as one, so git refuses to
 		// commit the path until the person resolves it and runs `git add`. Without this, main's
 		// version of the route sits in the index at stage 0, which a plain `git commit` records,
-		// and the branch's change is left in the working tree alone.
-		if err := repo.recordConflict(name, current, baseContent, branchContent); err != nil {
+		// and the branch's change is left in the working tree alone. The three stages are the
+		// merge's own sides, so `git checkout --theirs` answers the branch's route rather than
+		// the conflict-marked text the working copy holds: stage 1 the merge base, stage 2 main's,
+		// stage 3 the branch's own bytes (branchFiles[name], not branchContent, which merge has
+		// replaced with the marked text).
+		if err := repo.recordConflict(name, current, baseContent, branchFiles[name]); err != nil {
 			return nil, err
 		}
 	}

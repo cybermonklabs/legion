@@ -31,35 +31,121 @@ func jjLine(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(output), err
 }
 
-// mergeSides is the merge in progress as two commits and their names in the report.
+// mergeSides is the merge this run made, as two commits and their names in the report.
 type mergeSides struct {
 	first, second         string
 	firstName, secondName string
 }
 
-// sides finds the merge in progress: HEAD and MERGE_HEAD while `git merge` has stopped, or the
-// two parents of jj's working-copy commit, which `jj new <branch> main@origin` makes.
-func (g gitRepo) sides() (mergeSides, error) {
-	if !g.jj {
-		mergeHead, err := g.line("rev-parse", "-q", "--verify", "MERGE_HEAD")
-		if err != nil || mergeHead == "" {
-			return mergeSides{}, errors.New("no merge is in progress: run this while `git merge origin/main` has stopped")
-		}
-		head, err := g.line("rev-parse", "HEAD")
+// startMerge makes the merge this step works in, and refuses any tree it did not start itself.
+//
+// The step writes route files, takes routes_table.go and routes_shapes.go whole from the new
+// side, and writes conflicts into the index. A second run over its own output would take those
+// two files again and erase whatever had been carried into them, so there is no second run to
+// judge: the step begins from a tree nobody has touched since its last commit, and the merge it
+// starts is the one it finishes. Afterwards the tree is mid-merge, so another run is refused by
+// that fact, with no file content read anywhere.
+//
+// Four guards that read content to answer "has this run already?" each missed a state a person
+// or the step itself can leave (a file resolved by hand, a merge whose output is what is already
+// there, a resolution that takes the current side). This asks nothing about content.
+func (g gitRepo) startMerge(into string) (mergeSides, error) {
+	if err := g.refuseATreeThisDidNotStart(); err != nil {
+		return mergeSides{}, err
+	}
+	if g.jj {
+		head, err := jjLine(g.root, "log", "--no-graph", "-r", "@", "-T", "commit_id")
 		if err != nil {
 			return mergeSides{}, err
 		}
-		return mergeSides{head, mergeHead, "HEAD", "MERGE_HEAD"}, nil
+		other, err := jjLine(g.root, "log", "--no-graph", "-r", into, "-T", "commit_id")
+		if err != nil {
+			return mergeSides{}, fmt.Errorf("%s names no commit jj knows: %w", into, err)
+		}
+		if _, err := jjOutput(g.root, "new", head, other, "-m", "merge "+into); err != nil {
+			return mergeSides{}, err
+		}
+		return mergeSides{head, other, "the branch " + head[:12], into + " " + other[:12]}, nil
 	}
-	output, err := jjOutput(g.root, "log", "--no-graph", "-r", "parents(@)", "-T", `commit_id ++ "\n"`)
+	head, err := g.line("rev-parse", "HEAD")
 	if err != nil {
 		return mergeSides{}, err
 	}
-	parents := strings.Fields(output)
-	if len(parents) != 2 {
-		return mergeSides{}, fmt.Errorf("jj's working-copy commit has %d parents, and a merge has two: run this with the merge as @, after `jj new <branch> main@origin`", len(parents))
+	other, err := g.line("rev-parse", "--verify", into+"^{commit}")
+	if err != nil {
+		return mergeSides{}, fmt.Errorf("%s names no commit: %w", into, err)
 	}
-	return mergeSides{parents[0], parents[1], "@'s first parent " + parents[0][:12], "@'s second parent " + parents[1][:12]}, nil
+	// --no-commit, because the person finishes the merge once they have resolved what is left;
+	// a merge that settles by itself still stops here, so the route layer is translated before
+	// anything is recorded.
+	if _, err := g.run("merge", "--no-commit", "--no-ff", other); err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			return mergeSides{}, err
+		}
+		// Conflicts: the state this step is for.
+	}
+	return mergeSides{head, other, "the branch " + head[:12], into + " " + other[:12]}, nil
+}
+
+// refuseATreeThisDidNotStart refuses a tree that is mid-merge or holds a change, naming what the
+// person must do and what it costs them, since the step's safety rests on starting from a tree
+// nobody has touched.
+func (g gitRepo) refuseATreeThisDidNotStart() error {
+	const lost = "any resolution you have already made in that merge is lost, this step's route files included; everything committed is untouched"
+	if g.jj {
+		parents, err := jjOutput(g.root, "log", "--no-graph", "-r", "parents(@)", "-T", `commit_id ++ "\n"`)
+		if err != nil {
+			return err
+		}
+		if len(strings.Fields(parents)) > 1 {
+			return fmt.Errorf("@ is a merge already, and this step makes the merge itself: abandon it with `jj abandon @` and run this again (%s)", lost)
+		}
+		// jj has no uncommitted state: every change is in @ itself, so "nobody has touched it" is
+		// @ being empty. `jj diff -r @` would answer the commit's own diff against its parent,
+		// which is the branch's work when @ is a branch commit, so it is no reading of this.
+		empty, err := jjLine(g.root, "log", "--no-graph", "-r", "@", "-T", "empty")
+		if err != nil {
+			return err
+		}
+		if empty != "true" {
+			changed, err := jjOutput(g.root, "diff", "--summary", "-r", "@")
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("@ holds changes of its own, and this step begins from a commit nobody has touched: describe them and run `jj new` to sit on a fresh commit, then run this again:\n%s", strings.TrimRight(changed, "\n"))
+		}
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(g.gitDirOf(), "MERGE_HEAD")); err == nil {
+		return fmt.Errorf("a merge is in progress, and this step makes the merge itself: end it with `git merge --abort` and run this again (%s)", lost)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	changed, err := g.run("status", "--porcelain")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(changed)) != "" {
+		return fmt.Errorf("the tree holds changes, and this step begins from a tree nobody has touched: commit or stash them, then run this again:\n%s", strings.TrimRight(string(changed), "\n"))
+	}
+	return nil
+}
+
+// gitDirOf is the git directory of this checkout: jj's store where jj answers for it, else git's
+// own, which `git rev-parse --git-dir` names.
+func (g gitRepo) gitDirOf() string {
+	if g.gitDir != "" {
+		return g.gitDir
+	}
+	dir, err := g.line("rev-parse", "--git-dir")
+	if err != nil || dir == "" {
+		return filepath.Join(g.root, ".git")
+	}
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(g.root, dir)
 }
 
 // stage records files of package api written or removed: git adds them to its index; jj takes the

@@ -70,6 +70,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 )
 
 func main() {
@@ -91,11 +92,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "split" {
 		return runSplit(repo, args[1:], stdout, stderr)
 	}
-	if len(args) > 0 {
-		fmt.Fprintf(stderr, "dispatch-route-adopt: unknown argument %q: run it with none during a merge, or as `split -rev <commit> -out <dir>`\n", args[0])
-		return 1
+	// The step runs before the merge, so the branch's own tree does not hold this command yet:
+	// it is run from a checkout that has it (main, once this has landed) with -C naming the
+	// branch's worktree.
+	into := "origin/main"
+	for len(args) > 0 {
+		switch {
+		case args[0] == "-C" && len(args) > 1:
+			repo, err = findRepo(args[1])
+			if err != nil {
+				fmt.Fprintln(stderr, "dispatch-route-adopt:", err)
+				return 1
+			}
+			args = args[2:]
+		case !strings.HasPrefix(args[0], "-"):
+			into, args = args[0], args[1:]
+		default:
+			fmt.Fprintf(stderr, "dispatch-route-adopt: unknown argument %q: run it with none to merge origin/main, with `-C <worktree>` for another checkout, with one revision to merge that, or as `split -rev <commit> -out <dir>`\n", args[0])
+			return 1
+		}
 	}
-	report, err := adopt(repo)
+	report, err := adopt(repo, into)
 	if err != nil {
 		fmt.Fprintln(stderr, "dispatch-route-adopt:", err)
 		return 1
