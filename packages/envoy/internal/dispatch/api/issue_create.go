@@ -123,31 +123,34 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// before the external ref is resolved to an issue already imported. Nothing is written before
 	// this point. A credential that names one project creates an issue in every project that
 	// access.CredentialCovers covers. The one exception is a private project it does not name,
-	// whose visibility one statement reads here (projectVisibility). Such a caller gets the 404
-	// NOT_FOUND of a project that does not exist, which the project's owner lock below answers
-	// (pgx.ErrNoRows), so it cannot tell the two apart. It is refused here, so it is never
-	// answered with that project's issue, which respondWithExistingExternalIssue would also
-	// record a related-check outcome on. callerProject is empty for a credential that names none.
-	// The dependency lock step, the parent's read and writeBlockedBy below read it again, because
-	// neither a blocked_by target's project nor the parent's is part of this address.
+	// whose visibility one statement reads here (projectVisibility). Such a caller gets here the
+	// 404 NOT_FOUND of a project that does not exist (pgx.ErrNoRows) for that project and for a
+	// project that no row holds. The checks before this one read no project, so the two get one
+	// answer whatever else the body holds, and the caller cannot tell them apart. It is refused
+	// here, so it is never answered with that project's issue, which
+	// respondWithExistingExternalIssue would also record a related-check outcome on. A key that is
+	// empty or not a project key is left to its 400 below. callerProject is empty for a credential
+	// that names none, which is answered as before. The dependency lock step, the parent's read
+	// and writeBlockedBy below read it again, because neither a blocked_by target's project nor
+	// the parent's is part of this address.
 	callerProject, scoped := s.callerProject(r)
-	if scoped {
-		private, _, err := projectVisibility(r.Context(), s.deps.Store.Pool, input.Project)
+	if scoped && projectKeyPattern.MatchString(input.Project) {
+		private, found, err := projectVisibility(r.Context(), s.deps.Store.Pool, input.Project)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, input.Project, private) {
+		if !found || !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, input.Project, private) {
 			s.writeHandlerError(w, pgx.ErrNoRows)
 			return
 		}
 	}
-	// A scoped caller is asked here too about a parent or a blocked_by target of another project
+	// A scoped caller is asked here too about a parent or a blocked_by target
 	// (foreignDependencyTargets), with no lock held, before the near-copy gate and every other
 	// write before the transaction, so a create it may not make records no near-copy check. A
-	// target or a parent of a private project that the credential does not name gets the 400 of
-	// a target or a parent that does not exist. The lock step and the reads under the locks ask
-	// again, the authoritative refusal.
+	// parent or a target that no issue holds, or of a private project that the credential does
+	// not name, gets here the 400 of a parent or a target that does not exist. The lock step and
+	// the reads under the locks ask again, the final check.
 	if scoped && (parentKey != "" || len(blockers) > 0) {
 		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, input.Project, callerProject, blockers, parentKey); err != nil {
 			s.writeHandlerError(w, err)

@@ -243,11 +243,14 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	daemon := legionDaemonSessionOf(key)
 	credential := writer.credential
+	// Whether the actor is a daemon that writes the issue's records: the issue's project's daemon,
+	// or another project's daemon whose broker token proves its session and names its project.
+	issueDaemon := s.isIssueDaemon(r, writer.actor, key)
 	// A daemon's own token: it holds legion-status, which the broker grants to a daemon's token
 	// alone, and proves the session of the issue's project's daemon, or that of another project's
 	// daemon whose project it names. Such a token's actor is the session it proves.
 	daemonProven := credential != nil && credential.Holds(model.ScopeLegionStatus) &&
-		(credential.Session == daemon || s.isIssueDaemon(r, writer.actor, key))
+		(credential.Session == daemon || issueDaemon)
 	if s.deps.LegionStatusScope {
 		if !daemonProven {
 			writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
@@ -255,7 +258,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 				key, model.ScopeLegionStatus, daemon))
 			return
 		}
-	} else if !s.isIssueDaemon(r, writer.actor, key) {
+	} else if !issueDaemon {
 		writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
 			"only a Legion daemon names the sessions that hold the roles of %s: the daemon of project %s, as session %s, or another project's daemon, as session legion-daemon:<P> with a broker token that names P and proves that session.",
 			key, legionProjectOf(key), legionDaemonSessionOf(key)))

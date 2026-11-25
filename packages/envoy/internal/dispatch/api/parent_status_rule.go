@@ -72,8 +72,11 @@ type issueWriter struct {
 	// longer carries (model.Actor.Recorded). It is nil for the fix, which has no request.
 	credential *model.Credential
 	// callerProject is the one project the request's credential names (callerProject), empty
-	// for a credential that names none and for the fix. R24's conflict leaves out of its answer
-	// each issue of a private project that the credential does not name (seenConflictIssues).
+	// for a credential that names none and for the fix. A PATCH (writeIssue) and a status change
+	// (planStatusChangeUnderLocks) ask access.CredentialCovers about each issue of another
+	// project they write with it, and R24's conflict and the open-child check leave out of
+	// their answers each issue of a private project that the credential does not name
+	// (seenConflictIssues, seenForeignChildren).
 	callerProject string
 	// human is true only for a request that presents no token and that the browser identity
 	// names: a person at a browser (optionalActor's second answer).
@@ -425,20 +428,30 @@ func parentStatusConflictOf(ctx context.Context, q pgx.Tx, plan issueWritePlan, 
 }
 
 // seenConflictIssues is issues without each issue of a private project that caller, the one
-// project the request's credential names, does not name (access.CredentialCovers). A caller whose
-// credential names no project sees each issue. The rule has judged every pair already, so a
-// conflict refuses the write whatever this leaves, and its list can be empty. Every builder of a
-// conflict that can list such an issue answers through here (parentStatusConflictOf,
-// openChildrenOfAClose): the parent of a new issue (createParentConflict) is one that the create's
-// read of its parent already covered.
+// project the request's credential names, does not name (seenBy). A caller whose credential names
+// no project sees each issue. The rule has judged every pair already, so a conflict refuses the
+// write whatever this leaves, and its list can be empty. Every builder of a conflict that can list
+// such an issue answers through here (parentStatusConflictOf, openChildrenOfAClose): the parent of
+// a new issue (createParentConflict) is one that the create's read of its parent already covered.
 func seenConflictIssues(issues []parentStatusConflictIssue, caller string) []parentStatusConflictIssue {
 	if caller == "" {
 		return issues
 	}
-	seen := make([]parentStatusConflictIssue, 0, len(issues))
-	for _, issue := range issues {
-		if access.CredentialCovers(access.Credential{Listed: []string{caller}}, issue.project, issue.private) {
-			seen = append(seen, issue)
+	return seenBy(caller, issues, func(issue parentStatusConflictIssue) (string, bool) { return issue.project, issue.private })
+}
+
+// seenBy is items without each item of a private project that caller, the one project a
+// request's credential names, does not name (access.CredentialCovers), projectOf reading an item's
+// project and whether that project is private. An answer that can name an issue of such a project
+// leaves it out through here: the issues of a 409 PARENT_STATUS_CONFLICT (seenConflictIssues), the
+// children of a 409 FOREIGN_CHILD_OPEN (seenForeignChildren), and the checks that a result's
+// check value matches (resolveCheck). Each caller answers a caller that names no project, "",
+// before it calls this, since such a caller sees every item.
+func seenBy[T any](caller string, items []T, projectOf func(T) (string, bool)) []T {
+	seen := make([]T, 0, len(items))
+	for _, item := range items {
+		if project, private := projectOf(item); access.CredentialCovers(access.Credential{Listed: []string{caller}}, project, private) {
+			seen = append(seen, item)
 		}
 	}
 	return seen

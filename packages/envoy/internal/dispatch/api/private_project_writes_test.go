@@ -1,15 +1,32 @@
 // private_project_writes_test.go holds the private-project clause of INFRA-4799's R8: a broker
 // token that names one project writes no object of a private project that it does not name. Each
-// of the 11 write checks that ask access.CredentialCovers has a case of its own. Each case makes
-// the write to the private project's object and the same write to a target that does not exist,
-// and holds the two answers equal in status, code and message. Each case reads what the write
-// would add before and after the refused write, and finds nothing written. The same write with a
-// token that names the private project is taken. A status change leaves the private issue out of
-// its cascade, and the 409 PARENT_STATUS_CONFLICT answer leaves it out of its issues.
+// of the 11 write checks that ask access.CredentialCovers has a case of its own. Each HTTP case
+// makes the write to the private project's object and the same write to a target that does not
+// exist, and holds the two answers equal in status, code and message. Each reads what the two
+// writes could add before and after them, and finds nothing written. The same write with a token
+// that names the private project is taken.
+//
+// Some checks run behind an earlier check that refuses the same key with the same answer. The
+// HTTP case of such a check holds the answer and that nothing is written, and the check's own
+// branch decides the case only where the earlier check passes the key:
+//
+//   - foreignDependencyTargets refuses a parent and a blocked_by target before the reads under
+//     the locks. TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey calls validateIssueParent
+//     and writeBlockedBy directly, and so holds the branch of each. The create's read of its
+//     parent under the locks is held by its HTTP case where foreignDependencyTargets passes the
+//     key, which only a control that sets that outer check to false can show.
+//   - resolveCheck leaves out a check of a private project before readResultRequest asks about
+//     the check's issue. The project check of a retraction asks about the check's issue before the
+//     keyed layer and the handler (secondProjectResolverFor), and retractCheckResult asks again in
+//     its transaction.
+//
+// A status change leaves the private issue out of its cascade, and the answers 409
+// PARENT_STATUS_CONFLICT and 409 FOREIGN_CHILD_OPEN leave it out of their issues.
 package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -17,7 +34,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/google/uuid"
+
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -125,9 +144,9 @@ func (rig *privateProjectRig) written(t *testing.T, keys ...string) string {
 }
 
 // refusedAsMissing fails t unless private, the write to the private project's target, answers
-// status and code, writes nothing that written reads of keys, and answers exactly what missing,
-// the same write to a target that does not exist, answers, once missingTarget is read as
-// privateTarget in missing's body.
+// status and code, and answers exactly what missing, the same write to a target that does not
+// exist, answers, once missingTarget is read as privateTarget in missing's body. Neither write may
+// change what written reads of keys.
 func (rig *privateProjectRig) refusedAsMissing(t *testing.T, keys []string, status int, code, privateTarget, missingTarget string, private, missing func() *httptest.ResponseRecorder) {
 	t.Helper()
 	before := rig.written(t, keys...)
@@ -139,6 +158,9 @@ func (rig *privateProjectRig) refusedAsMissing(t *testing.T, keys []string, stat
 		t.Fatalf("the write to the private project: status=%d body=%s, want %d %s", refused.Code, refused.Body.String(), status, code)
 	}
 	absent := missing()
+	if after := rig.written(t, keys...); after != before {
+		t.Errorf("the write to a target that does not exist changed %s to %s, want nothing written", before, after)
+	}
 	want := strings.ReplaceAll(absent.Body.String(), missingTarget, privateTarget)
 	if refused.Code != absent.Code || refused.Body.String() != want {
 		t.Errorf("the write to the private project answers %d %s, and the write to a target that does not exist answers %d %s, want one answer",
@@ -162,7 +184,8 @@ func requireTaken(t *testing.T, what string, response *httptest.ResponseRecorder
 //   - withinProjectScope, for a comment on the private project's issue: 403 PROJECT_SCOPE, the
 //     answer for an issue key that no issue holds.
 //   - createIssue's check of the body's project, for an issue filed into the private project: 404
-//     NOT_FOUND, the answer for a project that does not exist.
+//     NOT_FOUND, the answer for a project that does not exist. The check runs before the body's
+//     other fields are judged, so a create with no title gets the same 404 for both projects.
 //   - createGoingRequest's check of the body's project, for a question of the private project: 404
 //     PROJECT_NOT_FOUND, the answer for a project that does not exist, which a person still asks
 //     of as before.
@@ -186,16 +209,18 @@ func TestAPrivateProjectsObjectAnswersAsAMissingObjectToAnotherProjectsToken(t *
 	})
 
 	t.Run("createIssue: an issue filed into the private project", func(t *testing.T) {
-		create := func(token, project string) func() *httptest.ResponseRecorder {
+		create := func(token, project, title string) func() *httptest.ResponseRecorder {
 			return func() *httptest.ResponseRecorder {
 				return rig.send(t, token, http.MethodPost, "/api/v1/issues", map[string]any{
-					"project": project, "title": "Filed into another project", "spec": "# Spec", "force": true,
+					"project": project, "title": title, "spec": "# Spec", "force": true,
 				})
 			}
 		}
-		rig.refusedAsMissing(t, []string{private}, http.StatusNotFound, "NOT_FOUND", privateTestProject, missingProject,
-			create(scopedToken, privateTestProject), create(scopedToken, missingProject))
-		created := create(namingToken, privateTestProject)()
+		for _, title := range []string{"Filed into another project", ""} {
+			rig.refusedAsMissing(t, []string{private}, http.StatusNotFound, "NOT_FOUND", privateTestProject, missingProject,
+				create(scopedToken, privateTestProject, title), create(scopedToken, missingProject, title))
+		}
+		created := create(namingToken, privateTestProject, "Filed into another project")()
 		if issue := createdIssue(t, "the create of the token that names the private project", created); issue.Project != privateTestProject {
 			t.Fatalf("the create made %s of project %s, want an issue of %s", issue.Key, issue.Project, privateTestProject)
 		}
@@ -223,19 +248,21 @@ func TestAPrivateProjectsObjectAnswersAsAMissingObjectToAnotherProjectsToken(t *
 // TestAPrivateParentOrBlockedByTargetAnswersAsAMissingIssueToAnotherProjectsToken: a token that
 // names its own project links no blocked_by target, and names no parent, of a private project that
 // it does not name. It gets the answer of a key that no issue holds: 400 BLOCKED_BY_INPUT for a
-// target and 400 PARENT_INPUT for a parent. Each case names how its request reaches its check:
+// target and 400 PARENT_INPUT for a parent. foreignDependencyTargets refuses both keys first, on
+// the pool, before the near-copy gate of a create and before a close settles the issue's
+// documents, so both get one answer whatever else the body holds. Each case holds that answer and
+// that neither write writes anything:
 //
 //   - foreignDependencyTargets, for a blocked_by target and for a parent: a close that also sets the
-//     field. The check runs on the pool before the close settles the issue's documents, and the
-//     issue's spec holds a decision block, whose settlement opens an ask. So a check that let the
-//     target through would leave that ask and its events, even where the write under the locks
-//     refuses the target after it. The write to a key no issue holds settles the documents and is
-//     refused under the locks.
-//   - The create's read of its parent under the locks, validateIssueParent and writeBlockedBy: a
-//     create that names the parent, a PATCH that sets the parent, and a create that names the
-//     target. foreignDependencyTargets asks about the same key first, so each case reaches its own
-//     check only where that first check passes the key, as a key no issue holds passes it. Each
-//     case's write to such a key is refused by the case's own check.
+//     field. The issue's spec holds a decision block, whose settlement opens an ask. So a check
+//     that let either key through would leave that ask and its events, even where the write under
+//     the locks refuses the key after it. The same close with a stale expected_sequence, which the
+//     write under the locks would refuse 409 ISSUE_CHANGED, gets the same 400 for both keys.
+//   - A create that names the parent, a PATCH that sets the parent, and a create that names the
+//     target, the writes whose reads under the locks are the create's read of its parent,
+//     validateIssueParent and writeBlockedBy. foreignDependencyTargets refuses each key first, so
+//     these cases hold the answer and that nothing is written. The create's cases also send no
+//     title, which the create judges after foreignDependencyTargets.
 //
 // The same write with the token that names the private project is taken.
 func TestAPrivateParentOrBlockedByTargetAnswersAsAMissingIssueToAnotherProjectsToken(t *testing.T) {
@@ -267,15 +294,18 @@ func TestAPrivateParentOrBlockedByTargetAnswersAsAMissingIssueToAnotherProjectsT
 
 	for _, field := range []string{"blocked_by", "parent"} {
 		t.Run("foreignDependencyTargets: a close that sets "+field, func(t *testing.T) {
-			close := func(token, issue, target string) func() *httptest.ResponseRecorder {
+			close := func(token, issue, target string, members map[string]any) func() *httptest.ResponseRecorder {
 				return func() *httptest.ResponseRecorder {
-					return rig.send(t, token, http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "done", field: value(field, target)})
+					return rig.send(t, token, http.MethodPatch, "/api/v1/issues/"+issue,
+						withMembers(map[string]any{"status": "done", field: value(field, target)}, members))
 				}
 			}
 			issues := closers[field]
-			rig.refusedAsMissing(t, []string{issues[0], private}, http.StatusBadRequest, notFound[field], private, missingIssue,
-				close(scopedToken, issues[0], private), close(scopedToken, issues[1], missingIssue))
-			closed := close(namingToken, issues[2], private)()
+			for _, members := range []map[string]any{nil, {"expected_sequence": 0}} {
+				rig.refusedAsMissing(t, []string{issues[0], issues[1], private}, http.StatusBadRequest, notFound[field], private, missingIssue,
+					close(scopedToken, issues[0], private, members), close(scopedToken, issues[1], missingIssue, members))
+			}
+			closed := close(namingToken, issues[2], private, nil)()
 			requireTaken(t, "the close of the token that names the private project", closed, http.StatusOK)
 			if issue := decodeBody[model.Issue](t, closed); issue.Status != "done" {
 				t.Fatalf("the close left %s %s, want done", issue.Key, issue.Status)
@@ -283,21 +313,31 @@ func TestAPrivateParentOrBlockedByTargetAnswersAsAMissingIssueToAnotherProjectsT
 		})
 	}
 
+	// The create's read of its parent under the locks is reached only where
+	// foreignDependencyTargets passes the key. This HTTP case holds the answer and that nothing is
+	// written, and it holds that read's own branch only under a control that sets the outer check
+	// to false.
 	t.Run("the create's read of its parent: a create under the private issue", func(t *testing.T) {
-		create := func(token, parent string) func() *httptest.ResponseRecorder {
+		create := func(token, parent, title string) func() *httptest.ResponseRecorder {
 			return func() *httptest.ResponseRecorder {
 				return rig.send(t, token, http.MethodPost, "/api/v1/issues", map[string]any{
-					"project": brokerTestProject, "title": "Filed under another project's issue", "parent": parent, "force": true,
+					"project": brokerTestProject, "title": title, "parent": parent, "force": true,
 				})
 			}
 		}
-		rig.refusedAsMissing(t, []string{private}, http.StatusBadRequest, "PARENT_INPUT", private, missingIssue,
-			create(scopedToken, private), create(scopedToken, missingIssue))
-		if issue := createdIssue(t, "the create of the token that names the private project", create(namingToken, private)()); issue.Parent == nil || *issue.Parent != private {
+		for _, title := range []string{"Filed under another project's issue", ""} {
+			rig.refusedAsMissing(t, []string{private}, http.StatusBadRequest, "PARENT_INPUT", private, missingIssue,
+				create(scopedToken, private, title), create(scopedToken, missingIssue, title))
+		}
+		if issue := createdIssue(t, "the create of the token that names the private project", create(namingToken, private, "Filed under another project's issue")()); issue.Parent == nil || *issue.Parent != private {
 			t.Fatalf("the create made %s under %v, want it under %s", issue.Key, issue.Parent, private)
 		}
 	})
 
+	// validateIssueParent is reached only where foreignDependencyTargets passes the key. This
+	// HTTP case holds the answer and that nothing is written, and
+	// TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey holds validateIssueParent's own
+	// branch.
 	t.Run("validateIssueParent: a PATCH that puts an issue under the private issue", func(t *testing.T) {
 		reparent := func(token, issue, parent string) func() *httptest.ResponseRecorder {
 			return func() *httptest.ResponseRecorder {
@@ -313,20 +353,83 @@ func TestAPrivateParentOrBlockedByTargetAnswersAsAMissingIssueToAnotherProjectsT
 		}
 	})
 
+	// writeBlockedBy is reached only where foreignDependencyTargets passes the key. This HTTP case
+	// holds the answer and that nothing is written, and
+	// TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey holds writeBlockedBy's own branch.
 	t.Run("writeBlockedBy: a create blocked by the private issue", func(t *testing.T) {
-		create := func(token, target string) func() *httptest.ResponseRecorder {
+		create := func(token, target, title string) func() *httptest.ResponseRecorder {
 			return func() *httptest.ResponseRecorder {
 				return rig.send(t, token, http.MethodPost, "/api/v1/issues", map[string]any{
-					"project": brokerTestProject, "title": "Waits on another project's issue", "blocked_by": []string{target}, "force": true,
+					"project": brokerTestProject, "title": title, "blocked_by": []string{target}, "force": true,
 				})
 			}
 		}
-		rig.refusedAsMissing(t, []string{private}, http.StatusBadRequest, "BLOCKED_BY_INPUT", private, missingIssue,
-			create(scopedToken, private), create(scopedToken, missingIssue))
-		if issue := createdIssue(t, "the create of the token that names the private project", create(namingToken, private)()); !slices.Equal(issue.BlockedBy, []string{private}) {
+		for _, title := range []string{"Waits on another project's issue", ""} {
+			rig.refusedAsMissing(t, []string{private}, http.StatusBadRequest, "BLOCKED_BY_INPUT", private, missingIssue,
+				create(scopedToken, private, title), create(scopedToken, missingIssue, title))
+		}
+		if issue := createdIssue(t, "the create of the token that names the private project", create(namingToken, private, "Waits on another project's issue")()); !slices.Equal(issue.BlockedBy, []string{private}) {
 			t.Fatalf("the create made %s blocked by %v, want %s", issue.Key, issue.BlockedBy, private)
 		}
 	})
+}
+
+// TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey: validateIssueParent and writeBlockedBy,
+// the reads under the locks of a PATCH's parent and of a blocked_by target, each answer a parent
+// or a target of a private project that the caller does not name with the error of a key that no
+// issue holds, parentNotFound and blockedByNotFound, in status, code and message. Through HTTP,
+// foreignDependencyTargets refuses such a key before either read, so this test calls each one
+// directly, in a transaction of the test database that it rolls back, and so holds the branch of
+// each. With a caller that names the private project, each takes the key.
+func TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey(t *testing.T) {
+	t.Parallel()
+	rig := newPrivateProjectRig(t, testServerOptions{})
+	private := rig.issue(t, privateTestProject, "A private project's issue", nil)
+	own := rig.issue(t, brokerTestProject, "An issue of the caller's own project", nil)
+	rig.makePrivate(t)
+	ctx := context.Background()
+	for _, site := range []struct {
+		name, code string
+		// read runs the site for the issue own, for a caller that names the project caller, and
+		// for key as the parent or the blocked_by target.
+		read func(tx pgx.Tx, caller, key string) error
+	}{
+		{"validateIssueParent", "PARENT_INPUT", func(tx pgx.Tx, caller, key string) error {
+			return validateIssueParent(ctx, tx, own, caller, key)
+		}},
+		{"writeBlockedBy", "BLOCKED_BY_INPUT", func(tx pgx.Tx, caller, key string) error {
+			return writeBlockedBy(ctx, tx, own, brokerTestProject, caller, []string{key})
+		}},
+	} {
+		t.Run(site.name, func(t *testing.T) {
+			// answer is what the site answers, in a transaction that it rolls back.
+			answer := func(caller, key string) error {
+				t.Helper()
+				tx, err := rig.database.Pool.Begin(ctx)
+				if err != nil {
+					t.Fatalf("begin the transaction of %s: %v", site.name, err)
+				}
+				defer tx.Rollback(ctx)
+				return site.read(tx, caller, key)
+			}
+			var refused, missing *apiError
+			if err := answer(brokerTestProject, private); !errors.As(err, &refused) {
+				t.Fatalf("%s of the private key %s answered %v, want the error of a key that no issue holds", site.name, private, err)
+			}
+			if err := answer(brokerTestProject, missingIssue); !errors.As(err, &missing) {
+				t.Fatalf("%s of the missing key %s answered %v, want its 400 %s", site.name, missingIssue, err, site.code)
+			}
+			want := strings.ReplaceAll(missing.message, missingIssue, private)
+			if refused.status != http.StatusBadRequest || refused.code != site.code ||
+				refused.status != missing.status || refused.code != missing.code || refused.message != want {
+				t.Errorf("%s answers %d %s %q for the private key and %d %s %q for a missing key, want one 400 %s",
+					site.name, refused.status, refused.code, refused.message, missing.status, missing.code, missing.message, site.code)
+			}
+			if err := answer(privateTestProject, private); err != nil {
+				t.Errorf("%s for a caller that names %s answered %v, want the key taken", site.name, privateTestProject, err)
+			}
+		})
+	}
 }
 
 // TestAResultOnAPrivateProjectsCheckAnswersAsAMissingCheckToAnotherProjectsToken: an issue of the
@@ -334,10 +437,18 @@ func TestAPrivateParentOrBlockedByTargetAnswersAsAMissingIssueToAnotherProjectsT
 // holds the check k1. The path names the issue of the token's own project, so each write passes
 // withinProjectScope and reaches the results route's own check of the check's issue.
 //
-//   - readResultRequest: a result recorded against k1, and its dry run, answer 400 UNKNOWN_CHECK,
-//     the answer for a check that no Verification document above the issue holds.
+//   - resolveCheck and readResultRequest: a result recorded against k1, and its dry run, answer
+//     400 UNKNOWN_CHECK, the answer for a check that no Verification document above the issue
+//     holds.
+//   - resolveCheck: a second issue of the token's own project under the private issue holds k1
+//     in its own Verification document too. The token's result against k1 and its dry run are
+//     taken on that issue's check, and name no issue of the private project. The token that
+//     names the private project gets 409 CHECK_AMBIGUOUS, which names both issues.
 //   - retractCheckResult: the retraction of a result recorded against k1 before the project was
-//     made private answers 403 PROJECT_SCOPE, the answer for a result id that no result holds.
+//     made private answers 403 PROJECT_SCOPE, the answer for a result id that no result holds,
+//     also for a body with a blank reason, and also under an Idempotency-Key: the project check
+//     asks about the check's issue before the keyed layer, so neither answer echoes the key, a
+//     second body under the key is refused as the first was, and a malformed key changes nothing.
 //
 // The same writes with the token that names the private project are taken.
 func TestAResultOnAPrivateProjectsCheckAnswersAsAMissingCheckToAnotherProjectsToken(t *testing.T) {
@@ -349,6 +460,8 @@ func TestAResultOnAPrivateProjectsCheckAnswersAsAMissingCheckToAnotherProjectsTo
 	recorded := rig.send(t, scopedToken, http.MethodPost, "/api/v1/issues/"+own+"/results", resultBody("k1", "pass", newHeadCommit, nil))
 	requireTaken(t, "the result recorded before the project is private", recorded, http.StatusCreated)
 	result := decodeBody[recordedResult](t, recorded).Result.ID
+	ambiguous := rig.issue(t, brokerTestProject, "Holds a check of the private parent's id", map[string]any{"parent": parent})
+	uploadDocument(t, rig.handler, "/api/v1/issues/"+ambiguous, "verification.md", twoChecks)
 	rig.makePrivate(t)
 
 	for _, route := range []struct{ name, path string }{
@@ -371,17 +484,67 @@ func TestAResultOnAPrivateProjectsCheckAnswersAsAMissingCheckToAnotherProjectsTo
 		})
 	}
 
-	t.Run("retractCheckResult: a retraction of a result on the private project's check", func(t *testing.T) {
-		retract := func(token, id string) func() *httptest.ResponseRecorder {
-			return func() *httptest.ResponseRecorder {
-				return rig.send(t, token, http.MethodPost, "/api/v1/results/"+id+"/retract", map[string]any{
-					"reason": "The run was against the wrong commit.",
-				})
+	t.Run("resolveCheck: a check id that the private parent's Verification document holds too", func(t *testing.T) {
+		record := func(token, path string) *httptest.ResponseRecorder {
+			return rig.send(t, token, http.MethodPost, "/api/v1/issues/"+ambiguous+path, resultBody("k1", "pass", newHeadCommit, nil))
+		}
+		for _, route := range []struct {
+			path string
+			want int
+		}{{"/results/dry-run", http.StatusOK}, {"/results", http.StatusCreated}} {
+			taken := record(scopedToken, route.path)
+			requireTaken(t, "the scoped token's write to "+route.path, taken, route.want)
+			if strings.Contains(taken.Body.String(), parent) {
+				t.Errorf("the scoped token's write to %s names the private issue %s: %s", route.path, parent, taken.Body.String())
+			}
+			if route.path == "/results" {
+				if check := decodeBody[recordedResult](t, taken).Result.CheckIssueKey; check != ambiguous {
+					t.Errorf("the scoped token's result is on the check of %s, want the check of %s", check, ambiguous)
+				}
 			}
 		}
-		rig.refusedAsMissing(t, []string{own, parent}, http.StatusForbidden, codeProjectScope, result, missingResult,
-			retract(scopedToken, result), retract(scopedToken, missingResult))
-		requireTaken(t, "the retraction of the token that names the private project", retract(namingToken, result)(), http.StatusCreated)
+		for _, path := range []string{"/results/dry-run", "/results"} {
+			refused := record(namingToken, path)
+			if code, message := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "CHECK_AMBIGUOUS" ||
+				!strings.Contains(message, parent) || !strings.Contains(message, ambiguous) {
+				t.Errorf("the write to %s of the token that names the private project: status=%d body=%s, want 409 CHECK_AMBIGUOUS naming %s and %s",
+					path, refused.Code, refused.Body.String(), parent, ambiguous)
+			}
+		}
+	})
+
+	t.Run("retractCheckResult: a retraction of a result on the private project's check", func(t *testing.T) {
+		retract := func(token, id, reason string) func() *httptest.ResponseRecorder {
+			return func() *httptest.ResponseRecorder {
+				return rig.send(t, token, http.MethodPost, "/api/v1/results/"+id+"/retract", map[string]any{"reason": reason})
+			}
+		}
+		for _, reason := range []string{"The run was against the wrong commit.", " "} {
+			rig.refusedAsMissing(t, []string{own, parent}, http.StatusForbidden, codeProjectScope, result, missingResult,
+				retract(scopedToken, result, reason), retract(scopedToken, missingResult, reason))
+		}
+		keyed := func(id, key, reason string) *httptest.ResponseRecorder {
+			request := rig.caller.presenting(t, http.MethodPost, "/api/v1/results/"+id+"/retract", scopedToken, map[string]any{"reason": reason})
+			request.Header.Set("Idempotency-Key", key)
+			return rig.serve(request)
+		}
+		for _, key := range []string{uuid.NewString(), "not a key"} {
+			for _, reason := range []string{"The run was against the wrong commit.", "Another reason under the same key."} {
+				before := rig.written(t, own, parent)
+				private, missing := keyed(result, key, reason), keyed(missingResult, key, reason)
+				if after := rig.written(t, own, parent); after != before {
+					t.Errorf("the keyed retractions under %q changed %s to %s, want nothing written", key, before, after)
+				}
+				want := strings.ReplaceAll(missing.Body.String(), missingResult, result)
+				if private.Code != http.StatusForbidden || private.Code != missing.Code || private.Body.String() != want ||
+					private.Header().Get("Idempotency-Key") != missing.Header().Get("Idempotency-Key") {
+					t.Errorf("under the key %q the private check's retraction answers %d %s (key %q), and a missing result's %d %s (key %q), want one 403",
+						key, private.Code, private.Body.String(), private.Header().Get("Idempotency-Key"),
+						missing.Code, missing.Body.String(), missing.Header().Get("Idempotency-Key"))
+				}
+			}
+		}
+		requireTaken(t, "the retraction of the token that names the private project", retract(namingToken, result, "The run was against the wrong commit.")(), http.StatusCreated)
 	})
 }
 
@@ -552,7 +715,10 @@ func privateRow(written string) string {
 //   - a PATCH of the status to done: 409 PARENT_STATUS_CONFLICT with no issue listed.
 //
 // With the token that names the private project, the status change to done and the PATCH list the
-// child, and the status change to backlog with include_children moves the child and is taken.
+// child, and the status change to backlog with include_children moves the child and is taken. The
+// rule refuses an acceptance write over such a child before its open-child check, so
+// TestAnAcceptanceWriteLeavesOutAPrivateProjectsOpenChild holds its 409 FOREIGN_CHILD_OPEN with the
+// rule off.
 func TestAParentStatusConflictLeavesOutAPrivateProjectsIssue(t *testing.T) {
 	t.Parallel()
 	rig := newPrivateProjectRig(t, testServerOptions{parentStatusRule: true})
@@ -651,51 +817,61 @@ func TestAParentStatusConflictLeavesOutAPrivateProjectsIssue(t *testing.T) {
 	})
 }
 
-// TestAnotherProjectsDaemonPublishesRoleHoldersUnderTheLegionStatusScope: with
-// DISPATCH_LEGION_STATUS_SCOPE on, the daemon of project brokerTestProject publishes the role
-// holders of another project's issue with its own broker token, which names its project, proves
-// legion-daemon:<its project> and holds legion-status. Each pair it stores is marked as a daemon's.
-// A token that holds legion-status and proves a session that is no daemon's, and a token that
-// proves the daemon's session and holds no legion-status, are each refused 403
-// ROLE_HOLDER_FORBIDDEN, and the stored set stays as it was.
-func TestAnotherProjectsDaemonPublishesRoleHoldersUnderTheLegionStatusScope(t *testing.T) {
+// TestAnAcceptanceWriteLeavesOutAPrivateProjectsOpenChild: an acceptance write, a PATCH of an
+// issue's status to done that carries refuse_open_foreign_children, on an issue of the token's own
+// project whose open child is in the private project, answers 409 FOREIGN_CHILD_OPEN with the
+// child absent from issues and from the message, and changes nothing: the child is open, so the
+// write is refused with no child listed. The token that names the private project, and a person,
+// get the same 409 with the child listed. The parent status rule is off, since with it on R24
+// refuses a close over an open child first
+// (TestTheParentStatusRuleDecidesBeforeTheOpenForeignChildCheck).
+func TestAnAcceptanceWriteLeavesOutAPrivateProjectsOpenChild(t *testing.T) {
 	t.Parallel()
-	rig := newBrokerTokenRigOn(t, testServerOptions{legionStatusScope: true})
-	caller := newBrokerCaller(t)
-	for _, project := range []string{brokerTestProject, "OTH"} {
-		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
-			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
-		}
-	}
-	issue := createdIssue(t, "file another project's issue", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "OTH", "title": "Another project's issue", "force": true,
-	})).Key
-	path := "/api/v1/issues/" + issue + "/role-holders"
-	const daemonToken, roleToken, unscopedDaemonToken = "a-daemon-token", "a-role-token-holding-legion-status", "a-daemon-token-holding-no-legion-status"
-	rig.broker.Says(daemonToken, liveDaemonToken(caller.jkt))
-	role := liveNamedToken(caller.jkt)
-	role.Scope = ciphertoken.ScopeLegionStatus
-	rig.broker.Says(roleToken, role)
-	unscoped := liveDaemonToken(caller.jkt)
-	unscoped.Scope = "dispatch.write"
-	rig.broker.Says(unscopedDaemonToken, unscoped)
-
-	set := []issueRoleHolder{{Role: "tester", Session: "ses-a"}, {Role: "implementer", Session: "ses-b"}}
-	published := rig.serve(caller.presenting(t, http.MethodPut, path, daemonToken, map[string]any{"holders": set}))
-	requireTaken(t, "the publication of another project's daemon", published, http.StatusOK)
-	stored := readStoredRoleHolders(t, rig.database, issue)
-	requireStoredRoleHolders(t, stored, set, true)
-
-	for _, token := range []string{roleToken, unscopedDaemonToken} {
-		t.Run(token, func(t *testing.T) {
-			response := rig.serve(caller.presenting(t, http.MethodPut, path, token, map[string]any{
-				"holders": []issueRoleHolder{{Role: "tester", Session: "ses-c"}},
-			}))
-			if code, _ := refusalOf(t, response); response.Code != http.StatusForbidden || code != "ROLE_HOLDER_FORBIDDEN" {
-				t.Fatalf("status=%d body=%s, want 403 ROLE_HOLDER_FORBIDDEN", response.Code, response.Body.String())
+	rig := newPrivateProjectRig(t, testServerOptions{settle: time.Hour})
+	parent := rig.issue(t, brokerTestProject, "Accepted over a private child", nil)
+	childTitle := "The open private child of an accepted issue"
+	child := rig.issue(t, privateTestProject, childTitle, map[string]any{"parent": parent})
+	rig.makePrivate(t)
+	body := map[string]any{"status": "done", "refuse_open_foreign_children": true}
+	listed := []string{child + " " + privateTestProject + " " + model.IssueStatusTriage}
+	for _, write := range []struct {
+		name string
+		send func(t *testing.T) *httptest.ResponseRecorder
+		want []string
+	}{
+		{"the token that names another project", func(t *testing.T) *httptest.ResponseRecorder {
+			return rig.send(t, scopedToken, http.MethodPatch, "/api/v1/issues/"+parent, body)
+		}, []string{}},
+		{"the token that names the private project", func(t *testing.T) *httptest.ResponseRecorder {
+			return rig.send(t, namingToken, http.MethodPatch, "/api/v1/issues/"+parent, body)
+		}, listed},
+		{"a person", func(t *testing.T) *httptest.ResponseRecorder {
+			return rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+parent, body)
+		}, listed},
+	} {
+		t.Run(write.name, func(t *testing.T) {
+			before := rig.written(t, parent, child)
+			response := write.send(t)
+			if after := rig.written(t, parent, child); after != before {
+				t.Errorf("the refused write changed %s to %s, want nothing written", before, after)
 			}
-			if after := readStoredRoleHolders(t, rig.database, issue); !sameStoredRoleHolders(after, stored) {
-				t.Errorf("the refused publication left %+v, want %+v", after, stored)
+			if response.Code != http.StatusConflict {
+				t.Fatalf("status=%d body=%s, want 409 FOREIGN_CHILD_OPEN", response.Code, response.Body.String())
+			}
+			refusal := decodeBody[foreignChildOpenAnswer](t, response)
+			got := []string{}
+			for _, issue := range refusal.Issues {
+				got = append(got, issue.Key+" "+issue.Project+" "+issue.Status)
+			}
+			if refusal.Code != "FOREIGN_CHILD_OPEN" || !slices.Equal(got, write.want) {
+				t.Errorf("the refusal lists %v, want FOREIGN_CHILD_OPEN listing %v: %s", got, write.want, response.Body.String())
+			}
+			names := strings.Contains(response.Body.String(), child) || strings.Contains(response.Body.String(), childTitle)
+			if len(write.want) == 0 && names {
+				t.Errorf("the refusal names the private child %s: %s", child, response.Body.String())
+			}
+			if len(write.want) > 0 && !strings.Contains(refusal.Error, child) {
+				t.Errorf("the refusal's message %q does not name the child %s", refusal.Error, child)
 			}
 		})
 	}

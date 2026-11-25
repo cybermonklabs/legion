@@ -48,6 +48,14 @@ type retractedResult struct {
 // the retraction is a row of its own, and both records stay readable. The answer is the
 // retraction.
 func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
+	// The one project the credential names, empty for a credential that names none, read before
+	// the transaction opens, as the person scope below is. The check's issue, which the retraction
+	// is appended to, can be of another project than the result's own, reached through a parent of
+	// another project. The pre-handler check asked about both before any other layer ran
+	// (withinProjectScope, projectOfRetractedCheck), so a check of a private project that the
+	// credential does not name got the answer of a result that does not exist, whatever the
+	// request holds. The transaction asks again below, under its locks.
+	callerProject, _ := s.callerProject(r)
 	var input checkResultRetractionInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
@@ -72,8 +80,6 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// a second one (store/pool.go): inside the transaction every person would read as holding
 	// no scope, which is the refusal this route must not make.
 	person := s.callerHoldsScope(r, model.ScopePerson)
-	// The one project the credential names, read before the transaction for the same reason.
-	callerProject, _ := s.callerProject(r)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -98,12 +104,11 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The pre-handler check judged the result's own issue alone, and the check's issue, which the
-	// retraction is appended to, can be of another project, reached through a parent of another
-	// project. A scoped caller is asked about it here (access.CredentialCovers), with the
-	// visibility of its project read in the same statement, before it takes that issue's owner
-	// lock. A check of a private project that the credential does not name gets the answer of a
-	// result that does not exist, which the pre-handler check gives (refuseWriteOutsideProjectScope).
+	// The check of the check's issue's project again, in the transaction that appends the
+	// retraction to that issue, with the visibility of its project read in the same statement,
+	// before it takes that issue's owner lock (access.CredentialCovers). The first check refused
+	// a check of a private project that the credential does not name already, so this one refuses
+	// it only where its project became private between the two reads, with the same answer.
 	if callerProject != "" {
 		project, private, err := checkIssueProject(r.Context(), tx, callerProject, result.CheckIssueKey)
 		if err != nil {
@@ -238,6 +243,21 @@ func readRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedRe
 		return retractedResult{}, fmt.Errorf("read result %s: %w", id, err)
 	}
 	return result, nil
+}
+
+// projectOfRetractedCheck reads, in one statement, the project of the check's issue of the result
+// the path names, and whether that project is private: the project of the issue that a retraction
+// of the result is appended to. An empty project with no error means no result has that id
+// (scanProjectKey). withinProjectScope asks it of the retraction route beside the result's own
+// issue (secondProjectResolverFor).
+func projectOfRetractedCheck(ctx context.Context, q queryer, r *http.Request) (string, bool, error) {
+	return scanProjectKey(q.QueryRow(ctx, `
+		select i.project_key, p.visibility = 'private'
+		from check_results c
+		join issues i on i.key = c.check_issue_key
+		join projects p on p.key = i.project_key
+		where c.id = $1
+	`, r.PathValue("id")))
 }
 
 // resultIsRetracted answers whether a retraction of this result stands already.

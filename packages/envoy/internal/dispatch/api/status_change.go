@@ -193,12 +193,11 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 		s.writeStatusChangeRefusal(w, err, none)
 		return
 	}
-	callerProject, _ := s.callerProject(r)
 	run := &statusChangeRun{
 		server: s, key: key, change: change, writer: writer, callerName: statusChangeCallerName(writer.actor),
-		callerProject: callerProject, outliving: outlivingTheClient(r), resumed: resumed, pointed: resumed != nil,
+		outliving: outlivingTheClient(r), resumed: resumed, pointed: resumed != nil,
 	}
-	plan, err := s.planStatusChange(ctx, key, change, writer, callerProject, resumed)
+	plan, err := s.planStatusChange(ctx, key, change, writer, resumed)
 	// A dry run answers what the call answers with the rule on, whatever the setting.
 	if err == nil && plan.conflict != nil && (change.dryRun || s.deps.ParentStatusRule.On()) {
 		err = plan.conflict
@@ -354,9 +353,9 @@ func (read statusChangeRead) steps(change statusChange) []statusChangeStep {
 // new parent in one store.LockOwners call. Under them it loads the issue the call names and
 // decides expected_sequence first (409 ISSUE_CHANGED), then the closed-issue gate as the PATCH has
 // it (409 ISSUE_CLOSED), and reads the plan again. Where the request's credential names one
-// project, callerProject, it asks access.CredentialCovers about each step's issue, and leaves out
-// of the plan each step whose issue is in a private project that the credential does not name.
-// Then it checks the whole plan (refuseIssueWritePlan). A plan whose issues moved
+// project, writer.callerProject, it asks access.CredentialCovers about each step's issue, and
+// leaves out of the plan each step whose issue is in a private project that the credential does
+// not name. Then it checks the whole plan (refuseIssueWritePlan). A plan whose issues moved
 // between the two reads, so that it needs a lock the transaction does not hold, starts over with
 // what the second read found, as lockPatchOwnersAndParent does, and a plan that moves at every
 // attempt is 409 PARENT_CONTENDED with nothing applied. The transaction rolls back before the
@@ -365,7 +364,7 @@ func (read statusChangeRead) steps(change statusChange) []statusChangeStep {
 // resumed is the recovery point of an earlier attempt that this attempt resumes, nil for a first
 // attempt: it changes the fence, the gate and the plan as planStatusChangeUnderLocks says.
 func (s *server) planStatusChange(
-	ctx context.Context, key string, change statusChange, writer issueWriter, callerProject string, resumed *statusChangeRecovery,
+	ctx context.Context, key string, change statusChange, writer issueWriter, resumed *statusChangeRecovery,
 ) (statusChangePlan, error) {
 	pool, err := s.readyPool()
 	if err != nil {
@@ -376,7 +375,7 @@ func (s *server) planStatusChange(
 		return statusChangePlan{}, err
 	}
 	for range parentLockAttempts {
-		plan, moved, err := s.planStatusChangeUnderLocks(ctx, key, change, writer, callerProject, read, resumed)
+		plan, moved, err := s.planStatusChangeUnderLocks(ctx, key, change, writer, read, resumed)
 		if err != nil || moved == nil {
 			return plan, err
 		}
@@ -399,7 +398,7 @@ func (s *server) planStatusChange(
 // entry, and runs no closed-issue gate on the named issue when the point holds its entry: the
 // call's own close closed it.
 func (s *server) planStatusChangeUnderLocks(
-	ctx context.Context, key string, change statusChange, writer issueWriter, callerProject string, read statusChangeRead, resumed *statusChangeRecovery,
+	ctx context.Context, key string, change statusChange, writer issueWriter, read statusChangeRead, resumed *statusChangeRecovery,
 ) (statusChangePlan, *statusChangeRead, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -443,6 +442,7 @@ func (s *server) planStatusChangeUnderLocks(
 		return statusChangePlan{}, nil, err
 	}
 	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(steps)), options: change.statusChangeOptions}
+	callerProject := writer.callerProject
 	planned := steps[:0]
 	for _, step := range steps {
 		row := rows[step.key]
@@ -491,18 +491,17 @@ func (s *server) planStatusChangeUnderLocks(
 // option that this attempt ran changed, in the order the steps committed, which the comment on the
 // named issue lists (namedComment).
 type statusChangeRun struct {
-	server        *server
-	key           string
-	change        statusChange
-	writer        issueWriter
-	callerName    string
-	callerProject string
-	outliving     context.Context
-	resumed       *statusChangeRecovery
-	pointed       bool
-	named         issueWriteResult
-	namedRan      bool
-	moved         []statusChangeMove
+	server     *server
+	key        string
+	change     statusChange
+	writer     issueWriter
+	callerName string
+	outliving  context.Context
+	resumed    *statusChangeRecovery
+	pointed    bool
+	named      issueWriteResult
+	namedRan   bool
+	moved      []statusChangeMove
 }
 
 // steps runs each step of the plan through the PATCH's write core, in a transaction of its own,
@@ -764,11 +763,10 @@ func (run *statusChangeRun) finish(issue model.Issue) error {
 // keyed call, nil for a call with no key.
 func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence, claim *requestKeyClaim) issueWriteCall {
 	call := issueWriteCall{
-		writer:        run.writer,
-		key:           step.key,
-		callerProject: run.callerProject,
-		outliving:     run.outliving,
-		adviceRoute:   statusChangeRoute,
+		writer:      run.writer,
+		key:         step.key,
+		outliving:   run.outliving,
+		adviceRoute: statusChangeRoute,
 		step: &issueWriteCallStep{
 			named: run.key, fence: fence, claim: claim, sweepsLater: step.key == run.key, options: run.change.statusChangeOptions,
 		},

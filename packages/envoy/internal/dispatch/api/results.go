@@ -240,8 +240,11 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// whole seventeen seconds the lock was held (store/pool.go). Nothing the lock protects is
 	// settled here — the check's words and its `when` are the document's, not the issue's — and
 	// what it does protect, the block's indexed version and digest, is read again under it
-	// below.
-	check, err := s.resolveCheck(r.Context(), pool, issueKey, input.Check)
+	// below. A credential scoped to one project does not see a check of a private project that it
+	// does not name, which resolveCheck leaves out before it counts the matches: a private check
+	// alone is 400 UNKNOWN_CHECK there, the answer of a check that does not exist.
+	callerProject, _ := s.callerProject(r)
+	check, err := s.resolveCheck(r.Context(), pool, issueKey, callerProject, input.Check)
 	if err != nil {
 		return refused(err)
 	}
@@ -251,7 +254,9 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// such a check here, before anything is written: it records on the check of every project
 	// access.CredentialCovers covers. A check of a private project that the credential does not
 	// name answers as a check that does not exist (unknownCheck), for the record and its dry run.
-	if callerProject, _ := s.callerProject(r); callerProject != "" {
+	// resolveCheck has left out such a check already, so this check refuses one only where its
+	// project became private between the two reads.
+	if callerProject != "" {
 		project, private, err := checkIssueProject(r.Context(), pool, callerProject, check.IssueKey)
 		if err != nil {
 			return refused(err)
@@ -736,7 +741,13 @@ func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, 
 // not unique in that set: an id two documents share is 409 CHECK_AMBIGUOUS, and an id no
 // Verification document of the set holds — or one that is not a `check` block — is 400
 // UNKNOWN_CHECK.
-func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value string) (resolvedCheck, error) {
+//
+// caller is the one project the request's credential names, empty for a credential that names
+// none. Such a caller does not see a check of an issue of a private project that the credential
+// does not name, so resolveCheck leaves out each such check before it counts the matches (seenBy):
+// a private check alone is 400 UNKNOWN_CHECK, the answer of a check that does not exist, and a
+// 409 CHECK_AMBIGUOUS names no issue that the caller does not see.
+func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, caller, value string) (resolvedCheck, error) {
 	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
 	if err != nil {
 		return resolvedCheck{}, err
@@ -762,9 +773,12 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 	}
 
 	rows, err := q.Query(ctx, `
-		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256
+		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256,
+		       i.project_key, p.visibility = 'private'
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
+		join issues i on i.key = a.issue_key
+		join projects p on p.key = i.project_key
 		where `+aliasedVerificationRole+`
 		  and a.issue_key = any($1) and d.type = 'check' and d.block_id = $2
 		  and ($3 = '' or d.artifact_id = $3::uuid)
@@ -773,38 +787,44 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 	if err != nil {
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
 	}
-	defer rows.Close()
-	var found []resolvedCheck
-	var references []string
-	for rows.Next() {
-		check := resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}
-		var slug string
-		if err := rows.Scan(&check.IssueKey, &slug, &check.ArtifactID, &check.Version, &check.SHA256); err != nil {
-			return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
-		}
-		found = append(found, check)
-		if reference, ok := text.FormatBlockRef(text.Ref{
-			Kind: "block", IssueKey: check.IssueKey, ID: slug, Block: blockID,
-		}); ok {
-			references = append(references, reference)
-		}
+	// matchedCheck is one check the value matches, with its document's slug, which its reference
+	// names, and its issue's project and whether that project is private.
+	type matchedCheck struct {
+		check         resolvedCheck
+		slug, project string
+		private       bool
 	}
-	if err := rows.Err(); err != nil {
+	found, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (matchedCheck, error) {
+		match := matchedCheck{check: resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}}
+		err := row.Scan(&match.check.IssueKey, &match.slug, &match.check.ArtifactID, &match.check.Version, &match.check.SHA256,
+			&match.project, &match.private)
+		return match, err
+	})
+	if err != nil {
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
+	}
+	if caller != "" {
+		found = seenBy(caller, found, func(match matchedCheck) (string, bool) { return match.project, match.private })
 	}
 	if len(found) == 0 {
 		return resolvedCheck{}, unknownCheck(value)
 	}
 	if len(found) > 1 {
 		issues := make([]string, len(found))
-		for index, check := range found {
-			issues[index] = check.IssueKey
+		var references []string
+		for index, match := range found {
+			issues[index] = match.check.IssueKey
+			if reference, ok := text.FormatBlockRef(text.Ref{
+				Kind: "block", IssueKey: match.check.IssueKey, ID: match.slug, Block: blockID,
+			}); ok {
+				references = append(references, reference)
+			}
 		}
 		return resolvedCheck{}, errorf(http.StatusConflict, "CHECK_AMBIGUOUS",
 			"check %s is a check of the Verification document of %s: name one with its reference, %s",
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
-	check := found[0]
+	check := found[0].check
 	if check.Attributes, err = s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID); err != nil {
 		return resolvedCheck{}, err
 	}
