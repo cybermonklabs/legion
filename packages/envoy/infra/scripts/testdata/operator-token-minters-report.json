@@ -646,6 +646,76 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind roles.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind roles.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind roles.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate roles.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate roles.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate roles.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind clusterroles.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind clusterroles.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind clusterroles.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch roles.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch roles.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch roles.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update roles.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "update roles.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update roles.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch rolebindings.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch rolebindings.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch rolebindings.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update rolebindings.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "update rolebindings.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update rolebindings.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
       "right": "create certificatesigningrequests, patch certificatesigningrequests/approval, update certificatesigningrequests/approval and approve signers of any name cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names on cluster example-grade/us-east1/grade-cluster",
       "role": "create certificatesigningrequests, patch certificatesigningrequests/approval, update certificatesigningrequests/approval and approve signers of any name cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
