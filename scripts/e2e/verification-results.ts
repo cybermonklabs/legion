@@ -1220,24 +1220,6 @@ A default-branch result is compared with the default branch alone.
     updated_at: new Date(Date.now() - 60_000).toISOString(),
     url: `https://github.com/${repo}/pull/23`,
   });
-  await publishPullRequest({
-    action: "closed",
-    base_ref: "main",
-    body: "Land the release branch.",
-    head_ref: "release/old",
-    head_repo: repo,
-    head_sha: commits.comparedLandingHead,
-    kind: "pr",
-    merge_commit_sha: commits.comparedLandingMerge,
-    merged_at: mergedAt,
-    merged: "true",
-    state: "closed",
-    number: "24",
-    repo,
-    title: "Land the release branch",
-    updated_at: mergedAt,
-    url: `https://github.com/${repo}/pull/24`,
-  });
   note(`${basesIssue} has pull requests #21 and #22 open, and #23 merged into release/old`);
 
   for (const commit of [commits.comparedHeadA, commits.comparedHeadA2, commits.comparedApart]) {
