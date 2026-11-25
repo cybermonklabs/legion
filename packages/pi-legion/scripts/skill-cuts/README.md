@@ -387,6 +387,12 @@ Prints `count.sql` filled for one store and one UTC day (or hour), the same as
 `bun scripts/skill-cuts/countsql.ts`. `--query models` prints `models.sql` instead: each session
 file's model, read from the first 256 Ki characters of the file, as one row per file hash.
 
+For the `attribute` context step, print the store-wide query with
+`count-sql --config <skill-cuts.json> --store <db> --query roots`. Omit `--day` and `--hour`.
+Run the query with the store's `psqlCommand` and save its result as `<count>/<db>/roots.txt`.
+The query reads only the file table's paths. It returns each file's count hash and Oh My Pi
+profile, not the path. You can add this file to an existing count without running the count again.
+
 Each count row also names, for each file, the keys of the reads that put it in the row (`calls`,
 and `unpaired_calls` for calls with no result). A key is md5 of the call's id, a space and the
 call line's UTC timestamp to the microsecond, cut to 16 hex characters. Inside one query, a key
@@ -692,10 +698,15 @@ bun scripts/skill-cuts/cli.ts attribute --config <skill-cuts.json> --count <coun
 
 The read count per skill copy (`attribute.ts`): it maps each read's copy path to a repository
 copy by the prefix table, then by the repository-relative skill directory a checkout's path ends
-with, then by the copies the store's context installs. Only the prefix table places reads under
+with, then by the copies the session's Oh My Pi profile installs. Only the prefix table places reads under
 the worker image's install location (`/opt/legion/`, copies.ts's `IMAGE_ROOT`). Matching rows
 must agree on one copy. If no row matches or the rows disagree, the read stays unattributed
 with any former-stage note for that path. Neither checkout nor context can substitute a copy.
+For the profile step, `attribute` groups the prefix-table reads by store and profile.
+It infers which units each group installed from those reads. It places a new read only if
+that group supplies one copy of the name. It does not borrow copies from another profile
+in the same store. If `roots.txt` does not identify the session's profile, this step cannot
+place the read. `attribute` refuses a count output without the corresponding `roots.txt`.
 A read placed by a Git rename's prefix row (a `former-stages.tsv` row with a `renamed_to`) counts
 in the renamed copy's `sessions` and `former_name_sessions`. Outside the worker image, if the
 prefix table does not decide a read that matches a former-name row, the context can choose the
@@ -754,6 +765,28 @@ bun scripts/skill-cuts/cli.ts build-tasks --first-read --config <skill-cuts.json
   [--model <model>] [--profiles-out <dir> --copies <copies out dir> --count <count dir>]
 ```
 
+`build-cases` and `build-cases --reprofile` read the Oh My Pi profile from the transcript path.
+`<home>/.omp/agent/sessions/` is the default profile. `<home>/.omp/profiles/<name>/agent/sessions/`
+is a named profile. A subagent's transcript is below its root's directory, so it uses the same
+profile. Only a default-profile session in a `devbox` store gets the dev-box installers.
+
+For a named profile in a `devbox` store, the builder reads the session-pod image pin at the
+root's prompt build. It reads the Dockerfile of the pinned image's build, even if the pin
+moved back to an older image. It uses the base worker's OCI revision or the commit recorded
+with the pin. It reads the staged skills at that commit for packages the image links into
+the profile. It leaves out a case if the evidence cannot identify the image or its commit.
+A separate profile with no known plugin links or explicit extensions gets project skills, not
+Legion role plugins. The evidence states where the builder inferred what the profile loaded.
+
+Set `sessionPod` in the private configuration to enable the image lookup. `repository` names
+the deployment repository. `pinFile` and `pinKey` locate its image pin, and `dockerfile` names
+the image recipe in that repository. `workerRepository` and `workerDockerfile` locate the base's
+source. Use paths relative to their repositories.
+
+`build-tasks --profiles-out` and `build-tasks --reprofile` use the same rule. A task whose pod
+image cannot be identified is not measurable. Case and task `context` labels keep their existing
+forms. The evidence records the pod profile separately.
+
 `build.ts`: `build-cases` pulls each candidate session through the config's `psqlCommand`, has
 the `case` reader propose the step the skill governs, reading the session from the skill's read
 on in windows of at most 40 messages, at most 6 windows a session, and writes the cases
@@ -761,7 +794,7 @@ on in windows of at most 40 messages, at most 6 windows a session, and writes th
 and near-miss tasks of a load test from the first requests of real sessions. `--count` and
 `--copies` are the count directory and the copies output that `attribute` read to make the
 sessions file: `build-cases` places each session's read of the skill with `attribute.ts`'s own
-rules (the prefix table, then a checkout, then the store's context), and keeps a session only
+rules (the prefix table, then a checkout, then the session's profile), and keeps a session only
 when they place it at the cut repository's copy; a read they place at another copy, or at none, is
 `not-cut-copy`, with the rule named. A session's reads of the skill are its `skill://` reads and its
 reads of the skill's files by path, by the count's rule (a path or URL that, its read selector taken
@@ -1221,12 +1254,12 @@ listing line. The measure drops
 nothing here: `behaviour` and `load` apply the listing rule to its `missing` and `added` names
 (above, under each command).
 
-`--reprofile` builds the profiles of an existing case file again that way, from the cases and
-their sessions' heads (no transcript pulled, no reader call), and writes a new file in which only
-`profile` and the profile's part of `evidence` differ. A case holds no working directory, so each
-case's is the header's `cwd` in its session's head, read from its store with `session-head.sql`
-(one query per store, through the configuration's `psqlCommand`; each head is kept under
-`<out>.sessions/`). For a case whose session the store no longer holds, the evidence says so
+`--reprofile` rebuilds each profile from the case and its session's head and path.
+It pulls no transcript and calls no reader. Only `profile` and its evidence can change.
+A case holds no working directory. The builder reads `cwd` from its session's head with
+`session-head.sql` and the transcript path with `session-paths.sql`, one query of each per store.
+It saves the head under `<out>.sessions/` but does not save the transcript path.
+For a case whose session the store no longer holds, the evidence says so
 (`no session head`), and the session repository is the one its old evidence names (`session
 repository <repo>` or `no session repository`); a case built before that evidence was written is
 taken to be in the workspace of the repository whose `AGENTS.md` its old profile holds. A Legion

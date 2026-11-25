@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   type Attribution,
-  attribute,
+  attribute as attributeByProfile,
   type CountRow,
   checkoutRule,
   copyPrefix,
@@ -115,6 +115,25 @@ function psqlTable(rows: readonly object[]): string {
   const lines = rows.map((row) => ` ${JSON.stringify(row)}`);
   return [" total", "-".repeat(40), ...lines, `(${rows.length} rows)`, ""].join("\n");
 }
+
+/** Older fixtures model a single profile in each store. */
+function attribute(config: typeof CONFIG, outputs: readonly QueryOutput[], tables: R4Tables) {
+  return attributeByProfile(
+    config,
+    outputs,
+    tables,
+    new Map(
+      outputs.flatMap(({ store, rows }) =>
+        rows.flatMap(({ hashes }) =>
+          hashes.map((hash) => [sessionKey(store, hash), "fixture"] as const)
+        )
+      )
+    )
+  );
+}
+
+const fixtureRoots = (...hashes: string[]) =>
+  psqlTable(hashes.map((hash) => ({ hash, profile: "fixture" })));
 
 const summaryRow = (store: string) => ({
   row: "summary",
@@ -1519,6 +1538,7 @@ test("a failed query in the run log is listed, with a split day's missing hours 
   ].join("\n");
   const countDir = tree(path.join(dir, "issues-count"), {
     ...hours,
+    "store_a/roots.txt": fixtureRoots(),
     "store_a/2026-11-21.err": "psql: error: connection to server failed\n",
     "store_a/2026-11-22.tmp": "",
     "run.log": log,
@@ -1559,6 +1579,7 @@ test("an output that is not a whole count.sql result is listed, and one of anoth
   const countDir = tree(path.join(dir, "unreadable-count"), {
     "store_a/2026-11-20.txt": f7("F7-count-first.txt"),
     "store_a/2026-11-21.txt": psqlTable([]),
+    "store_a/roots.txt": fixtureRoots(H1, H2, H3),
     "run.log": [
       "2026-11-22T03:00:00Z\tstore_a\t2026-11-20\trc=0\tseconds=1.0\t",
       "2026-11-22T03:01:00Z\tstore_a\t2026-11-21\trc=0\tseconds=1.0\t",
@@ -1681,6 +1702,7 @@ test("the command writes the count, its report, each cut's ranking and the model
     "store_a/2026-11-20.txt": f7("F7-count-first.txt"),
     "store_a/2026-11-20.err": "",
     "store_a/2026-11-21.txt": f7("F7-count-second.txt"),
+    "store_a/roots.txt": fixtureRoots(H1, H1B, H2, H3),
     "store_a/2026-11-21.err": "",
     "run.log": runLog,
   });
@@ -1905,6 +1927,7 @@ test("without --models the report says so and writes no models table and no mode
   const root = path.join(dir, "no-models");
   const countDir = tree(path.join(root, "count"), {
     "store_a/2026-11-20.txt": f7("F7-count-first.txt"),
+    "store_a/roots.txt": fixtureRoots(H1, H2, H3),
     "run.log": "2026-11-21T20:00:01Z\tstore_a\t2026-11-20\trc=0\tseconds=1.0\t\n",
   });
   const copiesDir = r4Dir(path.join(root, "copies"), f7World());
@@ -2011,6 +2034,7 @@ test("the command writes a renamed copy's reads under its former name beside its
         hashes: ["5555555555555555"],
       },
     ]),
+    "store_a/roots.txt": fixtureRoots(H4, "5555555555555555"),
     "run.log": "2026-11-21T20:00:01Z\tstore_a\t2026-11-20\trc=0\tseconds=1.0\t\n",
   });
   const formerRow = {
@@ -2044,4 +2068,53 @@ test("the command writes a renamed copy's reads under its former name beside its
   expect(readFileSync(path.join(out, "skill-read-count.md"), "utf8")).toContain(
     "| simplify-settled-diff | org/legion skills/simplify-settled-diff | 2 | 1 | ce-simplify-code |"
   );
+});
+
+test("session context row 4: one count row can read different copies in two profiles of one store", () => {
+  const root = path.join(dir, "profile-roots");
+  const countDir = tree(path.join(root, "count"), {
+    "store_a/2026-11-20.txt": queryText("store_a", "2026-11-20", [
+      {
+        skill: "alpha",
+        copy: "/home/fixture/.omp/profiles/fixture/agent/skills/alpha/SKILL.md",
+        hashes: [H1],
+      },
+      {
+        skill: "beta",
+        copy: "/home/fixture/plugins/cache/acme-market/acme-tools/1/skills/beta/SKILL.md",
+        hashes: [H2],
+      },
+      { skill: "beta", copy: "skill://beta", hashes: [H3, H4] },
+    ]),
+    "store_a/roots.txt": psqlTable([
+      { hash: H1, profile: "default" },
+      { hash: H2, profile: "legion" },
+      { hash: H3, profile: "legion" },
+      { hash: H4, profile: "default" },
+    ]),
+  });
+  const copiesDir = r4Dir(path.join(root, "copies"), f7World());
+  const spans = path.join(tree(root, { "spans.jsonl": "" }), "spans.jsonl");
+  const out = path.join(root, "out");
+  const result = run([
+    "--config",
+    CONFIG_FILE,
+    "--count",
+    countDir,
+    "--copies",
+    copiesDir,
+    "--spans",
+    spans,
+    "--out",
+    out,
+  ]);
+  expect(result.code).toBe(0);
+  expect(
+    parseTsv(readFileSync(path.join(out, "skill-read-count.tsv"), "utf8"))
+      .filter((row) => row.name === "beta")
+      .map((row) => [row.repository, row.sessions, row.unattributed_sessions])
+  ).toEqual([
+    ["acme/skills", "1", "0"],
+    ["acme/tools", "2", "0"],
+  ]);
 });

@@ -15,8 +15,10 @@
  *              configuration and each UTC day, or `<store>/<YYYY-MM-DD>T<HH>.txt` for each hour of
  *              a day whose query timed out: each is the psql output of one count.sql query
  *              (`psqlRows`), its count rows and then one summary row, as count.sql's header says. A
- *              query that has no `.txt` has no output: it failed, or it has not run yet. `run.log`
- *              lists every query run, `<time>\t<store>\t<day or hour>\trc=<status>\tseconds=<n>\t
+ *              query that has no `.txt` has no output: it failed, or it has not run yet.
+ *              Each store with count output needs `<store>/roots.txt` from `count-sql --query
+ *              roots`. It names each session's Oh My Pi profile by hash, without paths.
+ *              `run.log` lists every query run, `<time>\t<store>\t<day or hour>\trc=<status>\tseconds=<n>\t
  *              <its stderr>`, a `FAILED ...` line for each query given up, and `END <time>` when
  *              the run ended.
  *   --copies   The copies output (copies.ts): skill-copies.tsv, prefix-table.tsv,
@@ -68,15 +70,13 @@
  *      writes (`<dir>/vendor/<name>/`, a package under `node_modules/`, a plugin under
  *      `plugins/cache/`) is a checkout only of a repository that the path from that copy's own
  *      directory on names; when it names none, step 3 decides.
- *   3. The store's context. The units (packages, plugins, a host's user skills, each named with its
- *      manifest in prefix-table.tsv's `via`) that the store's own step-1 reads come from are the
- *      units its context installs. Their copies are the installers.tsv rows of those units and the
- *      prefix rows' own copies. For a read whose path matches a former-name row, the context
- *      can also choose the renamed copy under that name if it installs the row's unit. Such a
- *      read counts in `former_name_sessions`. When they hold exactly one copy of the row's skill name, the row
- *      goes to that copy; after a step-2 tie, exactly one of the tied copies, since the path
- *      already says the read is of one of them. A store with no step-1 read installs no unit. A
- *      row whose path is inside an `ensure_vendor` clone (`<dir>/vendor/<name>/`) goes to no copy
+ *   3. The session's profile. For each store and Oh My Pi profile, infer the installed units
+ *      from that group's step-1 reads. Their copies are the installers.tsv rows of those units
+ *      and the prefix rows' own copies. Place the read only when these units have one copy of
+ *      the name, or one of the copies in a checkout tie. A matching former-name row can also
+ *      name the copy if one of its units is in the group. With no known profile, this step
+ *      cannot place the read. A read under a former name counts in `former_name_sessions`.
+ *      A row whose path is inside an `ensure_vendor` clone (`<dir>/vendor/<name>/`) goes to no copy
  *      by this step: no prefix row maps that clone, so the copies output's end time holds no
  *      installer that makes it, and the copies the context installs then are other copies than
  *      the clone the read came from.
@@ -360,7 +360,13 @@ export interface QueryDir<O> {
   /** Each directory that the configuration names no store for. */
   readonly otherStores: readonly string[];
 }
-export type CountRead = QueryDir<QueryOutput>;
+export type SessionProfiles = ReadonlyMap<string, string>;
+export type CountRead = QueryDir<QueryOutput> & { readonly profiles: SessionProfiles };
+
+const RootRow = z.strictObject({
+  hash: Hash,
+  profile: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
+});
 
 /** Reads the query directory `dir` for the stores `stores`, each `.txt` parsed by `parse`. A
  *  `.txt` that `parse` throws on is listed as unreadable, but for an EarlierCount, which ends the
@@ -398,7 +404,25 @@ export function readQueryDir<O>(
 
 /** Reads the count directory `dir` for the stores `stores`. */
 export function readCount(dir: string, stores: readonly string[]): CountRead {
-  return readQueryDir(dir, stores, parseQueryOutput);
+  const count = readQueryDir(dir, stores, parseQueryOutput);
+  const profiles = new Map<string, string>();
+  for (const store of new Set(count.outputs.map((output) => output.store))) {
+    const file = path.join(dir, store, "roots.txt");
+    if (!existsSync(file))
+      throw new Error(
+        `${file} does not exist: run count-sql --query roots --config <file> --store ${store} and save the store's query output there`
+      );
+    for (const value of psqlRows(readFileSync(file, "utf8"))) {
+      const parsed = RootRow.safeParse(value);
+      if (!parsed.success)
+        throw new Error(`${file}: not a roots.sql row: ${schemaFaults(parsed.error)}`);
+      const { hash, profile } = parsed.data;
+      const key = sessionKey(store, hash);
+      if (profiles.has(key)) throw new Error(`${file}: duplicate file hash ${hash}`);
+      profiles.set(key, profile);
+    }
+  }
+  return { ...count, profiles };
 }
 
 /** A file that lists a key in a count row: its hash, and the name of its query. */
@@ -1277,8 +1301,8 @@ export interface Placement {
 
 /** The placing of reads by the rules of this file's header, for one count and one copies output. */
 export interface Placer {
-  /** Where a read of the copy path `copyPath` of the skill `skill` in the store `store` goes. */
-  place(store: string, copyPath: string, skill: string): Placement;
+  /** Where the read goes, using the session's profile if the path does not decide. */
+  place(store: string, copyPath: string, skill: string, profile: string): Placement;
   /** Step 3's units: for each store, each unit its prefix-table reads come from, with their
    *  sessions (file hashes). */
   readonly storeUnits: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>>;
@@ -1296,7 +1320,11 @@ export interface Placer {
  *  this puts it, and build.ts keeps a session only when this puts its read at the cut's copy.
  *  Throws when a prefix-table.tsv row, or an installers.tsv row that installs a copy, names a copy
  *  that skill-copies.tsv does not hold. */
-export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
+export function placer(
+  outputs: readonly QueryOutput[],
+  r4: R4Tables,
+  profiles: SessionProfiles
+): Placer {
   const counted = countOnce(outputs);
   const copies = new Map<string, SkillCopiesRow>();
   for (const row of r4.copies) copies.set(copyKey(row.repository, row.path), row);
@@ -1351,6 +1379,7 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
 
   // Step 3's units: those each store's own mapped reads come from, with their sessions.
   const storeUnits = new Map<string, Map<string, Set<string>>>();
+  const profileUnits = new Map<string, Set<string>>();
   for (const output of counted.outputs) {
     for (const row of output.rows) {
       if (row.hashes.length === 0) continue;
@@ -1359,24 +1388,29 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
       const units = entry(storeUnits, row.store, () => new Map<string, Set<string>>());
       for (const unit of decision.units) {
         const sessions = entry(units, unit, () => new Set<string>());
-        for (const hash of row.hashes) sessions.add(hash);
+        for (const hash of row.hashes) {
+          sessions.add(hash);
+          const profile = profiles.get(sessionKey(row.store, hash));
+          if (profile !== undefined && profile !== "unknown")
+            entry(profileUnits, sessionKey(row.store, profile), () => new Set<string>()).add(unit);
+        }
       }
     }
   }
   const contextCopies = new Map<string, Map<string, Set<string>>>();
   const installedInContext = new Set<string>();
-  for (const [store, units] of storeUnits) {
+  for (const [group, units] of profileUnits) {
     const byName = new Map<string, Set<string>>();
-    for (const unit of units.keys()) {
+    for (const unit of units) {
       for (const key of members.get(unit) ?? []) {
         entry(byName, copies.get(key)?.name ?? "", () => new Set<string>()).add(key);
         installedInContext.add(key);
       }
     }
-    contextCopies.set(store, byName);
+    contextCopies.set(group, byName);
   }
 
-  const place = (store: string, copyPath: string, skill: string): Placement => {
+  const place = (store: string, copyPath: string, skill: string, profile: string): Placement => {
     const prefix = copyPrefix(copyPath, skill);
     const decision = decide(copyPath);
     if (decision.copy !== undefined) {
@@ -1434,8 +1468,9 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
         formerName: undefined,
       };
     }
-    const context = [...(contextCopies.get(store)?.get(skill) ?? [])];
-    const units = storeUnits.get(store);
+    const group = sessionKey(store, profile);
+    const context = [...(contextCopies.get(group)?.get(skill) ?? [])];
+    const units = profileUnits.get(group);
     const formerRows = decision.formerRows.filter(
       (row) => row.formerName === skill && row.units.some((unit) => units?.has(unit))
     );
@@ -1471,7 +1506,10 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
       prefix,
       copy: undefined,
       rule: undefined,
-      outcome: `unattributed: ${why}, and its context installs ${contextSaid}`,
+      outcome:
+        profile === "unknown"
+          ? `unattributed: ${why}; the session's Oh My Pi profile is unknown`
+          : `unattributed: ${why}, and its context installs ${contextSaid}`,
       formerName: undefined,
     };
   };
@@ -1484,9 +1522,10 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
 export function attribute(
   config: SkillCutsConfig,
   outputs: readonly QueryOutput[],
-  r4: R4Tables
+  r4: R4Tables,
+  profiles: SessionProfiles
 ): Attribution {
-  const { place, storeUnits, members, installedInContext, counted } = placer(outputs, r4);
+  const { place, storeUnits, members, installedInContext, counted } = placer(outputs, r4, profiles);
 
   // Each copy's sessions, and each skill name's sessions no copy got, by the row's kind.
   const copySessions = {
@@ -1548,37 +1587,44 @@ export function attribute(
         for (const session of sessions) allReads.add(session);
         if (store.earliest === undefined || row.day < store.earliest) store.earliest = row.day;
       }
-      const placed = place(row.store, row.copy, row.skill);
-      const copy = placed.copy;
-      if (placed.outcome === undefined) {
-        if (copy !== undefined)
-          entry(mappedPrefixes, placed.prefix, () => new Set()).add(shown(copy));
-      } else {
-        const item = entry(unmapped, placed.prefix, () => ({
-          skills: new Set<string>(),
-          sessions: { read: new Set<string>(), reference: new Set<string>() },
-          outcomes: new Map<string, Set<string>>(),
-        }));
-        item.skills.add(row.skill);
-        const went = entry(
-          item.outcomes,
-          `${row.store}: ${placed.outcome}`,
-          () => new Set<string>()
-        );
-        for (const session of sessions) {
-          item.sessions[row.kind].add(session);
-          went.add(session);
-        }
+      const groups = new Map<string, string[]>();
+      for (const hash of row.hashes) {
+        const key = sessionKey(row.store, hash);
+        entry(groups, profiles.get(key) ?? "unknown", (): string[] => []).push(key);
       }
-      const counted =
-        copy === undefined
-          ? entry(unplaced[row.kind], row.skill, () => new Set<string>())
-          : entry(copySessions[row.kind], copy, () => new Set<string>());
-      for (const session of sessions) counted.add(session);
-      if (row.kind === "read" && copy !== undefined && placed.formerName !== undefined) {
-        entry(formerNames, copy, () => new Set<string>()).add(placed.formerName);
-        const former = entry(formerSessions, copy, () => new Set<string>());
-        for (const session of sessions) former.add(session);
+      for (const [profile, sessions] of groups) {
+        const placed = place(row.store, row.copy, row.skill, profile);
+        const copy = placed.copy;
+        if (placed.outcome === undefined) {
+          if (copy !== undefined)
+            entry(mappedPrefixes, placed.prefix, () => new Set()).add(shown(copy));
+        } else {
+          const item = entry(unmapped, placed.prefix, () => ({
+            skills: new Set<string>(),
+            sessions: { read: new Set<string>(), reference: new Set<string>() },
+            outcomes: new Map<string, Set<string>>(),
+          }));
+          item.skills.add(row.skill);
+          const went = entry(
+            item.outcomes,
+            `${row.store}: ${placed.outcome}`,
+            () => new Set<string>()
+          );
+          for (const session of sessions) {
+            item.sessions[row.kind].add(session);
+            went.add(session);
+          }
+        }
+        const counted =
+          copy === undefined
+            ? entry(unplaced[row.kind], row.skill, () => new Set<string>())
+            : entry(copySessions[row.kind], copy, () => new Set<string>());
+        for (const session of sessions) counted.add(session);
+        if (row.kind === "read" && copy !== undefined && placed.formerName !== undefined) {
+          entry(formerNames, copy, () => new Set<string>()).add(placed.formerName);
+          const former = entry(formerSessions, copy, () => new Set<string>());
+          for (const session of sessions) former.add(session);
+        }
       }
     }
   }
@@ -2221,12 +2267,12 @@ export function readCountMarkdown(report: Report): string {
     "",
     `1. The prefix table (prefix-table.tsv): a read goes to the copy that all matching rows agree on. Only the prefix table places reads under the worker image's install location (${code(IMAGE_ROOT)}). A miss or tie leaves an image read unattributed, with its former-stage note if there is one. Neither checkout nor context can substitute a copy. A former-stage row for a Git rename maps the old path to the renamed copy. Its reads count in both the copy's total sessions and its sessions under a former name (former_name_sessions).`,
     "2. A checkout, for a path not under the worker image's install location: a read whose path ends with a copy's skill directory in its repository (with a path boundary before it) is a read of that copy in a checkout of its repository; the longest such directory wins. Copies of several repositories at that directory are told apart by the path before it, in this order: the one whose owner and name are two directories of it in a row; else the one whose name is a directory of it; else the one whose owner is a directory followed by one that holds its name; else the one whose name a directory holds (`.dotfiles` holds `dotfiles`). An exact name always wins over a directory that only holds it. A tie left goes to step 3, among the tied copies alone. A skill directory of one segment (a skill at its repository's root) counts only when the path names its repository. A path inside a copy of another repository that an installer writes (`<dir>/vendor/<name>/`, an `ensure_vendor` clone; a package under `node_modules/`; a plugin under `plugins/cache/`) is a checkout only of a repository that the path from that copy's own directory on names; when it names none, step 3 decides.",
-    "3. The store's context: the units (packages, plugins, a host's user skills) that the store's own reads of step 1 come from are the units its context installs. Their copies are the copies their installers.tsv rows ship, stage, install, link or enable, and the copies of their prefix rows. For a read that matches a former-name row, the context can also choose the renamed copy under that name if it installs the row's unit. When those hold exactly one copy of the read's skill name, the read goes to that copy; after a tie of step 2, exactly one of the tied copies, since the path already says the read is of one of them. A read inside an `ensure_vendor` clone (`<dir>/vendor/<name>/`) that no prefix row maps goes to no copy by this step: the copies the context installs at the copies output's end time are other copies than that clone.",
+    "3. The session's profile: use its profile from roots.txt. For each store and profile, infer installed units from the prefix-table reads of that group. Use the copies of those units alone, including former names from matching prefix rows. A profile must supply exactly one copy of the name (or one of the tied copies). An unknown profile does not place the read.",
     "4. Otherwise the read is unattributed for its skill name.",
     "",
     "Two copies of one name are a tie when their sessions differ by at most that name's unattributed sessions.",
     "",
-    "### The units each store's context installs",
+    "### Units read from in each store, across profiles",
     ""
   );
   for (const store of attribution.stores) {
@@ -2523,7 +2569,7 @@ export function main(argv: readonly string[], io: Output): number {
     const count = readCount(countDir, stores);
     const r4 = readR4(copiesDir);
     const spans = parseSpans(readFileSync(spansFile, "utf8"), spansFile);
-    const attribution = attribute(config, count.outputs, r4);
+    const attribution = attribute(config, count.outputs, r4, count.profiles);
     const issues = queryIssues(config, count);
     let models: ModelsRead | undefined;
     if (modelsDir !== undefined) {

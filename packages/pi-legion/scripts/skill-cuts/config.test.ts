@@ -9,7 +9,7 @@ import { loadConfig, parseConfig, SkillCutsConfig, storeNamed } from "./config";
 // configuration F7's capture used.
 
 /** A configuration with every required key, each a made-up value; it leaves out the optional
- *  keys, devboxClaudeConfigDir and clones. */
+ *  keys, devboxClaudeConfigDir, clones and sessionPod. */
 function valid(): Record<string, unknown> {
   return {
     owners: ["acme", "acme-labs"],
@@ -46,12 +46,28 @@ test("a configuration with every required key loads", () => {
 
 test.each(
   Object.keys(SkillCutsConfig.shape).filter(
-    (key) => key !== "devboxClaudeConfigDir" && key !== "clones"
+    (key) => key !== "devboxClaudeConfigDir" && key !== "clones" && key !== "sessionPod"
   )
 )("a configuration without %s is refused by name", (key) => {
   const value = valid();
   delete value[key];
   expect(refusal(value)).toContain(`${key}: missing`);
+});
+
+test("sessionPod accepts a deployment pin and two repository-relative Dockerfiles", () => {
+  const sessionPod = {
+    repository: "acme/deploy",
+    pinFile: "pods/stack.yaml",
+    pinKey: "pods:image",
+    dockerfile: "pods/Dockerfile",
+    workerRepository: "acme/worker",
+    workerDockerfile: "docker/worker.Dockerfile",
+  };
+  expect(parseConfig(valid()).sessionPod).toBeUndefined();
+  expect(parseConfig({ ...valid(), sessionPod }).sessionPod).toEqual(sessionPod);
+  expect(
+    refusal({ ...valid(), sessionPod: { ...sessionPod, dockerfile: "../Dockerfile" } })
+  ).toContain("sessionPod.dockerfile:");
 });
 
 test("devboxClaudeConfigDir is optional, and an absolute path when given", () => {

@@ -6,7 +6,7 @@
  * it leaves out and the repositories its copies map to) comes from this file at run time and never
  * from a committed file. The real file is kept outside the repository.
  *
- * Keys, every one required but the last two, no other allowed:
+ * Keys (only the last three are optional):
  *   owners          GitHub owners whose repositories the copy lister reads
  *   stores          the session stores the count reads: `{name, context}`, `name` the database
  *                   name, `context` `devbox` or `legion:<PROJECT>` (whose sessions the store holds)
@@ -36,6 +36,10 @@
  *                   its default branch at the time read, and each unit it gives names this key.
  *                   Both repositories must be of an owner in `owners`, and copies.ts refuses a
  *                   `dir` that holds no pool of `repo`'s skills-sources.json once it has read it.
+ *   sessionPod     (optional) how to find a session pod's image: `repository` is the deployment
+ *                  repository, `pinFile` is its image pin file, `pinKey` is the key under
+ *                  `config`, and `dockerfile` is the session image's Dockerfile. `workerRepository`
+ *                  and `workerDockerfile` name the base worker's source and Dockerfile.
  *
  * A file that is not JSON, or that misses a key, holds a key not above or holds a value of the
  * wrong shape, is refused with one line per fault, each naming the key.
@@ -107,6 +111,16 @@ export const SkillCutsConfig = z
       .refine((value) => path.isAbsolute(value), { error: "an absolute path" })
       .optional(),
     clones: z.array(Clone).optional(),
+    sessionPod: z
+      .strictObject({
+        repository: Repository,
+        pinFile: CheckoutDirectory,
+        pinKey: z.string().regex(/^[A-Za-z0-9_.:-]+$/),
+        dockerfile: CheckoutDirectory,
+        workerRepository: Repository,
+        workerDockerfile: CheckoutDirectory,
+      })
+      .optional(),
   })
   .refine((config) => Date.parse(config.windowStart) < Date.parse(config.windowEnd), {
     error: "windowEnd must be after windowStart",

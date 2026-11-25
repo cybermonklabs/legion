@@ -91,7 +91,7 @@
  *    `skillReadFile` reads one) and its reads of the skill's files by path, by count.sql's rule
  *    (`readsByPath`: a path or URL that, its read selector taken off, ends `<skill>/SKILL.md` or
  *    holds `skills/<skill>/references/`). The copy a read reads is placed by attribute.ts's own
- *    rules (`placer`: the prefix table, then a checkout, then the store's context), from
+ *    rules (`placer`: the prefix table, then a checkout, then the session's Oh My Pi profile), from
  *    `--count` and `--copies`, the two attribute.ts made the sessions file from: a `skill://`
  *    read's at the path of its `[Skill file: <path>]` line, a read by path's at its own path, as
  *    read. A case is built from a successful `skill://` read, or from a successful whole read by
@@ -259,10 +259,13 @@
  * or digest-times.sql for `--reprofile`) and the step's message time, or the session's start for
  * its first build. Below, "the session's start" means that time (a subagent's pools are read at
  * its own start):
+ * - Only the default profile in a devbox store uses the dev box's installers. A named profile in
+ *   that store reads the session-pod image at the root's prompt build. A separate profile in a
+ *   Legion store does not inherit Legion role plugins. The `context` label does not change.
  * - The units installed: each unit (`via`) of each prefix row that a `[Skill file: <path>]` of a
  *   read result before the step is under, or the path of a successful whole read by path of the
  *   case's copy (`pathCopy`, `profileReads`); for a path no row maps, each unit of the prefix rows
- *   of the copy attribute.ts's rules place the read at (a checkout, the store's context); and,
+ *   of the copy attribute.ts's rules place the read at (a checkout, the session's profile); and,
  *   for a Legion context, each Oh My Pi unit with a prefix row under `/opt/legion/` (a package
  *   the worker image carries) and each unit an `omp-plugins` manifest installs. A read no rule
  *   places is listed as left out; a copy a read is placed at that no prefix row names a unit for
@@ -363,7 +366,7 @@
  *   gives Claude Code it as user memory). Each one the copies output or the session does not name
  *   is listed as left out: for a devbox, when no repository or more than one of its units holds
  *   those settings, or that one has no CLAUDE.md then. A subagent's case has none: its recorded
- *   prompt holds them. Its units and skills are read as its store's context's are.
+ *   prompt holds them. The transcript's config root decides which units and skills to read.
  *
  * Output: the case file `--out` (one JSON line per case, written whole after each case and checked
  * with cases.ts's `loadCases` against `--old` at the end) and `<out>.summary.json`: the seed and
@@ -645,6 +648,14 @@ import {
   stepText,
 } from "./judge";
 import { EvidenceItem, messageLoad, type RecordedListing, Task } from "./load";
+import {
+  type ImageConfig,
+  type PodImage,
+  PodNotMeasurable,
+  type ReadImageConfig,
+  registryImageConfig,
+  sessionPodImage,
+} from "./pod-image";
 import { eachStoreRow, PullCheck, storeRows } from "./psql-rows";
 import {
   AuditAnswer,
@@ -660,6 +671,7 @@ import {
 } from "./readers";
 import { isObject } from "./replay";
 import { LISTING_MEASURE_ITEM } from "./score";
+import { sessionProfileName } from "./session-root";
 
 /** Exit statuses: `stopped` at `--budget-usd`, `stoppedByCost` by the stop rule (`stopBy`). */
 export const EXIT = { ok: 0, failed: 1, refused: 2, stopped: 3, stoppedByCost: 4 } as const;
@@ -864,6 +876,7 @@ export interface BuildIo {
   /** One try of a read of the registry's tarball of a package version (`registryTarball` when
    *  absent); `GithubReads.tarball` sends a try that failed for a transient reason again. */
   readonly npm?: NpmTarball;
+  readonly imageConfig?: ReadImageConfig;
   /** Where each reader's answer records its usage span (spend-record.ts; `processSpendRecorder()`
    *  in a real run); none when absent. `main` leaves the wait for its spans to its caller. */
   readonly spendRecorder?: SpendRecorder;
@@ -2539,6 +2552,7 @@ export class GithubReads {
   private readonly dirs = new Map<string, Promise<TreeEntry[]>>();
   /** The skills each package version's tarball ships (`shippedSkills`), by `<name>@<version>`. */
   private readonly shipped = new Map<string, Promise<ReadonlySet<string> | undefined>>();
+  private readonly images = new Map<string, Promise<ImageConfig | undefined>>();
 
   constructor(
     private readonly gh: Gh,
@@ -2546,8 +2560,13 @@ export class GithubReads {
     readonly retries: GhRetries,
     /** One try of a read of the registry's tarball of a package version (`registryTarball` in a
      *  real run). */
-    private readonly npm: NpmTarball = registryTarball
+    private readonly npm: NpmTarball = registryTarball,
+    private readonly readImageConfig: ReadImageConfig = registryImageConfig
   ) {}
+
+  imageConfig(image: string) {
+    return readOnce(this.images, image, () => this.readImageConfig(image));
+  }
 
   /** The registry's tarball of `version` of the package `name`, undefined when it has none. A try
    *  that failed for a transient reason (an NpmFailed whose `failure` names one) is sent again as
@@ -3038,7 +3057,7 @@ function githubReads(
     { sleep: (ms) => io.sleep?.(ms) ?? Bun.sleep(ms), err: (line) => io.err(line) },
     who
   );
-  return new GithubReads(io.gh, branches, retries, io.npm);
+  return new GithubReads(io.gh, branches, retries, io.npm, io.imageConfig);
 }
 
 /** Which skills a package pinned by an exact npm version ships, and where its source says so. */
@@ -3078,6 +3097,7 @@ interface Checkout {
 interface ProfileInput {
   readonly store: string;
   readonly context: string;
+  readonly ompProfile: string;
   readonly project: string | undefined;
   readonly reads: readonly ShownRead[];
   /** Each successful read of its messages by an absolute path (`absoluteReads`): a file of them
@@ -3568,6 +3588,8 @@ const PARENT_LOAD_RULE =
  *  which times and why. */
 interface ReadTime {
   readonly at: string | undefined;
+  /** The first digest's time, when the older repository rule uses session start instead. */
+  readonly firstPromptAt?: string | undefined;
   readonly words: string;
   readonly poolsAtStart: boolean;
   readonly line: Evidence;
@@ -3710,13 +3732,16 @@ function topBuild(
   if (index < 1 || line === undefined) {
     const second = lines[1];
     return {
-      read: first(
-        `${how}; so it is the session's first build (${
-          lines[0] === undefined
-            ? "the session holds no system-prompt-digest line"
-            : `its line is the first of ${count}, at ${lines[0].at}, digest ${lines[0].digest}`
-        }), and each repository, a pool's too, is read at the session's start ${start}`
-      ),
+      read: {
+        ...first(
+          `${how}; so it is the session's first build (${
+            lines[0] === undefined
+              ? "the session holds no system-prompt-digest line"
+              : `its line is the first of ${count}, at ${lines[0].at}, digest ${lines[0].digest}`
+          }), and each repository, a pool's too, is read at the session's start ${start}`
+        ),
+        firstPromptAt: lines[0]?.at,
+      },
       window: {
         from: null,
         to: second?.at ?? null,
@@ -4310,17 +4335,48 @@ interface InstallPath {
 const notInstalled = (run: Pick<CaseRun, "skill" | "cut">, when = "the session's start") =>
   `the profile installs no ${run.skill} of ${run.cut.repo} at ${when}`;
 
+const OMP_PROFILE_ITEM = "Oh My Pi profile";
+
 /** The profile of a case, with the evidence for each part. Throws when a GitHub read fails. */
 async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<ProfileResult> {
   const { copies, github } = run;
   const evidence: Evidence[] = [];
   const commits = new Map<string, string>();
-  const legion = input.context.startsWith("legion:");
+  const { ompProfile } = input;
+  const legionStore = input.context.startsWith("legion:");
+  // The Legion worker sets OMP_PROFILE=legion (packages/daemon/docker/worker.Dockerfile).
+  const legion = legionStore && ompProfile === "legion";
+  const devbox = input.context === "devbox" && ompProfile === "default";
+  const named = ompProfile !== "default" && ompProfile !== "unknown";
+  const isolated = !devbox && !legion;
+  const inferReadUnits = !isolated || ompProfile === "unknown";
+  let pod: PodImage | undefined;
+  if (ompProfile !== "unknown") evidence.push({ item: OMP_PROFILE_ITEM, source: ompProfile });
+  if (input.context === "devbox" && named) {
+    if (run.config.sessionPod === undefined)
+      throw new PodNotMeasurable(`profile ${ompProfile} needs sessionPod in the configuration`);
+    const at =
+      input.readTime?.at ??
+      input.readTime?.firstPromptAt ??
+      (input.recordedPrompt ? undefined : input.sessionStart);
+    if (at === undefined)
+      throw new PodNotMeasurable(
+        `the time of the root's prompt build for profile ${ompProfile} is unknown`
+      );
+    pod = await sessionPodImage(github, run.config.sessionPod, ompProfile, at);
+    evidence.push({ item: `session pod profile ${ompProfile}`, source: pod.why });
+  } else if (legionStore && ompProfile !== "unknown" && isolated) {
+    evidence.push({
+      item: `Legion pod profile ${ompProfile}`,
+      source:
+        "Inference: the worker image links plugins into its legion profile, not this profile. No explicit extension or image-installed user skill is known for this profile, so the rebuild includes its project skills.",
+    });
+  }
   // A dev box's own repository (DEVBOX_INSTALLERS_RULE) is the checkout whose .claude/ the
   // configuration names as its CLAUDE_CONFIG_DIR (DEVBOX_CHECKOUT_RULE); devboxHome's evidence is
   // pushed where it is below.
   const homeEvidence: Evidence[] = [];
-  const home = legion ? undefined : devboxHome(copies, homeEvidence);
+  const home = devbox ? devboxHome(copies, homeEvidence) : undefined;
   const claudeDir = run.config.devboxClaudeConfigDir;
   let checkout =
     input.checkout ??
@@ -4436,9 +4492,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // session that copy of the name, so it is the profile's copy of it when a unit ships it then.
   const readCopies = new Map<string, { repo: string; path: string; index: number }>();
   const shown = new Set<string>();
-  for (const read of input.reads) {
+  // Pod links, not reads of arbitrary files, decide which complete units the pod ships.
+  for (const read of inferReadUnits ? input.reads : []) {
     if (read.skill !== undefined && !readCopies.has(read.skill)) {
-      const copy = run.placer.place(input.store, read.header, read.skill).copy;
+      const copy = run.placer.place(input.store, read.header, read.skill, ompProfile).copy;
       if (copy !== undefined) {
         const [repo = "", dir = ""] = copy.split("\t");
         readCopies.set(read.skill, { repo, path: repoPath(dir), index: read.index });
@@ -4459,7 +4516,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       const placed =
         read.skill === undefined
           ? undefined
-          : run.placer.place(input.store, read.header, read.skill);
+          : run.placer.place(input.store, read.header, read.skill, ompProfile);
       if (placed?.copy === undefined) {
         evidence.push({
           item: `left out: the copy read at ${read.header}`,
@@ -4592,9 +4649,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   for (const copy of alone.values()) repositories.add(copy.repo);
   if (deployment !== undefined) repositories.add(deployment);
+  if (pod?.directories.some((dir) => dir.startsWith(IMAGE_ROOT))) repositories.add(pod.repo);
   // A dev-box session repository whose Claude Code settings enable plugins (CLAUDE_PLUGIN_RULE)
   // is read whole with the repositories of the marketplaces that ship them.
-  if (checkout.repo !== undefined && !legion) {
+  if (checkout.repo !== undefined && devbox) {
     const repo = checkout.repo.toLowerCase();
     const enabled = new Set(
       copies.installers
@@ -4640,7 +4698,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // sorted order, as reading them one after another gives them.
   const reads = await Promise.allSettled(
     [...toRead].sort().map(async (repo) => {
-      const { sha, line } = await readCommit(repo);
+      const { sha, line } =
+        repo === pod?.repo && repo !== checkout.repo
+          ? { sha: pod.sha, line: { item: `commit ${pod.sha} of ${repo}`, source: pod.why } }
+          : await readCommit(repo);
       if (sha === undefined) return { repo, none: line };
       const { excludePaths } = run.config;
       const project =
@@ -4682,10 +4743,12 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // `github:` dependency of an Oh My Pi plugins package.json, an `ensure_vendor` clone) is held at
   // the ref that installer names at the session's start, as the session's machine held it then;
   // repositories.tsv's branch names the ref the copies output read, later.
-  const pins = installerPins(
-    values.flatMap((value) => (repositories.has(value.repo) ? value.at.manifests : [])),
-    run.config.clones
-  );
+  const pins = isolated
+    ? []
+    : installerPins(
+        values.flatMap((value) => (repositories.has(value.repo) ? value.at.manifests : [])),
+        run.config.clones
+      );
   for (const [index, value] of values.entries()) {
     const pin = pins.find((each) => each.repository.toLowerCase() === value.repo.toLowerCase());
     if (pin === undefined || pin.ref === "" || !repositories.has(value.repo)) continue;
@@ -4886,6 +4949,11 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // (LEGION_DAEMON_RULE).
   const [imageRepo, ...moreImageRepos] = [...imageRepositories].sort();
   let image: { readonly repo: string; readonly sha: string; readonly at: RepositoryAt } | undefined;
+  if (pod !== undefined && repositories.has(pod.repo)) {
+    const at = await github.at(pod.repo, pod.sha, run.config.excludePaths);
+    image = { repo: pod.repo, sha: pod.sha, at };
+    trees.set(`${pod.repo}@${pod.sha}`, at);
+  }
   if (deployment !== undefined && imageRepo !== undefined) {
     const depSha = commits.get(deployment);
     if (moreImageRepos.length > 0 || depSha === undefined) {
@@ -4973,7 +5041,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const lists = heldManifests.toSorted(
     (a, b) => Number(b.repository === home) - Number(a.repository === home)
   );
-  for (const pin of npmPins(lists)) {
+  for (const pin of isolated ? [] : npmPins(lists)) {
     const id = `package:${pin.package}`;
     if (versions.has(id)) continue;
     const pkg = heldManifests.find(
@@ -5049,6 +5117,20 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
           ),
           run.config.clones
         );
+  if (pod !== undefined) {
+    for (const row of resolved.rows) {
+      if (row.manifestRepository !== pod.repo || row.kind !== "omp-package" || !shipsMember(row))
+        continue;
+      const directory = `${IMAGE_ROOT}${path.posix.basename(path.posix.dirname(row.manifestPath))}`;
+      if (!pod.directories.includes(directory)) continue;
+      const via = {
+        unit: row.unit,
+        repository: row.manifestRepository,
+        manifest: row.manifestPath,
+      };
+      units.set(viaKey(via), { via, why: `${directory} is linked into ${ompProfile}: ${pod.why}` });
+    }
+  }
   /** The rows by which `via`'s unit ships a skill at the session's start (copies.ts's rules): a
    *  pool's from its host's tree at the subagent's start. */
   const shipsAtStart = (via: Via) =>
@@ -5067,7 +5149,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // The prefix rows the same manifests give at the session's start (copies.ts's rules,
   // `resolved.prefixes`) place the read at the unit that installed it then, and at its copy.
   const placedAtStart = new Set<string>();
-  for (const read of input.reads) {
+  for (const read of inferReadUnits ? input.reads : []) {
     const name = read.skill;
     if (name === undefined || placedAtStart.has(read.header)) continue;
     placedAtStart.add(read.header);
@@ -5137,7 +5219,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // The Claude Code plugins the session repository's own Claude Code settings enable, which
   // Claude Code installs for that project and Oh My Pi lists for a session in it
   // (CLAUDE_PLUGIN_RULE): each from the marketplace rows that ship its skills.
-  if (checkout.repo !== undefined && !legion && !notCheckout) {
+  if (checkout.repo !== undefined && devbox && !notCheckout) {
     const repo = checkout.repo.toLowerCase();
     const enabled = new Set(
       resolved.rows
@@ -5546,7 +5628,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     } else {
       contextFiles.push({ repo: project.repository ?? "", path: `project:${project.path ?? ""}` });
     }
-  } else {
+  } else if (devbox || ompProfile === "unknown") {
     // Oh My Pi's one user-level context file (discovery/claude.ts at the pinned tag) is CLAUDE.md
     // in Claude Code's config directory, which a dev box's CLAUDE_CONFIG_DIR names: the `.claude/`
     // of the repository that installs its units, which holds Claude Code's settings there.
@@ -5571,6 +5653,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     }
     if (checkout.repo !== undefined) contextFiles.push({ repo: checkout.repo, path: "levels:" });
   }
+  if (isolated && ompProfile !== "unknown" && !input.recordedPrompt && checkout.repo !== undefined)
+    contextFiles.push({ repo: checkout.repo, path: "levels:" });
 
   const profileSkills: ProfileSkill[] = [];
   for (const skill of [...skills.values()].sort((a, b) =>
@@ -6096,6 +6180,7 @@ async function sessionProfile(
   const profiled = await caseProfile(run, {
     store: store.name,
     context: store.context,
+    ompProfile: sessionProfileName(transcriptPath),
     project,
     sessionStart: header.sessionStart,
     cwd: header.cwd,
@@ -6188,7 +6273,9 @@ async function caseOf(
   // attribute.ts's rules place at the cut's copy (a source); the step comes after the first of
   // them.
   const reads = skillReads(allMessages, run.skill);
-  const placeRead = (copyPath: string) => run.placer.place(store.name, copyPath, run.skill);
+  const ompProfile = sessionProfileName(transcriptPath);
+  const placeRead = (copyPath: string) =>
+    run.placer.place(store.name, copyPath, run.skill, ompProfile);
   // A read by path relative to the session's working directory, or under `~`, resolves against
   // its header's cwd and the home its transcript's path names.
   const dirs = sessionDirs(header.cwd, transcriptPath);
@@ -6348,6 +6435,7 @@ async function caseOf(
   const profileInput = {
     store: store.name,
     context: store.context,
+    ompProfile,
     project,
     sessionStart,
     cwd: header.cwd,
@@ -6809,7 +6897,7 @@ function readCopiesAndPlacer(
       config.stores.map((store) => store.name)
     );
     outputs = count.outputs.length;
-    placing = placer(count.outputs, r4);
+    placing = placer(count.outputs, r4, count.profiles);
   } catch (error) {
     throw new Refused(
       `--count ${countDir} and --copies ${copiesDir} do not place reads as attribute.ts does: ${messageFor(error)}`
@@ -6908,10 +6996,13 @@ async function reprofileCases(
   };
   // Each case's session head, for its working directory.
   const heads = new Map<string, Map<string, SavedHead>>();
+  const transcriptPaths = new Map<string, Map<string, string>>();
   for (const name of new Set(cases.map((c) => c.source.store))) {
     if (!config.stores.some((each) => each.name === name)) continue;
     const hashes = cases.filter((c) => c.source.store === name).map((c) => c.source.pathHash);
     heads.set(name, await sessionHeads(config.psqlCommand, name, hashes, `${given.out}.sessions`));
+    const resolved = await resolvePaths(config.psqlCommand, name, hashes, sessionPathsSql);
+    transcriptPaths.set(name, resolved.paths);
   }
   // When each case's repositories are read: a subagent's at its root's last prompt build before
   // its start (PARENT_LOAD_RULE), a top-level session's at the build its step ran under
@@ -7010,11 +7101,17 @@ async function reprofileCases(
           },
         ];
     const reading = reads.get(c.id);
+    const transcriptPath = transcriptPaths.get(store.name)?.get(c.source.pathHash);
+    const savedProfile = old.find((each) => each.item === OMP_PROFILE_ITEM)?.source;
     let profiled: ProfileResult;
     try {
       profiled = await caseProfile(run, {
         store: store.name,
         context: store.context,
+        ompProfile:
+          transcriptPath === undefined && savedProfile !== undefined
+            ? savedProfile
+            : sessionProfileName(transcriptPath),
         project: legion ? store.context.slice("legion:".length) : undefined,
         reads: profileReads(c.messages, c.skill, c.pathCopy === undefined ? [] : [c.pathCopy]),
         absoluteReads: absoluteReads(c.messages),
@@ -7182,7 +7279,8 @@ function countFiles(countDir: string, stores: readonly string[]): string[] {
     const dir = path.join(countDir, store);
     if (!existsSync(dir)) continue;
     for (const file of readdirSync(dir).sort()) {
-      if (/^\d{4}-\d{2}-\d{2}(T\d{2})?\.txt$/.test(file)) files.push(`${store}/${file}`);
+      if (file === "roots.txt" || /^\d{4}-\d{2}-\d{2}(T\d{2})?\.txt$/.test(file))
+        files.push(`${store}/${file}`);
     }
   }
   return [...files, "run.log"];
@@ -8940,7 +9038,7 @@ async function reprofileTasks(
         digestRow: digestRowOf(task.store),
       });
     } catch (error) {
-      if (error instanceof ProfileRefused) {
+      if (error instanceof ProfileRefused || error instanceof PodNotMeasurable) {
         pulled.set(task.id, { leftOut: error.message });
         continue;
       }

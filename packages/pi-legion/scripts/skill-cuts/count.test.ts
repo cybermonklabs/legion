@@ -18,6 +18,7 @@ import {
   mtimeRange,
   PULL_PAGE,
   pullSql,
+  rootsSql,
   sessionHeadSql,
   sessionPathsSql,
   sessionsSql,
@@ -724,6 +725,17 @@ describe.skipIf(serverDsn === undefined)(
       }
     });
 
+    test("roots.sql reports only the count hash and profile of each stored path", () => {
+      const rows = run(names.first, rootsSql(CONFIG, "store_a"));
+      expect(rows).toHaveLength(3);
+      for (const row of rows) {
+        expect(row).toEqual({
+          hash: expect.stringMatching(/^[0-9a-f]{16}$/),
+          profile: expect.stringMatching(/^(fixture|unknown)$/),
+        });
+      }
+    });
+
     test("the first database: alpha one read and one reference session, the missing skill none, beta one read in the subagent's file, F4's Skill call one read", () => {
       const rows = run(names.first, countSql(CONFIG, "store_a", "2026-11-20"));
       expect(rows).toEqual(captured("F7-count-first.txt"));
@@ -917,13 +929,14 @@ describe.skipIf(serverDsn === undefined)(
       return read;
     };
     /** attribute.ts's count of the fork database's queries of the mtime days `days`. */
-    const forkCount = (...days: string[]) => attribute(CONFIG, days.map(forkQuery), NO_COPIES);
+    const forkCount = (...days: string[]) =>
+      attribute(CONFIG, days.map(forkQuery), NO_COPIES, new Map());
 
     test("a fork written on another mtime day than its parent, whose only read is a copy of the parent's, counts once across the two days' queries", () => {
       // The fork's day query holds the fork and not its parent, so it counts the fork.
       const copyDay = forkQuery("2026-11-21");
       expect(copyDay.rows.map((row) => row.hashes)).toEqual([[fileHash(FORK.copy)]]);
-      const count = attribute(CONFIG, [forkQuery("2026-11-20"), copyDay], NO_COPIES);
+      const count = attribute(CONFIG, [forkQuery("2026-11-20"), copyDay], NO_COPIES, new Map());
       expect(count.readSessions).toBe(1);
       expect(count.stores[0]?.readSessions).toBe(1);
     });
