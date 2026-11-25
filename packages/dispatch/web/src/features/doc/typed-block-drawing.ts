@@ -344,6 +344,7 @@ export function servedAskOf(
 
 /** The character references the renderer writes in a directive attribute's value
  *  (pmdoc's escapeDirectiveAttribute), each with the character it stands for. */
+// kept for one release: release-before-text
 const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
   "&#x22;": '"',
   "&#xA;": "\n",

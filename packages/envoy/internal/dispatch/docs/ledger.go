@@ -998,6 +998,8 @@ func (s *Service) Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger
 // advisory lock (takeRestoreLock) whose reads must see its own writes - an ask row it moved, a
 // version it wrote before the event that names it, a node it stated - and which no request waits
 // on, as the block-id backfill is (backfillBlockIDs). Every other caller joins with Join.
+//
+// kept for one release: decisions-step
 func (s *Service) joinAtOnce(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger) {
 	ledger := &Ledger{service: s, tx: tx}
 	return withLedger(ctx, ledger), ledger

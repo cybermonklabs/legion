@@ -279,6 +279,8 @@ type decisionStepCases struct {
 }
 
 // any reports whether the version is the decisions step's own write.
+//
+// kept for one release: decisions-step
 func (steps decisionStepCases) any() bool {
 	return steps.restore || steps.conversion
 }
@@ -298,6 +300,8 @@ func withDecisionStepWrite(ctx context.Context, steps decisionStepCases) context
 
 // decisionStepCasesOf is the phases ctx's mark names, and what their write added, zero for a
 // context the step did not mark.
+//
+// kept for one release: decisions-step
 func decisionStepCasesOf(ctx context.Context) decisionStepCases {
 	steps, _ := ctx.Value(decisionStepWriteKey{}).(decisionStepCases)
 	return steps
@@ -501,8 +505,10 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 	}
 	input := carryInput{
 		approved: approved, approvedText: approvedText, version: tree, agrees: agrees, answered: answered,
+		// kept for one release: decisions-step
 		decided: decidedAskBlocks(shown), steps: steps,
 	}
+	// kept for one release: decisions-step
 	if steps.restore {
 		input.restored = restoredAskBlocks(approved, tree, steps.restored, steps.restoredShaped)
 	}

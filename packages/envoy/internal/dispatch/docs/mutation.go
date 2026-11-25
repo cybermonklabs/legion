@@ -62,6 +62,8 @@ type versionWrite struct {
 	// conversionCase): set by SnapshotVersion and SettleVersion (snapshotVersion) from the mark the
 	// step alone puts on its context (withDecisionStepWrite), which no route can send, and zero for
 	// every other version, which the restore's and the conversion's carry cases do not reach.
+	//
+	// kept for one release: decisions-step
 	steps decisionStepCases
 }
 
@@ -1816,7 +1818,7 @@ func (s *Service) snapshotVersion(ctx context.Context, artifactID string, actor 
 		authors:          actorSlice(capture.authors),
 		capture:          &capture,
 		docUpdateVersion: rendered.head,
-		steps:            decisionStepCasesOf(ctx),
+		steps:            decisionStepCasesOf(ctx), // kept for one release: decisions-step
 		closedIssue:      closedIssue,
 		settlement:       settles,
 	})
