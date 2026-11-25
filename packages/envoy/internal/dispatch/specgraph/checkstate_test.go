@@ -483,23 +483,28 @@ func TestCheckState(t *testing.T) {
 			c.Results = append(c.Results, later)
 			c.Uncited = map[string]map[string]string{later.Commit: {c.check: "test-not-in-code"}}
 		}, want: CheckState{State: "unknown", Reason: "planted_on_outside_history", Detail: "c9"}},
-		{name: "R48, a refusal at planted_on keeps a later missed record planted on c3, a commit of the history whose results count at c1: a missed example is no support of true", change: func(c *checkCase) {
+		// The rule that replaces The Spec's R8 makes one exception to "A result counts only at the
+		// commit that it read": "A failing example that a check's test caught". So a failing example
+		// that missed its fault counts only at the commit that it counts from, and a missed record
+		// planted on c3 says nothing at c1, with CI's refusal at c3 or without it, whatever changed
+		// between them.
+		{name: "R48 and the rule that replaces The Spec's R8, a refusal at planted_on and a later missed record planted on c3, where no file of the tie changed: the missed record counts nowhere at c1, true from c1", change: func(c *checkCase) {
 			c.commit("c3", "c1", "docs/x.md")
 			c.Results = append(c.Results, laterMissed(func(r *Result) { r.PlantedOn, r.Commit = "c3", "f-c3" }))
 			c.Uncited = map[string]map[string]string{"c3": {c.check: "test-not-in-code"}}
-		}, want: CheckState{State: "unknown", Reason: "failing_example_missed"}},
-		{name: "control: a later missed failing example planted on c3, a commit of the history that does not carry to c1", change: func(c *checkCase) {
-			c.commit("c3", "c1", "packages/envoy/cmd/listener/main.go")
+		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+		{name: "the rule that replaces The Spec's R8, a later missed failing example planted on c3, where no file of the tie changed, counts nowhere at c1: true from c1", change: func(c *checkCase) {
+			c.commit("c3", "c1", "docs/x.md")
 			c.Results = append(c.Results, laterMissed(func(r *Result) { r.PlantedOn, r.Commit = "c3", "f-c3" }))
 		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
 		{name: "control: the later failing example that missed its fault, planted on c1 with its path: unknown (failing_example_missed)", change: func(c *checkCase) {
 			c.Results = append(c.Results, laterMissed(func(*Result) {}))
 		}, want: CheckState{State: "unknown", Reason: "failing_example_missed"}},
-		{name: "a later failing example planted on c1 that missed its fault counts at c2, where no file of the tie changed, beside c2's own pass", change: func(c *checkCase) {
+		{name: "the rule that replaces The Spec's R8, a later failing example planted on c1 that missed its fault counts nowhere at c2, where no file of the tie changed: true from c2's own pass", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
 			c.Results = append(c.Results, laterMissed(func(*Result) {}), checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
-		}, want: CheckState{State: "unknown", Reason: "failing_example_missed"}},
+		}, want: CheckState{State: "true", Reason: "passed", From: "c2"}},
 		// A fault path that is empty or only white space is no path: a record whose paths are all
 		// such reads as one with no path, and one with such a path beside a real one reads unknown with
 		// a reason of its own, and is neither left out nor counted.
@@ -607,11 +612,14 @@ func TestCheckState(t *testing.T) {
 			c.Results = append(c.Results, programResult(checkStateGraphProgram, ResultRun, OutcomeCouldNotRun, "c1", 2*time.Hour))
 			c.Uncited = map[string]map[string]string{"c1": {checkStateGraphProgram.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateGraphProgram.ID, State: "unknown", Reason: "could_not_run"}},
-		{name: "R48, a refusal of a program check of production at the commit of the test of a newer failing example that missed its fault keeps that example", change: func(c *checkCase) {
+		// A failing example of the test of c1 that missed its fault counts only at c1 (the rule that
+		// replaces The Spec's R8 carries a caught one alone), so at c2 it says nothing, with CI's
+		// refusal at c1 as without it, and the failing example that the test of c2 caught decides.
+		{name: "R48 and the rule that replaces The Spec's R8, a refusal of a program check of production at the commit of the test of a newer failing example that missed its fault: that example counts nowhere at c2, true from d2", change: func(c *checkCase) {
 			c.programPass(checkStateProductionProgram, "c2", "c2")
 			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultFailingExample, OutcomePass, "c1", 70*time.Minute))
 			c.Uncited = map[string]map[string]string{"c1": {checkStateProductionProgram.ID: "test-not-in-code"}}
-		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "unknown", Reason: "failing_example_missed"}},
+		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "true", Reason: "passed", From: "d2"}},
 		{name: "control: a refusal of a program check of production at the commit of the test of a newer pass takes out that pass, and the older failure decides", change: func(c *checkCase) {
 			c.programPass(checkStateProductionProgram, "c1", "c2")
 			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultRun, OutcomeFail, "c2", 30*time.Minute))

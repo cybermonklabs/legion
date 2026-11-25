@@ -102,13 +102,13 @@ type builtBase struct {
 // those that support true (R48: "At that commit, such a check reads unknown"), so a rule by which a
 // refusal took out a failure, or let newer evidence decide at the refused commit, would read the
 // later pass true. And carry with a later failing example, planted on c1 in a fault of its own of
-// two paths, carry's and a second source file of the tie, on which the test missed its fault: the
-// check reads unknown
-// (failing_example_missed) at c2 and at m2, and the member sweep takes out its planted_on and its
-// fault_paths, and the sweep writes each of its two fault paths as " ", a blank path beside a real
-// one, which leaves a record that does not say where its fault was planted or what it changed,
-// newer than carry's caught one, so that a rule by which such a record counted nowhere and let the
-// older caught one decide would read the check true (deriveChecks, step 7). And the same later
+// two paths, carry's and a second source file of the tie, on which the test missed its fault: it
+// counts only at c1 (the rule that replaces The Spec's R8 carries a caught one alone), so the check
+// reads true at c2 from c2's own pass and c1's caught example; the member sweep takes out its
+// planted_on and its fault_paths, and the sweep writes each of its two fault paths as " ", a blank
+// path beside a real one, which leaves a record that does not say where its fault was planted or
+// what it changed, newer than carry's caught one, and each moves the check away from true
+// (deriveChecks, step 7). And the same later
 // failing example with no planted_on: the check reads unknown (no_planted_on) at c2 and at m2, and
 // the refusal sweep refuses the check at its own commit, f2, which must not take it out; the member
 // sweep adds each planted_on that a record names and c9, no commit of the history. And the same
@@ -201,8 +201,9 @@ func builtBases() map[string]builtBase {
 	// a-restart-loses-no-message at c1, or 2, from 1, its caught failing example planted on c1, with
 	// the members of its set, each after carry's own six records, and the writers of a further edit),
 	// the state that it reads at each commit of at (readsAt): unknown (disagree) where a failure and
-	// a later pass count, unknown (failing_example_missed) with a later failing example that missed
-	// its fault, unknown (no_planted_on) with a failing example planted by no step, later or caught,
+	// a later pass count, true from c2's own pass with a later failing example planted on c1 that
+	// missed its fault, which counts only at c1, unknown (no_planted_on) with a failing example
+	// planted by no step, later or caught,
 	// and unknown (planted_on_outside_history) with a later one planted on c9; and the read-back of
 	// the facts as the reader reads them, stated apart from the input, so that a builder, or an input
 	// of it, that adds nothing or another thing fails by name.
@@ -235,7 +236,7 @@ func builtBases() map[string]builtBase {
 		{"carry with a later failing example planted on c1 that missed its fault",
 			"a failing example after carry's caught one, at the commit f2, planted on c1 with carry's fault path and a second source file of the tie, on which the test missed its fault",
 			[]addedResult{{1, map[string]any{"commit": "f2", "outcome": "pass", "seq": 7, "fault_paths": []any{faultPath, secondPath}}}}, nil,
-			CheckState{State: checkUnknown, Reason: reasonFailingExampleMissed}, []string{"c2", "m2"},
+			CheckState{State: CheckTrue, Reason: reasonPassed, From: "c2"}, []string{"c2"},
 			func(s Scenario) bool {
 				return slices.ContainsFunc(s.Results, func(r Result) bool {
 					return r.Check == code && r.Kind == ResultFailingExample && r.Outcome == OutcomePass && r.Commit == "f2" && r.PlantedOn == "c1" &&

@@ -56,7 +56,7 @@ func subjectFault(p Point, now time.Time) string {
 // 2), so each can move a state away from what the evidence without it gives, and never toward
 // true, and the caller gives JobRuns and Uncited, empty for none, and Input.check refuses nil.
 // Where a result counts is deriveChecks' steps 4 and 7: only by the ties and the history does one
-// count at another commit, a failing example, caught or missed, or a result of the test of a
+// count at another commit, a failing example that its test caught, or a result of the test of a
 // program check of production or of the graph. With no tie, or no history, none counts at another
 // commit, so a result at another commit then says nothing about this one. So a caller that gives
 // no Ties or no History is refused too, and one that states that it has none gives CommitTies{} or
@@ -228,10 +228,10 @@ const (
 //     says nothing of the code where its fault was planted. For a query or an agent of the code, one
 //     that counts at S from its commit by the same rule; for a program check of production or the
 //     graph, one whose TestCommit counts at S.Commit by the same rule (R9: "its test, as it is
-//     now"); for a query or an agent of production or the graph, the newest. The rule on files
-//     counts a failing example whose test missed its fault as one whose test caught it, which it
-//     names: a missed one that counts keeps C from true as the newest (failing_example_missed), so
-//     it moves a state away from true and never toward it (countingFaults).
+//     now"); for a query or an agent of production or the graph, the newest. A failing example
+//     whose test missed its fault counts only at the commit that it counts from, never at another
+//     by the rule on files, which carries a caught one alone (faultCountsAt); where it counts, as
+//     the newest it keeps C from true (failing_example_missed).
 //     None: unknown, no_failing_example; it did not fail: unknown, failing_example_missed; for a
 //     program check, its record does not show that an agent that did not write the test wrote the
 //     fault (R9): it names no author of the fault, no author of the test, or the author of the
@@ -592,15 +592,21 @@ func (j *checkJudge) countingFaults(c Check, faults []Result) []Result {
 }
 
 // faultCountsAt is whether the failing example r of c, a check whose results count at a commit
-// (countsAtACommit), counts at the subject (step 7): by the commit that it counts from
-// (faultCommit), and for a program check of the code never at a subject at its Commit, which CI
-// tested. countingFaults and withoutRefused read it alike, so a refusal marks as counted only a
-// failing example that would count.
+// (countsAtACommit), counts at the subject (step 7): at the commit that it counts from
+// (faultCommit), and at another commit by the ties (carries) only when its test caught its fault,
+// the one exception that the rule that replaces The Spec's R8 makes to "A result counts only at the
+// commit that it read" ("A failing example that a check's test caught"); for a program check of the
+// code, never at a subject at its Commit, which CI tested. countingFaults and withoutRefused read
+// it alike, so a refusal marks as counted only a failing example that would count.
 func (j *checkJudge) faultCountsAt(c Check, r Result) bool {
-	if countsFromPlantedOn(c) && r.Commit == j.in.Subject.Commit {
+	commit := j.faultCommit(c, r)
+	switch {
+	case countsFromPlantedOn(c) && r.Commit == j.in.Subject.Commit:
 		return false
+	case r.Outcome != OutcomeFail:
+		return commit != "" && commit == j.in.Subject.Commit
 	}
-	return j.carries(c.ID, j.faultCommit(c, r))
+	return j.carries(c.ID, commit)
 }
 
 // countsFromPlantedOn is whether c counts a failing example from the commit that the step planted
