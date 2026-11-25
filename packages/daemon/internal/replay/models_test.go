@@ -133,11 +133,11 @@ type queuedWait struct {
 }
 
 // queueLinesOf is the queue file's lines of waits, each of its own pull request, numbered from 1:
-// each one's added_to_merge_queue and its merged.
+// each one's added_to_merge_queue and its merged, the events numbered from 1 in turn.
 func queueLinesOf(waits []queuedWait) []json.RawMessage {
 	var lines []json.RawMessage
 	for i, wait := range waits {
-		lines = append(lines, queueLine(i+1, queueAdded, wait.added), queueLine(i+1, queueMerged, wait.left))
+		lines = append(lines, queueLine(2*i+1, i+1, queueAdded, wait.added), queueLine(2*i+2, i+1, queueMerged, wait.left))
 	}
 	return lines
 }

@@ -26,11 +26,15 @@ import (
 // inputsWindow's issues name, one page each: #12 is queued and merged, with a comment between, and
 // #13 is queued and taken out of the queue.
 var inputsTimelines = map[int][][]byte{
-	12: {[]byte(`[{"id":1,"event":"added_to_merge_queue","actor":{"login":"person-agent[bot]"},"commit_id":null,"created_at":"2001-03-05T09:40:00Z"},` +
+	12: {[]byte(`[{"id":1,"url":"https://api.github.com/repos/cybermonklabs/legion/issues/events/1","event":"added_to_merge_queue",` +
+		`"actor":{"login":"person-agent[bot]"},"commit_id":null,"created_at":"2001-03-05T09:40:00Z"},` +
 		`{"id":2,"event":"commented","actor":{"login":"person-1"},"created_at":"2001-03-05T09:41:00Z"},` +
-		`{"id":3,"event":"merged","actor":{"login":"person-agent[bot]"},"commit_id":"0123456789abcdef0123456789abcdef01234567","created_at":"2001-03-05T09:50:00Z"}]`)},
-	13: {[]byte(`[{"id":4,"event":"added_to_merge_queue","actor":{"login":"person-agent[bot]"},"commit_id":null,"created_at":"2001-03-05T10:00:00Z"},` +
-		`{"id":5,"event":"removed_from_merge_queue","actor":{"login":"person-agent[bot]"},"commit_id":null,"created_at":"2001-03-05T10:05:00Z"}]`)},
+		`{"id":3,"url":"https://api.github.com/repos/cybermonklabs/legion/issues/events/3","event":"merged","actor":{"login":"person-agent[bot]"},` +
+		`"commit_id":"0123456789abcdef0123456789abcdef01234567","created_at":"2001-03-05T09:50:00Z"}]`)},
+	13: {[]byte(`[{"id":4,"url":"https://api.github.com/repos/cybermonklabs/legion/issues/events/4","event":"added_to_merge_queue",` +
+		`"actor":{"login":"person-agent[bot]"},"commit_id":null,"created_at":"2001-03-05T10:00:00Z"},` +
+		`{"id":5,"url":"https://api.github.com/repos/cybermonklabs/legion/issues/events/5","event":"removed_from_merge_queue",` +
+		`"actor":{"login":"person-agent[bot]"},"commit_id":null,"created_at":"2001-03-05T10:05:00Z"}]`)},
 }
 
 // inputsEvent is an issue event of ACME's issue key, as Dispatch's issue event log serves it.
@@ -89,7 +93,8 @@ func inputsWindow(t *testing.T) Window {
 		},
 		"acme/other": {{SHA: stubSHA(0x710), At: capturedTime(t, "2026-11-20T01:30:00Z"), Branch: "main"}},
 	}
-	w.Queue["cybermonklabs/legion"] = []json.RawMessage{json.RawMessage(`{"pullRequest":99,"item":{"id":9,"event":"added_to_merge_queue",` +
+	w.Queue["cybermonklabs/legion"] = []json.RawMessage{json.RawMessage(`{"pullRequest":99,"item":{"id":9,` +
+		`"url":"https://api.github.com/repos/cybermonklabs/legion/issues/events/9","event":"added_to_merge_queue",` +
 		`"actor":{"login":"person-agent[bot]"},"commit_id":null,"created_at":"2001-03-05T08:30:00Z"}}`)}
 	return w
 }

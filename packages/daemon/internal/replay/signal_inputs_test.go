@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -62,26 +63,26 @@ func TestEachSignalInputReaderReadsItsCapturedShape(t *testing.T) {
 			Text: "launcher: memory guard: started act_percent=85 floor_percent=10 wait=5s interval=100ms limit=8589934592 reading=23052288"}, started},
 	}
 
-	queue := func(pr int, event, at, actor, commit string) QueueEvent {
-		return QueueEvent{PullRequest: pr, Event: event, At: capturedTime(t, at), Actor: actor, Commit: commit}
+	queue := func(pr int, id int64, event, at, actor, commit string) QueueEvent {
+		return QueueEvent{PullRequest: pr, Event: event, ID: id, Repo: "cybermonklabs/legion", At: capturedTime(t, at), Actor: actor, Commit: commit}
 	}
 	const agent, mergeQueue = "person-agent[bot]", "github-merge-queue[bot]"
 	timelines := map[string][]QueueEvent{
 		"github/timeline-5150.json": {
-			queue(5150, "added_to_merge_queue", "2026-11-23T02:27:46Z", agent, ""),
-			queue(5150, "merged", "2026-11-23T18:25:55Z", agent, "df18d9beddb21e3a2755887f68a13318f68b4659"),
-			queue(5150, "removed_from_merge_queue", "2026-11-23T18:25:55Z", mergeQueue, ""),
+			queue(5150, 36963393320, "added_to_merge_queue", "2026-11-23T02:27:46Z", agent, ""),
+			queue(5150, 37043365149, "merged", "2026-11-23T18:25:55Z", agent, "df18d9beddb21e3a2755887f68a13318f68b4659"),
+			queue(5150, 37043365837, "removed_from_merge_queue", "2026-11-23T18:25:55Z", mergeQueue, ""),
 		},
 		"github/timeline-4922.json": {
-			queue(4922, "added_to_merge_queue", "2026-11-23T02:36:07Z", agent, ""),
-			queue(4922, "removed_from_merge_queue", "2026-11-23T17:55:05Z", agent, ""),
+			queue(4922, 36963821391, "added_to_merge_queue", "2026-11-23T02:36:07Z", agent, ""),
+			queue(4922, 37040372393, "removed_from_merge_queue", "2026-11-23T17:55:05Z", agent, ""),
 		},
 		"github/timeline-4910.json": {
-			queue(4910, "added_to_merge_queue", "2026-11-22T19:51:26Z", agent, ""),
-			queue(4910, "removed_from_merge_queue", "2026-11-23T01:39:21Z", agent, ""),
-			queue(4910, "added_to_merge_queue", "2026-11-23T01:39:23Z", agent, ""),
-			queue(4910, "removed_from_merge_queue", "2026-11-23T02:46:55Z", mergeQueue, ""),
-			queue(4910, "merged", "2026-11-23T02:46:58Z", agent, "08af61f72c1e54f0b07901bbc343a5571d66a68d"),
+			queue(4910, 36943955399, "added_to_merge_queue", "2026-11-22T19:51:26Z", agent, ""),
+			queue(4910, 36960903624, "removed_from_merge_queue", "2026-11-23T01:39:21Z", agent, ""),
+			queue(4910, 36960905107, "added_to_merge_queue", "2026-11-23T01:39:23Z", agent, ""),
+			queue(4910, 36964362297, "removed_from_merge_queue", "2026-11-23T02:46:55Z", mergeQueue, ""),
+			queue(4910, 36964364704, "merged", "2026-11-23T02:46:58Z", agent, "08af61f72c1e54f0b07901bbc343a5571d66a68d"),
 		},
 	}
 
@@ -281,4 +282,40 @@ func TestEachSignalInputReaderReadsItsCapturedShape(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A queue line is read by its event's id and by the repository its event's url names, so a line
+// with no id, or whose url names no repository, is refused, the refusal saying which: GitHub gives
+// each timeline event its id and the url <API>/repos/<owner>/<name>/issues/events/<id>. A line
+// with both is read, the API at another host and path too.
+func TestParseQueueLineRefusesALineWithNoIDOrRepository(t *testing.T) {
+	line := func(item string) []byte {
+		return []byte(`{"pullRequest":7,"item":{` + item + `"event":"added_to_merge_queue","created_at":"2001-03-05T09:40:00Z",` +
+			`"actor":{"login":"acme-person"}}}`)
+	}
+	const url = `"url":"https://api.github.com/repos/acme/new-name/issues/events/77",`
+	for _, tc := range []struct {
+		name, item, refusal string
+	}{
+		{"an event with its id and url", `"id":77,` + url, ""},
+		{"an event of an API at another host and path", `"id":77,"url":"https://github.example.invalid/api/v3/repos/acme/new-name/issues/events/77",`, ""},
+		{"no id", url, "holds no event id"},
+		{"an id of null", `"id":null,` + url, "holds no event id"},
+		{"an id of zero", `"id":0,` + url, "holds no event id"},
+		{"no url", `"id":77,`, "names no repository"},
+		{"a url of null", `"id":77,"url":null,`, "names no repository"},
+		{"the url of a user", `"id":77,"url":"https://api.github.com/users/acme-person",`, "names no repository"},
+		{"the url of an issue", `"id":77,"url":"https://api.github.com/repos/acme/new-name/issues/7",`, "names no repository"},
+		{"a link a neutralization numbered", `"id":77,"url":"https://example.invalid/link-1",`, "names no repository"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseQueueLine(line(tc.item))
+			switch {
+			case tc.refusal == "" && err != nil:
+				t.Errorf("ParseQueueLine refuses the line: %v", err)
+			case tc.refusal != "" && (err == nil || !strings.Contains(err.Error(), tc.refusal)):
+				t.Errorf("ParseQueueLine of the line = %v, want a refusal that says the line %s", err, tc.refusal)
+			}
+		})
+	}
 }

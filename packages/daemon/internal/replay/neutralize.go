@@ -83,10 +83,11 @@ type NeutralMap struct {
 // to numbered neutral text. The inputs of the signals are renamed by the same rules: a pod's name
 // and a pull request's branch have their keys and the logins of the window's people renamed
 // (renameLogins), the launcher's lines and the pods' memory the names their shapes show, the
-// merge queue's events their GitHub accounts (login, numeric id, node id and links) and the
-// repository of their file, the project's settings events as Dispatch's events (a token's name
-// and a source's last error among them), and the default assignee as a person. It changes values
-// alone: every member, JSON type and list length of every line is the record's, so the neutral
+// merge queue's events their GitHub accounts (login, numeric id, node id and links), the
+// repository of their file and the repository their url names, the url keeping its form, the
+// project's settings events as Dispatch's events (a token's name and a source's last error among
+// them), and the default assignee as a person. It changes values alone: every member, JSON type
+// and list length of every line is the record's, so the neutral
 // window is read by the same readers. The daemon's msgs, document names, ranks, statuses and times
 // are kept, and so are the daemon's own words in its lines, their names renamed. It writes the map
 // to cfg.Map and returns it. It refuses a map
@@ -492,6 +493,9 @@ var (
 	daemonMachine = regexp.MustCompile(`^legion-([a-z0-9]+)-daemon$`)
 	// githubRepoURL is a link to a repository on GitHub, its owner/name and the rest of its path.
 	githubRepoURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(.*)$`)
+	// githubAPIRepoURL is a link to a repository in GitHub's REST API, as the url of each merge
+	// queue event is (ParseQueueLine), its owner/name and the rest of its path.
+	githubAPIRepoURL = regexp.MustCompile(`^https://api\.github\.com/repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(.*)$`)
 	// workspacePath is a Legion workspace on a pod, /legion/workspaces/<owner>/<name>/<issue>….
 	workspacePath = regexp.MustCompile(`^/legion/workspaces/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(.*)$`)
 	// anyAddress is a network address standing anywhere in a string (addressShape).
@@ -616,8 +620,9 @@ func numberFollowsKey(object jsonObject) {
 
 // register takes from s, standing at f, the projects, keys, repositories and logins the first walk
 // registers: a project member's value, a value that is one issue key, a repository member's value,
-// the repository of a workspace or of a link to GitHub, the window's events' keys, and a person's
-// login that is no email, in a Dispatch event or as a GitHub account's login in the merge queue.
+// the repository of a workspace or of a link to GitHub or to its REST API, the window's events'
+// keys, and a person's login that is no email, in a Dispatch event or as a GitHub account's login
+// in the merge queue.
 func (n *neutralizer) register(s string, f field) {
 	switch {
 	case f.key == "project":
@@ -634,6 +639,9 @@ func (n *neutralizer) register(s string, f field) {
 		n.addRepo(match[1])
 	}
 	if match := githubRepoURL.FindStringSubmatch(s); match != nil {
+		n.addRepo(match[1])
+	}
+	if match := githubAPIRepoURL.FindStringSubmatch(s); match != nil {
 		n.addRepo(match[1])
 	}
 	if claim.IsIssueKey(s) {
@@ -1055,12 +1063,18 @@ func (n *neutralizer) repo(repo string) string {
 }
 
 // link is the neutral form of a link: one to this repository, or to a registered repository on
-// GitHub, with its repository renamed and the names in the rest of it; any other a numbered link
-// of example.invalid, since its host and path are the record's.
+// GitHub or in its REST API, keeps its form with its repository renamed and the names in the rest
+// of it, so a merge queue event's url still names its repository (ParseQueueLine); any other is a
+// numbered link of example.invalid, since its host and path are the record's.
 func (n *neutralizer) link(link string) string {
-	if match := githubRepoURL.FindStringSubmatch(link); match != nil {
-		if neutral, known := n.m.Repos[match[1]]; known {
-			return "https://github.com/" + neutral + n.rename(match[2])
+	for _, form := range []struct {
+		pattern *regexp.Regexp
+		prefix  string
+	}{{githubRepoURL, "https://github.com/"}, {githubAPIRepoURL, "https://api.github.com/repos/"}} {
+		if match := form.pattern.FindStringSubmatch(link); match != nil {
+			if neutral, known := n.m.Repos[match[1]]; known {
+				return form.prefix + neutral + n.rename(match[2])
+			}
 		}
 	}
 	return n.named(n.m.Links, "link", link, func(i int) string { return fmt.Sprintf("https://example.invalid/link-%d", i) })

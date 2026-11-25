@@ -477,7 +477,8 @@ func TestNeutralizeRenamesTheSignalInputs(t *testing.T) {
 	}
 	w.Memory = []MemorySample{{Minute: at(3), Pod: pod, Bytes: 4096}}
 	w.Provider = []ProviderMinute{{Minute: at(3), Uncached: 7, Limit: &limit, LimitSource: &source, Own: 1}}
-	w.Queue = map[string][]json.RawMessage{privateRepo: {json.RawMessage(`{"pullRequest":88,"item":{"id":5,"event":"added_to_merge_queue",` +
+	w.Queue = map[string][]json.RawMessage{privateRepo: {json.RawMessage(`{"pullRequest":88,"item":{"id":5,` +
+		`"url":"https://api.github.com/repos/` + privateRepo + `/issues/events/5","event":"added_to_merge_queue",` +
 		`"actor":{"login":"` + privateLogin + `","id":4242,"node_id":"U_hush4242","avatar_url":"https://avatars.githubusercontent.com/u/4242?v=4",` +
 		`"url":"https://api.github.com/users/` + privateLogin + `","html_url":"https://github.com/` + privateLogin + `","type":"User"},` +
 		`"commit_id":null,"created_at":"2026-03-02T10:05:00Z"}}`)}}
@@ -536,8 +537,9 @@ func TestNeutralizeRenamesTheSignalInputs(t *testing.T) {
 	if !reflect.DeepEqual(shapeOf(t, queue[0]), shapeOf(t, w.Queue[privateRepo][0])) {
 		t.Errorf("the queue's line is\n  %s\nwhose shape differs from the record's\n  %s", queue[0], w.Queue[privateRepo][0])
 	}
-	if event, err := ParseQueueLine(queue[0]); err != nil || event.Actor != login || event.PullRequest != 88 || event.Event != "added_to_merge_queue" {
-		t.Errorf("the queue's line reads as %+v (%v), want pull request 88 added to the queue by %s", event, err, login)
+	if event, err := ParseQueueLine(queue[0]); err != nil || event.Actor != login || event.PullRequest != 88 || event.Event != "added_to_merge_queue" ||
+		event.ID != 5 || event.Repo != "acme/repo-1" {
+		t.Errorf("the queue's line reads as %+v (%v), want event 5 of pull request 88 of acme/repo-1 added to the queue by %s", event, err, login)
 	}
 	for i, event := range w.Settings {
 		if !reflect.DeepEqual(shapeOf(t, neutral.Settings[i]), shapeOf(t, event)) {
@@ -565,6 +567,7 @@ func TestNeutralizeRenamesTheSignalInputs(t *testing.T) {
 		{"the mapping's new name", pick(t, neutral.Settings[2], "payload", "mapping", "renamed_to"), names.Repos["hushcorp/vault-next"]},
 		{"the queue actor's links", pick(t, queue[0], "item", "actor", "url"), names.Links["https://api.github.com/users/"+privateLogin]},
 		{"the queue actor's id", pick(t, queue[0], "item", "actor", "id"), 1.0},
+		{"the queue event's url", pick(t, queue[0], "item", "url"), "https://api.github.com/repos/acme/repo-1/issues/events/5"},
 	} {
 		if !reflect.DeepEqual(check.got, check.want) || check.want == "" || check.want == nil {
 			t.Errorf("%s is %v, want %v", check.what, check.got, check.want)

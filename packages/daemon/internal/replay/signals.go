@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -307,35 +308,52 @@ type queueWait struct {
 	added, left time.Time
 }
 
-// queueWaits is each wait the queue files' lines record, by the moment it began: each pull
-// request's events in time order, the record's own order among those of one moment, a wait from
-// each added_to_merge_queue of a pull request standing in no wait to its next merged or
-// removed_from_merge_queue, so a drop and a re-add are two waits, and the removal GitHub records
-// beside a merge ends nothing. It refuses a line ParseQueueLine refuses.
+// queueWaits is each wait the queue files' lines record, by the moment it began. It reads the
+// events of every file together, each by the repository its url names and its pull request, and
+// each event id once, at the first line that carries it, the files in the order of their names:
+// GitHub answers a renamed repository's former name with the repository's own events, so a window
+// collected under both names holds some events in two files, and a pull request's events can be
+// split between them. Of each pull request's events in time order, the record's own order among
+// those of one moment, it makes a wait from each added_to_merge_queue of a pull request standing
+// in no wait to its next merged or removed_from_merge_queue, so a drop and a re-add are two waits,
+// and the removal GitHub records beside a merge ends nothing. It refuses a line ParseQueueLine
+// refuses.
 func queueWaits(queue map[string][]json.RawMessage) ([]queueWait, error) {
-	var waits []queueWait
-	for _, repo := range slices.Sorted(maps.Keys(queue)) {
-		byPull := make(map[int][]QueueEvent)
-		for i, line := range queue[repo] {
+	type pullRequest struct {
+		repo   string
+		number int
+	}
+	byPull := make(map[pullRequest][]QueueEvent)
+	seen := make(map[int64]bool)
+	for _, file := range slices.Sorted(maps.Keys(queue)) {
+		for i, line := range queue[file] {
 			event, err := ParseQueueLine(line)
 			if err != nil {
-				return nil, fmt.Errorf("replay: line %d of the merge queue of %s: %w", i+1, repo, err)
+				return nil, fmt.Errorf("replay: line %d of the merge queue of %s: %w", i+1, file, err)
 			}
-			byPull[event.PullRequest] = append(byPull[event.PullRequest], event)
+			if seen[event.ID] {
+				continue
+			}
+			seen[event.ID] = true
+			pull := pullRequest{repo: event.Repo, number: event.PullRequest}
+			byPull[pull] = append(byPull[pull], event)
 		}
-		for _, pull := range slices.Sorted(maps.Keys(byPull)) {
-			events := byPull[pull]
-			slices.SortStableFunc(events, func(a, b QueueEvent) int { return a.At.Compare(b.At) })
-			open := -1
-			for _, event := range events {
-				switch {
-				case event.Event == queueAdded && open < 0:
-					waits = append(waits, queueWait{added: event.At})
-					open = len(waits) - 1
-				case event.Event != queueAdded && open >= 0:
-					waits[open].left = event.At
-					open = -1
-				}
+	}
+	var waits []queueWait
+	for _, pull := range slices.SortedFunc(maps.Keys(byPull), func(a, b pullRequest) int {
+		return cmp.Or(strings.Compare(a.repo, b.repo), cmp.Compare(a.number, b.number))
+	}) {
+		events := byPull[pull]
+		slices.SortStableFunc(events, func(a, b QueueEvent) int { return a.At.Compare(b.At) })
+		open := -1
+		for _, event := range events {
+			switch {
+			case event.Event == queueAdded && open < 0:
+				waits = append(waits, queueWait{added: event.At})
+				open = len(waits) - 1
+			case event.Event != queueAdded && open >= 0:
+				waits[open].left = event.At
+				open = -1
 			}
 		}
 	}

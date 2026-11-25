@@ -166,11 +166,17 @@ func killsWindow(t *testing.T) Window {
 	return b.build()
 }
 
-// queueLine is a line of a window's queue file: pull request n's merge queue event of kind at at,
-// as GitHub's timeline serves it.
-func queueLine(n int, kind string, at time.Time) json.RawMessage {
-	return json.RawMessage(fmt.Sprintf(`{"pullRequest":%d,"item":{"event":%q,"created_at":%q,"actor":{"login":"acme-person"}}}`, n, kind,
-		at.Format(time.RFC3339)))
+// queueLine is a line of a window's queue file: event id, of kind at at, of pull request n of
+// builtRepository, as GitHub's timeline serves it (queueLineOf).
+func queueLine(id, n int, kind string, at time.Time) json.RawMessage {
+	return queueLineOf(builtRepository, id, n, kind, at)
+}
+
+// queueLineOf is a line of a window's queue file: event id, of kind at at, of pull request n of
+// repo, as GitHub's timeline serves it, its url naming repo and the event.
+func queueLineOf(repo string, id, n int, kind string, at time.Time) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"pullRequest":%d,"item":{"id":%d,"url":"https://api.github.com/repos/%s/issues/events/%d",`+
+		`"event":%q,"created_at":%q,"actor":{"login":"acme-person"}}}`, n, id, repo, id, kind, at.Format(time.RFC3339)))
 }
 
 // queueWindow is a window from 09:00 to 18:00 whose inputs reach back to 01:00, with a record of
@@ -188,22 +194,75 @@ func queueWindow(t *testing.T) Window {
 	b.reaches(8 * time.Hour)
 	b.boot(clock(1, 0))
 	b.window.Queue = map[string][]json.RawMessage{builtRepository: {
-		queueLine(1, queueAdded, clock(2, 0)),
-		queueLine(1, queueMerged, clock(3, 0)),
-		queueLine(1, queueRemoved, clock(3, 0)),
-		queueLine(2, queueAdded, clock(2, 30)),
-		queueLine(2, queueRemoved, clock(4, 30)),
-		queueLine(2, queueAdded, clock(5, 0)),
-		queueLine(2, queueMerged, clock(5, 30)),
-		queueLine(3, queueAdded, clock(6, 0)),
-		queueLine(3, queueMerged, clock(10, 0)),
-		queueLine(4, queueAdded, clock(9, 0)),
-		queueLine(4, queueRemoved, clock(11, 0)),
-		queueLine(5, queueAdded, clock(12, 0)),
-		queueLine(5, queueMerged, clock(15, 0)),
+		queueLine(1, 1, queueAdded, clock(2, 0)),
+		queueLine(2, 1, queueMerged, clock(3, 0)),
+		queueLine(3, 1, queueRemoved, clock(3, 0)),
+		queueLine(4, 2, queueAdded, clock(2, 30)),
+		queueLine(5, 2, queueRemoved, clock(4, 30)),
+		queueLine(6, 2, queueAdded, clock(5, 0)),
+		queueLine(7, 2, queueMerged, clock(5, 30)),
+		queueLine(8, 3, queueAdded, clock(6, 0)),
+		queueLine(9, 3, queueMerged, clock(10, 0)),
+		queueLine(10, 4, queueAdded, clock(9, 0)),
+		queueLine(11, 4, queueRemoved, clock(11, 0)),
+		queueLine(12, 5, queueAdded, clock(12, 0)),
+		queueLine(13, 5, queueMerged, clock(15, 0)),
 	}}
 	b.window.Signals = map[string][]Span{SignalQueue: {{From: clock(1, 0), To: clock(18, 0)}}}
 	return b.build()
+}
+
+// GitHub answers a renamed repository's former name with the repository's own events, so a
+// window whose queue was collected under acme/old-name, the former name of acme/new-name, and
+// under acme/new-name holds a file of each, every event's url naming acme/new-name and some
+// events in both files. The two files give the waits of their union, each event once, as one
+// file of the union does: #1, in both files, waits once, from 02:00 to 03:00; #2, entered in
+// the former name's file alone and merged in the current name's alone, waits once, from 04:00 to
+// 06:00, and not from 04:00 on with no end; #3, in the current name's file alone, waits from
+// 07:00 until it is dropped at 08:00; and #4, in the former name's file alone, waits from 09:00
+// to 10:00. It fails where the waits are built from each file apart.
+func TestQueueWaitsCountEachEventOnceAcrossARenamedRepository(t *testing.T) {
+	const current, former = "acme/new-name", "acme/old-name"
+	event := func(id, n int, kind string, at time.Time) json.RawMessage {
+		return queueLineOf(current, id, n, kind, at)
+	}
+	added1, merged1 := event(11, 1, queueAdded, clock(2, 0)), event(12, 1, queueMerged, clock(3, 0))
+	added2, merged2 := event(21, 2, queueAdded, clock(4, 0)), event(22, 2, queueMerged, clock(6, 0))
+	added3, removed3 := event(31, 3, queueAdded, clock(7, 0)), event(32, 3, queueRemoved, clock(8, 0))
+	added4, merged4 := event(41, 4, queueAdded, clock(9, 0)), event(42, 4, queueMerged, clock(10, 0))
+	want := []queueWait{{added: clock(2, 0), left: clock(3, 0)}, {added: clock(4, 0), left: clock(6, 0)},
+		{added: clock(7, 0), left: clock(8, 0)}, {added: clock(9, 0), left: clock(10, 0)}}
+	describe := func(waits []queueWait) string {
+		var spans []string
+		for _, wait := range waits {
+			left := "no end"
+			if !wait.left.IsZero() {
+				left = stamp(wait.left)
+			}
+			spans = append(spans, stamp(wait.added)+" to "+left)
+		}
+		return "[" + strings.Join(spans, ", ") + "]"
+	}
+	for _, tc := range []struct {
+		name  string
+		queue map[string][]json.RawMessage
+	}{
+		{"one file of the union", map[string][]json.RawMessage{current: {added1, merged1, added2, merged2, added3, removed3, added4, merged4}}},
+		{"a file under each name", map[string][]json.RawMessage{
+			current: {added1, merged1, merged2, added3, removed3},
+			former:  {added1, merged1, added2, added4, merged4},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := queueWaits(tc.queue)
+			if err != nil {
+				t.Fatalf("queueWaits: %v", err)
+			}
+			if !slices.EqualFunc(got, want, func(a, b queueWait) bool { return a.added.Equal(b.added) && a.left.Equal(b.left) }) {
+				t.Errorf("the queue's waits are %s, want %s", describe(got), describe(want))
+			}
+		})
+	}
 }
 
 // providerWindow is a window from 09:00 to 12:00 with the provider's record of every minute from

@@ -113,8 +113,8 @@ func signalWindow(t *testing.T) Window {
 	settings := json.RawMessage(`{"id":7,"issue_key":null,"artifact_id":null,"project":"ACME","seq":2,` +
 		`"type":"settings.project_default_assignee.updated","actor":{"kind":"user","id":"person-1@example.invalid"},"notify":false,` +
 		`"created_at":"2001-03-05T09:30:00Z","payload":{"project":"ACME","assignee":"person-2@example.invalid"}}`)
-	queued := json.RawMessage(`{"pullRequest":12,"item":{"id":1,"event":"added_to_merge_queue","actor":{"login":"person-agent[bot]"},` +
-		`"commit_id":null,"created_at":"2001-03-05T09:40:00Z"}}`)
+	queued := json.RawMessage(`{"pullRequest":12,"item":{"id":1,"url":"https://api.github.com/repos/acme/widgets/issues/events/1","event":"added_to_merge_queue",` +
+		`"actor":{"login":"person-agent[bot]"},"commit_id":null,"created_at":"2001-03-05T09:40:00Z"}}`)
 	return Window{
 		Project: "ACME", From: at(9, 0), To: at(11, 0), Before: Duration(time.Hour), Caps: []CapAt{{At: at(8, 0), Cap: 2}},
 		P0Bounds: []BoundAt{{At: at(9, 7), Bound: 1}}, Parts: []Part{}, TickInterval: Duration(time.Hour), GateSteps: nil,

@@ -131,6 +131,11 @@ Each line of each file is one JSON object.
   Where the record gives a pod's evictable and non-evictable memory as two series, `bytes` is their sum, and a minute with one of them counts that one.
 
 - `queue/<owner>__<name>.jsonl`: `{pullRequest, item}`, each timeline event of a pull request of the kinds `added_to_merge_queue`, `removed_from_merge_queue` and `merged`, exactly as GitHub's REST timeline serves it, with the pull request's number beside it.
+  Each event carries its `id` and its `url`, `https://api.github.com/repos/<owner>/<name>/issues/events/<id>`.
+  A line that lacks the id, or whose url names no repository, is refused.
+  The tool reads all the queue files together: each event under the repository that its url names, as GitHub names it, and each event once, at the first line that carries its id.
+  It reads them so because GitHub answers a renamed repository's former name with the repository's own events.
+  A window collected under the former name and under the current name then holds some events in both files, and a pull request's events can be split between the two.
 
 - `settings/events.jsonl`: each of the project's events of Dispatch's event log whose type starts `settings.`, `settings.project_default_assignee.updated` among them, verbatim, in the log's order.
   The events before the reach are there too, since the last of them sets what holds at its start.
@@ -369,6 +374,7 @@ It also renames the free text of Dispatch's events.
 It renames the records of the signals by the same rules.
 It renames the issue keys and the people's logins that a pod's name or a pull request's branch spells.
 It renames the GitHub accounts of the merge queue's events: each login, numeric id, node id and link.
+The `url` of each event keeps its form, with its repository renamed, so that it still names the event's repository.
 It renames the project's settings events as Dispatch's events, a token's name and a settings source's last error among them, and the default assignee as a person.
 It keeps every member, JSON type and list length, and the daemon's msgs, ranks, statuses and times.
 The window's own project becomes `--project`, and each other project becomes `OTHERA`, `OTHERB` and so on.
@@ -1532,7 +1538,7 @@ With no exit in the 6 hours and no pull request in the queue, the wait is 0.
 
 **Next crossing**: with the waits as they stand at the moment, the moment at which the wait of the pull request longest in the queue reaches the limit, or at which an exit leaves the 6 hours.
 
-**Inputs**: `queue/<owner>__<name>.jsonl`, which `collect-queue` writes.
+**Inputs**: `queue/<owner>__<name>.jsonl`, which `collect-queue` writes, all files together, each event under the repository that its url names and each event once ([The records of the signals](#the-records-of-the-signals)).
 
 **Source**: the merge queue model fitted on the window (assumption 38).
 
