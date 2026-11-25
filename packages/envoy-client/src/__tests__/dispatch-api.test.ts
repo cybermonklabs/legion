@@ -2,15 +2,19 @@
 //
 // `dispatch api --path <route> [--method POST|PUT|PATCH|DELETE] [--body-file <file>|-]` sends one
 // request of Dispatch's HTTP API with the credential every `dispatch` command resolves, and prints
-// the answer's body: Dispatch's JSON, or any other body of a 2xx as it came. These rows drive it
-// through `runDispatchCli` against a stub secrets broker (`stubBroker`) and a stub Dispatch of
-// this file's own, which keeps each request it was sent and answers by path: its own whoami, the
-// 401 and the 404 captured from a production Dispatch, a proxy's 502 page, a bodiless 204, a
-// redirect, a document version's Markdown download, a picture version's bytes and a write's
-// answer in plain text. They hold the paths it refuses before anything is sent, the credential it
-// presents and the session its trade names, with a host and without one, and the AskGate rule: in
-// a session whose gate is on it sends GET alone, and names the command that makes the write; the
-// gate sits in the command itself, under a host and with none.
+// the answer's body: Dispatch's JSON indented, and any other body of a 2xx byte for byte, stored
+// content (an attachment) never parsed whatever its type; a 2xx whose body holds the credential it
+// presented is refused. These rows drive it through `runDispatchCli` against a stub secrets broker
+// (`stubBroker`) and a stub Dispatch of this file's own, which keeps each request it was sent and
+// answers by path: its own whoami, the 401 and the 404 captured from a production Dispatch, a
+// proxy's 502 page, a bodiless 204, a redirect, file versions as `serveFileVersion` answers them,
+// a document version's JSON and its Markdown download, typed JSON that is empty or cut, plain text
+// to any method, and an echo of the presented credential. One table runs each kind of answer with
+// a host, with none and under Claude Code. The other rows hold the paths it refuses before
+// anything is sent, the credential it presents and the session its trade names, with a host and
+// without one, and the AskGate rule: in a session whose gate is on it sends GET alone, and names
+// the command that makes the write; the gate sits in the command itself, under a host and with
+// none.
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -52,16 +56,35 @@ const FOREIGN_JSON = { code: "UPSTREAM_DOWN", message: "the upstream is down" };
 /** A document version's Markdown, as `?download=true` answers it: no newline at its end, so one
  *  the command added would show. */
 const MARKDOWN = "# Plan\n\nShip the client first.";
+/** The same version as Dispatch's JSON, read without `?download=true`. */
+const DOCUMENT = { number: 3, markdown: MARKDOWN };
 /** A picture version's bytes as Dispatch stores them: a PNG's signature, then two bytes no UTF-8
  *  text holds, which a round trip through text would change. */
 const PNG = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe);
-/** The version of a document, and of a picture, the stub answers. */
+/** A file stored as JSON, as a person uploaded it: an integer past 2^53, a decimal with a trailing
+ *  zero and the file's own spacing, each of which a parse and a print again would change. */
+const DATA_JSON = new TextEncoder().encode('{"id":12345678901234567890,"ratio":1.10,"name":"x"}');
+/** A file stored as JSON that holds one string, which a parse would print without its quotes. */
+const STRING_JSON = new TextEncoder().encode('"just a JSON string"');
+/** A file stored as JSON that holds a list in its own spacing. */
+const LIST_JSON = new TextEncoder().encode("[1, 2,   3]");
+/** A binary file's bytes, none of them UTF-8 text, and more of them than Claude Code shows of an
+ *  output (`CLAUDE_OUTPUT_MAX`), so a cut or a move to a file would show. */
+const BINARY = Uint8Array.from({ length: 30_000 }, (_, index) => 0x80 + (index % 0x80));
+/** The type a file stored as JSON answers under, as `serveFileVersion` writes the stored one. */
+const JSON_FILE_TYPE = "application/json;charset=utf-8";
+/** The version of a document, of a picture, of three files stored as JSON and of a binary file
+ *  the stub answers. */
 const DOCUMENT_VERSION = "/api/v1/artifacts/01234567-0000-4000-8000-000000000002/versions/3";
 const PICTURE_VERSION = "/api/v1/artifacts/01234567-0000-4000-8000-000000000003/versions/1";
+const DATA_VERSION = "/api/v1/artifacts/01234567-0000-4000-8000-000000000004/versions/1";
+const STRING_VERSION = "/api/v1/artifacts/01234567-0000-4000-8000-000000000005/versions/1";
+const LIST_VERSION = "/api/v1/artifacts/01234567-0000-4000-8000-000000000006/versions/2";
+const BINARY_VERSION = "/api/v1/artifacts/01234567-0000-4000-8000-000000000007/versions/1";
 /** A write's answer in plain text, as something no Dispatch route answers yet could. */
 const ACCEPTED = "accepted";
-/** A plain-text answer longer than the most Claude Code shows (`CLAUDE_OUTPUT_MAX`). */
-const LONG = "one line of a long answer\n".repeat(1_500);
+/** A body typed JSON that was cut short, so it does not parse. */
+const CUT_JSON = '{"issues": [{"key": "ACME-1"';
 
 /** One request a stub server was sent, as it arrived. */
 interface Sent {
@@ -76,9 +99,11 @@ interface Sent {
  * captured 401 (`/api/v1/signed-out`) and 404 (`/api/v1/no-such-route`), a proxy's 502 page
  * (`/api/v1/proxied`), a JSON 503 that is no refusal of Dispatch's (`/api/v1/foreign`), a bodiless
  * 204 (`/api/v1/nothing`), a 307 to `redirectTo` (`/api/v1/moved`), a document version as its
- * JSON or, with `?download=true`, its Markdown (`DOCUMENT_VERSION`), a picture version's bytes
- * (`PICTURE_VERSION`), plain text to any method (`/api/v1/accepted`, `/api/v1/long`), and any
- * other request with the method and path it was sent.
+ * JSON or, with `?download=true`, its Markdown as an attachment (`DOCUMENT_VERSION`), each file
+ * version as `serveFileVersion` answers it (`fileVersion`), typed JSON cut short
+ * (`/api/v1/cut`) or empty (`/api/v1/empty`), plain text to any method (`/api/v1/accepted`), the
+ * bare token (`/api/v1/echo-token`) or the DPoP proof (`/api/v1/echo-proof`) it was sent, echoed
+ * in a plain-text 200, and any other request with the method and path it was sent.
  */
 function stubDispatch(redirectTo = "http://127.0.0.1:9"): { url: string; sent: Sent[] } {
   const sent: Sent[] = [];
@@ -118,16 +143,34 @@ function stubDispatch(redirectTo = "http://127.0.0.1:9"): { url: string; sent: S
           });
         case DOCUMENT_VERSION:
           return url.searchParams.get("download") === "true"
-            ? new Response(MARKDOWN, {
-                headers: { "Content-Type": "text/markdown; charset=utf-8" },
-              })
-            : Response.json({ number: 3, markdown: MARKDOWN });
+            ? fileVersion(new TextEncoder().encode(MARKDOWN), "text/markdown; charset=utf-8")
+            : Response.json(DOCUMENT);
         case PICTURE_VERSION:
-          return new Response(PNG, { headers: { "Content-Type": "image/png" } });
+          return fileVersion(PNG, "image/png");
+        case DATA_VERSION:
+          return fileVersion(DATA_JSON, JSON_FILE_TYPE);
+        case STRING_VERSION:
+          return fileVersion(STRING_JSON, JSON_FILE_TYPE);
+        case LIST_VERSION:
+          return fileVersion(LIST_JSON, JSON_FILE_TYPE);
+        case BINARY_VERSION:
+          return fileVersion(BINARY, "application/octet-stream");
+        case "/api/v1/cut":
+          return new Response(CUT_JSON, { headers: { "Content-Type": "application/json" } });
+        case "/api/v1/empty":
+          return new Response("", { headers: { "Content-Type": "application/json" } });
         case "/api/v1/accepted":
           return new Response(ACCEPTED, { headers: { "Content-Type": "text/plain" } });
-        case "/api/v1/long":
-          return new Response(LONG, { headers: { "Content-Type": "text/plain" } });
+        case "/api/v1/echo-token": {
+          const token = request.headers.get("Authorization")?.split(" ")[1];
+          return new Response(`echoed request token: ${token}`, {
+            headers: { "Content-Type": "text/plain" },
+          });
+        }
+        case "/api/v1/echo-proof":
+          return new Response(`you sent DPoP: ${request.headers.get("DPoP")}`, {
+            headers: { "Content-Type": "text/plain" },
+          });
         default:
           return Response.json({ method: request.method, path: url.pathname });
       }
@@ -135,6 +178,19 @@ function stubDispatch(redirectTo = "http://127.0.0.1:9"): { url: string; sent: S
   });
   servers.push(server);
   return { url: `http://127.0.0.1:${server.port}`, sent };
+}
+
+/** A file version's answer as `serveFileVersion` writes it: the stored bytes under the stored
+ *  type, as an attachment, with the headers it sets on every file version. */
+function fileVersion(bytes: Uint8Array<ArrayBuffer>, type: string): Response {
+  return new Response(bytes, {
+    headers: {
+      "Content-Type": type,
+      "Cache-Control": "private, max-age=31536000, immutable",
+      "Content-Disposition": `attachment; filename="file"; filename*=UTF-8''file`,
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }
 
 /** What one `dispatch` call printed and exited with, and how often it read standard input. */
@@ -206,6 +262,23 @@ function jobEnvironment(
   stateDir: string
 ): Record<string, string | undefined> {
   return { ...podEnvironment(brokerUrl, dispatchUrl), DISPATCH_STATE_DIR: stateDir };
+}
+
+/** The session the rows under Claude Code act as. */
+const CLAUDE_SESSION = "claude-ses";
+
+/** A Claude Code session `CLAUDE_SESSION`: the job's environment under Claude Code's host and
+ *  session id, where a long output is cut and written to a file (`fitOutput`). */
+function claudeEnvironment(
+  brokerUrl: string,
+  dispatchUrl: string,
+  stateDir: string
+): Record<string, string | undefined> {
+  return {
+    ...jobEnvironment(brokerUrl, dispatchUrl, stateDir),
+    DISPATCH_HOST: "claude",
+    CLAUDE_CODE_SESSION_ID: CLAUDE_SESSION,
+  };
 }
 
 /**
@@ -374,11 +447,6 @@ describe("a request", () => {
   });
 
   test.each([
-    [
-      "a GET's 404",
-      ["--path", "/api/v1/no-such-route"],
-      "NOT_FOUND: no route for GET /api/v1/no-such-route; GET /api/v1 lists every route\n",
-    ],
     ["a GET's 401", ["--path", "/api/v1/signed-out"], "NO_IDENTITY: unauthorized\n"],
     [
       "a write's 401",
@@ -394,18 +462,6 @@ describe("a request", () => {
     expect(server.sent).toHaveLength(1);
   });
 
-  test("a 502 with no JSON exits 1 naming the status", async () => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const ran = await dispatch(
-      ["api", "--path", "/api/v1/proxied"],
-      jobEnvironment(broker.url, server.url, tempDir())
-    );
-    expect(ran.code).toBe(1);
-    expect(ran.stdout).toContain("/api/v1/proxied answered 502");
-    expect(ran.stdout).toContain("rather than Dispatch's own answer");
-  });
-
   test("a JSON answer with a code but no Dispatch error exits 1 naming the status, not its code", async () => {
     const broker = stubBroker(300);
     const server = stubDispatch();
@@ -416,18 +472,6 @@ describe("a request", () => {
     expect(ran.code).toBe(1);
     expect(ran.stdout).toContain("/api/v1/foreign answered 503");
     expect(ran.stdout).not.toStartWith("UPSTREAM_DOWN");
-  });
-
-  test("a bodiless 204 prints an empty answer and exits 0", async () => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const ran = await dispatch(
-      ["api", "--method", "DELETE", "--path", "/api/v1/nothing"],
-      jobEnvironment(broker.url, server.url, tempDir())
-    );
-    expect(ran.code, ran.stdout).toBe(0);
-    expect(ran.stdout.trim()).toBe("");
-    expect(server.sent.map((sent) => sent.method)).toEqual(["DELETE"]);
   });
 
   test("/api/v1 itself is sent", async () => {
@@ -471,106 +515,223 @@ describe("a request", () => {
   });
 });
 
-/** The two ways the command runs: as an Oh My Pi session, and in a job no host runs. */
+/** The three ways the command runs, each with the session whose ledger it writes: as an Oh My Pi
+ *  session, in a job no host runs (which writes none), and as a Claude Code session, whose output
+ *  past `CLAUDE_OUTPUT_MAX` is cut and written to a file (`fitOutput`, `writeLongOutput`). */
 const RUNS = [
-  ["with a host", sessionEnvironment],
-  ["with no host", jobEnvironment],
+  ["with a host", sessionEnvironment, SESSION],
+  ["with no host", jobEnvironment, undefined],
+  ["under Claude Code", claudeEnvironment, CLAUDE_SESSION],
 ] as const;
 
-// Review 6059716082, finding 1: Dispatch answers some routes with a body that is not JSON (a file
-// version's bytes under its own MIME type, a document version's Markdown with `?download=true`),
-// and the command prints any 2xx's body as it came and exits 0: on standard output the bytes that
-// came and nothing else, with no newline added and no round trip through text.
-describe("a 2xx answer that is not JSON", () => {
+/** One kind of answer: the call, its exit, its standard output exactly, and what a session's
+ *  ledger records of it. */
+interface AnswerKind {
+  readonly kind: string;
+  readonly argv: readonly string[];
+  readonly code: number;
+  /** Standard output, the stored bytes where the answer is stored content; `url` is the stub
+   *  Dispatch's. */
+  readonly stdout: string | Uint8Array | ((url: string) => string);
+  /** The ledger line's details, or `refusal` for a refusal, whose line holds its text. */
+  readonly ledger: Readonly<Record<string, unknown>> | "refusal";
+  readonly bearer?: boolean;
+}
+
+/** A 2xx body's details in the ledger: its path, its type and its size, never its bytes. */
+function bodyDetails(
+  argv: readonly string[],
+  type: string | undefined,
+  body: string | Uint8Array
+): Record<string, unknown> {
+  const method = methodOf(argv);
+  return {
+    path: argv[argv.indexOf("--path") + 1],
+    ...(method === "GET" ? {} : { method }),
+    ...(type === undefined ? {} : { content_type: type }),
+    bytes: typeof body === "string" ? Buffer.byteLength(body) : body.byteLength,
+  };
+}
+
+/** The method `argv` sends: the one `--method` names, else GET. */
+function methodOf(argv: readonly string[]): string {
+  const at = argv.indexOf("--method");
+  return at === -1 ? "GET" : (argv[at + 1] ?? "");
+}
+
+/** The row of a 2xx answer whose body is printed byte for byte as `body`, typed `type`. */
+function asItCame(
+  kind: string,
+  argv: readonly string[],
+  type: string | undefined,
+  body: string | Uint8Array
+): AnswerKind {
+  return { kind, argv, code: 0, stdout: body, ledger: bodyDetails(argv, type, body) };
+}
+
+/** The row of a 200 whose body echoes what the request presented on `route`: the command
+ *  refuses it, naming the status, that a write may have been made, to a GET as to a POST, and no
+ *  retry, and prints nothing of the body. */
+function echoed(kind: string, method: "GET" | "POST", bearer: boolean): AnswerKind {
+  const path = bearer ? "/api/v1/echo-token" : "/api/v1/echo-proof";
+  return {
+    kind,
+    argv: method === "GET" ? ["--path", path] : ["--method", method, "--path", path],
+    code: 1,
+    stdout:
+      "CREDENTIAL_ECHOED: The answer had HTTP status 200 (2xx), so a write may have been made. The body held a credential this command presented. It is not printed. Something in Dispatch's place appears to have echoed the request. Check whether any write took effect before sending it again.\n",
+    ledger: "refusal",
+    bearer,
+  };
+}
+
+/** Each kind of answer the command can be given, and what it prints and exits with. */
+const ANSWER_KINDS: readonly AnswerKind[] = [
+  {
+    kind: "Dispatch's JSON is printed indented, as every command prints it",
+    argv: ["--path", DOCUMENT_VERSION],
+    code: 0,
+    stdout: `${JSON.stringify(DOCUMENT, null, 2)}\n`,
+    ledger: { path: DOCUMENT_VERSION },
+  },
+  asItCame(
+    "a 2xx typed JSON whose body does not parse is printed as it came",
+    ["--path", "/api/v1/cut"],
+    "application/json",
+    CUT_JSON
+  ),
+  asItCame(
+    "a 2xx typed JSON with an empty body prints nothing",
+    ["--path", "/api/v1/empty"],
+    "application/json",
+    ""
+  ),
+  asItCame(
+    "a file stored as JSON keeps its 64-bit integer, its 1.10 and its spacing",
+    ["--path", DATA_VERSION],
+    JSON_FILE_TYPE,
+    DATA_JSON
+  ),
+  asItCame(
+    "a file that holds one JSON string, read with download=true, keeps its quotes",
+    ["--path", `${STRING_VERSION}?download=true`],
+    JSON_FILE_TYPE,
+    STRING_JSON
+  ),
+  asItCame(
+    "a file that holds a JSON list keeps its spacing",
+    ["--path", LIST_VERSION],
+    JSON_FILE_TYPE,
+    LIST_JSON
+  ),
+  asItCame("a picture's bytes go out unchanged", ["--path", PICTURE_VERSION], "image/png", PNG),
+  asItCame(
+    "a binary file longer than Claude Code shows goes out whole",
+    ["--path", BINARY_VERSION],
+    "application/octet-stream",
+    BINARY
+  ),
+  asItCame(
+    "a document's Markdown download is printed exactly as it came",
+    ["--path", `${DOCUMENT_VERSION}?download=true`],
+    "text/markdown; charset=utf-8",
+    new TextEncoder().encode(MARKDOWN)
+  ),
+  asItCame(
+    "a POST answered 200 in plain text is printed as it came",
+    ["--method", "POST", "--path", "/api/v1/accepted"],
+    "text/plain",
+    ACCEPTED
+  ),
+  asItCame(
+    "a bodiless 204 prints nothing",
+    ["--method", "DELETE", "--path", "/api/v1/nothing"],
+    undefined,
+    ""
+  ),
+  {
+    kind: "Dispatch's refusal is printed with its code",
+    argv: ["--path", "/api/v1/no-such-route"],
+    code: 1,
+    stdout: "NOT_FOUND: no route for GET /api/v1/no-such-route; GET /api/v1 lists every route\n",
+    ledger: "refusal",
+  },
+  {
+    kind: "a gateway's page is refused naming its status",
+    argv: ["--path", "/api/v1/proxied"],
+    code: 1,
+    stdout: (url) =>
+      `HTTP_502: GET ${url}/api/v1/proxied answered 502 Bad Gateway with a body that is not Dispatch's error JSON ("502 Bad Gateway"), which looks like a proxy or gateway page rather than Dispatch's own answer, so a retry may succeed.\n`,
+    ledger: "refusal",
+  },
+  echoed("a GET answered 200 with the bearer it presented", "GET", true),
+  echoed("a POST answered 200 with the bearer it presented", "POST", true),
+  echoed("a GET answered 200 with the DPoP proof it presented", "GET", false),
+  echoed("a POST answered 200 with the DPoP proof it presented", "POST", false),
+];
+
+// One table of the answers the command can be given, each run with a host, with none and under
+// Claude Code (whose long-output handling must not cut or move an answer written as bytes).
+// Dispatch's JSON is printed indented; every other 2xx body goes to standard output as the bytes
+// that came, alone, with nothing added (review 6059716082, finding 1), stored content (an
+// attachment) never parsed whatever its type (test handoff v9); each exits 0. A refusal exits 1
+// and is the one thing printed, and a 2xx that echoes the credential the command presented is one.
+describe("each kind of answer", () => {
   test.each(
-    RUNS
-  )("a document version's Markdown download is printed exactly as it came, and it exits 0: %s", async (_, environment) => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const ran = await dispatch(
-      ["api", "--path", `${DOCUMENT_VERSION}?download=true`],
-      environment(broker.url, server.url, tempDir())
-    );
-    expect(ran.code, ran.stdout).toBe(0);
-    expect(ran.stdout).toBe(MARKDOWN);
-    expect(ran.stderr).toBe("");
-    expect(server.sent).toHaveLength(1);
-  });
-
-  test.each(
-    RUNS
-  )("a picture version's bytes go to standard output unchanged, and it exits 0: %s", async (_, environment) => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const ran = await dispatch(
-      ["api", "--path", PICTURE_VERSION],
-      environment(broker.url, server.url, tempDir())
-    );
-    expect(ran.code, ran.stdout).toBe(0);
-    expect(ran.bytes).toEqual(PNG);
-    expect(ran.stderr).toBe("");
-  });
-
-  test.each(
-    RUNS
-  )("a POST answered 200 in plain text prints it, and it exits 0: %s", async (_, environment) => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const ran = await dispatch(
-      ["api", "--method", "POST", "--path", "/api/v1/accepted", "--body-file", bodyFile(COMMENT)],
-      environment(broker.url, server.url, tempDir())
-    );
-    expect(ran.code, ran.stdout).toBe(0);
-    expect(ran.stdout).toBe(ACCEPTED);
-    expect(ran.stderr).toBe("");
-    expect(server.sent.map((sent) => sent.method)).toEqual(["POST"]);
-  });
-
-  test("the same version read without download=true is Dispatch's JSON, printed as every JSON answer is", async () => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const ran = await dispatch(
-      ["api", "--path", DOCUMENT_VERSION],
-      jobEnvironment(broker.url, server.url, tempDir())
-    );
-    expect(ran.code, ran.stdout).toBe(0);
-    expect(ran.stdout).toBe(`${JSON.stringify({ number: 3, markdown: MARKDOWN }, null, 2)}\n`);
-  });
-
-  test("with a host, the ledger records the body's type and size, never its bytes", async () => {
+    ANSWER_KINDS.flatMap((answer) =>
+      RUNS.map(
+        ([run, environment, session]) => [answer.kind, run, answer, environment, session] as const
+      )
+    )
+  )("%s: %s", async (_, __, answer, environment, session) => {
     const broker = stubBroker(300);
     const server = stubDispatch();
     const stateDir = tempDir();
-    const ran = await dispatch(
-      ["api", "--path", PICTURE_VERSION],
-      sessionEnvironment(broker.url, server.url, stateDir)
+    const bearer = answer.bearer ? fixtureSecret("dsp") : undefined;
+    const ran = await dispatch(["api", ...answer.argv], {
+      ...environment(broker.url, server.url, stateDir),
+      DISPATCH_TOKEN: bearer,
+    });
+    const printed = typeof answer.stdout === "function" ? answer.stdout(server.url) : answer.stdout;
+    const expected = typeof printed === "string" ? new TextEncoder().encode(printed) : printed;
+    expect(ran.code, ran.stdout.slice(0, 300)).toBe(answer.code);
+    // Standard output is exactly the answer or the refusal, its sha256 the stored bytes' own.
+    expect(ran.bytes).toEqual(expected);
+    expect(createHash("sha256").update(ran.bytes).digest("hex")).toBe(
+      createHash("sha256").update(expected).digest("hex")
     );
-    expect(ran.code, ran.stdout).toBe(0);
-    expect(ledgerOf(stateDir, SESSION)).toEqual([
+    expect(ran.stderr).toBe("");
+    expect(server.sent.map((sent) => sent.method)).toEqual([methodOf(answer.argv)]);
+    const headers = server.sent[0]?.headers;
+    const token = bearer ?? broker.trades[0]?.token;
+    expect(token).toBeTruthy();
+    expect(headers?.get("Authorization")).toBe(
+      `${bearer === undefined ? "DPoP" : "Bearer"} ${token}`
+    );
+    const proof = headers?.get("DPoP");
+    if (bearer === undefined) expect(proof).toBeTruthy();
+    else expect(proof).toBeNull();
+    for (const credential of [token, proof]) {
+      if (credential) {
+        expect(ran.stdout.includes(credential) || ran.stderr.includes(credential)).toBe(false);
+      }
+    }
+    if (session === undefined) {
+      expect(existsSync(join(stateDir, "sessions"))).toBe(false);
+      return;
+    }
+    // The ledger records a refusal's text and an answer's details, never a body's bytes.
+    expect(ledgerOf(stateDir, session)).toEqual([
       {
         at: expect.any(String),
         tool: "dispatch_api",
-        details: { path: PICTURE_VERSION, content_type: "image/png", bytes: PNG.byteLength },
+        ...(answer.ledger === "refusal"
+          ? { error: ran.stdout.trimEnd() }
+          : { details: answer.ledger }),
       },
     ]);
-  });
-
-  test("under Claude Code a body longer than the output limit is written whole, and no file holds it", async () => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const stateDir = tempDir();
-    const ran = await dispatch(["api", "--path", "/api/v1/long"], {
-      ...jobEnvironment(broker.url, server.url, stateDir),
-      DISPATCH_HOST: "claude",
-      CLAUDE_CODE_SESSION_ID: "claude-ses",
-    });
-    expect(ran.code, ran.stdout.slice(0, 200)).toBe(0);
-    expect(ran.stdout).toBe(LONG);
-    expect(ran.stderr).toBe("");
-    expect(ledgerOf(stateDir, "claude-ses").map((entry) => entry.details)).toEqual([
-      { path: "/api/v1/long", content_type: "text/plain", bytes: LONG.length },
-    ]);
-    expect(existsSync(join(stateDir, "sessions", "claude-ses", "out"))).toBe(false);
+    // No answer is moved to a file: under Claude Code too, a long one is written whole.
+    expect(existsSync(join(stateDir, "sessions", session, "out"))).toBe(false);
   });
 
   test("with a host, a note of the CLI's own goes to standard error beside bytes, and before a JSON answer as for every command", async () => {

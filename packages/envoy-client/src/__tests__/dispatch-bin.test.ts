@@ -5,8 +5,8 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 
 // The `dispatch` entry is its own process in production, and every omp session reads it through a
 // pipe: Bun's `process.exit` drops what a pipe has not yet taken, so the entry must wait for its
-// writes. This test runs the real entry and reads its output through a pipe, and holds that a
-// body that is not text reaches the pipe as its bytes, unchanged (`stdoutBytes`).
+// writes. This test runs the real entry and reads its output through a pipe, and holds that stored
+// content or a body that is not JSON reaches the pipe as its bytes, unchanged (`stdoutBytes`).
 
 const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
 const PROJECTS = 4000;
@@ -15,6 +15,19 @@ const PROJECTS = 4000;
  *  holds, which a round trip through text would change. */
 const PICTURE_VERSION = "/api/v1/artifacts/01234567-0000-4000-8000-000000000003/versions/1";
 const PNG = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe);
+/** A file version stored as JSON, and its bytes: an integer past 2^53 and a decimal with a
+ *  trailing zero, which a parse and a print again would change. */
+const DATA_VERSION = "/api/v1/artifacts/01234567-0000-4000-8000-000000000004/versions/1";
+const DATA_JSON = new TextEncoder().encode('{"id":12345678901234567890,"ratio":1.10,"name":"x"}');
+
+/** Each file version the stub answers, as `serveFileVersion` does: its stored bytes under its
+ *  stored type, as an attachment. */
+const FILES: Readonly<
+  Record<string, { readonly bytes: Uint8Array<ArrayBuffer>; readonly type: string }>
+> = {
+  [PICTURE_VERSION]: { bytes: PNG, type: "image/png" },
+  [DATA_VERSION]: { bytes: DATA_JSON, type: "application/json;charset=utf-8" },
+};
 
 const makeDirectory = temporaryDirectories("dispatch-bin");
 
@@ -36,8 +49,14 @@ const server = Bun.serve({
         }))
       );
     }
-    if (pathname === PICTURE_VERSION && request.method === "GET") {
-      return new Response(PNG, { headers: { "Content-Type": "image/png" } });
+    const file = FILES[pathname];
+    if (file !== undefined && request.method === "GET") {
+      return new Response(file.bytes, {
+        headers: {
+          "Content-Type": file.type,
+          "Content-Disposition": `attachment; filename="file"; filename*=UTF-8''file`,
+        },
+      });
     }
     return Response.json({ error: "unexpected" }, { status: 500 });
   },
@@ -105,12 +124,14 @@ describe("the dispatch entry", () => {
   }, 30_000);
 
   test.each([
-    ["with a host", OMP],
-    ["with no host", {}],
-  ] as const)("writes a body that is not JSON to a pipe as its bytes, unchanged: %s", async (_, host) => {
-    const { code, stdout, stderr } = await runEntry(["api", "--path", PICTURE_VERSION], host);
+    ["a picture, with a host", PICTURE_VERSION, OMP],
+    ["a picture, with no host", PICTURE_VERSION, {}],
+    ["a file stored as JSON, with a host", DATA_VERSION, OMP],
+    ["a file stored as JSON, with no host", DATA_VERSION, {}],
+  ] as const)("writes stored content to a pipe as its bytes, unchanged: %s", async (_, path, host) => {
+    const { code, stdout, stderr } = await runEntry(["api", "--path", path], host);
     expect(stderr).toBe("");
     expect(code).toBe(0);
-    expect(stdout).toEqual(PNG);
+    expect(stdout).toEqual(FILES[path]?.bytes);
   });
 });

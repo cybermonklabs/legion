@@ -926,9 +926,13 @@ be got past. Before, its text was handed back as the route's answer, and `dispat
 portal's page as no asks at all. Such a 2xx reaches that advice only for a read, a `PUT` or a
 `DELETE`: a keyed write's 2xx, a `POST`'s or a `PATCH`'s, is read by its own table
 (`write-outcome.ts`), which says the write may have landed.
-`readRoute` and `sendRoute`, which send the route `dispatch api`'s caller wrote, give a 2xx's
-body that is not JSON back as the bytes that came, with its Content-Type (`RouteAnswer`): a file
-version's bytes and a document version's Markdown download are such answers.
+`readRoute` and `sendRoute`, which send the route `dispatch api`'s caller wrote, give every 2xx
+but Dispatch's JSON back as the bytes that came, with its Content-Type (`RouteAnswer`): a file
+version's bytes and a document version's Markdown download are such answers, and an answer that
+carries `Content-Disposition: attachment` is stored content whatever its type, JSON included, so it
+is never parsed. A 2xx whose body holds a credential the request presented, a token or its DPoP
+proof, is refused instead (`DispatchCredentialEchoError`, code `CREDENTIAL_ECHOED`), since no
+route of Dispatch's answers the caller's own credential.
 
 `DispatchWriteUnsettledError` is deliberately not a `DispatchServiceError`, since a caller reads
 one as a refusal Dispatch decided: its message is the last answer or failure, the number of
@@ -1354,10 +1358,11 @@ whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set tha
 request of a route under `/api/v1` that no other command sends (`apiCommand`,
 `src/dispatch-commands/api.ts`), with the session's own credential as every command presents it
 (a set bearer, the token files' broker token, else a token traded at the secrets broker, with a
-new DPoP proof for the request), and prints the answer's body: Dispatch's JSON for `jq`, or any
-other body of a 2xx as it came. It is the contract's spec `dispatch_api`. With no `--method` it
-sends a GET (`DispatchClient.readRoute`); `--method` sends `POST`, `PUT`, `PATCH` or `DELETE` in
-its place (`DispatchClient.sendRoute`), and `GET` is no value of it. A write that a named command
+new DPoP proof for the request), and prints the answer's body: Dispatch's JSON, indented as every
+command prints it, for `jq`; any other 2xx body as it came. It is the contract's spec
+`dispatch_api`. With no `--method` it sends a GET (`DispatchClient.readRoute`); `--method` sends
+`POST`, `PUT`, `PATCH` or `DELETE` in its place (`DispatchClient.sendRoute`), and `GET` is no
+value of it. A write that a named command
 makes goes through that command (`dispatch --help` lists them): `dispatch api` is for a route no
 command sends, and it is how a script or a job writes, since a broker token is bound to a key and
 no script can send it as a bearer. `--body-file <file>` sends the file's text, `--body-file -`
@@ -1373,17 +1378,24 @@ URL parser would resolve any of those out of `/api/v1`; each refusal names the p
 credential goes to no other server and no other route. It sends the request once, and once more
 only after Dispatch answers that the token it presented is not live (Dispatch authenticated
 nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`. On a 2xx answer it
-prints the body as it came and exits 0: Dispatch's JSON for `jq`, a bodiless 204 as empty text,
-and any other body, such as a file version's bytes (`GET /api/v1/artifacts/{id}/versions/{number}`)
-or a document version's Markdown (`?download=true`), unchanged, with nothing added and nothing
-else on standard output; under a host, the session's ledger records such a body by its
-Content-Type and size, never its bytes. Any other answer exits 1 with its code: a refusal is
-Dispatch's error with its code and, where Dispatch gives one, its hint
+exits 0 and prints Dispatch's JSON, indented as every command prints it; any other 2xx body as it
+came, byte for byte, with nothing added and nothing else on standard output: a bodiless 204 as
+nothing, a body typed JSON that is empty or does not parse, and stored content, such as a file
+version's bytes (`GET /api/v1/artifacts/{id}/versions/{number}`) or a document version's Markdown
+(`?download=true`). An answer that carries `Content-Disposition: attachment` is stored content
+whatever its type, so a file stored as JSON prints as it was stored and is never parsed. Under a
+host, the session's ledger records a body printed as it came by its Content-Type and size, never
+its bytes. A 2xx whose body holds a credential the command presented (its token, or the DPoP
+proof of its request) is not printed: something in Dispatch's place echoed the request, so the
+command exits 1 with `CREDENTIAL_ECHOED`, naming the status, saying that a write may have been
+made and to check whether it took effect before sending it again, and naming nothing of the
+body. Any other answer exits 1 with its code: a refusal is Dispatch's error with its code and,
+where Dispatch gives one, its hint
 (`NOT_FOUND: no route for GET /api/v1/x; GET /api/v1 lists every route`), and an answer that is
 neither a 2xx nor Dispatch's JSON, such as a proxy's page or a redirect, is named by its status. A
 usage error, such as a path outside `/api/v1` or a body with no method, exits 2. Under Claude
 Code, a JSON answer longer than the output limit is written to a file the output names; a body
-that is not JSON is written whole.
+printed as it came is written whole.
 
 Under a host it acts as that host's session, as every command does, and refuses a missing
 session id with the usage error they give. Where no host is found (`commandHost`), as in a

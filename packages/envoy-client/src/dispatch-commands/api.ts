@@ -4,14 +4,17 @@
 // that no named command sends, a GET or the method `--method` names, sent through the client
 // every command uses, so it presents the credential every command presents (a set bearer, the
 // token files' broker token, else a token traded at the secrets broker, with a new DPoP proof for
-// the request), and the answer's body printed: Dispatch's JSON for `jq` to read, and any other
-// body of a 2xx, such as a file version's bytes, as it came. The contract's rule refused a path
-// that could leave `/api/v1` (`apiPathProblem`), and a body with no method (`apiCallProblem`),
-// before this runs. The request goes once (`DispatchClient.readRoute` and `sendRoute`), and once
-// more only after Dispatch answers that the token it presented is not live (Dispatch
-// authenticated nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`. A
-// refusal is Dispatch's own error, thrown as the client throws it, which the command prints and
-// exits 1 on.
+// the request), and the answer's body printed: Dispatch's JSON indented, as every command prints
+// it, for `jq` to read, and any other body of a 2xx as it came, byte for byte. An attachment (a
+// file version, a document version read with `?download=true`) is stored content whatever its
+// type, JSON included, so it is never parsed. A 2xx whose body holds a credential the command
+// presented is not printed: it is refused (`DispatchCredentialEchoError`). The contract's rule
+// refused a path that could leave `/api/v1` (`apiPathProblem`), and a body with no method
+// (`apiCallProblem`), before this runs. The request goes once (`DispatchClient.readRoute` and
+// `sendRoute`), and once more only after Dispatch answers that the token it presented is not
+// live (Dispatch authenticated nothing, so nothing ran), with no redirect followed and no
+// `Idempotency-Key`. A refusal is thrown as the client throws it, Dispatch's own error among
+// them, which the command prints and exits 1 on.
 //
 // A script and a job send it too: a broker token is bound to a key, so no script can send it as a
 // bearer. Where no host is found, as in a GitHub Actions job, the CLI reads Dispatch from the
@@ -216,9 +219,9 @@ function gatedWriteRefusal(
  * Sends `args`, a `dispatch_api` call the contract's schema checked, through `client`, in `env`:
  * a GET of its path through `readRoute`, or its method with its body through `sendRoute`, which
  * a session whose AskGate reviews Dispatch writes refuses first (`gatedWriteRefusal`). Answers
- * Dispatch's JSON, printed for `jq` (a bodiless 204 or 205 as the empty text the client reads it
- * as), or a 2xx's body that is not JSON as `body`, the bytes that came, which its details record
- * by their Content-Type and their count alone.
+ * Dispatch's JSON, printed for `jq` as every command prints it, or any other 2xx's body as
+ * `body`, the bytes that came (an attachment, a body that is not JSON, a bodiless 204's none),
+ * which its details record by their Content-Type and their count alone.
  */
 export async function sendApiCall(
   args: ToolArguments,
@@ -239,16 +242,12 @@ export async function sendApiCall(
   if ("body" in answer) {
     const { body, type } = answer;
     return {
-      text: `Dispatch answered a body of ${body.byteLength} bytes that is not JSON (${type ?? "no Content-Type"})`,
+      text: `the answer's body as it came: ${body.byteLength} bytes (${type ?? "no Content-Type"})`,
       body,
       details: { ...details, ...defined("content_type", type), bytes: body.byteLength },
     };
   }
-  const { payload } = answer;
-  return {
-    text: typeof payload === "string" ? payload : JSON.stringify(payload, null, 2),
-    details,
-  };
+  return { text: JSON.stringify(answer.payload, null, 2), details };
 }
 
 /**

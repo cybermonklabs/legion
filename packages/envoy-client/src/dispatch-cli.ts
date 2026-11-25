@@ -55,9 +55,10 @@ import { createEnvoyClient, EnvoyApiError } from "./transport";
 export interface DispatchCliIo {
   /** Where the text the model reads goes: results, refusals and notices alike. */
   stdout(text: string): void;
-  /** Where a body that is not text goes, byte for byte, and alone on standard output:
-   *  `dispatch api`'s answer to a 2xx that is not JSON (`DispatchToolResult.body`). Without it
-   *  the bytes go to `stdout` decoded as UTF-8, for a caller that reads text alone. */
+  /** Where a body that is not Dispatch's JSON goes, byte for byte, and alone on standard output:
+   *  `dispatch api`'s answer to a 2xx that is stored content or a body that is not JSON
+   *  (`DispatchToolResult.body`), a Markdown download's text among them. Without it the bytes go
+   *  to `stdout` decoded as UTF-8, for a caller that reads text alone. */
   stdoutBytes?(bytes: Uint8Array): void;
   /** Where a result's warnings go (`DispatchToolResult.warnings`), one line each, beside it. */
   stderr(text: string): void;
