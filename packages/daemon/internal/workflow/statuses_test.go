@@ -71,6 +71,7 @@ func tell(t *testing.T, messages []record.RoleMessage, settled string) []record.
 // in which only a status changed state, a newer status of its context, says something new, and is
 // told again.
 func TestTheCIMessageNamesEachStatus(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	engine := mergingEngine()
@@ -107,6 +108,7 @@ func TestTheCIMessageNamesEachStatus(t *testing.T) {
 // and runs it moved to the head while the statuses stayed stamped with the head before, which the
 // stamp alone keeps out of the notice.
 func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
+	t.Parallel()
 	const earlier = "0000000000000000000000000000000000000abc"
 	t.Run("the current head's statuses", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -167,6 +169,7 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 // decide what it means, and nothing else happens - no phase moves, no notice reaches the
 // architect, no worker is started and no return is counted.
 func TestAFailedStatusMovesNoIssue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from   phase.Phase
 		status string
@@ -219,6 +222,7 @@ func TestAFailedStatusMovesNoIssue(t *testing.T) {
 // could not read names no status, so the green list stays as it is and no red name comes back,
 // and it says nothing new, so nobody is told again.
 func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	engine := mergingEngine()
@@ -268,6 +272,7 @@ func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
 // applying it leaves as they are, rather than telling the role the head passed every check. A
 // settlement that names no failed status gives today's text, "passed every check" included.
 func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
+	t.Parallel()
 	checks := func(failing, cancelled []string, statuses ...record.CommitStatus) intake.PullRequestChecks {
 		fact := settlement("head1", failing...)
 		fact.Cancelled, fact.Statuses = cancelled, statuses
@@ -335,6 +340,7 @@ func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
 // changed status, and the newer settlement delivered again after it changes nothing, tells nobody
 // and marks no movement of the issue (record.Issue.MovedAt).
 func TestAnOlderCheckRunSetChangesItsNewerStatusesAlone(t *testing.T) {
+	t.Parallel()
 	build1, build2 := []record.AttemptRun{{Name: "build", ID: 1}}, []record.AttemptRun{{Name: "build", ID: 2}}
 	for _, tc := range []struct {
 		name string
@@ -417,6 +423,7 @@ func TestAnOlderCheckRunSetChangesItsNewerStatusesAlone(t *testing.T) {
 // keeps the failure at its own numbering, 4 and head-4, and the daemon names that failed status to
 // the roles.
 func TestARecreatedRecordStillNamesARedStatus(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	engine := mergingEngine()

@@ -133,6 +133,7 @@ func waits(t *testing.T, pool *pgxpool.Pool, why string) {
 // holds a review request open; and `behind` and `draft` keep the stuck round and its notice, told
 // once.
 func TestAnApprovalOfABlockedHeadWhoseChecksConcludedMovesToAccepting(t *testing.T) {
+	t.Parallel()
 	// rig is LEGION-208 in reviewing, its pull request #42 at headOne with CI settled there and no
 	// merge state read (seedMergeStateRound), applied through the real engine and the fake GitHub.
 	rig := func(t *testing.T, state record.MergeState) (*pgxpool.Pool, *githubFake) {
