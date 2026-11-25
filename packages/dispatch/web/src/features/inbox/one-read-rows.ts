@@ -61,9 +61,9 @@ export function agentConversation(thread: MyReplyRow): MessageRead | undefined {
  *  row's mark and its reading pane draw; undefined for a row of no issue, for one a server older
  *  than the field answered, and for a row of another read. */
 export function approvalGateOf(
-  row: OpenAskRow | MyReplyRow
+  row: (OpenAskRow | MyReplyRow) & InboxRowGate
 ): readonly ApprovalGateLine[] | undefined {
-  return "approval_gate" in row ? (row as InboxRowGate).approval_gate : undefined;
+  return row.approval_gate;
 }
 
 /** `approvalGateOf` the ask or the thread a list row is. */

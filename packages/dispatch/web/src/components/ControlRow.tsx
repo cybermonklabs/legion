@@ -670,7 +670,10 @@ export function ControlRow<TData = unknown>({
       <div className="flex shrink-0 items-stretch" data-row-slot="">
         <PanelTrigger
           {...trigger}
-          look={{ icon: narrowBar ? FUNNEL_GLYPH : undefined, joined: clearShown }}
+          appearance={{
+            kind: "bar",
+            look: { icon: narrowBar ? FUNNEL_GLYPH : undefined, joined: clearShown },
+          }}
           size={size}
         >
           {(close) => (
@@ -715,18 +718,27 @@ export function ControlRow<TData = unknown>({
     );
   }
   if (hint !== undefined) {
-    end.push(<ViewPanel {...hint} key="hint" look={{ icon: INFO_GLYPH }} size={size} />);
+    end.push(
+      <ViewPanel
+        {...hint}
+        appearance={{ kind: "bar", look: { icon: INFO_GLYPH } }}
+        key="hint"
+        size={size}
+      />
+    );
   }
   if (columns !== undefined) {
-    end.push(<ColumnsMenu {...columns} key="columns" look={{}} size={size} />);
+    end.push(
+      <ColumnsMenu {...columns} appearance={{ kind: "bar", look: {} }} key="columns" size={size} />
+    );
   }
   // The display menu, in its own place, or below 640 px as **More**'s first item.
   if (display !== undefined && !displayInMore) {
     end.push(
       <DisplayMenu
         {...display}
+        appearance={{ kind: "bar", look: { icon: narrowBar ? SLIDERS_GLYPH : undefined } }}
         key="display"
-        look={{ icon: narrowBar ? SLIDERS_GLYPH : undefined }}
         size={size}
       />
     );

@@ -219,9 +219,9 @@ test("a trigger given the menuitem role is an item of its menu that opens its pa
 function BarTrigger({ count, look }: { count?: number; look: BarLook }) {
   return (
     <PanelTrigger
+      appearance={{ kind: "bar", look }}
       count={count}
       label="Filter"
-      look={look}
       onOpenChange={() => undefined}
       open={false}
     >
@@ -252,9 +252,9 @@ test("in the bar's look the trigger is quiet at rest, on a tint with its count w
     // The panel keeps the trigger's own words as its name.
     view.rerender(
       <PanelTrigger
+        appearance={{ kind: "bar", look: { icon: <svg aria-hidden="true" /> } }}
         count={2}
         label="Filter"
-        look={{ icon: <svg aria-hidden="true" /> }}
         onOpenChange={() => undefined}
         open
       >

@@ -7,9 +7,8 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../theme/classes";
-import type { BarLook } from "./bar-look";
 import { CONTROL, type ControlSize } from "./control-names";
-import { PanelTrigger } from "./PanelTrigger";
+import { PanelTrigger, type PanelTriggerAppearance } from "./PanelTrigger";
 
 /** One of a section's mutually exclusive choices, as the menu names it. */
 export interface DisplayMenuOption {
@@ -29,24 +28,23 @@ export interface DisplayMenuSection {
 }
 
 export interface DisplayMenuProps {
+  /** How the trigger is drawn (`PanelTriggerAppearance`): in the control bar's look where the bar
+   *  draws the menu - quiet, and its glyph alone below 640 px of the bar's width, its label still
+   *  its name - and in **More**'s item's look where **More** holds it (`role`). A menu outside
+   *  any bar is given none and keeps `PanelTrigger`'s own look. */
+  readonly appearance?: PanelTriggerAppearance;
   /** The trigger's text and the panel's name: the Inbox's menu is **View**, the Issues tab's
    *  **Group by**. */
   readonly label: string;
-  /** The control bar's look (`BarLook`), where the bar draws the menu: quiet, and its glyph
-   *  alone below 640 px of the bar's width, its label still its name. A menu outside any bar is
-   *  given none and keeps `PanelTrigger`'s own look. */
-  readonly look?: BarLook;
   readonly onOpenChange: (open: boolean) => void;
   /** The host owns it, so a page keeps one panel open at a time. */
   readonly open: boolean;
   /** `menuitem` where a menu holds the display menu as one of its items: the control bar's
    *  **More** below 640 px of the bar's width on the Inbox (`MoreMenu`), which draws it in its
-   *  own item's look (`triggerClassName`). */
+   *  own item's look (`appearance`). */
   readonly role?: "menuitem";
   readonly sections: readonly DisplayMenuSection[];
   readonly size?: ControlSize;
-  /** The trigger's look as an item of a menu (`role`). */
-  readonly triggerClassName?: string;
 }
 
 /** One of a section's choices: a radio, so the browser reads the section as one pick and the
@@ -101,27 +99,25 @@ function Choice({
  * narrows the value it is handed back.
  */
 export function DisplayMenu({
+  appearance,
   label,
-  look,
   onOpenChange,
   open,
   role,
   sections,
   size,
-  triggerClassName,
 }: DisplayMenuProps): ReactNode {
   const id = useId();
   return (
     <PanelTrigger
       align={role === undefined ? "left" : "right"}
+      appearance={appearance}
       control={CONTROL.displayMenu}
       label={label}
-      look={look}
       onOpenChange={onOpenChange}
       open={open}
       role={role}
       size={size}
-      triggerClassName={triggerClassName}
     >
       {() =>
         sections.map((section) => (

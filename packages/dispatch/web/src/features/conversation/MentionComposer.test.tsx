@@ -142,7 +142,8 @@ interface ComposerOptions {
   seedMentions?: readonly { target: string; title: string }[];
   onCancelReply?: () => void;
   onKindChange?: (kind: "ask" | "comment" | "suggestion") => string | undefined;
-  onSent?: () => unknown;
+  // biome-ignore lint/suspicious/noConfusingVoidType: the composer's own `onSent` type, which a handler that returns `void` fits.
+  onSent?: () => PromiseLike<unknown> | void;
   owner?: ComposerOwner;
   replyTo?: (Omit<ReplyTarget, "parentKind"> & { parentKind?: ReplyTarget["parentKind"] }) | null;
   inMain?: boolean;

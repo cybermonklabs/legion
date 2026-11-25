@@ -13,8 +13,25 @@ import { heldPress } from "./held-press";
 export const PANEL_FRAME =
   "flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border shadow-lg";
 
+/**
+ * How a trigger is drawn where it does not keep its own look, a bordered button on the muted
+ * surface that says its count after its label, at zero as well:
+ *
+ * - `bar`: the control bar's look (`BarLook`), where the bar draws the trigger: no border and no
+ *   fill at rest, on a tint with its count while the count is above zero, and its glyph alone
+ *   with the count as a badge where `look.icon` is given, its label and count then its name.
+ * - `class`: a look of the host's own, such as the table header's funnel or an item of **More**
+ *   (`MoreMenu`), whose count is said as the trigger's own look says it.
+ */
+export type PanelTriggerAppearance =
+  | { readonly kind: "bar"; readonly look: BarLook }
+  | { readonly kind: "class"; readonly className: string };
+
 export interface PanelTriggerProps {
   readonly align?: "left" | "right";
+  /** How the trigger is drawn (`PanelTriggerAppearance`): its own look where none is given, as a
+   *  trigger outside any bar is drawn. */
+  readonly appearance?: PanelTriggerAppearance;
   /** Holds the trigger while a write it leads to is out - an epic's actions while a table action
    *  is out (`heldPress`): it keeps the focus and its Tab stop, says it cannot be pressed
    *  (`aria-disabled`), and a press on it opens nothing. A press still closes a panel it has
@@ -28,8 +45,9 @@ export interface PanelTriggerProps {
    *  menu, a columns menu and a column filter are each a button that opens a panel, and each is
    *  found by its own name while there is still one definition of the button and its panel. */
   readonly control?: ControlName;
-  /** Said after the label as `Columns · 2`, the way `MultiSelect`'s trigger counts a selection.
-   *  In the control bar's look (`look`) it is said only while above zero, on a tint. */
+  /** Said after the label as `Columns · 2`, the way `MultiSelect`'s trigger counts a selection,
+   *  at zero as well. In the control bar's look (`appearance`'s `bar`) it is said only while
+   *  above zero, on a tint. */
   readonly count?: number;
   /** The id of the line on screen that says why the trigger is held (`ariaDisabled`), named as
    *  its description: a refused action of the bar that opens a panel (`PanelAction`). */
@@ -39,11 +57,6 @@ export interface PanelTriggerProps {
    *  focus starts where the page starts (the Board). Read as the panel opens. */
   readonly focusOnOpen?: boolean;
   readonly label: ReactNode;
-  /** The control bar's look (`BarLook`), where the bar draws this trigger: no border and no fill
-   *  at rest, on a tint with its count while the count is above zero, and its glyph alone with
-   *  the count as a badge where `look.icon` is given, its label and count then its name. Given,
-   *  it takes the place of `triggerClassName`; a trigger outside any bar is given none. */
-  readonly look?: BarLook;
   readonly onOpenChange: (open: boolean) => void;
   /** The host owns it, so a page keeps one panel open at a time rather than a row of them. */
   readonly open: boolean;
@@ -64,8 +77,6 @@ export interface PanelTriggerProps {
   /** The trigger's tooltip where it is not its name: why a refused action of the bar that opens
    *  a panel is held (`PanelAction`). */
   readonly tooltip?: string;
-  /** For a trigger with a look of its own, such as the table header's funnel. */
-  readonly triggerClassName?: string;
 }
 
 /**
@@ -85,6 +96,7 @@ export interface PanelTriggerProps {
  */
 export function PanelTrigger({
   align = "left",
+  appearance,
   ariaDisabled = false,
   children,
   control = CONTROL.panelTrigger,
@@ -92,7 +104,6 @@ export function PanelTrigger({
   describedBy,
   focusOnOpen,
   label,
-  look,
   onOpenChange,
   open,
   role,
@@ -100,7 +111,6 @@ export function PanelTrigger({
   stacked = false,
   title,
   tooltip,
-  triggerClassName,
 }: PanelTriggerProps): ReactNode {
   const trigger = useRef<HTMLButtonElement>(null);
   // The panel's content, without a box of its own (`contents`), so the panel lays it out as it
@@ -122,6 +132,7 @@ export function PanelTrigger({
   const ownTrigger = `rounded-lg border text-sm font-semibold whitespace-nowrap refused:opacity-40 ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
   // In the bar's look the count is said only while above zero, and a glyph drawn alone leaves
   // the label and the count to the name.
+  const look = appearance?.kind === "bar" ? appearance.look : undefined;
   const counted = count !== undefined && count > 0;
   const glyph = look?.icon;
   const name =
@@ -151,14 +162,16 @@ export function PanelTrigger({
   }
   const tone: BarTone = look?.filled === true ? "filled" : counted ? "tint" : "quiet";
   const className =
-    look === undefined
-      ? (triggerClassName ?? ownTrigger)
-      : barButton(
-          size,
-          tone,
-          glyph !== undefined,
-          look.joined === true ? "rounded-l-lg" : "rounded-lg"
-        );
+    appearance === undefined
+      ? ownTrigger
+      : appearance.kind === "class"
+        ? appearance.className
+        : barButton(
+            size,
+            tone,
+            glyph !== undefined,
+            appearance.look.joined === true ? "rounded-l-lg" : "rounded-lg"
+          );
   return (
     <>
       <button

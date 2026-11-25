@@ -69,12 +69,12 @@ export function ColumnFilter<TData>({
     return (
       <PanelTrigger
         align="right"
+        appearance={{ className: filterTrigger(value !== "", size), kind: "class" }}
         control={CONTROL.columnFilter}
         label={<FunnelIcon />}
         onOpenChange={onOpenChange}
         open={open}
         title={`Filter ${name}`}
-        triggerClassName={filterTrigger(value !== "", size)}
       >
         {() => (
           <input

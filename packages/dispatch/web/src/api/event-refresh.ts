@@ -313,8 +313,14 @@ function approvalGateReads(belongs: (row: InboxListRow) => boolean): RefreshTarg
  * Whether an event of an issue can move that issue's approval gate: a review of one of its
  * documents (`artifact.approved`, `artifact.changes_requested`), a version of one, and an
  * approval request opened or resolved with no review (`ask.opened`, `ask.resolved` of an ask of
- * kind `approval`). Every version of the issue's documents is read, since a version of a document
- * no line names yet - a Verification document written for the first time - moves the gate too.
+ * kind `approval`).
+ *
+ * A document's first upload and its removal are not listed, and need no read here, since neither
+ * can move a gate. The first upload - a Verification document written for the first time among
+ * them - sends `artifact.created`, not `artifact.version`, and a new document has no review: its
+ * gate line reads `Not requested`, as a line with no document does (`gateLineWords`). A removal
+ * (`artifact.removed`) takes no document a gate reads: `DELETE /api/v1/artifacts/{id}` refuses
+ * the issue's spec, a document with a role and a document with a review.
  */
 function movesApprovalGate(event: DispatchEvent): boolean {
   switch (event.type) {

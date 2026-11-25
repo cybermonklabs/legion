@@ -4,3 +4,7 @@ export const ROW_ATTRIBUTE = "data-inbox-row";
 
 /** Every Inbox ask row. */
 export const ROW_SELECTOR = `[${ROW_ATTRIBUTE}]`;
+
+/** The attribute the Inbox's list column carries, with rows or with none: where the reader's own
+ *  Send takes a row away, the focus goes to a control of this list (`landAfterOwnSend`). */
+export const LIST_ATTRIBUTE = "data-inbox-list";

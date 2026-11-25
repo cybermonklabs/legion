@@ -37,11 +37,28 @@ export function controlIn(root: ParentNode, name: ControlName): HTMLElement | nu
   return root.querySelector<HTMLElement>(`[data-control="${name}"]`);
 }
 
-/** The last control `root` holds under the name `name`, in the page's order, or null: the
- *  Artifacts tab's **Upload**, the last of its bar's actions. */
-export function lastControlIn(root: ParentNode, name: ControlName): HTMLElement | null {
+/** The words a screen reader names `node` by: its `aria-label`, else the words it draws, with
+ *  what it hides from a screen reader (`aria-hidden`, such as a bar action's glyph) left out. */
+function spokenName(node: Node): string {
+  if (node instanceof Element) {
+    if (node.getAttribute("aria-hidden") === "true") return "";
+    const label = node.getAttribute("aria-label");
+    if (label !== null) return label;
+  }
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+  return [...node.childNodes].map(spokenName).join("");
+}
+
+/** The control `root` holds under the name `name` writes into its `data-control` whose
+ *  accessible name is `label`, or null: the Artifacts tab's **Upload**, one of its bar's actions,
+ *  found by the label `BarAction` names it by rather than by its place among them. */
+export function namedControlIn(
+  root: ParentNode,
+  name: ControlName,
+  label: string
+): HTMLElement | null {
   const named = root.querySelectorAll<HTMLElement>(`[data-control="${name}"]`);
-  return named[named.length - 1] ?? null;
+  return [...named].find((control) => spokenName(control).trim() === label) ?? null;
 }
 
 /** The control bar's own width under which it takes its narrow layout (`ControlRow`). One width,

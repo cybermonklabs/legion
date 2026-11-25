@@ -270,7 +270,7 @@ interface MentionComposerProps {
   readonly hostDraft?: HostDraft;
   /** Holds Send by `aria-disabled` while a send is out, as every composer's Send is held then,
    *  with why on the line under it, and past the send: after it lands the hold goes on until the
-   *  read the send changes has come back - the promise `onSent` answers - and it ends at the
+   *  read the send changes has come back - the one `onSent` answers - and it ends at the
    *  latest at the write deadline (`SEND_DEADLINE_MS`) from the press. A refusal ends it at once,
    *  and Send is given back with the refusal shown. While it holds the field is read-only, and the
    *  hold is part of the reader's press (`useHeldThroughAnswer`), which a press inside the form
@@ -315,9 +315,10 @@ interface MentionComposerProps {
   readonly onClose: () => void;
   /** Told that a send landed, with Dispatch's answer (`null` for a landing with none): the
    *  message, the comment or the ask it made. A host whose composer holds Send (`heldSend`)
-   *  answers the read the send changes, a promise the hold waits for; whatever else it answers is
-   *  not read. */
-  readonly onSent: (answer: unknown) => unknown;
+   *  answers the read the send changes, which the hold waits for; a host that answers nothing
+   *  holds nothing past the send. */
+  // biome-ignore lint/suspicious/noConfusingVoidType: a host that answers nothing writes a handler that returns `void` (`() => {}`), which `undefined` in its place would refuse.
+  readonly onSent: (answer: unknown) => PromiseLike<unknown> | void;
   readonly owner: ComposerOwner;
   /** How many times the reader has moved this composer's address with a control its host draws
    *  for it - an Agents row's issue picker - counted by the host in the press that makes the
@@ -428,7 +429,7 @@ export function MentionComposer({
   // A held Send's hold (`heldSend`): when the newest press was made (0 before any), and, once its
   // send has landed, the read `onSent` answered, which the hold waits for (`useHeldUntilRead`).
   const [pressedAt, setPressedAt] = useState(0);
-  const [landedRead, setLandedRead] = useState<Promise<unknown> | null>(null);
+  const [landedRead, setLandedRead] = useState<PromiseLike<unknown> | null>(null);
   const holdStands = useHeldUntilRead(
     pressedAt,
     landedRead !== null,
@@ -659,7 +660,7 @@ export function MentionComposer({
   const landed = ({ edit: sentEdit }: SentRequest, answer: unknown) => {
     clearDraft();
     const read = onSent(answer);
-    if (heldSend && read instanceof Promise) setLandedRead(read);
+    if (heldSend && read !== undefined) setLandedRead(read);
     if (!inline && sentEdit === undefined) onClose();
   };
   const { refusal, sending } = outgoing;

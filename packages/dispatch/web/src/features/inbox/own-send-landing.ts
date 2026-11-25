@@ -6,7 +6,7 @@ import {
   landFirstInSight,
 } from "../../components/focus-place";
 import { takesText } from "../shell/keymap";
-import { ROW_ATTRIBUTE } from "./inbox-row";
+import { LIST_ATTRIBUTE, ROW_ATTRIBUTE } from "./inbox-row";
 
 /**
  * Where the focus goes when the reader's own Send - an answer's, or a reply box's - takes its row
@@ -33,7 +33,7 @@ export function landAfterOwnSend(form: Element): void {
   if (lost === null || !form.contains(lost)) return;
   const row = form.closest(`[${ROW_ATTRIBUTE}]`);
   if (row === null) return;
-  const list = row.closest<HTMLElement>('[data-testid="inbox-list"]') ?? row.parentElement;
+  const list = row.closest<HTMLElement>(`[${LIST_ATTRIBUTE}]`);
   if (list === null) return;
   const controls = focusableIn(list).filter((control) => !row.contains(control));
   const after = controls.find(

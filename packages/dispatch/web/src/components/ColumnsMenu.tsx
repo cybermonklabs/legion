@@ -1,17 +1,17 @@
 import type { Column } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
 import { checkboxAccent, surfaceMutedHoverBg } from "../theme/classes";
-import type { BarLook } from "./bar-look";
 import { CONTROL, type ControlSize } from "./control-names";
-import { PanelTrigger } from "./PanelTrigger";
+import { PanelTrigger, type PanelTriggerAppearance } from "./PanelTrigger";
 
 export interface ColumnsMenuProps<TData> {
+  /** How the trigger is drawn (`PanelTriggerAppearance`): in the control bar's look where the bar
+   *  draws the menu, quiet. A menu outside any bar is given none and keeps `PanelTrigger`'s own
+   *  look. */
+  readonly appearance?: PanelTriggerAppearance;
   /** The table's leaf columns, in the order the menu lists them; the ones the reader may not
    *  hide are left out. */
   readonly columns: readonly Column<TData, unknown>[];
-  /** The control bar's look (`BarLook`), where the bar draws the menu: quiet. A menu outside any
-   *  bar is given none and keeps `PanelTrigger`'s own look. */
-  readonly look?: BarLook;
   readonly size?: ControlSize;
 }
 
@@ -20,14 +20,18 @@ export interface ColumnsMenuProps<TData> {
  * columns are shown. It keeps its own open state, because a table's header has no other panel
  * for it to be open beside.
  */
-export function ColumnsMenu<TData>({ columns, look, size }: ColumnsMenuProps<TData>): ReactNode {
+export function ColumnsMenu<TData>({
+  appearance,
+  columns,
+  size,
+}: ColumnsMenuProps<TData>): ReactNode {
   const [open, setOpen] = useState(false);
   return (
     <PanelTrigger
       align="right"
+      appearance={appearance}
       control={CONTROL.columnsMenu}
       label="Columns"
-      look={look}
       onOpenChange={setOpen}
       open={open}
       size={size}

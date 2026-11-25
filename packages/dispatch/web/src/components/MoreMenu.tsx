@@ -13,11 +13,15 @@ import { CONTROL, type ControlSize } from "./control-names";
 import { DisplayMenu, type DisplayMenuProps } from "./DisplayMenu";
 import { armHandOff } from "./focus-place";
 import { heldPress } from "./held-press";
-import { PanelTrigger } from "./PanelTrigger";
+import { PanelTrigger, type PanelTriggerAppearance } from "./PanelTrigger";
 
 /** An item of **More**: a row the menu's width, at the touch target the display menu's choices
  *  keep. A refused item says why under its label. */
 const ITEM = `flex min-h-11 w-full items-center gap-2 rounded px-2 text-left text-sm font-medium outline-none focus-visible:ring-2 ${focusVisibleRing} ${textSecondaryOnCanvas} ${surfaceMutedHoverBg} refused:cursor-not-allowed ${secondaryButtonDisabledText}`;
+
+/** An item that opens a panel of its own draws in every other item's look (`ITEM`): an action's
+ *  panel (**Save view**) and the display menu. */
+const ITEM_LOOK: PanelTriggerAppearance = { className: ITEM, kind: "class" };
 
 /** The items the arrow keys walk. */
 const ITEMS = '[role="menuitem"], [role="menuitemcheckbox"]';
@@ -56,6 +60,7 @@ function Item({ action, close }: { action: BarActionProps; close: () => void }):
     return (
       <PanelAction
         action={action}
+        appearance={ITEM_LOOK}
         panel={panel}
         role="menuitem"
         shown={
@@ -64,7 +69,6 @@ function Item({ action, close }: { action: BarActionProps; close: () => void }):
             {words(action)}
           </>
         }
-        triggerClassName={ITEM}
       />
     );
   }
@@ -135,9 +139,9 @@ export function MoreMenu({ actions, display, size = "comfortable" }: MoreMenuPro
   return (
     <PanelTrigger
       align="right"
+      appearance={{ kind: "bar", look: { icon: DOTS_GLYPH } }}
       control={CONTROL.moreMenu}
       label="More"
-      look={{ icon: DOTS_GLYPH }}
       onOpenChange={setOpen}
       open={open}
       size={size}
@@ -145,13 +149,7 @@ export function MoreMenu({ actions, display, size = "comfortable" }: MoreMenuPro
       {(close) => (
         <div aria-label="More" className="flex w-full flex-col" onKeyDown={walk} role="menu">
           {display === undefined ? null : (
-            <DisplayMenu
-              {...display}
-              look={undefined}
-              role="menuitem"
-              size={size}
-              triggerClassName={ITEM}
-            />
+            <DisplayMenu {...display} appearance={ITEM_LOOK} role="menuitem" size={size} />
           )}
           {actions.map((action) => (
             <Item action={action} close={close} key={action.label} />

@@ -57,8 +57,8 @@ test("the panel is drawn only while the menu is open, under the trigger's own co
 test("in the bar's look the menu is quiet, and given an icon it draws it alone, its label still the name of the trigger and of the panel", () => {
   const view = render(
     <DisplayMenu
+      appearance={{ kind: "bar", look: {} }}
       label="Group by"
-      look={{}}
       onOpenChange={() => undefined}
       open={false}
       sections={[SORT]}
@@ -71,8 +71,8 @@ test("in the bar's look the menu is quiet, and given an icon it draws it alone, 
     expect(quiet).not.toHaveClass("border");
     view.rerender(
       <DisplayMenu
+        appearance={{ kind: "bar", look: { icon: <svg aria-hidden="true" /> } }}
         label="Group by"
-        look={{ icon: <svg aria-hidden="true" /> }}
         onOpenChange={() => undefined}
         open
         sections={[SORT]}

@@ -8,7 +8,7 @@ import type { Artifact, IssueReferencesAnswer, ReferenceLink } from "../../api/t
 import type { BarActionProps, BarActionRefusal } from "../../components/BarAction";
 import { textGlyph } from "../../components/bar-look";
 import { ControlRow } from "../../components/ControlRow";
-import { CONTROL, controlIn, lastControlIn } from "../../components/control-names";
+import { CONTROL, controlIn, namedControlIn } from "../../components/control-names";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useCappedAddressParam, usePageAddress } from "../../lib/page-address";
@@ -438,6 +438,9 @@ function ArtifactRow({
 /** **Upload**'s glyph, drawn before its words where the control bar draws it. */
 const UPLOAD_GLYPH = textGlyph("↑");
 
+/** **Upload**'s label, which the bar's action is named by (`BarAction`) and found by. */
+const UPLOAD_LABEL = "Upload";
+
 /**
  * The issue's artifacts: a control bar (`ControlRow`) of the search box and two actions, **New
  * document** and **Upload**, which a closed issue refuses, and every artifact the issue holds.
@@ -511,13 +514,13 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
     refusal,
   });
   // The staged file's line hands the focus it goes with - its Upload landed, its Cancel pressed -
-  // to the bar's **Upload**, which the same commit draws again as the bar's last action, or to
-  // **More** where the bar holds its actions there (`ArtifactUploadStaging`).
+  // to the bar's **Upload**, which the same commit draws again among the bar's actions, found by
+  // its name, or to **More** where the bar holds its actions there (`ArtifactUploadStaging`).
   const uploadAction = useCallback(
     () =>
       tab.current === null
         ? null
-        : (lastControlIn(tab.current, CONTROL.barAction) ??
+        : (namedControlIn(tab.current, CONTROL.barAction, UPLOAD_LABEL) ??
           controlIn(tab.current, CONTROL.moreMenu)),
     []
   );
@@ -546,7 +549,7 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
   const actions: BarActionProps[] = [
     newDocument.action,
     ...(upload.pendingFile === null
-      ? [{ icon: UPLOAD_GLYPH, label: "Upload", onPress: upload.openPicker, refusal }]
+      ? [{ icon: UPLOAD_GLYPH, label: UPLOAD_LABEL, onPress: upload.openPicker, refusal }]
       : []),
   ];
 
