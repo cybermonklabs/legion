@@ -159,15 +159,28 @@ function useLastAnswered(refs: readonly string[], answered: boolean): readonly s
   return last.current;
 }
 
-/** The issue's asks as the tree reads them: every ask, open or closed (`listIssueAsks` with
- *  `all`), under the key the margin, a document's ask blocks and the feed's ask rules read and
- *  refresh (`["asks", key]`). One definition, so a view that observes the same read takes the
- *  key from here and cannot drift from it; such a view, like the tree, adds how it is kept fresh
- *  (`EVENT_FRESH`). */
+/** The issue's asks as the margin, a document's ask blocks and the feed's ask rules read and
+ *  refresh them: every ask, open or closed (`listIssueAsks` with `all`), under `["asks", key]`.
+ *  The outline reads them with each ask's thread instead (`issueAskThreadsQuery`). One
+ *  definition, so a view that observes the same read takes the key from here and cannot drift
+ *  from it; such a view adds how it is kept fresh (`EVENT_FRESH`). */
 export const issueAsksQuery = (key: string) =>
   queryOptions({
     queryKey: ["asks", key],
     queryFn: () => api.listIssueAsks(key, "all"),
+  });
+
+/** The outline's one asks read (R5): `GET /api/v1/issues/{key}/asks?thread=1`, every ask, open
+ *  or closed, with its thread - the options and their descriptions, the answer and each ask's
+ *  answers, rewordings and replies, which the ask row and the facts of a focused ask draw - under
+ *  a key of its own beneath the plain read's (`["asks", key, "thread"]`), the one today's
+ *  Conversation tab reads the same request by, so every rule that refreshes the issue's asks
+ *  reaches it. Each reader of the outline's asks takes it from here, with how it is kept fresh
+ *  (`EVENT_FRESH`). */
+export const issueAskThreadsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["asks", key, "thread"],
+    queryFn: () => api.listIssueAskThreads(key, "all"),
   });
 
 /** The issue's comments as the tree reads them (`listComments`), under the key the feed's rules
@@ -240,14 +253,19 @@ function builtTree(reads: IssueTreeReads): TreeNode {
  * `buildIssueTree` is pure and holds none of them, so the model is testable without a server and
  * the page makes no request per node.
  *
- * The tree is the issue's tree read (`useTreeRead`), every page of it, which places, orders and
- * words every node; no document's blocks are read. Every decision is one of its nodes, with its
- * review state, and a person's comment the read hangs under a decision is a change they asked of
- * it (`decision-review.ts`), so no decisions read is made. Beside it stand the reads that tell
- * what the answer does not, each under the key another surface of this issue reads too, so
- * opening Details, the history or the Contents pane after the tree finds them answered rather
- * than fetching again: the coverage, the results, the issue's asks, its comments, its messages,
- * and the reader's login, which says which open questions wait on the reader
+ * The tree is the outline read the page holds (`useTreeRead`): Conversation's read, or Graph's
+ * in Graph, as the view of the address the router is at chooses it (`tree-read/tree-read.ts`'
+ * `outlineOf`), the pages of it read so far - the first on load, each next on the reader's press
+ * or an address (R15) - which place, order and word every node; no document's blocks are read.
+ * `IssueTreeReads.tree` is that read's whole answer as loaded (R7), so
+ * `presetView`, `filterSignals` and `blocksOf` read the one tree the page holds. Every decision
+ * is one of its nodes, with its review state, and a person's comment the read hangs under a
+ * decision is a change they asked of it (`decision-review.ts`), so no decisions read is made.
+ * Beside it stand the reads that tell what the answer does not, each under the key another
+ * surface of this issue reads too, so opening Details, the history or the Contents pane after
+ * the tree finds them answered rather than fetching again: the coverage, the results, the
+ * issue's asks with each ask's thread (`issueAskThreadsQuery`), its comments, its messages, and
+ * the reader's login, which says which open questions wait on the reader
  * (`IssueTreeReads.viewer`).
  *
  * Each filter's view read (`viewQuery`), the decisions view among them, is watched here and
@@ -296,7 +314,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // live feed is down (`TREE_FRESH`), since their events already reach them while it is up.
   const coverage = useQuery({ ...issueCoverageQuery(key), ...EVENT_FRESH });
   const results = useQuery({ ...issueResultsQuery(key), ...EVENT_FRESH });
-  const asks = useQuery({ ...issueAsksQuery(key), ...EVENT_FRESH });
+  const asks = useQuery({ ...issueAskThreadsQuery(key), ...EVENT_FRESH });
   // Under the keys the margin, the history and the focused row's facts read too, so a reader
   // opening the panel after the tree finds them answered rather than read a second time. The
   // tree read answers each comment as a node, so the model reads from the comments only what

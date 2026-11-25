@@ -420,7 +420,7 @@ func VisibleKind(kind, address, param string) string {
 	}
 	return VisibilityMarker + kind + ` */(` +
 		visibleWhere(`'`+StoredKindOf(kind)+`'`, address, entry.visibility.compares.authorIs(`visible_node.made_by`, param)) +
-		notStaleOfLiteralKind(kind, address) + `)`
+		` and ` + notStaleOfLiteralKind(kind, address) + `)`
 }
 
 // StoredNodeMarker opens the one read of `visibility` that is no test of it: the column a loader
@@ -723,7 +723,7 @@ func VisibleKindRow(kind, alias, param string) string {
 		return "false"
 	}
 	return VisibilityMarker + kind + ` */(` + visibleHeldRow(alias, entry.visibility.compares.authorIs(alias+`.made_by`, param)) +
-		notStaleOfLiteralKind(kind, alias+`.id`) + `)`
+		` and ` + notStaleOfLiteralKind(kind, alias+`.id`) + `)`
 }
 
 // visibleHeldRow is the body both of those render: the row itself says whether the acting

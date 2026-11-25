@@ -326,7 +326,8 @@ func blockRefCarries(fromKind, alias string) string {
 // from the tuples alone goes into graphstore's pointerRules instead: a pointer there alone, which
 // storeArmPointers (graph.go) reads from graphstore.PointerKinds, and a placement there and then
 // in storeArmPlacements (graph.go), which TestTheStoreArmReadsEveryKindThePointerRulesHold holds
-// to graphstore.PlacementKinds. This list reads both.
+// to graphstore.PlacementKinds; one that no pointer rule holds, as changed_by_run is, goes into
+// storeArmPointers itself. This list reads both.
 //
 // The announcement names a kind alone, and part_of in it is no claim about every part_of the store
 // holds: this build writes a part_of the view answers only out of a lens, a lens_block, a risk, a

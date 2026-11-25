@@ -9,7 +9,7 @@ import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { ApiError, api } from "../../../api/client";
-import { issueTreeKey } from "../../../api/queries";
+import { conversationTreeKey, issueTreeKey } from "../../../api/queries";
 import type { Actor, AuthenticatedUser, Comment, Decision, DecisionKeep } from "../../../api/types";
 import {
   pageFocusedRow,
@@ -47,14 +47,14 @@ import { ViewStage } from "../slots/stage";
 import { AppProviders } from "../slots/stage-fixtures";
 import { decisionBehind } from "../tree-keys";
 import {
-  issueTreeQuery,
+  outlineQuery,
   subscribeTreeFreshness,
   type TreeAnswer,
   type TreeAnswerNode,
   viewKey,
   viewQuery,
 } from "../tree-read/tree-read";
-import { issueAsksQuery } from "../useIssueTree";
+import { issueAskThreadsQuery } from "../useIssueTree";
 import { overflowing, wordsScrollSheet } from "../words-scroll-fixtures";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
@@ -301,8 +301,8 @@ function HeldReads({
 }): ReactNode {
   const client = useQueryClient();
   useEffect(() => subscribeTreeFreshness(client, KEY), [client]);
-  useQuery(issueTreeQuery(KEY));
-  useQuery({ ...issueAsksQuery(KEY), ...EVENT_FRESH, enabled: readsAsks });
+  useQuery(outlineQuery(KEY, "conversation"));
+  useQuery({ ...issueAskThreadsQuery(KEY), ...EVENT_FRESH, enabled: readsAsks });
   useQuery({
     ...EVENT_FRESH,
     queryFn: () => api.listComments(KEY),
@@ -381,10 +381,10 @@ function renderBody(
     treeReads.mockImplementation(async (_key, query) =>
       query?.view === "decisions" ? readView() : readTree()
     );
-    client.setQueryData(issueTreeKey(KEY), readTree(), answered);
+    client.setQueryData(conversationTreeKey(KEY), readTree(), answered);
     client.setQueryData(viewKey(KEY, "decisions"), readView(), answered);
   }
-  if (asks !== null) client.setQueryData(["asks", KEY], asks, answered);
+  if (asks !== null) client.setQueryData(["asks", KEY, "thread"], asks, answered);
   client.setQueryData(["comments", KEY], comments, answered);
   // Who is reading, as the page's first read of it left it, where the reads are dated: the page
   // read it as it loaded, before any view was opened.
@@ -791,7 +791,7 @@ function renderUnread(read: () => Promise<never>): RenderResult {
   });
   treeReads ??= spyOn(api, "getIssueTree");
   treeReads.mockImplementation(read);
-  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["asks", KEY, "thread"], []);
   client.setQueryData(["comments", KEY], []);
   const issue = issueDetails();
   const root = issueTree([]);
@@ -866,9 +866,9 @@ async function renderReads(
       await client.prefetchQuery({ queryFn: () => answerAs(state, answer), queryKey });
     }
   };
-  await hold(issueTreeKey(KEY), reads.tree, treeAnswer(made));
+  await hold(conversationTreeKey(KEY), reads.tree, treeAnswer(made));
   await hold(viewKey(KEY, "decisions"), reads.view, treeAnswer(made));
-  await hold(["asks", KEY], reads.asks, []);
+  await hold(["asks", KEY, "thread"], reads.asks, []);
   client.setQueryData(["comments", KEY], []);
   const issue = issueDetails();
   const root = issueTree(reads.tree === "answered" ? children : []);
@@ -1042,7 +1042,7 @@ test("Retry on the decisions' failed line reads them again and draws what they h
     if (down) throw new ApiError(503, { code: "UNAVAILABLE", error: "down" });
     return treeAnswer(made);
   });
-  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["asks", KEY, "thread"], []);
   client.setQueryData(["comments", KEY], []);
   const issue = issueDetails();
   // The page's tree as `useIssueTree.ts` builds it from `children`: no node of the read before
@@ -1092,7 +1092,7 @@ test("Retry on the decisions' failed line reads them again and draws what they h
     await user.click(drawn.getByRole("button", { name: "Retry" }));
     await waitFor(() => {
       expect(
-        client.getQueryData<TreeAnswer>(issueTreeKey(KEY)),
+        client.getQueryData<TreeAnswer>(conversationTreeKey(KEY)),
         "Retry did not read the tree again"
       ).toEqual(treeAnswer(made));
       expect(
@@ -1139,15 +1139,15 @@ test("the view says its open questions could not be read where the asks read fai
   ];
   treeReads ??= spyOn(api, "getIssueTree");
   treeReads.mockImplementation(async () => treeAnswer(made));
-  client.setQueryData(issueTreeKey(KEY), treeAnswer(made));
+  client.setQueryData(conversationTreeKey(KEY), treeAnswer(made));
   client.setQueryData(viewKey(KEY, "decisions"), treeAnswer(made));
   client.setQueryData(["comments", KEY], []);
   // The asks read failed, as the page's own observer of it left it (`useIssueTree.ts`).
   await client.prefetchQuery({
     queryFn: () => Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "down" })),
-    queryKey: ["asks", KEY],
+    queryKey: ["asks", KEY, "thread"],
   });
-  const asksRead = spyOn(api, "listIssueAsks").mockResolvedValue([]);
+  const asksRead = spyOn(api, "listIssueAskThreads").mockResolvedValue([]);
   const issue = issueDetails();
   const root = issueTree([statement("s1"), decisionNode("first")]);
   const view = presetView(root, "decisions", "", new Set()).root;
@@ -1213,9 +1213,9 @@ test("where the decisions' reads and the asks read both failed, each line names 
   // The asks read failed, as the page's own observer of it left it (`useIssueTree.ts`).
   await client.prefetchQuery({
     queryFn: () => Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "down" })),
-    queryKey: ["asks", KEY],
+    queryKey: ["asks", KEY, "thread"],
   });
-  const asksRead = spyOn(api, "listIssueAsks").mockRejectedValue(
+  const asksRead = spyOn(api, "listIssueAskThreads").mockRejectedValue(
     new ApiError(503, { code: "UNAVAILABLE", error: "down" })
   );
   const issue = issueDetails();
@@ -1433,7 +1433,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["asks", KEY, "thread"], []);
   client.setQueryData(["comments", KEY], []);
   const failed = renderOver(client, [], { stage: true });
   try {
@@ -1456,7 +1456,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     treeReads.mockResolvedValue(treeAnswer(made));
     await user.keyboard("{Enter}");
     await waitFor(() => expect(failedLine(failed, "decisions")).toBeNull());
-    expect(client.getQueryData(issueTreeKey(KEY))).toBeDefined();
+    expect(client.getQueryData(conversationTreeKey(KEY))).toBeDefined();
     // The tree read was read three times: refused as the page loaded, refused again under the
     // first Retry, and answered under the second.
     expect(treeReads?.mock.calls.filter(([, query]) => query?.view === undefined)).toHaveLength(3);
@@ -1476,16 +1476,16 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
   const asksDown = async (over: QueryClient) => {
     await over.prefetchQuery({
       queryFn: () => Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "down" })),
-      queryKey: ["asks", KEY],
+      queryKey: ["asks", KEY, "thread"],
     });
   };
-  const refusedAsks = spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
+  const refusedAsks = spyOn(api, "listIssueAskThreads").mockRejectedValue(new Error("refused"));
   try {
     treeReads.mockImplementation(async () => treeAnswer([]));
     const bare = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
     });
-    bare.setQueryData(issueTreeKey(KEY), treeAnswer([]));
+    bare.setQueryData(conversationTreeKey(KEY), treeAnswer([]));
     bare.setQueryData(viewKey(KEY, "decisions"), treeAnswer([]));
     bare.setQueryData(["comments", KEY], []);
     await asksDown(bare);
@@ -1508,7 +1508,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     const held = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
     });
-    held.setQueryData(issueTreeKey(KEY), treeAnswer(made));
+    held.setQueryData(conversationTreeKey(KEY), treeAnswer(made));
     held.setQueryData(viewKey(KEY, "decisions"), treeAnswer(made));
     held.setQueryData(["comments", KEY], []);
     await asksDown(held);
@@ -1546,7 +1546,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
   // render, the focus goes from the busy Retry to the question's row, and the foot takes it at
   // no point on the way.
   const asksOut = Promise.withResolvers<never>();
-  const asksRead = spyOn(api, "listIssueAsks").mockReturnValue(asksOut.promise);
+  const asksRead = spyOn(api, "listIssueAskThreads").mockReturnValue(asksOut.promise);
   try {
     const early = renderBody({ ...FOOT_ONLY, asks: null }, {}, { stage: true });
     expect(footControlOf(early)).not.toBeNull();
@@ -1568,7 +1568,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     asksRead.mockResolvedValue([]);
     await user.keyboard("{Enter}");
     await waitFor(() =>
-      expect(opened.client.getQueryData<readonly unknown[]>(["asks", KEY])).toEqual([])
+      expect(opened.client.getQueryData<readonly unknown[]>(["asks", KEY, "thread"])).toEqual([])
     );
     await waitFor(() =>
       expect(document.activeElement, "the focus is not on the minor decision").toBe(
@@ -1603,7 +1603,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
         answered.again({ children: [openAsk("q-open"), decisionNode("minor")] });
         answer.resolve([]);
         // The read's run (`Query.promise`): the query takes its answer as the run ends, first.
-        await answered.client.getQueryCache().find({ queryKey: ["asks", KEY] })?.promise;
+        await answered.client.getQueryCache().find({ queryKey: ["asks", KEY, "thread"] })?.promise;
       });
     } finally {
       document.removeEventListener("focusin", recordFocus);
@@ -1630,7 +1630,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
   // body.
   treeReads ??= spyOn(api, "getIssueTree");
   const decisionsRefused = treeReads.mockRejectedValue(new Error("refused"));
-  const asksRefused = spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
+  const asksRefused = spyOn(api, "listIssueAskThreads").mockRejectedValue(new Error("refused"));
   try {
     const both = renderBody(
       { asks: null, children: [statement("s1")], made: null },
@@ -1655,7 +1655,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     await waitFor(() => expect(document.activeElement).toBe(retryOf(both, "asks")));
     asksRefused.mockResolvedValue([]);
     await act(async () => {
-      void both.client.refetchQueries({ queryKey: ["asks", KEY] });
+      void both.client.refetchQueries({ queryKey: ["asks", KEY, "thread"] });
     });
     await waitFor(() => expect(failedLine(both, "asks")).toBeNull());
     await waitFor(() =>
@@ -1681,19 +1681,19 @@ test("a read refused after the tree took the focus gives that focus to its Retry
     });
     client.setQueryData(["comments", KEY], []);
     treeReads ??= spyOn(api, "getIssueTree");
-    const asks = spyOn(api, "listIssueAsks");
+    const asks = spyOn(api, "listIssueAskThreads");
     if (read === "decisions") {
       treeReads.mockReturnValue(answer.promise);
-      client.setQueryData(["asks", KEY], []);
+      client.setQueryData(["asks", KEY, "thread"], []);
     } else {
       treeReads.mockImplementation(async () => treeAnswer([]));
-      client.setQueryData(issueTreeKey(KEY), treeAnswer([]));
+      client.setQueryData(conversationTreeKey(KEY), treeAnswer([]));
       client.setQueryData(viewKey(KEY, "decisions"), treeAnswer([]));
       // The page's own read of the asks, which the view watches and does not send.
       asks.mockReturnValue(answer.promise);
       void client.prefetchQuery({
-        queryFn: () => api.listIssueAsks(KEY, "all"),
-        queryKey: ["asks", KEY],
+        queryFn: () => api.listIssueAskThreads(KEY, "all"),
+        queryKey: ["asks", KEY, "thread"],
       });
     }
     const view = renderOver(client, [statement("s1")], { stage: true });
@@ -1740,7 +1740,7 @@ test("a refused read's run that ends with no new refusal draws no new alert, and
     const spy =
       read === "decisions"
         ? treeReads.mockRejectedValue(new Error("refused"))
-        : spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
+        : spyOn(api, "listIssueAskThreads").mockRejectedValue(new Error("refused"));
     try {
       const view =
         read === "decisions"
@@ -1760,7 +1760,7 @@ test("a refused read's run that ends with no new refusal draws no new alert, and
       await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBe("true"));
       await act(async () =>
         view.client.cancelQueries({
-          queryKey: read === "decisions" ? issueTreeKey(KEY) : ["asks", KEY],
+          queryKey: read === "decisions" ? issueTreeKey(KEY) : ["asks", KEY, "thread"],
         })
       );
       await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBeNull());
@@ -1930,7 +1930,7 @@ test("a decision that leaves the review list by no act of the reader keeps the f
   await waitFor(() => expect(focusedRow(changed)).toBe(D("second")));
   await act(async () =>
     changed.client.setQueryData(
-      issueTreeKey(KEY),
+      conversationTreeKey(KEY),
       treeAnswer([
         ...whole.made,
         changeComment("change-second", "second", "2026-11-16T09:00:00Z", "Name the read, please."),
@@ -2065,7 +2065,7 @@ test("an entry that moves to another part by no act of the reader keeps the focu
 // an issue whose review list holds rows, and asked nothing on an issue whose review list holds
 // none.
 test("the view opened after the app's staleTime asks no read again, its rows' Keep and Change included", async () => {
-  const names = ["listIssueAsks", "listComments", "getArtifactBlocks"] as const;
+  const names = ["listIssueAskThreads", "listComments", "getArtifactBlocks"] as const;
   // Each read held, so a read the mount started reaches no server.
   const reads = names.map((read) =>
     spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise)
@@ -2083,7 +2083,7 @@ test("the view opened after the app's staleTime asks no read again, its rows' Ke
       getArtifactBlocks: 0,
       getIssueTree: 0,
       listComments: 0,
-      listIssueAsks: 0,
+      listIssueAskThreads: 0,
     });
     view.unmount();
   } finally {
@@ -2831,7 +2831,7 @@ test("a list that holds only the foot gives the focus to its first row, and to t
       expect(document.activeElement).toBe(footControlOf(left));
     }
     await act(async () => {
-      left.client.setQueryData(issueTreeKey(KEY), tied);
+      left.client.setQueryData(conversationTreeKey(KEY), tied);
       left.client.setQueryData(viewKey(KEY, "decisions"), tied);
     });
     await waitFor(() => expect(rowsOfPart(left, "review")).toEqual([D("minor")]));

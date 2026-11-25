@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // offerRow is one write_suggestions row as the table holds it, every column a case reads.
@@ -339,7 +340,14 @@ func TestSuggestionOfferBecomesActedOnWhenTheSourceCitesTheOfferedAsk(t *testing
 	if len(recorded) != 1 {
 		t.Fatalf("recorded %v, want the one offered question", recorded)
 	}
-	time.Sleep(10 * time.Millisecond) // the citation must postdate the row
+	// The citation must postdate the row, by the clock that stamps both: the database's.
+	testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("the database's clock to pass the offer row's created_at %s (its clock)", recorded[0].CreatedAt), func() (time.Time, bool) {
+		var now time.Time
+		if err := fixture.database.Pool.QueryRow(context.Background(), `select clock_timestamp()`).Scan(&now); err != nil {
+			t.Fatalf("read the database's clock: %v", err)
+		}
+		return now, now.After(recorded[0].CreatedAt)
+	})
 
 	citation := "dispatch://" + fixture.owner + "/ask/" + fixture.offered[0]
 	postOutcomeMessage(t, fixture.handler, fixture.host, "alice", "XCITEO settled this already: "+citation)

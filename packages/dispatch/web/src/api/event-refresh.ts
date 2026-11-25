@@ -8,6 +8,7 @@ import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
   architectureSourcesQuery,
+  conversationTreeKey,
   inboxQuery,
   inboxThreadsKey,
   issueTreeKey,
@@ -963,8 +964,30 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
       ) {
         return true;
       }
+      // Conversation's read (`conversationTreeKey`, its kinds the last member of its key) is an
+      // outline as the tree read is: it is judged by its own answer alone.
+      if (typeof view === "object" && view !== null) {
+        return false;
+      }
       if (view === undefined || client === undefined) {
         return false;
+      }
+      // A view follows the outline the page holds: the tree read below, Graph's, and where the
+      // cache holds none, Conversation's read, which the view waits on and is judged by alike.
+      const conversation = client
+        .getQueryCache()
+        .get(hashKey(conversationTreeKey(String(query.queryKey[1]))));
+      if (
+        conversation !== undefined &&
+        client.getQueryCache().get(hashKey(query.queryKey.slice(0, 2))) === undefined
+      ) {
+        const answer = conversation.state.data;
+        const judged = typeof answer === "object" && answer !== null && held.get(answer) === true;
+        if (conversation.state.fetchStatus !== "idle" && !judged) {
+          waitForOutline(client, conversation, query, issues);
+          return false;
+        }
+        return holds(answer, issues);
       }
       const outline = client.getQueryCache().get(hashKey(query.queryKey.slice(0, 2)));
       if (outline === undefined) {

@@ -1,8 +1,7 @@
-import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useId, useState } from "react";
 
 import { api } from "../../api/client";
-import { issueTreeKey } from "../../api/queries";
 import { refreshQueries } from "../../api/query-refresh";
 import type { AnchorInput, Artifact } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
@@ -21,8 +20,7 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { type DecisionNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { treeRead } from "./spec-filter/tree-read";
-import { dropViews, issueTreeQuery } from "./tree-read/tree-read";
+import { dropViews, outlineTargets, useOutlineAnswer } from "./tree-read/tree-read";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
 export type RowAction = "change" | "keep";
@@ -83,16 +81,17 @@ function keepFocusOnRow(control: HTMLElement): void {
 }
 
 /**
- * Reads the tree of issue `issueKey` again and drops every view of it the page holds: what a Keep
- * does however it ends, and a Change once Dispatch took it. The rule: a write whose answer
- * changes what the tree draws reads the tree by its own key, as the page refreshes it on an event
- * (`subscribeTreeFreshness`'s `refreshQueries`), so a walk of its pages already in flight is
- * waited for rather than cut off, and drops every held view (`dropViews`), since each draws how a
- * decision stands. It reaches the tree through no other read's invalidation, which reaches
- * nothing where that read is already invalidated.
+ * Reads the outline of issue `issueKey` again and drops every view of it the page holds: what a
+ * Keep does however it ends, and a Change once Dispatch took it. The rule: a write whose answer
+ * changes what the outline draws reads each outline read the page may hold by its own key
+ * (`outlineTargets`), as the page refreshes them on an event (`subscribeTreeFreshness`'s
+ * `refreshQueries`), so a walk of its pages already in flight is waited for rather than cut off,
+ * and drops every held view (`dropViews`), since each draws how a decision stands. It reaches
+ * the outline through no other read's invalidation, which reaches nothing where that read is
+ * already invalidated.
  */
 function readDecisionsAgain(queryClient: QueryClient, issueKey: string): void {
-  refreshQueries(queryClient, [{ exact: true, queryKey: issueTreeKey(issueKey) }]);
+  refreshQueries(queryClient, outlineTargets(issueKey));
   dropViews(queryClient, issueKey);
 }
 
@@ -128,9 +127,10 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
  * against the decision node's own document and block, carrying the sum of the text this node
  * drew, so a decision the agent changed since is refused rather than agreed with, and Change is a
  * comment anchored to the decision's own block and the words of its first paragraph, its
- * `heading` (`decision-nodes.ts`). The decision is the node of the tree read the page already
- * holds (`issueTreeKey`), found by its address among that answer's decisions
- * (`decisionsOfAnswer`), so the node makes no read of its own to draw its controls.
+ * `heading` (`decision-nodes.ts`). The decision is the node of the outline read the page already
+ * holds, the one its address chooses (`useOutlineAnswer`), found by its address among that
+ * answer's decisions (`decisionsOfAnswer`), so the node makes no read of its own to draw its
+ * controls.
  */
 export function DecisionActions({
   document,
@@ -151,15 +151,15 @@ export function DecisionActions({
   tabStops?: boolean;
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
-  // The decisions of the tree read are read once per answer for every node of the page
+  // The decisions of the outline read are read once per answer for every node of the page
   // (`decisionsOfAnswer`), with no asks: they only make an answered question a person's
   // decision, and these controls are drawn only on a decision waiting for review, which is an
   // agent's, so the decision its address finds is the same without them.
-  const tree = useQuery(treeRead(issueTreeQuery(issueKey)));
+  const tree = useOutlineAnswer(issueKey);
   const decision =
-    tree.data === undefined || nodeReference === undefined
+    tree === undefined || nodeReference === undefined
       ? undefined
-      : decisionsOfAnswer(tree.data, issueKey).get(nodeReference);
+      : decisionsOfAnswer(tree, issueKey).get(nodeReference);
   const documentId = decision?.document;
   if (decision === undefined || documentId === undefined || isClosed) return null;
   return (

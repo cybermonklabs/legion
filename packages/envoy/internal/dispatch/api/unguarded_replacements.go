@@ -43,3 +43,36 @@ func (s *server) noteUnguardedReplacement(artifact model.Artifact) {
 	s.unguardedReplacements.Inc()
 	slog.Info(unguardedReplacementMessage, "artifact", artifact.ID, "document", artifact.RefKey)
 }
+
+// A file's or a picture's upload over one that already exists names the token of the version it
+// replaces in the same way, and Dispatch checks it under the owner's lock (refuseFileBase). One
+// naming none is taken unchecked too, since no deployed client but this build's `dispatch` names
+// one (the dashboard's upload does not), and each one stored is counted here, apart from the
+// documents', so the same later refusal can cover files once every client sends a token: this
+// counter reading no new replacements is how that is seen.
+
+// unguardedFileReplacementsMetric is the counter of file and picture uploads that replaced one
+// naming no token. It carries no label, for the reason the documents' counter carries none.
+const unguardedFileReplacementsMetric = "envoy_dispatch_file_replacements_unguarded_total"
+
+// unguardedFileReplacementMessage is the INFO line each such replacement logs once it has
+// committed.
+const unguardedFileReplacementMessage = "dispatch: an upload replaced a file naming no token for the version it replaces; taken unchecked until every client sends one"
+
+// registerUnguardedFileReplacements adds the file counter to registry and answers it, nil for a
+// nil registry, as registerUnguardedReplacements does.
+func registerUnguardedFileReplacements(registry *metrics.Registry) *metrics.Counter {
+	if registry == nil {
+		return nil
+	}
+	return registry.NewCounter(unguardedFileReplacementsMetric,
+		"File and picture uploads that replaced an existing file or picture naming no token for the version they replace, taken unchecked")
+}
+
+// noteUnguardedFileReplacement counts a committed upload that replaced the file or picture
+// artifact naming no token and logs the artifact it replaced, naming no caller, as
+// noteUnguardedReplacement does.
+func (s *server) noteUnguardedFileReplacement(artifact model.Artifact) {
+	s.unguardedFileReplacements.Inc()
+	slog.Info(unguardedFileReplacementMessage, "artifact", artifact.ID, "file", artifact.RefKey)
+}

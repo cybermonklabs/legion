@@ -3,17 +3,17 @@ import type { CSSProperties, ReactNode } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
-import { pageGuideLineBg, pageQuietText } from "../../theme/classes";
+import { pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { useDocumentAdmissions } from "./document-admission";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
-import { NodeRow } from "./NodeRow";
+import { IndentGuides, NodeRow } from "./NodeRow";
 import type { ThreadMark } from "./outline-thread-read";
 import { authorText, pageChrome } from "./page-structure";
 import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
-import type { DrawnRow } from "./tree-fold";
+import { type DrawnRow, indentOf, type PageRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
 import { nodeEditable } from "./useNodeEditing";
 
@@ -21,22 +21,24 @@ import { nodeEditable } from "./useNodeEditing";
  * The rows of the issue's tree, drawn.
  *
  * It is the drawing alone: which rows there are is the fold's (`tree-fold.ts`), and what the
- * reader opened, pinned, focused and is editing in is `IssueTree.tsx`'s, which hands each row
- * what it is. A row below the levels the fold drew is one line saying how many nodes it holds
- * and opening them in place.
+ * reader folded, focused and is editing in is `IssueTree.tsx`'s, which hands each row what it
+ * is. Every row draws its node whole, with what it holds on its face, whatever the focus (R11).
+ * The row after a node's drawn children says how many are left and draws the next page of them,
+ * the control above the first row reads the outline read's next page of older comments, and the
+ * control after the last row reads the read's next page, each where it is given (R15).
  */
 export function TreeRows({
   artifacts,
   context,
-  cycle,
   editing,
   focused,
+  foldedMore = false,
   isClosed,
+  more,
   onFocus,
-  onOpenDeeper,
-  onPin,
+  onOlder,
+  onPage,
   onToggle,
-  pinned,
   report,
   rows,
   tabStop,
@@ -48,21 +50,28 @@ export function TreeRows({
   artifacts: ReadonlyMap<string, Artifact>;
   /** The ids of the rows this preset draws only as the ancestor of a match. */
   context: ReadonlySet<string>;
-  /** Which of the cycle key's three states the tree is in (`CYCLE_STATES`). */
-  cycle: number;
   /** The row the reader is editing in and the document its editor belongs to. */
   editing: { readonly artifactId: string; readonly row: string } | undefined;
-  /** The key of the row whose body and acts the focus opened: the row that holds the focus, or
-   *  the one a press on another control of the page took it from, which keeps them drawn until
-   *  that press has ended (`IssueTree.tsx`'s `useReleaseFocus`). */
+  /** The key of the row the focus is on: the row that holds the focus, or the one a press on
+   *  another control of the page took it from, which keeps its focused look until that press has
+   *  ended (`IssueTree.tsx`'s `useReleaseFocus`). */
   focused: string | undefined;
+  /** Whether the read the rows are drawn from holds nodes no page read yet holds, so a folded
+   *  row's count carries "+" (R15). False unless the tree passes it. */
+  foldedMore?: boolean;
   isClosed: boolean;
+  /** The read's next page, which the control after the last row reads (R15): how many nodes the
+   *  read holds after the pages read, where it says, and the press. Undefined where its answer
+   *  names none, and the control is not drawn. */
+  more?: { readonly left: number | undefined; readonly onPress: () => void };
   onFocus: (row: string, node: TreeNode) => void;
-  onOpenDeeper: (id: string) => void;
-  onPin: (row: string) => void;
+  /** Reads the next page of the outline read's older comments, which the control above the
+   *  first row does; undefined where no older comment remains or the tree is drawn from no
+   *  issue, and the control is not drawn. */
+  onOlder?: () => void;
+  /** Draws the next page of a node's children, which the row that pages them does. */
+  onPage: (row: PageRow) => void;
   onToggle: (node: TreeNode, expanded: boolean | undefined) => void;
-  /** The keys of the rows whose bodies the reader pinned open. */
-  pinned: ReadonlySet<string>;
   /** What a key reported when it had nowhere to go, and the key of the row it was pressed on,
    *  which draws it (`NodeRow`'s `report`). */
   report?: { readonly line: string; readonly row: string | undefined };
@@ -92,16 +101,24 @@ export function TreeRows({
   const admissions = useDocumentAdmissions();
   return (
     <>
+      {onOlder === undefined ? null : (
+        <PageControl kind="older" level={1} onPress={onOlder}>
+          {CONTROL_LABELS.older_comments}
+        </PageControl>
+      )}
       {rows.map((row) => {
         const key = rowKeyOf(row);
-        if (row.kind === "deeper") {
+        if (row.kind === "page") {
           return (
-            <BranchMore
-              held={row.held}
-              key={key}
-              level={row.level}
-              onOpen={() => onOpenDeeper(row.of.id)}
-            />
+            <PageControl key={key} kind="page" level={row.level} onPress={() => onPage(row)}>
+              {/* One run of text: below 1280 px a button is a flex box (`styles.css`), which
+                  lays the count's own span and the words after it out as two boxes side by
+                  side, the space that opens the words dropped at the start of theirs. */}
+              <span>
+                <span {...authorText}>{row.left.toLocaleString()}</span>{" "}
+                {row.left === 1 ? CONTROL_LABELS.page_row : CONTROL_LABELS.page_rows}
+              </span>
+            </PageControl>
           );
         }
         const place = documentOfNode(row.node.id, artifacts);
@@ -116,12 +133,6 @@ export function TreeRows({
               name: agentText.author(row.node.author),
               reader: isReader(row.node.author, reader),
             }}
-            body={
-              focused === key ||
-              pinned.has(key) ||
-              editing?.row === key ||
-              drawsBody(cycle, row.level)
-            }
             context={context.has(row.node.id)}
             {...(place === undefined ? {} : { document: place.artifact })}
             editable={nodeEditable(place, isClosed, admissions)}
@@ -130,15 +141,14 @@ export function TreeRows({
             focused={focused === key}
             foldable={!(row.level === 1 && row.node.id === zoomRoot)}
             folded={row.folded}
+            foldedMore={foldedMore}
             isClosed={isClosed}
             key={key}
             level={row.level}
             node={row.node}
             onFocus={() => onFocus(key, row.node)}
-            onPin={() => onPin(key)}
             onToggle={() => onToggle(row.node, row.expanded)}
             ownAnswer={isReader(row.node.answer?.by, reader)}
-            pinned={pinned.has(key)}
             placesItself={unplaced !== key}
             {...(report?.row === key ? { report: report.line } : {})}
             rowKey={key}
@@ -147,77 +157,77 @@ export function TreeRows({
           />
         );
       })}
+      {more === undefined ? null : (
+        <PageControl kind="more" level={1} onPress={more.onPress}>
+          <NextPageWords left={more.left} />
+        </PageControl>
+      )}
     </>
   );
 }
 
 /**
- * How much of the whole tree the cycle key draws, in the three states it steps through: its
- * rows as the fold left them, those rows with every body down to the second level open, and
- * everything - every branch unfolded and every body open, but for a branch the reader folds
- * while it is drawn, which is drawn folded at once. The key leaves the reader's own folds and
- * pins as they are, so the cycle comes back to the tree they had, with any fold made in the last
- * state among them.
+ * What the control that reads a read's next page says (R15), in the outline and after a view's
+ * last row alike: how many nodes the read holds after the pages read, the author's number, and
+ * the words that agree with it, in one run of text, as the row after a node's children draws its
+ * count and words; the words alone where the read gives no count.
  */
-export const CYCLE_STATES = 3;
-
-/** The state that unfolds every branch, which is the last of the three. */
-export const EVERYTHING = CYCLE_STATES - 1;
-
-/** How deep the second state of the cycle opens the bodies. */
-const BODIES_TO_LEVEL = 2;
-
-/** Whether the cycle draws the body of a row at `level`, whatever the focus and the pins say. */
-function drawsBody(cycle: number, level: number): boolean {
-  return cycle === EVERYTHING || (cycle === 1 && level <= BODIES_TO_LEVEL);
+export function NextPageWords({ left }: { left: number | undefined }): ReactNode {
+  if (left === undefined) return CONTROL_LABELS.tree_page;
+  return (
+    <span>
+      <span {...authorText}>{left.toLocaleString()}</span>{" "}
+      {left === 1 ? CONTROL_LABELS.tree_page_row : CONTROL_LABELS.tree_page_rows}
+    </span>
+  );
 }
 
-/** The one row a branch below the drawn levels folds to: how many rows it holds, in words
- *  that agree with the count, and the control that opens them in place, at the level its nodes
- *  would stand at and under the guides of the levels above it. */
-function BranchMore({
-  held,
+/**
+ * One control that draws more of the outline in place (R15), at the level of the rows it draws
+ * and under the guides of the levels above them: the row after a node's drawn children, the
+ * control above the first row that reads older comments, and the control after the last row that
+ * reads the read's next page. A press replaces it with what it drew, so it takes no focus from
+ * that press: it leaves the focus where it is (decision 366), and it is out of the tab order, as
+ * every control inside the tree is, since the tree is one tab stop. The keys press it from the row
+ * beside it, and leave the focus on the first row it drew (`useTreeKeymap.ts`'s `tree-next` and
+ * `tree-previous`); a press of the read's next page leaves it there too.
+ */
+function PageControl({
+  children,
+  kind,
   level,
-  onOpen,
+  onPress,
 }: {
-  held: number;
+  children: ReactNode;
+  /** Which of the three it is, by the mark it carries: the row after a node's children
+   *  (`data-tree-page`), the control that reads older comments (`data-older-comments`), or the
+   *  one that reads the read's next page (`data-tree-more`). */
+  kind: "more" | "older" | "page";
   level: number;
-  onOpen: () => void;
+  onPress: () => void;
 }): ReactNode {
-  const depth = level - 1;
+  const depth = indentOf(level);
   return (
     <div
       aria-level={level}
       className={`relative flex min-w-0 pl-[calc(var(--row-depth)*23px+26px)] text-xs leading-7 max-[761px]:pl-[calc(var(--row-depth)*17px+22px)] ${pageQuietText}`}
-      data-branch-more=""
       role="treeitem"
       style={{ "--row-depth": depth } as CSSProperties}
       tabIndex={-1}
+      data-older-comments={kind === "older" ? "" : undefined}
+      data-tree-more={kind === "more" ? "" : undefined}
+      data-tree-page={kind === "page" ? "" : undefined}
     >
-      {Array.from({ length: depth }, (_unused, guide) => (
-        <span
-          aria-hidden="true"
-          className={`absolute inset-y-0 w-px left-[calc(var(--guide)*23px+9px)] max-[761px]:left-[calc(var(--guide)*17px+8px)] ${pageGuideLineBg}`}
-          // biome-ignore lint/suspicious/noArrayIndexKey: a guide is its level and nothing else.
-          key={guide}
-          style={{ "--guide": guide } as CSSProperties}
-        />
-      ))}
+      <IndentGuides depth={depth} />
       <button
         className="dispatch-inline-link font-medium underline decoration-page-hair underline-offset-[3px]"
-        onClick={onOpen}
+        onClick={onPress}
+        onMouseDown={(event) => event.preventDefault()}
         tabIndex={-1}
         type="button"
         {...pageChrome}
       >
-        {/* One run of text: below 1280 px a button is a flex box (`styles.css`), which lays the
-            count's own span and the words after it out as two boxes side by side, the space
-            that opens the words dropped at the start of theirs, and the line read
-            "21more rows below". */}
-        <span>
-          <span {...authorText}>{held}</span>{" "}
-          {held === 1 ? CONTROL_LABELS.deeper_row : CONTROL_LABELS.deeper_rows}
-        </span>
+        {children}
       </button>
     </div>
   );

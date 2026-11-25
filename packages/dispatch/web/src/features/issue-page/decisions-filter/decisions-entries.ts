@@ -11,8 +11,8 @@ import type { TreeNode } from "../issue-tree";
 import { treeRead } from "../spec-filter/tree-read";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
-import { issueTreeQuery, type TreeAnswer, viewQuery } from "../tree-read/tree-read";
-import { issueAsksQuery, issueCommentsQuery } from "../useIssueTree";
+import { outlineQuery, type TreeAnswer, viewQuery } from "../tree-read/tree-read";
+import { issueAskThreadsQuery, issueCommentsQuery } from "../useIssueTree";
 import {
   askIdOf,
   type DecisionsEntry,
@@ -40,15 +40,16 @@ import {
  * or a Change drops every view the page holds (`DecisionActions.tsx`), and every change of the
  * issue marks it stale and reads it again while the answer stays drawn
  * (`subscribeTreeFreshness`). Until the view answers, and where its read fails, the decisions
- * are the decision nodes of the tree read the page holds, which has the same nodes with the same
- * members. So every decision stands in its part with its state, never in the folded foot for want
- * of a row, and the focus stays with it.
+ * are the decision nodes of the tree read the page holds beside the view, Conversation's read
+ * (`tree-read.ts`' `outlineOf`), which has the same nodes with the same members. So every
+ * decision stands in its part with its state, never in the folded foot for want of a row, and
+ * the focus stays with it.
  *
  * The reads are the page's own, under the keys it reads them by (`useIssueTree.ts`,
- * `ViewReadProvider`): the tree read, the decisions view, the issue's asks and its comments, the
- * asks and the comments by the tree's own definitions of those reads (`issueAsksQuery`,
- * `issueCommentsQuery`), each watched and never sent, so the view adds no request of its own and
- * reads none of them again when it is opened.
+ * `ViewReadProvider`): Conversation's read, the decisions view, the issue's asks and its
+ * comments, the asks and the comments by the tree's own definitions of those reads
+ * (`issueAskThreadsQuery`, `issueCommentsQuery`), each watched and never sent, so the view adds
+ * no request of its own and reads none of them again when it is opened.
  *
  * The view draws four parts. A decision another person made is no part of its own: it stands
  * under the reader's decisions, with that person's name on its row, so the model's `others` is
@@ -156,9 +157,9 @@ export function useDecisionsEntries({
   /** The tree as the Decisions view leaves it. */
   view: TreeNode;
 }): DecisionsEntries {
-  // The tree read, which holds each Change under its decision, and the decisions until the view
-  // answers.
-  const issueTreeRead = useQuery(treeRead(issueTreeQuery(issue.key)));
+  // The tree read the page holds in the Decisions view, Conversation's read, which holds each
+  // Change under its decision, and the decisions until the view answers.
+  const issueTreeRead = useQuery(treeRead(outlineQuery(issue.key, "conversation")));
   const tree = issueTreeRead.data;
   // The decisions view read, watched the same way for how it stands: the page reads it
   // (`ViewReadProvider`) and holds its answer on the issue's node (`TreeNode.views`).
@@ -166,7 +167,7 @@ export function useDecisionsEntries({
   // The issue's asks, watched the same way: the page's tree reads them under this key. The
   // decision the read carries on an answered ask, by its `links`, makes it a person's decision;
   // the asks read is only the fallback where the read carries none (`decisionNodes`).
-  const asksRead = useQuery(treeRead(issueAsksQuery(issue.key)));
+  const asksRead = useQuery(treeRead(issueAskThreadsQuery(issue.key)));
   const asks = asksRead.data;
   // The decisions view the page holds, and the tree read wherever the view holds no answer.
   const held = root.views?.decisions ?? tree;

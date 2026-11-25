@@ -14,6 +14,7 @@ import { useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
+import { NextViewPage } from "../tree-read/view-read";
 import { waitingPressOf } from "../waiting";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
@@ -80,6 +81,8 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
         // entry (part P): each press goes to the next thing that waits (the tester's F12).
         waitingPress={waitingPressOf(state)}
       />
+      {/* While the decisions view read answers a next page, the control that reads it (R15). */}
+      <NextViewPage filter="decisions" issueKey={issue.key} />
     </NoTooltips>
   );
 }

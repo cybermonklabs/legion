@@ -282,6 +282,7 @@ export function stubReads(): { mockRestore(): void }[] {
     }),
     spyOn(api, "getIssueReferences").mockResolvedValue({ members: [], truncated: false }),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
     spyOn(api, "listComments").mockResolvedValue([]),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
     spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(treeOf([]))),

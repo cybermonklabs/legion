@@ -135,6 +135,7 @@ test("the stage takes the first thing a view says for each following of an addre
       "getReferenceTargets",
       "listComments",
       "listIssueAsks",
+      "listIssueAskThreads",
       "listIssueMessages",
       "whoAmI",
     ] as const

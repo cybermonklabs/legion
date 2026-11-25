@@ -74,7 +74,7 @@ import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { issueTreeQuery, useTreeRead, useTreeReadRunning, viewQuery } from "../tree-read/tree-read";
-import { issueAsksQuery, type NamesFailure, useLastAnswer } from "../useIssueTree";
+import { issueAskThreadsQuery, type NamesFailure, useLastAnswer } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
@@ -190,7 +190,7 @@ export function SpecFilterBody({
   const treeQuery = issueTreeQuery(issue.key);
   const resultsQuery = issueResultsQuery(issue.key);
   const specQuery = viewQuery(issue.key, "spec");
-  const asksQuery = issueAsksQuery(issue.key);
+  const asksQuery = issueAskThreadsQuery(issue.key);
   const coverageRead = useQuery(treeRead(coverageQuery));
   const { blocksOf } = useTreeRead(issue);
   // Whether the tree read runs, from an observer of its own (`useTreeReadRunning`): what a line
@@ -483,7 +483,6 @@ export function SpecFilterBody({
     },
     onEditEnd: NOTHING,
     onFold: NOTHING,
-    onOpenDeeper: NOTHING,
     onPin: NOTHING,
     // The keymap's `q` and `w` say where they could not go only while its one `readsHeld` flag
     // holds. `q` walks the open questions, which the asks read brings, so the flag is
@@ -512,7 +511,6 @@ export function SpecFilterBody({
       if (path !== undefined) navigate(path);
     },
     onZoom: NOTHING,
-    oneNodeAtATime: false,
     readsHeld: asksHeld,
     rows,
     // The whole tree, which `q` walks for the next open question, and `w` on a row that is no

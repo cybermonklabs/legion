@@ -46,7 +46,8 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // What each control draws after its name: a view's count of its main kind and what of it asks
   // something of the reader, and for Conversation how many entries the Contents list holds, as
-  // the prototype's signal counts its branches. Each follows `?q=`. None while the reads or the
+  // the prototype's signal counts its branches. Each follows `?q=`, and carries "+" while the read
+  // it is read from holds nodes no page read yet holds (R15). None while the reads or the
   // reader's login do not hold, nor under `?q=` while the names do not (above).
   const signals = useMemo(
     () =>
@@ -55,6 +56,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
             ...filterSignals(root, address.filter),
             conversation: {
               count: contentsEntries(presetView(root, "conversation", address.filter).root, viewer),
+              ...(root.moreToRead === true ? { more: true as const } : {}),
             },
           }
         : undefined,

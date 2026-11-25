@@ -15,12 +15,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // withdrawnGoingStream is everything the stream writes for a withdrawn run whose ending holds
@@ -275,25 +276,16 @@ func TestGoingRunStillAnsweringAtTheDeleteSlipsNoFramePastIt(t *testing.T) {
 		rig.handler.ServeHTTP(sink, request)
 	}()
 	const first = "id: 1\nevent: text\ndata: {\"text\":\"Before the delete, \"}\n\n"
-	waitUntil(t, 30*time.Second, "the open stream writing the answer's first frame", func() bool {
+	waitUntil(t, "the open stream writing the answer's first frame", func() bool {
 		return sink.text() == first
 	})
 
 	deleteThreadComment(t, rig.handler, comment.ID, "alice")
 	release()
-	select {
-	case err := <-answerer.stored:
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("storing the rest of the answer answered %v, want it stored or refused as an ended run's", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the answer did not finish within 30s of its release")
+	if err := testwait.Receive(t, "the rest of the answer, stored once its release came", answerer.stored); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("storing the rest of the answer answered %v, want it stored or refused as an ended run's", err)
 	}
-	select {
-	case <-served:
-	case <-time.After(60 * time.Second):
-		t.Fatal("the open stream did not end within 60s of the delete")
-	}
+	testwait.Receive(t, "the end of the open stream after the delete", served)
 
 	ending, err := readGoingTerminalEvent(ctx, rig.server.deps.Store.Pool, run.ID)
 	if err != nil {
@@ -352,20 +344,21 @@ func streamedFrames(t *testing.T, stream string) []model.GraphFrame {
 	return frames
 }
 
-// storedFrames is every frame the run stored, as its going_events rows hold them.
+// storedFrames is every frame the run stored, as its going_events rows hold them: the base's
+// goingRig.frames reads them as a reader of the stream does, and each `<sequence> <name> <data>`
+// line it answers is decoded as graphFrameOf decodes a frame.
 func (rig goingRoutesRig) storedFrames(t *testing.T, id string) []model.GraphFrame {
 	t.Helper()
-	stored, _, err := rig.server.readGoingStream(context.Background(), id, 0)
-	if err != nil {
-		t.Fatalf("read the frames run %s stored: %v", id, err)
-	}
-	frames := make([]model.GraphFrame, 0, len(stored))
-	for _, frame := range stored {
-		data, err := json.Marshal(frame.Event.Data)
+	lines := goingRig{server: rig.server, database: rig.database}.frames(t, id)
+	frames := make([]model.GraphFrame, 0, len(lines))
+	for _, line := range lines {
+		sequence, rest, _ := strings.Cut(line, " ")
+		name, data, _ := strings.Cut(rest, " ")
+		parsed, err := strconv.Atoi(sequence)
 		if err != nil {
-			t.Fatalf("encode the data of frame %d of run %s: %v", frame.Sequence, id, err)
+			t.Fatalf("run %s stored the frame %q, which names no sequence", id, line)
 		}
-		frames = append(frames, graphFrameOf(t, frame.Sequence, frame.Event.Name, data))
+		frames = append(frames, graphFrameOf(t, parsed, name, []byte(data)))
 	}
 	return frames
 }
@@ -375,11 +368,7 @@ func (rig goingRoutesRig) storedFrames(t *testing.T, id string) []model.GraphFra
 func (rig goingRoutesRig) graphFrames(t *testing.T, id string) []model.GraphFrame {
 	t.Helper()
 	address := "dispatch://" + graphstore.KindInteraction + "/" + id
-	response := referencesAt(t, rig.handler, "from", address, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("alice's ?from=%s: status=%d body=%s", address, response.Code, response.Body.String())
-	}
-	read := decodeBody[model.GraphReferences](t, response)
+	read := graphEdges(t, rig.handler, url.Values{"from": {address}})
 	if read.Node.Ref != address {
 		t.Fatalf("alice's ?from=%s answers the node %+v, want her run", address, read.Node)
 	}

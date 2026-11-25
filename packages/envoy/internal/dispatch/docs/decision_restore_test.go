@@ -1313,6 +1313,106 @@ func TestTheRestoreDeclinesAnAnsweredAskAPersonDeletedFromTheDecisionsDocumentSi
 	}
 }
 
+// A person's browser deletion of an answered ask's block from the decisions document is that
+// person's removal whether or not its settlement has run when the decisions step reads the
+// document. On a fleet of this build, alice's browser deletes q-doc from the standing
+// decisions.md and the room's settlement has not run yet (the settle delay runs from her last
+// update), so no version of the document records her removal; the step's pass then reads the
+// finder's work, which takes q-doc for an ask of the second shape, and restores. The pass writes
+// no block of q-doc into the spec and writes the ask nowhere, as it does once that settlement has
+// run (TestTheRestoreDeclinesAnAnsweredAskAPersonDeletedFromTheDecisionsDocumentSinceItWasRead):
+// the room the pass could read holds no block of q-doc, and the step retires the document, so
+// her deletion would reach no store at all.
+func TestTheRestoreWritesBackNoAnsweredAskAPersonsBrowserDeletedFromTheDecisionsDocumentBeforeItSettled(t *testing.T) {
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n")
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions",
+		"# Decisions\n\n## Which line names a moved block\n\n:::ask{#q-doc urgency=\"low\" multiple=\"false\"}\nWhich line names a block that moved?\n:::\n")
+	deleted := issue.answer(decisions, "q-doc", "The census names each move.")
+	before := latestVersionNumber(t, issue.service, decisions)
+	browserReplaceText(t, issue.service, decisions, "# Decisions\n\n## Which line names a moved block\n\nThe census names each move.\n",
+		model.Actor{Kind: "user", ID: "alice"})
+	if version := latestVersionNumber(t, issue.service, decisions); version != before {
+		t.Fatalf("the decisions document stands at version %d after alice's browser deletion, want %d: its settlement has not run", version, before)
+	}
+	work, err := graphcensus.ReadRestoreWork(context.Background(), issue.database.Pool)
+	if err != nil {
+		t.Fatalf("read the restore's work: %v", err)
+	}
+
+	result := issue.restoreWith(work, false)
+	for _, restored := range result.Restored {
+		if restored.Ask == deleted {
+			t.Errorf("the restore wrote %+v, the ask %s (q-doc), which alice's browser deleted from the decisions document before its settlement ran, want it written nowhere", restored, deleted)
+		}
+	}
+	if spec := issue.latest(issue.spec); strings.Contains(spec, "#q-doc ") {
+		t.Errorf("the spec holds a block of the ask %s, which alice's browser deleted from the decisions document:\n%s", deleted, spec)
+	}
+}
+
+// A conversion that retires the decisions document first writes the version that states a
+// person's browser deletion no settlement has versioned yet. Alice's browser deletes q-doc, the
+// document's last ask block and all it held but its title, and the room's settlement has not run.
+// The pass converts: the document then holds no section and no ask block, so the pass retires it.
+// Before the retirement it writes a version of the document that holds no block of q-doc, and
+// that version states her removal: the ask's node holds one removed_by, to alice, under that
+// version's event. The result declines the ask to alice at that version, the ask's row keeps
+// naming the block it left, and the spec holds no block of it.
+func TestAConversionThatRetiresTheDecisionsDocumentFirstVersionsAPersonsUnsettledDeletionOfItsLastAsk(t *testing.T) {
+	ctx := context.Background()
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n")
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions",
+		"# Decisions\n\n:::ask{#q-doc urgency=\"low\" multiple=\"false\"}\nWhich line names a block that moved?\n:::\n")
+	deleted := issue.answer(decisions, "q-doc", "The census names each move.")
+	before := latestVersionNumber(t, issue.service, decisions)
+	browserReplaceText(t, issue.service, decisions, "# Decisions\n", model.Actor{Kind: "user", ID: "alice"})
+	if version := latestVersionNumber(t, issue.service, decisions); version != before {
+		t.Fatalf("the decisions document stands at version %d after alice's browser deletion, want %d: its settlement has not run", version, before)
+	}
+	if removals := heldRemovalsOf(t, issue, deleted); len(removals) != 0 {
+		t.Fatalf("before the pass the ask %s holds the removals %+v, want none: no version records alice's deletion", deleted, removals)
+	}
+	work, err := graphcensus.ReadRestoreWork(ctx, issue.database.Pool)
+	if err != nil {
+		t.Fatalf("read the restore's work: %v", err)
+	}
+
+	result := issue.restoreWith(work, true)
+	if !result.Retired || result.DecisionsVersion <= before {
+		t.Fatalf("the conversion retired the decisions document %t and wrote its version %d, want it retired after a version above %d", result.Retired, result.DecisionsVersion, before)
+	}
+	if len(result.Restored) != 0 || len(result.Declined) != 1 ||
+		result.Declined[0] != (DeclinedAsk{Ask: deleted, Person: "alice", Version: result.DecisionsVersion}) {
+		t.Fatalf("the conversion wrote %+v and declined %+v, want the ask %s (q-doc) written nowhere and declined to alice at version %d of the decisions document",
+			result.Restored, result.Declined, deleted, result.DecisionsVersion)
+	}
+	var written string
+	if err := issue.database.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`,
+		decisions, result.DecisionsVersion).Scan(&written); err != nil {
+		t.Fatalf("read version %d of the decisions document: %v", result.DecisionsVersion, err)
+	}
+	if strings.Contains(written, "#q-doc ") {
+		t.Errorf("version %d of the decisions document holds a block of q-doc, which alice's browser deleted:\n%s", result.DecisionsVersion, written)
+	}
+	var event int64
+	if err := issue.database.Pool.QueryRow(ctx, `
+		select id from events
+		where type = 'artifact.version' and payload->>'artifact_id' = $1 and (payload->'version'->>'number')::int = $2
+	`, decisions, result.DecisionsVersion).Scan(&event); err != nil {
+		t.Fatalf("read the event of version %d of the decisions document: %v", result.DecisionsVersion, err)
+	}
+	if held := heldRemovalsOf(t, issue, deleted); len(held) != 1 || !held[0].Asserted || held[0].ToID != "alice" || held[0].SourceEvent != event {
+		t.Errorf("after the conversion the ask %s holds the removals %+v, want one asserted to alice under the event %d of version %d of the decisions document",
+			deleted, held, event, result.DecisionsVersion)
+	}
+	if blockID, document := issue.askRow(deleted); blockID != "q-doc" || document != decisions {
+		t.Errorf("after the conversion the ask's row names %s of %s, want q-doc of the decisions document %s", blockID, document, decisions)
+	}
+	if spec := issue.latest(issue.spec); strings.Contains(spec, "#q-doc ") {
+		t.Errorf("the spec holds a block of the ask %s, which alice's browser deleted from the decisions document:\n%s", deleted, spec)
+	}
+}
+
 // openerOf is the opening line of the ask block id that markdown holds, "" where it holds none.
 func openerOf(markdown, id string) string {
 	start := strings.Index(markdown, "ask{#"+id+" ")

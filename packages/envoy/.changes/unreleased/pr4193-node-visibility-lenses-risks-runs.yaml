@@ -46,6 +46,9 @@ body: |-
   `POST /api/v1/issues/{key}/nodes/{id}/settle` lets a person or the node's author settle a proposed
   node. Any other move of a node into or out of proposed or settled takes the same rule: any other
   caller is refused with `403 STATE_NOT_PERMITTED`, so the shared agent token makes no such move.
+  A state write or settle on the block of an `:::ask` block returns `409 ASK_HOLDS_STATE` and
+  writes nothing, naming the ask whose node holds the question's state (the block's own ask or
+  the source ask for a copy) or saying no ask holds it yet.
   Only a person takes a lens, a finding, a risk or a constraint to gone, and the node takes every
   node that stands under it, at every depth, with it, those the person may not see included. Any
   other caller, the node's own author included, is refused with `403 STATE_NOT_PERMITTED`, naming

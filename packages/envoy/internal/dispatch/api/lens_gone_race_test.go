@@ -58,7 +58,7 @@ func holdGone(t *testing.T, rig reasoningRig, name string, target stateTarget, p
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- post() }()
 	var answer *httptest.ResponseRecorder
-	waitUntil(t, 30*time.Second, name+" waiting on the gone of "+target.address+", or answering", func() bool {
+	waitUntil(t, name+" waiting on the gone of "+target.address+", or answering", func() bool {
 		select {
 		case answer = <-answered:
 			return true

@@ -1,3 +1,6 @@
+/** the server's decision nodes, their review state and the comment under each, read through the
+ *  tree and its views */
+
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import type { IssueDetails, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";

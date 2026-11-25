@@ -5,11 +5,11 @@ import type { ReactNode } from "react";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
-import { issueTreeKey } from "../../../api/queries";
+import { conversationTreeKey } from "../../../api/queries";
 import type { Actor, Comment } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { presetView } from "../presets";
-import { issueTreeQuery, type TreeAnswer, viewKey, viewQuery } from "../tree-read/tree-read";
+import { outlineQuery, type TreeAnswer, viewKey, viewQuery } from "../tree-read/tree-read";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
   AGENT,
@@ -56,8 +56,8 @@ function heldClient(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(issueTreeKey(KEY), tree);
-  client.setQueryData(["asks", KEY], asks);
+  client.setQueryData(conversationTreeKey(KEY), tree);
+  client.setQueryData(["asks", KEY, "thread"], asks);
   client.setQueryData(["comments", KEY], comments);
   return client;
 }
@@ -220,7 +220,7 @@ async function seamOf(quote: string) {
 test("the seam gives four parts from today's reads and makes no request", async () => {
   const getIssueDecisions = spyOn(api, "getIssueDecisions");
   const getIssueTree = spyOn(api, "getIssueTree");
-  const listIssueAsks = spyOn(api, "listIssueAsks");
+  const listIssueAskThreads = spyOn(api, "listIssueAskThreads");
   const listComments = spyOn(api, "listComments");
   // Any request at all, past the reads the page's tree makes.
   const request = spyOn(globalThis, "fetch");
@@ -250,13 +250,13 @@ test("the seam gives four parts from today's reads and makes no request", async 
 
     expect(getIssueDecisions).not.toHaveBeenCalled();
     expect(getIssueTree).not.toHaveBeenCalled();
-    expect(listIssueAsks).not.toHaveBeenCalled();
+    expect(listIssueAskThreads).not.toHaveBeenCalled();
     expect(listComments).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
   } finally {
     getIssueDecisions.mockRestore();
     getIssueTree.mockRestore();
-    listIssueAsks.mockRestore();
+    listIssueAskThreads.mockRestore();
     listComments.mockRestore();
     request.mockRestore();
   }
@@ -337,7 +337,7 @@ test("a reading under an answered question is a write-up, which no part draws an
 // blocks.
 test("answers older than the app's staleTime are not read again as the seam mounts", async () => {
   const made = [decision("minor")];
-  const names = ["getIssueTree", "listIssueAsks", "listComments"] as const;
+  const names = ["getIssueTree", "listIssueAskThreads", "listComments"] as const;
   // Each of the three reads, held, so a read the mount started reaches no server.
   const reads = names.map((read) =>
     spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise)
@@ -349,8 +349,8 @@ test("answers older than the app's staleTime are not read again as the seam moun
       defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
     });
     const given = { updatedAt: Date.now() - 31_000 };
-    client.setQueryData(issueTreeKey(KEY), treeAnswer(made), given);
-    client.setQueryData(["asks", KEY], [], given);
+    client.setQueryData(conversationTreeKey(KEY), treeAnswer(made), given);
+    client.setQueryData(["asks", KEY, "thread"], [], given);
     client.setQueryData(["comments", KEY], [], given);
     const hook = await mountOver(
       client,
@@ -363,7 +363,7 @@ test("answers older than the app's staleTime are not read again as the seam moun
     ).toEqual({
       getIssueTree: [],
       listComments: [],
-      listIssueAsks: [],
+      listIssueAskThreads: [],
     });
     expect(request).not.toHaveBeenCalled();
     hook.unmount();
@@ -411,8 +411,18 @@ test("an empty decisions member gives the questions alone and no error", async (
   // sends none of its own, so the fetch is never started.
   const held = { asks: [], comments: [], tree: treeAnswer([]) };
   const cold = [
-    { answer: held.tree, key: issueTreeKey(KEY), knownWhileOut: false, read: "getIssueTree" },
-    { answer: held.asks, key: ["asks", KEY], knownWhileOut: false, read: "listIssueAsks" },
+    {
+      answer: held.tree,
+      key: conversationTreeKey(KEY),
+      knownWhileOut: false,
+      read: "getIssueTree",
+    },
+    {
+      answer: held.asks,
+      key: ["asks", KEY, "thread"],
+      knownWhileOut: false,
+      read: "listIssueAskThreads",
+    },
     {
       answer: held.tree,
       key: viewKey(KEY, "decisions"),
@@ -451,22 +461,22 @@ test("an empty decisions member gives the questions alone and no error", async (
   // entry moves, so the parts are the very object they were before the retry.
   const refused = [
     {
-      key: issueTreeKey(KEY),
-      other: "listIssueAsks",
+      key: conversationTreeKey(KEY),
+      other: "listIssueAskThreads",
       read: "decisions",
-      refuse: (client: QueryClient) => client.prefetchQuery(issueTreeQuery(KEY)),
+      refuse: (client: QueryClient) => client.prefetchQuery(outlineQuery(KEY, "conversation")),
       request: "getIssueTree",
     },
     {
-      key: ["asks", KEY],
+      key: ["asks", KEY, "thread"],
       other: "getIssueTree",
       read: "asks",
       refuse: (client: QueryClient) =>
         client.prefetchQuery({
-          queryFn: () => api.listIssueAsks(KEY, "all"),
-          queryKey: ["asks", KEY],
+          queryFn: () => api.listIssueAskThreads(KEY, "all"),
+          queryKey: ["asks", KEY, "thread"],
         }),
-      request: "listIssueAsks",
+      request: "listIssueAskThreads",
     },
   ] as const;
   for (const { key, other, read, refuse, request } of refused) {
@@ -504,8 +514,8 @@ test("an empty decisions member gives the questions alone and no error", async (
   // failed, the read still holds the answer it gave, which the view draws from, so it is not
   // unreadable, draws no line, and the reads still hold.
   const refetched = [
-    { queryKey: issueTreeKey(KEY), read: "decisions", request: "getIssueTree" },
-    { queryKey: ["asks", KEY], read: "asks", request: "listIssueAsks" },
+    { queryKey: conversationTreeKey(KEY), read: "decisions", request: "getIssueTree" },
+    { queryKey: ["asks", KEY, "thread"], read: "asks", request: "listIssueAskThreads" },
   ] as const;
   for (const { queryKey, read, request } of refetched) {
     const answer = Promise.withResolvers<never>();
@@ -602,12 +612,12 @@ test("the seam mounted over reads older than the app's stale time sends no reque
       },
     }),
   ];
-  client.setQueryData(issueTreeKey(KEY), treeAnswer(made), { updatedAt: minuteAgo });
-  client.setQueryData(["asks", KEY], [], { updatedAt: minuteAgo });
+  client.setQueryData(conversationTreeKey(KEY), treeAnswer(made), { updatedAt: minuteAgo });
+  client.setQueryData(["asks", KEY, "thread"], [], { updatedAt: minuteAgo });
   client.setQueryData(["comments", KEY], [], { updatedAt: minuteAgo });
   const never = () => new Promise<never>(() => {});
   const getIssueTree = spyOn(api, "getIssueTree").mockImplementation(never);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockImplementation(never);
+  const listIssueAskThreads = spyOn(api, "listIssueAskThreads").mockImplementation(never);
   const listComments = spyOn(api, "listComments").mockImplementation(never);
   const request = spyOn(globalThis, "fetch");
   try {
@@ -618,12 +628,12 @@ test("the seam mounted over reads older than the app's stale time sends no reque
     );
     expect(idsOf(parts).review).toEqual([D("review")]);
     expect(getIssueTree).not.toHaveBeenCalled();
-    expect(listIssueAsks).not.toHaveBeenCalled();
+    expect(listIssueAskThreads).not.toHaveBeenCalled();
     expect(listComments).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
   } finally {
     getIssueTree.mockRestore();
-    listIssueAsks.mockRestore();
+    listIssueAskThreads.mockRestore();
     listComments.mockRestore();
     request.mockRestore();
   }

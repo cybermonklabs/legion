@@ -355,9 +355,9 @@ test("what waits on the reader is their open questions, the review list and thei
 
 // R7 and R13, and R3 of dispatch://INFRA-1523: a Change its author deleted asks nothing any
 // more, so the decision it was asked of is back on the review list and in the header's count,
-// in the tree as in the count. The deleted Change keeps its place under that decision, drawn as
-// the deleted line, and holds no word of what it asked. The tree read answers it with no body
-// and no mark of the delete, so the comments read tells it.
+// in the tree as in the count. The tree read answers it with no body and no mark of the delete,
+// so the comments read tells it. Anchored on that decision's words, the deleted Change is no row
+// of the outline (R9): the margin beside the decision draws it.
 test("a Change its author deleted leaves its decision on the review list and in the count", () => {
   const deleted: Comment = {
     ...change,
@@ -378,12 +378,7 @@ test("a Change its author deleted leaves its decision on the review list and in 
 
   const root = buildIssueTree({ comments: [deleted], coverage, issue, tree, viewer: "alice" });
   expect(waitingIn(root)).toEqual(["mine", "spec#b-listed", "spec#b-changed"]);
-  expect(parentsOf(root, deleted.id)).toEqual(["spec#b-changed"]);
-  const node = nodesInOrder(root).find((one) => one.id === deleted.id);
-  expect({ deletedAt: node?.deletedAt, text: node?.text }).toEqual({
-    deletedAt: "2026-11-05T12:00:00Z",
-    text: "Deleted by alice · 2026-11-05T12:00:00Z",
-  });
+  expect(parentsOf(root, deleted.id)).toEqual([]);
 });
 
 // A decision the count counts is a decision node of the tree read, by the review

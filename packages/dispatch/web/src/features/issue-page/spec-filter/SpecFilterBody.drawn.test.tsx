@@ -65,14 +65,14 @@ import {
   wholeTreeOnly,
 } from "../tree-read/tree-fixtures";
 import {
-  issueTreeQuery,
+  outlineQuery,
   type TreeAnswer,
   type TreeAnswerNode,
   type TreeTuple,
   viewKey,
   viewQuery,
 } from "../tree-read/tree-read";
-import { issueAsksQuery } from "../useIssueTree";
+import { issueAskThreadsQuery } from "../useIssueTree";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
 import {
@@ -162,8 +162,8 @@ function locationOf(view: RenderResult): string {
 function TreeReads({ issue }: { issue: IssueDetails }): ReactNode {
   useQuery(issueCoverageQuery(issue.key));
   useQuery(issueResultsQuery(issue.key));
-  useQuery(issueAsksQuery(issue.key));
-  useQuery(issueTreeQuery(issue.key));
+  useQuery(issueAskThreadsQuery(issue.key));
+  useQuery(outlineQuery(issue.key, "conversation"));
   return null;
 }
 
@@ -177,7 +177,7 @@ type TreeRead = "blocks" | "specView";
 
 /** The spies on the page's reads that the body reads, so a case can answer one again. */
 interface Reads {
-  readonly asks: Mock<typeof api.listIssueAsks>;
+  readonly asks: Mock<typeof api.listIssueAskThreads>;
   readonly coverage: Mock<typeof api.getIssueCoverage>;
   readonly results: Mock<typeof api.getIssueResults>;
   /** The one `getIssueTree`, which answers each read by the view it asks for. */
@@ -283,7 +283,7 @@ function drawBody(
     defaultOptions: { queries: { retry: false, staleTime } },
   });
   const spies = {
-    asks: spyOn(api, "listIssueAsks"),
+    asks: spyOn(api, "listIssueAskThreads"),
     coverage: spyOn(api, "getIssueCoverage"),
     results: spyOn(api, "getIssueResults"),
     tree: spyOn(api, "getIssueTree"),
@@ -318,7 +318,7 @@ function drawBody(
     return answerAs(treeStanding[asked], treeAnswers[asked]);
   });
   if (treeStanding.blocks === "answered") {
-    client.setQueryData(issueTreeQuery(KEY).queryKey, treeAnswers.blocks);
+    client.setQueryData(outlineQuery(KEY, "conversation").queryKey, treeAnswers.blocks);
   }
   if (treeStanding.specView === "answered") {
     client.setQueryData(viewKey(KEY, "spec"), treeAnswers.specView);
@@ -327,9 +327,10 @@ function drawBody(
   // carry the members of an ask the page reads (`TreeAsk`), not every member the route answers,
   // so a read of them again answers what the cache holds.
   settle(asksRead, spies.asks, () => {
-    client.setQueryData(["asks", KEY], [...asks]);
+    client.setQueryData(issueAskThreadsQuery(KEY).queryKey, [...asks] as never);
     spies.asks.mockImplementation(
-      async () => client.getQueryData<IssueAskRow[]>(["asks", KEY]) ?? []
+      async () =>
+        (client.getQueryData<IssueAskRow[]>(issueAskThreadsQuery(KEY).queryKey) ?? []) as never
     );
   });
   settle(results, spies.results, () => {
@@ -652,7 +653,7 @@ test("while the asks read is out, no statement a person's decision shaped reads 
     expect(view.container.querySelectorAll("[data-spec-statement]")).toHaveLength(3);
 
     act(() => {
-      client.setQueryData(["asks", KEY], [askRead("ask-1", words)]);
+      client.setQueryData(issueAskThreadsQuery(KEY).queryKey, [askRead("ask-1", words)] as never);
     });
     await waitFor(() =>
       expect(
@@ -1218,10 +1219,10 @@ test("with the Spec view's slot filled, a spec item's address lands on the item 
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
   client.setQueryData(viewKey(KEY, "spec"), treeAnswer([]));
-  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   client.setQueryData(["comments", KEY], TWO_THREADS);
   client.setQueryData(["issue-messages", KEY], []);
-  client.setQueryData(issueTreeQuery(KEY).queryKey, threadsTree());
+  client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threadsTree());
   const trees = answerThreadsTree();
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const view = render(
@@ -1276,14 +1277,15 @@ test("a failed names read says so in its own line, after the view's own, and its
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   // Every read the page's tree is built from answered but the Spec view read, which is refused,
-  // so the view draws a line of its own before the names'.
+  // so the view draws lines of its own before the names': the statements', since on Spec the
+  // spec's blocks are that read's (`useTreeRead`), and the decisions'.
   client.setQueryData(["whoami"], { kind: "user", login: READER });
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
-  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   client.setQueryData(["comments", KEY], TWO_THREADS);
   client.setQueryData(["issue-messages", KEY], []);
-  client.setQueryData(issueTreeQuery(KEY).queryKey, threadsTree());
+  client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threadsTree());
   const trees = spyOn(api, "getIssueTree").mockImplementation((_key, query = {}) =>
     query.view === undefined ? Promise.resolve(threadsTree()) : Promise.reject(new Error("offline"))
   );
@@ -1303,6 +1305,7 @@ test("a failed names read says so in its own line, after the view's own, and its
     const line = await waitFor(() => alertSaying(view, STATE_LINES.names_unreadable));
     const lines = '[data-spec-body] [data-failed-read] [role="alert"]';
     expect(textsOf(view, lines), "the names' line is not drawn after the view's own").toEqual([
+      STATE_LINES.statements_unreadable,
       STATE_LINES.issue_decisions_unreadable,
       STATE_LINES.names_unreadable,
     ]);
@@ -1311,6 +1314,7 @@ test("a failed names read says so in its own line, after the view's own, and its
     await user.click(within(line).getByRole("button", { name: "Retry" }));
     await waitFor(() =>
       expect(textsOf(view, lines), "the names' line stayed once the names answered").toEqual([
+        STATE_LINES.statements_unreadable,
         STATE_LINES.issue_decisions_unreadable,
       ])
     );
@@ -2359,7 +2363,7 @@ test("a line's alert is said again for a new refusal of one read where another o
   });
   const coverage = issueCoverageQuery(KEY).queryKey;
   // The spec's blocks are the tree read's.
-  const blocks = issueTreeQuery(KEY).queryKey;
+  const blocks = outlineQuery(KEY, "conversation").queryKey;
   let notifications: HeldNotifications | undefined;
   try {
     // Both reads are refused once before the alert is taken, so it is the alert drawn for both

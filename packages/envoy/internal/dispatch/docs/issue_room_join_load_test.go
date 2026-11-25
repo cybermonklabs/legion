@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A load of an issue room that read the room's layout before a join's transaction committed is
@@ -55,8 +56,8 @@ func TestAJoinsCommitClosesAnIssueRoomLoadedAcrossIt(t *testing.T) {
 	}
 	releaseLoad := sync.OnceFunc(func() { close(letLoad) })
 	releaseClose := sync.OnceFunc(func() { close(letClose) })
-	t.Cleanup(releaseLoad)
-	t.Cleanup(releaseClose)
+	testcleanup.Add(t, releaseLoad)
+	testcleanup.Add(t, releaseClose)
 
 	// The room's settlement, as its timer runs it: the room is not resident, so its warm-up loads it.
 	state := service.lockState(room.tree)
@@ -176,7 +177,7 @@ func TestAnIssueRoomLoadedAfterAJoinOnAnAdmissionsEarlierReadHoldsTheJoinedDocum
 				<-letClose
 			}
 			releaseClose := sync.OnceFunc(func() { close(letClose) })
-			t.Cleanup(releaseClose)
+			testcleanup.Add(t, releaseClose)
 
 			// The admission's read of the issue, as ServeHTTP makes it, before the join commits.
 			read, err := service.readIssue(ctx, service.queryFrom(ctx), room.tree)
@@ -185,7 +186,7 @@ func TestAnIssueRoomLoadedAfterAJoinOnAnAdmissionsEarlierReadHoldsTheJoinedDocum
 			}
 			hold := func() {
 				held := service.holdForAdmission(room.tree, read)
-				t.Cleanup(func() { service.releaseAdmission(room.tree, held) })
+				testcleanup.Add(t, func() { service.releaseAdmission(room.tree, held) })
 			}
 			if order.holdsBeforeIt {
 				hold()

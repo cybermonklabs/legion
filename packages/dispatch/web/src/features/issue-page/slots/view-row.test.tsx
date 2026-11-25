@@ -77,6 +77,8 @@ function treeOf(comments: readonly Comment[], blocks: readonly TreeAnswerNode[])
 const ANSWERED_COUNTS: Readonly<Record<Preset, string>> = {
   conversation: "2",
   decisions: "0",
+  // Graph draws no count (R10), which `toEqual` reads as a member that holds none.
+  graph: undefined as never,
   plan: "0",
   spec: "2",
   verification: "0",
@@ -90,7 +92,7 @@ const NAMES_ALONE = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]).join("");
  *  the answer of the read it holds out or fails. */
 function answerReads() {
   return {
-    asks: spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
+    asks: spyOn(api, "listIssueAskThreads").mockResolvedValue([] as never),
     comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([] as never),

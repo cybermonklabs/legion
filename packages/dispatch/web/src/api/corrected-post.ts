@@ -29,6 +29,8 @@ import type {
   IDCandidate,
   IssueDetails,
   IssueReferencesAnswer,
+  IssueTreeNode,
+  IssueTreeRead,
   MessageEventPayload,
   MessageRead,
   MessageWithTrees,
@@ -168,6 +170,12 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
   /** An issue's messages (`["issue-messages", key]`) and the margin's pinned ones
    *  (`["issue-messages", key, "margin-pinned", …]`). */
   "issue-messages": ofKind("message", markedMessageReads),
+  /** The issue page's tree read (`["issue-tree", key]`), Conversation's read under it
+   *  (`conversationTreeKey`) and each view of the tree (`["issue-tree", key, view]`), one answer
+   *  over every page: each node that is the post or a block of it, which holds its words as its
+   *  text and their tree, and each node under one, which carries the head of its words as its
+   *  parent's first line. Comments and messages are both nodes of it. */
+  "issue-tree": (answer, post) => markedTreeRead(answer as IssueTreeRead, post),
   /** The reader's answers and ask replies (`["me", "answers"]`, pages): each reply's body. */
   "me answers": ofKind("comment", (answer, post) =>
     isPages<MyAnswersResponse>(answer)
@@ -311,6 +319,10 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
  * - each row of an issue's references read (`["issue", key, "references"]`) whose node is the
  *   post or a block of it: the node marked as a graph read's is, and the row's `name`, the head
  *   of the post's words, empty;
+ * - each node of the issue page's tree read, of Conversation's read and of each view of the tree
+ *   (`["issue-tree", key, …]`) that is the post or a block of it: the node with no text and no
+ *   tree beside the delete's mark; and the first line of its parent's words that each node under
+ *   it carries (`parent.first_line`), empty;
  * - each item a refusal of a graph read lists that is the post: Dispatch refuses the read of an id
  *   written short where the id names several items (`ID_AMBIGUOUS`), listing each with its first
  *   line for the reader to choose from, and the query holds that refusal as its error
@@ -1301,6 +1313,57 @@ function markedGraphNode(
   }
   const { text_tree: _pinTree, ...pinKept } = pin;
   return { ...marked, pin: { ...pinKept, text: "" } };
+}
+
+/** A tree read's node as a correction writes it: the node with the marks every other copy of a
+ *  post carries, the edit's time or the delete's, which the read answers none of, since the page
+ *  reads a post's marks from the comments and messages reads (`KeptReads.posts` in
+ *  `tree-nodes.ts`). */
+type MarkedTreeNode = IssueTreeNode & {
+  readonly deleted_at?: string;
+  readonly deleted_by?: Actor;
+  readonly edited_at?: string;
+};
+
+/** A tree read's answer - the tree read's own, Conversation's or a view's
+ *  (`["issue-tree", key, …]`) - once `post` is corrected: each node `markedTreeNode` answers for;
+ *  undefined where it answers for none. */
+function markedTreeRead(read: IssueTreeRead, post: CorrectedPost): IssueTreeRead | undefined {
+  const nodes = markEach<MarkedTreeNode>(read.nodes, (node) => markedTreeNode(node, post));
+  return nodes === undefined ? undefined : { ...read, nodes };
+}
+
+/** `node`, a node of a tree read, once `post` is corrected. Where it is the post or a block of it:
+ *  the edit's time, or the delete's mark with no text and no tree, as a graph read's node is
+ *  written (`markedGraphNode`). Where it stands under the post or a block of it, for a delete: no
+ *  first line of its parent's words (`parent.first_line`), as the read answers it once the delete
+ *  has cleared them; an edit keeps that line, as every copy keeps the post's words until a read
+ *  gives the new ones. Undefined for any other node. */
+function markedTreeNode(node: MarkedTreeNode, post: CorrectedPost): MarkedTreeNode | undefined {
+  const { parent } = node;
+  const under =
+    post.mark.kind === "deleted" && parent !== null && isPostOrBlock(parent, post)
+      ? { ...node, parent: { ...parent, first_line: "" } }
+      : undefined;
+  if (!isPostOrBlock(node, post)) {
+    return under;
+  }
+  if (post.mark.kind === "edited") {
+    return { ...node, edited_at: editedAfter(node.edited_at, post.mark.at) };
+  }
+  const { deleted_by: _by, text_tree: _tree, ...kept } = under ?? node;
+  return { ...kept, ...deletionMarks(post.mark.deletion), text: "" };
+}
+
+/** Whether `end`, a node named by its store kind and id, is `post` or a block of it, whose id
+ *  starts with the post's (`CorrectedPost.blockNodes`). */
+function isPostOrBlock(
+  end: { readonly kind: string; readonly id: string },
+  post: CorrectedPost
+): boolean {
+  return end.kind === "block"
+    ? end.id.startsWith(post.blockNodes)
+    : end.kind === post.kind && end.id === post.id;
 }
 
 /** A names read once the post is corrected: each member naming the post or a block of it

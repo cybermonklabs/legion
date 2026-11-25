@@ -25,7 +25,7 @@ import { specSummary } from "./spec-summary";
 import { blockNodeId, blockWords } from "./tree-drafts";
 import { nodeRowSelectorOf } from "./tree-focus";
 import { treeNode as answerNode, treeAnswer } from "./tree-read/tree-fixtures";
-import { issueTreeQuery, type TreeAnswerNode } from "./tree-read/tree-read";
+import { outlineQuery, type TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * The head of the page draws the issue in plain language: at most three bullets, each one spoken
@@ -653,13 +653,13 @@ test("the Contents pane draws the three sentences though the plan's blocks could
   client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
   client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
   client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
-  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["asks", KEY, "thread"], []);
   client.setQueryData(["comments", KEY], []);
   client.setQueryData(["issue-messages", KEY], []);
   // The tree read holds the spec's summary, and the plan's blocks are no read of their own: a
   // blocks read of any document is refused.
   client.setQueryData(
-    issueTreeQuery(KEY).queryKey,
+    outlineQuery(KEY, "conversation").queryKey,
     treeAnswer([
       block("summary", "callout", 0, "What this is. Why it matters. What is different when done."),
     ])
@@ -684,7 +684,9 @@ test("the Contents pane draws the three sentences though the plan's blocks could
     );
     try {
       await waitFor(() =>
-        expect(client.getQueryState(issueTreeQuery(KEY).queryKey)?.status).toBe("success")
+        expect(client.getQueryState(outlineQuery(KEY, "conversation").queryKey)?.status).toBe(
+          "success"
+        )
       );
       await waitFor(() =>
         expect(
@@ -763,7 +765,6 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
               artifacts={new Map([[specDocument.slug, specDocument]])}
               context={new Set()}
               emptyLine="Nothing here."
-              filtering={false}
               focusReveal={false}
               holdsEscape={false}
               isClosed={false}

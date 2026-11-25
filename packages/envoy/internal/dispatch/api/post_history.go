@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -137,12 +138,14 @@ var errDeleteContended error = &apiError{
 // in the document, and the update then empties that quote too, leaving every other key of the
 // anchor as it is; a message carries no anchor. The clear rides the one update, so the kind's
 // search trigger rewrites the row's vector once from the cleared body and the deleted post stops
-// matching a keyword search. Each form of that update is one literal statement, so every column
-// it sets is read where it is written (api's TestNoProjectionRowIsWrittenWithoutTheStore): none
-// is a column a tuple of the store projects, since the anchor's quote key keeps the artifact its
-// anchored_to tuple names, so the clear writes no node and no tuple. (A delete that rejects a
-// pending insert suggestion also settles the document's version in its transaction, which writes
-// the document's block nodes and tuples: comment_delete.go.) The post's embedding
+// matching a keyword search. Each form of that update spells its set list in one literal, so every
+// column it sets is read where it is written (api's TestNoProjectionRowIsWrittenWithoutTheStore):
+// none is a column a tuple of the store projects, since the anchor's quote key keeps the artifact its
+// anchored_to tuple names, so the clear writes no node and no tuple. A comment's form claims the head
+// rows kept (graphstore.KeptHeadRows), which the delete writes after it in the same transaction
+// (deleteComment), so the head mark trigger of comments leaves the issue's mark as it is. (A delete
+// that rejects a pending insert suggestion also settles the document's version in its transaction,
+// which writes the document's block nodes and tuples: comment_delete.go.) The post's embedding
 // windows go in this transaction too (refs.TombstoneItem): the cleared body splits into no block,
 // so the write enqueues no window and deletes each window the post held, and no meaning search
 // finds the post once the delete commits. No path of this build leaves a window of a deleted post
@@ -166,10 +169,10 @@ func (s *server) clearDeletedPostBody(
 ) (model.ReferenceChanges, docs.WriteStep, error) {
 	statement := `update messages set body = '', deleted_at = $3, deleted_by = $2 where id = $1`
 	if kind == refs.ItemComment {
-		statement = `update comments set body = '', suggestion = null, deleted_at = $3, deleted_by = $2 where id = $1`
+		statement = `update comments set body = '', suggestion = null, deleted_at = $3, deleted_by = $2 where id = $1 and ` + graphstore.KeptHeadRows
 		if quoteIsBody {
 			statement = `update comments set body = '', suggestion = null, anchor = jsonb_set(anchor, '{quote}', to_jsonb(''::text)),
-				deleted_at = $3, deleted_by = $2 where id = $1`
+				deleted_at = $3, deleted_by = $2 where id = $1 and ` + graphstore.KeptHeadRows
 		}
 	}
 	// The history step refuses a kind that is neither a comment nor a message, so no other

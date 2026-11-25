@@ -22,7 +22,6 @@ import {
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId, checkStanding } from "../web/src/features/issue-page/tree-drafts";
-import { DRAWN_LEVELS } from "../web/src/features/issue-page/tree-fold";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "../web/src/features/refs/ref-preview-timing";
 import { pageFocusedRow } from "../web/src/theme/classes";
 import {
@@ -3197,20 +3196,17 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
     expect(await focusedRow(page), "Home did not reach the first visible row").toBe(order[0]);
 
     // The right arrow unfolds the focused node and then moves into its first child; the left
-    // arrow moves back to the parent and then folds it. The branch is one above the drawn
-    // levels, because that is where unfolding draws the children as rows of their own: a
-    // branch below them folds to one line the open-deeper key is for (`tree-fold.ts`), which
-    // is no child row for an arrow to move into. The page opens folded to the frontier, so
-    // there are plenty either way.
-    const folded = (await drawnRows(page)).find(
-      (row) => row.expanded === "false" && Number(row.level) < DRAWN_LEVELS
-    );
-    expect(
-      folded,
-      "no branch above the drawn levels is folded, so the arrows have nothing to unfold"
-    ).toBeDefined();
-    const branch = folded?.id ?? "";
+    // arrow moves back to the parent and then folds it. Nothing opens folded (R11), so the row
+    // folds a branch with the left arrow before the right arrow unfolds it.
+    const open = (await drawnRows(page)).find((row) => row.expanded === "true");
+    expect(open, "no branch is drawn, so the arrows have nothing to fold and unfold").toBeDefined();
+    const branch = open?.id ?? "";
     await nodeRow(page, branch).first().focus();
+    await page.keyboard.press("ArrowLeft");
+    expect(
+      (await drawnRows(page)).find((row) => row.id === branch)?.expanded,
+      "the left arrow did not fold the focused node"
+    ).toBe("false");
     await page.keyboard.press("ArrowRight");
     expect(
       (await drawnRows(page)).find((row) => row.id === branch)?.expanded,
@@ -4008,14 +4004,6 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
       .toBe(seeded.first);
     const crumbs = issuePage(page).locator("[data-crumb]");
     await expect(crumbs, "the reply's address does not zoom the tree to its thread").toHaveCount(1);
-    await page.keyboard.press("ArrowLeft");
-    await expect(
-      nodeRow(page, seeded.first).first().locator("[data-row-report]"),
-      "Left on a child of the row the tree is zoomed to says nothing at the row"
-    ).toHaveText(KEY_REPORTS.parent_zoomed);
-    expect(await focusedNodeId(page), "Left on a child of the zoom moved the focus").toBe(
-      seeded.first
-    );
     // The zoom's own row, the thread's head: Left zooms out to the issue, and there Left on the
     // head, a child of the issue, says the whole issue is drawn.
     await page.keyboard.press("ArrowUp");

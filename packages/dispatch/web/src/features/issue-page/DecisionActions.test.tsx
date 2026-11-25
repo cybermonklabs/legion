@@ -3,9 +3,10 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 
 import { ApiError, api } from "../../api/client";
-import { issueTreeKey } from "../../api/queries";
+import { conversationTreeKey } from "../../api/queries";
 import type { Artifact, DecisionKeep } from "../../api/types";
 import {
   borderDefault,
@@ -21,12 +22,7 @@ import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { type TreeNodeExtra, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
-import {
-  issueTreeQuery,
-  type TreeAnswer,
-  type TreeAnswerNode,
-  viewKey,
-} from "./tree-read/tree-read";
+import { outlineQuery, type TreeAnswer, type TreeAnswerNode, viewKey } from "./tree-read/tree-read";
 
 /**
  * The two controls a decision's node draws (R7). The tree is one tab stop,
@@ -81,11 +77,12 @@ const ONE = decisionNode(
   "One tree, five presets\n\nThe presets are queries over the one tree."
 );
 
-/** A client that holds what the page holds: the tree read's answer of `nodes`, on one page. It
- *  is not fresh, so an enabled observer would read it again as it mounts. */
+/** A client that holds what the page holds: the outline read's answer of `nodes`, on one page,
+ *  Conversation's, the read the page holds at the address each case draws (`MemoryRouter`'s
+ *  `/`). It is not fresh, so an enabled observer would read it again as it mounts. */
 function heldReads(nodes: readonly TreeAnswerNode[]): QueryClient {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(issueTreeKey(KEY), treeAnswer(nodes));
+  client.setQueryData(conversationTreeKey(KEY), treeAnswer(nodes));
   return client;
 }
 
@@ -99,7 +96,7 @@ function renderActions(
   const client = heldReads(nodes);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>
-      {page ? <NoTooltips>{children}</NoTooltips> : children}
+      <MemoryRouter>{page ? <NoTooltips>{children}</NoTooltips> : children}</MemoryRouter>
     </QueryClientProvider>
   );
   const view = render(
@@ -135,11 +132,13 @@ function renderBody(): { close: () => void; open: () => void; unmount: () => voi
   const client = heldReads([ONE]);
   const body = (drawn: boolean) => (
     <QueryClientProvider client={client}>
-      <ChangeDraftsProvider>
-        {drawn ? (
-          <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
-        ) : null}
-      </ChangeDraftsProvider>
+      <MemoryRouter>
+        <ChangeDraftsProvider>
+          {drawn ? (
+            <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+          ) : null}
+        </ChangeDraftsProvider>
+      </MemoryRouter>
     </QueryClientProvider>
   );
   const view = render(body(true));
@@ -507,7 +506,7 @@ test("Keep posts the node's document, block id and sum", async () => {
     ).toEqual([document_.id, "d1", "sum-d1"]);
     await waitFor(() =>
       expect(
-        client.getQueryState(issueTreeKey(KEY))?.isInvalidated,
+        client.getQueryState(conversationTreeKey(KEY))?.isInvalidated,
         "the kept decision's tree was not read again"
       ).toBe(true)
     );
@@ -529,7 +528,7 @@ test("a refused Keep keeps the decision waiting and reads the tree again", async
   const user = userEvent.setup();
   const { client, unmount } = renderActions();
   // The Decisions view, held as the page holds it once that view has been open.
-  client.setQueryData(viewKey(KEY, "decisions"), client.getQueryData(issueTreeKey(KEY)));
+  client.setQueryData(viewKey(KEY, "decisions"), client.getQueryData(conversationTreeKey(KEY)));
   try {
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision }));
     const alert = await screen.findByRole("alert");
@@ -542,7 +541,7 @@ test("a refused Keep keeps the decision waiting and reads the tree again", async
     ).toBe(true);
     await waitFor(() =>
       expect(
-        client.getQueryState(issueTreeKey(KEY))?.isInvalidated,
+        client.getQueryState(conversationTreeKey(KEY))?.isInvalidated,
         "the refused decision's tree was not read again"
       ).toBe(true)
     );
@@ -556,10 +555,10 @@ test("a refused Keep keeps the decision waiting and reads the tree again", async
   }
 });
 
-/** The tree read as the page holds it, by an observer that is enabled (`useIssueTree.ts`'s
- *  `useTreeRead`), which is what a refresh of the tree reads again. */
+/** The outline read as the page holds it, Conversation's, by an observer that is enabled
+ *  (`useIssueTree.ts`'s `useTreeRead`), which is what a refresh of the outline reads again. */
 function PageTreeRead(): null {
-  useQuery(issueTreeQuery(KEY));
+  useQuery(outlineQuery(KEY, "conversation"));
   return null;
 }
 
@@ -576,7 +575,7 @@ test("Keep leaves a tree read in flight to finish and reads the tree again after
     kept_by: "alice",
   } satisfies DecisionKeep);
   const client = heldReads([ONE]);
-  const held = client.getQueryData<TreeAnswer>(issueTreeKey(KEY));
+  const held = client.getQueryData<TreeAnswer>(conversationTreeKey(KEY));
   if (held === undefined) throw new Error("the client holds no tree read");
   const inFlight = Promise.withResolvers<TreeAnswer>();
   const signals: (AbortSignal | undefined)[] = [];
@@ -587,14 +586,16 @@ test("Keep leaves a tree read in flight to finish and reads the tree again after
   const user = userEvent.setup();
   const view = render(
     <QueryClientProvider client={client}>
-      <PageTreeRead />
-      <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+      <MemoryRouter>
+        <PageTreeRead />
+        <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+      </MemoryRouter>
     </QueryClientProvider>
   );
   try {
     // The read in flight starts inside `act`, since it moves the tree read the page draws from.
     await act(async () => {
-      void client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+      void client.refetchQueries({ exact: true, queryKey: conversationTreeKey(KEY) });
     });
     await waitFor(() =>
       expect(tree, "no tree read was in flight before the Keep").toHaveBeenCalledTimes(1)
@@ -613,7 +614,7 @@ test("Keep leaves a tree read in flight to finish and reads the tree again after
     );
     expect(signals[0]?.aborted, "the Keep cut off the tree read in flight").toBe(false);
     expect(
-      client.getQueryState(issueTreeKey(KEY))?.isInvalidated,
+      client.getQueryState(conversationTreeKey(KEY))?.isInvalidated,
       "the Keep did not mark the tree to be read again"
     ).toBe(true);
     expect(tree, "the Keep started a tree read beside the one in flight").toHaveBeenCalledTimes(1);
@@ -643,7 +644,7 @@ test("Keep leaves a tree read in flight to finish and reads the tree again after
 // the decision as it stood.
 test("a Change sent while the comments read is already invalidated reads the tree again and drops the held views", async () => {
   const client = heldReads([ONE]);
-  const held = client.getQueryData<TreeAnswer>(issueTreeKey(KEY));
+  const held = client.getQueryData<TreeAnswer>(conversationTreeKey(KEY));
   if (held === undefined) throw new Error("the client holds no tree read");
   // The Decisions and Spec views, held as the page holds them once each has been open.
   client.setQueryData(viewKey(KEY, "decisions"), held);
@@ -656,8 +657,10 @@ test("a Change sent while the comments read is already invalidated reads the tre
   const user = userEvent.setup();
   const view = render(
     <QueryClientProvider client={client}>
-      <PageTreeRead />
-      <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+      <MemoryRouter>
+        <PageTreeRead />
+        <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+      </MemoryRouter>
     </QueryClientProvider>
   );
   try {
@@ -703,7 +706,7 @@ test("Keep drops every held view, the Spec view's among them", async () => {
   } satisfies DecisionKeep);
   const user = userEvent.setup();
   const { client, unmount } = renderActions();
-  const held = client.getQueryData<TreeAnswer>(issueTreeKey(KEY));
+  const held = client.getQueryData<TreeAnswer>(conversationTreeKey(KEY));
   client.setQueryData(viewKey(KEY, "decisions"), held);
   client.setQueryData(viewKey(KEY, "spec"), held);
   try {
@@ -730,7 +733,9 @@ test("Keep drops every held view, the Spec view's among them", async () => {
 // fresh and an enabled observer would read it again as it mounts.
 test("the node sends no request of its own to draw Keep and Change", async () => {
   const tree = spyOn(api, "getIssueTree").mockImplementation(() => new Promise<never>(() => {}));
-  const asks = spyOn(api, "listIssueAsks").mockImplementation(() => new Promise<never>(() => {}));
+  const asks = spyOn(api, "listIssueAskThreads").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
   const { unmount } = renderActions();
   try {
     await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision });

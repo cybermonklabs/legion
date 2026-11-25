@@ -22,7 +22,7 @@ import {
 } from "@tanstack/react-query";
 import { act, type RenderHookResult, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { type FakeLiveSockets, installFakeLiveSockets } from "../../__tests__/live-socket-harness";
@@ -31,9 +31,10 @@ import { useEventFeed } from "../../api/event-feed";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { liveFeedUp, liveSocketFor } from "../../api/live-socket";
 import {
+  CONVERSATION_KINDS,
+  conversationTreeKey,
   issueCoverageQuery,
   issueQuery,
-  issueTreeKey,
   referenceTargetsQuery,
 } from "../../api/queries";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
@@ -56,8 +57,10 @@ import type {
 import { heldSends } from "../conversation/held-sends";
 import { MarginProvider } from "../margin/margin-context";
 import type { PostDeletion } from "../refs/post-marks";
+import { parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plainWrite, writesOf } from "../writes/write-store";
+import { issueAddress, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import { presetView } from "./presets";
@@ -72,6 +75,7 @@ import {
 } from "./reference-names";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
+import { nodeRowSelectorOf } from "./tree-focus";
 import { nodesInOrder } from "./tree-keys";
 import {
   commentNode,
@@ -82,6 +86,8 @@ import {
 } from "./tree-read/tree-fixtures";
 import {
   dropViews,
+  readNextTreePage,
+  readOlderComments,
   subscribeTreeFreshness,
   type TreeAnswer,
   type TreeAnswerNode,
@@ -268,7 +274,8 @@ function stubTreeReads(
       members: [],
       truncated: false,
     }),
-    spyOn(api, "listIssueAsks").mockImplementation(async () => {
+    // The outline's one asks read, each ask with its thread (`issueAskThreadsQuery`).
+    spyOn(api, "listIssueAskThreads").mockImplementation(async () => {
       await answered("asks");
       return [];
     }),
@@ -336,7 +343,7 @@ test("the names already in hand stand while a tree that grew reads the new set",
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const view = renderHook(() => useIssueTree(issue).root, { wrapper });
@@ -347,7 +354,7 @@ test("the names already in hand stand while a tree that grew reads the new set",
     // page draws again.
     await act(async () => {
       client.setQueryData(
-        issueTreeKey(KEY),
+        conversationTreeKey(KEY),
         treeAnswer([{ ...comment, body: "Read dispatch://CORE-8 first." }], needs)
       );
       await Promise.resolve();
@@ -393,9 +400,9 @@ test("a names read that fails for a tree that grew keeps the names in hand, and 
   // No retry: the read under the new key fails on its first attempt.
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
+    <RoutedQueries client={client}>
       <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-    </QueryClientProvider>
+    </RoutedQueries>
   );
   try {
     const view = renderHook(
@@ -418,7 +425,7 @@ test("a names read that fails for a tree that grew keeps the names in hand, and 
       id: "comment-2",
     };
     await act(async () => {
-      client.setQueryData(issueTreeKey(KEY), treeAnswer([citing, second]));
+      client.setQueryData(conversationTreeKey(KEY), treeAnswer([citing, second]));
       await Promise.resolve();
     });
     await waitFor(() => expect(view.result.current.tree.namesFailure).toBeDefined());
@@ -467,7 +474,7 @@ test("a names read moved to a set of addresses whose query already failed says i
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   const held = Promise.withResolvers<void>();
   try {
@@ -477,14 +484,14 @@ test("a names read moved to a set of addresses whose query already failed says i
     // of the tree's new set fails too.
     await act(async () =>
       client.setQueryData(
-        issueTreeKey(KEY),
+        conversationTreeKey(KEY),
         treeAnswer([{ ...comment, body: "Read dispatch://CORE-8 first." }])
       )
     );
     await waitFor(() => expect(view.result.current?.failure).toBe(2));
     // The comment goes: the read moves back to the first set, whose query failed, and is out.
     out = held.promise;
-    await act(async () => client.setQueryData(issueTreeKey(KEY), treeAnswer([])));
+    await act(async () => client.setQueryData(conversationTreeKey(KEY), treeAnswer([])));
     await waitFor(() => expect(view.result.current?.retrying).toBe(true));
     expect(view.result.current?.failure, "the first set's failure was not said again").toBe(3);
     view.unmount();
@@ -563,9 +570,9 @@ test("The names are read in one batched request, after every other read has answ
     // A client and a page of the turn's own, so no answer of an earlier turn is in hand.
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>
+      <RoutedQueries client={client}>
         <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-      </QueryClientProvider>
+      </RoutedQueries>
     );
     try {
       const view = renderHook(
@@ -620,7 +627,7 @@ test("the batched names read is given no node's own address, and a chip's addres
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper });
@@ -665,9 +672,9 @@ test("a short address a comment cites is read as written and named from that ans
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
+    <RoutedQueries client={client}>
       <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-    </QueryClientProvider>
+    </RoutedQueries>
   );
   try {
     const view = renderHook(
@@ -706,9 +713,9 @@ test("the page publishes an ambiguous reference a comment cites as ambiguous, a 
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
+    <RoutedQueries client={client}>
       <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-    </QueryClientProvider>
+    </RoutedQueries>
   );
   try {
     const view = renderHook(
@@ -751,9 +758,9 @@ test("the page publishes an edited post a comment cites by its words, among the 
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
+    <RoutedQueries client={client}>
       <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-    </QueryClientProvider>
+    </RoutedQueries>
   );
   try {
     const view = renderHook(
@@ -802,9 +809,9 @@ test("the page publishes a deleted post a comment cites by its deleted line, amo
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
+    <RoutedQueries client={client}>
       <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-    </QueryClientProvider>
+    </RoutedQueries>
   );
   try {
     const view = renderHook(
@@ -1040,9 +1047,9 @@ test("a published name of an ask is its question's plain words, never its markdo
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
+    <RoutedQueries client={client}>
       <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-    </QueryClientProvider>
+    </RoutedQueries>
   );
   try {
     const view = renderHook(
@@ -1088,14 +1095,16 @@ test("the tree is read in one request, and no document's blocks are read", async
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const view = renderHook(() => useIssueTree(withDocuments).root, { wrapper });
     // The names are read once every other read has answered, the tree read among them.
     await waitFor(() => expect(named).toBe(1));
     const reads = (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls;
-    expect(reads.map(([key, query]) => [key, query])).toEqual([[KEY, {}]]);
+    expect<unknown>(reads.map(([key, query]) => [key, query])).toEqual([
+      [KEY, { kind: [...CONVERSATION_KINDS] }],
+    ]);
     expect(api.getArtifactBlocks).not.toHaveBeenCalled();
     expect(api.getIssueDecisions).not.toHaveBeenCalled();
     view.unmount();
@@ -1117,7 +1126,7 @@ test("A plan with no role that the issue names by its id is named the plan, its 
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const view = renderHook(() => useIssueTree(named).root, { wrapper });
@@ -1164,9 +1173,9 @@ test("A published name of a typed block is never its directive line", async () =
     );
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>
+      <RoutedQueries client={client}>
         <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-      </QueryClientProvider>
+      </RoutedQueries>
     );
     try {
       const view = renderHook(
@@ -1196,7 +1205,7 @@ test("blocks a failed refetch leaves in hand stay held while they stop counting 
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper });
@@ -1215,7 +1224,7 @@ test("blocks a failed refetch leaves in hand stay held while they stop counting 
       new Error("the tree read failed")
     );
     await act(async () => {
-      await client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+      await client.refetchQueries({ exact: true, queryKey: conversationTreeKey(KEY) });
     });
     await waitFor(() => expect(view.result.current.blocksRead).toBe(false));
     expect(view.result.current.blocksHeld).toBe(true);
@@ -1241,7 +1250,7 @@ test("a write of the issue that lands reads the tree again", async () => {
   client.setQueryData(["whoami"], { event_head: "1", kind: "user", login: "alice" });
   const unsubscribe = subscribeTreeFreshness(client, KEY);
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const view = renderHook(() => useIssueTree(issue).root, { wrapper });
@@ -1309,7 +1318,7 @@ test("a Keep's event reads the tree again and marks the decisions view stale", a
     nodes: [answerNode("d1", "decision", { role: "query", text: "Keep one reading." })],
   };
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const view = renderHook(() => useIssueTree(issue).root, { wrapper });
@@ -1365,23 +1374,29 @@ test("a Keep's event reads the tree again and marks the decisions view stale", a
   }
 });
 
-/** How many times each read the hook sends that an event refreshes has been sent, by name. */
+/** How many times each read the hook sends that an event refreshes has been sent, by name: the
+ *  outline read (`tree`) apart from the views of the tree (`views`). */
 function readsSent(): Record<string, number> {
   const reads = {
-    asks: api.listIssueAsks,
+    asks: api.listIssueAskThreads,
     comments: api.listComments,
     coverage: api.getIssueCoverage,
     messages: api.listIssueMessages,
     names: api.getReferenceTargets,
     results: api.getIssueResults,
-    tree: api.getIssueTree,
   };
-  return Object.fromEntries(
-    Object.entries(reads).map(([name, read]) => [
-      name,
-      (read as unknown as Mock<() => unknown>).mock.calls.length,
-    ])
-  );
+  const trees = (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls;
+  const views = trees.filter(([, query]) => query?.view !== undefined).length;
+  return {
+    ...Object.fromEntries(
+      Object.entries(reads).map(([name, read]) => [
+        name,
+        (read as unknown as Mock<() => unknown>).mock.calls.length,
+      ])
+    ),
+    tree: trees.length - views,
+    views,
+  };
 }
 
 // The page's reads are refreshed by events, never by age. A slot the stage mounts again past the
@@ -1393,7 +1408,7 @@ test("a remount after 30 s sends no read", async () => {
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const first = renderHook(() => useIssueTree(issue).root, { wrapper });
@@ -1415,101 +1430,232 @@ test("a remount after 30 s sends no read", async () => {
   }
 });
 
-// The tree read holds data once every page of it holds data - the pages are read in turn and
-// answered merged - so neither the tree nor a role's blocks are drawn from the first page alone;
-// and a refetch whose last page fails keeps every page held, and the plan's task on the second
-// page with them.
-test("blocksHeld holds while every page holds data", async () => {
-  const secondOut = Promise.withResolvers<void>();
+/** `page` as the server answers it where the read goes on past it: the `cursor` that names the
+ *  next page, and how many nodes the read holds after this one (`remaining`), which the server
+ *  answers beside the cursor and the generated contract does not name yet. */
+function pagedAnswer(page: TreeAnswer, cursor: string | null, remaining?: number): TreeAnswer {
+  const count = remaining === undefined ? {} : { remaining };
+  return { ...page, cursor, ...count };
+}
+
+// R5, R15: the tree read holds data once its first page does: the load reads that page alone,
+// though it names a next one, and the tree and a role's blocks are drawn from it. The reader's
+// press reads the next page, and a refetch then reads both pages again, so one whose second page
+// fails keeps both held, and the plan's task on the second page with them.
+test("blocksHeld holds once the first page holds data", async () => {
   const stubs = stubTreeReads(async (refs) => namedTargets(refs));
   // The tree read's two pages: the issue's own node, then the plan's task.
   const whole = treeAnswer([]);
-  const firstPage: TreeAnswer = {
-    ...whole,
-    cursor: "page-2",
-    nodes: (whole.nodes ?? []).slice(0, 1),
-  };
+  const firstPage = pagedAnswer({ ...whole, nodes: (whole.nodes ?? []).slice(0, 1) }, "page-2", 1);
   const secondPage: TreeAnswer = { ...whole, nodes: (whole.nodes ?? []).slice(1) };
-  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => {
-    if (query?.cursor === undefined) return firstPage;
-    await secondOut.promise;
-    return secondPage;
-  });
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+    query?.cursor === undefined ? firstPage : secondPage
+  );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper });
-    await waitFor(() => expect(api.getIssueTree).toHaveBeenCalledTimes(2));
-    expect(view.result.current.blocksHeld).toBe(false);
-    expect(view.result.current.blocksOf("plan").data).toBeUndefined();
-
-    await act(async () => {
-      secondOut.resolve();
-      await secondOut.promise;
-    });
     await waitFor(() => expect(view.result.current.blocksHeld).toBe(true));
     expect(view.result.current.blocksRead).toBe(true);
-    expect(view.result.current.blocksOf("plan").data?.map((block) => block.id)).toEqual(["t1"]);
+    expect(view.result.current.blocksOf("plan").data).toEqual([]);
+    expect(view.result.current.root.moreToRead).toBe(true);
+    await act(async () => {
+      await Bun.sleep(50);
+    });
+    expect(api.getIssueTree, "the load reads no next page").toHaveBeenCalledTimes(1);
 
-    // The tree is read again, and its second page fails.
+    // The reader's press reads the second page.
+    await act(async () => {
+      await readNextTreePage(client, KEY, "conversation");
+    });
+    await waitFor(() =>
+      expect(view.result.current.blocksOf("plan").data?.map((block) => block.id)).toEqual(["t1"])
+    );
+    expect(view.result.current.root.moreToRead).toBeUndefined();
+
+    // The tree is read again, with the page the press loaded, and its second page fails.
     (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => {
       if (query?.cursor === undefined) return firstPage;
       throw new Error("the second page failed");
     });
     await act(async () => {
-      await client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+      await client.refetchQueries({ exact: true, queryKey: conversationTreeKey(KEY) });
     });
     await waitFor(() => expect(view.result.current.blocksRead).toBe(false));
+    expect(api.getIssueTree).toHaveBeenCalledTimes(4);
     expect(view.result.current.blocksHeld).toBe(true);
     expect(view.result.current.blocksOf("plan").data?.map((block) => block.id)).toEqual(["t1"]);
     view.unmount();
   } finally {
-    secondOut.resolve();
     for (const stub of stubs) stub.mockRestore();
   }
 });
 
-// A refresh whose walk meets a cursor the server named already fails, as one whose page fails
-// does (`readTree`), and never answers the pages it read as the whole tree: the outline that
-// holds an answer keeps it, and draws no failed-read line, which is for a read that holds none.
+// A refresh reads again the pages the reader loaded, and where its walk meets a cursor the server
+// named already it fails, as one whose page fails does (`readTree`), and never answers the pages
+// it read as the tree: the outline that holds an answer keeps it, and draws no failed-read line,
+// which is for a read that holds none.
 test("a refresh whose walk meets a cursor named twice keeps the answer the outline holds", async () => {
   const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  // The tree's first page, the issue and the task, names a second, the comment.
+  const whole = treeAnswer([comment]);
+  const nodes = whole.nodes ?? [];
+  const firstPage = pagedAnswer({ ...whole, nodes: nodes.slice(0, 2) }, "page-2", 1);
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+    query?.cursor === undefined ? firstPage : pagedAnswer({ ...whole, nodes: nodes.slice(2) }, null)
+  );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper });
     await waitFor(() => expect(view.result.current.blocksRead).toBe(true));
-    expect(taskWords(view.result.current.root)).toBe(TASK_WORDS);
-
-    // The tree is read again: its first page, the issue and the task, names a second, the
-    // comment, and that page names the second page again.
-    const whole = treeAnswer([comment]);
-    const nodes = whole.nodes ?? [];
-    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => ({
-      ...whole,
-      cursor: "page-2",
-      nodes: query?.cursor === undefined ? nodes.slice(0, 2) : nodes.slice(2),
-    }));
     await act(async () => {
-      await client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+      await readNextTreePage(client, KEY, "conversation");
+    });
+    await waitFor(() => expect(holdsComment(view.result.current.root)).toBe(true));
+
+    // The tree is read again: its second page now names the second page again.
+    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+      query?.cursor === undefined
+        ? firstPage
+        : pagedAnswer({ ...whole, nodes: nodes.slice(2) }, "page-2", 1)
+    );
+    await act(async () => {
+      await client.refetchQueries({ exact: true, queryKey: conversationTreeKey(KEY) });
     });
     await waitFor(() => expect(view.result.current.blocksRead).toBe(false));
-    expect(api.getIssueTree).toHaveBeenCalledTimes(3);
-    expect(client.getQueryState(issueTreeKey(KEY))?.error?.message).toContain(
+    expect(api.getIssueTree).toHaveBeenCalledTimes(4);
+    expect(client.getQueryState(conversationTreeKey(KEY))?.error?.message).toContain(
       'the cursor "page-2" twice'
     );
     expect(view.result.current.failed).toBe(false);
     expect(view.result.current.blocksHeld).toBe(true);
-    const rows = nodesInOrder(view.result.current.root);
     expect(taskWords(view.result.current.root)).toBe(TASK_WORDS);
-    expect(rows.some((node) => node.id === comment.id)).toBe(false);
+    expect(holdsComment(view.result.current.root)).toBe(true);
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+/** The outline's row of the node `id` the body draws, or null where it draws none. */
+function outlineRowOf(id: string): HTMLElement | null {
+  return document.body.querySelector<HTMLElement>(nodeRowSelectorOf(id));
+}
+
+/** The control after the outline's last row that reads the read's next page, or null. */
+function moreControl(): HTMLButtonElement | null {
+  return document.body.querySelector<HTMLButtonElement>("[data-tree-more] button");
+}
+
+// R15: while the outline read's answer names a next page, a control follows the outline's last
+// row and says how many nodes the read holds after the pages read, the page's `remaining`, by
+// its count and the words that agree with it. A press reads the next page, its rows are drawn
+// where the read's order puts them, and the focus goes to the first row it drew; once no page is
+// left the control goes.
+test("the more control says the page's remaining count", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const later: Comment = {
+    ...comment,
+    body: "A later turn of the conversation.",
+    created_at: "2026-11-06T00:00:00Z",
+    id: "comment-2",
+  };
+  const last: Comment = { ...later, created_at: "2026-11-07T00:00:00Z", id: "comment-3" };
+  const whole = treeAnswer([comment, later, last]);
+  const nodes = whole.nodes ?? [];
+  const pages: Readonly<Record<string, TreeAnswer>> = {
+    first: pagedAnswer({ ...whole, nodes: nodes.slice(0, 3) }, "page-2", 1240),
+    "page-2": pagedAnswer({ ...whole, nodes: nodes.slice(3, 4) }, "page-3", 1),
+    "page-3": pagedAnswer({ ...whole, nodes: nodes.slice(4) }, null),
+  };
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(
+    async (_key, query) => pages[query?.cursor ?? "first"] ?? pages.first
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: bodyWrapper(client) });
+    await waitFor(() => expect(moreControl()?.textContent).toBe("1,240 more rows to load"));
+    expect(moreControl()?.textContent).toBe(`1,240 ${CONTROL_LABELS.tree_page_rows}`);
+    expect(outlineRowOf(later.id)).toBeNull();
+
+    await act(async () => {
+      moreControl()?.click();
+    });
+    await waitFor(() =>
+      expect(moreControl()?.textContent).toBe(`1 ${CONTROL_LABELS.tree_page_row}`)
+    );
+    await waitFor(() => expect(document.activeElement).toBe(outlineRowOf(later.id)));
+
+    await act(async () => {
+      moreControl()?.click();
+    });
+    await waitFor(() => expect(outlineRowOf(last.id)).not.toBeNull());
+    expect(moreControl(), "no control once no page is left").toBeNull();
+    expect(
+      (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls.map(
+        ([, query]) => query?.cursor
+      )
+    ).toEqual([undefined, "page-2", "page-3"]);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// R15: an address that names a node no page read yet holds - a comment past the first page -
+// reads the read's next pages until one brings it, and no page after it, and then lands on it as
+// on a node the first page held: its row is drawn with the focus on it, and the item's own read,
+// which the page reads where the tree holds no node of the item, is never sent.
+test("an address of a node past the first page reads pages until it is loaded", async () => {
+  const later: Comment = {
+    ...comment,
+    body: "A later turn of the conversation.",
+    created_at: "2026-11-06T00:00:00Z",
+    id: "comment-2",
+  };
+  const last: Comment = { ...later, created_at: "2026-11-07T00:00:00Z", id: "comment-3" };
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), {
+    comments: [comment, later, last],
+  });
+  const whole = treeAnswer([comment, later, last]);
+  const nodes = whole.nodes ?? [];
+  const pages: Readonly<Record<string, TreeAnswer>> = {
+    first: pagedAnswer({ ...whole, nodes: nodes.slice(0, 3) }, "page-2", 2),
+    "page-2": pagedAnswer({ ...whole, nodes: nodes.slice(3, 4) }, "page-3", 1),
+    "page-3": pagedAnswer({ ...whole, nodes: nodes.slice(4) }, null),
+  };
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(
+    async (_key, query) => pages[query?.cursor ?? "first"] ?? pages.first
+  );
+  const item = spyOn(api, "getComment").mockRejectedValue(new Error("no item read is sent"));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue), {
+      wrapper: bodyWrapper(client, `/issues/${KEY}?comment=${later.id}`),
+    });
+    await waitFor(() => expect(outlineRowOf(later.id)).not.toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(outlineRowOf(later.id)));
+    await act(async () => {
+      await Bun.sleep(100);
+    });
+    expect(
+      (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls.map(
+        ([, query]) => query?.cursor
+      )
+    ).toEqual([undefined, "page-2"]);
+    expect(outlineRowOf(last.id), "no page past the node is read").toBeNull();
+    expect(item).not.toHaveBeenCalled();
+    view.unmount();
+  } finally {
+    item.mockRestore();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
   }
 });
 
@@ -1528,7 +1674,7 @@ test("a held view answer reaches presetView through root.views", async () => {
   const planView = viewAnswer({ ...task, role: "query" });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const view = renderHook(() => useIssueTree(issue).root, { wrapper });
@@ -1561,15 +1707,32 @@ test("a held view answer reaches presetView through root.views", async () => {
   }
 });
 
+/** `client`'s queries around `children`, under a router at no issue's address, as the page draws
+ *  every reader of the outline under its router (`tree-read.ts` reads the address there): the
+ *  page with no filter on. */
+function RoutedQueries({
+  children,
+  client,
+}: {
+  readonly children: ReactNode;
+  readonly client: QueryClient;
+}): ReactNode {
+  return (
+    <QueryClientProvider client={client}>
+      <MemoryRouter>{children}</MemoryRouter>
+    </QueryClientProvider>
+  );
+}
+
 /** The stage of the issue as the page mounts it: the view reads' provider, which holds the
  *  page's one refresh subscription, around the hook, on the app's own query client. */
 function stageWrapper(client: QueryClient, preset: "conversation" | "spec" = "conversation") {
   return ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
+    <RoutedQueries client={client}>
       <ViewReadProvider issue={issue} preset={preset}>
         {children}
       </ViewReadProvider>
-    </QueryClientProvider>
+    </RoutedQueries>
   );
 }
 
@@ -1730,18 +1893,18 @@ function holdsComment(root: TreeNode): boolean {
 /** The filter on in a stage `turnedStage` draws, which a case turns off and on as the reader
  *  presses it. */
 interface FilterOn {
-  preset: "conversation" | "plan" | "spec" | "verification";
+  preset: "conversation" | "graph" | "plan" | "spec" | "verification";
 }
 
 /** The stage of the issue as `stageWrapper` mounts it, with whichever filter `on` names on, so a
  *  case can turn one off and on as the reader presses it. */
 function turnedStage(client: QueryClient, on: FilterOn) {
   return ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
+    <RoutedQueries client={client}>
       <ViewReadProvider issue={issue} preset={on.preset}>
         {children}
       </ViewReadProvider>
-    </QueryClientProvider>
+    </RoutedQueries>
   );
 }
 
@@ -1786,7 +1949,9 @@ test("a write while the first tree read is out, or after it failed, reads the tr
   const refused = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(refused) });
-    await waitFor(() => expect(refused.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await waitFor(() =>
+      expect(refused.getQueryState(conversationTreeKey(KEY))?.status).toBe("error")
+    );
     expect(view.result.current.blocksHeld).toBe(false);
     (api.getIssueTree as Mock<typeof api.getIssueTree>).mockResolvedValue(treeAnswer([comment]));
     await landWrite(refused);
@@ -1887,7 +2052,8 @@ test("coming back to an issue nothing changed on reads nothing again", async () 
     await act(async () => {
       await Bun.sleep(1_200);
     });
-    expect(readsSent()).toEqual(sent);
+    // A load sends Plan's view read with it (R4), a load after leaving among them.
+    expect(readsSent()).toEqual({ ...sent, views: (sent.views ?? 0) + 1 });
     back.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
@@ -1928,6 +2094,197 @@ test("a filter's view is read once in a load, and not again when it is pressed o
   }
 });
 
+/** The stage as the page's root draws it at the address the router holds: the stage's view reads
+ *  (`ViewReadProvider`) at the address's view, while each reader of the outline reads the address
+ *  itself. `held.navigate` moves the router, as a press of a view's control does. */
+function AddressedStage({
+  children,
+  held,
+}: {
+  readonly children: ReactNode;
+  readonly held: { navigate?: NavigateFunction };
+}): ReactNode {
+  const { hash, pathname, search } = useLocation();
+  held.navigate = useNavigate();
+  const route = parseIssuePath(pathname, search);
+  const preset =
+    route === undefined ? "conversation" : issueAddress(route, search, hash, undefined).preset;
+  return (
+    <ViewReadProvider issue={issue} preset={preset}>
+      {children}
+    </ViewReadProvider>
+  );
+}
+
+/** A load of the issue at `path`, as the page's root mounts it (`AddressedStage`). */
+function loadAt(client: QueryClient, path: string, held: { navigate?: NavigateFunction } = {}) {
+  return ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={[path]}>
+        <AddressedStage held={held}>{children}</AddressedStage>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+}
+
+/** How many reads of the tree route were sent, by what each asked for: Conversation's read
+ *  (`kind`), the tree read with no view (`whole`), each view by its name, and an older comment
+ *  page of either outline read (`… comments`). */
+function treeReadsSent(): Record<string, number> {
+  const sent: Record<string, number> = {};
+  for (const [, query] of (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls) {
+    const asked = query as
+      | { readonly comments_before?: string; readonly kind?: unknown; readonly view?: string }
+      | undefined;
+    const read = asked?.view ?? (asked?.kind === undefined ? "whole" : "kind");
+    const name = asked?.comments_before === undefined ? read : `${read} comments`;
+    sent[name] = (sent[name] ?? 0) + 1;
+  }
+  return sent;
+}
+
+// R1, R4, R10: a load of Graph reads Graph's read, the tree read with no view, once, and nothing
+// else of the route: no Conversation's read, and no view read for a count, each count being read
+// off Graph's read.
+test("a load of Graph sends one tree read with no view and none with kind", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, {
+      wrapper: loadAt(client, `/issues/${KEY}/graph`),
+    });
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+    await act(async () => {
+      await Bun.sleep(300);
+    });
+    expect(treeReadsSent()).toEqual({ whole: 1 });
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// R1, R4, R9: a load of Conversation reads Conversation's read once, `kind` repeated for root R1's
+// kinds, and Plan's view read with it, whose plan tasks Conversation's read never holds, and no
+// tree read with no view. The issue has no children, so neither Spec's nor Verification's view is
+// sent with it.
+test("a load of Conversation sends one kind read, the plan view read and no read with no view", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, {
+      wrapper: loadAt(client, `/issues/${KEY}`),
+    });
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+    await act(async () => {
+      await Bun.sleep(300);
+    });
+    expect(treeReadsSent()).toEqual({ kind: 1, plan: 1 });
+    const kinds = (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls.flatMap(
+      ([, query]) => {
+        const asked = query as { readonly kind?: readonly string[] } | undefined;
+        return asked?.kind === undefined ? [] : [asked.kind];
+      }
+    );
+    expect(kinds).toEqual([CONVERSATION_KINDS]);
+    expect(view.result.current.views?.plan).toBeDefined();
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// R4: each filter's view is read once in a load: Plan's with the load, and Spec's the first time
+// Spec is on. Turned off and on again, a filter finds its view held and the page sends no second
+// read, of the view or of Conversation's read.
+test("a filter turned off and on sends no second read", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const held: { navigate?: NavigateFunction } = {};
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, {
+      wrapper: loadAt(client, `/issues/${KEY}`, held),
+    });
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+    for (const preset of [
+      "plan",
+      "conversation",
+      "plan",
+      "spec",
+      "conversation",
+      "spec",
+    ] as const) {
+      act(() => {
+        void held.navigate?.(presetPath(KEY, preset));
+      });
+      await act(async () => {
+        await Bun.sleep(150);
+      });
+    }
+    expect(treeReadsSent()).toEqual({ kind: 1, plan: 1, spec: 1 });
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// R6, R15: a write of the issue reads the outline read the page holds again, Conversation's and
+// Graph's alike, with the older comment page the reader had loaded, so the older comment stays
+// drawn. The case's client has no live feed, so the write's settle reads the outline read.
+test("a write of the issue reads each held outline read again with its loaded comment pages", async () => {
+  const older: Comment = {
+    ...comment,
+    body: "An older turn of the conversation.",
+    created_at: "2026-11-04T00:00:00Z",
+    id: "comment-older",
+  };
+  const loads = [
+    { name: "kind", outline: "conversation", path: `/issues/${KEY}` },
+    { name: "whole", outline: "graph", path: `/issues/${KEY}/graph` },
+  ] as const;
+  for (const { name, outline, path } of loads) {
+    const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+    const first: TreeAnswer = {
+      ...treeAnswer([comment]),
+      comments_before: `2026-11-05T01:00:00.000000Z,${comment.id}`,
+    };
+    const page: TreeAnswer = { ...fixtureAnswer([commentNode(older, KEY)]), comments_before: null };
+    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+      query?.comments_before === undefined ? first : page
+    );
+    const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+    const holdsOlder = (root: TreeNode) => nodesInOrder(root).some((one) => one.id === older.id);
+    try {
+      const view = renderHook(() => useIssueTree(issue).root, { wrapper: loadAt(client, path) });
+      await waitFor(() => expect(holdsComment(view.result.current)).toBe(true));
+      await act(async () => {
+        await readOlderComments(client, KEY, outline);
+      });
+      await waitFor(() => expect(holdsOlder(view.result.current), outline).toBe(true));
+      const before = treeReadsSent();
+      expect(before[`${name} comments`], `${outline}: one older page read`).toBe(1);
+
+      await landWrite(client);
+      await waitFor(
+        () => expect(treeReadsSent()[name], `${outline}: read again`).toBe((before[name] ?? 0) + 1),
+        { timeout: 3_000 }
+      );
+      await waitFor(() =>
+        expect(treeReadsSent()[`${name} comments`], `${outline}: its older page read again`).toBe(2)
+      );
+      expect(holdsOlder(view.result.current), `${outline}: the older comment stays`).toBe(true);
+      expect(holdsComment(view.result.current)).toBe(true);
+      view.unmount();
+    } finally {
+      for (const stub of stubs) stub.mockRestore();
+      client.clear();
+    }
+  }
+});
+
 // A write of the issue marks every view the load holds stale as it settles and drops none: the
 // open filter keeps drawing the view it holds while that view is read again, so it never falls
 // back to the tree for the length of the read, and a filter that is off keeps its answer until it
@@ -1938,23 +2295,24 @@ test("a write marks the held views stale, keeps what they draw, and reads the op
     document: { artifact_id: plan.id, position: 1, slug: PLAN },
     text: "A second step.",
   });
-  const planView = viewAnswer({ ...task, role: "query" });
+  const verificationView = viewAnswer({ ...task, role: "query" });
   const specBefore = viewAnswer({ ...task, role: "context" });
   const specAfter = viewAnswer({ ...task, role: "context" }, { ...second, role: "context" });
   let written = false;
   const specOut = Promise.withResolvers<void>();
   (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => {
-    if (query?.view === "plan") return planView;
+    if (query?.view === "verification") return verificationView;
     if (query?.view !== "spec") return treeAnswer([]);
     if (!written) return specBefore;
     await specOut.promise;
     return specAfter;
   });
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
-  const on: { preset: "plan" | "spec" } = { preset: "plan" };
+  // Verification is the view whose filter is off: Plan's view is read with the load (R4).
+  const on: { preset: "spec" | "verification" } = { preset: "verification" };
   try {
     const view = renderHook(() => useIssueTree(issue).root, { wrapper: turnedStage(client, on) });
-    await waitFor(() => expect(view.result.current.views?.plan).toBe(planView));
+    await waitFor(() => expect(view.result.current.views?.verification).toBe(verificationView));
     on.preset = "spec";
     view.rerender();
     await waitFor(() => expect(view.result.current.views?.spec).toBe(specBefore));
@@ -1965,20 +2323,25 @@ test("a write marks the held views stale, keeps what they draw, and reads the op
       timeout: 3_000,
     });
     expect(view.result.current.views?.spec, "the open view draws what it held").toBe(specBefore);
-    expect(client.getQueryState(viewKey(KEY, "plan"))?.isInvalidated, "the off view is stale").toBe(
-      true
+    expect(
+      client.getQueryState(viewKey(KEY, "verification"))?.isInvalidated,
+      "the off view is stale"
+    ).toBe(true);
+    expect(view.result.current.views?.verification, "the off view keeps its answer").toBe(
+      verificationView
     );
-    expect(view.result.current.views?.plan, "the off view keeps its answer").toBe(planView);
-    expect(treeReadsOf("plan")).toBe(1);
+    expect(treeReadsOf("verification")).toBe(1);
 
     await act(async () => {
       specOut.resolve();
       await specOut.promise;
     });
     await waitFor(() => expect(view.result.current.views?.spec).toEqual(specAfter));
-    on.preset = "plan";
+    on.preset = "verification";
     view.rerender();
-    await waitFor(() => expect(treeReadsOf("plan"), "the off view is read when on").toBe(2));
+    await waitFor(() =>
+      expect(treeReadsOf("verification"), "the off view is read when on").toBe(2)
+    );
     view.unmount();
   } finally {
     specOut.resolve();
@@ -2249,7 +2612,7 @@ test("a write as the reader leaves reads the tree only when the reader comes bac
       await Bun.sleep(1_500);
     });
     expect(treeReadsOf(), "no tree read while nothing draws it").toBe(1);
-    expect(client.getQueryState(issueTreeKey(KEY))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(conversationTreeKey(KEY))?.isInvalidated).toBe(true);
 
     const back = renderHook(() => useIssueTree(issue).root, { wrapper });
     await waitFor(() => expect(holdsComment(back.result.current)).toBe(true));
@@ -2365,7 +2728,7 @@ test("the outline mounted again on the same reads builds no tree, and a changed 
   const stubs = stubTreeReads(async (refs) => namedTargets(refs));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const first = renderHook(() => useIssueTree(issue).root, { wrapper });
@@ -2497,11 +2860,12 @@ test("a Retry of a refused tree read keeps the focus off the page's body while t
   }
 });
 
-/** The page's body as the stage draws it, around the hook a case reads the tree's state by. */
-function bodyWrapper(client: QueryClient) {
+/** The page's body as the stage draws it, around the hook a case reads the tree's state by, at
+ *  the router's first address or at `path` where a case gives one. */
+function bodyWrapper(client: QueryClient, path?: string) {
   const route = { key: KEY, kind: "issue" } as const;
   return ({ children }: { children: ReactNode }) => (
-    <MemoryRouter>
+    <MemoryRouter {...(path === undefined ? {} : { initialEntries: [path] })}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
@@ -2649,7 +3013,9 @@ test("a Retry whose tree read is refused again leaves the line, its Retry and th
       again.reject(new Error("the tree read was refused again"));
       await again.promise.catch(() => undefined);
     });
-    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await waitFor(() =>
+      expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("error")
+    );
     await act(async () => {
       await Bun.sleep(20);
     });
@@ -2692,13 +3058,13 @@ test("a read the reader did not ask for keeps the refused read's line and its fo
     act(() => retry.focus());
 
     act(() => {
-      refreshQueries(client, [{ exact: true, queryKey: issueTreeKey(KEY) }]);
+      refreshQueries(client, [{ exact: true, queryKey: conversationTreeKey(KEY) }]);
     });
     await waitFor(() => expect(reads).toBe(2), { timeout: 3_000 });
     await act(async () => {
       await Bun.sleep(20);
     });
-    expect(client.getQueryState(issueTreeKey(KEY))?.fetchStatus, "the read is out").toBe(
+    expect(client.getQueryState(conversationTreeKey(KEY))?.fetchStatus, "the read is out").toBe(
       "fetching"
     );
     expect(failedTreeLine(), "the line drawn before the read began").toBe(line);
@@ -2749,7 +3115,7 @@ test("a tree mounted again past 30 s reads nothing, and a comment event reads th
   // The page's one subscription that reads the tree again when the comments change.
   const unsubscribe = subscribeTreeFreshness(client, KEY);
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const first = renderHook(() => useIssueTree(issue).root, { wrapper });
@@ -3109,9 +3475,9 @@ test("a cited comment's edit reads the names once more, and the page publishes i
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
+    <RoutedQueries client={client}>
       <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-    </QueryClientProvider>
+    </RoutedQueries>
   );
   try {
     const view = renderHook(
@@ -3327,7 +3693,7 @@ test("a refused tree read, its retries spent, is read no more for a minute of fo
       { wrapper: stageWrapper(client) }
     );
     await tick(2_000, 250);
-    expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error");
+    expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("error");
     expect(treeReadsOf(), "the load's read and its two retries").toBe(3);
 
     let pendingAt = 0;
@@ -3338,7 +3704,7 @@ test("a refused tree read, its retries spent, is read no more for a minute of fo
       });
       for (let step = 0; step < 12; step += 1) {
         await tick(250, 250);
-        if (client.getQueryState(issueTreeKey(KEY))?.status !== "error") pendingAt += 1;
+        if (client.getQueryState(conversationTreeKey(KEY))?.status !== "error") pendingAt += 1;
       }
     }
     expect(issueReads, "the issue read is read again on a focus once old").toBeGreaterThan(1);
@@ -3549,18 +3915,18 @@ test("a surface that starts reading a refused tree read sends no read while the 
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(client) });
     await tick(2_000, 250);
-    expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error");
+    expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("error");
     expect(treeReadsOf(), "the load's read and its two retries").toBe(3);
 
     const later = renderHook(() => useIssueTree(issue), {
       wrapper: ({ children }: { children: ReactNode }) => (
-        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+        <RoutedQueries client={client}>{children}</RoutedQueries>
       ),
     });
     let pendingAt = 0;
     for (let step = 0; step < 12; step += 1) {
       await tick(250, 250);
-      if (client.getQueryState(issueTreeKey(KEY))?.status !== "error") pendingAt += 1;
+      if (client.getQueryState(conversationTreeKey(KEY))?.status !== "error") pendingAt += 1;
     }
     expect(treeReadsOf(), "a surface that starts reading the tree reads nothing of its own").toBe(
       3
@@ -3696,7 +4062,7 @@ test("the network said to be back while the live feed stays up reads a refused t
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(client) });
     await tick(2_000, 250);
-    expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error");
+    expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("error");
     expect(treeReadsOf(), "the load's read and its two retries").toBe(3);
 
     act(() => {
@@ -3706,7 +4072,7 @@ test("the network said to be back while the live feed stays up reads a refused t
     let pendingAt = 0;
     for (let step = 0; step < 12; step += 1) {
       await tick(250, 250);
-      if (client.getQueryState(issueTreeKey(KEY))?.status !== "error") pendingAt += 1;
+      if (client.getQueryState(conversationTreeKey(KEY))?.status !== "error") pendingAt += 1;
     }
     expect(treeReadsOf(), "the network's word reads nothing").toBe(3);
     expect(pendingAt, "the read stays refused, so the failed line stays drawn").toBe(0);
@@ -3733,7 +4099,9 @@ test("an event while the reader is away from a refused tree reads it once the re
   const wrapper = stageWrapper(client);
   try {
     const first = renderHook(() => useIssueTree(issue), { wrapper });
-    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await waitFor(() =>
+      expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("error")
+    );
     first.unmount();
 
     const visit = renderHook(() => useIssueTree(issue), { wrapper });
@@ -3741,7 +4109,7 @@ test("an event while the reader is away from a refused tree reads it once the re
       await Bun.sleep(1_200);
     });
     expect(treeReadsOf(), "a stage drawn again reads a refused tree no more").toBe(1);
-    expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error");
+    expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("error");
     visit.unmount();
 
     // Away: a reply and its event, and Dispatch now answers the tree.
@@ -3820,7 +4188,7 @@ test("the outline's tree that took the focus for want of a row hands it to the f
       await Bun.sleep(MIN_REFETCH_INTERVAL_MS + 100);
     });
     act(() => {
-      refreshQueries(client, [{ exact: true, queryKey: issueTreeKey(KEY) }]);
+      refreshQueries(client, [{ exact: true, queryKey: conversationTreeKey(KEY) }]);
     });
     await waitFor(() => expect(holdsComment(view.result.current.root)).toBe(true));
     const row = await waitFor(() => {
@@ -4019,7 +4387,7 @@ for (const latency of [200, 1_200]) {
       expect(sent, "and one more where that read was out at most").toBeLessThanOrEqual(2);
       expect(
         client
-          .getQueryData<TreeAnswer>(issueTreeKey(KEY))
+          .getQueryData<TreeAnswer>(conversationTreeKey(KEY))
           ?.nodes?.find((node) => node.id === comment.id)?.state,
         "the tree read holds the resolve"
       ).toBe("settled");
@@ -4044,8 +4412,8 @@ test("a resolve from the margin with the live feed down reads the tree once, aft
   let answered = false;
   const readsAnswered: boolean[] = [];
   (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => [held]);
-  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
-    readsAnswered.push(answered);
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => {
+    if (query?.view === undefined) readsAnswered.push(answered);
     return heldCommentTree(held);
   });
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -4075,7 +4443,7 @@ test("a resolve from the margin with the live feed down reads the tree once, aft
     ).toEqual([true]);
     expect(
       client
-        .getQueryData<TreeAnswer>(issueTreeKey(KEY))
+        .getQueryData<TreeAnswer>(conversationTreeKey(KEY))
         ?.nodes?.find((node) => node.id === comment.id)?.state,
       "the tree read holds the resolve"
     ).toBe("settled");
@@ -4113,17 +4481,19 @@ test("a refused tree read is read again when the live feed comes back with its g
     act(() => socket.receive({ type: "events_start", sub, since: "1", replay_complete: true }));
   };
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
+    <RoutedQueries client={client}>
       <ShellEventFeed />
       <ViewReadProvider issue={issue} preset="conversation">
         {children}
       </ViewReadProvider>
-    </QueryClientProvider>
+    </RoutedQueries>
   );
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper });
     startFeed();
-    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await waitFor(() =>
+      expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("error")
+    );
     await act(async () => {
       await Bun.sleep(1_100);
     });
@@ -4321,7 +4691,9 @@ test("a refused tree read is read once, not twice, when the live feed comes back
       wrapper: fedStage(client, { preset: "conversation" }),
     });
     startFeedOn(sockets, true);
-    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await waitFor(() =>
+      expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("error")
+    );
     await act(async () => {
       await Bun.sleep(1_100);
     });
@@ -4360,7 +4732,9 @@ test("with the live feed down, a change seen while a write is out reads the tree
       },
       { wrapper: stageWrapper(client) }
     );
-    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("success"));
+    await waitFor(() =>
+      expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("success")
+    );
     await waitFor(() => expect(client.getQueryState(["issue", KEY])?.status).toBe("success"));
     await act(async () => {
       await Bun.sleep(1_100);
@@ -4475,7 +4849,9 @@ test("with the live feed down, a focus while a write is out reads a refused tree
   const answered = Promise.withResolvers<void>();
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(client) });
-    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await waitFor(() =>
+      expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("error")
+    );
     await act(async () => {
       await Bun.sleep(1_100);
     });
@@ -4522,12 +4898,16 @@ test("a surface that starts reading a tree whose refresh was refused sends no re
   const feed = liveFeedOn(client);
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(client) });
-    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("success"));
+    await waitFor(() =>
+      expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("success")
+    );
     refused = true;
     await act(async () => {
-      await client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+      await client.refetchQueries({ exact: true, queryKey: conversationTreeKey(KEY) });
     });
-    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await waitFor(() =>
+      expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("error")
+    );
     expect(holdsComment(view.result.current.root), "the outline draws the answer it holds").toBe(
       true
     );
@@ -4535,7 +4915,7 @@ test("a surface that starts reading a tree whose refresh was refused sends no re
 
     const later = renderHook(() => useIssueTree(issue), {
       wrapper: ({ children }: { children: ReactNode }) => (
-        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+        <RoutedQueries client={client}>{children}</RoutedQueries>
       ),
     });
     await act(async () => {
@@ -4617,7 +4997,9 @@ test("a refused tree read is read again when the live feed comes back while the 
   try {
     const first = renderHook(() => useIssueTree(issue), { wrapper: turnedStage(client, on) });
     startFeedOn(sockets, true);
-    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await waitFor(() =>
+      expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("error")
+    );
     await act(async () => {
       await Bun.sleep(1_100);
     });
@@ -4634,7 +5016,7 @@ test("a refused tree read is read again when the live feed comes back while the 
       await Bun.sleep(1_500);
     });
     expect(
-      client.getQueryState(issueTreeKey(KEY))?.status,
+      client.getQueryState(conversationTreeKey(KEY))?.status,
       "the refused tree was read again for the feed coming back"
     ).toBe("success");
     expect(holdsComment(back.result.current.root), "the outline draws what Dispatch serves").toBe(
@@ -4671,7 +5053,9 @@ test("a focus held for a write reads no refused tree once the live feed came bac
       wrapper: fedStage(client, { preset: "conversation" }),
     });
     startFeedOn(sockets, true);
-    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await waitFor(() =>
+      expect(client.getQueryState(conversationTreeKey(KEY))?.status).toBe("error")
+    );
     await act(async () => {
       await Bun.sleep(1_100);
     });
@@ -4742,7 +5126,7 @@ test("an event soon after the tree and the comments were read reads each once", 
     await act(async () => {
       await Bun.sleep(1_100);
       // A read of the tree, and 50 ms later one of the comments, each answering what it held.
-      await client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+      await client.refetchQueries({ exact: true, queryKey: conversationTreeKey(KEY) });
       await Bun.sleep(50);
       await client.refetchQueries({ queryKey: ["comments", KEY] });
       await Bun.sleep(200);
@@ -4873,7 +5257,7 @@ function openRig(read: RuleRead): Rig {
 
 /** The key of the row's query. */
 function ruleKey(rig: Rig): readonly unknown[] {
-  return rig.read === "tree" ? issueTreeKey(KEY) : viewKey(KEY, rig.read);
+  return rig.read === "tree" ? conversationTreeKey(KEY) : viewKey(KEY, rig.read);
 }
 
 /** How many reads of the row's query the page has sent. */
@@ -4913,8 +5297,15 @@ function leave(rig: Rig): void {
     rig.stage = undefined;
     return;
   }
-  rig.on.preset = "conversation";
+  rig.on.preset = offPreset(rig);
   stageOf(rig).rerender();
+}
+
+/** The view the row's filter is off in: Conversation, but for Plan, whose view read every load of
+ *  Conversation or of a filter sends with it (R4), so its filter is off in Graph, which sends no
+ *  view read. */
+function offPreset(rig: Rig): FilterOn["preset"] {
+  return rig.read === "plan" ? "graph" : "conversation";
 }
 
 /** The reader observes the row's read again: comes back to the issue, or turns the row's filter
@@ -5004,10 +5395,10 @@ const STATES = {
     reach: async (rig, observed) => {
       if (observed) throw new Error("an observer reads a read never made");
       if (rig.read === "tree") return;
-      rig.on.preset = "conversation";
+      rig.on.preset = offPreset(rig);
       mountStage(rig);
       await tick(100, 10);
-      expect(rig.client.getQueryState(issueTreeKey(KEY))?.status).toBe("success");
+      expect(rig.client.getQueryState(conversationTreeKey(KEY))?.status).toBe("success");
     },
   },
   answered: { words: "answered", reach: reachAnswered },
@@ -5120,7 +5511,7 @@ function treeHoldsComment(state: "live" | "settled"): (rig: Rig) => void {
     if (rig.stage === undefined || (rig.read === "tree" && rig.refusing)) return;
     expect(
       rig.client
-        .getQueryData<TreeAnswer>(issueTreeKey(KEY))
+        .getQueryData<TreeAnswer>(conversationTreeKey(KEY))
         ?.nodes?.find((node) => node.id === comment.id)?.state,
       state === "settled" ? "the tree read holds the resolve" : "the tree read holds no resolve"
     ).toBe(state);
@@ -5189,7 +5580,7 @@ const postedComment: Comment = {
  *  tree has been read since they were posted. */
 function treeHoldsPosted(rig: Rig): void {
   if (rig.stage === undefined) return;
-  const nodes = rig.client.getQueryData<TreeAnswer>(issueTreeKey(KEY))?.nodes ?? [];
+  const nodes = rig.client.getQueryData<TreeAnswer>(conversationTreeKey(KEY))?.nodes ?? [];
   for (const one of rig.posted) {
     expect(
       nodes.some((node) => node.id === one.id),
@@ -5463,7 +5854,7 @@ const EVENT_AFTER_WAITED_READ: RuleWay = {
     const settleWrite = holdWrite(rig);
     await tick(10, 10);
     act(() => {
-      void rig.client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+      void rig.client.refetchQueries({ exact: true, queryKey: conversationTreeKey(KEY) });
     });
     await tick(1_500, 10);
     act(() => settleWrite());
@@ -5693,7 +6084,7 @@ const RETRY_RETRIED_DURING_WRITE: RuleWay = {
   words:
     "the reader's Retry while a write of the issue is out, refused and retried a second later, an event of the issue during that second and the write settling before the retry",
   does: async (rig) => {
-    rig.client.setQueryDefaults(issueTreeKey(KEY), { retry: 1, retryDelay: 1_000 });
+    rig.client.setQueryDefaults(conversationTreeKey(KEY), { retry: 1, retryDelay: 1_000 });
     stageOf(rig).rerender();
     const settleWrite = holdWrite(rig);
     await tick(10, 10);
@@ -5721,7 +6112,7 @@ const SECOND_WRITE_AT_SETTLE: RuleWay = {
     const settleFirst = holdWrite(rig);
     await tick(10, 10);
     act(() => {
-      void rig.client.invalidateQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+      void rig.client.invalidateQueries({ exact: true, queryKey: conversationTreeKey(KEY) });
     });
     await tick(300, 10);
     let settleSecond: (() => void) | undefined;
@@ -6078,7 +6469,7 @@ function writeDroppingViews({
         onSuccess: () => {
           if (!dropOnly) {
             void rig.client.invalidateQueries({ queryKey: issueCoverageQuery(KEY).queryKey });
-            refreshQueries(rig.client, [{ exact: true, queryKey: issueTreeKey(KEY) }]);
+            refreshQueries(rig.client, [{ exact: true, queryKey: conversationTreeKey(KEY) }]);
           }
           dropViews(rig.client, KEY);
         },
@@ -6108,7 +6499,7 @@ const WAYS = {
       rig.slots.push(
         renderHook(() => useIssueTree(issue), {
           wrapper: ({ children }: { children: ReactNode }) => (
-            <QueryClientProvider client={rig.client}>{children}</QueryClientProvider>
+            <RoutedQueries client={rig.client}>{children}</RoutedQueries>
           ),
         })
       );
@@ -7226,9 +7617,9 @@ async function openCorrectedPage(stored: Comment[]) {
     const signedIn: AuthenticatedUser = { event_head: "0", kind: "user", login: "alice" };
     client.setQueryData(["whoami"], signedIn);
     const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>
+      <RoutedQueries client={client}>
         <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-      </QueryClientProvider>
+      </RoutedQueries>
     );
     const view = renderHook(
       () => {

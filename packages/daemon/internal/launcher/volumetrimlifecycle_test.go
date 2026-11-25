@@ -755,7 +755,7 @@ func TestALaterAnswerAppliesToTheNextSweepAndNotOneInFlight(t *testing.T) {
 // the outage, holds the report it cannot write, and sends it on the connection that comes back,
 // where the daemon reads it as a launcher_volume_report frame. A daemon restart is not an
 // operator turning the trimmer off, and a report the daemon never got is a volume nobody was
-// told about (bundleRestore keeps its own confirmation the same way).
+// told about.
 func TestADroppedConnectionLeavesTheSettingsInForceAndHoldsTheReport(t *testing.T) {
 	f := newTrimFixture(t, 25) // a hundred entries, ten points: the sweep ends below the high mark and above the low one
 	f.useVolume(f.modelled(90))

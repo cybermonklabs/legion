@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -44,7 +45,7 @@ import (
 // approver, prove one thing each. The survivor is the outage itself: keyed by `agent-secrets
 // keygen` and enrolled into its key dir as the worker shim's pods are, it renews through
 // `agent-secrets renew --pod-token-file` from before the outage to the end, once a third of its
-// lease has passed, which two of its leases before the outage show. Once the second broker
+// lease has passed, which two of its renewals before the outage show. Once the second broker
 // listens its first fetch through the CLI is served, its renewer, which never exited, renews its
 // lease to a whole one, and the second broker logs that it gave back the time no broker was
 // serving. The revoked pod, ended by its launcher, and the lapsed pod, whose
@@ -52,9 +53,16 @@ import (
 // revives nothing that had ended: each is refused a fetch, PROOF_INVALID not live, and a renewal,
 // ENROLLMENT_NOT_LIVE. The mismatch pod, whose lease ran out in the outage as the survivor's did,
 // proves a lease given back renews for no one else: a renewal carrying another pod's token, or
-// another service account's, is refused POD_IDENTITY_MISMATCH and moves its lease not at all. The
+// another service account's, is refused POD_IDENTITY_MISMATCH and renews its lease not at all. The
 // broker's log line is read last, so that against a broker without the fix the test fails on the
 // refusal the pods met rather than on a missing line.
+//
+// A renewal is read from the database's record of each update of a lease (recordLeaseWrites),
+// never from a lease moving: the serving clock's give-back moves every live lease too, and not
+// only after an outage. A broker that serves while its beats fail for more than NotServingSweeps
+// sweeps, three seconds of a slow database at this row's sweep, gives that gap back at its next
+// beat (enroll.ServingClock.Beat), and a row that read such a move as a renewal read the renewer
+// as renewing seconds after the renewal before it.
 func TestABrokerOutageLongerThanALease(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
@@ -126,8 +134,7 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 		}
 		return expires, now
 	}
-	// leaseRead is one reading of leaseOf, which a wait on a lease answers and prints.
-	type leaseRead struct{ expires, now time.Time }
+	recordLeaseWrites(t, db)
 	podToken := func(uid, account string) string {
 		claims := issuer.Claims(account, podAudience)
 		claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": uid}}
@@ -209,43 +216,37 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 		t.Fatalf("the mismatch pod's grant values = %v, want %s=%s", values, secretName, secretValue)
 	}
 
-	// The renewer's cadence, read from the leases the broker wrote: a renewal sets the lease to
-	// run out a whole lease after the broker's moment of renewal (internal/cipher/enroll), so two
-	// renewals one after the other are as far apart as the expiries they wrote. The renewer renews
-	// once a third of what it holds has passed (leasetime.RenewAfter), so that gap is a third of a
-	// lease and the request that carried it, and the row reads it as the third, nearer that than
-	// a quarter or a half of one.
+	// The renewer's cadence, read from the renewals the broker wrote (renewalsOf): a renewal sets
+	// the lease to run out a whole lease after the broker's moment of renewal
+	// (internal/cipher/enroll), so two renewals one after the other are as far apart as the
+	// expiries they wrote. The renewer renews once a third of what it holds has passed
+	// (leasetime.RenewAfter), so that gap is a third of a lease and the request that carried it,
+	// and the row reads it as the third, nearer that than a quarter or a half of one.
 	t.Log("--- the survivor's renewer renews at a third of its lease")
-	renewedAfter := func(before time.Time) time.Time {
-		t.Helper()
-		return testwait.UntilPolling(t, 250*time.Millisecond, "the survivor's renewer to renew its lease", func() (time.Time, bool) {
-			renewerRunning("before the outage")
-			expires, _ := leaseOf(survivorID)
-			return expires, !expires.Equal(before)
-		})
-	}
-	seen, _ := leaseOf(survivorID)
-	cadenceFrom := renewedAfter(seen)
-	gap := renewedAfter(cadenceFrom).Sub(cadenceFrom)
+	seen := len(renewalsOf(t, db, survivorID))
+	renewals := testwait.UntilPolling(t, 250*time.Millisecond, "the survivor's renewer to renew its lease twice", func() ([]leaseWrite, bool) {
+		renewerRunning("before the outage")
+		renewals := renewalsOf(t, db, survivorID)
+		return renewals, len(renewals) >= seen+2
+	})
+	gap := renewals[seen+1].expires.Sub(renewals[seen].expires)
 	if promised := lease / leasetime.RenewDivisor; gap <= lease*7/24 || gap >= lease*5/12 {
 		t.Fatalf("the survivor's renewer renewed its lease %s after the renewal before it; want a third of its %s lease, %s (leasetime.RenewAfter), nearer that than a quarter or a half of one:\n%s",
 			gap, lease, promised, renewer.Output.String())
 	}
 	t.Logf("the survivor's renewer renewed its lease %s after the renewal before it: a third of its %s lease", gap, lease)
 
-	// The margin: the broker is stopped while the survivor holds more than two thirds of its lease
-	// but renewed at least five seconds ago, between two of its renewals. The time given back
-	// restores the lease the survivor held at the first broker's last record that it served, at
-	// most one sweep before the stop, so the restored survivor holds at least two thirds of a
-	// lease less one beat, far more than its renewer's longest retry wait, and it renews well
-	// inside that. And the lease given back runs at least four seconds short of a whole one from
-	// the restart, which is what tells the renewer's own renewal after the restart from it.
+	// The margin: the broker is stopped while the survivor holds more than two thirds of its
+	// lease, between two of its renewals. The time given back restores the lease the survivor held
+	// at the first broker's last record that it served, no later than the stop, so the restored
+	// survivor holds more than two thirds of a lease, far more than its renewer's longest retry
+	// wait, and it renews well inside that.
 	t.Log("--- the outage: the broker is stopped between two of the survivor's renewals")
-	atStop := testwait.UntilPolling(t, 250*time.Millisecond, "the survivor to hold more than two thirds of its lease, renewed at least five seconds ago", func() (time.Duration, bool) {
+	atStop := testwait.UntilPolling(t, 250*time.Millisecond, "the survivor to hold more than two thirds of its lease", func() (time.Duration, bool) {
 		renewerRunning("before the outage")
 		expires, now := leaseOf(survivorID)
 		left := expires.Sub(now)
-		return left, left > lease*2/3+time.Second && left <= lease-5*time.Second
+		return left, left > lease*2/3+time.Second
 	})
 	t.Logf("the survivor holds %s of its lease at the stop", atStop.Round(time.Millisecond))
 	front.route("")
@@ -254,6 +255,9 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 		t.Fatalf("the first broker's exit = %v, want a clean one:\n%s", err, first.Log())
 	}
 	stopped := time.Now()
+	// No broker serves from here until the second one listens, so each renewal of the survivor's
+	// lease recorded after these is one the second broker wrote.
+	renewedBefore := len(renewalsOf(t, db, survivorID))
 	outage := lease + notServing + renewerLongestWait
 	t.Logf("the first broker exited; no broker serves for %s", outage)
 	time.Sleep(time.Until(stopped.Add(outage)))
@@ -263,28 +267,23 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	restarted := serve()
 	restartedAt := time.Now()
 	t.Logf("the second broker listens %s after the first exited", restartedAt.Sub(stopped).Round(time.Millisecond))
-	var restartedDB time.Time
-	if err := db.QueryRow(ctx, `select now()`).Scan(&restartedDB); err != nil {
-		t.Fatal(err)
-	}
 
 	t.Log("--- (1) the survivor's first fetch through the CLI is served")
 	fetch("after the restart")
 	t.Logf("(1) served %s after the second broker listened", time.Since(restartedAt).Round(time.Millisecond))
 
 	t.Log("--- (2) the survivor's renewer, which never exited, renews a whole lease")
-	renewed := testwait.UntilPolling(t, 100*time.Millisecond, "the survivor's renewer to renew its lease against the second broker", func() (leaseRead, bool) {
-		expires, now := leaseOf(survivorID)
-		if !expires.Before(restartedDB.Add(lease - time.Second)) {
-			return leaseRead{expires, now}, true
+	renewed := testwait.UntilPolling(t, 100*time.Millisecond, "the survivor's renewer to renew its lease against the second broker", func() (leaseWrite, bool) {
+		if renewals := renewalsOf(t, db, survivorID); len(renewals) > renewedBefore {
+			return renewals[renewedBefore], true
 		}
 		renewerRunning("after the restart")
-		return leaseRead{expires, now}, false
+		return leaseWrite{}, false
 	})
-	if left := renewed.expires.Sub(renewed.now); left < lease-2*time.Second || left > lease+time.Second {
-		t.Fatalf("the survivor's renewed lease runs %s past now, want about %s", left, lease)
+	if left := renewed.expires.Sub(renewed.at); left < lease-2*time.Second || left > lease+time.Second {
+		t.Fatalf("the survivor's renewal against the second broker set its lease to run out %s after the renewal, want about %s", left, lease)
 	}
-	t.Logf("(2) renewed %s after the second broker listened, to %s past now", time.Since(restartedAt).Round(time.Millisecond), renewed.expires.Sub(renewed.now).Round(time.Millisecond))
+	t.Logf("(2) renewed %s after the second broker listened, to %s past the renewal", time.Since(restartedAt).Round(time.Millisecond), renewed.expires.Sub(renewed.at).Round(time.Millisecond))
 	renewerRunning("after it renewed")
 
 	for _, ended := range []struct {
@@ -309,7 +308,7 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	}
 
 	t.Log("--- (4) the mismatch pod's lease renews for no other pod and no other account")
-	before, _ := leaseOf(mismatch.enrollmentID)
+	before := len(renewalsOf(t, db, mismatch.enrollmentID))
 	for _, other := range []struct{ what, token string }{
 		{"another pod's UID", podToken("another-pod", podAccount)},
 		{"another service account", podToken(mismatch.runtimeID, otherAccount)},
@@ -319,8 +318,8 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 			t.Fatalf("the mismatch pod's renewal with a token naming %s = %d %s, want 403 POD_IDENTITY_MISMATCH", other.what, status, answer)
 		}
 	}
-	if after, _ := leaseOf(mismatch.enrollmentID); !after.Equal(before) {
-		t.Fatalf("the mismatch pod's lease moved from %s to %s on two refused renewals", before, after)
+	if after := renewalsOf(t, db, mismatch.enrollmentID); len(after) != before {
+		t.Fatalf("the mismatch pod's lease was renewed to %s on two refused renewals", after[len(after)-1].expires)
 	}
 
 	t.Log("--- (5) the second broker logged that it gave back the time no broker was serving")
@@ -331,6 +330,60 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 		}
 	}
 	renewerRunning("at the end")
+}
+
+// leaseWrite is one update of an enrollment's lease that recordLeaseWrites recorded: the
+// lease_expires_at it wrote, and when, on Postgres's clock.
+type leaseWrite struct{ expires, at time.Time }
+
+// recordLeaseWrites has the database db is connected to record each update of an enrollment's
+// lease, and each transaction that writes a broker_serving row, for renewalsOf. The enrollment's
+// insert writes its first lease, which no update trigger sees; two of the broker's statements
+// update one: a renewal (enroll.Service.Renew) and the serving clock's give-back
+// (enroll.ServingClock.Beat), and the give-back is written in a beat, the one transaction that
+// also writes broker_serving. The row's own update, the lapsed pod's lease set in the past, is the
+// one other.
+func recordLeaseWrites(t *testing.T, db *pgx.Conn) {
+	t.Helper()
+	for _, statement := range []string{
+		`create table outage_test_lease_writes (enrollment_id uuid not null, lease_expires_at timestamptz not null,
+			xact xid8 not null default pg_current_xact_id(), written_at timestamptz not null default clock_timestamp())`,
+		`create table outage_test_beats (xact xid8 primary key)`,
+		`create function outage_test_lease_write() returns trigger language plpgsql as $$
+			begin insert into outage_test_lease_writes (enrollment_id, lease_expires_at) values (new.id, new.lease_expires_at); return null; end $$`,
+		`create trigger outage_test_lease_write after update of lease_expires_at on enrollments
+			for each row execute function outage_test_lease_write()`,
+		`create function outage_test_beat() returns trigger language plpgsql as $$
+			begin insert into outage_test_beats values (pg_current_xact_id()) on conflict do nothing; return null; end $$`,
+		`create trigger outage_test_beat after insert or update on broker_serving
+			for each row execute function outage_test_beat()`,
+	} {
+		if _, err := db.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("record the writes of the enrollments' leases: %v", err)
+		}
+	}
+}
+
+// renewalsOf answers the renewals of enrollmentID's lease that recordLeaseWrites recorded, oldest
+// first: each update of it but those made in a transaction that wrote broker_serving, which are
+// the serving clock's give-backs.
+func renewalsOf(t *testing.T, db *pgx.Conn, enrollmentID string) []leaseWrite {
+	t.Helper()
+	rows, err := db.Query(context.Background(), `select lease_expires_at, written_at from outage_test_lease_writes w
+		where enrollment_id = $1 and not exists (select from outage_test_beats b where b.xact = w.xact)
+		order by written_at`, enrollmentID)
+	if err != nil {
+		t.Fatalf("read the renewals of enrollment %s: %v", enrollmentID, err)
+	}
+	renewals, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (leaseWrite, error) {
+		var renewal leaseWrite
+		err := row.Scan(&renewal.expires, &renewal.at)
+		return renewal, err
+	})
+	if err != nil {
+		t.Fatalf("read the renewals of enrollment %s: %v", enrollmentID, err)
+	}
+	return renewals
 }
 
 // buildAgentSecrets builds cmd/cipher into a temporary directory and returns its path, as

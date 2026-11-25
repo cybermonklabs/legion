@@ -393,10 +393,13 @@ FIELDS = ("Dir,ImportPath,ForTest,Standard,GoFiles,CgoFiles,TestGoFiles,XTestGoF
 @dataclass
 class Session:
     """The go commands' environment and results. GOPROXY=off over an empty module cache: no
-    download, no rewrite of a go.work.sum, and the same answer on a warm machine as on a cold
-    runner. A third-party package then fails to load, which loses nothing first-party
+    download, no rewrite of a go.sum or go.work.sum, and the same answer on a warm machine as on a
+    cold runner. A third-party package then fails to load, which loses nothing first-party
     (check-ci-filters.sh's header says why). The toolchain is the exception that cache cannot
-    hold: `toolchain()` resolves it first, under the machine's own cache and proxy."""
+    hold: `toolchain()` resolves it first, under the machine's own cache and proxy, with a `go env
+    GOROOT` that writes nothing. The go commands of go_build_tags.py, which ci_job_reads.py and
+    rule 20 run outside a Session, have no such environment and can write checksums into the
+    go.work.sum of their workspace; check-ci-filters.sh fails a run that changes one, naming it."""
 
     problems: list[Annotation] = field(default_factory=list)
     cache: dict = field(default_factory=dict)
@@ -1322,10 +1325,10 @@ def reduce_line(line: str) -> tuple:
 # GOPROXY and GOCACHE are the two names go itself reads that are here. GOCACHE says where go
 # keeps what it built (its line below says why that changes nothing go compiles). GOPROXY says
 # where a module's bytes come from, never which version: the module files this check already
-# reads decide that, and go.sum holds each module's hash whichever source serves it. This check's
-# own go commands run with GOPROXY=off over an empty module cache (Go.env below), so a workflow's
-# value never reaches them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN
-# and CI_OK_EXEMPT are
+# reads decide that, and go.sum holds each module's hash whichever source serves it. The go
+# commands that compute closures run with GOPROXY=off over an empty module cache (Session.go), so
+# a workflow's value never reaches them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY,
+# CI_OK_ALWAYS_RUN and CI_OK_EXEMPT are
 # ci.yaml's ci-ok classes: ci-ok-report.sh reads the first three out of that file and hands them
 # to ci-ok.sh, and CI_OK_EXEMPT is read by this check alone. LEGION_RUN_FUZZ_ITERS and
 # LEGION_KEPT_PROPERTY_RUNS are the counts the pull-request lane reduces: each is read at run
@@ -1357,6 +1360,10 @@ ENV_ALLOWED = frozenset({
     # land in a directory of their own, which the go-envoy-darwin-vet cache family holds.
     "GOCACHE",
     "GOPROXY",
+    # The job's state, success, failure or cancelled, which the step "Wait for the script
+    # harnesses and judge them" of the test job and envoy-go-checks hands .github/scripts/
+    # harness-pool.sh to choose --allow-none and --now. go reads it nowhere.
+    "JOB_STATUS",
     # The job's timeout-minutes, which .github/scripts/gh-read.sh's wait for a spent API budget
     # stays within. Every job whose steps call GitHub's API sets it in its own env, the jobs that
     # run go commands among them, and around_job reads a job's env. go reads it nowhere.
