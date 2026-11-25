@@ -9831,3 +9831,181 @@ test("k-phone: right after a tap on P1 moves a card, a tap on the page beside th
     expect(page.url(), step("the tap opens nothing")).toBe(address);
   }
 });
+
+// The tester's red rows of round 17 (R7, R17, R18, and 62b47002's "a held key acts once but for
+// the steps and scrolls that repeat"): a key whose press puts the caret in a text field, held down
+// past the system's repeat delay, types nothing there. At 1e21af01 the registry reads a repeat
+// against its own target (`handleKeyDown`'s `event.repeat` branch, `features/shell/keymap.ts`):
+// once the press has moved the focus into the field, no binding of the field's takes the key, so
+// the repeat goes on to the field and is typed - "4444444444" in the answer box, ten new lines,
+// "ffffffffff" in the search box, "rrrrrrrrrr" in the reply box, "RRRRRRRRRR" in the reason.
+
+/** Three questions of CORE, each on an issue of its own with three options, waiting on alice. */
+async function seedHeldQuestions(): Promise<void> {
+  await createProject({ key: "CORE", name: "Core" });
+  for (const title of ["Ledger", "Mirror", "Lease"]) {
+    const issue = await createIssue({ force: true, project: "CORE", title: `${title} rollout` });
+    await createAsk(
+      issue.key,
+      {
+        options: [{ label: "Ship" }, { label: "Hold" }, { label: "Drop" }],
+        question: `Ship the ${title.toLowerCase()} rollout?`,
+      },
+      asker
+    );
+  }
+}
+
+const HELD_INTO_A_FIELD = [
+  {
+    check: "k-other-key",
+    field: "answer",
+    key: "4",
+    what: "a 4 held down on a question of three options picks Other with the caret in its answer box",
+  },
+  {
+    check: "k-answer-box",
+    field: "answer",
+    key: "Enter",
+    what: "an Enter held down on a question's row puts the caret in its answer box",
+  },
+  {
+    check: "k-default-keys",
+    field: "search",
+    key: "f",
+    what: "an f held down puts the caret in the Inbox's search box",
+  },
+] as const;
+
+for (const { check, field, key, what } of HELD_INTO_A_FIELD) {
+  // SLOW(>=2s): three questions in the reading pane, a key held for a third of a second.
+  // @firefox: the repeats the engine sends for a held key, and where they land once the press has
+  // moved the focus (playwright.config.ts names the clause).
+  test(`${check}: beside the reading pane ${what}, and its repeats type nothing there and answer nothing @firefox`, async ({
+    page,
+  }) => {
+    const step = (text: string) => `${check}: a held ${key}: ${text}`;
+    await seedHeldQuestions();
+    const inbox = await openInboxAt(page, "the reading pane", 3);
+    const first = itemAt(inbox.order, 0);
+    const answers = inbox.order.map((id) => answerWrites(page, id));
+    await goTo(inbox, first);
+    const card = inboxPane(page).getByTestId(`ask-${first}`);
+    const box =
+      field === "answer"
+        ? card.locator("[data-ask-answer]")
+        : inbox.scope.getByRole("searchbox", { name: "Search asks" });
+    await expect(box, step("the field is drawn")).toBeVisible();
+    await holdKey(page, key, 10);
+    await expect(box, step("the press puts the caret in the field")).toBeFocused();
+    if (key === "4") {
+      await expect(card.getByRole("radio", { name: "Other" }), step("4 picks Other")).toBeChecked();
+    }
+    // A write the repeats sent reaches the page's request events within this second and a half.
+    await page.waitForTimeout(1_500);
+    expect(requestsSent(answers), step("nothing is answered")).toBe(0);
+    await expect(box, step("the repeats type nothing in the field")).toHaveValue("");
+  });
+}
+
+// SLOW(>=2s): a reply thread opened in the reading pane, and r held for a third of a second.
+// @firefox: the repeats the engine sends for a held key, and where they land once the press has
+// moved the focus (playwright.config.ts names the clause).
+test("k-answer-box: beside the reading pane an r held down on a reply thread's row puts the caret in its reply box, and its repeats type nothing there @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-answer-box: a held r: ${text}`;
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ force: true, project: "CORE", title: "Replay budget" });
+  const thread = await seedCommentThread(
+    issue.key,
+    "How far back does a replay go?",
+    "One hour, then it gives up."
+  );
+  await page.setViewportSize(WIDE);
+  await page.goto("/");
+  await selectRow(page, replyRowId(thread));
+  const reply = inboxPane(page).locator("[data-inbox-thread-body] textarea").first();
+  await expect(reply, step("the thread's reply box is drawn")).toBeVisible();
+  await holdKey(page, "r", 10);
+  await expect(reply, step("r puts the caret in the reply box")).toBeFocused();
+  await expect(reply, step("the repeats type nothing in the reply box")).toHaveValue("");
+});
+
+// SLOW(>=2s): an approval request on a card, and Shift+R held for a third of a second.
+// @firefox: the repeats the engine sends for a held key, and where they land once the press has
+// moved the focus (playwright.config.ts names the clause).
+test("k-approval-keys: in card mode a Shift+R held down picks Request changes with the caret in its reason, and its repeats type nothing there @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-approval-keys: a held Shift+R: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const approval = await seedApprovalAtVersionTwo("CORE", "Clock audit");
+  const inbox = await openInboxAt(page, "card mode", 1);
+  const row = rowOf(inbox, approval.askId);
+  await row.focus();
+  await page.keyboard.down("Shift");
+  await holdKey(page, "R", 10);
+  await page.keyboard.up("Shift");
+  await expect(
+    row.getByRole("radio", { name: /^Request changes/ }),
+    step("Shift+R picks Request changes")
+  ).toBeChecked();
+  const reason = row.locator("[data-ask-answer]");
+  await expect(reason, step("the caret is in the reason")).toBeFocused();
+  await expect(reason, step("the repeats type nothing in the reason")).toHaveValue("");
+});
+
+for (const [key, what] of [
+  ["c", "the new issue's title"],
+  ["/", "the command bar's box"],
+] as const) {
+  // SLOW(>=2s): two questions in the reading pane, a key held for a third of a second.
+  // @firefox: the repeats the engine sends for a held key, and where they land once the press has
+  // moved the focus (playwright.config.ts names the clause).
+  test(`k-default-keys: beside the reading pane a ${key} held down puts the caret in ${what}, and its repeats type nothing there @firefox`, async ({
+    page,
+  }) => {
+    const step = (text: string) => `k-default-keys: a held ${key}: ${text}`;
+    await seedHeldQuestions();
+    const inbox = await openInboxAt(page, "the reading pane", 3);
+    await goTo(inbox, itemAt(inbox.order, 0));
+    await holdKey(page, key, 10);
+    await nextFrames(page);
+    const typed = await page.evaluate(() => {
+      const active = document.activeElement;
+      return active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+        ? active.value
+        : null;
+    });
+    expect(typed, step(`the press puts the caret in ${what}`)).not.toBeNull();
+    expect(typed, step(`the repeats type nothing in ${what}`)).toBe("");
+  });
+}
+
+// The tester's red row of round 17 (R24: "Escape closes the list that is open, then the panel or
+// the menu", and 62b47002's "a held key acts once but for the steps and scrolls that repeat"): an
+// Escape held down in the Filter panel's open list closes that list alone. At 1e21af01 the panel's
+// own Escape (`AnchoredPanel`'s capture-phase `dismissOnEscape`) reads no `repeat`, so the first
+// repeat after the list has closed, on the field inside the panel, closes the panel too.
+// SLOW(>=2s): the Inbox's Filter panel with a list open, and Escape held for a third of a second.
+// @firefox: the repeats the engine sends for a held key, and where they land once the press has
+// moved the focus (playwright.config.ts names the clause).
+test("k-filter-keys: on the Inbox page an Escape held down in the Filter panel's open list closes the list alone, and the panel stays open with the focus on the field @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-filter-keys: a held Escape in the list: ${text}`;
+  await seedFilterKeys();
+  await openInboxAt(page, "the reading pane", 4);
+  await focusPage(page, step("the focus starts on the page"));
+  const field = page.getByRole("button", { name: "Filter by priority" });
+  const panel = await shiftFOpens(page, field, "on the Inbox");
+  await page.keyboard.press("Enter");
+  const list = listOf(field);
+  await expect(list, step("Enter opens the field's list")).toBeVisible();
+  await holdKey(page, "Escape", 10);
+  await expect(list, step("the Escape closes the list")).toBeHidden();
+  await expect(panel, step("the repeats leave the panel open")).toBeVisible();
+  await expect(field, step("the focus is on the field")).toBeFocused();
+});
