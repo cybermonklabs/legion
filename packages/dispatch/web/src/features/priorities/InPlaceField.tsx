@@ -19,6 +19,7 @@ import {
   calloutWarningText,
   focusBorder,
   focusVisibleRing,
+  hasFocusVisibleRing,
   inputClasses,
   surfaceMutedStrongBg,
   textPrimaryOnSurface,
@@ -183,12 +184,19 @@ export const FIELD_CHIP = `inline-flex min-h-11 max-w-full items-center gap-1 ro
  *
  * Drawn `closed`, the field reads as its text until the reader opens it, and closes as they leave
  * it; what it writes, and when, is the same. A heading (`closed="heading"`) is the page's heading,
- * in an issue title's type, as an issue's header draws its title: a click, the focus, Enter or
- * Space opens it, and open, the heading holds a box in the same type that wraps as the heading
- * does, so every word of a long title stays in view as it is written, and nothing under it moves
- * as it opens and closes. A chip (`closed="chip"`) reads the field's name and its text in a label
- * chip's shape (`FIELD_CHIP`), and a click opens it into the plain box, its name beside it. While
- * it is closed, the heading or the chip is what names the notice as what describes it.
+ * in an issue title's type, as an issue's header draws its title: its text is a button inside it,
+ * which Tab reaches and a screen reader names a button, and the heading takes no Tab stop of its
+ * own. A click on the heading, or Enter or Space on the button, opens it; a focus alone never
+ * does, since a focus can come to the button with no act of the reader's and a box opened then
+ * would change the page on focus (WCAG 2.2, 3.2.1 On Focus). Open, the heading holds a box in the
+ * same type that wraps as the heading does, so every word of a long title stays in view as it is
+ * written, and nothing under it moves as it opens and closes. A chip (`closed="chip"`) reads the
+ * field's name and its text in a label chip's shape (`FIELD_CHIP`), and a click opens it into the
+ * plain box, its name beside it. While it is closed, the heading or the chip is what names the
+ * notice as what describes it. Enter and Escape leave a field drawn closed as any leaving does,
+ * and give the focus back to the button the box was opened from, the heading's or the chip's,
+ * with no scroll; leaving it any other way, a click elsewhere or Tab, leaves the focus where the
+ * reader put it.
  */
 export function InPlaceField({
   closed,
@@ -254,6 +262,12 @@ export function InPlaceField({
   // Whether the reader has opened a field drawn `closed`; any other is always open.
   const [opened, setOpened] = useState(false);
   const box = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+  // The button a field drawn `closed` reads as while it is, the heading's or the chip's, which
+  // the reader opens the box from.
+  const opener = useRef<HTMLButtonElement>(null);
+  // Set by a key that ends the edit of a field drawn `closed`, and read once its button is drawn
+  // again: the focus goes back to that button (`opener`).
+  const returning = useRef(false);
   // Where the field stands against the server's text (`FieldStand`): what the reader's text is
   // compared with, and the texts written that the server has not answered with yet, oldest first.
   const base = useRef(value);
@@ -334,6 +348,14 @@ export function InPlaceField({
     node.setSelectionRange(node.value.length, node.value.length);
   }, [opened]);
 
+  // Ended by a key, the box gives the focus back to the button it was opened from, with no
+  // scroll, once that button is drawn in its place: the box took the focus with it as it went.
+  useEffect(() => {
+    if (opened || !returning.current) return;
+    returning.current = false;
+    opener.current?.focus({ preventScroll: true });
+  }, [opened]);
+
   // A heading's box is as tall as the text it holds, so the title wraps in it as it does in the
   // heading, and what stands under it keeps its place as the field opens, closes or takes a line.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `draft` and `opened` are the triggers; the box is read as it stands
@@ -393,12 +415,18 @@ export function InPlaceField({
       timer.current = window.setTimeout(save, SAVE_AFTER_MS);
     },
     onKeyDown: (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-      // The Enter that ends an input method's composition takes the word composed, and is no
-      // Enter of the reader's: it neither writes nor leaves the field. Safari sends it after its
+      // The Enter that ends an input method's composition takes the word composed, and the
+      // Escape that ends one drops it: each is the input method's key, and no key of the
+      // reader's, so it neither writes nor leaves the field. Safari sends it after its
       // compositionend, with `isComposing` false and keyCode 229 (`inputMethodKey`).
-      if (event.key !== "Enter" || inputMethodKey(event.nativeEvent)) return;
+      if (inputMethodKey(event.nativeEvent)) return;
+      // Enter writes and leaves the field. So does Escape in a field drawn `closed`, whose press
+      // is then marked taken (`shell/keymap.ts`); one always open leaves Escape to the page.
+      // Either key leaving a field drawn `closed` gives the focus back to its button.
+      if (event.key !== "Enter" && (event.key !== "Escape" || closed === undefined)) return;
       event.preventDefault();
       save();
+      returning.current = closed !== undefined;
       event.currentTarget.blur();
     },
     placeholder,
@@ -420,20 +448,29 @@ export function InPlaceField({
             />
           </h1>
         ) : (
+          // biome-ignore lint/a11y/useKeyWithClickEvents: the heading's click takes a press on its rule and its padding as on its words; the button inside it is the control, which takes the keys and whose click reaches this one.
           <h1
             aria-describedby={describedBy}
-            className={`cursor-text ${HEADING_BOX} ${borderStrongHover}`}
+            className={`cursor-text ${HEADING_BOX} ${borderStrongHover} has-focus-visible:ring-2 ${hasFocusVisibleRing}`}
             onClick={() => setOpened(true)}
-            onFocus={() => setOpened(true)}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter" && event.key !== " ") return;
-              event.preventDefault();
-              setOpened(true);
-            }}
-            // biome-ignore lint/a11y/noNoninteractiveTabindex: the heading is the title's edit control, as the issue title's heading is, and a keyboard reaches it by Tab.
-            tabIndex={0}
           >
-            {draft}
+            <button
+              // The title's words, drawn in the heading's box as the heading drew them. Below
+              // 1280 px `styles.css` gives every button a 44 px floor (the touch target
+              // `packages/dispatch/README.md` asks of every control) and an `inline-flex`
+              // display, in no layer. The button keeps the floor: 8 px of padding above and
+              // below its 28 px line make it 44 px tall, and as much negative margin keeps its
+              // place in the heading one line tall, so the title stands where the closed
+              // heading and its open box draw it. `block!` and `min-w-0!` take the display and
+              // the width floor off, which would keep a long word from breaking at the heading's
+              // edge, since a layered utility wins over an unlayered rule only with `!`. The
+              // heading draws the focus ring on its own box (`has-focus-visible`).
+              className="block! min-w-0! -my-2 w-full cursor-text py-2 text-left outline-none xl:my-0 xl:py-0"
+              ref={opener}
+              type="button"
+            >
+              {draft}
+            </button>
           </h1>
         )}
         {placed}
@@ -469,6 +506,7 @@ export function InPlaceField({
           aria-describedby={describedBy}
           className={`${FIELD_CHIP} ${textSecondaryHoverToPrimary} outline-none focus-visible:ring-2 ${focusVisibleRing}`}
           onClick={() => setOpened(true)}
+          ref={opener}
           type="button"
         >
           <span className="font-normal">{label}</span>

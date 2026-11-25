@@ -4,6 +4,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   useEffect,
   useId,
   useRef,
@@ -129,6 +130,33 @@ function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
   return input.status === undefined ? `${key}: ${field} saved` : `${key} set to ${input.status}`;
 }
 
+/** The control that opened one of the header's editors - Edit title, the message route's, the
+ *  parent's - and what gives it the focus back, as the new issue page's title row does
+ *  (`IssueTitleRow`). A key or a button inside the editor that ends the edit calls `handBack`
+ *  before it ends it: the editor leaves the page with the focus it held, and once the commit
+ *  that ends the edit has drawn `opener` again, the focus goes to it with no scroll. An edit the
+ *  reader ended by moving the focus elsewhere - a click, Tab - calls no `handBack`, so the focus
+ *  stays where they put it, and a control the header does not draw, as a closed issue draws no
+ *  Edit title, takes nothing. */
+function useFocusBack(editing: boolean): {
+  handBack: () => void;
+  opener: RefObject<HTMLButtonElement | null>;
+} {
+  const opener = useRef<HTMLButtonElement>(null);
+  const returning = useRef(false);
+  useEffect(() => {
+    if (editing || !returning.current) return;
+    returning.current = false;
+    opener.current?.focus({ preventScroll: true });
+  }, [editing]);
+  return {
+    handBack: () => {
+      returning.current = true;
+    },
+    opener,
+  };
+}
+
 export function IssueHeader({
   documentArtifact,
   isClosed,
@@ -146,7 +174,9 @@ export function IssueHeader({
 }): ReactNode {
   const queryClient = useQueryClient();
   const [editingTitle, setEditingTitle] = useState(false);
+  const titleFocus = useFocusBack(editingTitle);
   const [routeEditing, setRouteEditing] = useState(false);
+  const routeFocus = useFocusBack(routeEditing);
   const routeInputRef = useRef<HTMLInputElement>(null);
   // Focus the route input once when editing opens: the trigger button unmounts, so without this
   // focus would drop to the body and a keyboard user would have to find the form again.
@@ -156,6 +186,7 @@ export function IssueHeader({
     }
   }, [routeEditing]);
   const [parentEditing, setParentEditing] = useState(false);
+  const parentFocus = useFocusBack(parentEditing);
   const parentInputRef = useRef<HTMLInputElement>(null);
   // Same focus handoff as the route editor: the trigger button unmounts when the form opens.
   useEffect(() => {
@@ -446,22 +477,42 @@ export function IssueHeader({
     },
   });
   useReleaseWhenLate(pinGuard, updateState.late);
+  // Enter ends the edit as the editor's blur does, and gives the focus back to Edit title. The
+  // press is marked taken: the browser sends the key's keypress to the element focused by then,
+  // and on Edit title that keypress would press it and open the editor again.
   const saveTitleOnEnter = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
+      event.preventDefault();
+      titleFocus.handBack();
       event.currentTarget.blur();
     }
   };
+  // The route's and the parent's editors end by a save - Enter or the Save button - by Escape and
+  // by Cancel, each a key or a button inside the editor: each closes it with the focus back on the
+  // control that opened it (`useFocusBack`). Escape and Cancel drop the draft.
   const saveRoute = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (drafts.requestRouteSubmit()) {
+      routeFocus.handBack();
       setRouteEditing(false);
     }
+  };
+  const cancelRoute = () => {
+    routeFocus.handBack();
+    drafts.discardRoute();
+    setRouteEditing(false);
   };
   const saveParent = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (drafts.requestParentSubmit()) {
+      parentFocus.handBack();
       setParentEditing(false);
     }
+  };
+  const cancelParent = () => {
+    parentFocus.handBack();
+    drafts.discardParent();
+    setParentEditing(false);
   };
   // A refused parent save (PARENT_INPUT, ISSUE_CLOSED) renders the server's reason inline,
   // like a route validation error, instead of the generic update failure line. One the reader
@@ -499,6 +550,7 @@ export function IssueHeader({
       className={`inline-flex min-h-11 max-w-[14ch] shrink-0 items-center truncate rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
       disabled={isClosed}
       onClick={() => setRouteEditing(true)}
+      ref={routeFocus.opener}
       title={drafts.route === "" ? undefined : drafts.route}
       type="button"
     >
@@ -579,8 +631,10 @@ export function IssueHeader({
                   if (inputMethodKey(event.nativeEvent)) return;
                   if (event.key === "Escape") {
                     // The press is the editor's: marked taken, so the key registry passes over it
-                    // and a held Escape's repeats are kept from the page (`shell/keymap.ts`).
+                    // and a held Escape's repeats are kept from the page (`shell/keymap.ts`). The
+                    // focus goes back to Edit title (`useFocusBack`).
                     event.preventDefault();
+                    titleFocus.handBack();
                     drafts.discardTitle();
                     setEditingTitle(false);
                     return;
@@ -600,8 +654,9 @@ export function IssueHeader({
               // what it holds, a button's `aria-label` included. It opens the editor when the
               // reader activates it - a click, Enter or Space - and never as it takes the focus:
               // an editor that opens on focus changes the page on focus (WCAG 2.2, 3.2.1 On
-              // Focus), and a focus can come to the button with no act of the reader's. A closed
-              // issue's title edits nothing, so it is the heading alone.
+              // Focus), and a focus can come to the button with no act of the reader's. Escape and
+              // Enter in the editor give the focus back to it (`useFocusBack`). A closed issue's
+              // title edits nothing, so it is the heading alone.
               <div className="relative min-w-0 flex-1">
                 <h1
                   className={`break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface}`}
@@ -615,6 +670,7 @@ export function IssueHeader({
                     aria-label="Edit title"
                     className={`absolute inset-0 cursor-text rounded-lg border outline-none focus-visible:ring-2 ${borderTransparent} ${borderStrongHover} ${focusVisibleRing}`}
                     onClick={() => setEditingTitle(true)}
+                    ref={titleFocus.opener}
                     type="button"
                   />
                 )}
@@ -866,6 +922,7 @@ export function IssueHeader({
                 className={`inline-flex min-h-11 max-w-[14ch] shrink-0 items-center rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
                 disabled={isClosed}
                 onClick={() => setParentEditing(true)}
+                ref={parentFocus.opener}
                 type="button"
               >
                 {issue.parent === null ? "None" : "Edit"}
@@ -933,8 +990,7 @@ export function IssueHeader({
               // (`shell/keymap.ts`).
               if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
                 event.preventDefault();
-                drafts.discardRoute();
-                setRouteEditing(false);
+                cancelRoute();
               }
             }}
             placeholder="role:legion-controller-core"
@@ -951,10 +1007,7 @@ export function IssueHeader({
           </button>
           <button
             className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
-            onClick={() => {
-              drafts.discardRoute();
-              setRouteEditing(false);
-            }}
+            onClick={cancelRoute}
             type="button"
           >
             Cancel
@@ -987,8 +1040,7 @@ export function IssueHeader({
               // (`shell/keymap.ts`).
               if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
                 event.preventDefault();
-                drafts.discardParent();
-                setParentEditing(false);
+                cancelParent();
               }
             }}
             placeholder={`${issue.project}-12`}
@@ -1005,10 +1057,7 @@ export function IssueHeader({
           </button>
           <button
             className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
-            onClick={() => {
-              drafts.discardParent();
-              setParentEditing(false);
-            }}
+            onClick={cancelParent}
             type="button"
           >
             Cancel

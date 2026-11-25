@@ -498,6 +498,70 @@ test("focusing Edit title does not open the title's editor", async () => {
   }
 });
 
+// Escape and Enter end the title's edit from the keyboard and take the editor, which held the
+// focus, off the page: the focus goes back to Edit title, the control the reader opened it from,
+// so their next Tab goes on from the title and not from the top of the page. A Tab out of the
+// editor ends the edit too, and the focus stays on the control the Tab reached.
+test("Escape and Enter in the title's editor give the focus back to Edit title, and a Tab out of it leaves the focus on the control it reached", async () => {
+  const { patches, unmount, user } = header();
+  try {
+    for (const [key, title] of [
+      ["Escape", base.title],
+      ["Enter", "Renamed"],
+    ] as const) {
+      await editTitle(user, "Renamed");
+      await user.keyboard(`{${key}}`);
+      expect(screen.queryByRole("textbox", { name: "Issue title" }), key).not.toBeInTheDocument();
+      expect(screen.getByRole("heading", { level: 1, name: title }), key).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Edit title" }), key).toHaveFocus();
+    }
+    await waitFor(() => expect(patches).toHaveBeenCalledTimes(1));
+    await afterFrameAndTasks();
+
+    await user.click(screen.getByRole("button", { name: "Edit title" }));
+    expect(await screen.findByRole("textbox", { name: "Issue title" })).toHaveFocus();
+    await user.tab();
+    expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pin issue" })).toHaveFocus();
+    expect(patches).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+  }
+});
+
+// The message route's editor and the parent's end by Escape, by Cancel and by a save, each a key
+// or a button inside the editor, and each takes the editor, which held the focus, off the page:
+// the focus goes back to the control that opened it.
+test("Escape, Cancel and a save in the message route's and the parent's editors give the focus back to the control that opened them", async () => {
+  const { patches, unmount, user } = header();
+  try {
+    let saves = 0;
+    for (const [opener, box, draft] of [
+      [/^Messages default to /, "Message route", "role:reviewer"],
+      [/parent issue$/, "Parent", "CORE-2"],
+    ] as const) {
+      for (const end of ["Escape", "Cancel", "a save"] as const) {
+        const by = `${box}, ${end}`;
+        await user.click(await screen.findByRole("button", { name: opener }));
+        const editor = screen.getByRole("textbox", { name: box });
+        await user.clear(editor);
+        await user.type(editor, draft);
+        if (end === "Cancel") await user.click(screen.getByRole("button", { name: "Cancel" }));
+        else await user.keyboard(end === "Escape" ? "{Escape}" : "{Enter}");
+        expect(screen.queryByRole("textbox", { name: box }), by).toBeNull();
+        expect(screen.getByRole("button", { name: opener }), by).toHaveFocus();
+        if (end === "a save") {
+          saves += 1;
+          await waitFor(() => expect(patches, by).toHaveBeenCalledTimes(saves));
+          await afterFrameAndTasks();
+        }
+      }
+    }
+  } finally {
+    unmount();
+  }
+});
+
 // A closed issue's title edits nothing: it is the heading alone, with no Edit title button, no
 // Tab stop and nothing that a press on it opens.
 test("a closed issue's title is its heading alone, with no Edit title button", async () => {

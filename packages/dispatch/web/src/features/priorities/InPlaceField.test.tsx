@@ -859,3 +859,102 @@ test("a read that answers an earlier write while the reader's typing waits leave
   expect(writes).toEqual(["A", "AB", "ABC"]);
   expect(madeOn).toEqual(["Old", "A", "AB"]);
 });
+
+/** A field drawn `closed`, as a priority's page draws its title (`"heading"`) and its owner
+ *  (`"chip"`), with a control after it that a Tab out of the box reaches. Every text the field
+ *  writes is kept in `writes`. */
+function closedField(closed: "chip" | "heading") {
+  const writes: string[] = [];
+  const view = render(
+    <>
+      <InPlaceField
+        closed={closed}
+        label="Title"
+        onSave={(next) => void writes.push(next)}
+        value="Old name"
+      />
+      <button type="button">Next</button>
+    </>
+  );
+  const page = within(view.container);
+  return {
+    box: () => page.queryByRole("textbox", { name: "Title" }),
+    // The button the closed field reads as: the one inside the heading, or the chip, which its
+    // label names first.
+    opener: () =>
+      closed === "heading"
+        ? within(page.getByRole("heading", { level: 1 })).getByRole("button")
+        : page.getByRole("button", { name: /^Title/ }),
+    page,
+    view,
+    writes,
+  };
+}
+
+// A heading's title is a button inside the heading, which Tab reaches and a screen reader names a
+// button, and the heading takes no Tab stop of its own. A focus on the button opens nothing: a
+// focus can come to it with no act of the reader's, and a box that opened then would change the
+// page on focus (WCAG 2.2, 3.2.1 On Focus). Enter and Space, a button's own keys, open the box
+// inside the heading with the focus in it.
+test("a heading's title is a button inside the heading, which a focus does not open and Enter and Space open with the focus in the box", async () => {
+  const user = userEvent.setup();
+  const { box, opener, page, view } = closedField("heading");
+  try {
+    const heading = page.getByRole("heading", { level: 1, name: "Old name" });
+    expect(heading).not.toHaveAttribute("tabindex");
+    for (const key of ["{Enter}", " "]) {
+      const title = opener();
+      expect(title, key).toHaveAccessibleName("Old name");
+      expect(title, key).toHaveAttribute("type", "button");
+      act(() => title.focus());
+      expect(title, key).toHaveFocus();
+      expect(box(), `${key}: the focus opened the box`).toBeNull();
+      await user.keyboard(key);
+      const opened = box();
+      expect(opened, key).toHaveFocus();
+      expect(opened, key).toHaveValue("Old name");
+      expect(heading.contains(opened), key).toBe(true);
+      await user.keyboard("{Escape}");
+      expect(box(), key).toBeNull();
+    }
+  } finally {
+    view.unmount();
+  }
+});
+
+// Enter and Escape end the edit of a field drawn closed as leaving it does: what the reader wrote
+// is written, and the box closes. Each takes the box, which held the focus, off the page, and the
+// focus goes back to the button the box was opened from, the heading's or the chip's, so the
+// keyboard reader is where they were. A Tab out of the box ends the edit too, and the focus stays
+// on the control the Tab reached. The clock is held, so nothing is written as the typing rests.
+test.each([
+  "heading",
+  "chip",
+] as const)("Enter and Escape in a %s's box write what the reader wrote and give the focus back to its button, and a Tab out leaves the focus on the control it reached", async (closed) => {
+  const user = userEvent.setup({ delay: null });
+  const { box, opener, page, view, writes } = closedField(closed);
+  try {
+    await onFakeClock(async () => {
+      for (const [key, typed] of [
+        ["{Enter}", ", mine"],
+        ["{Escape}", " too"],
+      ] as const) {
+        await user.click(opener());
+        expect(box(), key).toHaveFocus();
+        await user.keyboard(typed);
+        await user.keyboard(key);
+        expect(box(), key).toBeNull();
+        expect(opener(), key).toHaveFocus();
+      }
+      expect(writes).toEqual(["Old name, mine", "Old name, mine too"]);
+      await user.click(opener());
+      expect(box()).toHaveFocus();
+      await user.tab();
+    });
+    expect(box()).toBeNull();
+    expect(page.getByRole("button", { name: "Next" })).toHaveFocus();
+    expect(writes).toEqual(["Old name, mine", "Old name, mine too"]);
+  } finally {
+    view.unmount();
+  }
+});
