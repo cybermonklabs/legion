@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
@@ -953,11 +954,19 @@ func TestARefusedFileUploadLeavesNoObjectInTheFileStore(t *testing.T) {
 // needs its own lock for. Only the first upload of each name creates: one that reaches an owner
 // already holding the name is a replacement, which names no token here and is taken unchecked
 // (INFRA-4980).
+//
+// The uploads queue at the document's writer gate behind one another, each for what is left of
+// its one write wait (docs.Service.AcquireDocumentWriter). That wait is not what the row proves, so
+// it is past any run (admission.Limits.WriteWait), with the deployment's limits otherwise: under
+// parallel load six uploads behind one holder otherwise ran it out and were answered 429
+// EDIT_QUEUE_FULL, a refusal the row does not mean to race.
 func TestConcurrentUploadsUnderOneNameAndItsSlugLeaveNoReferenceNamingTwo(t *testing.T) {
 	t.Parallel()
 	for _, owner := range []string{"issue", "project"} {
 		t.Run(owner, func(t *testing.T) {
-			handler, database, _ := newTestServer(t, testServerOptions{})
+			limits := admission.DefaultLimits()
+			limits.WriteWait = pastTheRun
+			handler, database, _ := newTestServer(t, testServerOptions{admission: admission.New(limits)})
 			issue := createArtifactIssue(t, handler)
 			path, ownerKey := "/api/v1/projects/TEST/artifacts", "TEST"
 			if owner == "issue" {
