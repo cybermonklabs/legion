@@ -501,6 +501,13 @@ func TestCheckState(t *testing.T) {
 			c.Subject.Commit = "c2"
 			c.Results = append(c.Results, laterMissed(func(*Result) {}), checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
 		}, want: CheckState{State: "true", Reason: "passed", From: "c2"}},
+		// The same of a program check of production: a failing example of the test of c1 that missed
+		// its fault counts only at c1, so at c2 it says nothing, and the failing example that the test
+		// of c2 caught decides.
+		{name: "the rule that replaces The Spec's R8, a newer failing example of a program check of production whose test of c1 missed its fault counts nowhere at c2: true from d2", change: func(c *checkCase) {
+			c.programPass(checkStateProductionProgram, "c2", "c2")
+			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultFailingExample, OutcomePass, "c1", 70*time.Minute))
+		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "true", Reason: "passed", From: "d2"}},
 		// A fault path that is empty or only white space is no path: a record whose paths are all
 		// such reads as one with no path, and one with such a path beside a real one reads unknown with
 		// a reason of its own, and is neither left out nor counted.
@@ -608,13 +615,6 @@ func TestCheckState(t *testing.T) {
 			c.Results = append(c.Results, programResult(checkStateGraphProgram, ResultRun, OutcomeCouldNotRun, "c1", 2*time.Hour))
 			c.Uncited = map[string]map[string]string{"c1": {checkStateGraphProgram.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateGraphProgram.ID, State: "unknown", Reason: "could_not_run"}},
-		// Not a row of a refusal: a failing example of the test of c1 that missed its fault counts
-		// only at c1 (the rule that replaces The Spec's R8 carries a caught one alone), so at c2 it
-		// says nothing, and the failing example that the test of c2 caught decides.
-		{name: "the rule that replaces The Spec's R8, a newer failing example of a program check of production whose test of c1 missed its fault counts nowhere at c2: true from d2", change: func(c *checkCase) {
-			c.programPass(checkStateProductionProgram, "c2", "c2")
-			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultFailingExample, OutcomePass, "c1", 70*time.Minute))
-		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "true", Reason: "passed", From: "d2"}},
 		{name: "control: a refusal of a program check of production at the commit of the test of a newer pass takes out that pass, and the older failure decides", change: func(c *checkCase) {
 			c.programPass(checkStateProductionProgram, "c1", "c2")
 			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultRun, OutcomeFail, "c2", 30*time.Minute))

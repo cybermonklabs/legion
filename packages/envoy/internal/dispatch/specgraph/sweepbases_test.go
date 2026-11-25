@@ -134,8 +134,8 @@ type builtBase struct {
 // the check at c1 takes out c1's pass and caught failing example and keeps that failure (R48), so
 // the check still reads false, and a rule by which a refusal took out each result of its commit
 // would read the pass of m2 true, a state that the refusal sweep compares (refusalsTakeOut). Each
-// of the twenty reads, at the subjects of its shape, the state that the shape gives its check
-// (readsAt): the nine above the states that their shapes are for, the ten of production-and-graph
+// of the nineteen reads, at the subjects of its shape, the state that the shape gives its check
+// (readsAt): the eight above the states that their shapes are for, the ten of production-and-graph
 // their check of the graph, or the check that they write, in the state that the check's kind gives
 // its results, and the last its program check of production false; the eight that write a check
 // also read it as its kind (readsAs). A state does not show each fact that a builder adds (a base
@@ -194,16 +194,17 @@ func builtBases() map[string]builtBase {
 	// input (the records added to results.json, each a copy of carry's result 1, from 0, a pass of
 	// a-restart-loses-no-message at c1, or 2, from 1, its caught failing example planted on c1, with
 	// the members of its set, each after carry's own six records, and the writers of a further edit),
-	// the state that it reads at each commit (readsAt): unknown (disagree) where a failure and a later
-	// pass count; unknown (no_planted_on) with a failing example planted by no step, later or caught;
-	// and unknown (planted_on_outside_history) with a later one planted on c9. And the read-back of
-	// the facts as the reader reads them, stated apart from the input, so that a builder, or an input
-	// of it, that adds nothing or another thing fails by name.
+	// the state that it reads at each commit of at (readsAt): unknown (disagree) where a failure and
+	// a later pass count; unknown (no_planted_on) with a failing example planted by no step, later or
+	// caught; and unknown (planted_on_outside_history) with a later one planted on c9. And the
+	// read-back of the facts as the reader reads them, stated apart from the input, so that a
+	// builder, or an input of it, that adds nothing or another thing fails by name.
 	for _, row := range []struct {
 		name, facts string
 		adds        []addedResult
 		then        []fileEdit
-		reads       map[string]CheckState
+		want        CheckState
+		at          []string
 		holds       func(Scenario) bool
 	}{
 		{"carry with c2's failure between c1's pass and c1's failing example",
@@ -211,7 +212,7 @@ func builtBases() map[string]builtBase {
 			[]addedResult{
 				{0, map[string]any{"commit": "c2", "outcome": "fail", "at": "2026-11-12T10:03:00Z", "seq": 7}},
 				{0, map[string]any{"commit": "c2", "at": "2026-11-12T12:00:00Z", "seq": 8}},
-				{1, map[string]any{"commit": "f-c2", "planted_on": "c2", "at": "2026-11-12T12:05:00Z", "seq": 9}}}, nil, map[string]CheckState{"c2": disagree},
+				{1, map[string]any{"commit": "f-c2", "planted_on": "c2", "at": "2026-11-12T12:05:00Z", "seq": 9}}}, nil, disagree, []string{"c2"},
 			func(s Scenario) bool {
 				return has(s, ResultRun, OutcomeFail, "c2", "", 7) && has(s, ResultRun, OutcomePass, "c2", "", 8) && has(s, ResultFailingExample, OutcomeFail, "f-c2", "c2", 9)
 			}},
@@ -220,14 +221,14 @@ func builtBases() map[string]builtBase {
 			[]addedResult{
 				{0, map[string]any{"commit": "m2", "outcome": "fail", "at": "2026-11-13T09:15:00Z", "seq": 7}},
 				{0, map[string]any{"commit": "m2", "at": "2026-11-13T12:00:00Z", "seq": 8}},
-				{1, map[string]any{"commit": "f-m2", "planted_on": "m2", "at": "2026-11-13T12:05:00Z", "seq": 9}}}, nil, map[string]CheckState{"m2": disagree},
+				{1, map[string]any{"commit": "f-m2", "planted_on": "m2", "at": "2026-11-13T12:05:00Z", "seq": 9}}}, nil, disagree, []string{"m2"},
 			func(s Scenario) bool {
 				return has(s, ResultRun, OutcomeFail, "m2", "", 7) && has(s, ResultRun, OutcomePass, "m2", "", 8) && has(s, ResultFailingExample, OutcomeFail, "f-m2", "m2", 9)
 			}},
 		{"carry with a later failing example planted by no step",
 			"a failing example after carry's caught one, at the commit f2, with no planted_on and with carry's fault path and a second source file of the tie, on which the test missed its fault",
 			[]addedResult{{1, map[string]any{"commit": "f2", "outcome": "pass", "seq": 7, "fault_paths": []any{faultPath, secondPath}}}},
-			[]fileEdit{{"results.json", lastPlantedOnLeftOut}}, map[string]CheckState{"c2": {State: checkUnknown, Reason: reasonNoPlantedOn}, "m2": {State: checkUnknown, Reason: reasonNoPlantedOn}},
+			[]fileEdit{{"results.json", lastPlantedOnLeftOut}}, CheckState{State: checkUnknown, Reason: reasonNoPlantedOn}, []string{"c2", "m2"},
 			func(s Scenario) bool {
 				return slices.ContainsFunc(s.Results, func(r Result) bool {
 					return r.Check == code && r.Kind == ResultFailingExample && r.Outcome == OutcomePass && r.Commit == "f2" && r.PlantedOn == "" &&
@@ -237,7 +238,7 @@ func builtBases() map[string]builtBase {
 		{"carry with a later failing example planted on c9, no commit of the history",
 			"a failing example after carry's caught one, at the commit f2, planted on c9, which the history does not hold, with carry's fault path and a second source file of the tie, on which the test missed its fault",
 			[]addedResult{{1, map[string]any{"commit": "f2", "outcome": "pass", "seq": 7, "planted_on": "c9", "fault_paths": []any{faultPath, secondPath}}}}, nil,
-			map[string]CheckState{"c2": {State: checkUnknown, Reason: ReasonPlantedOnOutside, Detail: "c9"}, "m2": {State: checkUnknown, Reason: ReasonPlantedOnOutside, Detail: "c9"}},
+			CheckState{State: checkUnknown, Reason: ReasonPlantedOnOutside, Detail: "c9"}, []string{"c2", "m2"},
 			func(s Scenario) bool {
 				_, held, err := s.History.Changed("c9", "c9")
 				return err == nil && !held && slices.ContainsFunc(s.Results, func(r Result) bool {
@@ -247,7 +248,7 @@ func builtBases() map[string]builtBase {
 			}},
 		{"carry with its failing example planted by no step",
 			"a caught failing example at the commit c1 with no planted_on and no fault path",
-			nil, []fileEdit{{"results.json", caughtFailingExampleUnplanted}}, map[string]CheckState{"c2": {State: checkUnknown, Reason: reasonNoPlantedOn}, "m2": {State: checkUnknown, Reason: reasonNoPlantedOn}},
+			nil, []fileEdit{{"results.json", caughtFailingExampleUnplanted}}, CheckState{State: checkUnknown, Reason: reasonNoPlantedOn}, []string{"c2", "m2"},
 			func(s Scenario) bool {
 				return has(s, ResultFailingExample, OutcomeFail, "c1", "", 2) && !slices.ContainsFunc(s.Results, func(r Result) bool { return len(r.FaultPaths) > 0 })
 			}},
@@ -263,9 +264,7 @@ func builtBases() map[string]builtBase {
 			if s, err := ReadScenario(fsys); err != nil || !row.holds(s) {
 				t.Fatalf("%s: the reader does not read the facts that its builder adds, %s (%v)", name, row.facts, err)
 			}
-			for _, commit := range slices.Sorted(maps.Keys(row.reads)) {
-				readsAt(t, name, fsys, code, row.reads[commit], commit)
-			}
+			readsAt(t, name, fsys, code, row.want, row.at...)
 		}}
 	}
 	// written is production-and-graph, fsys, with its check id written as a check of procedure and
