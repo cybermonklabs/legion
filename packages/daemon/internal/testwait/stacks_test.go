@@ -81,6 +81,39 @@ func TestGoroutinesOfOneStackPrintItOnce(t *testing.T) {
 	}
 }
 
+// Under GOTRACEBACK=system or crash, runtime.Stack's headers name the goroutine's g and m before its
+// state, and each frame's file line ends with its fp, sp and pc: the stacks still know whose each
+// goroutine is, and still print two goroutines of one stack once.
+func TestTheStacksReadATracebackOfLevelSystem(t *testing.T) {
+	system := func(id int, state string, creator int, functions ...string) string {
+		text := trace(id, state, creator, functions...)
+		text = strings.Replace(text, fmt.Sprintf("goroutine %d [", id), fmt.Sprintf("goroutine %d gp=0x%x m=nil [", id, 0xc00+id), 1)
+		var lines []string
+		for line := range strings.Lines(text) {
+			line = strings.TrimSuffix(line, "\n")
+			if strings.HasPrefix(line, "\t") {
+				line += fmt.Sprintf(" fp=0x%x sp=0x%x pc=0x%x", 0xf00+id, 0xe00+id, 0xd00+id)
+			}
+			lines = append(lines, line)
+		}
+		return strings.Join(lines, "\n")
+	}
+	dump := []string{
+		system(5, "running", 1, "example.awaitTheFact", "testing.tRunner"),
+		system(1, "chan receive", 0, "testing.runTests"),
+		system(6, "select", 5, "example.worker"),
+		system(7, "select", 5, "example.worker"),
+		system(8, "chan receive", 1, "example.TestOther", "testing.tRunner"),
+	}
+	got := goroutineStacks("TestWaits", dump)
+	if want := "the goroutine stacks as the wait gave up: 5 goroutines: the waiting one, 2 this test started, 0 whose creator is no longer running, 1 of the test binary, and 1 other running tests started"; !strings.Contains(got, want) {
+		t.Errorf("the stacks of a system traceback open\n%.300s\nwant them to count %q", got, want)
+	}
+	if want := "testwait: the stack below is that of 2 goroutines: 6 7\n"; !strings.Contains(got, want) || strings.Contains(got, "example.TestOther(") {
+		t.Errorf("the stacks of a system traceback hold no %q, or print another test's goroutine:\n%s", want, got)
+	}
+}
+
 // Past stackBound of text after the waiting goroutine's trace, the stacks print no more, and the
 // last line counts what they left out; the waiting goroutine's trace is printed whatever its size.
 func TestTheStacksStopAtTheirBound(t *testing.T) {

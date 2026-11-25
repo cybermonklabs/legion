@@ -96,12 +96,16 @@ type goroutine struct {
 	owner   owner
 }
 
+// The parts of a trace's text: its header ("goroutine 7 [select, 2 minutes]:", with " gp=… m=…"
+// before the state under GOTRACEBACK=system or crash), the line naming its creator, and what a
+// frame's lines carry that differs between goroutines of one stack: argument values, the offset,
+// and under GOTRACEBACK=system or crash the frame's fp=, sp= and pc=.
 var (
-	traceHeader  = regexp.MustCompile(`^goroutine (\d+) \[(.*)\]:$`)
+	traceHeader  = regexp.MustCompile(`^goroutine (\d+)(?: [^\[]*)? \[(.*)\]:$`)
 	traceCreator = regexp.MustCompile(`(?m)^created by (.*) in goroutine (\d+)$`)
 	waitedFor    = regexp.MustCompile(`, \d+ minutes?`)
 	frameArgs    = regexp.MustCompile(`\([^()]*\)$`)
-	frameOffset  = regexp.MustCompile(` \+0x[0-9a-f]+$`)
+	frameOffset  = regexp.MustCompile(` \+0x[0-9a-f]+( fp=.*)?$`)
 )
 
 // readTrace is trace's goroutine, its owner not yet known.
