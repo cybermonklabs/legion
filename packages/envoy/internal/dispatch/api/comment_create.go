@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -212,12 +211,12 @@ type commentRecovery struct {
 // attempt no lane takes - this process is stopping, or its queue is full - has its claim given
 // back and is the delivery sweep's, as the first request's would have been.
 func (s *server) replayComment(w http.ResponseWriter, r *http.Request, point commentRecovery, stored []byte) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
 	ctx, pool := r.Context(), s.deps.Store.Pool
-	comment, err := s.loadComment(ctx, pool, point.CommentID)
+	comment, err := s.loadComment(ctx, pool, who, point.CommentID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -454,14 +453,14 @@ func (s *server) describeAsk(
 // askSessions is what a comment.created in askID's thread says about whose ask it is
 // (model.CommentEventPayload.AskSessions), as the comment's write leaves them: author, the
 // session that wrote the ask when one did (describeAsk's AskAuthorSession), then each other
-// session asks.Followers reads, ordered by since and then session id, then replier, appended
+// session asks.PayloadFollowers reads, ordered by since and then session id, then replier, appended
 // last, when it is a session none of those names, and [] when no session owns the ask. It reads
 // in the route's read phase, where the read holds no transaction id and finds the followers
 // committed before this write, but not the follow the write queues for a session that replies
 // (asks.QueueFollowAuthor), which only Ledger.Commit sends: so the replier is added here rather
 // than read.
 func askSessions(ctx context.Context, tx pgx.Tx, askID string, author *string, replier model.Actor) ([]string, error) {
-	followers, err := asks.Followers(ctx, tx, askID)
+	followers, err := asks.PayloadFollowers(ctx, tx, askID)
 	if err != nil {
 		return nil, err
 	}
@@ -649,14 +648,14 @@ func (s *server) readCommentRoutes(ctx context.Context, owner owner, askID *stri
 // route the listener resolved is still the one the issue row carries, read under that lock. A
 // route that moved in between leaves the resolution unusable, so the write is resolved once more
 // rather than suppressing the wrong session's fan-out.
-func (s *server) beginCommentWrite(ctx context.Context, owner owner, resolved commentResolution, write closedWrite) (commentWrite, error) {
+func (s *server) beginCommentWrite(ctx context.Context, who model.Actor, owner owner, resolved commentResolution, write closedWrite) (commentWrite, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return commentWrite{}, err
 	}
 	// The transaction is the caller's on success only, so every refusal unwinds here: a later
 	// check that forgot its own rollback would hold a pooled connection for the process's life.
-	status, err := s.lockCommentOwner(ctx, tx, owner, resolved.route, write)
+	status, err := s.lockCommentOwner(ctx, tx, who, owner, resolved.route, write)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		return commentWrite{}, err
@@ -669,9 +668,17 @@ func (s *server) beginCommentWrite(ctx context.Context, owner owner, resolved co
 // longer carries the route the resolution was taken for. A closed issue still takes a comment -
 // issue-level, a reply, a reply on an ask, one anchored to a document's quote - but not a
 // suggestion: that is a proposed document edit, and accepting it, its only outcome, is refused
-// on a closed issue, which is what write says (refuseClosed).
-func (s *server) lockCommentOwner(ctx context.Context, tx pgx.Tx, owner owner, route commentRoute, write closedWrite) (*string, error) {
-	status, open, err := ownerStatus(ctx, owner, lockedOwnerRead(tx))
+// on a closed issue, which is what write says (refuseClosed). The owner is read as who reads it
+// (ownerStatus). An issue the path names by its key alone is read before its lock is asked for
+// (lockedOwnerReadOnceFound), so a hidden one is refused without waiting behind its project's
+// writers, as a key no issue holds is; a document owner was read as who reads it before this
+// (documentOwnerForHandler).
+func (s *server) lockCommentOwner(ctx context.Context, tx pgx.Tx, who model.Actor, owner owner, route commentRoute, write closedWrite) (*string, error) {
+	read := lockedOwnerRead(tx)
+	if owner.IssueKey != nil {
+		read = lockedOwnerReadOnceFound(tx)
+	}
+	status, open, err := ownerStatus(ctx, who, owner, read)
 	if err != nil {
 		return nil, err
 	}
@@ -725,6 +732,13 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
+	// What the writer sees, resolved before any transaction holds a connection: the owner checks
+	// read the owner as it may, and the thread target below lists the owner's open asks as it may
+	// read them (askIDInputForOwner).
+	writer, ok := s.readerAs(w, r, actor)
+	if !ok {
+		return
+	}
 
 	// Every Envoy listener lookup this comment needs happens here, with no transaction and no
 	// pooled connection held (resolveCommentDeliveries). beginCommentWrite re-reads the issue's
@@ -739,17 +753,23 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		write = refusedWhenClosed
 	}
 	if len(mentionTargets) > 0 {
-		if err := s.refuseOwnerBeforeResolving(r.Context(), owner, write); err != nil {
+		if err := s.refuseOwnerBeforeResolving(r.Context(), writer, owner, write); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
 	start, err := resolveThenLock(r.Context(),
 		func(ctx context.Context) (commentResolution, error) {
-			return s.resolveCommentDeliveries(ctx, owner, input, mentionTargets, delivery)
+			resolved, err := s.resolveCommentDeliveries(ctx, owner, input, mentionTargets, delivery)
+			if err == nil && len(mentionTargets) > 0 {
+				// The lookups may have waited a listener take-over out, and the write below reads
+				// its owner by the session content rule.
+				s.refreshRosterBeforeReadBack(ctx, writer)
+			}
+			return resolved, err
 		},
 		func(ctx context.Context, resolved commentResolution) (commentWrite, error) {
-			return s.beginCommentWrite(ctx, owner, resolved, write)
+			return s.beginCommentWrite(ctx, writer, owner, resolved, write)
 		},
 		errorf(http.StatusConflict, "ROUTE_CHANGED",
 			"the issue's delivery route changed while this comment was being written; post it again"),
@@ -782,7 +802,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	if !isSuggestion {
 		documentCtx = docs.WithCommentMarks(documentCtx)
 	}
-	threadTarget, err := s.normalizeCommentThreadTarget(r.Context(), tx, ledger, actor, owner, input)
+	threadTarget, err := s.normalizeCommentThreadTarget(r.Context(), tx, ledger, writer, owner, input)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -901,11 +921,17 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	// What this comment is in the node and tuple store: its node, queued before the row that names
-	// it, and the facts the row is the projection of, which wait for the event that stores it. The
-	// node write appends nothing (graphstore.QueueNodes): every fact of this write, the two base
-	// attributes it states among them, is appended under that event, which is appended after the
-	// row. A comment left out of the store (unprojected) has no node to write.
-	stored, err := commentStored(r.Context(), tx, rowID, actor, comment.CreatedAt, anchor, owner.ArtifactID)
+	// it, in the project of the issue or the document it belongs to, and the facts the row is the
+	// projection of, which wait for the event that stores it. The node write appends nothing
+	// (graphstore.QueueNodes): every fact of this write, the base attributes it states among
+	// them, is appended under that event, which is appended after the row. A comment left out of
+	// the store (unprojected) has no node to write.
+	project, parties, err := graphstore.ScopeOf(r.Context(), tx, owner.IssueKey, owner.ArtifactID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	stored, err := commentStored(r.Context(), tx, rowID, actor, comment.CreatedAt, anchor, owner.ArtifactID, project, parties)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1231,10 +1257,11 @@ type commentStoreWrite struct {
 }
 
 // commentStored is what the comment rowID states (graphstore.CommentFacts): its node,
-// project-visible and live, made by its author at the row's own created_at, and the artifact it
-// is anchored to and the artifact that owns it, each stated only where the comment has one.
-// Both relations name the artifact by its address, which is its ref_key, so the two artifacts'
-// addresses are read here, in the caller's read phase, in one statement.
+// project-visible and live, in project or between parties (graphstore.ScopeOf of what it belongs
+// to), made by its author at the row's own created_at, and the artifact it is anchored to and the
+// artifact that owns it, each stated only where the comment has one. Both relations name the
+// artifact by its address, which is its ref_key, so the two artifacts' addresses are read here, in
+// the caller's read phase, in one statement.
 func commentStored(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1243,6 +1270,8 @@ func commentStored(
 	at time.Time,
 	anchor *model.Anchor,
 	ownerArtifactID *string,
+	project string,
+	parties []string,
 ) (commentStoreWrite, error) {
 	var artifacts []string
 	if anchor != nil {
@@ -1272,7 +1301,7 @@ func commentStored(
 		(ownerAddress != "" && !graphstore.AddressFits(ownerAddress)) {
 		return commentStoreWrite{unprojected: true}, nil
 	}
-	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, anchorAddress, ownerAddress)
+	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, anchorAddress, ownerAddress, project, parties)
 	return commentStoreWrite{written: graphstore.PlanUncaused([]graphstore.Node{node}, tuples)}, nil
 }
 

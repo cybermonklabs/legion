@@ -13,13 +13,12 @@ import (
 
 	"github.com/pulumi/pulumi-go-provider/infer"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
-	"golang.org/x/net/idna"
-
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/weborigin"
+	"golang.org/x/net/idna"
 )
 
 // dispatchType is the component's token. pulumi-go-provider derives the same one from the Dispatch
@@ -321,6 +320,11 @@ type DispatchArgs struct {
 	OidcAudience string `pulumi:"oidcAudience,optional"`
 	OidcIssuer   string `pulumi:"oidcIssuer,optional"`
 
+	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK: the lowercase email of a full
+	// member, whom Dispatch makes, at boot, the owner of every project the migration left without
+	// one. Unset renders nothing.
+	ProjectOwnerFallback string `pulumi:"projectOwnerFallback,optional"`
+
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's
 	// GitHub App together: DISPATCH_APP_CLIENT_ID and DISPATCH_APP_ID as plain values, and
 	// DISPATCH_APP_PEM_B64 read from the key AppPrivateKeySecretKey of the Kubernetes Secret
@@ -514,6 +518,12 @@ type DispatchArgs struct {
 	// namespace: only the component's own tailnet front door, which Tailscale Serve on 443 proxies
 	// through, reaches the app.
 	AllowedNamespaces []string `pulumi:"allowedNamespaces,optional"`
+	// AllowedApps names the apps, by their pods' app label, whose pods in the component's own
+	// namespace the app's NetworkPolicy admits on port 8766: one rule per app, beside the
+	// allowedNamespaces rule. The secrets broker, envoy-broker in production, runs in Dispatch's
+	// own namespace, which an allowedNamespaces entry would open to every pod. Unset or empty
+	// admits no such pod.
+	AllowedApps []string `pulumi:"allowedApps,optional"`
 
 	// AzureEmbedEndpoint turns on meaning search through Azure AI Foundry: DISPATCH_EMBEDDER=azure
 	// and DISPATCH_AZURE_EMBED_ENDPOINT, the base URL the embeddings route is appended to (such as
@@ -610,6 +620,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"agentSecretsAudience", args.AgentSecretsAudience},
 		{"oidcAudience", args.OidcAudience},
 		{"oidcIssuer", args.OidcIssuer},
+		{"projectOwnerFallback", args.ProjectOwnerFallback},
 		{"appClientId", args.AppClientId},
 		{"appId", args.AppId},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName},
@@ -768,6 +779,7 @@ type dispatchSettings struct {
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
 	oidcAudience, oidcIssuer                    string
+	projectOwnerFallback                        string
 	appClientID, appID, verdictAppID            string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
@@ -1115,6 +1127,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
 		{"oidcAudience", args.OidcAudience != ""},
 		{"oidcIssuer", args.OidcIssuer != ""},
+		{"projectOwnerFallback", args.ProjectOwnerFallback != ""},
 		{"appClientId", args.AppClientId != ""},
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
@@ -1146,6 +1159,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"frontDoorPdbMinAvailable", args.FrontDoorPdbMinAvailable != nil},
 		{"listenerPdbMinAvailable", args.ListenerPdbMinAvailable != nil},
 		{"allowedNamespaces", len(args.AllowedNamespaces) > 0},
+		{"allowedApps", len(args.AllowedApps) > 0},
 		{"azureEmbedEndpoint", args.AzureEmbedEndpoint != nil},
 		{"azureEmbedDeployment", args.AzureEmbedDeployment != nil},
 		{"azureEmbedTokensPerMinute", args.AzureEmbedTokensPerMinute != nil},
@@ -1480,6 +1494,12 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, sign
 // letter, then up to 62 lowercase letters, digits or hyphens, the last not a hyphen
 // (https://cloud.google.com/compute/docs/naming-resources).
 var negNameRule = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
+
+// appLabelValueRule is a non-empty Kubernetes label value, which an allowedApps entry is: the app
+// label of the pods the app's NetworkPolicy admits. It is at most 63 characters, a letter or digit
+// at each end, with letters, digits, dashes, underscores and dots between. An empty value would
+// make a rule for pods labelled app="", and a value of another shape fails only at apply.
+var appLabelValueRule = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$`)
 
 // refuseDispatchEntrance judges what the deployment's own entrance, a load balancer serving
 // publicOrigin, hands the component: loadBalancerSourceRanges, the CIDRs it reaches the app's pods
@@ -1888,6 +1908,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.agentSecretsAudience = args.AgentSecretsAudience
 	s.oidcAudience = args.OidcAudience
 	s.oidcIssuer = args.OidcIssuer
+	s.projectOwnerFallback = args.ProjectOwnerFallback
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName
@@ -1982,6 +2003,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	for i, namespace := range args.AllowedNamespaces {
 		if !dnsLabel(namespace) {
 			return dispatchSettings{}, core.InputErrorf("allowedNamespaces", "allowedNamespaces[%d] %q must be a DNS label", i, namespace)
+		}
+	}
+	for i, app := range args.AllowedApps {
+		if !appLabelValueRule.MatchString(app) {
+			return dispatchSettings{}, core.InputErrorf("allowedApps", "allowedApps[%d] %q must be a pod's app label value: 1 to 63 letters, digits, dashes, underscores and dots, a letter or digit at each end", i, app)
 		}
 	}
 	return s, nil

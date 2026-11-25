@@ -61,9 +61,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // speedCustomPlans is how many runs of a prepared statement on one connection Postgres plans for
@@ -99,16 +99,18 @@ const (
 	speedPriorityFullName = "the whole priorities body"
 )
 
-// The statements each priorities read is written as and the round trips they go in
-// (readPriorities): the live priorities (prioritystore.List), then their relations
-// (priorityRelationsQuery), then one batch of the statements that rest on them, which for the
-// whole body is the counts, the newest event under each priority and the two faults, and for the
-// summary the two faults alone. The corpus holds twenty priorities and 400 relations, so a read
-// that sent a statement for each priority or each relation would send dozens more.
+// The statements each priorities read is written as and the round trips they go in: first the
+// read of the projects its caller sees (VisibleProjectsSQL, which the route's read gate makes
+// before any handler runs), then readPriorities's: the live priorities (prioritystore.List), then
+// their relations (priorityRelationsQuery), then one batch of the statements that rest on them,
+// which for the whole body is the counts, the newest event under each priority and the two
+// faults, and for the summary the two faults alone. The corpus holds twenty priorities and 400
+// relations, so a read that sent a statement for each priority or each relation would send dozens
+// more.
 const (
-	priorityBodyStatements    = 6
-	prioritySummaryStatements = 4
-	priorityReadRoundTrips    = 3
+	priorityBodyStatements    = 7
+	prioritySummaryStatements = 5
+	priorityReadRoundTrips    = 4
 )
 
 // speedGenericBuffersRatio is the most buffer accesses the page with the relation may make under
@@ -275,13 +277,14 @@ func TestAdvancesListingSpeed(t *testing.T) {
 }
 
 // TestPrioritiesReadSpeed holds the priorities read to what the page that draws it can afford, in
-// the work it costs rather than the time it takes (speedRequestWork): the whole body in the six
-// statements and three round trips it is written as, over a store of twenty priorities and 400
-// relations, and in no more than five times the buffer accesses of the paged listing of every
-// open issue, the read it stands beside and the one a reader already waits for; and the summary
-// the navigation rail reads on every page in its four statements and three round trips, in no
-// more than that listing's buffer accesses. Hit plus read is every page a statement asked for,
-// cached or not, so the count is the read's work and not the cache's state.
+// the work it costs rather than the time it takes (speedRequestWork): the whole body in the seven
+// statements and four round trips it is written as (the caller's visible projects, then
+// readPriorities's six in three), over a store of twenty priorities and 400 relations, and in no
+// more than five times the buffer accesses of the paged listing of every open issue, the read it
+// stands beside and the one a reader already waits for; and the summary the navigation rail reads
+// on every page in its five statements and four round trips, in no more than that listing's
+// buffer accesses. Hit plus read is every page a statement asked for, cached or not, so the count
+// is the read's work and not the cache's state.
 //
 // The work is counted under both plans a connection runs each statement with
 // (speedCustomPlans), each against the listing under the same kind of plan: a connection runs
@@ -289,9 +292,10 @@ func TestAdvancesListingSpeed(t *testing.T) {
 // under the generic plan from then on (twelve runs of each request on one connection gave five
 // custom plans and seven generic ones for every statement, pg_prepared_statements, PostgreSQL
 // 18.6, 2026-11-22), so the two pairs are what a reader waits for on a connection's first five
-// reads and on every read after. Correct code reads 0.39 times the listing's buffer accesses for
-// the body and 0.13 times for the summary under the plans made for their arguments (1,193 and 393
-// against 3,052), and 2.20 and 0.69 times under the generic plans (20,188 and 6,345 against 9,162).
+// reads and on every read after. On main, before reads were held to their caller's projects,
+// correct code read 0.39 times the listing's buffer accesses for the body and 0.13 times for the
+// summary under the plans made for their arguments (1,193 and 393 against 3,052), and 2.20 and
+// 0.69 times under the generic plans (20,188 and 6,345 against 9,162).
 //
 // The rows each plan's nodes produced or threw away are reported beside the buffer accesses and
 // held to nothing: the body's statements aggregate the seed's descent through hash joins where
@@ -410,7 +414,7 @@ func speedPriorityAllocs(t *testing.T, corpus speedCorpusShape, summary bool) fl
 	ctx := context.Background()
 	var failed error
 	allocs := testing.AllocsPerRun(speedScanRuns, func() {
-		if _, err := corpus.server.readPriorities(ctx, []string{}, summary); err != nil {
+		if _, err := corpus.server.readPriorities(ctx, refs.VisibilityArg(everyReader), []string{}, summary); err != nil {
 			failed = err
 		}
 	})
@@ -454,7 +458,7 @@ func growSpeedPriorities(t *testing.T, corpus speedCorpusShape) speedPriorityGro
 	t.Helper()
 	ctx := context.Background()
 	faults := func() string {
-		body, err := corpus.server.readPriorities(ctx, []string{}, false)
+		body, err := corpus.server.readPriorities(ctx, refs.VisibilityArg(everyReader), []string{}, false)
 		if err != nil {
 			t.Fatalf("read the priorities: %v", err)
 		}
@@ -473,7 +477,7 @@ func growSpeedPriorities(t *testing.T, corpus speedCorpusShape) speedPriorityGro
 	growth.body[0], growth.summary[0] = speedPriorityAllocs(t, corpus, false), speedPriorityAllocs(t, corpus, true)
 
 	copySeededRows(t, corpus.database, "priority_tuples", seededTupleColumns, corpus.moreRelations)
-	keys, _, err := corpus.server.readPriorityRelations(ctx, corpus.priorities)
+	keys, _, err := corpus.server.readPriorityRelations(ctx, corpus.priorities, refs.VisibilityArg(everyReader))
 	if err != nil {
 		t.Fatalf("read the advances relations: %v", err)
 	}
@@ -494,13 +498,13 @@ func growSpeedPriorities(t *testing.T, corpus speedCorpusShape) speedPriorityGro
 var speedPagedListingTarget = fmt.Sprintf("/api/v1/issues?open=true&limit=%d", speedCorpusPage)
 
 // speedPageArguments are the arguments one page of the open listing takes, in the order
-// listIssues builds them: no filter but `open`, and the page's limit and offset last. Both
-// statement texts take the same list, which is what lets one measurement stand against the
-// other (issueSummaryQuery).
+// listIssues builds them: no filter but `open`, the server's own viewer, and the page's limit and
+// offset last. Both statement texts take the same list, which is what lets one measurement stand
+// against the other (issueSummaryQuery).
 func speedPageArguments(limit, offset int) []any {
 	return []any{
 		"", []string{}, "", (*time.Time)(nil), []string{}, true, []int16{}, false,
-		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, limit, offset,
+		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, refs.VisibilityArg(everyReader), limit, offset,
 	}
 }
 
@@ -749,10 +753,11 @@ func speedScanAllocs(t *testing.T, corpus speedCorpusShape, query string, argume
 }
 
 // speedLiterals writes a statement's arguments as the list an EXECUTE names after the statement,
-// since an EXECUTE under EXPLAIN takes no bound parameter: a string, a flag, a number, a list of
-// strings, an empty list of numbers and a null time are every value the arguments of the reads
-// counted here hold, and any other stops the test rather than be written wrong. A statement that
-// takes no argument is named with no list.
+// since an EXECUTE under EXPLAIN takes no bound parameter: a string, a string pointer (null where
+// it is nil), a flag, a number, a list of strings, an empty list of numbers, a null time and the
+// caller's viewer (refs.VisibilityArg's JSON, which the statement reads as jsonb, written as its
+// text quoted) are every value the arguments of the reads counted here hold, and any other stops
+// the test rather than be written wrong. A statement that takes no argument is named with no list.
 func speedLiterals(t *testing.T, arguments []any) string {
 	t.Helper()
 	if len(arguments) == 0 {
@@ -764,6 +769,12 @@ func speedLiterals(t *testing.T, arguments []any) string {
 		switch value := argument.(type) {
 		case string:
 			literals = append(literals, quote(value))
+		case *string:
+			if value == nil {
+				literals = append(literals, "null")
+				continue
+			}
+			literals = append(literals, quote(*value))
 		case bool:
 			literals = append(literals, strconv.FormatBool(value))
 		case int:
@@ -788,6 +799,11 @@ func speedLiterals(t *testing.T, arguments []any) string {
 				t.Fatalf("write %v as a literal: only the null time is written", value)
 			}
 			literals = append(literals, "null")
+		case []byte:
+			if !json.Valid(value) {
+				t.Fatalf("write %q as a literal: only the viewer's JSON is written", value)
+			}
+			literals = append(literals, "'"+strings.ReplaceAll(string(value), "'", "''")+"'")
 		default:
 			t.Fatalf("write a %T as a literal: no literal is written for it", argument)
 		}

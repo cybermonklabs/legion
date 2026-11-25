@@ -48,9 +48,9 @@ func TestRouteIndexLinesOrderTwoMethodsOfOnePathByMethod(t *testing.T) {
 	t.Parallel()
 	got := routeIndexLines([]apiRoute{
 		{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/things/{id}", Auth: authAny}},
-		{routeRow: routeRow{Method: http.MethodDelete, Pattern: "/api/v1/things/{id}", Auth: authPublic}},
+		{routeRow: routeRow{Method: http.MethodDelete, Pattern: "/api/v1/things/{id}", Auth: authBearer}},
 	})
-	want := "DELETE /api/v1/things/{id} public\nGET /api/v1/things/{id} any\n"
+	want := "DELETE /api/v1/things/{id} bearer\nGET /api/v1/things/{id} any\n"
 	if got != want {
 		t.Fatalf("routeIndexLines = %q, want %q", got, want)
 	}
@@ -62,7 +62,9 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
 
 	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1", nil))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+	request.Header.Set("Authorization", "Bearer agent-token")
+	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", response.Code, response.Body.String())
 	}
@@ -168,7 +170,9 @@ func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
 	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1", nil))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+	request.Header.Set("Authorization", "Bearer agent-token")
+	mux.ServeHTTP(response, request)
 	if served := response.Body.String(); served != output.String() {
 		t.Fatalf("printed index differs from GET /api/v1:\nprinted %s\nserved  %s", output.String(), served)
 	}
@@ -203,7 +207,7 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has no handler", key)
 		}
 		switch route.Auth {
-		case authPublic, authAny, authBearer:
+		case authAny, authBearer:
 		default:
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
@@ -455,6 +459,15 @@ func personalTokenHolding(t *testing.T, database *store.Store, scopes ...string)
 // with an empty id (agent_tokens.go), so only the owner tells them apart.
 func personalTokenOwnedBy(t *testing.T, database *store.Store, owner string, scopes ...string) string {
 	t.Helper()
+	return personalTokenListing(t, database, owner, nil, scopes...)
+}
+
+// personalTokenListing is personalTokenOwnedBy for a token whose row lists projects, written
+// straight to the table as that one is: a row a build mints no longer, such as a restricted
+// member's token holding a scope or listing other than one project, which a mint before the rule
+// that holds such a token to one project and no scope (tokenScopes, tokenProjects) wrote.
+func personalTokenListing(t *testing.T, database *store.Store, owner string, projects []string, scopes ...string) string {
+	t.Helper()
 	plaintext, hash, err := newAgentToken()
 	if err != nil {
 		t.Fatalf("mint a personal token: %v", err)
@@ -464,10 +477,13 @@ func personalTokenOwnedBy(t *testing.T, database *store.Store, owner string, sco
 		// an empty set, as the shared token's credential holds, rather than a null one.
 		scopes = []string{}
 	}
+	if projects == nil {
+		projects = []string{}
+	}
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into agent_tokens (owner, name, token_hash, prefix, scopes)
-		values ($1, $2, $3, $4, $5)
-	`, owner, "probe", hash[:], plaintext[len("dsp_"):len("dsp_")+agentTokenPrefixLength], scopes); err != nil {
+		insert into agent_tokens (owner, name, token_hash, prefix, scopes, projects)
+		values ($1, $2, $3, $4, $5, $6)
+	`, owner, "probe", hash[:], plaintext[len("dsp_"):len("dsp_")+agentTokenPrefixLength], scopes, projects); err != nil {
 		t.Fatalf("insert a personal token: %v", err)
 	}
 	return plaintext
@@ -530,8 +546,6 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 	for _, route := range (&server{}).routes() {
 		t.Run(route.Method+" "+route.Pattern, func(t *testing.T) {
 			switch route.Auth {
-			case authPublic:
-				expectAdmitted(t, route, "anonymous")
 			case authAny:
 				expectRefused(t, route, "anonymous")
 				expectAdmitted(t, route, "cookie")
@@ -641,6 +655,23 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		// The scope edit is the one route that was no row at all before INFRA-1017: it is the
 		// person's own, as the mint and the revoke beside it are.
 		"PATCH /api/v1/me/agent-tokens/{id}",
+		// Who may see a project, and the groups an access list names, are this change's own rows
+		// (INFRA-3862). Each names or acts as a person — the project's owner, the group's owner,
+		// the people a list names — which Dispatch takes from the credential and never from the
+		// request, so a credential the deployment configured is nobody to change them.
+		"GET /api/v1/projects/{key}/access",
+		"PATCH /api/v1/projects/{key}/access",
+		"PUT /api/v1/projects/{key}/access/people/{email}",
+		"DELETE /api/v1/projects/{key}/access/people/{email}",
+		// The owner's link for a person from outside and the owner's Reset of one: the owner's
+		// browser alone makes either (BROWSER_SESSION_REQUIRED for any token).
+		"POST /api/v1/projects/{key}/access/people/{email}/invitations",
+		"POST /api/v1/projects/{key}/access/people/{email}/reset",
+		"PUT /api/v1/projects/{key}/access/groups/{name}",
+		"DELETE /api/v1/projects/{key}/access/groups/{name}",
+		"GET /api/v1/access-groups",
+		"PUT /api/v1/access-groups/{name}",
+		"DELETE /api/v1/access-groups/{name}",
 	}
 	for _, name := range browserOnly {
 		scopes, named := routeScopes[name]

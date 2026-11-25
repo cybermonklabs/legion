@@ -2,6 +2,7 @@ package githubapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -102,10 +103,31 @@ func newProxyRig(t *testing.T) (*githubapp.Client, *fakeGitHub) {
 	return client, fake
 }
 
+// proxy answers a request through ProxyREST for a person who sees every repository of a deployment
+// with no private project, whose reads are not held.
 func proxy(client *githubapp.Client, method, target string) *httptest.ResponseRecorder {
+	return proxyAs(client, method, target, func(string, string) (Gate, error) { return Gate{}, nil })
+}
+
+func proxyAs(client *githubapp.Client, method, target string, gate func(owner, repo string) (Gate, error)) *httptest.ResponseRecorder {
 	response := httptest.NewRecorder()
-	ProxyREST(response, httptest.NewRequest(method, target, nil), client)
+	ProxyREST(response, httptest.NewRequest(method, target, nil), client, gate)
 	return response
+}
+
+// A failed read of whether the person sees the repository is the server's error, a 500, and
+// never an answer about the repository: neither GitHub's nor the not-installed one.
+func TestProxyAnswersAFailedVisibilityReadAsAServerError(t *testing.T) {
+	client, fake := newProxyRig(t)
+	response := proxyAs(client, http.MethodGet, "/api/github/rest/repos/acme/web/pulls/1", func(string, string) (Gate, error) {
+		return Gate{}, errors.New("the database is gone")
+	})
+	if response.Code != http.StatusInternalServerError || errorCode(t, response) != "INTERNAL" {
+		t.Fatalf("status %d body %s, want 500 INTERNAL", response.Code, response.Body.String())
+	}
+	if reads := fake.seen(); len(reads) != 0 {
+		t.Fatalf("GitHub was read %q, want no read", reads)
+	}
 }
 
 func errorCode(t *testing.T, response *httptest.ResponseRecorder) string {

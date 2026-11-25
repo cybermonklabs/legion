@@ -123,58 +123,65 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 	return response
 }
 
-// One approval request on a document with no request open costs at most twenty-four round trips,
+// One approval request on a document with no request open costs at most twenty-five round trips,
 // counted as the issue read's are (roundTrips): one for each statement it runs on its own and one
 // for each batch, whatever that batch holds. The budget is a ceiling, and the enumeration below
-// is where it goes today: the first eight read the coverage the answer reports, before the
-// request's transaction opens (approvalCoverage); the fourteen after them are the transaction
-// itself, and all but two of those are reads: this route's writes are queued and sent as one
-// batch before the commit, which is what holds its transaction id to its database work
-// (INFRA-636). The last two store the display trees of the texts it wrote, after the commit. In
-// the order it sends them:
+// is where it goes today: the first reads the caller's viewer, once a request; the eight after it
+// read the coverage the answer reports, before the request's transaction opens
+// (approvalCoverage); the fourteen after them are the transaction itself, and all but two of
+// those are reads: this route's writes are queued and sent as one batch before the commit, which
+// is what holds its transaction id to its database work. The last two store the
+// display trees of the texts it wrote, after the commit. In the order it sends them:
 //
-//  1. the artifact row the coverage is read for (loadArtifact);
-//  2. a batch of 3: that artifact's versions, its latest review and its open approval request
+//  1. what the caller sees (access.Resolve, through readerOf), resolved before the request holds
+//     a connection: the coverage and the Verification document are read as the requester reads
+//     them;
+//  2. the artifact row the coverage is read for (loadArtifact);
+//  3. a batch of 3: that artifact's versions, its latest review and its open approval request
 //     (loadArtifactRow, queueArtifactDetails);
-//  3. the issue's spec and whether it has a plan (issueCoverage);
-//  4. the spec's settled version, to read its text at (docs.Text, through requirementBlocksIn);
-//  5. begin, that text read's read-only snapshot;
-//  6. the document's stored snapshot;
-//  7. the updates after it;
-//  8. commit, which ends the text read; this spec marks no requirement, so the coverage asks
+//  4. the issue's spec and whether it has a plan (issueCoverage);
+//  5. the spec's settled version, to read its text at (docs.Text, through requirementBlocksIn);
+//  6. begin, that text read's read-only snapshot;
+//  7. the document's stored snapshot;
+//  8. the updates after it;
+//  9. commit, which ends the text read; this spec marks no requirement, so the coverage asks
 //     nothing further - no descendant walk and no count of what serves each requirement;
-//  9. begin, the request's own transaction;
-//  10. the artifact row (loadArtifact);
-//  11. a batch of 3: that artifact's versions, its latest review and its open approval request
+//  10. begin, the request's own transaction;
+//  11. the artifact row (loadArtifact);
+//  12. a batch of 3: that artifact's versions, its latest review and its open approval request
 //     (loadArtifactRow, queueArtifactDetails);
-//  12. a batch of 2: the owning issue's owner lock, and in the statement after it the row that
+//  13. a batch of 2: the owning issue's owner lock, and in the statement after it the row that
 //     lock guards (requireOpenOwner, through store.LockOwnerAndRead). The lock assigns no
 //     transaction id, and the read is a statement of its own because a statement's snapshot is
 //     taken before it waits;
-//  13. the document's settled version number (settledVersionNumber);
-//  14. a batch of 2: the approval before the write - the latest review and the open request
+//  14. the document's settled version number (settledVersionNumber);
+//  15. a batch of 2: the approval before the write - the latest review and the open request
 //     (attachApproval, queueApprovals);
-//  15. the open approval ask naming this document, which there is none of
+//  16. the open approval ask naming this document, which there is none of
 //     (docs.OpenApprovalAskForDocuments);
-//  16. the person this request reaches, which the answer names (askWaitingOnPerson, the one rule
+//  17. the person this request reaches, which the answer names (askWaitingOnPerson, the one rule
 //     every read of that person shares), read over the owner before the ask's row is queued;
-//  17. the new ask's id and the transaction's time (select gen_random_uuid()::text, now());
-//  18. the latest approved review the request carries (docs.LatestApprovedReview);
-//  19. the question's references as they stand, which the replacement is planned against
+//  18. the new ask's id and the transaction's time (select gen_random_uuid()::text, now());
+//  19. the latest approved review the request carries (docs.LatestApprovedReview);
+//  20. the question's references as they stand, which the replacement is planned against
 //     (queueNewAskReferences, through refs.PlanReplace);
-//  20. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
+//  21. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
 //     refs.ReadItemIndex);
-//  21. a batch of 15: the whole write phase, sent back to back - the ask row, its block state
-//     and the part rows of its question and options, the references and
-//     the row the ask owes the grammar's re-index queue, deleted with them
-//     (refs.Replacement.Queue, INFRA-869), the ask.opened event with its payload and the
-//     issue's last_seq, the reference stamps, the author's follow and the session node it
+//  22. a batch of 19: the whole write phase, sent back to back - the ask's node, in its
+//     document's project, which costs no read of its own since the document was read with its
+//     project, in the three statements of the store's node write (graphstore.QueueNodes: the
+//     insert, the check that no node moves project, and the move), the ask row, its block state
+//     and the part rows of its question and options, the references and the row the ask owes the
+//     grammar's re-index queue, deleted with them (refs.Replacement.Queue, INFRA-869), the
+//     ask.opened event with its payload and the issue's last_seq, the reference stamps, the base
+//     attributes the node write stated - its visibility, its state and its project - appended
+//     under that event (graphstore.QueueCaused), the author's follow and the session node it
 //     records, caused by that ask.opened, in one statement (asks.QueueFollowAuthor), and the
 //     approval as the request leaves it;
-//  22. commit;
-//  23. the display trees of the texts the ask.opened event carries - its question and both option
+//  23. commit;
+//  24. the display trees of the texts the ask.opened event carries - its question and both option
 //     labels - stored in one statement by the publish path (storeEventDisplayTrees);
-//  24. the display tree of the question the request wrote, stored by the route itself, which the
+//  25. the display tree of the question the request wrote, stored by the route itself, which the
 //     table already holds from the statement before it (`on conflict do nothing`): the route
 //     stores what it wrote whether or not the event it published carried the same text.
 //
@@ -185,11 +192,11 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 // ever ask for that document, and the read is not made. A request whose summary writes a `#`
 // pays it once for the two of them.
 //
-// The transaction takes its transaction id at the first statement of 21 and gives it up at 22;
+// The transaction takes its transaction id at the first statement of 22 and gives it up at 23;
 // the per-route window test measures that window, and this test bounds what the route sends
 // around it. The one-phase route sent thirty-seven, its write statements each a round trip of
 // its own between the reads.
-func TestApprovalRequestsCostAtMostTwentyFourRoundTrips(t *testing.T) {
+func TestApprovalRequestsCostAtMostTwentyFiveRoundTrips(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
@@ -214,8 +221,8 @@ func TestApprovalRequestsCostAtMostTwentyFourRoundTrips(t *testing.T) {
 	// A ceiling, not an equality: the round trips are counted through helpers several other
 	// requests share, so an exact count reds this row for a change that sends one round trip
 	// fewer and costs nothing. What the name states is the cost bound, and the enumeration above
-	// says where the twenty-four go.
-	const ceiling = 24
+	// says where the twenty-five go.
+	const ceiling = 25
 	if len(counted) > ceiling {
 		t.Fatalf("the approval request made %d round trips, want at most %d:\n%s",
 			len(counted), ceiling, strings.Join(roundTripLines(counted), "\n"))

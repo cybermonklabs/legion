@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -88,12 +89,19 @@ type BlockIndexTick struct {
 	// tick reads, Marked how many documents an artifact.version, artifact.created or issue.created
 	// event among them named that it marked owed a block index, Comments how many comments a
 	// comment.created or comment.answered event among them named whose rows it gave their nodes,
-	// and AnotherBuild whether a live server process of another build served, which the tick
-	// reports and which decides nothing (readEventsAfterCursor).
+	// and AnotherBuild whether a live server process of another build served, which decides
+	// nothing of which events the tick reads and makes it owe the object pass
+	// (readEventsAfterCursor).
 	Events       int
 	Marked       int
 	Comments     int
 	AnotherBuild bool
+	// ObjectNodes is how many issues, documents, asks and messages whose row named no node the
+	// tick wrote the node of, and OrphansGone how many document nodes whose row another build
+	// removed it stated gone, while this build owed the object pass
+	// (writeObjectNodesAnotherBuildWrote).
+	ObjectNodes int
+	OrphansGone int
 	// OwedDocuments, OwedTexts, OwedItems and OwedItemBlocks are what is still owed after the tick.
 	OwedDocuments  int
 	OwedTexts      int
@@ -196,6 +204,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 	}
 	if tick.Documents > 0 || tick.Items > 0 || tick.ItemBlocks > 0 || tick.Texts > 0 ||
 		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.Comments > 0 ||
+		tick.ObjectNodes > 0 || tick.OrphansGone > 0 ||
 		tick.AnotherBuild != logged.AnotherBuild || tick.LiveAhead != logged.LiveAhead ||
 		tick.OwedDocuments != logged.OwedDocuments || tick.OwedItems != logged.OwedItems ||
 		tick.OwedItemBlocks != logged.OwedItemBlocks || tick.OwedTexts != logged.OwedTexts ||
@@ -207,13 +216,15 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		// changes - the drain reaching it, or a new backlog starting - and not as it ages.
 		// events= is how many events the tick read after its build's event cursor, marked= and
 		// comments= the documents it marked owed and the comments it gave their nodes from those
-		// events, and another_build= whether a live server process of another build served,
-		// which the tick reports and which decides nothing (readEventsAfterCursor).
+		// events, object_nodes= and orphans_gone= the rows the object pass gave their nodes and the
+		// orphaned document nodes it stated gone, and another_build= whether a live server process
+		// of another build served, which decides nothing of which events the tick reads and makes
+		// it owe the object pass (readEventsAfterCursor).
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
-			"comments", tick.Comments, "another_build", tick.AnotherBuild,
-			"owed_documents", tick.OwedDocuments,
+			"comments", tick.Comments, "object_nodes", tick.ObjectNodes, "orphans_gone", tick.OrphansGone,
+			"another_build", tick.AnotherBuild, "owed_documents", tick.OwedDocuments,
 			"owed_items", tick.OwedItems, "owed_item_blocks", tick.OwedItemBlocks,
 			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead,
 			"oldest_owed_at", refs.OwedTimeText(tick.OldestOwedDocumentAt),
@@ -248,8 +259,12 @@ type liveAheadDocuments map[string]owedDocument
 
 // ReconcileBlockIndex runs one tick: first the read of the events after its build's cursor, which
 // marks owed every document they name that this build's store has not stated at its version and
-// gives every comment they name whose row names no node its node (readEventsAfterCursor), then one
-// batch of the documents owed a block index past
+// gives every comment they name whose row names no node its node (readEventsAfterCursor), then,
+// while this build owes it, the object pass: the nodes of the issues, documents, asks and messages
+// whose rows another build wrote with none, and the gone statement of each document node another
+// build left behind no row (writeObjectNodesAnotherBuildWrote), which reads those four tables whole
+// where every other read of the tick reads only what is owed; then one batch of the documents owed
+// a block index past
 // cursors.Documents (a document id; empty is the start), one batch of the items owed an index
 // with the block grammar, oldest first (refs.ReindexOwed), one batch of the comments, messages
 // and asks owed a block index of their own blocks, oldest owed_at first
@@ -287,14 +302,24 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	// The read of the events runs first, so a document it marks is listed by this tick's batch
 	// below and drained by it when the batch has room. A read that fails is logged and holds back
 	// nothing else of the tick: the cursor stays where it was, and the next tick reads the same
-	// events again.
-	eventsFull, err := s.readEventsAfterCursor(ctx, &tick)
+	// events again. The object pass runs after it, so the node of a document the read marks is
+	// there before the documents batch states its blocks; one that fails, or stops with work left,
+	// is logged and leaves this build's debt, so the next tick runs it again.
+	eventsFull, owedPass, err := s.readEventsAfterCursor(ctx, &tick)
 	switch {
 	case ctx.Err() != nil:
 		return tick, ctx.Err()
 	case err != nil:
 		slog.Error("dispatch: block index could not read the events after its build's cursor", "error", err)
 	}
+	objectsLeft, err := s.writeObjectNodesAnotherBuildWrote(ctx, &tick, owedPass)
+	switch {
+	case ctx.Err() != nil:
+		return tick, ctx.Err()
+	case err != nil:
+		slog.Error("dispatch: block index could not write the nodes of the rows another build wrote", "error", err)
+	}
+	eventsFull = eventsFull || objectsLeft
 	owed, err := s.owedDocuments(ctx, after)
 	if err != nil {
 		return tick, err
@@ -340,7 +365,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 		return tick, err
 	}
 	for _, item := range items {
-		indexed, err := refs.ReindexOwed(ctx, s.store.Pool, item, s.serverURL)
+		indexed, err := refs.ReindexOwed(ctx, s.store.Pool, item, s.origins)
 		if err != nil {
 			if ctx.Err() != nil {
 				return tick, ctx.Err()
@@ -359,7 +384,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 		return tick, err
 	}
 	for _, item := range itemBlocks {
-		indexed, err := refs.IndexOwedItemBlocks(ctx, s.store.Pool, item, s.serverURL)
+		indexed, err := refs.IndexOwedItemBlocks(ctx, s.store.Pool, item, s.origins)
 		if err != nil {
 			if ctx.Err() != nil {
 				return tick, ctx.Err()
@@ -590,7 +615,7 @@ func (s *Service) windowItem(ctx context.Context, kind refs.ItemKind, id string)
 // same way, as indexOwedDocument indexes one: its blocks came from its version's own markdown,
 // which is what is embedded.
 func (s *Service) windowDocument(ctx context.Context, artifactID string) (bool, error) {
-	markdown, blocks, err := s.TextWithBlocks(ctx, artifactID)
+	markdown, blocks, err := s.TextWithBlocks(ctx, model.ServerReader, artifactID)
 	unreadable := false
 	switch {
 	case ctx.Err() != nil:
@@ -914,7 +939,7 @@ func (s *Service) owedDocuments(ctx context.Context, after string) ([]owedDocume
 func (s *Service) reindexOwedText(ctx context.Context, source refs.Owed) (bool, error) {
 	switch source.Kind {
 	case "comment", "ask", "message":
-		return refs.ReindexOwed(ctx, s.store.Pool, source, s.serverURL)
+		return refs.ReindexOwed(ctx, s.store.Pool, source, s.origins)
 	case "artifact":
 		return s.drainOwedDocument(ctx, source)
 	case "scope":
@@ -1015,7 +1040,7 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 	}
 	for _, source := range sources {
 		if source.Kind != "artifact" {
-			if _, err := refs.ReindexScopeSource(ctx, s.store.Pool, source.Kind, source.ID, s.serverURL); err != nil {
+			if _, err := refs.ReindexScopeSource(ctx, s.store.Pool, source.Kind, source.ID, s.origins); err != nil {
 				return err
 			}
 			continue
@@ -1029,7 +1054,7 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 		if err != nil {
 			return err
 		}
-		if !found || !refs.HoldsQuestionCandidate(body, s.serverURL) {
+		if !found || !refs.HoldsQuestionCandidate(body, s.origins) {
 			continue
 		}
 		if err := oweDocumentIndex(ctx, s.store.Pool, source.ID, s.markingRule); err != nil {
@@ -1080,7 +1105,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	if document.version == 0 {
 		return false, false, nil
 	}
-	markdown, blocks, err := s.TextWithBlocks(ctx, document.id)
+	markdown, blocks, err := s.TextWithBlocks(ctx, model.ServerReader, document.id)
 	unreadable := false
 	switch {
 	case ctx.Err() != nil:

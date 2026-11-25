@@ -531,6 +531,17 @@ import it, `e2e/__tests__/delivery-live-probe.test.ts:6-9` and
 local-instance-support.test.ts:2-5, run in this job's test step and in no other,
 so that read is this gate's (ci_job_reads.py's dispatch_ui).
 
+## dispatch_ui: The route index and the GitHub proxy's expression the restricted sweep's tests read
+
+The route index, `packages/envoy/internal/dispatch/api/testdata/routes.txt`, which
+`e2e/__tests__/restricted-sweep.test.ts`, `restricted-sweep-judging.test.ts`,
+`restricted-sweep-split.test.ts` and the fake they share, `restricted-sweep-fake.ts`, read
+(`restricted-sweep-sockets.test.ts` through that fake), holding
+`e2e/acceptance/restricted-sweep.sh`'s kinds and calls to it (that script reads it row by row);
+and the GitHub proxy's `readable` expression, `githubapi/proxy.go`, which
+`restricted-sweep.test.ts` reads and holds the sweep's proxy reads to. Each of those suites runs
+in this job's test step.
+
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
 
 The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
@@ -1560,6 +1571,26 @@ The two-build job's Go step alone, behind a gate of its own (ci-job-dispatch-two
 says why). The dispatch_two_builds output decides whether the job runs at all, the `full-ci` term with
 it, so this one carries only the dispatched term.
 
+## The private-projects blob driver's job
+
+The private-projects acceptance drivers (dispatch-project-access, ci-job-dispatch-project-access.yaml
+holds the steps and why they are what they are): from packages/dispatch, e2e/acceptance/project-access.sh
+runs twice: with --all-public, every project public, it runs its listed and confined sections
+alone, and with --private-by-sql, PRIV made private by the store's own write, it walks every
+route as each caller PRIV is hidden from. e2e/acceptance/project-access-blob.sh builds
+./cmd/dispatch of this tree and of the merge base through scripts/e2e/lib/two-builds.sh and the
+rig it sources, starts both beside the browser harness's fake Envoy (e2e/fake-envoy.ts, which
+imports the contracts), and compares what each caller reads of the two. The three go commands
+the job runs (./cmd/dispatch, ./internal/testnats/cmd/natsd and
+./internal/dispatch/api/cmd/routeprobes) compile 97 of the module's 220 packages (`go list
+-deps`), and the filter names the module whole rather than that closure: what every caller reads
+is the drivers' subject, and a change anywhere in it is one they exist to see. The run reads a
+few hundred routes from each build, minutes rather than tens of them, so the output carries no
+`full-ci` term: a pull request that changes what any caller reads finds out on its own run.
+
+The job reads pull requests (`pull-requests: read`) to find the branch the read check's pull
+request targets, the base of `e2e/__tests__/restricted-sweep.test.ts`'s control build.
+
 ## Why the tool fallback proof carries no full-ci term
 
 The second source of every tool install, proved by driving it: no `full-ci` term, so the
@@ -2083,21 +2114,22 @@ exactly what the lane runs, and the one plain run it keeps of them is the step n
 what the race build cannot run at all or at full size", which runs the handful of
 assertions the detector makes impossible or shrinks and nothing else.
 
-The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener,
-the registry store, the session cache, kvwatch, natscred, the NATS auth service and the sign-in
-code flow), envoy-go-race-api and envoy-go-race-docs, whose notes,
-.github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
-say why the document service runs alone.
+The lane is three jobs of ci.yaml: envoy-go-race, whose file runs two jobs on two runners -
+envoy-go-race (delivery, the bus, the listener, the registry store, the session cache, kvwatch,
+natscred, the NATS auth service and the sign-in code flow) and envoy-go-race-store (the
+Dispatch store) - envoy-go-race-api and envoy-go-race-docs, whose notes,
+.github/ci-notes/ci.md#why-the-dispatch-store-runs-alone-under-the-race-detector and
+.github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector, say why the
+Dispatch store and the document service run alone.
 
-api sits apart, on a runner of its own, because isolation is what made it fast: sharing a
-runner, the race binaries contended for the four vCPUs, and alone api fell from 1099.487 s to
-746.718 s. The packages
-left in envoy-go-race are cheap enough to share one: the two heaviest of those measured
-there, the bus at 286.931 s and the listener at 365.787 s (run 40926978371), are a quarter
-and a third of the lane's bar of 1080 s, which is 60 % of a 30-minute step's own timeout, so
-a runner each would buy nothing and cost about 8,000 replayed runner minutes. Running a heavy
-package apart also reads its seconds as its own job's, and leaves the others' numbers
-standing when one is red.
+api sits apart because isolation is what made it fast: sharing a runner, the race binaries
+contended for the four vCPUs, and alone api fell from 1099.487 s to 746.718 s. The packages
+left in envoy-go-race's race step are cheap enough to share one: the two heaviest, the bus at
+618 s to 641 s and the listener at 1024 s to 1041 s over six merge-group runs of main on
+2026-11-22 (job 137151013393 among them), are within the lane's bar of 1080 s, which is 60 %
+of a 30-minute step's own timeout, so a runner each would buy nothing and cost about 8,000
+replayed runner minutes. Running a heavy package apart also reads its seconds as its own
+job's, and leaves the others' numbers standing when one is red.
 
 envoy-go-race-api's tests drive the Dispatch store, so its job carries the lane's Postgres
 service.
@@ -2117,14 +2149,20 @@ current is envoy-go-build's. delivery's, the bus's, natscred's and the auth serv
 runs in the test process (internal/testnats), so no job here needs a container runtime of its
 own.
 
-Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache,
-kvwatch, natscred, the NATS auth service and the sign-in code flow share this runner. The
-Dispatch store's tests
+Delivery, the bus, the listener, the registry store, the session cache, kvwatch, natscred, the
+NATS auth service and the sign-in code flow share envoy-go-race's runner, and the Dispatch store
+has envoy-go-race-store's. The Dispatch store's tests
 (store_test.go:28) and delivery's take their databases from storetest.Open
 (storetest.go:64-66), which reads DISPATCH_TEST_DATABASE_URL and skips without it, and
-cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the
-job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
-natscred's, the auth service's and the code flow's tests open no store, so they need none.
+cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so
+both jobs carry the lane's Postgres service; the registry store itself is the NATS KV view, and
+natscred's and the code flow's tests open no store. One test of the NATS auth service does:
+hold_budget_test.go reads the broker's person_standing through the broker's storetest, which
+reads BROKER_TEST_DATABASE_URL and skips without it, so envoy-go-race sets that variable too,
+to the same service. The auth service runs in a step of its own, through
+packages/envoy/scripts/database-skips.sh, which fails on any skip of it: go test without -v
+prints nothing for a skipped test, and the race step's other packages skip some tests in every
+CI run by design, which the counter would count.
 
 ## The mention sender's claim model alone, on a runner of its own
 
@@ -2132,6 +2170,30 @@ The mention sender's claim model alone, on a runner of its own: its search takes
 the runner has for as long as it runs, which beside envoy-go's other steps would put its
 minutes on theirs and theirs on its deadline. Its rules' test opens the store, so the job
 carries a Postgres service.
+
+## Why the Dispatch store runs alone under the race detector
+
+The Dispatch store alone, under the race detector, with a deadline of its own:
+envoy-go-race-store, the second job of ci-job-envoy-go-race.yaml, on a runner of its own.
+ci.yaml's envoy-go-race job calls that file, so the store runs on exactly the changes that ran
+it in envoy-go-race's race step, and a failure of either job fails that one job of ci.yaml. In
+that 30-minute step the store was already the slowest package, 1094 s to 1201 s over six
+merge-group runs of main on 2026-11-22 (job 137151013393 among them), past the lane's bar of
+1080 s; and once its tests grew from 238 to 337 the step died on go test's own deadline at
+1800 s with a 2 s test running, out of time rather than hung (job 137158396292). Alone, on
+4 vCPU and 16 GiB beside its own Postgres with the CI service's settings, the same package took
+732 s at main, and with those tests 1129.5 s on one run and 1509.6 s on another of the same
+tests, so a run on that machine varies by a third. Against main's run, the 99 new tests added
+271.6 s, and TestEveryShippedCensusAnswersAtTheSchemaBeforeItsMigration, which takes one census
+at the schema before each shipped census file, 277 of them where main has 222, grew from
+101.85 s to 192.45 s. Its step's -timeout of 60 minutes is twice and more the longer run.
+
+A job and not a step: a step after envoy-go-race's race step would add the store's whole run
+to that job's, and a job of ci.yaml of its own would call one more workflow than
+.github/scripts/check-workflow-files.sh allows ci.yaml, whose calls are at its limit of 45. The
+second runner need not lengthen a merge group: in three merge groups of main on 2026-11-22
+envoy-go ran beside envoy-go-race and took 36 to 37 minutes, longer than the store's longer
+run alone and the job's setup together.
 
 ## Why the document service runs alone under the race detector
 

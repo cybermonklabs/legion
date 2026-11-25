@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -147,14 +148,14 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 
 // admittedRequest is request on a request context of its own carrying the admission ServeHTTP
 // puts on every document socket's context, that context's cancel included, and the one read of
-// the document's issue ServeHTTP makes for it: authorize fills the admission in and takes that
-// read, and cancelling the context with errSchemaRevoked is how a re-check closes the socket
-// (revokeUnless).
+// the document's issue ServeHTTP makes for it, here for the room's own reader: authorize fills the
+// admission in and takes that read, and cancelling the context with errSchemaRevoked is how a
+// re-check closes the socket (revokeUnless).
 func admittedRequest(t *testing.T, service *Service, request *http.Request) *http.Request {
 	t.Helper()
 	ctx, cancel := context.WithCancelCause(request.Context())
 	t.Cleanup(func() { cancel(nil) })
-	issue, err := service.readIssue(ctx, service.queryFrom(ctx), request.PathValue("room"))
+	issue, err := service.readIssue(ctx, service.queryFrom(ctx), request.PathValue("room"), model.ServerReader)
 	if err != nil {
 		t.Fatalf("read the document's issue as the socket's admission does: %v", err)
 	}
@@ -307,7 +308,7 @@ func TestLoadFailureMakesDocumentServiceUnavailable(t *testing.T) {
 	if err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("failed-room connection: response=%#v err=%v, want HTTP 503", response, err)
 	}
-	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrServiceUnavailable) {
+	if _, err := service.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("load failure = %v, want ErrServiceUnavailable", err)
 	}
 }
@@ -336,7 +337,7 @@ func TestCorruptLoadRefusesTheSocketAndReadsAsUnloadable(t *testing.T) {
 	if err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("corrupt-room connection: response=%#v err=%v, want HTTP 503", response, err)
 	}
-	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, ErrServiceUnavailable) {
+	if _, err := service.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("corrupt load = %v, want ErrDocumentUnloadable", err)
 	}
 }
@@ -569,7 +570,7 @@ func TestASocketsPreloadIsServedOnlyWhileTheHistoryHasNotMoved(t *testing.T) {
 	closeDocumentRoom(t, service, artifactID)
 	preload := func(t *testing.T) []byte {
 		t.Helper()
-		_, loaded, err := service.loadTree(context.Background(), artifactID)
+		_, loaded, err := service.loadTree(context.Background(), serverReader, artifactID)
 		if err != nil || loaded == nil || len(loaded.Update) == 0 {
 			t.Fatalf("load cold document: loaded=%v err=%v, want its durable history", loaded, err)
 		}
@@ -584,7 +585,7 @@ func TestASocketsPreloadIsServedOnlyWhileTheHistoryHasNotMoved(t *testing.T) {
 		if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 			t.Fatalf("load the room: %v", err)
 		}
-		if text, err := service.Text(context.Background(), artifactID); err != nil || !strings.Contains(text, want) {
+		if text, err := service.Text(context.Background(), serverReader, artifactID); err != nil || !strings.Contains(text, want) {
 			t.Fatalf("the loaded room reads %q (%v), want %q", text, err, want)
 		}
 		mu.Lock()
@@ -655,7 +656,7 @@ func TestDocumentSocketRefusesARoomOutsideTheSchema(t *testing.T) {
 			if !errors.As(err, &closed) || closed.Code != documentSchemaCloseCode {
 				t.Fatalf("first frame = %q (%v), want close %d before any sync", message, err, documentSchemaCloseCode)
 			}
-			if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocOutsideSchema) {
+			if _, err := service.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocOutsideSchema) {
 				t.Fatalf("read after refused socket: %v, want ErrDocOutsideSchema", err)
 			}
 		})
@@ -697,7 +698,7 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 	if err := <-shutdown; err != nil {
 		t.Fatalf("shutdown with document peer: %v", err)
 	}
-	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "before\n" {
+	if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != "before\n" {
 		t.Fatalf("text after closing document peer = %q (%v), want before", got, err)
 	}
 }
@@ -755,7 +756,7 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 	}
 	reloaded := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
 	defer reloaded.Shutdown(context.Background())
-	if got, err := reloaded.Text(context.Background(), artifactID); err != nil || got != "after\n" {
+	if got, err := reloaded.Text(context.Background(), serverReader, artifactID); err != nil || got != "after\n" {
 		t.Fatalf("text after the shutdown the locked append outlasted = %q (%v), want after", got, err)
 	}
 }
@@ -791,7 +792,7 @@ func TestAppendFailureClosesDocumentConnectionAndReloadsRoom(t *testing.T) {
 	}
 	_ = connection.Close()
 	waitForNoLiveDocument(t, service, artifactID)
-	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "before\n" {
+	if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != "before\n" {
 		t.Fatalf("reloaded text after append failure = %q (%v), want persisted text before", got, err)
 	}
 }

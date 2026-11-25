@@ -63,7 +63,105 @@ var (
 	// CommitOnBranch, DefaultBranch and delivery's own pull-request reads all classify their
 	// answers by).
 	ErrRepositoryUnreadable = errors.New("the GitHub App cannot read the repository")
+	// ErrRedirectedOffRepository is a request held to one repository (HoldToRepository, or the
+	// client's own rule while a project is private) that GitHub redirected anywhere but that same
+	// repository: GitHub answers an old name of a renamed or transferred repository with a redirect
+	// to the repository as it is now, which another repository's name, or none, may name. The
+	// redirect is not followed, and the error wraps ErrNoInstallation too, so every caller answers
+	// it as it answers a repository the App is not installed on.
+	ErrRedirectedOffRepository = errors.New("GitHub redirected the request away from the repository it named")
 )
+
+// heldRepositoryKey keys the repository HoldToRepository holds a context's requests to.
+type heldRepositoryKey struct{}
+
+// heldRepository is the owner and name HoldToRepository holds a context's requests to.
+type heldRepository struct{ owner, repo string }
+
+// HoldToRepository is ctx with every request the client sends on it held to the repository
+// owner/repo: a redirect GitHub answers one with is followed only to that same repository, owner
+// and name compared without case under the request's own API origin and prefix, and any other
+// redirect fails the request with ErrRedirectedOffRepository before the redirected request is sent.
+// The GitHub proxy holds its reads to the repository its gate passed (githubapi.ProxyREST), so an
+// old name the gate shows never reads the repository GitHub moved it to. A context not held is held
+// by the client's own rule (WithPrivateProjects) where it has one, and otherwise follows GitHub's
+// redirects as the standard client does.
+func HoldToRepository(ctx context.Context, owner, repo string) context.Context {
+	return context.WithValue(ctx, heldRepositoryKey{}, heldRepository{owner: owner, repo: repo})
+}
+
+// checkRedirect is the client's redirect policy: the standard client's (at most ten redirects),
+// and for a request held to a repository a redirect to that repository alone. A request is held
+// by its context (HoldToRepository), or, while any project is private (WithPrivateProjects), to the
+// repository its own path names (/repos/<owner>/<repo>, under the client's API origin): GitHub's
+// REST API answers an old name of a renamed or transferred repository with a redirect to the
+// repository as it is now, which the repository rule never judged, so every REST read Dispatch
+// makes under a repository's name - an issue's, a source's, a pull request's - reads that
+// repository or nothing. A read whose answer to the private-projects question failed is held too.
+// via[0] is the request the client sent, whose context every redirect carries.
+//
+// GraphQL is not held: GitHub's GraphQL API answers an old name with the repository as it is now
+// and no redirect, which no redirect policy sees. Dispatch's one GraphQL read of a repository, the
+// CI reconcile's open heads (cireconcile's Reconciler.query), names the repository by the full
+// name its REST identity read answered (cireconcile's Reconciler.resolve and identify), and that
+// read, under /repos/<owner>/<repo>, is held here: while a project is private an old name fails
+// there, before the GraphQL read is sent.
+func (c *Client) checkRedirect(request *http.Request, via []*http.Request) error {
+	held, ok := request.Context().Value(heldRepositoryKey{}).(heldRepository)
+	if !ok && c.anyPrivate != nil {
+		if named, names := c.repositoryOf(via[0].URL); names {
+			if private, err := c.anyPrivate(request.Context()); err != nil || private {
+				held, ok = named, true
+			}
+		}
+	}
+	if ok && !sameRepository(via[0].URL, request.URL, held) {
+		return fmt.Errorf("%w %s/%s: %w", ErrRedirectedOffRepository, held.owner, held.repo, ErrNoInstallation)
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
+}
+
+// repositoryOf is the repository a request to sent names: the owner and name after the client's
+// API origin's own path and /repos/, as every repository read GitHub's REST API serves names it.
+// A request of the client's origin that names no repository (an App or installation call,
+// GraphQL) names none.
+func (c *Client) repositoryOf(sent *url.URL) (heldRepository, bool) {
+	prefix := "/"
+	if base, err := url.Parse(c.base); err == nil {
+		prefix = strings.TrimSuffix(base.Path, "/") + "/"
+	}
+	rest, under := strings.CutPrefix(sent.Path, prefix+"repos/")
+	if !under {
+		return heldRepository{}, false
+	}
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return heldRepository{}, false
+	}
+	return heldRepository{owner: parts[0], repo: parts[1]}, true
+}
+
+// sameRepository reports whether target, a redirect of sent, names the repository held: the same
+// scheme and host, and a path that is sent's own prefix (the API origin's path, empty on
+// api.github.com) then /repos/<owner>/<repo>, alone or followed by "/", owner and name compared
+// without case. A redirect naming the repository by its numeric id names no owner and name, so it
+// is not the same repository.
+func sameRepository(sent, target *url.URL, held heldRepository) bool {
+	if !strings.EqualFold(sent.Scheme, target.Scheme) || !strings.EqualFold(sent.Host, target.Host) {
+		return false
+	}
+	named := strings.ToLower("/repos/" + held.owner + "/" + held.repo)
+	at := strings.Index(strings.ToLower(sent.Path), named)
+	if at < 0 {
+		return false
+	}
+	want := strings.ToLower(sent.Path[:at]) + named
+	path := strings.ToLower(target.Path)
+	return path == want || strings.HasPrefix(path, want+"/")
+}
 
 // responseLimit caps a GitHub API response body; a blob response is read
 // through blobResponseLimit instead, since base64 with GitHub's line wrapping
@@ -307,6 +405,14 @@ func WithLimits(limits Limits) Option {
 	return func(c *Client) { c.limits = limits }
 }
 
+// WithPrivateProjects makes the client hold every request that names a repository to that
+// repository while anyPrivate answers that a project is private, or fails to answer
+// (checkRedirect). It is asked only when GitHub answers a request with a redirect. Without it, and
+// while no project is private, the client follows GitHub's redirects as before (R9).
+func WithPrivateProjects(anyPrivate func(context.Context) (bool, error)) Option {
+	return func(c *Client) { c.anyPrivate = anyPrivate }
+}
+
 // Client calls the GitHub App API as the configured App. A nil *Client is the
 // valid "no app credentials yet" state: every method returns ErrNoAppKey.
 type Client struct {
@@ -317,6 +423,9 @@ type Client struct {
 	now  func() time.Time
 	// limits is the shared rate limits request obeys and records; nil is no shared limit.
 	limits Limits
+	// anyPrivate answers whether any project is private, which holds every request that names a
+	// repository to it (checkRedirect, WithPrivateProjects); nil holds only a held context's.
+	anyPrivate func(context.Context) (bool, error)
 
 	mu sync.Mutex
 	// tokens holds each installation's token in this process alone. GitHub budgets an
@@ -383,6 +492,7 @@ func New(app *auth.AppConfig, base string, options ...Option) (*Client, error) {
 	for _, option := range options {
 		option(c)
 	}
+	c.http.CheckRedirect = c.checkRedirect
 	nowFunc := func() time.Time { return c.now() }
 	c.repositories = newTTLCache[string, int64](installationsCacheTTL, nowFunc)
 	c.installations = newTTLCache[string, []Installation](installationsCacheTTL, nowFunc)
@@ -939,6 +1049,36 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 	return responseBody, status, header, nil
 }
 
+// HeldLimit is the limit send would hold a request on scope under now, read with no request sent:
+// the shared limit in force on scope (Limits), and nil when none is, for a nil client, a client
+// without Limits or an empty scope. A limit that cannot be read is logged and read as none, since
+// send would then send the request. The GitHub proxy answers a repository its caller may not see
+// with it, as a repository the App is not installed on answers under the same limit, without
+// asking GitHub (githubapi.ProxyREST).
+func (c *Client) HeldLimit(ctx context.Context, scope string) *RateLimitError {
+	if c == nil {
+		return nil
+	}
+	held, err := c.heldLimit(ctx, scope)
+	if err != nil {
+		slog.Warn("dispatch githubapp: the shared GitHub rate limit was not read; it is read as none", "scope", scope, "error", err)
+	}
+	return held
+}
+
+// heldLimit is the limit in force on scope that send holds a request under: nil when none is, for
+// a client without Limits and for an empty scope, and an error when the shared limit cannot be read.
+func (c *Client) heldLimit(ctx context.Context, scope string) (*RateLimitError, error) {
+	if c.limits == nil || scope == "" {
+		return nil, nil
+	}
+	wait, recorded, err := c.limits.Wait(ctx, scope)
+	if err != nil || wait <= 0 {
+		return nil, err
+	}
+	return &RateLimitError{Wait: wait, Scope: scope, Held: true, Recorded: recorded}, nil
+}
+
 // send is the one function that sends anything to GitHub, so it is where the shared limit on
 // scope is obeyed: while a limit is in force on it nothing is sent and a held *RateLimitError is
 // returned. A limit that cannot be read (the database failing) is logged and the request goes
@@ -959,16 +1099,13 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 // keeps and text GitHub gave (a blob's sha from a tree answer, a next page link), so none of them
 // passes the bound in send's errors.
 func (c *Client) send(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
-	if c.limits != nil && scope != "" {
-		wait, recorded, err := c.limits.Wait(ctx, scope)
-		switch {
-		case err != nil:
-			slog.Warn("dispatch githubapp: the shared GitHub rate limit was not read; the request is sent", "scope", scope, "error", err)
-		case wait > 0:
-			held := &RateLimitError{Wait: wait, Scope: scope, Held: true, Recorded: recorded}
-			noteFailure(ctx, held)
-			return nil, 0, nil, held
-		}
+	held, err := c.heldLimit(ctx, scope)
+	if err != nil {
+		slog.Warn("dispatch githubapp: the shared GitHub rate limit was not read; the request is sent", "scope", scope, "error", err)
+	}
+	if held != nil {
+		noteFailure(ctx, held)
+		return nil, 0, nil, held
 	}
 	bounded, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()

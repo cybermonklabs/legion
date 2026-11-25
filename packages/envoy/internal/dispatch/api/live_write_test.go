@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -388,7 +387,7 @@ func (f *heldWriteFixture) expectFailedResponse(t *testing.T, responses <-chan *
 
 func (f *heldWriteFixture) liveText(t *testing.T) string {
 	t.Helper()
-	text, err := f.docs.Text(context.Background(), f.issue.PrimaryArtifactID)
+	text, err := f.docs.Text(context.Background(), everyReader, f.issue.PrimaryArtifactID)
 	if err != nil {
 		t.Fatalf("read live document: %v", err)
 	}

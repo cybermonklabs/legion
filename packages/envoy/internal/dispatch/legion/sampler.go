@@ -69,7 +69,7 @@ func (s *Sampler) Pass(ctx context.Context) {
 
 // read is one project's read, the record it leaves, and the notification that wakes every open
 // Legion board of the project (StateChannel). A read the daemon answered is recorded with its
-// observations in one transaction (RecordRead); a read that failed, and one whose record Postgres
+// observations in one transaction (record); a read that failed, and one whose record Postgres
 // refused, are recorded as a failed read (RecordFailedRead), the refusal as `record: <why>`, so the
 // last good read stands and the board's header names what failed. The notification goes out after
 // a failed read too: the board's header carries the failure.
@@ -84,7 +84,7 @@ func (s *Sampler) read(ctx context.Context, setting Settings) {
 	if readErr != nil {
 		slog.Warn("dispatch: read a Legion daemon's state", "project", setting.Project, "bytes", bytes, "error", readErr)
 	} else {
-		written, err := RecordRead(ctx, s.pool, setting.Project, at, bytes, state.Observations())
+		written, err := s.record(ctx, setting.Project, at, bytes, state)
 		if err == nil {
 			if written > 0 {
 				slog.Info("dispatch: recorded Legion state changes", "project", setting.Project, "rows", written, "issues", len(state.Issues))
@@ -97,6 +97,20 @@ func (s *Sampler) read(ctx context.Context, setting Settings) {
 	if err := RecordFailedRead(ctx, s.pool, setting.Project, at, bytes, readErr); err != nil {
 		slog.Warn("dispatch: record a Legion state read", "project", setting.Project, "error", err)
 	}
+}
+
+// record records a read the daemon answered as project's (RecordRead), cut to what project's
+// record keeps (State.keepProject): the issues Dispatch holds as project's, and nothing of any
+// other project the daemon reports. A daemon that serves several projects reports all of their
+// issues, and a project's setting may name any daemon, so what decides which issues are project's
+// is Dispatch's own record of each key (projectIssues), never the daemon's answer.
+func (s *Sampler) record(ctx context.Context, project string, at time.Time, bytes int, state State) (int64, error) {
+	own, err := projectIssues(ctx, s.pool, project, state.issueKeys())
+	if err != nil {
+		return 0, err
+	}
+	state.keepProject(project, own)
+	return RecordRead(ctx, s.pool, project, at, bytes, state.Observations())
 }
 
 // keepClients leaves one client per state URL the settings name, keeping the client each URL

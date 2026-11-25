@@ -8,7 +8,12 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // RenderStamp is the half of a version row's render stamp its writer holds in Go: the document
@@ -83,21 +88,33 @@ func (l *Ledger) RenderStampOf(artifactID, markdown string) RenderStamp {
 // storedVersionSQL reads, for the room $1 names, everything a stored text read weighs, in one
 // statement so the version row and the document's stamp are of one snapshot: the latest version's
 // markdown, its document token and its render stamp, beside the document's DocumentStamp now
-// (documentStampSQL). Every value is null for a document with no version, as the markdown and the
-// stamp are for a version written before the stamp existed or by a write holding no tree.
-const storedVersionSQL = `
+// (documentStampSQL), and whether the reader whose viewer $2 binds may read the document
+// (access.ItemOwnerClause, the rule of a document's own row). Every other value is null for a
+// document with no version, as the markdown and the stamp are for a version written before the
+// stamp existed or by a write holding no tree. The rule is read once: a reader who may not read
+// the document is answered pgx.ErrNoRows before any version value is read (storedText).
+var storedVersionSQL = `
 		select v.markdown, v.document_token, v.head_version, v.doc_update_row, v.renderer_version,
-			s.version, s.row_xmin
+			s.version, s.row_xmin, ` + readableDocument + `
 		from (` + documentStampSQL + `
 		) s
 		left join lateral (
 			select markdown, document_token, head_version, doc_update_row, renderer_version
-			from artifact_versions where artifact_id = $1 order by number desc limit 1
+			from artifact_versions where artifact_id = $1
+			order by number desc limit 1
 		) v on true`
 
+// readableDocument is whether the reader whose viewer $2 binds may read the document $1 names, by
+// the rule of the document's own row (access.ItemOwnerClause): a document of a project the viewer
+// sees, or a file of a conversation the viewer may read.
+var readableDocument = access.ItemOwnerClause("null::text", "$1", "$2")
+
 // storedText is the markdown and the document token the document's latest version stored, served
-// as the document's own text without reading or rendering its tree, and whether they were served.
-// A read not served here reads the document as it always has (readDocument).
+// as the document's own text without reading or rendering its tree, and whether they were served,
+// for who: a document who may not read is pgx.ErrNoRows, as a document no row holds is to every
+// caller, which reads the document's row first. A read not served here reads the document as it
+// always has (readDocument). A read joined to a transaction is that transaction's writer's own and
+// reads as it always has.
 //
 // They are the document's text only while the document still stands where that version was
 // written from, which is all of this:
@@ -126,9 +143,12 @@ const storedVersionSQL = `
 //
 // What the room holds is weighed after the version is read, the narrower order: an update a room
 // took between the two either reached the store, which moved the stamp this read already holds,
-// or is still owed here. That the room is there at all is read first, so a document no room
-// holds costs this read nothing before it goes the way it always went.
-func (s *Service) storedText(ctx context.Context, artifactID string) (string, string, bool, error) {
+// or is still owed here. That the room is there at all is read first, as it was before a read was
+// made for a reader: a document no room holds costs a reader that sees every document
+// (readsEveryDocument) nothing before it goes the way it always went, and any other reader the one
+// statement that reads the rule of the document's row, which refuses a document it may not read
+// whether a room holds it or not.
+func (s *Service) storedText(ctx context.Context, who model.Actor, artifactID string) (string, string, bool, error) {
 	if _, joined := txFromContext(ctx); joined {
 		return "", "", false, nil
 	}
@@ -139,17 +159,24 @@ func (s *Service) storedText(ctx context.Context, artifactID string) (string, st
 		return "", "", false, err
 	}
 	live := s.srv.GetDoc(artifactID)
-	if live == nil {
+	if live == nil && readsEveryDocument(who) {
 		return "", "", false, nil
 	}
 	var markdown, token, row *string
 	var head *int64
 	var renderer *int
 	var stamp DocumentStamp
-	if err := s.store.Pool.QueryRow(ctx, storedVersionSQL, artifactID).Scan(
-		&markdown, &token, &head, &row, &renderer, &stamp.Version, &stamp.Row,
+	var readable bool
+	if err := s.store.Pool.QueryRow(ctx, storedVersionSQL, artifactID, refs.VisibilityArg(who)).Scan(
+		&markdown, &token, &head, &row, &renderer, &stamp.Version, &stamp.Row, &readable,
 	); err != nil {
 		return "", "", false, fmt.Errorf("read the document's stored version: %w", err)
+	}
+	if !readable {
+		return "", "", false, pgx.ErrNoRows
+	}
+	if live == nil {
+		return "", "", false, nil
 	}
 	if markdown == nil || token == nil || head == nil || row == nil || renderer == nil {
 		return "", "", false, nil
@@ -169,4 +196,13 @@ func (s *Service) storedText(ctx context.Context, artifactID string) (string, st
 		return "", "", false, nil
 	}
 	return *markdown, *token, true, nil
+}
+
+// readsEveryDocument reports whether who reads every document, so that no rule of a document's row
+// can refuse it one: the server's own reader, and an open viewer of a deployment that holds no
+// private project, which sees every project and every conversation, as every reader did before a
+// project could be private. It is the api package's seesEveryObject, read for the documents alone.
+func readsEveryDocument(who model.Actor) bool {
+	viewer := who.Viewer
+	return viewer != nil && (viewer.All || (viewer.Open && !viewer.AnyPrivate))
 }

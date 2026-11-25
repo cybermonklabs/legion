@@ -106,6 +106,7 @@ func (f *xidFixture) measure(t *testing.T, want int, shape storetest.XidShape, r
 	if response.Code != want {
 		t.Fatalf("XID RIG PROBLEM (not a finding about the code): the measured request answered %d, want %d: %s", response.Code, want, response.Body.String())
 	}
+	report.MayHoldNoXid = f.mayHoldNoXid
 	storetest.AssertXidWindows(t, report, shape)
 	return report
 }
@@ -619,8 +620,8 @@ func xidWindowPlanReview(t *testing.T, f *xidFixture) {
 
 func xidWindowIssueCreateWithSpec(t *testing.T, f *xidFixture) {
 	spec, _ := xidSpec(2)
-	f.measureAdvised(t, http.StatusCreated, storetest.XidWindowOf(10,
-		"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, its blocked_by links and its artifact row - "+
+	f.measureAdvised(t, http.StatusCreated, storetest.XidWindowOf(11,
+		"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row, its blocked_by links and its artifact row - "+
 			"the two reads that load the issue it answers with, the queued batch and its COMMIT"), func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues", map[string]any{
 			"project": xidProject, "title": "Second large spec for the reviewers", "spec": spec, "force": true,
@@ -630,25 +631,17 @@ func xidWindowIssueCreateWithSpec(t *testing.T, f *xidFixture) {
 }
 
 // A create naming a GitHub issue Dispatch already tracks answers that issue
-// (respondWithExistingExternalIssue), with its advice, and creates nothing. The answer's own
-// transaction holds no xid: it writes no row, and the issue's owner lock it reads under is the
-// advisory lock alone, which assigns none while no earlier build is in the fleet (store.LockOwner).
-// The request still holds one xid window on every run, since it records the related-item check it
-// did not make (reason already_exists) in a transaction of its own after that commit
-// (insertRelatedChecks), and the record's insert assigns that transaction its xid.
+// (respondWithExistingExternalIssue), with its advice. It writes nothing: today its row lock gives
+// it an xid, and once the owner lock is advisory (plan M1) it may hold none at all.
 func xidWindowExistingExternalIssue(t *testing.T, f *xidFixture) {
 	body := map[string]any{"project": xidProject, "external": "owner/repo#41", "title": "Tracked upstream", "actor": sessionActor()}
 	if created := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues", body); created.Code != http.StatusCreated {
 		t.Fatalf("create the external issue: status=%d body=%s", created.Code, created.Body.String())
 	}
-	// The record of a related-item check is written in a transaction of its own, after the write
-	// that ran the check has committed (insertRelatedChecks). That transaction is the window: its
-	// xid comes with the batch that inserts the related_checks row, and the window holds that batch
-	// and the COMMIT ending it. Nothing here holds a lock the insert waits on, so the record always
-	// lands within the request and a run with no window fails.
-	f.measureAdvised(t, http.StatusOK, storetest.XidWindowOf(2,
-		"the related-item check's record in its own transaction (insertRelatedChecks): the batch inserting "+
-			"the related_checks row, and the COMMIT ending it"), func(h http.Handler) *httptest.ResponseRecorder {
+	f.mayHoldNoXid = true
+	defer func() { f.mayHoldNoXid = false }()
+	f.measureAdvised(t, http.StatusOK, storetest.XidWindowOf(1,
+		"its COMMIT alone: the answer writes nothing and locks no row, so no statement of it holds a transaction id"), func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues", body)
 	})
 }
@@ -907,10 +900,10 @@ func xidWindowMessageDeliveryReply(t *testing.T, f *xidFixture) {
 		"body":   "Can this ship?\n\nThe migration section is the one to read.",
 		"target": "session:s1", "delivery": "steer",
 	}, "alice")
-	f.measure(t, http.StatusCreated, storetest.XidWindowOf(10,
-		"the parent message's lock, the attempt row's lock, the reply's insert, the one batch writing "+
+	f.measure(t, http.StatusCreated, storetest.XidWindowOf(11,
+		"the parent message's lock, the attempt row's lock, the reply's node, the reply's insert, the one batch writing "+
 			"its block index and its references, its thread, the thread's logins, the batch appending "+
-			"message.answered, the stamp of its references, the attempt's update and the COMMIT ending "+
+			"message.answered and what the node write stated, the stamp of its references, the attempt's update and the COMMIT ending "+
 			"them"), func(h http.Handler) *httptest.ResponseRecorder {
 		return xidSessionReply(t, h, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
 			"attempt": 1, "body": xidCitingBody("It can: the outbox keys each copy.", f.issueKey),

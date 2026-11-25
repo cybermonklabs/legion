@@ -54,6 +54,9 @@ type xidFixture struct {
 	// verification is set once the issue's Verification document is uploaded
 	// (uploadVerification).
 	verification bool
+	// mayHoldNoXid passes a measured request that holds no xid at all
+	// (storetest.XidReport.MayHoldNoXid): one that may write nothing.
+	mayHoldNoXid bool
 }
 
 // newXidFixture builds the fixture on a server with options, whose tracer it sets, and with spec

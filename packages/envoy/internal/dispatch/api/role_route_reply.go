@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -47,7 +48,37 @@ func (s *server) roleHolderReplyOf(ctx context.Context, actor model.Actor, id, q
 	if err != nil {
 		return roleHolderReply{}, fmt.Errorf("read the route and the attempt that the reply to %s answers: %w", id, err)
 	}
+	seen, err := seenReferences(ctx, s.deps.Store.Pool, who, named)
+	if err != nil {
+		return roleHolderReply{}, err
+	}
 	return s.lookUpRoleHolderReply(ctx, route, attemptSession, actor)
+}
+
+// mentionsRepliedToBy is mentions less every one whose target who does not see
+// (references.holdsRoute: a `session:<id>` target of a session who does not see, or a role of a
+// private project who does not see), as a delivery's reply reads them (replyComment). It does not
+// judge a mention by the session it resolved to when its comment was written, as every read of the
+// comment and a Retry do (mentionsReadBy): that resolution (comment_mentions.resolved_session_id)
+// is written once, and a role passes from session to session, so a role's mention resolved to a
+// holder that acted in a project who does not see would refuse the reply of the role's holder now,
+// to whom a Retry sent a later attempt. The session a reply may answer for is the attempt's own,
+// which the reply judges apart (replyAttemptHidden). Its read is made whatever the mentions name,
+// so a comment with a hidden mention costs what one without it costs; a reader that sees every
+// object reads nothing (R9).
+func mentionsRepliedToBy(ctx context.Context, q queryer, who model.Actor, mentions []model.Mention) ([]model.Mention, error) {
+	if seesEveryObject(who) {
+		return mentions, nil
+	}
+	named := references{}
+	for _, mention := range mentions {
+		named.nameRoute(&mention.Target)
+	}
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(slices.Clone(mentions), func(mention model.Mention) bool { return !seen.holdsRoute(mention.Target) }), nil
 }
 
 // lookUpRoleHolderReply asks the listener whether actor holds the role route names, for a reply

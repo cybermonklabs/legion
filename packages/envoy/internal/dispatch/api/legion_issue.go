@@ -23,8 +23,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
@@ -118,7 +119,11 @@ func (s *server) getLegionIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	answer, err := s.readLegionIssue(r.Context(), r.PathValue("key"))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	answer, err := s.readLegionIssue(r.Context(), who, r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -142,7 +147,7 @@ func (s *server) getLegionIssue(w http.ResponseWriter, r *http.Request) {
 //     the board's header reads) and the issue's state (legion.ReadIssue, which reads the issue's
 //     rows and the project's admission row and no other issue's);
 //   - in every case, the runs' revision (workflowstore.IssueRunsRevision).
-func (s *server) readLegionIssue(ctx context.Context, key string) (legionIssueResponse, error) {
+func (s *server) readLegionIssue(ctx context.Context, who model.Actor, key string) (legionIssueResponse, error) {
 	tx, err := s.deps.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return legionIssueResponse{}, err
@@ -155,14 +160,14 @@ func (s *server) readLegionIssue(ctx context.Context, key string) (legionIssueRe
 		}
 		return legionIssueResponse{}, err
 	}
-	_, err = legion.GetSettings(ctx, tx, answer.Project)
+	_, err = legion.GetSettings(ctx, tx, answer.Project, refs.VisibilityArg(who))
 	switch {
 	case errors.Is(err, legion.ErrNoSettings):
 	case err != nil:
 		return legionIssueResponse{}, err
 	default:
 		answer.Configured = true
-		read, err := readDaemonRead(ctx, tx, answer.Project)
+		read, err := readDaemonRead(ctx, tx, answer.Project, refs.VisibilityArg(who))
 		if err != nil {
 			return legionIssueResponse{}, err
 		}

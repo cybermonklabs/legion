@@ -25,7 +25,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -86,6 +85,10 @@ type bootConfig struct {
 	// AgentTokens is DISPATCH_AGENT_TOKEN parsed: every value the API accepts as the shared agent
 	// token, the first the current one.
 	AgentTokens *auth.SharedAgentTokens
+	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK, a lowercase email: the full member
+	// the boot makes the owner of every project with no owner (store.EnsureProjectOwners); empty
+	// gives none, and the boot then refuses to serve while a project has no owner.
+	ProjectOwnerFallback string
 	// NewIssueLabel and NewIssueSession are DISPATCH_NEW_ISSUE_LABEL and
 	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the search bar files from a person's typed
 	// words carries, and the session that issue is routed to and its first message is sent to.
@@ -470,6 +473,13 @@ func main() {
 		slog.Warn("dispatch: anchored asks left out of asks_anchor_artifact_id: their anchor's artifact_id is not a lower-case document id, so settlement records no mark for them", "count", outside)
 	}
 
+	// Every project has an owner (INFRA-3862): a project the access migration left with none is
+	// given to DISPATCH_PROJECT_OWNER_FALLBACK's full member, and while one still has none the boot
+	// refuses, naming each and both repairs.
+	if err := store.EnsureProjectOwners(store.WithTransactionTracking(ctx), database.Pool, boot.ProjectOwnerFallback); err != nil {
+		slog.Error("dispatch: give every project an owner", "error", err)
+		os.Exit(1)
+	}
 	webDistDir, err := defaultWebDistDir(boot.WebDist)
 	if err != nil {
 		slog.Error("dispatch: resolve web dist dir", "error", err)
@@ -525,7 +535,7 @@ func main() {
 	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
 
 	broker := events.NewBroker()
-	documentService := newDocumentService(boot, docs.Deps{
+	documentService := newDocumentService(boot, serverURL, docs.Deps{
 		Store:       database,
 		Events:      broker,
 		Identity:    requestIdentity,
@@ -1446,7 +1456,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	boot := bootConfig{
-		DatabaseURL:           strings.TrimSpace(env.get("DATABASE_URL")),
+		DatabaseURL:          strings.TrimSpace(env.get("DATABASE_URL")),
+		ProjectOwnerFallback: strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
+
 		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
 		GitHubAPIBase:         strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
@@ -1824,15 +1836,18 @@ func devSignInSharedSigningKey(shared string) string {
 
 // newDocumentService is the document service main serves the document websocket and the API's
 // documents from: built, what main made from the rest of the configuration, with every setting the
-// service takes from boot filled in (documentDeps).
-func newDocumentService(boot bootConfig, built docs.Deps) *docs.Service {
-	return docs.New(documentDeps(boot, built))
+// service takes from boot and serverURL filled in (documentDeps).
+func newDocumentService(boot bootConfig, serverURL string, built docs.Deps) *docs.Service {
+	return docs.New(documentDeps(boot, serverURL, built))
 }
 
-// documentDeps is built with every setting the document service takes from boot filled in. The
-// settings tests read its answer, as they build the router through appContextOptions, so dropping
-// a hand-off here fails a case (TestDocumentDepsCarryEveryBootSetting).
-func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
+// documentDeps is built with every setting the document service takes from boot filled in, and
+// its origins: serverURL, the canonical origin, then boot's outside origin. serverURL loses one
+// trailing `/` first, as api.NewDeps trims it, so the document service and the API read a server
+// URL ending in `//` alike. The settings tests read its answer, as they build the router through
+// appContextOptions, so dropping a hand-off here fails a case (TestDocumentDepsCarryEveryBootSetting,
+// TestDocumentDepsReadLinksAsTheAPIDoes).
+func documentDeps(boot bootConfig, serverURL string, built docs.Deps) docs.Deps {
 	built.Settle = boot.SettleDelay
 	built.MarkWait = boot.MarkWait
 	built.UnrecordedMarkTTL = boot.UnrecordedMarkTTL
@@ -2169,23 +2184,6 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 	return extra
 }
 
-// dispatchHandler mounts the three probes the process serves - /healthz, /livez and /metrics -
-// above every dashboard and API route, so each is answered whatever the router is doing. Go's
-// ServeMux prefers the longer pattern, so "GET /healthz", "GET /livez" and "GET /metrics" win
-// over the router's "/", which is also what keeps a scrape of /metrics from falling through to
-// the SPA shell the router answers an unknown path with. /livez answers 204 and touches nothing:
-// it says only that the process answers, for a liveness or startup probe, which must not wait on
-// or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
-// so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, reads))
-	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	mux.Handle("GET /metrics", registry.Handler())
-	mux.Handle("/", handler)
-	return mux
-}
-
 // issuers are the two OIDC issuers the process discovers in the background, as /healthz reports
 // them: the sign-in issuer's code flow and the service-account token verifier, each nil when boot
 // configures none.
@@ -2229,13 +2227,14 @@ type gitHubReadEntry struct {
 	State gitHubReadState `json:"state"`
 	// At is when the newest attempt was recorded, by the database's clock, in UTC.
 	At *time.Time `json:"at"`
-	// Cause is the newest attempt's first failure, at most githubreads.CauseLimit bytes.
+	// Cause is the class of the newest attempt's first failure (gitHubReadCauseClass); the
+	// failure's text is github_read_attempts'.
 	Cause *string `json:"cause"`
 }
 
 // gitHubReadEntryOf is read's entry: off when this process does not run it (runs false), unknown
 // before the copy's first load (loaded false), no_attempt when the copy holds no row for it, and
-// otherwise the row's own outcome, with its time, and with its cause when it failed.
+// otherwise the row's own outcome, with its time, and with its cause's class when it failed.
 func gitHubReadEntryOf(read githubreads.Read, runs, loaded bool, rows map[githubreads.Read]githubreads.Recorded) gitHubReadEntry {
 	if !runs {
 		return gitHubReadEntry{State: gitHubReadOff}
@@ -2369,8 +2368,11 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // failure, `failed` when it noted one, `no_attempt` while the record holds none, `unknown` before
 // this process has read the record, and `off` where this process does not run the read (no App
 // private key, or no NATS for the redelivery sweep and the CI reconcile). `at` is when a
-// succeeded or failed attempt was recorded, by the database's clock, and `cause` a failed one's
-// first failure, cut to githubreads.CauseLimit bytes; each is null where the state carries none.
+// succeeded or failed attempt was recorded, by the database's clock, and `cause` the class of a
+// failed one's first failure, `status <n>` or `no status` (gitHubReadCauseClass); each is null
+// where the state carries none. The failure's text names the repository the read read, and this
+// answer reaches whoever reaches the port (R2), so it is never answered here: the operator reads
+// it in github_read_attempts.
 // It never decides `ok` or the status: a process serves everything but GitHub's own reads while
 // GitHub fails, so failing the probe would take every server process out of service for an outage
 // each of them serves through. It is read from this process's copy of the record

@@ -566,7 +566,7 @@ func TestAnUploadKeepsAnUntypedContainersIDWhenItsContentsChange(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		found := text.Extract(stored, "")
+		found := text.Extract(stored, text.NewOrigins(""))
 		if len(found) != 1 || found[0].Kind != "block" {
 			t.Fatalf("the markdown the upload stored holds %d references (%v), want the one block reference:\n%s", len(found), found, stored)
 		}

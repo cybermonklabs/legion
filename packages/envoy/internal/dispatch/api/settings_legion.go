@@ -23,13 +23,16 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // getLegionSetting answers GET /api/v1/projects/{key}/legion/daemon with the project's daemon,
 // or null when it names none, as GET /api/v1/settings/delivery answers a setting nobody wrote. An
-// unknown project is 404 PROJECT_NOT_FOUND.
+// unknown project is 404 PROJECT_NOT_FOUND. The setting is read as the caller reads the project
+// (legion.GetSettings binds the project's clause itself).
 func (s *server) getLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -38,7 +41,11 @@ func (s *server) getLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	settings, err := legion.GetSettings(r.Context(), s.deps.Store.Pool, project)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	settings, err := legion.GetSettings(r.Context(), s.deps.Store.Pool, project, refs.VisibilityArg(who))
 	if err != nil {
 		if errors.Is(err, legion.ErrNoSettings) {
 			WriteJSON(w, http.StatusOK, nil)
@@ -122,17 +129,23 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 }
 
 // legionProject is the {key} of the path, once it is a project key and a project of that key
-// exists. Every Legion route of one project is under /api/v1/projects/{key}/legion/, the three
-// daemon routes and the board alike, so each reads its project here and answers as every project
-// route does: a badly spelled key is 400 INVALID_PROJECT, and an unknown project loadProject's 404
-// PROJECT_NOT_FOUND.
+// exists that the caller may see. Every Legion route of one project is under
+// /api/v1/projects/{key}/legion/, the three daemon routes and the board alike, so each reads its
+// project here and answers as every project route does: a badly spelled key is 400
+// INVALID_PROJECT, and an unknown project, or one the caller may not see, loadProject's 404
+// PROJECT_NOT_FOUND, so a private project's Legion routes answer its outsiders as a project nobody
+// holds.
 func (s *server) legionProject(w http.ResponseWriter, r *http.Request) (string, bool) {
 	project := strings.TrimSpace(r.PathValue("key"))
-	if !projectKeyPattern.MatchString(project) {
+	if !contracts.ValidProjectKey(project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
 		return "", false
 	}
-	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, project); err != nil {
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return "", false
+	}
+	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, who, project); err != nil {
 		s.writeHandlerError(w, err)
 		return "", false
 	}

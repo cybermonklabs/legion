@@ -11,12 +11,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
@@ -142,7 +144,10 @@ type createAskInput struct {
 }
 
 func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owner) {
-	if !s.requireAuthenticated(w, r) {
+	// The asker as a reader, resolved before the transaction opens: the related-item check below
+	// offers only what it may read (relatedInput.who).
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	var input createAskInput
@@ -192,7 +197,18 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	status, err := s.requireOpenOwnerStatus(r.Context(), tx, owner)
+	// An issue the path names by its key alone is read as the asker reads it before its lock is
+	// asked for (lockedOwnerReadOnceFound), so an issue of a project the asker does not see is
+	// refused without waiting behind that project's writers, as a key no issue holds is; a
+	// document owner was read as the asker reads it before this (documentOwnerForHandler).
+	read := lockedOwnerRead(tx)
+	if owner.IssueKey != nil {
+		read = lockedOwnerReadOnceFound(tx)
+	}
+	status, open, err := ownerStatus(r.Context(), who, owner, read)
+	if err == nil {
+		err = refuseClosed(open, refusedWhenClosed)
+	}
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -206,8 +222,8 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	rowID := ask.ID
-	// The person this question reaches, read here in the read phase, under the owner's lock
-	// requireOpenOwnerStatus took, through the rule every read of that person shares, so the
+	// The person this question reaches, read here in the read phase, under the owner's lock the
+	// owner check above took, through the rule every read of that person shares, so the
 	// caller is told whose Inbox it just landed in rather than having to read the ask again. A
 	// new ask is handed to nobody, so the rule is read over its owner alone
 	// (askWaitingOnPerson): the row itself is only queued below.
@@ -251,6 +267,23 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			s.writeHandlerError(w, err)
 			return
 		}
+	}
+	// The ask's node goes in before its row, in the project of the issue or the document it is
+	// asked on, read here in the read phase; its write is a step of the write phase, queued before
+	// the row's insert, and what it states waits for the ask.opened event below
+	// (graphstore.QueueCaused).
+	project, parties, err := graphstore.ScopeOf(r.Context(), tx, owner.IssueKey, owner.ArtifactID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	askNode := graphstore.PlanUncaused([]graphstore.Node{graphstore.AskNode(rowID, project, parties, actor, ask.CreatedAt)}, nil)
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	if err := queueExec(ledger, `
 		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, created_at)
@@ -315,7 +348,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The ask's node and the asker's follow learn the ask.opened event the step before appended.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
 		graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
 		return nil
 	}); err != nil {
@@ -338,7 +373,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// report no review.
 	if advice != nil && owner.IssueKey != nil {
 		advice.StandingReview = s.standingReviewAdvice(
-			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
+			r.Context(), tx, ledger, who, routeOpenAsk, *owner.IssueKey,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
@@ -364,7 +399,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// (newShapedAsk). It is resolved before the response is written.
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	suggestions := s.relatedCheck(r.Context(), relatedInput{
-		text: ask.Question, title: ask.Question, source: source, question: true, record: true,
+		who: who, text: ask.Question, title: ask.Question, source: source, question: true, record: true,
 		trees: trees,
 	})
 	trees.resolve()
@@ -449,6 +484,12 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		}
 		asThePerson = &person
 	}
+	// What the writer sees, resolved before the transaction for the same reason: the ask is
+	// loaded as the writer may read it (loadAsk).
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -467,16 +508,16 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// transactions before either takes a second lock. closeAsk relies on the same invariant.
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	unlockedAsk, err := s.loadAsk(r.Context(), tx, r.PathValue("id"))
+	unlockedAsk, err := s.loadAsk(r.Context(), tx, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := s.requireOpenOwner(documentCtx, tx, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
+	if err := s.requireOpenOwner(documentCtx, tx, who, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	ask, err := s.readAskForTransition(documentCtx, tx, unlockedAsk.ID)
+	ask, err := s.readAskForTransition(documentCtx, tx, who, unlockedAsk.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -675,9 +716,14 @@ type openAsksResponse struct {
 // one project's issues and documents (?project=) regardless of author -- issue-owned via
 // issues.project_key, document-owned via artifacts.project_key. Exactly one of the two query
 // parameters selects the scope. A human clarification leaves an ask open but makes the author
-// responsible for the next reply.
+// responsible for the next reply. An ask of a project the caller does not see is in neither
+// scope (access.ItemOwnerClause), so a hidden project's scope is the empty one an unknown key has.
 func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	sessionID := strings.TrimSpace(r.URL.Query().Get("author_session"))
@@ -712,9 +758,10 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 			select a.* from asks a
 			left join issues i on i.key = a.issue_key
 			left join artifacts ar on ar.id = a.artifact_id
-			where
+			where (
 				($1 <> '' and a.author->>'kind' = 'session' and a.author->>'id' = $1)
 				or ($3 <> '' and coalesce(i.project_key, ar.project_key) = $3)
+			) and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$4")+`
 		), active as (
 			select
 				a.id::text,
@@ -728,9 +775,11 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 				-- The issue's own assignee beside its key and title, which is not the person the
 				-- question reaches: a question on an issue nobody holds carries a null assignee
 				-- here and the project's default in waiting_on_person below. The Inbox's rows
-				-- carry the pair the same way (inboxIssue, api/inbox.go).
+				-- carry the pair the same way (inboxIssue, api/inbox.go). Each is a person, named
+				-- only to a caller who sees them (the rule of references, references_seen.go).
 				case
-					when i.key is not null then jsonb_build_object('issue', jsonb_build_object('key', i.key, 'title', i.title, 'assignee', i.assignee))
+					when i.key is not null then jsonb_build_object('issue', jsonb_build_object('key', i.key, 'title', i.title,
+						'assignee', case when `+access.PersonClause("i.assignee", "$4")+` then i.assignee end))
 					else jsonb_build_object('document', jsonb_build_object('project', ar.project_key, 'slug', ar.slug, 'name', ar.name))
 				end as owner,
 				exists (
@@ -742,7 +791,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 					'created_at', lr.created_at
 				) end as last_reply,
 				`+waitingOnExpression+` as waiting_on,
-				`+askedOfPersonExpression+` as waiting_on_person
+				case when `+access.PersonClause(askedOfPersonExpression, "$4")+` then `+askedOfPersonExpression+` end as waiting_on_person
 			from mine a`+askedOfPersonJoins+lastReplyJoin+`
 			where a.state = 'open' and (i.key is null or i.closed_at is null)
 		)
@@ -750,7 +799,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 			statement_timestamp(),
 			exists (select 1 from mine where $2::timestamptz is not null and created_at >= $2),
 			coalesce((select jsonb_agg(to_jsonb(active) order by priority asc nulls last, created_at asc, id) from active), '[]'::jsonb)
-	`, sessionID, since, project).Scan(&asOf, &openedSince, &rawAsks)
+	`, sessionID, since, project, refs.VisibilityArg(who)).Scan(&asOf, &openedSince, &rawAsks)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -812,7 +861,7 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -854,7 +903,7 @@ func (s *server) attachIssueAskThreads(ctx context.Context, who model.Actor, row
 	if err != nil {
 		return err
 	}
-	answers, err := s.loadAskAnswersByAsk(ctx, s.deps.Store.Pool, askIDs)
+	answers, err := s.loadAskAnswersByAsk(ctx, s.deps.Store.Pool, who, askIDs)
 	if err != nil {
 		return err
 	}
@@ -905,11 +954,11 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "ask") {
 		return
 	}
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
-	ask, err := s.loadAsk(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	ask, err := s.loadAsk(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -921,7 +970,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	ask.AnchorPosition, err = s.anchorBlock(r.Context(), ask.Anchor)
+	ask.AnchorPosition, err = s.anchorBlock(r.Context(), who, ask.Anchor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -931,22 +980,28 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	edits, err := s.loadAskEdits(r.Context(), s.deps.Store.Pool, ask.ID)
+	edits, err := s.loadAskEdits(r.Context(), s.deps.Store.Pool, who, ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	answers, err := s.loadAskAnswers(r.Context(), s.deps.Store.Pool, ask.ID)
+	answers, err := s.loadAskAnswers(r.Context(), s.deps.Store.Pool, who, ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	followers, err := asks.Followers(r.Context(), s.deps.Store.Pool, ask.ID)
+	followers, err := asks.Followers(r.Context(), s.deps.Store.Pool, ask.ID, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reaches, err := s.loadAskReaches(r.Context(), []string{ask.ID})
+	seenFollowers := map[string][]model.AskFollower{ask.ID: followers}
+	if err := leaveOutHiddenFollowers(r.Context(), s.deps.Store.Pool, who, seenFollowers); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	followers = seenFollowers[ask.ID]
+	reaches, err := s.loadAskReaches(r.Context(), who, []string{ask.ID})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -971,14 +1026,15 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 }
 
 // loadAskEdits reads every rewording of an ask back from its ask.edited events,
-// oldest first, so a reader can see each version the question went through.
-func (s *server) loadAskEdits(ctx context.Context, q queryer, askID string) ([]model.AskEdit, error) {
+// oldest first, so a reader can see each version the question went through, of the events who may
+// read (eventReadableSQL).
+func (s *server) loadAskEdits(ctx context.Context, q queryer, who model.Actor, askID string) ([]model.AskEdit, error) {
 	rows, err := q.Query(ctx, `
 		select payload->'previous', payload->'edited_by', created_at
 		from events
-		where type = 'ask.edited' and payload->>'id' = $1
+		where type = 'ask.edited' and payload->>'id' = $1 and `+eventReadableSQL("events", "$2")+`
 		order by id asc
-	`, askID)
+	`, askID, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load ask edits: %w", err)
 	}
@@ -1007,23 +1063,25 @@ func (s *server) loadAskEdits(ctx context.Context, q queryer, askID string) ([]m
 }
 
 // answerEventsQuery selects the ask.answered events (aliased e) that record a person's own answer,
-// one row per answer. A document settlement can restore an answered block and write the same
-// answer event under its editor, so only an event whose actor is the user the answer names counts,
-// and the repeats of one answer (its ask and its `at`) collapse to the earliest event. columns is
-// the select list; filter narrows the events further. loadAskAnswers and listMyAnswers share it.
-func answerEventsQuery(columns, filter string) string {
+// one row per answer, of the events the viewer bound at viewerParam may read (eventReadableSQL). A
+// document settlement can restore an answered block and write the same answer event under its
+// editor, so only an event whose actor is the user the answer names counts, and the repeats of
+// one answer (its ask and its `at`) collapse to the earliest event. columns is the select list;
+// filter narrows the events further. loadAskAnswers and listMyAnswers share it.
+func answerEventsQuery(columns, filter, viewerParam string) string {
 	return `select distinct on (e.payload->>'id', e.payload->'answer'->>'at') ` + columns + `
 		from events e
 		where e.type = 'ask.answered' and e.actor->>'kind' = 'user'
 		  and e.actor->>'id' = e.payload->'answer'->>'user' and ` + filter + `
+		  and ` + eventReadableSQL("e", viewerParam) + `
 		order by e.payload->>'id', e.payload->'answer'->>'at', e.id asc`
 }
 
 // loadAskAnswersByAsk reads every real answer to each listed ask back from its ask.answered
-// events (answerEventsQuery), oldest first, keyed by ask id; an ask nobody answered gets an
-// empty slice. One query for the whole list: the ask read batches one ask, an issue's ask list
-// asked for a thread a page of them.
-func (s *server) loadAskAnswersByAsk(ctx context.Context, q queryer, askIDs []string) (map[string][]model.AskAnswer, error) {
+// events (answerEventsQuery), oldest first, keyed by ask id, of the events who may read; an ask
+// nobody answered gets an empty slice. One query for the whole list: the ask read batches one
+// ask, an issue's ask list asked for a thread a page of them.
+func (s *server) loadAskAnswersByAsk(ctx context.Context, q queryer, who model.Actor, askIDs []string) (map[string][]model.AskAnswer, error) {
 	answers := make(map[string][]model.AskAnswer, len(askIDs))
 	for _, askID := range askIDs {
 		answers[askID] = []model.AskAnswer{}
@@ -1033,8 +1091,8 @@ func (s *server) loadAskAnswersByAsk(ctx context.Context, q queryer, askIDs []st
 	}
 	rows, err := q.Query(ctx, answerEventsQuery(
 		`e.payload->>'id', e.payload->'answer', e.id`,
-		`e.payload->>'id' = any($1::text[])`,
-	), askIDs)
+		`e.payload->>'id' = any($1::text[])`, "$2",
+	), askIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load ask answers: %w", err)
 	}
@@ -1072,27 +1130,29 @@ func (s *server) loadAskAnswersByAsk(ctx context.Context, q queryer, askIDs []st
 	return answers, nil
 }
 
-// loadAskAnswers reads every real answer to one ask, oldest first.
-func (s *server) loadAskAnswers(ctx context.Context, q queryer, askID string) ([]model.AskAnswer, error) {
-	answers, err := s.loadAskAnswersByAsk(ctx, q, []string{askID})
+// loadAskAnswers reads every real answer to one ask, oldest first, of the events who may read.
+func (s *server) loadAskAnswers(ctx context.Context, q queryer, who model.Actor, askID string) ([]model.AskAnswer, error) {
+	answers, err := s.loadAskAnswersByAsk(ctx, q, who, []string{askID})
 	if err != nil {
 		return nil, err
 	}
 	return answers[askID], nil
 }
 
-// loadAsk reads one ask for a response: unlike readAskForTransition, which feeds the
-// ask.* event payloads, it carries WaitingOn for an open ask.
-func (s *server) loadAsk(ctx context.Context, q queryer, id string) (model.Ask, error) {
+// loadAsk reads one ask for a response, as who may read it (access.ItemOwnerClause): an ask of a
+// project who does not see is pgx.ErrNoRows, as an id no ask holds is, and a document beside it of
+// a project who does not see is none (askRowFromSeenBy). Unlike readAskForTransition, which feeds
+// the ask.* event payloads, it carries WaitingOn for an open ask.
+func (s *server) loadAsk(ctx context.Context, q queryer, who model.Actor, id string) (model.Ask, error) {
 	ask, _, err := scanAskRead(q.QueryRow(ctx, `
 		select `+askReadColumns+`
-		`+askReadFrom+`
-		where a.id = $1
-	`, id))
+		`+askReadFromSeenBy("$2")+`
+		where a.id = $1 and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2")+`
+	`, id, refs.VisibilityArg(who)))
 	if err != nil {
 		return model.Ask{}, err
 	}
-	if err := s.attachOpenedEventIDs(ctx, q, []*model.Ask{&ask}); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, q, &who, []*model.Ask{&ask}); err != nil {
 		return model.Ask{}, err
 	}
 	return ask, nil
@@ -1106,20 +1166,22 @@ func (s *server) loadAsk(ctx context.Context, q queryer, id string) (model.Ask, 
 // asks_open_artifact, the partial index 0009 built for the open case, went unused for the nine
 // days the index audit measured and migration 20261101182440 drops it. An issue's asks with no
 // state filter read asks_issue_key (20261101182426). They are vars, not consts, because
-// askReadFrom builds its anchor join from store.CastableUUID.
+// askReadFromSeenBy builds its anchor join from store.CastableUUID. Each tests its owner once, and
+// joins the documents beside each ask, for the viewer bound at $2 (ownerClause,
+// askRowFromSeenBy): an owner of a project the viewer does not see lists nothing.
 var (
-	listIssueAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.issue_key = $1 order by a.created_at, a.id`
-	listIssueAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.issue_key = $1 and a.state = 'open' order by a.created_at, a.id`
-	listIssueAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.issue_key = $1 and a.state = 'answered' order by a.created_at, a.id`
-	listArtifactAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.artifact_id = $1 order by a.created_at, a.id`
-	listArtifactAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.artifact_id = $1 and a.state = 'open' order by a.created_at, a.id`
-	listArtifactAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.artifact_id = $1 and a.state = 'answered' order by a.created_at, a.id`
+	listIssueAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFromSeenBy("$2") + `
+		where a.issue_key = $1 and ` + access.IssueProjectClause("$1", "$2") + ` order by a.created_at, a.id`
+	listIssueAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFromSeenBy("$2") + `
+		where a.issue_key = $1 and a.state = 'open' and ` + access.IssueProjectClause("$1", "$2") + ` order by a.created_at, a.id`
+	listIssueAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFromSeenBy("$2") + `
+		where a.issue_key = $1 and a.state = 'answered' and ` + access.IssueProjectClause("$1", "$2") + ` order by a.created_at, a.id`
+	listArtifactAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFromSeenBy("$2") + `
+		where a.artifact_id = $1 and ` + access.ItemOwnerClause("null::text", "$1", "$2") + ` order by a.created_at, a.id`
+	listArtifactAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFromSeenBy("$2") + `
+		where a.artifact_id = $1 and a.state = 'open' and ` + access.ItemOwnerClause("null::text", "$1", "$2") + ` order by a.created_at, a.id`
+	listArtifactAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFromSeenBy("$2") + `
+		where a.artifact_id = $1 and a.state = 'answered' and ` + access.ItemOwnerClause("null::text", "$1", "$2") + ` order by a.created_at, a.id`
 )
 
 // queryOwnerAsks returns an owner's asks, oldest first, filtered by state ("all",
@@ -1153,7 +1215,7 @@ func (s *server) queryOwnerAsks(ctx context.Context, q queryer, who model.Actor,
 	default:
 		return nil, nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
-	rows, err := q.Query(ctx, query, value)
+	rows, err := q.Query(ctx, query, value, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1207,33 +1269,43 @@ func askReadPointers(asks []model.Ask) []*model.Ask {
 // refresh - holds its owner's lock first, so two transitions of the same ask, and a reply against
 // a transition, run one after the other, and the ask read here holds still until this transaction
 // ends. (The boot's restoration of decided wordings, docs.RestoreDecidedWordings, runs before the
-// server serves anything.)
-func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, id string) (model.Ask, error) {
+// server serves anything.) The writer's 200 answers the ask this read returns, so the documents
+// beside it are joined as who, the writer, sees them (askRowFromSeenBy): a document of a project
+// the writer does not see is none. The ask.* event payload built from it is joined again for each
+// of its readers (attachAskDocumentArtifacts), so what this read joins reaches no other reader.
+func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (model.Ask, error) {
 	ask, err := scanAskRow(tx.QueryRow(ctx, `
 		select `+askRowColumns+`
-		`+askRowFrom+`
+		`+askRowFromSeenBy("$2")+`
 		where a.id = $1
-	`, id))
+	`, id, refs.VisibilityArg(who)))
 	if err != nil {
 		return model.Ask{}, err
 	}
-	if err := s.attachOpenedEventIDs(ctx, tx, []*model.Ask{&ask}); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, tx, nil, []*model.Ask{&ask}); err != nil {
 		return model.Ask{}, err
 	}
 	return ask, nil
 }
 
+// attachOpenedEventIDs stamps each ask with its identity event (events.OpenedEventIDs), read among
+// the events who may read (eventReadableSQL), the rule every read of an ask's events binds. A nil
+// who is a write reading the asks its event payloads carry, which reads every event.
 func (s *server) attachOpenedEventIDs(
 	ctx context.Context,
 	q queryer,
+	who *model.Actor,
 	asks []*model.Ask,
 ) error {
 	askIDs := distinctAskIDs(asks)
 	if len(askIDs) == 0 {
 		return nil
 	}
-
-	openedEventIDs, err := events.OpenedEventIDs(ctx, q, askIDs)
+	readable := events.EveryEvent
+	if who != nil {
+		readable = readableEvents(*who)
+	}
+	openedEventIDs, err := events.OpenedEventIDs(ctx, q, askIDs, readable)
 	if err != nil {
 		return err
 	}

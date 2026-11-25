@@ -12,6 +12,7 @@ import {
 import type { AuthenticatedUser } from "../../api/types";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { PinButton } from "../../components/PinButton";
+import { isRestrictedMember } from "../../hooks/useRestrictedMember";
 import {
   railAccentText,
   railActiveBg,
@@ -153,6 +154,11 @@ export function Sidebar({
   user: AuthenticatedUser;
 }): ReactNode {
   const location = useLocation();
+  // A restricted member reads only the projects that name them (R4 of the private-projects spec),
+  // so their rail draws neither view over every project - Priorities and Pipeline - and no Peek,
+  // and never reads the priorities. `app.tsx` answers those pages NotFound for them. Delivery
+  // stays: its timeline answers them the pull requests whose issue they see.
+  const restricted = isRestrictedMember(user);
   const inbox = useQuery(inboxQuery());
   const pinned = useQuery({
     queryKey: ["issues", "pinned"],
@@ -165,7 +171,7 @@ export function Sidebar({
   // a parent refreshes it with the page (`api/event-refresh.ts`). A deployment that has written
   // no priority answers `empty` and no number is drawn, since nothing is yet off a list that
   // does not exist; a read that failed draws none either, rather than a zero it did not read.
-  const prioritySummary = useQuery(prioritySummaryQuery()).data;
+  const prioritySummary = useQuery({ ...prioritySummaryQuery(), enabled: !restricted }).data;
   const priorityFaults =
     prioritySummary === undefined || (prioritySummary.empty ?? "") !== ""
       ? undefined
@@ -237,7 +243,9 @@ export function Sidebar({
             )}
           </Link>
           {/* The Inbox page is the Inbox already, so there is nothing to peek at from it. */}
-          {onOpenInboxDrawer === undefined || routeIsInbox(location.pathname) ? null : (
+          {restricted ||
+          onOpenInboxDrawer === undefined ||
+          routeIsInbox(location.pathname) ? null : (
             <button
               aria-label="Peek at the inbox without leaving this page"
               className={`mt-1 shrink-0 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
@@ -306,19 +314,21 @@ export function Sidebar({
         </section>
         <section>
           <ul className="mt-1 space-y-0.5">
-            <RailRow
-              badge={priorityFaults}
-              detail="Every project's priorities, and the work on none"
-              label="Priorities"
-              onNavigate={onNavigate}
-              // The entry stands for the whole of the priorities, so it stays lit on one
-              // priority's own page (`/priorities/<id>`) as well as on the list.
-              selected={
-                location.pathname === PRIORITIES_PATH ||
-                location.pathname.startsWith(`${PRIORITIES_PATH}/`)
-              }
-              to={PRIORITIES_PATH}
-            />
+            {restricted ? null : (
+              <RailRow
+                badge={priorityFaults}
+                detail="Every project's priorities, and the work on none"
+                label="Priorities"
+                onNavigate={onNavigate}
+                // The entry stands for the whole of the priorities, so it stays lit on one
+                // priority's own page (`/priorities/<id>`) as well as on the list.
+                selected={
+                  location.pathname === PRIORITIES_PATH ||
+                  location.pathname.startsWith(`${PRIORITIES_PATH}/`)
+                }
+                to={PRIORITIES_PATH}
+              />
+            )}
             <RailRow
               badge={undefined}
               detail="Deploys, merges, and pipeline failures"
@@ -327,14 +337,16 @@ export function Sidebar({
               selected={location.pathname === "/delivery"}
               to="/delivery"
             />
-            <RailRow
-              badge={undefined}
-              detail="CI and deploy step timings"
-              label="Pipeline"
-              onNavigate={onNavigate}
-              selected={location.pathname === "/pipeline"}
-              to="/pipeline"
-            />
+            {restricted ? null : (
+              <RailRow
+                badge={undefined}
+                detail="CI and deploy step timings"
+                label="Pipeline"
+                onNavigate={onNavigate}
+                selected={location.pathname === "/pipeline"}
+                to="/pipeline"
+              />
+            )}
           </ul>
         </section>
         {pinned.data.length === 0 ? null : (

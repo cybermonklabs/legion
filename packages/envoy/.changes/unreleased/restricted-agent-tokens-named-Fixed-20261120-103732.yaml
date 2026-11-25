@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The Go broker client's `Token` reuses a token that lives less than its renewal window until
+  halfway through its life, as its renewal loop already did, rather than trading again at every
+  call: a restricted member's 270-second token would otherwise have spent the broker's
+  per-address bucket.
+time: 2026-11-20T10:37:32Z
+custom:
+    Issue: restricted-agent-tokens-named

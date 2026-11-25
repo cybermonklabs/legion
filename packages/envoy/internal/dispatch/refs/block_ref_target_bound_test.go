@@ -34,7 +34,7 @@ func TestAMentionWhoseFarEndIsPastTheBoundLeavesOutItsTuple(t *testing.T) {
 	// far end a mention can hold.
 	target := randText(text.MaxTargetBytes - len("CORE-1/#x"))
 	markdown := "See dispatch://CORE-1/artifact/" + target + "#b-x.\n"
-	located := text.ExtractAt(markdown, server)
+	located := text.ExtractAt(markdown, text.NewOrigins(server))
 	if len(located) != 1 || located[0].Kind != "block" {
 		t.Fatalf("the reference at the bound parsed as %#v, want one block", located)
 	}

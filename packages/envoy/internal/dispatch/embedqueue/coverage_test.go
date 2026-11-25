@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -265,9 +266,17 @@ func cover(t *testing.T, deps Deps) {
 	}
 }
 
+// everyProject is the server's own reader (model.ServerReader), which sees every project: the
+// reader these tests read the report as, since none of them is about who may see what.
+var everyProject = model.ServerReader
+
+// everyProjectArg is everyProject's visibility argument, the coverage statement's $2 as Coverage
+// binds it (refs.VisibilityArg), for the tests that run the statement themselves.
+var everyProjectArg = refs.VisibilityArg(everyProject)
+
 func coverage(t *testing.T, database *store.Store, identity string) (items, current, lacking, failed int64, oldest *int64) {
 	t.Helper()
-	report, err := Coverage(context.Background(), database, identity)
+	report, err := Coverage(context.Background(), database, identity, everyProject)
 	if err != nil {
 		t.Fatalf("Coverage: %v", err)
 	}
@@ -1109,7 +1118,7 @@ func TestCoverageCountsEveryStateAnItemCanBeIn(t *testing.T) {
 	mustExec(t, database.Pool, `update issues set created_at = now() - interval '3 hours' where key in ('CVRG-4', 'CVRG-5')`)
 	mustExec(t, database.Pool, `update embeddings set pending_since = now() - interval '30 minutes' where id = 'CVRG-5'`)
 
-	report, err := Coverage(ctx, database, configuredIdentity)
+	report, err := Coverage(ctx, database, configuredIdentity, everyProject)
 	if err != nil {
 		t.Fatalf("Coverage: %v", err)
 	}
@@ -1133,7 +1142,7 @@ func TestCoverageCountsEveryStateAnItemCanBeIn(t *testing.T) {
 		t.Errorf("oldest lacking = %v, want about 2 hours (No row, aged from its write)", oldest)
 	}
 
-	unconfigured, err := Coverage(ctx, database, "")
+	unconfigured, err := Coverage(ctx, database, "", everyProject)
 	if err != nil {
 		t.Fatalf("Coverage with no embedder: %v", err)
 	}
@@ -1149,7 +1158,7 @@ func TestCoverageOfAnEmptyBacklogHasNoOldestAge(t *testing.T) {
 	database := storetest.Open(t)
 	seeded := seedEveryKind(t, database.Pool, "EMPT")
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(foreignIdentity)})
-	report, err := Coverage(context.Background(), database, foreignIdentity)
+	report, err := Coverage(context.Background(), database, foreignIdentity, everyProject)
 	if err != nil {
 		t.Fatalf("Coverage: %v", err)
 	}
@@ -1204,7 +1213,7 @@ func TestCoverageNamesEveryKindItCoversNothingOfWithItsCount(t *testing.T) {
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
 	ctx := context.Background()
 
-	report, err := Coverage(ctx, database, configuredIdentity)
+	report, err := Coverage(ctx, database, configuredIdentity, everyProject)
 	if err != nil {
 		t.Fatalf("Coverage: %v", err)
 	}
@@ -1241,7 +1250,7 @@ func TestCoverageNamesEveryKindItCoversNothingOfWithItsCount(t *testing.T) {
 	mustExec(t, database.Pool, `insert into handoffs (issue_key, phase, version, body, author)
 		values ('NIDX-1', 'implement', 1, '{}', '{"kind":"user","id":"alice"}'::jsonb)`)
 
-	after, err := Coverage(ctx, database, configuredIdentity)
+	after, err := Coverage(ctx, database, configuredIdentity, everyProject)
 	if err != nil {
 		t.Fatalf("Coverage after the writes: %v", err)
 	}

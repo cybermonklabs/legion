@@ -452,27 +452,17 @@ func QuestionMap(ctx context.Context, q Queryer, who model.Actor, doc string) (m
 // questionMap is QuestionMap for who, or for no person at all where who is nil: the index-time
 // resolver's read (Reader.Questions), which answers no reader.
 func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (map[string]text.Ref, error) {
-	// Each statement is built before the call that sends it, as scopeOf's are.
-	if who != nil {
-		var args queryArgs
-		key := args.param(doc)
-		query := `select ` + args.visible(who, "artifact", `a.ref_key`) + ` from artifacts a where a.id = ` + key + `::uuid`
-		var visible bool
-		err := q.QueryRow(ctx, query, args.values...).Scan(&visible)
-		if errors.Is(err, pgx.ErrNoRows) || err == nil && !visible {
-			return nil, nil
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read whether the reader may see document %s: %w", doc, err)
-		}
-	}
+	// Each statement is built before the call that sends it, as scopeOf's are. The latest
+	// version is read under the document's predicate for who (sourceText), so a document who may
+	// not see has no text to declare a question in. A version this transaction has queued is the
+	// writer's own, read by the index for no person, as its queued asks are below.
 	pending := pendingOf(ctx)
 	markdown, queued := "", false
 	if pending != nil {
 		markdown, queued = pending.PendingMarkdown(doc)
 	}
 	if !queued {
-		stored, _, found, err := sourceText(ctx, q, "artifact", doc)
+		stored, _, found, err := sourceText(ctx, q, who, "artifact", doc)
 		if err != nil {
 			return nil, fmt.Errorf("read the latest version of document %s: %w", doc, err)
 		}

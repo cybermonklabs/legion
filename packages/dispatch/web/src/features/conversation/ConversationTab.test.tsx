@@ -345,7 +345,13 @@ test("Conversation holds Reply while its composer sends", async () => {
     await user.click(field);
     await user.paste("Status please");
     await user.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(field.closest("fieldset")?.disabled).toBe(true));
+    await waitFor(() =>
+      expect(field.closest("fieldset")?.getAttribute("aria-disabled")).toBe("true")
+    );
+    // The held composer keeps the box focusable, and a key in it writes nothing.
+    field.focus();
+    await user.keyboard("x");
+    expect(field.value).toBe("Status please");
     const reply = screen.getByRole("button", { name: "Reply" }) as HTMLButtonElement;
     expect(reply.disabled).toBe(true);
     await user.click(reply);

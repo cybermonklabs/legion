@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -27,6 +28,20 @@ const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclin
 // ask's thread.
 const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is true
 	       or exists (select 1 from ask_followers f where f.ask_id = a.id and f.session_id = $1))`
+
+// eventSeen is the SQL predicate, on the event the alias e names, that holds when the reader whose
+// viewer is bound at $4 may read what the event is the record of, judged over the event's own owner
+// (events_one_owner: at most one of issue_key, artifact_id and project_key): an ask's or a
+// comment's event by the rule of the ask or comment that owner owns (access.ItemOwnerClause), a
+// project's event by that project's (access.ProjectClause), and an event of no owner, a message's
+// on no issue, by the parties of that message's conversation (access.PartyClause over
+// access.MessagePartiesSQL), as the event log reads each. An event is read under it wherever the
+// query reads one, so an event whose own owner the reader may not see carries nothing to the list,
+// whatever item its payload names: no decline's words, and no answer counted as replaced.
+var eventSeen = `(case when e.issue_key is not null or e.artifact_id is not null
+		then ` + access.ItemOwnerClause("e.issue_key", "e.artifact_id", "$4") + `
+	when e.project_key is not null then ` + access.ProjectClause("e.project_key", "$4") + `
+	else ` + access.PartyClause(access.MessagePartiesSQL(`coalesce(e.payload->>'message_id', e.payload->>'id')`), "$4") + ` end)`
 
 // query reads, in one statement, every item a person wrote that Dispatch delivered to the session
 // $1 since $2, $3 being the session's own topic (contracts.LegacyAgentSubject). Its three sources:
@@ -89,8 +104,17 @@ const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is tr
 // so the actor check runs on those few rows: with it inside the scan, the planner ANDs in
 // events_person_words_with_declines, whose predicate the check implies, and reads every entry of
 // that index for each ask.
-const query = `
-	with reached as (
+//
+// $4 is the reader's viewer (refs.VisibilityArg). The list of a session the reader may not see
+// (access.SessionClause) is the empty list a session nobody knows has, and of the rest each item
+// passes its own rule: an answer, a decline and a comment that of what owns its ask or itself
+// (access.ItemOwnerClause), and a message that of its issue or its conversation
+// (access.MessageClause). Each event the query reads, of reached and of answer_events, passes its
+// own owner's rule beside that (eventSeen).
+var query = `
+	with session_seen as (
+		select ` + access.SessionClause("$1::text", "$4") + ` as seen
+	), reached as (
 		select e.type, e.payload->>'id' as id, e.payload->'resolution' as resolution
 		from events e
 		where e.actor->>'kind' = 'user'
@@ -98,6 +122,7 @@ const query = `
 		                 'ask.resolved')
 		  and e.created_at >= $2
 		  and $3 = any(e.published_destinations)
+		  and ` + eventSeen + `
 	), mentioned as (
 		select cd.comment_id::text as id
 		from comment_deliveries cd
@@ -108,6 +133,7 @@ const query = `
 		select e.payload->>'id' as id, e.actor, e.payload->'answer' as answer
 		from events e
 		where e.type = 'ask.answered' and e.payload->>'id' in (select id from answer_ids)
+		  and ` + eventSeen + `
 	), decline_ids as (
 		-- A decline carries its own words, so the arm keeps the resolution the event recorded.
 		-- An ask holds at most one decline: a resolved ask is not resolved again (api's
@@ -151,6 +177,7 @@ const query = `
 	left join issues i on i.key = a.issue_key
 	left join artifacts ar on ar.id = a.artifact_id
 	where a.answer is not null and (a.answer->>'at')::timestamptz >= $2
+	  and (select seen from session_seen) and ` + access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$4") + `
 	union all
 	select 'comment', c.id::text, c.created_at, c.edited_at, c.deleted_at, c.deleted_by, c.author, c.body, null, null, false,
 	       a.id::text, a.question,
@@ -166,6 +193,7 @@ const query = `
 	left join issues i on i.key = c.issue_key
 	left join artifacts ar on ar.id = c.artifact_id
 	where c.author->>'kind' = 'user' and c.created_at >= $2
+	  and (select seen from session_seen) and ` + access.ItemOwnerClause("c.issue_key", "c.artifact_id", "$4") + `
 	union all
 	select 'message', m.id::text, m.created_at, m.edited_at, m.deleted_at, m.deleted_by, m.author, m.body, null, null, false,
 	       null, null,
@@ -178,6 +206,7 @@ const query = `
 	join messages m on m.id::text = x.id
 	left join issues i on i.key = m.issue_key
 	where m.author->>'kind' = 'user' and m.created_at >= $2
+	  and (select seen from session_seen) and ` + access.MessageClause("m", "$4") + `
 	union all
 	-- A decline has no answer to take a time from, so it sits at the resolution's own time, and
 	-- that time, not the event's, is what the window holds it to: the event is written moments
@@ -195,11 +224,13 @@ const query = `
 	left join issues i on i.key = a.issue_key
 	left join artifacts ar on ar.id = a.artifact_id
 	where (x.resolution->>'at')::timestamptz >= $2
+	  and (select seen from session_seen) and ` + access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$4") + `
 	order by at desc, id desc`
 
 // List lists what people wrote that Dispatch delivered to session since since, newest first by
 // time, then by id descending: an ask's current answer, a comment or a message at its current
-// body with the mark of a delete, or a person's decline of an ask, each (kind, id) once (query).
+// body with the mark of a delete, or a person's decline of an ask, each (kind, id) once (query),
+// of what the reader whose viewer is bound as viewer (refs.VisibilityArg) may read.
 //
 // An item reached several ways carries one relation, the most specific to the session, in this
 // order of precedence. A session owns an ask when it wrote the ask or follows it (ownsAsk), and
@@ -214,8 +245,8 @@ const query = `
 // words, for any other session. The follower route delivers an ask's answer, decline and replies
 // to its followers; the session route, the claimant route and a credit on the issue's primary
 // document each deliver some of them to sessions that do not own the ask.
-func List(ctx context.Context, pool *store.Pool, session string, since time.Time) ([]model.SessionAnswer, error) {
-	rows, err := pool.Query(ctx, query, session, since, contracts.LegacyAgentSubject(session))
+func List(ctx context.Context, pool *store.Pool, viewer any, session string, since time.Time) ([]model.SessionAnswer, error) {
+	rows, err := pool.Query(ctx, query, session, since, contracts.LegacyAgentSubject(session), viewer)
 	if err != nil {
 		return nil, fmt.Errorf("read session %q answers: %w", session, err)
 	}

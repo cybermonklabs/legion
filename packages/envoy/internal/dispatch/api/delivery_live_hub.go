@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -62,6 +62,16 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		refusal.Sub = frame.Sub
 		conn.Send(*refusal)
 		return false
+	}
+	reader := frame.Reader
+	if frame.Resolve != nil {
+		// Read before the hub's lock, which no database read is made under.
+		resolved, err := frame.Resolve(store.WithTransactionTracking(h.lifetime))
+		if err != nil {
+			conn.Send(liveRefusal(frame.Sub, codeInternal, "the subscription could not resolve what its caller sees"))
+			return false
+		}
+		reader = resolved
 	}
 	var held *DeliveryLiveRevs
 	if frame.Resume != nil {
@@ -121,6 +131,58 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		h.markDirtyLocked(g, view, now, deliveryCauseSubscribe)
 	}
 	return true
+}
+
+// recheckSubs resolves the reader of each of subs again, and moves each sub whose reader now reads
+// other rows (deliveryReaderKey) to the view of its new reader, which answers it with a snapshot:
+// the page drops the rows of a project its caller no longer sees and reads one it now sees. A sub
+// whose new reader its view's GET row refuses (liveReadRefusal) is dropped and sent that refusal
+// instead. A sub replaced or dropped meanwhile is left as it is. A sub whose reader does not
+// resolve is dropped and sent an ended frame (dropped), on which its page subscribes again and is
+// answered as a subscribe is: the re-check cannot show the caller still reads the view's rows, and
+// keeping the old reader would go on sending them rows of a project it may have lost.
+//
+// The key of a reader that sees every object (seesEveryObject) names none of the projects it sees,
+// so a new project moves no such sub: its view is read again, for the reader that sees the project
+// now, which the statements that bind the viewer read (the unowned P0 list, the unfetchable count,
+// a Legion board's project), and its pages are sent what changed, as before a project could be
+// private (R9).
+func (h *deliveryHub) recheckSubs(g *hubGeneration, subs []*deliverySub) {
+	for _, sub := range subs {
+		reader, err := sub.resolve(g.readContext())
+		if err != nil {
+			if g.ctx.Err() != nil {
+				continue
+			}
+			slog.Warn("dispatch: delivery live hub could not resolve a subscriber's reader again; its view ends and its page subscribes again", "error", err)
+			h.mu.Lock()
+			if h.generation == g && g.conns[sub.conn][sub.id] == sub {
+				h.dropLocked(sub.conn, sub.id)
+				sub.conn.Send(liveEnded(sub.id, liveEndedDropped))
+			}
+			h.mu.Unlock()
+			continue
+		}
+		refusal := liveReadRefusal(g.readContext(), sub.id, sub.view.spec.kind, sub.holds,
+			func(context.Context) (model.Actor, error) { return reader, nil })
+		viewer := deliveryReaderKey(reader)
+		h.mu.Lock()
+		switch {
+		case h.generation != g || g.conns[sub.conn][sub.id] != sub:
+		case refusal != nil:
+			h.dropLocked(sub.conn, sub.id)
+			sub.conn.Send(*refusal)
+		case sub.view.spec.viewer != viewer:
+			spec := sub.view.spec
+			spec.readFor(reader)
+			g.leaveLocked(sub)
+			h.joinLocked(g, sub.conn, sub.id, spec, nil, sub.resolve, sub.holds, h.clock.Now())
+		case seesEveryObject(reader) && !sameSet(sub.view.spec.reader.Viewer.Sees, reader.Viewer.Sees):
+			sub.view.spec.reader = reader
+			h.markDirtyLocked(g, sub.view, h.clock.Now(), deliveryCauseChange)
+		}
+		h.mu.Unlock()
+	}
 }
 
 // Unsubscribe drops conn's sub; a view's last sub drops the view, and the hub's last its generation.
@@ -367,6 +429,7 @@ type deliveryLiveSpec struct {
 	// view's board shows, and the one a legion_issue view's key names (parseLegionIssueLiveView).
 	// A delivery view names none.
 	project string
+	reader  model.Actor
 	// issue is the issue a legion_issue view shows (DeliveryLiveView.Issue), which a write of one
 	// of its runs marks (dirtyLegionIssue); every other kind names none.
 	issue string

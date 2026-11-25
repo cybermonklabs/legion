@@ -68,6 +68,7 @@ env:
       "dispatch-memory": "dispatch_memory",
       "dispatch-multiprocess": "dispatch_multiprocess",
       "dispatch-two-builds": "dispatch_two_builds",
+      "dispatch-project-access": "dispatch_project_access",
       "listener-server-change": "listener_server_change",
       "broker-multiprocess": "broker_multiprocess",
       "airlock-lean": "airlock_lean",
@@ -218,6 +219,8 @@ jobs:
       dispatch_two_builds: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_two_builds')) && steps.filter.outputs.dispatch_two_builds || 'false' }}
       # why: .github/ci-notes/ci.md#the-two-build-jobs-go-step-alone-behind-a-gate-of-its-own
       dispatch_two_builds_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_two_builds_go }}
+      # why: .github/ci-notes/ci.md#the-private-projects-blob-drivers-job
+      dispatch_project_access: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_project_access }}
       listener_server_change: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.listener_server_change }}
       broker_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.broker_multiprocess }}
       # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
@@ -838,6 +841,19 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       dispatch_two_builds_go: ${{ needs.changes.outputs.dispatch_two_builds_go }}
 
+  # why: .github/ci-notes/ci.md#the-private-projects-blob-drivers-job
+  dispatch-project-access:
+    needs: changes
+    if: needs.changes.outputs.dispatch_project_access == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+      pull-requests: read
+    uses: ./.github/workflows/ci-job-dispatch-project-access.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # why: .github/ci-notes/ci.md#the-server-change-soak
   listener-server-change:
     needs: changes
@@ -1076,6 +1092,7 @@ jobs:
       - dispatch-memory
       - dispatch-multiprocess
       - dispatch-two-builds
+      - dispatch-project-access
       - listener-server-change
       - broker-multiprocess
       - airlock-lean

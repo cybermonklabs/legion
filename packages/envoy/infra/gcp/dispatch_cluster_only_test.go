@@ -7,11 +7,10 @@ import (
 	"testing"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
-	"github.com/stretchr/testify/require"
-
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
+	"github.com/stretchr/testify/require"
 )
 
 // dispatchClusterOnlyArgs are every input the cluster-only mode takes: clusterOnly itself and the
@@ -186,6 +185,7 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"agentSecretsAudience", func(a *gcp.DispatchArgs) { a.AgentSecretsAudience = "example-broker-audience" }},
 		{"oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = dispatchOidcAudience }},
 		{"oidcIssuer", func(a *gcp.DispatchArgs) { a.OidcIssuer = dispatchOidcIssuer }},
+		{"projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "owner@example.com" }},
 		{"appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = "example-app-client-id" }},
 		{"appId", func(a *gcp.DispatchArgs) { a.AppId = "123456" }},
 		{"appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = "example-app-key" }},
@@ -220,6 +220,7 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"frontDoorPdbMinAvailable", func(a *gcp.DispatchArgs) { a.FrontDoorPdbMinAvailable = pulumi.IntRef(1) }},
 		{"listenerPdbMinAvailable", func(a *gcp.DispatchArgs) { a.ListenerPdbMinAvailable = pulumi.IntRef(1) }},
 		{"allowedNamespaces", func(a *gcp.DispatchArgs) { a.AllowedNamespaces = []string{"envoy"} }},
+		{"allowedApps", func(a *gcp.DispatchArgs) { a.AllowedApps = []string{"envoy-broker"} }},
 		{"azureEmbedEndpoint", func(a *gcp.DispatchArgs) { a.AzureEmbedEndpoint = pulumi.String(azureEmbedEndpoint) }},
 		{"azureEmbedDeployment", func(a *gcp.DispatchArgs) { a.AzureEmbedDeployment = pulumi.String("example-embed-deployment") }},
 		{"azureEmbedTokensPerMinute", func(a *gcp.DispatchArgs) { a.AzureEmbedTokensPerMinute = pulumi.IntRef(300000) }},

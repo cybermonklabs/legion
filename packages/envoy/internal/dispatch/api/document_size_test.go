@@ -38,29 +38,29 @@ func (w *renderWatch) record(read, artifactID string) {
 	}
 }
 
-func (w *renderWatch) Text(ctx context.Context, artifactID string) (string, error) {
+func (w *renderWatch) Text(ctx context.Context, who model.Actor, artifactID string) (string, error) {
 	w.record("Text", artifactID)
-	return w.API.Text(ctx, artifactID)
+	return w.API.Text(ctx, who, artifactID)
 }
 
-func (w *renderWatch) TextWithToken(ctx context.Context, artifactID string) (string, string, error) {
+func (w *renderWatch) TextWithToken(ctx context.Context, who model.Actor, artifactID string) (string, string, error) {
 	w.record("TextWithToken", artifactID)
-	return w.API.TextWithToken(ctx, artifactID)
+	return w.API.TextWithToken(ctx, who, artifactID)
 }
 
-func (w *renderWatch) Blocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error) {
+func (w *renderWatch) Blocks(ctx context.Context, who model.Actor, artifactID string) ([]model.ArtifactBlock, error) {
 	w.record("Blocks", artifactID)
-	return w.API.Blocks(ctx, artifactID)
+	return w.API.Blocks(ctx, who, artifactID)
 }
 
-func (w *renderWatch) TextWithBlocks(ctx context.Context, artifactID string) (string, []model.ArtifactBlock, error) {
+func (w *renderWatch) TextWithBlocks(ctx context.Context, who model.Actor, artifactID string) (string, []model.ArtifactBlock, error) {
 	w.record("TextWithBlocks", artifactID)
-	return w.API.TextWithBlocks(ctx, artifactID)
+	return w.API.TextWithBlocks(ctx, who, artifactID)
 }
 
-func (w *renderWatch) BlockPath(ctx context.Context, artifactID, blockID string) (model.BlockPath, error) {
+func (w *renderWatch) BlockPath(ctx context.Context, who model.Actor, artifactID, blockID string) (model.BlockPath, error) {
 	w.record("BlockPath", artifactID)
-	return w.API.BlockPath(ctx, artifactID, blockID)
+	return w.API.BlockPath(ctx, who, artifactID, blockID)
 }
 
 // requireSize fails the test unless version carries want as its stored byte size.

@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 // TestEveryMutatingRouteIsClassed: every mutating row of the table declares what its write
@@ -245,10 +247,18 @@ func hyphenatedEveryFour(id string) string {
 	return spelled.String()
 }
 
-// TestAProjectScopedTokenWritesOnlyItsOwnProject: one real token, two projects. Every addressing
-// kind the check resolves is refused across projects, naming both, and the same call against the
-// token's own project is answered by the handler. Each id-addressed kind runs under both
-// spellings of its uuid, since the check and the handler have to read a path the same way.
+// TestAProjectScopedTokenWritesOnlyItsOwnProject: one real token, three projects, in a deployment
+// that holds a private project. A full member's token an operator's entry mapped to one project
+// writes that project alone, whatever the deployment holds (namedProjectOf): every addressing kind
+// of another project it sees, OTH, is refused 403 PROJECT_SCOPE naming OTH, as before projects
+// could be private; every addressing kind of a private project its person does not see, HIDE, is
+// answered exactly as an object nobody holds - the same status and the same bytes, ids aside - since
+// the scope's read of the object's project binds the project clause; and the same call against the
+// token's own project is answered by the handler. Each id-addressed kind runs under both spellings
+// of its uuid, since the loader and the prefix layer read a path one way.
+//
+// Control: projectResolverFor's reads without their project clause: HIDE's objects resolve to
+// HIDE, the refusal names it, and the test fails naming the write.
 func TestAProjectScopedTokenWritesOnlyItsOwnProject(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
@@ -257,24 +267,33 @@ func TestAProjectScopedTokenWritesOnlyItsOwnProject(t *testing.T) {
 	rig.broker.Says(token, liveNamedToken(caller.jkt))
 	own := seedProject(t, rig, brokerTestProject, "Broker")
 	other := seedProject(t, rig, "OTH", "Other")
+	hidden := seedProject(t, rig, "HIDE", "Hidden")
+	hideFromBrokerPerson(t, rig, hidden.key)
+	nobodys := projectFixture{key: "NOPE", issue: "NOPE-1", document: uuid.NewString(), ask: uuid.NewString(),
+		comment: uuid.NewString(), message: uuid.NewString()}
 
 	for _, write := range addressedWrites() {
 		for _, spelling := range uuidSpellings(write) {
 			t.Run(write.kind+", "+spelling.name, func(t *testing.T) {
-				refused := rig.serve(caller.presenting(t, write.method, write.path(other, spelling.spell), token, write.body))
-				if refused.Code != http.StatusForbidden {
-					t.Fatalf("a write to %s: status=%d body=%s, want 403", other.key, refused.Code, refused.Body.String())
+				refused := rig.serve(caller.presenting(t, write.method, write.path(hidden, spelling.spell), token, write.body))
+				missing := rig.serve(caller.presenting(t, write.method, write.path(nobodys, spelling.spell), token, write.body))
+				want := missing.Body.String()
+				for _, pair := range [][2]string{
+					{nobodys.issue, hidden.issue}, {nobodys.key, hidden.key},
+					{spelling.spell(nobodys.document), spelling.spell(hidden.document)}, {spelling.spell(nobodys.ask), spelling.spell(hidden.ask)},
+					{spelling.spell(nobodys.comment), spelling.spell(hidden.comment)}, {spelling.spell(nobodys.message), spelling.spell(hidden.message)},
+				} {
+					want = strings.ReplaceAll(want, pair[0], pair[1])
 				}
-				refusal := decodeBody[refusalAnswer](t, refused)
-				if refusal.Code != codeProjectScope {
-					t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScope)
+				if refused.Code != missing.Code || refused.Body.String() != want || refused.Code < http.StatusBadRequest {
+					t.Fatalf("a write to %s: status=%d body=%s, want what an object nobody holds answers: status=%d body=%s",
+						hidden.key, refused.Code, refused.Body.String(), missing.Code, missing.Body.String())
 				}
-				if !strings.Contains(refusal.Error, own.key) || !strings.Contains(refusal.Error, other.key) {
-					t.Fatalf("refusal %q names neither the project the credential covers (%s) nor the project the write belongs to (%s)",
-						refusal.Error, own.key, other.key)
-				}
-				if strings.Contains(refusal.Error, token) {
-					t.Fatalf("the refusal repeats the token: %q", refusal.Error)
+
+				seen := rig.serve(caller.presenting(t, write.method, write.path(other, spelling.spell), token, write.body))
+				if wantOther := `{"code":"PROJECT_SCOPE","error":"this request's credential may write project BRK; this write belongs to project OTH"}`; seen.Code != http.StatusForbidden ||
+					strings.TrimSpace(seen.Body.String()) != wantOther {
+					t.Fatalf("a write to %s: status=%d body=%s, want 403 %s", other.key, seen.Code, seen.Body.String(), wantOther)
 				}
 
 				answered := rig.serve(caller.presenting(t, write.method, write.path(own, spelling.spell), token, write.body))
@@ -292,28 +311,24 @@ func TestAProjectScopedTokenWritesOnlyItsOwnProject(t *testing.T) {
 	}
 }
 
-// TestATargetThatResolvesToNoProjectIsRefusedToAProjectScopedToken: the check fails closed, so
-// a target it cannot resolve to the caller's own project is refused whether another project
-// holds it, no project does, or nothing does — an id nobody has, and an id that is no uuid in
-// any spelling. A refusal names the project the credential covers and no other, so it invents
-// no project this caller may not reach. It does not close the existence oracle: this refusal
-// and the one for another project's object still read differently, so a scoped caller can tell
-// an object of another project from an id nobody holds. Nothing is read out that way, since no
-// GET route is project-scoped; what it learns is which of its own refused writes addressed
-// something that exists.
-//
-// This replaces the assertion that such a target kept its handler's answer for every caller.
-// It still does for a caller that names no project, which is every credential but a
-// project-scoped broker token, and the second half holds that.
-func TestATargetThatResolvesToNoProjectIsRefusedToAProjectScopedToken(t *testing.T) {
+// TestATargetNobodyHoldsAnswersAProjectScopedTokenAsItAnswersAPerson: in a deployment that holds a
+// private project, a target that resolves to nothing - an id nobody has, an id that is no uuid in
+// any spelling, a key no project holds - is refused a full member's token scoped to one project 403
+// PROJECT_SCOPE naming no project, the one answer every such target gets, as before projects could
+// be private (TestABrokerTokenScopedToOneProjectAnswersAsBeforeWhileNoProjectIsPrivate), and never a
+// 500. A person, whose writes no scope holds, is answered by the handler.
+func TestATargetNobodyHoldsAnswersAProjectScopedTokenAsItAnswersAPerson(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-addressing-nothing"
 	rig.broker.Says(token, liveNamedToken(caller.jkt))
 	seedProject(t, rig, brokerTestProject, "Broker")
+	seedProject(t, rig, "HIDE", "Hidden")
+	makePrivate(t, rig.database, "HIDE")
 
 	const unknownUUID = "5d4a3b2c-1e0f-4a9b-8c7d-6e5f4a3b2c1d"
+	const refusal = `{"code":"PROJECT_SCOPE","error":"this request's credential may write project BRK; this write resolves to no project of that credential's"}`
 	for name, request := range map[string]struct {
 		method string
 		path   string
@@ -330,32 +345,13 @@ func TestATargetThatResolvesToNoProjectIsRefusedToAProjectScopedToken(t *testing
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			refused := rig.serve(caller.presenting(t, request.method, request.path, token, request.body))
-			if refused.Code != http.StatusForbidden {
-				t.Fatalf("status=%d body=%s, want 403 from the project check", refused.Code, refused.Body.String())
+			scoped := rig.serve(caller.presenting(t, request.method, request.path, token, request.body))
+			if scoped.Code != http.StatusForbidden || strings.TrimSpace(scoped.Body.String()) != refusal {
+				t.Fatalf("the scoped token: status=%d body=%s, want 403 %s", scoped.Code, scoped.Body.String(), refusal)
 			}
-			refusal := decodeBody[refusalAnswer](t, refused)
-			if refusal.Code != codeProjectScope {
-				t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScope)
-			}
-			if !strings.Contains(refusal.Error, brokerTestProject) {
-				t.Fatalf("refusal %q does not name the project the credential covers (%s)", refusal.Error, brokerTestProject)
-			}
-			if strings.Contains(refusal.Error, token) {
-				t.Fatalf("the refusal repeats the token: %q", refusal.Error)
-			}
-
-			// A caller that names no project is untouched: the handler answers for itself, as it
-			// always has.
-			answered := rig.asPerson(t, request.method, request.path, request.body)
-			if answered.Code < http.StatusBadRequest {
-				t.Fatalf("a person's same call: status=%d body=%s, want the handler's own refusal",
-					answered.Code, answered.Body.String())
-			}
-			if answered.Code == http.StatusForbidden {
-				if blocked := decodeBody[refusalAnswer](t, answered); blocked.Code == codeProjectScope {
-					t.Fatalf("a caller that names no project was refused by project scope: %+v", blocked)
-				}
+			person := rig.asPerson(t, request.method, request.path, request.body)
+			if person.Code < http.StatusBadRequest || person.Code >= http.StatusInternalServerError {
+				t.Fatalf("a person: status=%d body=%s, want the handler's refusal, and no 500", person.Code, person.Body.String())
 			}
 		})
 	}

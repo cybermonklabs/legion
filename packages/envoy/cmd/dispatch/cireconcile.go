@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -103,7 +105,10 @@ func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppCo
 		return nil, nil
 	}
 	limits := ratelimit.New(database.Pool)
-	github, err := githubapp.New(app, apiBase, githubapp.WithLimits(limits))
+	// While a project is private the pass's reads of a repository are held to it, as the server's
+	// own client holds its (githubapp.WithPrivateProjects).
+	github, err := githubapp.New(app, apiBase, githubapp.WithLimits(limits),
+		githubapp.WithPrivateProjects(func(ctx context.Context) (bool, error) { return access.AnyProjectPrivate(ctx, database.Pool) }))
 	if err != nil || github == nil {
 		return nil, err
 	}

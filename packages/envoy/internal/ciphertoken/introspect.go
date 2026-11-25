@@ -31,8 +31,9 @@ const maxIntrospectionBytes = 64 << 10
 // Project scopes an Introspection's Projects is read under: the broker's own wire names, carried
 // here so a reader of a Caller this package decides reads one package (internal/dispatch/api).
 const (
-	// ProjectScopeNamed means Projects is the one project an operator's entry gave the token, or
-	// none for an account entry naming none.
+	// ProjectScopeNamed means Projects is the one project the token is held to: the one an
+	// operator's entry gave it, or none for an account entry naming none, or the one a restricted
+	// member's machine login asked for.
 	ProjectScopeNamed = oauthwire.ProjectScopeNamed
 	// ProjectScopePerson means the token acts as its person, and Projects is what its trade
 	// asked for.
@@ -82,13 +83,37 @@ func expiryOf(answer Introspection) time.Time {
 // answer naming neither). ReadOnly is shapeOf's verdict on the answer, which sessionCaller reached
 // and hands over as shape: callerOf runs only on an answer sessionCaller accepted, and
 // sessionCaller lets a read-only answer through only with its switch set, which only a verifier
-// that serves one sets, so a Caller marked read-only is one such a verifier accepted.
+// that serves one sets, so a Caller marked read-only is one such a verifier accepted. The account
+// the token's credential records, and when that credential was made, are carried too, which the
+// cache keeps with the rest of the answer. So is held: a held answer is still a live one, kept in
+// the cache as any other for AffirmativeCacheTTL, and each reader refuses a held Caller after its
+// own checks. And so is not_held_until, the deadline of a not-held answer, which the cache keeps
+// the answer no later than (answerCache.remember) and each reader refuses a Caller past
+// (Verifier.Lapsed).
 func callerOf(answer Introspection, shape tokenShape) Caller {
-	return Caller{
+	caller := Caller{
 		Session: answer.Session, Person: answer.Person, Service: answer.Service,
 		Projects: slices.Clone(answer.Projects), ProjectScope: answer.ProjectScope,
-		ReadOnly: shape == shapeReadOnly,
+		ReadOnly:      shape == shapeReadOnly,
+		AccountIssuer: answer.AccountIssuer, AccountSubject: answer.AccountSubject,
+		Held: answer.Held,
 	}
+	if answer.CredentialCreatedAt > 0 {
+		caller.CredentialCreatedAt = time.Unix(answer.CredentialCreatedAt, 0).UTC()
+	}
+	if answer.NotHeldUntil > 0 {
+		caller.NotHeldUntil = time.Unix(answer.NotHeldUntil, 0).UTC()
+	}
+	return caller
+}
+
+// notHeldUntilOf is when a live answer that its person is not held stops being good, or the zero
+// time for an answer naming no deadline and for a held one, which is kept as every held answer is.
+func notHeldUntilOf(answer Introspection) time.Time {
+	if answer.Held || answer.NotHeldUntil <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(answer.NotHeldUntil, 0)
 }
 
 // introspect asks the broker what token is, presenting Dispatch's own projected ServiceAccount

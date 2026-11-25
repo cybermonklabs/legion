@@ -351,7 +351,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     // is what it goes on to do with them.
     await page.goto("/settings");
     await page.getByLabel("Token label").fill("Inbox reader");
-    await page.getByRole("button", { name: "New token" }).click();
+    await page.getByRole("button", { exact: true, name: "New token" }).click();
     // textContent waits for the code element to attach, and an element's text is never null,
     // so the check below only narrows the type.
     const token = await page.getByRole("status").locator("code").first().textContent();

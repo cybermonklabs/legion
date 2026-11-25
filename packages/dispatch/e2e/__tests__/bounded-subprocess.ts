@@ -30,15 +30,16 @@
  * `outside-agent-tailnet-stand-ins.ts` starts, and the squatters `squat` of
  * `outside-agent-acceptance.test.ts` leaves running until its row ends. Three subprocesses a row
  * can wait for run outside it, as stated edges. One is the psql of `e2e/psql.ts` (the rows and
- * hooks of `psql-session.test.ts`, and the scratch databases of `replace-blocks-guard.test.ts`),
- * whose `sqlAt` `e2e/harness-postgres.ts` and `e2e/local-instance.ts` call too, so bounding that
- * psql would reach past `e2e/__tests__/`. Another is the `ps` that reads the process table on a
- * machine with no `/proc`, here (`processTable`) and in `bounded-subprocess.test.ts`, which runs
- * with no bound. Linux lists its processes under `/proc` and never runs that `ps`. The third is
- * the shell of two synchronous waits for a port, each ended by its own clock within 11 s: the one
- * `squat` of `outside-agent-acceptance.test.ts` waits for while it takes a port over, synchronous
- * because the listener stop it follows is and the port must be taken before that stop returns,
- * and the stand-in Dispatch's readiness wait in `outside-agent-tailnet-stand-ins.ts`.
+ * hooks of `psql-session.test.ts` and `node-projects-horizon-hold.test.ts`, and the scratch
+ * databases of `replace-blocks-guard.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and
+ * `e2e/local-instance.ts` call too, so bounding that psql would reach past `e2e/__tests__/`.
+ * Another is the `ps` that reads the process table on a machine with no `/proc`, here
+ * (`processTable`) and in `bounded-subprocess.test.ts`, which runs with no bound. Linux lists its
+ * processes under `/proc` and never runs that `ps`. The third is the shell of two synchronous
+ * waits for a port, each ended by its own clock within 11 s: the one `squat` of
+ * `outside-agent-acceptance.test.ts` waits for while it takes a port over, synchronous because
+ * the listener stop it follows is and the port must be taken before that stop returns, and the
+ * stand-in Dispatch's readiness wait in `outside-agent-tailnet-stand-ins.ts`.
  *
  * `bun test` collects only a file whose name carries a `test` or `spec` token, `*.test.ts` and
  * its kin (`collectedTestFile` of `e2e/row-limits.ts` holds the measured set), so a plain `.ts`
@@ -80,6 +81,13 @@
  *   that `row-map.test.ts` waits for cost 45.23 s at most.
  * - `twoStackBuild`, against about nine minutes, measured from cold on that four-core pod. That
  *   child builds two stacks, and each stack is a Go build and an initdb.
+ * - `wholeIndexSweep`, against 82 s: the one run of `restricted-sweep-judging.test.ts` over the
+ *   whole route index, about 400 requests to that file's fake Dispatch, each a curl and a jq. On
+ *   the dev box at a load of 500 to 1200, with two more runs of that file and a run of
+ *   `restricted-sweep.test.ts`'s stacks beside it, on 2026-11-20 and 2026-11-21, it finished in
+ *   32.4 s, 37.6 s, 48.7 s and 49.4 s, and was stopped at the `short` bound it then had after 65 s
+ *   and after 82 s, so a correct run there takes longer than 82 s. 300 s is more than three times
+ *   82 s.
  * - `edgeRun`, against 175.0 s: the slowest of 30 runs, one after another, of
  *   `e2e/acceptance/outside-edge-refusals.sh` against one stand-in edge of its tests, with their
  *   lists and probe bounds, on a dev box of 288 CPUs at a 1-minute load of 1,024 to 1,892 on
@@ -106,9 +114,16 @@
  *   `/proc/<pid>/cwd`, which took 1.3 to 11.5 s alone on that box; the driver since walks its own
  *   tree instead, and its 35 runs on 8 CPUs (`taskset`, under a CPU quota of 8) with 16 busy loops
  *   on them, on that box at a load of about 400 the same day, took 0.28 s to 2.81 s.
+ * - `runnerSweep`, against 48 s: a runner of `e2e/acceptance/restricted-sweep.sh` in
+ *   `restricted-sweep-split.test.ts` that reads the member's live feed, whose window is the fixed
+ *   45 s a runner takes at least (the script's `runner_live_floor`). Each of the six such rows'
+ *   runners took about 48 s in the build cluster's whole-file run of that file at 9ce18a69c9 (Job
+ *   legion-judging-c5xpq, 2026-11-23), against the `short` bound's 60 s. Three times 48 s,
+ *   rounded up, is 150 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
+ * sweep runner that reads the live feed after 2.5 minutes, a whole-index sweep after 5 minutes, a
  * listing after 6 minutes, the generation after 6.5 minutes, a run of the Codex leg after 3
  * minutes, a run of the edge check after 9 minutes, and the two-stack build after 30 minutes.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
@@ -147,6 +162,9 @@ export const bounds = Object.freeze({
   generation: 390_000,
   /** The `bun --eval` of `second-global-setup.test.ts`, which builds two stacks. */
   twoStackBuild: 1_800_000,
+  /** One run of `e2e/acceptance/restricted-sweep.sh` over the whole route index against the fake
+   *  Dispatch of `restricted-sweep-judging.test.ts`: about 400 requests, each a curl and a jq. */
+  wholeIndexSweep: 300_000,
   /** One run of `e2e/acceptance/outside-edge-refusals.sh` that probes a stand-in edge. */
   edgeRun: 540_000,
   /** One run of `e2e/acceptance/outside-agent-codex.sh` against the stand-ins of its tests. */
@@ -154,6 +172,9 @@ export const bounds = Object.freeze({
   /** One driver of a stop row of `unit-repeat.test.ts`: a copy of the repeat tool, its Bun, the
    *  stop or kill the row sends, and its names runs. */
   stoppedLeg: 90_000,
+  /** One runner of `e2e/acceptance/restricted-sweep.sh` against the fake Dispatch of
+   *  `restricted-sweep-split.test.ts` that reads the member's feed over the 45 s live window. */
+  runnerSweep: 150_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */
@@ -1060,7 +1081,7 @@ export function named({ argv, env, from }: Child): string {
  *  process table, which takes seconds on a machine of many processes (`processTableYielding`), so
  *  the time `runBounded` answers at is the child's end and that kill, and the cost line's time is
  *  both. */
-interface BoundedRun {
+export interface BoundedRun {
   readonly code: number;
   readonly endedAt: number;
   readonly named: string;

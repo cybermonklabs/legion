@@ -80,12 +80,12 @@ func NamesCredential(actor model.Actor) bool {
 	return actor.ID != "" || (actor.Owner != nil && *actor.Owner != "") || (actor.Service != nil && *actor.Service != "")
 }
 
-// ActingCredential is the one value an author-private read binds beside its own arguments: the
-// author the acting credential proved (provedAuthor), as AuthorIsSQL compares it. A credential
-// that proves no author binds nil, which is SQL null, which that comparison answers false for -
-// so a reader the store cannot name reads no author-private node at all, rather than every node
-// written on the shared bearer.
-func ActingCredential(actor model.Actor) any {
+// ActingCredential is the author the acting credential proved (provedAuthor), as AuthorIsSQL
+// compares it: the author member of the one argument every visibility predicate binds
+// (refs.VisibilityArg). A credential that proves no author is nil, which that argument carries as
+// a JSON null, which that comparison answers false for - so a reader the store cannot name reads
+// no author-private node at all, rather than every node written on the shared bearer.
+func ActingCredential(actor model.Actor) json.RawMessage {
 	proved, ok := provedAuthor(actor)
 	if !ok {
 		return nil
@@ -99,16 +99,17 @@ func ActingCredential(actor model.Actor) any {
 }
 
 // AuthorIsSQL is the SQL half of the one rule: true when the author a node's `made_by` column
-// records proved somebody, and that somebody is the author bound at param (ActingCredential). It
-// states in SQL exactly what provedAuthor states of a credential, so a read and a route cannot
-// answer differently. A login is compared in the form user_threads_login gives it on both sides,
-// the stored one and the bound one, so the two are canonical by one function.
+// records proved somebody, and that somebody is the acting author, the `author` member of the
+// visibility argument bound at param (ActingCredential, refs.VisibilityArg). It states in SQL
+// exactly what provedAuthor states of a credential, so a read and a route cannot answer
+// differently. A login is compared in the form user_threads_login gives it on both sides, the
+// stored one and the bound one, so the two are canonical by one function.
 //
-// The whole test is wrapped in coalesce so it is false rather than unknown for an acting
-// credential that binds null, and for a stored author that names nobody: a reader that proves no
+// The whole test is wrapped in coalesce so it is false rather than unknown for an acting author
+// the argument holds as null, and for a stored author that names nobody: a reader that proves no
 // author reads no author-private node, and a node no author wrote is nobody's.
 func AuthorIsSQL(column, param string) string {
-	bound := `(` + param + `::jsonb)`
+	bound := `(` + param + `::jsonb->'author')`
 	return `coalesce(` + authorSQL(column) + ` = ` + authorKeySQL(bound+`->>'kind'`, bound+`->>'id'`) + `, false)`
 }
 

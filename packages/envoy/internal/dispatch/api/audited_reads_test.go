@@ -75,7 +75,7 @@ func TestTheAuditedReadsSearchTheirIndex(t *testing.T) {
 	for number, read := range auditedReads {
 		t.Run(read.name, func(t *testing.T) {
 			plan := explaintest.GenericPlan(t, ctx, connection, fmt.Sprintf("audited_read_%d", number),
-				read.query, []string{read.parameter}, []string{read.literal},
+				read.query, []string{read.parameter, "jsonb"}, []string{read.literal, "'" + string(planViewer) + "'"},
 				"set local enable_seqscan = off")
 			if explaintest.SeqScansRelation(t, plan, read.relation) {
 				t.Fatalf("%s scans %s sequentially; want %s:\n%s", read.name, read.relation, read.index, plan)
