@@ -100,20 +100,36 @@ func TestAClaimRoutePassOnAStandbyAndTheHoldersSweepPassGiveTheNewHolderEachMess
 		}
 	}
 	var holderFirst, standbyFirst sync.Once
+	// Whichever pass walks the kept lane second finds it busy - the other walk's claim of a copy
+	// outstanding, or the cursor taken from under it - and waits before it walks again, which
+	// deployed is bus.KeptRoleClaimWindow, 60 s, since a claim may belong to a walk still
+	// forwarding (handOverKeptRole). The walk holding the lane here ends each claim it writes
+	// before it reads its next copy: it confirms the copy it forwarded, {kept: that copy,
+	// claiming: 0}, or releases the claim of one it does not forward (walkKeptRole). Only a cursor
+	// write that failed would leave a claim behind, and this row fails none, so that walk leaves no
+	// claim outstanding when it ends. The walk after a short pause then finds the lane drained, or
+	// goes on from where that walk is, as it would after the full window: the passes and the new
+	// holder's copies are the same, a minute sooner. Each pass's fault set shortens that pause
+	// (laneBusyPause): the standby's own, and the holder's, which the sweep's copy of its
+	// configuration shares (keptSweepConfig). No other handover of the holder's listener runs in
+	// this row: its claim route starts none, and its relay copies no frame of the role.
+	const busyPause = 500 * time.Millisecond
 	// The holder's own claim route starts no handover: the claim is served by the standby, whose
 	// pass this row runs itself.
 	setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{
 		relayCopy:         copiesRelayCopyHeld(servingRole),
 		skipClaimHandover: func(string) bool { return true },
 		beforeCopy:        meet(&holderFirst),
+		laneBusyPause:     busyPause,
 	})
 	standby := *rig.deps.delivery
 	standby.roleKeepDrains = newRoleKeepGuards()
 	standby.ledger = testDeliveryLedger(t, rig.harness.client.Conn, "test-machine", "boot-standby")
 	standby.takeoverFaults = &takeoverFaultHooks{}
 	standby.takeoverFaults.set.Store(&takeoverFaultSet{
-		relayCopy:  copiesRelayCopyHeld(servingRole),
-		beforeCopy: meet(&standbyFirst),
+		relayCopy:     copiesRelayCopyHeld(servingRole),
+		beforeCopy:    meet(&standbyFirst),
+		laneBusyPause: busyPause,
 	})
 	taker, unread := startServingTakeover(t, rig, 3)
 	records := servingRecords(t, rig)
@@ -122,18 +138,6 @@ func TestAClaimRoutePassOnAStandbyAndTheHoldersSweepPassGiveTheNewHolderEachMess
 	}
 
 	sweep := keptSweepConfig(*rig.deps.delivery, rig.relays)
-	// Whichever pass walks the kept lane second finds it busy - the other walk's claim of a copy
-	// outstanding, or the cursor taken from under it - and waits before it walks again, which
-	// deployed is bus.KeptRoleClaimWindow, 60 s, since a claim may belong to a walk still
-	// forwarding (roleKeepBusyPause). The walk holding the lane here ends each claim it writes
-	// before it reads its next copy: it confirms the copy it forwarded, {kept: that copy,
-	// claiming: 0}, or releases the claim of one it does not forward (walkKeptRole). Only a cursor
-	// write that failed would leave a claim behind, and this row fails none, so that walk leaves no
-	// claim outstanding when it ends. The walk after a short pause then finds the lane drained, or
-	// goes on from where that walk is, as it would after the full window: the passes and the new
-	// holder's copies are the same, a minute sooner.
-	const busyPause = 500 * time.Millisecond
-	standby.laneBusyPause, sweep.laneBusyPause = busyPause, busyPause
 	var passes sync.WaitGroup
 	passes.Add(2)
 	go func() {

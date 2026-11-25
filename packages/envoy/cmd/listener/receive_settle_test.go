@@ -126,9 +126,9 @@ func (rig *receiverRig) awaitRecord(t *testing.T, what string, cond func(leaseRe
 	}
 }
 
-// takenIn is how many messages the rig's term has taken in and not settled, as its intake counts
-// each it queues (receiveTerm.intake), and 0 while it has no term.
-func (rig *receiverRig) takenIn() int {
+// unsettledCount is how many messages the rig's term counts unsettled (receiveTerm.unsettled),
+// as its intake counts each it queues (receiveTerm.intake), and 0 while it has no term.
+func (rig *receiverRig) unsettledCount() int {
 	rig.receiver.mu.Lock()
 	term := rig.receiver.term
 	rig.receiver.mu.Unlock()
@@ -359,7 +359,7 @@ func TestASettleHoldsCapIsWhatThePreviousHolderCanStillHaveOutstanding(t *testin
 // how long what that pod NAKed takes to come back. Its end clears the term's debt and the stale
 // binding alike: the mark says a binding this term subscribed beside was the stopping pod's own
 // linger.
-// It must not run in parallel: the first message must come within 700 ms of the hand-back delay.
+// It must not run in parallel: the first message must come within 700 ms of its 3 s hold.
 func TestAMarkedHandBacksHoldEndsAtTheHandBackDelayAndNotBefore(t *testing.T) {
 	uri := testnats.URL(t)
 	const machineID = "box-mark-floor"
@@ -434,7 +434,7 @@ func TestAGracefulStopDuringAnAckWaitHoldOwesTheNextHolderAnAckWait(t *testing.T
 		info, err := client.JS().ConsumerInfo(bus.Stream, bus.ListenerDurable(machineID))
 		return err == nil && info.NumAckPending == 2 && info.NumPending == 0
 	})
-	waitFor(t, 5*time.Second, "pod-b to take in the newer message the server sent it", func() bool { return stopping.takenIn() >= 1 })
+	waitFor(t, 5*time.Second, "pod-b to take in the newer message the server sent it", func() bool { return stopping.unsettledCount() >= 1 })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	stopping.receiver.Stop(ctx)
@@ -601,7 +601,7 @@ func TestAGracefulStopDuringASettleHoldHandsTheHoldOn(t *testing.T) {
 			return err == nil && info.NumAckPending == 3 && info.NumPending == 0
 		}()
 	})
-	waitFor(t, 5*time.Second, "pod-b to take in both newer messages the server sent it", func() bool { return stopping.takenIn() >= 2 })
+	waitFor(t, 5*time.Second, "pod-b to take in both newer messages the server sent it", func() bool { return stopping.unsettledCount() >= 2 })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	stopping.receiver.Stop(ctx)

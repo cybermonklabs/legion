@@ -256,19 +256,3 @@ func TestAClaimNoDrainReleasedHoldsTheLaneUntilItsWindowHasPassed(t *testing.T) 
 		t.Fatalf("the drain past the claim's window handed over %v, want the copy under %s the killed drain claimed and never forwarded", handed, key)
 	}
 }
-
-// A handover whose walk found the lane busy waits bus.KeptRoleClaimWindow before it walks again,
-// the life of the claim the walk holding the lane may still be forwarding under: that is the
-// pause of the configuration main.go builds, which leaves laneBusyPause zero, so a zero pause is
-// the claim window and never no pause at all. Only a laneBusyPause above zero, which a row sets on
-// its own copy, replaces it.
-func TestABusyLanesPauseIsTheClaimWindowUnlessARowShortensIt(t *testing.T) {
-	t.Parallel()
-	if got := roleKeepBusyPause(listenerDeliveryHandlerConfig{}); got != bus.KeptRoleClaimWindow {
-		t.Errorf("a configuration with no laneBusyPause, main.go's, waits %s after a busy lane; want bus.KeptRoleClaimWindow, %s", got, bus.KeptRoleClaimWindow)
-	}
-	const short = 500 * time.Millisecond
-	if got := roleKeepBusyPause(listenerDeliveryHandlerConfig{laneBusyPause: short}); got != short {
-		t.Errorf("a configuration whose laneBusyPause is %s waits %s after a busy lane; want %s", short, got, short)
-	}
-}

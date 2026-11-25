@@ -467,10 +467,10 @@ func (p *listenerProcess) healthUnder(ctx context.Context, t *testing.T) map[str
 // queues connections on it from before the process starts, so a request there waits rather than
 // fails until the process serves, and only its listening line says it does. Each request carries
 // the shared wait's context (testwait.Context), so one that waits on a process that does not
-// answer ends where the wait does, and no request has a bound of its own. /healthz answers 503
-// "starting" from the moment the listener serves until it is ready, which it is only after it
-// installs its SIGTERM handler, and a SIGTERM before that kills the process without an ordered
-// shutdown.
+// answer ends where the wait does, and no request has a bound of its own. It asks every
+// healthPoll, an HTTP call to the listener. /healthz answers 503 "starting" from the moment the
+// listener serves until it is ready, which it is only after it installs its SIGTERM handler, and
+// a SIGTERM before that kills the process without an ordered shutdown.
 //
 // A listener that exits during its start-up fails this wait at once, naming its exit status and
 // its last output line, rather than being waited for until the test binary's own deadline: a
@@ -501,7 +501,7 @@ func (p *listenerProcess) waitHealth(t *testing.T, what string, want map[string]
 		default:
 		}
 	}
-	testwait.Until(t, "the listener to become "+what, func() (string, bool) {
+	testwait.UntilPolling(t, healthPoll, "the listener to become "+what, func() (string, bool) {
 		if health := p.healthUnder(ctx, t); health != nil {
 			matches := health["status"] == "healthy"
 			for field, value := range want {
@@ -516,6 +516,11 @@ func (p *listenerProcess) waitHealth(t *testing.T, what string, want map[string]
 		return fmt.Sprintf("%s; the listener's last line was %q", answer, lastOutputLine(p.Output.String())), false
 	})
 }
+
+// healthPoll is how often waitHealth asks a listener's /healthz: the 200 ms its fixed-span loop
+// asked at before. Each healthy answer reads the bus - a flush, each cache's stream state and the
+// durable's info - and many parallel rows wait through it on the package's one shared NATS server.
+const healthPoll = 200 * time.Millisecond
 
 // lastOutputLine is the final non-empty line of a process's output, the one a start-up that ended
 // in log.Fatal wrote.

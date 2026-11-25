@@ -221,6 +221,9 @@ type takeoverFaultSet struct {
 	// claimHandoverWindow, when it is above zero, bounds the claim route's handover
 	// (runTakenRoleDrain) in place of roleKeepHandoverWindow.
 	claimHandoverWindow time.Duration
+	// laneBusyPause, when it is above zero, is a handover's pause after a walk that found the
+	// lane busy (roleKeepLaneBusy, handOverKeptRole) in place of bus.KeptRoleClaimWindow.
+	laneBusyPause time.Duration
 }
 
 // takeoverFaultHooks is one listener's takeover-copy seam set (listenerDeliveryHandlerConfig's

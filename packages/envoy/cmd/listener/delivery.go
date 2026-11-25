@@ -180,12 +180,6 @@ type listenerDeliveryHandlerConfig struct {
 	// main.go makes one and sets it once, so every handler and every route built from that config
 	// guards one set of roles. A test that builds a config sets its own.
 	roleKeepDrains *roleKeepGuards
-	// laneBusyPause is how long a handover of a role's kept lane waits before its next walk when
-	// the walk before it found the lane busy (roleKeepLaneBusy, roleKeepBusyPause). Zero, which
-	// main.go leaves it, is bus.KeptRoleClaimWindow, the life of the claim the walk holding the
-	// lane may still be forwarding under, and never no pause; a test whose other walk confirms or
-	// releases every claim it writes before it ends sets it shorter on its copy.
-	laneBusyPause time.Duration
 	// now is the listener's clock, which a kept copy's age and the end of its hour are measured
 	// by, against the time the stream stored the copy: the keep's answer (storeKeptRoleCopy), the
 	// handovers the claim route, the keep and a registration that makes a holder live again

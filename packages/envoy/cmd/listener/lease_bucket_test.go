@@ -106,7 +106,7 @@ func TestOpeningTheListenerStateBucketRaisesAnEarlierBuildsMaxAge(t *testing.T) 
 // A user whose grant lacks the bucket is refused with errListenerStateRefused, naming the bucket
 // and the grant; once the grant has it the same connection opens the bucket and takes the lease;
 // a connection error is not the refusal.
-// It must not run in parallel: the refusal must arrive inside the open's 500 ms request wait.
+// It must not run in parallel: the refusal must arrive inside the open's 1.5 s (3 waits of 500 ms).
 func TestListenerStateBucketRefusalIsTheMissingGrant(t *testing.T) {
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, "_INBOX.>", "$JS.API.INFO")

@@ -232,7 +232,7 @@ func TestADeliveryExceptionOnALaneAddedSinceTheLastReadIsStoredOnce(t *testing.T
 // the stream stores the exception under a message id of its own dedupe key
 // (bus.DeliveryExceptionDedupePrefix): neither the core publish the one judgement chose nor the
 // one-copy exception.<reason>.<origin> another listener's JetStream judgement stores it under.
-// It must not run in parallel: its 2 s judgement must end inside the row's 3 s hold of the locks.
+// It must not run in parallel: its 2 s judgement must end before the locks go, 3 s after it began.
 func TestADeliveryExceptionIsPublishedOnTheOneJudgementOfItsLane(t *testing.T) {
 	const (
 		topic  = "notifications.x.judged"

@@ -31,7 +31,7 @@ const registrationBehindALostStreamRead = time.Second
 // state, which starts once A's has been out the overlap bound, so B is answered 200 well inside the
 // registration's 3.5 s store budget. Behind A's whole 5 s that budget ran out, and B was answered
 // 503 though nothing was wrong with B or with the bus (2fdc4f23, run 2 of the hand-back row).
-// It must not run in parallel: the registration must answer within 1 s of its 250 ms overlap bound.
+// It must not run in parallel: the registration must answer in 1 s, 750 ms past its overlap bound.
 func TestARegistrationBehindAnotherSessionsLostStreamReadIsAnswered(t *testing.T) {
 	const (
 		restarting  = "ses_restart_whose_stream_read_is_lost"

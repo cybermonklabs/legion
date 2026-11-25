@@ -476,14 +476,7 @@ func TestAWriteTheBucketRefusedLeavesNoChunkOfItsOwn(t *testing.T) {
 	if !racing.raced {
 		t.Fatal("the other writer never stored the record under this write, so nothing was refused")
 	}
-	head, err := kv.Get("ses_refused")
-	if err != nil {
-		t.Fatalf("read the session's key: %v", err)
-	}
-	layout, err := kvchunk.ReadLayout(head.Value())
-	if err != nil || !layout.Chunked() {
-		t.Fatalf("the session's key holds %.60q (%v), want a manifest", head.Value(), err)
-	}
+	layout := kvchunktest.HeadLayout(t, kv, "ses_refused")
 	if chunks := kvchunktest.LiveChunkKeys(t, kv); !slices.Equal(chunks, slices.Sorted(slices.Values(layout.Keys()))) {
 		t.Fatalf("the bucket holds chunks %v, want only the %d its manifest names", chunks, layout.Chunks)
 	}

@@ -38,15 +38,15 @@
 //     since the copy last stopped following, not how far behind the live watch is now.
 //   - A known-session write's delete of the chunks of the record it replaces (session's
 //     KnownSessions.writeWithin, through kvchunk.Write), whose layout is this listener's copy of
-//     that record. The record itself stays last-writer-wins, a plain Put that no compare-and-swap
-//     fences, as main's #4325 and this branch had it. Every generation is unique to one write,
-//     which names its chunks by a crypto/rand generation of its own. This listener's copy saw the
-//     head whose chunks it deletes before this write's own head landed, so that head comes earlier
-//     in the bucket than this write's head, and no later write names that generation again; the
-//     delete is made only once this write's head has landed, so it removes only chunks no head
-//     names. The chunks of a head the copy had not taken, which landed between the two, are left
-//     for the collection, and so is a generation another record of the copy names, a manifest
-//     copied under another key (session's ownLayout). Session's
+//     that record. The record itself is last-writer-wins, a plain Put that no compare-and-swap
+//     fences (main's #4325). Every generation is unique to one write, which names its chunks by a
+//     crypto/rand generation of its own. This listener's copy saw the head whose chunks it deletes
+//     before this write's own head landed, so that head comes earlier in the bucket than this
+//     write's head, and no later write names that generation again; the delete is made only once
+//     this write's head has landed, so it removes only chunks no head names. The chunks of a head
+//     the copy had not taken, which landed between the two, are left for the collection, and so is
+//     a generation another record of the copy names, a manifest copied under another key
+//     (session's ownLayout). Session's
 //     TestAKnownSessionWriteFromACopyBehindTheBucketDeletesOnlyChunksNoHeadNames pins it.
 //   - The known-session store's purge of the markers its chunk keys' deletes left (session's
 //     purgeChunkMarkers, kvchunk.PurgeMarkers), each one its watcher was delivered

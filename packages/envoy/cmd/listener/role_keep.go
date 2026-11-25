@@ -777,19 +777,6 @@ func roleKeepDrainBackoff(last time.Duration) time.Duration {
 	return min(2*last, roleKeepDrainRetryCap)
 }
 
-// roleKeepBusyPause is how long a handover under cfg waits before its next walk when the walk
-// before it found the lane busy (roleKeepLaneBusy, handOverKeptRole): bus.KeptRoleClaimWindow,
-// since the walk holding the lane can still be forwarding under its claim until that claim
-// lapses. cfg.laneBusyPause above zero replaces it, for a test whose other walk confirms or
-// releases every claim it writes before it ends; zero, which main.go leaves it, is the claim
-// window, so no configuration walks a busy lane again with no pause by leaving the field unset.
-func roleKeepBusyPause(cfg listenerDeliveryHandlerConfig) time.Duration {
-	if cfg.laneBusyPause > 0 {
-		return cfg.laneBusyPause
-	}
-	return bus.KeptRoleClaimWindow
-}
-
 // drainKeptRole hands role's kept lane to the session that holds the role. It is the whole of a
 // handover under role's own guard: runKeptRoleDrain and runTakenRoleDrain are the goroutines its
 // starts run it in (the claim route, the registration route, the keep and the session relay), and
@@ -1031,7 +1018,10 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 			waitOut()
 			continue
 		case roleKeepLaneBusy:
-			pause = roleKeepBusyPause(cfg)
+			pause = bus.KeptRoleClaimWindow
+			if faults := cfg.takeoverFaults.faults(); faults.laneBusyPause > 0 {
+				pause = faults.laneBusyPause
+			}
 		case roleKeepWorkLeft, roleKeepHolderMoved:
 			pause = 0
 		}

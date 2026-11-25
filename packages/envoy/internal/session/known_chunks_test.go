@@ -702,21 +702,6 @@ func TestAKnownSessionWriteOverACopiedManifestLeavesTheOwnersChunks(t *testing.T
 	}
 }
 
-// headLayout is the layout the head under key names, read from the bucket through kv, a raw
-// handle (rawKnown), so no store's copy answers it.
-func headLayout(t *testing.T, kv nats.KeyValue, key string) kvchunk.Layout {
-	t.Helper()
-	head, err := kv.Get(key)
-	if err != nil {
-		t.Fatalf("read %s's head from the bucket: %v", key, err)
-	}
-	layout, err := kvchunk.ReadLayout(head.Value())
-	if err != nil || !layout.Chunked() {
-		t.Fatalf("%s's head holds %.60q (%v), want a manifest", key, head.Value(), err)
-	}
-	return layout
-}
-
 // A known-session write deletes the chunks of the record its listener's copy holds, not those of
 // the bucket's head, and that copy can be behind the bucket (internal/bus/kv_leader_read.go). Each
 // write names its chunks by a generation of its own, so a copy behind the bucket names a generation
@@ -739,12 +724,12 @@ func TestAKnownSessionWriteFromACopyBehindTheBucketDeletesOnlyChunksNoHeadNames(
 	if err := known.RecordWithin(t.Context(), KnownSession{SessionID: sessionID, Topics: kvchunktest.Topics("g0", 400)}); err != nil {
 		t.Fatalf("record G0 from listener A: %v", err)
 	}
-	g0 := headLayout(t, kv, sessionID)
+	g0 := kvchunktest.HeadLayout(t, kv, sessionID)
 	known.StopWatch()
 	if err := other.RecordWithin(t.Context(), KnownSession{SessionID: sessionID, Topics: kvchunktest.Topics("g1", 400)}); err != nil {
 		t.Fatalf("record G1 from listener B: %v", err)
 	}
-	g1 := headLayout(t, kv, sessionID)
+	g1 := kvchunktest.HeadLayout(t, kv, sessionID)
 	if g1.Generation == g0.Generation {
 		t.Fatalf("G1's head names G0's generation %s, want one of its own", g0.Generation)
 	}
@@ -757,7 +742,7 @@ func TestAKnownSessionWriteFromACopyBehindTheBucketDeletesOnlyChunksNoHeadNames(
 	if err := known.RecordWithin(t.Context(), KnownSession{SessionID: sessionID, Topics: topics}); err != nil {
 		t.Fatalf("record G2 from listener A's copy behind the bucket: %v", err)
 	}
-	g2 := headLayout(t, kv, sessionID)
+	g2 := kvchunktest.HeadLayout(t, kv, sessionID)
 	if g2.Generation == g0.Generation || g2.Generation == g1.Generation {
 		t.Fatalf("after G2's write the head names generation %s, want one neither G0 (%s) nor G1 (%s) names", g2.Generation, g0.Generation, g1.Generation)
 	}
