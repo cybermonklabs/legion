@@ -1342,7 +1342,7 @@ func followUpRequested(r *http.Request) (bool, error) {
 // step that writes its index and the write of its node (planMessageReply). A follow-up names no
 // block, and its thread and issue are the first reply's, so the plan's serves both rows the route
 // can insert. Nothing of the body and nothing of the reply's own row is read here, so this write
-// holds the transaction id for its own statements alone (INFRA-636).
+// holds the transaction id for its own statements alone, which the xid window tests count.
 func (s *server) insertSessionReply(
 	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, plan messageReplyPlan,
 ) (model.Message, model.Event, error) {

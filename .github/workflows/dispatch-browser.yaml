@@ -34,7 +34,7 @@ on:
         required: true
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the merge job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the merge job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends, for the job that calls
           this file. Empty for the nightly workflow and for ci.yaml's dispatch-references job,
           neither of which reports a check.
@@ -101,7 +101,7 @@ jobs:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-shard-job-its-stacks-and-its-container
     container:
-      image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:e07980de09bccdbac284c19b9aa94032e90b9f9deb3edac565e3fb0945f2b230
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
     # 1,080 + 120 + 120 + 565 = 1,885 s, 31 min 25 s, rounded up to the 32 minutes below.
@@ -123,13 +123,13 @@ jobs:
         with:
           name: ${{ inputs.job }}-binaries
           path: packages/envoy/out/dispatch-e2e-binaries-1
+      # why: .github/ci-notes/dispatch-browser.md#why-the-second-read-of-the-binaries-is-a-script
       - name: Download the binaries again, after a first attempt that did not complete
         if: steps.binaries.outcome != 'success'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         timeout-minutes: 2
-        with:
-          name: ${{ inputs.job }}-binaries
-          path: packages/envoy/out/dispatch-e2e-binaries-2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/dispatch-browser-fetch-binaries.sh packages/envoy/out/dispatch-e2e-binaries-2 "${{ inputs.job }}"
       # why: .github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it
       - name: Place the binaries of the attempt that completed
         env:
@@ -216,7 +216,7 @@ jobs:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-alone-job-and-what-it-keeps-the-same-as-the-shard-job
     container:
-      image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:e07980de09bccdbac284c19b9aa94032e90b9f9deb3edac565e3fb0945f2b230
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-alone-jobs-measured-steps-and-its-budget
     # 180 + 120 + 120 + 442 = 862 s, 14 min 22 s, rounded up to the 15 minutes below.
@@ -237,13 +237,13 @@ jobs:
         with:
           name: ${{ inputs.job }}-binaries
           path: packages/envoy/out/dispatch-e2e-binaries-1
+      # why: .github/ci-notes/dispatch-browser.md#why-the-second-read-of-the-binaries-is-a-script
       - name: Download the binaries again, after a first attempt that did not complete
         if: steps.binaries.outcome != 'success'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         timeout-minutes: 2
-        with:
-          name: ${{ inputs.job }}-binaries
-          path: packages/envoy/out/dispatch-e2e-binaries-2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/dispatch-browser-fetch-binaries.sh packages/envoy/out/dispatch-e2e-binaries-2 "${{ inputs.job }}"
       - name: Place the binaries of the attempt that completed
         env:
           FIRST: ${{ steps.binaries.outcome }}

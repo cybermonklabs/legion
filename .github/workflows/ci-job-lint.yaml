@@ -1,6 +1,6 @@
 name: CI job lint
 
-# The steps of ci.yaml's `lint` job, in a file of its own, and the private-name check of the
+# The steps of `.github/workflows/ci.yaml#lint` job, in a file of its own, and the private-name check of the
 # repository in a job beside it (private-names, below).
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
@@ -10,25 +10,25 @@ name: CI job lint
 #
 # Each job's last step reports ci-ok for the caller: on a merge-group run its own result decides,
 # it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of ci.yaml ends.
-# `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
       changes-result:
         description: >-
-          ci.yaml's `needs.changes.result`: the two notices steps below run when `changes` did
+          `.github/workflows/ci.yaml#needs.changes.result`: the two notices steps below run when `changes` did
           not succeed, as they do in ci.yaml.
         type: string
         required: true
       go_notices:
         description: >-
-          ci.yaml's `needs.changes.outputs.go_notices`: the two notices steps below run when
+          `.github/workflows/ci.yaml#needs.changes.outputs.go_notices`: the two notices steps below run when
           that filter matched.
         type: string
         required: true
@@ -144,8 +144,10 @@ jobs:
           # shellcheck disable=SC2046 # the file is the package list, split on purpose
           .github/scripts/release-push.sh fold-orphans $(<.github/changelog-packages)
 
-      # No setup-go cache: gofmt needs none, and the notices step below keeps its own (go-notices),
-      # keyed on the Go version this step installs.
+      # No setup-go cache: gofmt needs none, nor does the citation check's go run of its scanner,
+      # which compiles only standard-library packages (4 s from an empty build cache, measured on
+      # a development machine), and the notices step below keeps its own (go-notices), keyed on
+      # the Go version this step installs.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -155,10 +157,11 @@ jobs:
           cache: false
 
       # The skill-scenario rig's daemon-pane.go belongs to no module (it runs with `go run -overlay`
-      # inside packages/daemon), so it is formatted here with the daemon.
+      # inside packages/daemon), so it is formatted here with the daemon, and so is the citation
+      # check's Go scanner, .github/scripts/ci_citations_code.go, which `go run` runs alone.
       - name: Check the Go daemon's formatting
         run: |
-          unformatted=$(gofmt -l packages/daemon packages/pi-legion/scripts/skill-scenarios/daemon-pane.go)
+          unformatted=$(gofmt -l packages/daemon packages/pi-legion/scripts/skill-scenarios/daemon-pane.go .github/scripts/ci_citations_code.go)
           if [ -n "$unformatted" ]; then
             echo "::error::gofmt -l lists files that are not gofmt-formatted; run gofmt -w on them:"
             echo "$unformatted"
@@ -170,6 +173,19 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # A citation under .github is one token, a path and a name, never a line: a line number
+      # drifts with every edit of the cited file, and a rename anywhere in the repository can
+      # break a name, so this job, which every change runs, holds them
+      # (.github/ci-notes/ci.md#a-citation-names-a-symbol-never-a-line). Its test runs first.
+      # After the install and setup-go: the check reads each cited TypeScript and JavaScript
+      # file through the typescript package under node_modules, with Bun, and each cited Go file
+      # through go/scanner, with go run.
+      - name: Test the citation check
+        run: .github/scripts/ci-citations.test.sh
+
+      - name: Check every citation under .github is a token whose file holds its name
+        run: .github/scripts/ci_citations.py
 
       # The frozen install above does not refuse a workspace `version` the lockfile does not hold.
       # --lockfile-only writes the lockfile the manifests imply and installs nothing, so a

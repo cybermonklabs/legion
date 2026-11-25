@@ -81,8 +81,10 @@ For each gated step, once every child is filed:
    `skill://legion-architect/references/wake-routing.md`).
 
 - A version you write moves the request to your turn, and the person stops seeing it: once they
-  agree, run `dispatch request-approval` again. Their answer, resolve or decline keeps it with
-  them.
+  agree, run `dispatch request-approval` again.
+  Their answer, resolve or decline writes one version, which keeps it with them.
+  The version carries an approval only when the person's answer, resolve or decline is its whole change.
+  If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
 - `already approved at version <N>`: still `register_gate` that id and version.
 - Refusals record nothing: `VERSION_NOT_IN_DISPATCH` (register the latest version),
   `GATE_STEP_REQUIRED` (name the step),
