@@ -9864,7 +9864,7 @@ A deployment that sets it also gives the daemon these:
 
 - **The secrets broker** lists the daemon's ServiceAccount in `BROKER_EXCHANGE_ACCOUNTS` with an entry that names the daemon's project, a person and the fixed session `legion-daemon:<PROJECT>`:
   `<the daemon's ServiceAccount>=<PROJECT>=<person>=legion-daemon:<PROJECT>`.
-  Dispatch refuses every write of a token that names no person (`SIGN_IN_REQUIRED`), a write to a target that resolves to no project or to nothing (`403 PROJECT_SCOPE`), and every write the daemon makes as `legion-daemon:<PROJECT>` with a token of another session (`403 ACTOR_SESSION_MISMATCH`).
+  Dispatch refuses every write of a machine's token that names no person (`SIGN_IN_REQUIRED`), a write to a target that resolves to no project or to nothing (`403 PROJECT_SCOPE`), and every write the daemon makes as `legion-daemon:<PROJECT>` with a token of another session (`403 ACTOR_SESSION_MISMATCH`).
   The project that the entry names does not limit the token's writes to that project.
   An entry that fixes its session needs no pod-session registration.
 

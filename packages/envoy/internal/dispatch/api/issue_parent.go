@@ -299,9 +299,11 @@ func foreignTargets(ctx context.Context, q queryer, project string, targets []st
 // for a write whose target, what (such as "blocked_by issue KEY"), belongs to project, a private
 // project the credential does not name: the one project access.CredentialCovers leaves out. A
 // blocked_by target and a parent are asked about in more than one step, before any lock and again
-// under the locks, and the results routes ask once about the check's issue (readResultRequest,
-// retractCheckResult); each words its refusal here, so the steps cannot drift. Every caller passes
-// private as false while Dispatch holds no private project, so today nothing reaches it.
+// under the locks, the results routes ask once about the check's issue (readResultRequest,
+// retractCheckResult), and a status change's plan asks about each step's issue under its owner
+// locks (planStatusChangeUnderLocks in status_change.go); each words its refusal here, so the
+// steps cannot drift. Every caller passes private as false while Dispatch holds no private
+// project, so today nothing reaches it.
 func refuseUncoveredProject(caller, what, project string) error {
 	return errorf(http.StatusForbidden, codeProjectScope,
 		"this request's credential names project %s, and %s belongs to project %s, a private project that the credential does not name",

@@ -54,7 +54,7 @@ every session it enrolled ends, and the box signs in again to work on.
 A Kubernetes pod trades its own projected ServiceAccount token at the same exchange for a Dispatch
 access token alone: that trade mints no machine login and enrols nothing. The entry that lists the
 pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` gives it a person
-and the one Dispatch project it may write, or no project for an entry that names none
+and the one Dispatch project its token names, or no project for an entry that names none
 (`<service account>==<person>`), or neither a person nor a project for an entry that names
 neither (`<service account>==`): such a token acts as the account itself, names the account as its
 service, and Dispatch records its writes under that account. An entry that names a project names

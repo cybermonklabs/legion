@@ -74,11 +74,13 @@ export interface DispatchCliIo {
 }
 
 /** Exit codes: written or read, a call that did not do what it asks, and a usage error. REFUSED
- *  is every failure that is not a usage error, the call not done for a reason other than its
- *  arguments: a refusal by Dispatch or AskGate (a near copy, an AskGate block, a server refusal),
- *  a Dispatch the command cannot reach (DispatchUnreachableError), and Dispatch keeping no answer
- *  for a call that writes nothing (DispatchAnswerNotKeptError). An argument this CLI refuses
- *  before any request is USAGE, whether the argv named a command or not. */
+ *  is a refusal by Dispatch or AskGate (a near copy, an AskGate block, a server refusal), a
+ *  Dispatch the command cannot reach (DispatchUnreachableError), and Dispatch keeping no answer
+ *  for a call that writes nothing (DispatchAnswerNotKeptError). USAGE is an argument this CLI
+ *  refuses before any request, whether the argv named a command or not, and a session or a
+ *  configuration the command cannot use: a refusal of callSession (DISPATCH_HOST or the session
+ *  id unset) or of callDispatch (Dispatch turned off, an envoy.json it cannot read), and a
+ *  corrupted state.json. */
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
@@ -785,10 +787,8 @@ export async function runDispatchCli(
   } catch (error) {
     // A 409 PARENT_STATUS_CONFLICT names each issue that holds the rule and what the refused
     // command's caller does next (`parentStatusConflictLines`), as a near copy's refusal names
-    // each open issue. LEGION_ISSUE tells the project of the issue a call with no --issue names.
-    text = (
-      parentStatusConflictLines(error, tool, args, env.LEGION_ISSUE) ?? [messageFor(error)]
-    ).join("\n");
+    // each open issue.
+    text = (parentStatusConflictLines(error, tool, args) ?? [messageFor(error)]).join("\n");
     // The command's write landed but its answer was lost: it is done, so the call succeeded, and
     // its one line says to read back what it made. The executor turns a landing of a write that
     // was only a step of its command (a picture, a closing reason) into a failure of its own. A

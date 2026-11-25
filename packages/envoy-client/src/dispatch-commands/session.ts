@@ -125,8 +125,7 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // names none does, except in a private project it does not name. So the line names the
   // project and claims no limit on what the token writes; a read-only credential's line names
   // none, as it names no write.
-  const tokenProject =
-    project !== null && !readOnly ? ` Its token names project ${project}.` : "";
+  const tokenProject = project !== null && !readOnly ? ` Its token names project ${project}.` : "";
   return {
     text: acting + elsewhere + tokenProject,
     details: { session, owner, service, project },

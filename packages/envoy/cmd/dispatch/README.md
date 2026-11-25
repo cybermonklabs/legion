@@ -311,6 +311,8 @@ A `blocked_by` target and a parent may each be an issue of any project.
 The issue create and `PATCH /api/v1/issues/{key}` make the same check for each `blocked_by` target and for a parent of another project, before any lock is taken (`foreignDependencyTargets`) and again under the locks (`writeBlockedBy` for a target, and `validateIssueParent` or the create's own read of its parent for the parent).
 A result and its retraction are appended to the check's issue, which a parent of another project can put in another project, and which the path does not name.
 `POST /api/v1/issues/{key}/results` and its dry run (`POST /api/v1/issues/{key}/results/dry-run`) make the same check for that issue once, before anything is written, and `POST /api/v1/results/{id}/retract` makes it once, before it takes that issue's owner lock.
+A status change's cascade can write an issue of another project, since a parent may be one: an ancestor that `include_parent` moves, and an issue under the issue that `include_children` moves or `unlink_children` unlinks.
+`POST /api/v1/issues/{key}/status-change` and its dry run make the same check for each issue a step of the call writes, under the issues' owner locks and before the first step (`planStatusChangeUnderLocks`).
 
 The session check holds the rows classed *the calling session's* whose path names a session
 — the `agents/{session_id}` writes and `PUT /api/v1/me/agents/{session_id}/state` — to the session the caller's credential proved:
@@ -5203,7 +5205,9 @@ Each item below names a path with its method and identity, then its purpose.
   - `403 BROWSER_SIGN_IN_REQUIRED`: `include_children` with `done` from a request that presents a token, whatever the setting.
     Only a person who is signed in at a browser closes the open issues under an issue together with it.
 
-  - `403 PROJECT_SCOPE`: the request's credential may write one project, and a write of the call is of an issue of another project: an ancestor that `include_parent` moves, or an issue under the issue that `include_children` moves or `unlink_children` removes, since a parent may be an issue of another project.
+  - `403 PROJECT_SCOPE`: the request's credential names one project, and a write of the call is of an issue of a private project it does not name, the one project `access.CredentialCovers` leaves out.
+    Such an issue is an ancestor that `include_parent` moves, or an issue under the issue that `include_children` moves or `unlink_children` removes, since a parent may be an issue of another project.
+    No project is private yet, so today the route refuses no such write.
     The route checks every write of the plan before the first one, so it refuses the whole call before any write, a dry run too; it decides this after `ISSUE_CLOSED` and before `BROWSER_SIGN_IN_REQUIRED` and `PARENT_STATUS_CONFLICT`.
     A credential that names no project is refused nothing here.
 

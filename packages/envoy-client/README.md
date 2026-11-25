@@ -1352,9 +1352,9 @@ could not be read or used, each exiting 2. `DISPATCH_HOST` unset with
 `CLAUDE_CODE_CHILD_SESSION=1` is host `claude`. stdout carries what
 the model reads: the result, one `- picture: <path>` line per image (written under the session
 directory), the follow notice the first time a call follows an ask, and every refusal. It exits 0
-on success, 1 when the call did not do what it asks, for a reason other than its arguments (Dispatch
-or AskGate refused it, the command could not reach Dispatch, or Dispatch kept no answer for a call
-that writes nothing), and 2 on a usage error. A usage error
+on success, 1 when Dispatch or AskGate refused the call, the command could not reach Dispatch, or
+Dispatch kept no answer for a call that writes nothing, and 2 on a usage error or on a session or
+configuration it cannot use (above). A usage error
 includes every refusal of the flags or arguments before any request, and a corrupted `state.json`.
 Under Claude Code the whole output stays under 25,000 characters: the result text is cut to fit,
 the full text written to a file the output names, and the picture lines and follow notice kept.
@@ -1378,11 +1378,6 @@ Those flags go with `--status` alone, and with `--reason` for done, so a call th
 another field is told to send that change in a call of its own.
 A reparent refused for a child, against the status it also wrote, is told to run the status change
 first, in a call of its own, and the reparent after it, without `--status`.
-Dispatch refuses a credential scoped to one project each step that writes an issue of another
-project (`403 PROJECT_SCOPE`), and the CLI does not know its credential's scope. So where an issue
-the refusal names, which a flag of the line writes, is in another project than the issue the call
-names (its `--issue`, else `LEGION_ISSUE`), the line also says that such a credential is refused
-that step, and that a person, or a credential that names no project, must make it.
 When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
 be written, the result still prints, with one line saying so. `dispatch proxy` is the exception to
 this paragraph's output and exit statuses. It leaves standard output to its command, and it writes

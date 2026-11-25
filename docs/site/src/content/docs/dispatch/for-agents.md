@@ -108,10 +108,10 @@ Bulk parent changes are ordinary independent keyed writes, at most eight in flig
 New epic waits for the create's answer before registering parent changes. Start next waits for each predecessor rank write and stops at a refusal, reporting which issues did not move up; a selection already at the head of the queue is reported, not rewritten.
 
 A command that a Dispatch spec defines, given several problems, is refused once with every problem
-listed, so the next run can fix them all. It exits 0 when it wrote or read, and 1 when it did not
-do what it asks, for a reason other than its arguments: Dispatch or AskGate refused it, the command
-could not reach Dispatch, or Dispatch kept no answer for a call that writes nothing. It exits 2 on
-a usage error, such as flags it refused before any request, and an unknown command exits 2 too.
+listed, so the next run can fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or
+AskGate refused it, the command could not reach Dispatch, or Dispatch kept no answer for a call
+that writes nothing. It exits 2 on a usage error, such as flags it refused before any request, and
+on a session or configuration it cannot use. An unknown command exits 2 too.
 The commands that no spec defines exit by rules of their own,
 which each one's help gives. `dispatch proxy` exits with the status of the command it runs. It
 exits 127 for a command that does not exist, 126 for a command that cannot run, 128 plus the
