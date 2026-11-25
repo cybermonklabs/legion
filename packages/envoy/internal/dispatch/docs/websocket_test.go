@@ -203,7 +203,7 @@ func admittedRequest(t *testing.T, service *Service, request *http.Request) *htt
 	if err != nil {
 		t.Fatalf("read the document's issue as the socket's admission does: %v", err)
 	}
-	connection := &connectionState{mayWrite: true, issue: issue, admission: &schemaAdmission{cancel: cancel}}
+	connection := &connectionState{caller: SocketCaller{MayWrite: true}, issue: issue, admission: &schemaAdmission{cancel: cancel}}
 	return request.WithContext(context.WithValue(ctx, connectionContextKey{}, connection))
 }
 

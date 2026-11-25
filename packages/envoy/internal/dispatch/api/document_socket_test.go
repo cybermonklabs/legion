@@ -34,33 +34,6 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// agentTokenLookups counts each statement a traced pool runs that looks a bearer up among the
-// personal tokens (agentTokenLookup), a statement of a batch included.
-type agentTokenLookups struct{ count atomic.Int64 }
-
-func (l *agentTokenLookups) read(statement string) {
-	if agentTokenLookup.MatchString(statement) {
-		l.count.Add(1)
-	}
-}
-
-func (l *agentTokenLookups) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	l.read(data.SQL)
-	return ctx
-}
-
-func (l *agentTokenLookups) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func (l *agentTokenLookups) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
-	return ctx
-}
-
-func (l *agentTokenLookups) TraceBatchQuery(_ context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
-	l.read(data.SQL)
-}
-
-func (l *agentTokenLookups) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
-
 // countedServiceVerifier is a service-account token verifier (Deps.OIDC) that counts the tokens
 // it is asked to verify.
 type countedServiceVerifier struct {
@@ -209,10 +182,9 @@ func pendingAuthorsOf(t *testing.T, database *store.Store, room string) []model.
 // edit (doc_pending_authors) is that very actor, which graphstore reads as the token's person
 // (ActingCredential).
 //
-// Controls: the mount as on main, with no decideBrokerToken layer and the document service asking
-// identity.Login alone, refuses the socket main's 401 and the row fails at its open; the
-// connection's actor handed as a bare session with no owner, Proven or act fails on the stored
-// author.
+// Controls: the mount with no decideBrokerToken layer, the document service asking identity.Login
+// alone, refuses the socket 401 and the row fails at its open; the connection's actor handed as a
+// bare session with no owner, Proven or act fails on the stored author.
 func TestADocumentSocketAdmitsABrokerTokenAsItsSession(t *testing.T) {
 	t.Parallel()
 	rig := newDocumentSocketTokenRig(t, time.Hour, nil)
@@ -392,28 +364,24 @@ func TestADocumentSocketsAccessLogNamesItsTokenCaller(t *testing.T) {
 // the shared bearer, a personal token that writes, a read-only personal token, and a service-account
 // token, a JWT on a server that verifies them. Each socket's token message is answered read-write,
 // and its edit is stored and recorded as the cookie's person. Across all four no statement the
-// server's pool runs looks a personal token up (agentTokenLookup on rig.tokenLookups), and the
-// service-account verifier is asked nothing. The counters are this server's own: the API on the
-// same server, sent the personal token and the service-account token, looks the one up and verifies
-// the other, and both counters move.
+// server's pool runs looks a personal token up (agentTokenLookup among rig.statements), and the
+// service-account verifier is asked nothing. The records are this server's own: the API on the
+// same server, sent the personal token and the service-account token, looks the one up and
+// verifies the other, and both records show it.
 //
 // Control: the mount resolving a non-DPoP bearer, through optionalActor or through
 // refuseReadOnlyToken mounted on every request as on GET /ws/live, makes a statement that reads
-// agent_tokens and agent_read_tokens, and the row fails on the lookup count (the read-only
-// personal token's socket is refused 403 READ_ONLY_TOKEN there too).
+// agent_tokens and agent_read_tokens, and the row fails on that lookup (the read-only personal
+// token's socket is refused 403 READ_ONLY_TOKEN there too).
 func TestADocumentSocketNeverReadsABearerThatIsNotDPoP(t *testing.T) {
 	t.Parallel()
-	rig := newDocumentSocketTokenRig(t, time.Hour, nil)
-	minted := rig.tokens.asPerson(t, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "a writer", "scopes": []string{model.ScopePerson}})
-	if minted.Code != http.StatusCreated {
-		t.Fatalf("mint a personal token that writes: status=%d body=%s", minted.Code, minted.Body.String())
-	}
-	writer := decodeBody[agentTokenResponse](t, minted).Token
+	rig := newDocumentSocketTokenRig(t, time.Hour, nil, verifyingServiceAccounts)
+	writer := mintPersonalToken(t, rig.tokens.handler, brokerTestPerson, "a writer", []string{model.ScopePerson}).Token
 	reader := readOnlyPersonalTokens(t, rig.tokens)[0].token
 	serviceAccount := rig.serviceTokens.mint(t, serviceTokenAudience)
 	person := model.Actor{Kind: "user", ID: documentSocketPerson, Proven: true}
 
-	lookups := rig.tokenLookups.count.Load()
+	sockets := rig.statements.count()
 	for index, bearer := range []struct{ name, authorization string }{
 		{"the shared bearer", "Bearer agent-token"},
 		{"a personal token that writes", "Bearer " + writer},
@@ -434,21 +402,22 @@ func TestADocumentSocketNeverReadsABearerThatIsNotDPoP(t *testing.T) {
 			peer.closeAndWait(t)
 		})
 	}
-	if looked := rig.tokenLookups.count.Load() - lookups; looked != 0 {
-		t.Errorf("the document sockets looked a personal token up %d times, want none: no bearer beside a cookie is read", looked)
+	if holdsStatement(rig.statements.since(sockets), agentTokenLookup) {
+		t.Errorf("the document sockets looked a personal token up, want no lookup: no bearer beside a cookie is read")
 	}
 	if verified := rig.serviceVerifies.calls.Load(); verified != 0 {
 		t.Errorf("the document sockets asked the service-account verifier %d times, want none", verified)
 	}
 
+	api := rig.statements.count()
 	for _, authorization := range []string{"Bearer " + writer, "Bearer " + serviceAccount} {
 		if whoami := rig.serve(brokerRequest(t, http.MethodGet, "/api/v1/whoami", nil, authorization, "")); whoami.Code != http.StatusOK {
 			t.Fatalf("GET /api/v1/whoami on the same server: status=%d body=%s", whoami.Code, whoami.Body.String())
 		}
 	}
-	if rig.tokenLookups.count.Load() == lookups || rig.serviceVerifies.calls.Load() == 0 {
-		t.Fatalf("the API on the same server read the two bearers with %d personal-token lookups and %d verifications, want at least one of each: the counters do not see this server's reads",
-			rig.tokenLookups.count.Load()-lookups, rig.serviceVerifies.calls.Load())
+	if looked := holdsStatement(rig.statements.since(api), agentTokenLookup); !looked || rig.serviceVerifies.calls.Load() == 0 {
+		t.Fatalf("the API on the same server read the two bearers with a personal-token lookup %t and %d verifications, want a lookup and at least one verification: the records do not see this server's reads",
+			looked, rig.serviceVerifies.calls.Load())
 	}
 }
 

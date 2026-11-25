@@ -40,23 +40,23 @@ import (
 // newCookieServerOn's do, and whose agents present tokens the secrets broker issued, as
 // newBrokerTokenRig's do: the one server where a request can carry both, a cookie and a token
 // beside it. The API and the document service share one cookie identity, as cmd/dispatch hands
-// them one. It verifies service-account tokens too (Deps.OIDC), as a deployment that serves its
-// fleet's pods does.
+// them one. A rig made with verifyingServiceAccounts verifies service-account tokens too
+// (Deps.OIDC), as a deployment that serves its fleet's pods does.
 type documentSocketTokenRig struct {
 	// tokens is the rig the broker-token verifier comes from: its stub broker answers what a test
 	// says a token is, and its deps.BrokerTokens is the verifier this server decides tokens with.
 	// Its own server is sent no socket; a test that needs a person's agent token mints it there
-	// (asPerson), on the database this server reads too.
+	// (mintPersonalToken on its handler, readOnlyPersonalTokens), on the database this server
+	// reads too.
 	tokens *brokerTokenRig
 	// serviceTokens is the issuer of the service-account tokens this server verifies, and
 	// serviceVerifies the verifier it verifies them with, counting the tokens it is asked to
-	// verify.
+	// verify: both nil on a rig made without verifyingServiceAccounts.
 	serviceTokens   *serviceTokenIssuer
 	serviceVerifies *countedServiceVerifier
-	// tokenLookups counts each statement the server's pool runs that looks a bearer up among the
-	// personal tokens (agentTokenLookup), and specWriterReads records each read of the spec-writer
-	// rule it runs (specWriterOfIssueSQL).
-	tokenLookups    *agentTokenLookups
+	// statements records each statement the server's pool runs (poolStatements), and
+	// specWriterReads each read of the spec-writer rule it runs (specWriterOfIssueSQL).
+	statements      *poolStatements
 	specWriterReads *specWriterReads
 	sessions        *store.PgSessionStore
 	// logins is the API's Identity: the cookie identity the document service shares, counting
@@ -82,26 +82,50 @@ type documentSocketTokenRig struct {
 // documentSocketPerson is the person signed in on a documentSocketTokenRig.
 const documentSocketPerson = "alice@d.example"
 
+// documentSocketRigConfig is what newDocumentSocketTokenRig's options set: the options its
+// broker-token verifier takes after the rig's own, and whether its server verifies
+// service-account tokens.
+type documentSocketRigConfig struct {
+	verifier        []func(*ciphertoken.Options)
+	serviceAccounts bool
+}
+
+// brokerTokenOptions applies options to the rig's broker-token verifier's options after the rig's
+// own, for a test that needs a bucket it can empty or a broker that does not answer.
+func brokerTokenOptions(options ...func(*ciphertoken.Options)) func(*documentSocketRigConfig) {
+	return func(config *documentSocketRigConfig) { config.verifier = append(config.verifier, options...) }
+}
+
+// verifyingServiceAccounts makes the rig's server verify service-account tokens (Deps.OIDC) with
+// an issuer of the rig's own (serviceTokens, serviceVerifies). A rig made without it has no such
+// verifier: its Deps.OIDC is nil.
+func verifyingServiceAccounts(config *documentSocketRigConfig) { config.serviceAccounts = true }
+
 // newDocumentSocketTokenRig signs documentSocketPerson in with a session cookie and gives her an
 // issue whose spec she can open, on a server whose sockets resolve their caller every heartbeat.
 // The verifier is newBrokerTokenRig's, taken from that rig rather than built a second time, so it
 // is the one every broker-token test drives: the same stub broker, the replay table on this same
-// database, and the switches cmd/dispatch sets on it. Each of options is applied to the verifier's
-// options after the rig's own, for a test that needs a bucket it can empty or a broker that does
-// not answer. The server's heartbeats run on beats (Deps.Clock; nil is the real clock), which a row
-// that moves through them hands a fake, and a live socket's read deadline on a fake no one moves
-// (Deps.LiveSocketClock), so no pong the runner holds back ends one. The server is register's own,
-// as newRegisteredTestServer's is, so a row can replace a check of it (served).
-func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, beats clock.Clock, options ...func(*ciphertoken.Options)) *documentSocketTokenRig {
+// database, and the switches cmd/dispatch sets on it. options are brokerTokenOptions and
+// verifyingServiceAccounts. The server's heartbeats run on beats (Deps.Clock; nil is the real
+// clock), which a row that moves through them hands a fake, and a live socket's read deadline on a
+// fake no one moves (Deps.LiveSocketClock), so no pong the runner holds back ends one. The server
+// is register's own, as newRegisteredTestServer's is, so a row can replace a check of it (served).
+func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, beats clock.Clock, options ...func(*documentSocketRigConfig)) *documentSocketTokenRig {
 	t.Helper()
 	ctx := context.Background()
-	rig := &documentSocketTokenRig{
-		heartbeats: &heartbeatCalls{}, serviceTokens: newServiceTokenIssuer(t),
-		tokenLookups: &agentTokenLookups{}, specWriterReads: &specWriterReads{},
+	var config documentSocketRigConfig
+	for _, option := range options {
+		option(&config)
 	}
-	rig.tokens = newBrokerTokenRigOn(t, testServerOptions{tracer: multitracer.New(rig.tokenLookups, rig.specWriterReads)},
-		append([]func(*ciphertoken.Options){timeBrokerCalls(t, rig.heartbeats)}, options...)...)
-	rig.serviceVerifies = &countedServiceVerifier{ServiceTokenVerifier: rig.serviceTokens.verifier(t)}
+	rig := &documentSocketTokenRig{heartbeats: &heartbeatCalls{}, statements: &poolStatements{}, specWriterReads: &specWriterReads{}}
+	rig.tokens = newBrokerTokenRigOn(t, testServerOptions{tracer: multitracer.New(rig.statements, rig.specWriterReads)},
+		append([]func(*ciphertoken.Options){timeBrokerCalls(t, rig.heartbeats)}, config.verifier...)...)
+	var serviceVerifier ServiceTokenVerifier
+	if config.serviceAccounts {
+		rig.serviceTokens = newServiceTokenIssuer(t)
+		rig.serviceVerifies = &countedServiceVerifier{ServiceTokenVerifier: rig.serviceTokens.verifier(t)}
+		serviceVerifier = rig.serviceVerifies
+	}
 	database := rig.tokens.database
 	rig.sessions = store.NewPgSessionStore(database.Pool)
 	person := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions}
@@ -111,7 +135,7 @@ func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, beats cloc
 	t.Cleanup(func() { _ = rig.documents.Shutdown(context.Background()) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: rig.logins, AgentTokens: sharedAgentTokens(t, "agent-token"),
-		ServerURL: testServerURL, Docs: rig.documents, Events: broker, OIDC: rig.serviceVerifies,
+		ServerURL: testServerURL, Docs: rig.documents, Events: broker, OIDC: serviceVerifier,
 		BrokerTokens: rig.tokens.deps.BrokerTokens, StreamHeartbeat: heartbeat, Clock: beats,
 	})
 	if err != nil {
@@ -240,10 +264,11 @@ func (s *specWriterReads) since(mark specWriterReadMark, want judgedWrite) (star
 
 // countedLogins is an Identity that records the lookups made through it as heartbeat calls
 // (heartbeatCalls.begin) and counts those that start once the test has said the cookie's session
-// ended (end): on a documentSocketTokenRig, the API's, whose only caller once the setup's requests
-// have answered is the document socket's heartbeat (signInStillResolves). A lookup counts when it
-// starts after end, so one already under way when the session ended, which may find the session
-// either way, is not counted.
+// ended (end): on a documentSocketTokenRig, the API's, which the api package asks of each socket a
+// cookie opens, once at its upgrade (refuseDocumentSocketCredential) and again at each of its
+// heartbeats (documentSocketStillResolves, signInStillResolves). A lookup counts when it starts
+// after end, so one already under way when the session ended, which may find the session either
+// way, is not counted.
 type countedLogins struct {
 	identity.Identity
 	calls    *heartbeatCalls
@@ -576,11 +601,7 @@ func TestACookieDocumentSocketClosesThoughABearerRidesBesideIt(t *testing.T) {
 	}{
 		{"the shared bearer", func(*testing.T, *documentSocketTokenRig) string { return "agent-token" }},
 		{"a personal token that writes", func(t *testing.T, rig *documentSocketTokenRig) string {
-			minted := rig.tokens.asPerson(t, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "a writer", "scopes": []string{model.ScopePerson}})
-			if minted.Code != http.StatusCreated {
-				t.Fatalf("mint a personal token that writes: status=%d body=%s", minted.Code, minted.Body.String())
-			}
-			return decodeBody[agentTokenResponse](t, minted).Token
+			return mintPersonalToken(t, rig.tokens.handler, brokerTestPerson, "a writer", []string{model.ScopePerson}).Token
 		}},
 	} {
 		t.Run(beside.name, func(t *testing.T) {
@@ -893,12 +914,12 @@ func TestATokenSocketOutlivesAnEmptiedAddressBucket(t *testing.T) {
 	opened := fake.Now()
 	from := time.Now()
 	var reads atomic.Int64
-	rig := newDocumentSocketTokenRig(t, heartbeat, fake, func(o *ciphertoken.Options) {
+	rig := newDocumentSocketTokenRig(t, heartbeat, fake, brokerTokenOptions(func(o *ciphertoken.Options) {
 		o.AddressLimit = ratelimit.Limit{Every: time.Hour, Burst: 1}
 		o.Now = func() time.Time {
 			return from.Add(time.Duration(reads.Add(1)) * (ciphertoken.AffirmativeCacheTTL + time.Second))
 		}
-	})
+	}))
 	door := openedDoor(t, rig.server, rig.artifactID, rig.cookie)
 	caller := newBrokerCaller(t)
 	const token = "a-token-holding-both-sockets-open"

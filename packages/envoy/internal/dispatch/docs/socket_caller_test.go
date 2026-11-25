@@ -94,9 +94,9 @@ func registeredActors(service *Service, artifactID string) []model.Actor {
 // connection as the handed session and credits the edit it sends to that whole actor, and the
 // identity is asked nothing. authorize tells the caller's Admitted, once, whether it admitted the
 // socket writable: true on an open issue's document, false on a closed issue's. With no caller
-// handed, the header identity decides as it did before the api package handed callers: carol's
-// header registers carol, Proven, and a request naming nobody is refused with the docs package's
-// own 401, as text/plain with nosniff, naming the process ProcessName reports.
+// handed, the header identity decides: carol's header registers carol, Proven, and a request
+// naming nobody is refused with the docs package's own 401, as text/plain with nosniff, naming the
+// process ProcessName reports.
 //
 // Controls: a requestCaller that asks the identity before it reads the handed caller registers bob
 // rather than the session and counts a lookup; one that asks and then takes the handed caller still

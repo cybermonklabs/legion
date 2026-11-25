@@ -348,10 +348,12 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 
 // documentSocketRig is the server main serves a person signed in through a sign-in pool: cookie
 // identity confirming membership with the pool, and the API and document socket Register mounts.
-// lookups is the API's Identity, which the document socket's heartbeat asks (signInStillResolves);
-// the document service keeps the bare one, so only the heartbeat's lookups and the API's own
-// requests are counted. spans records the server's own calls on each connection it accepts, its
-// end of a socket among them.
+// lookups is the API's Identity, which the api package asks of a socket the sign-in opens at its
+// upgrade (refuseDocumentSocketCredential) and at each of its heartbeats
+// (documentSocketStillResolves, signInStillResolves), so the upgrade's lookup is counted too; the
+// mounted socket never asks the document service's own identity, which keeps the bare one. The
+// API's own requests are counted as well. spans records the server's own calls on each connection
+// it accepts, its end of a socket among them.
 type documentSocketRig struct {
 	database   *store.Store
 	pool       *oidctest.Issuer

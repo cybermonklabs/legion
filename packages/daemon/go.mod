@@ -16,6 +16,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.3
 	github.com/nats-io/nats.go v1.55.0
 	github.com/nats-io/nkeys v0.4.16
+	github.com/reearth/ygo v1.49.5
 	github.com/sjawhar/envoy v0.0.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
@@ -161,7 +162,6 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
-	github.com/reearth/ygo v1.49.5 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/rs/zerolog v1.33.0 // indirect
 	github.com/sagikazarmark/locafero v0.7.0 // indirect

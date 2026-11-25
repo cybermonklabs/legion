@@ -1148,20 +1148,8 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 // credential its upgrade carried has expired (identity.ErrCredentialExpired). ygo reads CloseCode
 // off the cause and sends the document socket's peer that close frame, and the live socket reads
 // the cause itself (liveSocket.write).
-var errCredentialExpired error = credentialExpired{}
-
-// credentialExpired is that cause's type: an error whose CloseCode ygo sends.
-type credentialExpired struct{}
-
-func (credentialExpired) Error() string {
-	return "the credential this socket was opened with has expired; the page opens it again with a fresh one"
-}
-
-// CloseCode is the close frame ygo sends the document socket's peer: the document socket's code
-// for a socket whose admission no longer stands, on which the provider reconnects and the
-// reconnect is admitted again (contracts.DocumentAdmissionRevokedCloseCode).
-func (credentialExpired) CloseCode() (int, string) {
-	return contracts.DocumentAdmissionRevokedCloseCode, contracts.DocumentAdmissionRevokedCloseReason
+var errCredentialExpired error = admissionRevoked{
+	reason: "the credential this socket was opened with has expired; the page opens it again with a fresh one",
 }
 
 // errDocumentWriteRevoked is the cause whileCallerResolves cancels a writable document socket's
@@ -1169,35 +1157,49 @@ func (credentialExpired) CloseCode() (int, string) {
 // write its document, or the rule's read fails (documentSocketStillResolves). ygo reads CloseCode
 // off the cause and sends the peer that close frame, on which the provider reconnects with a
 // fresh proof, and the new upgrade decides the write afresh: read-only where the rule refuses.
-var errDocumentWriteRevoked error = documentWriteRevoked{}
+var errDocumentWriteRevoked error = admissionRevoked{
+	reason: "the spec-writer rule no longer lets the token this socket was opened with write its document; the provider reconnects and is admitted read-only",
+}
 
-// documentWriteRevoked is that cause's type: an error whose CloseCode ygo sends.
-type documentWriteRevoked struct{}
+// admissionRevoked is the type of those two causes: an error whose CloseCode ygo sends. The type
+// is comparable and each cause is one value with a reason of its own, so errors.Is tells the two
+// apart, as the live socket does when it reads the cause (liveSocket.write).
+type admissionRevoked struct{ reason string }
 
-func (documentWriteRevoked) Error() string {
-	return "the spec-writer rule no longer lets the token this socket was opened with write its document; the provider reconnects and is admitted read-only"
+func (c admissionRevoked) Error() string {
+	return c.reason
 }
 
 // CloseCode is the close frame ygo sends the document socket's peer: the document socket's code
-// for a socket whose admission no longer stands (contracts.DocumentAdmissionRevokedCloseCode).
-func (documentWriteRevoked) CloseCode() (int, string) {
+// for a socket whose admission no longer stands, on which the provider reconnects and the
+// reconnect is admitted again (contracts.DocumentAdmissionRevokedCloseCode).
+func (admissionRevoked) CloseCode() (int, string) {
 	return contracts.DocumentAdmissionRevokedCloseCode, contracts.DocumentAdmissionRevokedCloseReason
+}
+
+// signInLogin is the person the request's sign-in resolves to (Identity.Login): the sign-in
+// cookie, or under IAP identity the request's IAP assertion. It reads no Authorization header.
+// With no identity configured it is 500 IDENTITY_ERROR. It is the one read of a sign-in that the
+// API's caller (optionalActor), the document socket's credential rule
+// (refuseDocumentSocketCredential) and that socket's heartbeat (signInStillResolves) make.
+func (s *server) signInLogin(r *http.Request) (string, error) {
+	if s.deps.Identity == nil {
+		return "", errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
+	}
+	return s.deps.Identity.Login(r)
 }
 
 // signInStillResolves answers whether the browser credential a document socket was admitted with
 // still resolves - the sign-in cookie, or under IAP identity the upgrade's IAP assertion - which
 // is what the document socket's heartbeat asks of a socket no broker-issued token opened
 // (documentSocketStillResolves). The api package admits such a socket by that credential and
-// nothing else (refuseDocumentSocketCredential, Identity.Login), and this asks the same Identity
+// nothing else (refuseDocumentSocketCredential, signInLogin), and this asks the same Identity
 // the same question. It reads no Authorization header. A bearer sent beside the cookie admitted
 // nothing, so it keeps nothing open either: resolved here, it would hold the socket open for the
 // bearer's whole life after the cookie ended, a read-only token's included, which may read a
 // document through the API's reads and never through this socket.
 func (s *server) signInStillResolves(r *http.Request) error {
-	if s.deps.Identity == nil {
-		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
-	}
-	_, err := s.deps.Identity.Login(r)
+	_, err := s.signInLogin(r)
 	return err
 }
 
@@ -1351,10 +1353,7 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 		return actor, false, nil
 	}
 	// What is left is credentialSignIn: no Authorization header, or a blank one.
-	if s.deps.Identity == nil {
-		return model.Actor{}, false, errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
-	}
-	login, err := s.deps.Identity.Login(r)
+	login, err := s.signInLogin(r)
 	if err != nil {
 		return model.Actor{}, false, err
 	}

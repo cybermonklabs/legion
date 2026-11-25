@@ -235,6 +235,14 @@ func WithSocketCaller(ctx context.Context, caller SocketCaller) context.Context 
 	return context.WithValue(ctx, socketCallerContextKey{}, caller)
 }
 
+// PersonCaller is the caller a person's sign-in is: the person (kind "user"), Proven, since the
+// credential proved the login, who may write wherever the document service's own conditions let
+// the socket write (authorize). It is the caller the api package hands for a socket a sign-in
+// opens, and the one requestCaller takes from the identity service when none is handed.
+func PersonCaller(login string) SocketCaller {
+	return SocketCaller{Actor: model.Actor{Kind: "user", ID: login, Proven: true}, MayWrite: true}
+}
+
 // ServeHTTP serves the Hocuspocus-framed document websocket endpoint. Its caller is the one the
 // api package decided and handed on the request (SocketCaller), and with none handed the person
 // the identity service resolves (requestCaller). A request the identity service resolves to nobody
@@ -325,7 +333,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// is how a re-check closes the socket (RunSchemaAdmission).
 	ctx, cancel := context.WithCancelCause(r.Context())
 	defer cancel(nil)
-	connection := &connectionState{actor: caller.Actor, mayWrite: caller.MayWrite, admitted: caller.Admitted, issue: issue, admission: &schemaAdmission{cancel: cancel}}
+	connection := &connectionState{caller: caller, issue: issue, admission: &schemaAdmission{cancel: cancel}}
 	defer func() {
 		s.schemaAdmissions.remove(connection.admission)
 		s.releaseRoom(room)
@@ -567,16 +575,16 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 	connection.room = room
 	connection.id = s.nextConnection.Add(1)
 	connection.added = true
-	s.registerConnectionLocked(state, connection.id, connection.actor)
+	s.registerConnectionLocked(state, connection.id, connection.caller.Actor)
 	s.unlockState(room, state)
 	query := r.URL.Query()
 	admission := connection.admission
 	admission.key = schemaAdmissionKey{room: room, token: query.Get("schema_version")}
 	admission.page = schemaPageOf(query)
-	admission.writable = connection.mayWrite && open && fleet.admits(admission.page, admission.documentSince)
+	admission.writable = connection.caller.MayWrite && open && fleet.admits(admission.page, admission.documentSince)
 	s.schemaAdmissions.admit(admission)
-	if connection.admitted != nil {
-		connection.admitted(admission.writable)
+	if connection.caller.Admitted != nil {
+		connection.caller.Admitted(admission.writable)
 	}
 	// A reader joining a room already resident here asks the other processes for their readers'
 	// awareness, so their cursors reach it at once; a room this join has yet to load asks once its
@@ -632,5 +640,5 @@ func (s *Service) requestCaller(r *http.Request) (SocketCaller, error) {
 		return SocketCaller{}, err
 	}
 	accesslog.Note(r.Context(), accesslog.KindUser, login)
-	return SocketCaller{Actor: model.Actor{Kind: "user", ID: login, Proven: true}, MayWrite: true}, nil
+	return PersonCaller(login), nil
 }

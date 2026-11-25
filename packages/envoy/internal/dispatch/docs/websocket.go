@@ -16,26 +16,23 @@ import (
 )
 
 // connectionState is one document socket as its admission (ServeHTTP) found it and ygo's
-// authorization of the same request (authorize) registered it: the caller and whether it may
-// write, taken once (requestCaller), and the admission's one read of the document's issue, which
-// authorize takes rather than resolving or reading either again; then the room, the connection id
-// the service gave the connection, and whether authorize registered it, which tells the socket's
-// end whether its place under the connection cap is the connection's count to forget
-// (removeConnection) or a reservation to give back (releaseConnection). What else a socket's
-// admission reads off its request goes here too.
+// authorization of the same request (authorize) registered it: the caller, taken once
+// (requestCaller), and the admission's one read of the document's issue, which authorize takes
+// rather than resolving or reading either again; then the room, the connection id the service gave
+// the connection, and whether authorize registered it, which tells the socket's end whether its
+// place under the connection cap is the connection's count to forget (removeConnection) or a
+// reservation to give back (releaseConnection). What else a socket's admission reads off its
+// request goes here too.
 type connectionState struct {
-	room  string
-	id    uint64
-	actor model.Actor
-	// mayWrite is whether the caller's credential may write the document (SocketCaller.MayWrite).
-	// authorize admits the socket writable only when it holds, so a connection that may not write
-	// stays read-only for its life, its token message included.
-	mayWrite bool
-	// admitted is the caller's SocketCaller.Admitted, nil when it set none: authorize calls it
-	// once with whether it admitted the socket writable.
-	admitted func(writable bool)
-	issue    issueRead
-	added    bool
+	room string
+	id   uint64
+	// caller is the caller ServeHTTP took (SocketCaller): authorize registers the connection as
+	// its Actor, admits the socket writable only when its MayWrite holds, so a connection that
+	// may not write stays read-only for its life, its token message included, and calls its
+	// Admitted, when set, once with whether it admitted the socket writable.
+	caller SocketCaller
+	issue  issueRead
+	added  bool
 	// admission is this socket's schema admission: ServeHTTP makes it with the document's
 	// documentSince and the cancel of the socket's own request context, authorize decides and
 	// records it, the answer to the socket's token reads it (authorizeSchemaVersion), a re-check

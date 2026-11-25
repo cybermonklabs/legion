@@ -23,10 +23,10 @@ import (
 // open, with the host name its document service named on the 101 it answered that person's
 // cookie with: the process every refusal at the door must name too (docs.ProcessHeader).
 type socketDoor struct {
-	// path is the door's path, which a DPoP proof for it is signed for, and url the address an
-	// upgrade dials.
-	path, url string
-	process   string
+	// room is the room the door opens, path the door's path, which a DPoP proof for it is signed
+	// for, and url the address an upgrade dials.
+	room, path, url string
+	process         string
 }
 
 // socketAnswer is what one upgrade was answered: whether a socket opened (101), which the dial
@@ -63,7 +63,7 @@ func (door socketDoor) knock(t *testing.T, headers http.Header) socketAnswer {
 // sign-in, so a refusal there is the credential's and not the room's.
 func openedDoor(t *testing.T, server *httptest.Server, artifactID string, cookie *http.Cookie) socketDoor {
 	t.Helper()
-	door := socketDoor{path: "/ws/doc/" + artifactID}
+	door := socketDoor{room: artifactID, path: "/ws/doc/" + artifactID}
 	door.url = "ws" + strings.TrimPrefix(server.URL, "http") + door.path
 	signedIn := door.knock(t, http.Header{"Cookie": {cookie.Name + "=" + cookie.Value}})
 	if !signedIn.opened {
@@ -75,11 +75,11 @@ func openedDoor(t *testing.T, server *httptest.Server, artifactID string, cookie
 	return door
 }
 
-// presenting is what caller sends door with token under the DPoP scheme: the token and a fresh
-// proof of caller's key for the door's own target.
+// presenting is what caller sends door with token under the DPoP scheme, as presentingAt builds it
+// for the door's room.
 func (door socketDoor) presenting(t *testing.T, caller *brokerCaller, token string) http.Header {
 	t.Helper()
-	return presentedHeaders(caller.presenting(t, http.MethodGet, door.path, token, nil))
+	return presentingAt(t, caller, door.room, token)
 }
 
 // credentialsIn is the text of each credential headers carries: an Authorization header's token,
@@ -120,15 +120,11 @@ func TestADocumentSocketRefusesEachCredentialItDoesNotAdmit(t *testing.T) {
 
 	// The server most rows are sent to: its people sign in with a cookie, and it takes the shared
 	// bearer, personal tokens, service-account tokens and the stub broker's tokens.
-	served := newDocumentSocketTokenRig(t, time.Hour, nil)
+	served := newDocumentSocketTokenRig(t, time.Hour, nil, verifyingServiceAccounts)
 	door := openedDoor(t, served.server, served.artifactID, served.cookie)
 	broker := served.tokens.broker
 	caller := newBrokerCaller(t)
-	minted := served.tokens.asPerson(t, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "a writer", "scopes": []string{model.ScopePerson}})
-	if minted.Code != http.StatusCreated {
-		t.Fatalf("mint a personal token that writes: status=%d body=%s", minted.Code, minted.Body.String())
-	}
-	writer := decodeBody[agentTokenResponse](t, minted).Token
+	writer := mintPersonalToken(t, served.tokens.handler, brokerTestPerson, "a writer", []string{model.ScopePerson}).Token
 	reader := readOnlyPersonalTokens(t, served.tokens)[0].token
 	serviceAccount := served.serviceTokens.mint(t, serviceTokenAudience)
 	// The person signs out once the door is read, so their cookie is one whose session ended.
@@ -139,14 +135,14 @@ func TestADocumentSocketRefusesEachCredentialItDoesNotAdmit(t *testing.T) {
 
 	// A server whose address bucket holds one introspection and refills more slowly than the row
 	// lasts.
-	limited := newDocumentSocketTokenRig(t, time.Hour, nil, func(o *ciphertoken.Options) {
+	limited := newDocumentSocketTokenRig(t, time.Hour, nil, brokerTokenOptions(func(o *ciphertoken.Options) {
 		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
-	})
+	}))
 	limitedDoor := openedDoor(t, limited.server, limited.artifactID, limited.cookie)
 
 	// A server whose broker is at a port the test holds and nothing listens on.
 	refused := "http://" + testport.Refused(t)
-	unanswered := newDocumentSocketTokenRig(t, time.Hour, nil, func(o *ciphertoken.Options) { o.BrokerURL = refused })
+	unanswered := newDocumentSocketTokenRig(t, time.Hour, nil, brokerTokenOptions(func(o *ciphertoken.Options) { o.BrokerURL = refused }))
 	unansweredDoor := openedDoor(t, unanswered.server, unanswered.artifactID, unanswered.cookie)
 
 	// A server whose person signed in through a sign-in pool, and which has no broker configured.

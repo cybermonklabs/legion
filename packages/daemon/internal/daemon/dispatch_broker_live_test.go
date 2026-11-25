@@ -50,7 +50,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	varint "encoding/binary" // tools_test.go's binary holds the name in this package
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -77,6 +76,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/reearth/ygo/encoding"
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/cipherclient"
 	"github.com/sjawhar/envoy/ciphertest"
@@ -1788,46 +1788,6 @@ const (
 	hocuspocusAuthenticated = 2 // the room's grant, with its scope: "read-write" or "readonly"
 )
 
-// appendVarString appends s to frame as lib0 writes a string: its length in bytes as an unsigned
-// varint, seven bits a byte with the low bits first, which is the varint encoding/binary writes,
-// then its bytes.
-func appendVarString(frame []byte, s string) []byte {
-	return append(varint.AppendUvarint(frame, uint64(len(s))), s...)
-}
-
-// lib0Reader reads a frame front to back as lib0 wrote it. A read that runs past the frame's end,
-// or meets a number that does not parse, sets bad, and every read after it answers the zero value.
-type lib0Reader struct {
-	rest []byte
-	bad  bool
-}
-
-// varUint reads an unsigned varint, as appendVarString writes a string's length.
-func (f *lib0Reader) varUint() uint64 {
-	if f.bad {
-		return 0
-	}
-	value, n := varint.Uvarint(f.rest)
-	if n <= 0 {
-		f.bad = true
-		return 0
-	}
-	f.rest = f.rest[n:]
-	return value
-}
-
-// varString reads a string as appendVarString writes one.
-func (f *lib0Reader) varString() string {
-	length := f.varUint()
-	if f.bad || length > uint64(len(f.rest)) {
-		f.bad = true
-		return ""
-	}
-	text := string(f.rest[:length])
-	f.rest = f.rest[length:]
-	return text
-}
-
 // roomScope sends the room its token message on connection, as a Hocuspocus provider sends it once
 // its socket opens (docstest's Peer.Authenticate): the room's name, the auth kind, the token
 // sub-kind and version, the schema version the socket was opened at, which is the token the
@@ -1842,10 +1802,12 @@ func roomScope(ctx context.Context, connection *websocket.Conn, room, version st
 	if err := connection.SetReadDeadline(deadline); err != nil {
 		return "", err
 	}
-	message := appendVarString(nil, room)
-	message = varint.AppendUvarint(message, hocuspocusAuth)
-	message = varint.AppendUvarint(message, hocuspocusToken)
-	message = appendVarString(message, version)
+	message := encoding.EncodeBytes(func(e *encoding.Encoder) {
+		e.WriteVarString(room)
+		e.WriteVarUint(hocuspocusAuth)
+		e.WriteVarUint(hocuspocusToken)
+		e.WriteVarString(version)
+	})
 	if err := connection.WriteMessage(websocket.BinaryMessage, message); err != nil {
 		return "", fmt.Errorf("send the token message: %w", err)
 	}
@@ -1854,14 +1816,20 @@ func roomScope(ctx context.Context, connection *websocket.Conn, room, version st
 		if err != nil {
 			return "", fmt.Errorf("the room sent no answer to the token message: %w", err)
 		}
-		reader := lib0Reader{rest: frame}
-		reader.varString() // the document's name
-		if reader.varUint() != hocuspocusAuth {
+		decoder := encoding.NewDecoder(frame)
+		if _, err := decoder.ReadVarString(); err != nil { // the document's name
 			continue
 		}
-		answer, text := reader.varUint(), reader.varString()
+		if kind, err := decoder.ReadVarUint(); err != nil || kind != hocuspocusAuth {
+			continue
+		}
+		answer, err := decoder.ReadVarUint()
+		text := ""
+		if err == nil {
+			text, err = decoder.ReadVarString()
+		}
 		switch {
-		case reader.bad:
+		case err != nil:
 			return "", fmt.Errorf("the room's auth answer %x does not parse", frame)
 		case answer == hocuspocusAuthenticated:
 			return text, nil

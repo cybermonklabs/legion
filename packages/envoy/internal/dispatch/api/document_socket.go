@@ -80,11 +80,24 @@ type documentSocketWrite struct {
 	armed atomic.Pointer[documentSpecWrite]
 }
 
+// armOnWritable is the docs.SocketCaller.Admitted of a socket whose write the spec-writer rule
+// holds: called with true, once the document service has admitted the socket writable, it arms
+// held with write, which the heartbeat then judges again; called with false it leaves held empty.
+func (held *documentSocketWrite) armOnWritable(write *documentSpecWrite) func(writable bool) {
+	return func(writable bool) {
+		if writable {
+			held.armed.Store(write)
+		}
+	}
+}
+
 // documentSpecWrite is a document socket's write that the spec-writer rule holds: who writes, as
-// the rule judges the token's write (specWriter), and the document.
+// the rule judges the token's write (specWriter), the document's artifact id, and the write of
+// that document the rule judges (specWriteOfDocument), on the document's issue.
 type documentSpecWrite struct {
 	writer   specWriter
-	artifact model.Artifact
+	artifact string
+	write    specWrite
 }
 
 // documentSocketWriteKey carries a document socket's documentSocketWrite on its request's context.
@@ -125,22 +138,22 @@ func (s *server) documentSocketStillResolves(r *http.Request) error {
 	if held == nil {
 		return nil
 	}
-	write := held.armed.Load()
-	if write == nil {
+	armed := held.armed.Load()
+	if armed == nil {
 		return nil
 	}
-	refuses, err := specWriterRefusesDocument(r.Context(), s.deps.Store.Pool, write.writer, write.artifact)
+	refuses, err := specWriterRefusesDocument(r.Context(), s.deps.Store.Pool, armed.writer, armed.write)
 	switch {
 	case err != nil && r.Context().Err() != nil:
 		// The socket's own end cut the read short: it is closing already, and closes nothing more.
 		return err
 	case err != nil:
 		slog.Warn("dispatch: closed a writable document socket: the read of the spec-writer rule failed; the provider reconnects",
-			"artifact", write.artifact.ID, "issue", *write.artifact.IssueKey, "session", write.writer.actor.ID, "error", err)
+			"artifact", armed.artifact, "issue", armed.write.issue, "session", armed.writer.actor.ID, "error", err)
 		return errDocumentWriteRevoked
 	case refuses:
 		slog.Info("dispatch: closed a writable document socket whose token the spec-writer rule no longer lets write; the provider reconnects read-only",
-			"artifact", write.artifact.ID, "issue", *write.artifact.IssueKey, "session", write.writer.actor.ID)
+			"artifact", armed.artifact, "issue", armed.write.issue, "session", armed.writer.actor.ID)
 		return errDocumentWriteRevoked
 	}
 	return nil
@@ -176,24 +189,23 @@ func nameDocumentSocketProcess(process string, next http.HandlerFunc) http.Handl
 //     token is not read: the token decides, as it does on the API.
 //   - Any other Authorization header that is not blank - the shared bearer, a personal token, a
 //     service-account token, another scheme - is never classified, looked up or verified
-//     (credentialOf is not called). Only the sign-in is read (Identity.Login), and a person it
+//     (credentialOf is not called). Only the sign-in is read (signInLogin), and a person it
 //     resolves is admitted whatever the header holds. Any failure, a lapsed confirmation the
 //     sign-in issuer cannot renew included, is 401 DOC_SOCKET_CREDENTIAL_REFUSED.
 //   - With no Authorization header, or a blank one (auth.BearerToken's present), the sign-in is
-//     read as optionalActor reads it: 500 IDENTITY_ERROR with no identity configured, and a
-//     failure written by writeAuthenticationError, 401 NO_IDENTITY or 503 SIGNIN_UNAVAILABLE.
+//     read as optionalActor reads it (signInLogin): 500 IDENTITY_ERROR with no identity
+//     configured, and a failure written by writeAuthenticationError, 401 NO_IDENTITY or 503
+//     SIGNIN_UNAVAILABLE.
 //
 // A person the sign-in resolves is noted on the access-log line as optionalActor notes one, and
-// handed to the document service as that person, Proven, who may write wherever the document
-// service's own conditions let the socket write. A token's caller is handed on by
-// decideDocumentSocketWrite, which reads the room.
+// handed to the document service as that person (docs.PersonCaller), Proven, who may write
+// wherever the document service's own conditions let the socket write. A token's caller is handed
+// on by decideDocumentSocketWrite, which reads the room.
 func (s *server) refuseDocumentSocketCredential(next http.HandlerFunc) http.HandlerFunc {
 	token := s.refuseReadOnlyToken(http.MethodGet+" "+documentSocketPattern, readEntry{}, func(w http.ResponseWriter, r *http.Request) {
-		if _, _, err := s.optionalActor(r); err != nil {
-			s.writeAuthenticationError(w, err)
-			return
+		if s.requireAuthenticated(w, r) {
+			next(w, r)
 		}
-		next(w, r)
 	})
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := ciphertoken.Presented(r); presented {
@@ -201,11 +213,7 @@ func (s *server) refuseDocumentSocketCredential(next http.HandlerFunc) http.Hand
 			return
 		}
 		_, bearer := auth.BearerToken(r)
-		var login string
-		var err error = errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
-		if s.deps.Identity != nil {
-			login, err = s.deps.Identity.Login(r)
-		}
+		login, err := s.signInLogin(r)
 		if err != nil {
 			if bearer {
 				writeError(w, codeDocSocketCredentialRefused, http.StatusUnauthorized, docSocketCredentialRefusal)
@@ -215,9 +223,7 @@ func (s *server) refuseDocumentSocketCredential(next http.HandlerFunc) http.Hand
 			return
 		}
 		accesslog.Note(r.Context(), accesslog.KindUser, login)
-		next(w, r.WithContext(docs.WithSocketCaller(r.Context(), docs.SocketCaller{
-			Actor: model.Actor{Kind: "user", ID: login, Proven: true}, MayWrite: true,
-		})))
+		next(w, r.WithContext(docs.WithSocketCaller(r.Context(), docs.PersonCaller(login))))
 	}
 }
 
@@ -273,7 +279,7 @@ func (s *server) decideDocumentSocketWrite(next http.HandlerFunc) http.HandlerFu
 		mayWrite := false
 		var recheck *documentSpecWrite
 		if person {
-			if mayWrite, recheck, err = s.documentWritable(r.Context(), r.PathValue("room"), caller, recorded); err != nil {
+			if mayWrite, recheck, err = s.documentWritable(r, recorded); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -283,21 +289,18 @@ func (s *server) decideDocumentSocketWrite(next http.HandlerFunc) http.HandlerFu
 			held, ok := r.Context().Value(documentSocketWriteKey{}).(*documentSocketWrite)
 			handed.MayWrite = ok
 			if ok {
-				handed.Admitted = func(writable bool) {
-					if writable {
-						held.armed.Store(recheck)
-					}
-				}
+				handed.Admitted = held.armOnWritable(recheck)
 			}
 		}
 		next(w, r.WithContext(docs.WithSocketCaller(r.Context(), handed)))
 	}
 }
 
-// documentWritable is whether caller, a broker-issued token's caller that names a person and is
-// recorded as recorded, may write room's document, as the edits route decides the same token's
-// write, and, for a write the spec-writer rule holds and passes, that write, which the socket's
-// heartbeat judges again (documentSpecWrite; nil for every other answer):
+// documentWritable is whether the broker-issued token r presents, whose caller names a person and
+// is recorded as recorded, may write the document of r's room, as the edits route decides the same
+// token's write and through the same reads of the caller (callerProject, specWriterOf), and, for a
+// write the spec-writer rule holds and passes, that write, which the socket's heartbeat judges
+// again (documentSpecWrite; nil for every other answer):
 //
 //   - A token that names one project writes only a document of that project, read as the
 //     project check reads it (artifactProject). A document of no project, a room that is no
@@ -307,21 +310,22 @@ func (s *server) decideDocumentSocketWrite(next http.HandlerFunc) http.HandlerFu
 //     issue's spec or Verification document is written only by a person's credential or by an
 //     architect session of the issue's chain. Its refusal is a no and writes no answer. A
 //     credential that holds the person scope passes it at once, so its document is not read, and
-//     no later answer of the rule can refuse it.
+//     no later answer of the rule can refuse it. A document the rule does not hold is judged no
+//     further.
 //
 // A room that is no artifact (ARTIFACT_NOT_FOUND, isArtifactNotFound) is a no as well, and the
 // api package writes no 404 for it: the document service answers that room 404 itself. The reads
 // go to the pool and hold no transaction (store.ErrNestedAcquire). Any other error is a read that
 // failed, which the caller answers.
-func (s *server) documentWritable(ctx context.Context, room string, caller, recorded model.Actor) (bool, *documentSpecWrite, error) {
-	pool := s.deps.Store.Pool
-	if caller.Project != nil && *caller.Project != "" {
+func (s *server) documentWritable(r *http.Request, recorded model.Actor) (bool, *documentSpecWrite, error) {
+	ctx, room, pool := r.Context(), r.PathValue("room"), s.deps.Store.Pool
+	if covers, scoped := s.callerProject(r); scoped {
 		project, err := artifactProject(ctx, pool, room)
-		if err != nil || project != *caller.Project {
+		if err != nil || project != covers {
 			return false, nil, err
 		}
 	}
-	writer := specWriter{actor: recorded, person: caller.Credential.Holds(model.ScopePerson)}
+	writer := s.specWriterOf(r, recorded)
 	if writer.person {
 		return true, nil, nil
 	}
@@ -332,25 +336,24 @@ func (s *server) documentWritable(ctx context.Context, room string, caller, reco
 	if err != nil {
 		return false, nil, err
 	}
-	refuses, err := specWriterRefusesDocument(ctx, pool, writer, artifact)
+	write, held := specWriteOfDocument(artifact)
+	if !held {
+		return true, nil, nil
+	}
+	refuses, err := specWriterRefusesDocument(ctx, pool, writer, write)
 	if err != nil || refuses {
 		return false, nil, err
 	}
-	if _, held := specWriterDocumentName(artifact); !held {
-		return true, nil, nil
-	}
-	return true, &documentSpecWrite{writer: writer, artifact: artifact}, nil
+	return true, &documentSpecWrite{writer: writer, artifact: artifact.ID, write: write}, nil
 }
 
-// specWriterRefusesDocument is whether the spec-writer rule refuses writer a write of artifact, as
-// refuseSpecWriterOfDocument judges the edits route's write (judgeSpecWriter), with no line
-// logged and no answer made: a document socket the rule refuses opens read-only, and no write was
-// refused. A document the rule does not hold is read no further.
-func specWriterRefusesDocument(ctx context.Context, q queryer, writer specWriter, artifact model.Artifact) (bool, error) {
-	document, held := specWriterDocumentName(artifact)
-	if !held {
-		return false, nil
-	}
-	refusal, _, err := judgeSpecWriter(ctx, q, writer, specWrite{issue: *artifact.IssueKey, document: document})
+// specWriterRefusesDocument is whether the spec-writer rule refuses writer write, a write of a
+// document the rule holds (specWriteOfDocument), as refuseSpecWriterOfDocument judges the edits
+// route's write (judgeSpecWriter), with no line logged and no answer made: a document socket the
+// rule refuses opens read-only, and no write was refused. The write decision judges it once at the
+// upgrade (documentWritable), and the heartbeat again with the write the socket was armed with
+// (documentSocketStillResolves).
+func specWriterRefusesDocument(ctx context.Context, q queryer, writer specWriter, write specWrite) (bool, error) {
+	refusal, _, err := judgeSpecWriter(ctx, q, writer, write)
 	return refusal != nil, err
 }
