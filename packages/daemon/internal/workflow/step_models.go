@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // A step record names the model its agent's launches were set to, and each model that answered
@@ -203,11 +204,13 @@ type spanRead struct {
 }
 
 // stepSpans is each launch of agent during a step, given what the step's start kept (began), the
-// agent's launches now (from began's generation on), and the fact's reads. The launches are the
-// start's live launch, and each launch from began.FromZero to the generation now. A launch counts
-// from zero where it started after the start. Its end is the read usedRead gives where it is live
-// now, and its final totals where it ended. used is each read the end used.
-func stepSpans(agent claim.Token, began record.StartTotals, now record.AgentLaunches, reads FactReads) (spans []launchSpan, used []spanRead) {
+// agent's launches now (from began's generation on), whether its generation now is a launch still
+// starting (starting, startingLaunch), and the fact's reads. The launches are the start's live
+// launch, each launch from began.FromZero to the generation now, and the launch still starting. A
+// launch counts from zero where it started after the start. Its end is the read usedRead gives where
+// it is live now, and its final totals where it ended. A launch still starting has no end. used is
+// each read the end used.
+func stepSpans(agent claim.Token, began record.StartTotals, now record.AgentLaunches, starting bool, reads FactReads) (spans []launchSpan, used []spanRead) {
 	var generations []uint64
 	if began.Live {
 		generations = append(generations, began.Generation)
@@ -217,7 +220,7 @@ func stepSpans(agent claim.Token, began record.StartTotals, now record.AgentLaun
 			generations = append(generations, launch.Generation)
 		}
 	}
-	if now.Live && now.Generation >= began.FromZero && !slices.Contains(generations, now.Generation) {
+	if (now.Live || starting) && now.Generation >= began.FromZero && !slices.Contains(generations, now.Generation) {
 		generations = append(generations, now.Generation)
 	}
 	for _, generation := range generations {
@@ -335,7 +338,11 @@ func (e *Engine) writeCounts(ctx context.Context, tx pgx.Tx, issue string, place
 	if err != nil {
 		return err
 	}
-	spans, used := stepSpans(agent, *start.StartTotals, now, factReads(ctx))
+	starting, err := e.startingLaunch(ctx, tx, agent, *start.StartTotals, now)
+	if err != nil {
+		return err
+	}
+	spans, used := stepSpans(agent, *start.StartTotals, now, starting, factReads(ctx))
 	setModel, answers := countStep(spans)
 	if setModel != "" {
 		write.SetModel = &setModel
@@ -352,6 +359,23 @@ func (e *Engine) writeCounts(ctx context.Context, tx pgx.Tx, issue string, place
 			key: read.key, read: read.read, final: read.final, endedBy: ended})
 	}
 	return nil
+}
+
+// startingLaunch says whether the agent's generation now is a launch still starting at the end of a
+// step that began as began. Its claim records no process, and the store holds no row of that
+// launch. The claim is launching, or the boot found its launch unfinished (launch_uncertain). A try
+// of that launch was written, so its process may run before the store records it, and no read of it
+// exists. Only a generation at or past began.FromZero can be a launch of the step.
+func (e *Engine) startingLaunch(ctx context.Context, tx pgx.Tx, agent claim.Token, began record.StartTotals, now record.AgentLaunches) (bool, error) {
+	if now.Live || now.Generation == 0 || now.Generation < began.FromZero || launchAt(now, now.Generation) != nil {
+		return false, nil
+	}
+	claims, err := e.store.RoleClaims(ctx, tx, []claim.Token{agent})
+	if err != nil {
+		return false, err
+	}
+	held, ok := claims[agent]
+	return ok && (held.State == supervise.StateLaunching || held.State == supervise.StateLaunchUncertain), nil
 }
 
 // endedBy is who ended a step whose agent is agent, as the end's log line says it: agent where the

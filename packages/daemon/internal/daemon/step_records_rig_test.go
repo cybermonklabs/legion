@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -79,6 +78,9 @@ type stepRecordsRig struct {
 	// readHook is the hook onRead set, which each boot's overrides.totalsRead calls. It is nil
 	// while none is set.
 	readHook atomic.Pointer[func(agents []claim.Token, reads workflow.FactReads)]
+	// spawnHold is the hold holdSpawns arms, which each boot's fake runtime runs at the start of
+	// every Spawn (fake.Runtime.OnSpawn). It is nil while none is armed.
+	spawnHold atomic.Pointer[func(ctx context.Context) error]
 }
 
 // heldAnswer is the answer heldRequest holds: the feed of token's claim stops before its machine
@@ -239,6 +241,12 @@ func (r *stepRecordsRig) boot() {
 	// The runtime provisions each claim's workspace itself, so a launch reaches the fake without
 	// the daemon cloning acme/widgets from github.com.
 	r.rt.InPod = true
+	r.rt.OnSpawn = func(ctx context.Context) error {
+		if hold := r.spawnHold.Load(); hold != nil {
+			return (*hold)(ctx)
+		}
+		return nil
+	}
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
@@ -274,6 +282,29 @@ func (r *stepRecordsRig) onRead(f func(agents []claim.Token, reads workflow.Fact
 		return
 	}
 	r.readHook.Store(&f)
+}
+
+// holdSpawns holds each Spawn of the fake runtime from now on, once the runtime has recorded the
+// call. The claim then stays launching, with no process recorded. It answers the function that
+// lets every held Spawn go on, which the test's end calls too. A Spawn whose context ends first
+// answers that context's error.
+func (r *stepRecordsRig) holdSpawns() (release func()) {
+	let := make(chan struct{})
+	release = sync.OnceFunc(func() {
+		r.spawnHold.Store(nil)
+		close(let)
+	})
+	hold := func(ctx context.Context) error {
+		select {
+		case <-let:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	r.spawnHold.Store(&hold)
+	r.t.Cleanup(release)
+	return release
 }
 
 // switchClock is a supervise.Clock that answers as the clock it holds now, which use swaps. A
@@ -1284,10 +1315,10 @@ func (c *stepClaimant) totalsLocked() shimwire.Totals {
 }
 
 // exit ends the launch as its harness exiting does. With final, the shim first sends its final
-// totals unasked, the read number raised by 1. The fake then answers the next probe gone and the
-// connection closes, so the claim's machine probes and relaunches the claim. It returns once the
-// daemon has launched the claim at a higher generation, which relaunched connects. The fake's
-// probe script serves every claim, so no other connection may close meanwhile.
+// totals unasked, the read number raised by 1. The fake then answers the next probe of this claim
+// gone (fake.Runtime.ScriptProbeOf), and the connection closes, so the claim's machine probes and
+// relaunches the claim. It returns once the daemon has launched the claim at a higher generation,
+// which relaunched connects.
 func (c *stepClaimant) exit(final bool) {
 	t := c.r.t
 	t.Helper()
@@ -1300,7 +1331,7 @@ func (c *stepClaimant) exit(final bool) {
 		c.send(shimwire.ModelTotalsFinal{Totals: totals})
 	}
 	rt := c.r.rt
-	rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
+	rt.ScriptProbeOf(c.token, fake.ProbeResult{Kind: runtime.Gone})
 	c.closeConn()
 	testwait.WithinPolling(t, stepRecordsWait, 50*time.Millisecond, fmt.Sprintf("the launch of %s past generation %d", c.token, before), func() bool {
 		return slices.ContainsFunc(rt.Calls(), func(call fake.Call) bool {
@@ -1383,41 +1414,10 @@ func (c *stepClaimant) holdSocket(sh *shim) {
 }
 
 // dialCountingShim dials the worker stream at address as a shim that counts its launch's calls
-// (Hello2.ModelTotals). It dials again after a refused hello until one is acked, as
-// dialShimUntilAcked does, and answers the acked connection.
+// (Hello2.ModelTotals), again after a refused hello until one is acked (dialHelloUntilAcked).
 func dialCountingShim(t *testing.T, address, bootToken string) *shim {
 	t.Helper()
-	var last error
-	var acked *shim
-	if !testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool {
-		conn, err := net.Dial("unix", strings.TrimPrefix(address, "unix://"))
-		if err != nil {
-			last = err
-			return false
-		}
-		s := newTestShim(t, conn)
-		if err := s.writer.WriteFrame(shimwire.Hello2{BootToken: bootToken, ModelTotals: true}); err != nil {
-			conn.Close()
-			last = err
-			return false
-		}
-		if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-			t.Fatalf("set the read deadline: %v", err)
-		}
-		line, err := s.lines.ReadBytes('\n')
-		if err == nil {
-			if frame, decodeErr := shimwire.Decode(line); decodeErr == nil && frame.FrameType() == shimwire.TypeHelloAck {
-				acked = s
-				return true
-			}
-		}
-		conn.Close()
-		last = fmt.Errorf("hello refused: %v", err)
-		return false
-	}) {
-		t.Fatalf("no counting hello with %s was acked: %v", bootToken, last)
-	}
-	return acked
+	return dialHelloUntilAcked(t, address, shimwire.Hello2{BootToken: bootToken, ModelTotals: true})
 }
 
 // stepRecordsGitHub is GitHub's REST API as the walk's daemon reads it: every repository with

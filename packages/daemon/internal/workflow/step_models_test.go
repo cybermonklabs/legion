@@ -117,10 +117,11 @@ func shownAnswers(answers *[]record.ModelCalls) string {
 	return fmt.Sprintf("%v", *answers)
 }
 
-// The launches of a step: the start's live launch, and each launch from the first one that counts
-// from zero (record.StartTotals.FromZero) to the claim's generation now. A launch absent at the
-// start, whose row the store wrote only after it, counts from zero. A live launch's end is the
-// fact's read, or the newer read a committed fact kept. An ended launch's end is its final totals.
+// The launches of a step: the start's live launch, each launch from the first one that counts from
+// zero (record.StartTotals.FromZero) to the claim's generation now, and a launch still starting. A
+// launch absent at the start, whose row the store wrote only after it, counts from zero. A live
+// launch's end is the fact's read, or the newer read a committed fact kept. An ended launch's end is
+// its final totals. A launch still starting at the end has no end.
 func TestTheLaunchesOfAStepAreItsStartsAndEachLaunchFromZero(t *testing.T) {
 	t.Parallel()
 	agent := claim.Token("legion-legion-legion-208-implementer")
@@ -133,11 +134,12 @@ func TestTheLaunchesOfAStepAreItsStartsAndEachLaunchFromZero(t *testing.T) {
 		return record.LaunchKey{Claim: agent, Generation: generation}
 	}
 	for _, tc := range []struct {
-		name  string
-		began record.StartTotals
-		now   record.AgentLaunches
-		reads FactReads
-		want  []launchSpan
+		name     string
+		began    record.StartTotals
+		now      record.AgentLaunches
+		starting bool
+		reads    FactReads
+		want     []launchSpan
 	}{
 		{name: "a launch absent at the start counts from zero",
 			began: record.StartTotals{Generation: 0, FromZero: 0},
@@ -166,9 +168,25 @@ func TestTheLaunchesOfAStepAreItsStartsAndEachLaunchFromZero(t *testing.T) {
 			now:   record.AgentLaunches{Generation: 3, Live: true, Launches: []record.Launch{{Generation: 2, Final: read(3)}, {Generation: 3}}},
 			reads: FactReads{key(3): *read(1)},
 			want:  []launchSpan{{setModel: modelA, start: fromZero, end: &read(1).Totals}}},
+		{name: "a launch still starting at the end has no end",
+			began:    record.StartTotals{Generation: 0, FromZero: 0},
+			now:      record.AgentLaunches{Generation: 1},
+			starting: true,
+			want:     []launchSpan{{start: fromZero}}},
+		{name: "a generation with no row and no launch starting is no launch",
+			began: record.StartTotals{Generation: 0, FromZero: 0},
+			now:   record.AgentLaunches{Generation: 1}},
+		{name: "a launch still starting after one that ended has no end",
+			began: record.StartTotals{Generation: 2, Live: true, Read: read(1, calls(modelA, 1)), FromZero: 3},
+			now: record.AgentLaunches{Generation: 3, Launches: []record.Launch{
+				{Generation: 2, Final: read(3, calls(modelA, 2))}}},
+			starting: true,
+			want: []launchSpan{
+				{setModel: modelA, start: &read(1, calls(modelA, 1)).Totals, end: &read(3, calls(modelA, 2)).Totals},
+				{start: fromZero}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _ := stepSpans(agent, tc.began, tc.now, tc.reads)
+			got, _ := stepSpans(agent, tc.began, tc.now, tc.starting, tc.reads)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("stepSpans = %+v, want %+v", got, tc.want)
 			}

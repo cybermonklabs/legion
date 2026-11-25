@@ -197,8 +197,9 @@ func TestAStepRecordSaysWhenItDoesNotKnow(t *testing.T) {
 		r.waitModels(r.key, 1, 1, stepModels{result: "passed", setModel: stepRecordsModel, model: "stand-in/m-16"})
 	})
 	// The review that asks for changes reads the implementer's launch before its transaction. The
-	// launch then exits with no final totals and is made again. So the second run's start holds a
-	// read of a launch that is gone.
+	// launch then exits with no final totals and is made again. So the fact's only read of the
+	// implementer is of a launch that is gone by its transaction, and the second run's start has no
+	// usable read.
 	t.Run("a launch that exited after the fact's read", func(t *testing.T) {
 		r := newStepRecordsRig(t, 1)
 		r.plan()
@@ -214,9 +215,17 @@ func TestAStepRecordSaysWhenItDoesNotKnow(t *testing.T) {
 		relaunchDone := sync.OnceFunc(func() { close(done) })
 		t.Cleanup(relaunchDone)
 		var acted atomic.Bool
+		// read is the generation of the held fact's read of the implementer, which the hook writes
+		// before it closes reached.
+		var read uint64
 		r.onRead(func(_ []claim.Token, reads workflow.FactReads) {
 			if !readsClaim(reads, implementer.token) || !acted.CompareAndSwap(false, true) {
 				return
+			}
+			for key := range reads {
+				if key.Claim == implementer.token {
+					read = key.Generation
+				}
 			}
 			close(reached)
 			<-done
@@ -228,20 +237,32 @@ func TestAStepRecordSaysWhenItDoesNotKnow(t *testing.T) {
 		case <-time.After(stepRecordsWait):
 			t.Fatalf("no fact read the calls of %s within %s of the request for changes", implementer.token, stepRecordsWait)
 		}
+		if read != gone {
+			t.Fatalf("the held fact read launch %d of %s, want launch %d, the one about to exit", read, implementer.token, gone)
+		}
 		implementer.exit(false)
 		implementer.relaunched()
+		// The claim held no task when its launch exited. So the daemon tells the next launch what the
+		// exit ended in a delivery of its own, before the held fact can send the task.
+		if told := implementer.takeQuietly(); !(supervise.Delivery{ID: told.DeliveryID}).Relaunch() {
+			t.Fatalf("the next launch of %s was first prompted with delivery %q, want the daemon's own delivery of what its relaunch ended", implementer.token, told.DeliveryID)
+		}
+		implementer.endTurn()
 		relaunchDone()
 		r.waitPhase(phase.Implementing)
 		r.onRead(nil)
 		implementer.take()
 		r.finish(implementer, "implement", implementedRound, phase.Testing)
 		again := r.waitModels(r.key, 2, 2, stepModels{result: "passed", setModel: stepRecordsModel, model: stepRecordsModel})
-		// The control: the run's start used the read of the launch that exited, not one of the next.
-		started := r.waitUsedRead("the read of "+string(implementer.token)+" that the start of "+again.ID+" used", func(line usedRead) bool {
-			return line.Side == "start" && line.Step == again.ID && line.Claim == string(implementer.token)
+		// The control: the log names this step where it used a read, since its end used a read of the
+		// next launch. Its start used none, since a read of a launch no longer live is not used.
+		r.waitUsedRead("the read of "+string(implementer.token)+" that the end of "+again.ID+" used", func(line usedRead) bool {
+			return line.Side == "end" && line.Step == again.ID && line.Claim == string(implementer.token) && line.Generation > gone
 		})
-		if started.Generation != gone {
-			t.Fatalf("the start of %s used a read of launch %d of %s, want launch %d, the one that exited after the read", again.ID, started.Generation, implementer.token, gone)
+		for _, line := range r.usedReads() {
+			if line.Side == "start" && line.Step == again.ID {
+				t.Fatalf("the start of %s used the read %+v, want none: the fact read only launch %d of %s, which had exited by its transaction", again.ID, line, gone, implementer.token)
+			}
 		}
 	})
 	// A person's done on the root lingers its tree, which stops a child's step. That fact reads the
@@ -274,6 +295,30 @@ func TestAStepRecordSaysWhenItDoesNotKnow(t *testing.T) {
 				t.Fatalf("the end of %s, stopped by the root's done, used the read %+v, want none: that fact reads only the root's agents", stopped.ID, line)
 			}
 		}
+	})
+	// GitHub's merge ends the merge step while the merger's launch is still starting. A try of the
+	// launch was written and its process may run, but no read of it can be made. So the merge's
+	// record names no set model and does not know its counts.
+	t.Run("a merge whose merger is still starting", func(t *testing.T) {
+		r := newStepRecordsRig(t, 1)
+		r.plan()
+		r.implement()
+		r.test()
+		r.review("APPROVED", phase.Accepting)
+		r.accept()
+		release := r.holdSpawns()
+		r.retro()
+		merger := r.token(claim.RoleMerger)
+		r.awaitLaunch(merger)
+		r.github.merged(r.number)
+		r.publishMergeOf(r.number, r.key, stepRecordsHead, "main")
+		r.waitPhase(phase.Done)
+		r.waitKindModels(r.key, "merge", 0, 1, stepModels{result: "passed"})
+		// The control: the merge's end was written while the merger's launch was still starting.
+		if state := r.d.claim(merger).State; state != string(supervise.StateLaunching) {
+			t.Fatalf("%s is %s once the merge's record ended, want %s: the walk holds its Spawn", merger, state, supervise.StateLaunching)
+		}
+		release()
 	})
 }
 
@@ -652,9 +697,15 @@ type stepModels struct {
 // answers the record. The failure names the last difference the read showed.
 func (r *stepRecordsRig) waitModels(issue string, place, attempt int, want stepModels) stepRecordRead {
 	r.t.Helper()
+	return r.waitKindModels(issue, "step", place, attempt, want)
+}
+
+// waitKindModels is waitModels for issue's record of kind: a step, a retro or a merge.
+func (r *stepRecordsRig) waitKindModels(issue, kind string, place, attempt int, want stepModels) stepRecordRead {
+	r.t.Helper()
 	var found stepRecordRead
-	r.waitStepsOf(issue, fmt.Sprintf("the models of step %d attempt %d of %s", place, attempt, issue), func(read stepRecordsRead) error {
-		found = read.find("step", place, attempt)
+	r.waitStepsOf(issue, fmt.Sprintf("the models of %s %d attempt %d of %s", kind, place, attempt, issue), func(read stepRecordsRead) error {
+		found = read.find(kind, place, attempt)
 		return modelsHold(found, want)
 	})
 	return found
