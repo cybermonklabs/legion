@@ -2729,8 +2729,13 @@ type Store interface {
 	// false is none. Kinds nil is every kind.
 	NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error)
 	// BranchQueued says whether the outbox still holds an issue_branch row of issue, whatever its
-	// lease or its next_at: the branch the row creates may not exist on GitHub yet.
+	// lease or its next_at: the branch the row creates may not exist on GitHub yet. It is
+	// OutboxQueued of that kind.
 	BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// OutboxQueued says whether the outbox still holds a row of kind for issue, whatever its lease
+	// or its next_at: the read of a kind of which one row stands for an issue at a time, as one
+	// close_read and one close_wait_publish row do.
+	OutboxQueued(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
 	UnfinishedLanes(ctx context.Context, tx pgx.Tx, project string) ([]LaneKey, error)

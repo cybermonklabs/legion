@@ -3340,10 +3340,18 @@ func (s *Postgres) NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds [
 // start older than the branch row it must wait for (the outbox's first start of a child's own
 // architect, which can outlast a re-admission that queues the child's branch row again).
 func (s *Postgres) BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
+	return s.OutboxQueued(ctx, tx, issue, OutboxKindIssueBranch)
+}
+
+// OutboxQueued says whether the outbox still holds a row of kind for issue — due, running or
+// backing off. A kind of which one row stands for an issue at a time is queued only where this
+// answers false: the read of the checks (CloseRead) and the publish of the stored wait
+// (CloseWaitPublish), each of which reads the record when it runs.
+func (s *Postgres) OutboxQueued(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (bool, error) {
 	var queued bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2)`,
-		issue, string(OutboxKindIssueBranch)).Scan(&queued); err != nil {
-		return false, fmt.Errorf("read whether %s's branch row is still queued: %w", issue, err)
+		issue, string(kind)).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether a %s row of %s is still queued: %w", kind, issue, err)
 	}
 	return queued, nil
 }
