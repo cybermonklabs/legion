@@ -107,8 +107,13 @@ func TestACatchUpMarksAHandedOverRootInEveryPhase(t *testing.T) {
 				if _, err := pool.Exec(t.Context(), "delete from outbox"); err != nil {
 					t.Fatal(err)
 				}
+				// The root closed and reopened: its re-admission's clear of the whole tree raises the
+				// tree's run with its generation (record.Postgres.ClearTreeGeneration).
 				root.Generation = 3
 				seedIssue(t, pool, root)
+				if _, err := pool.Exec(t.Context(), `update issues set tree_generation = generation where key = $1`, root.Key); err != nil {
+					t.Fatal(err)
+				}
 				claimReady(t, pool, engine, root.Key, claim.RoleArchitect, 2)
 				if got := lastCatchUp(t, pool); got.HandedOver || got.Carried {
 					t.Fatalf("the root's later generation in %s: catch-up still says handed over %t, carried %t", at, got.HandedOver, got.Carried)

@@ -951,10 +951,14 @@ func TestTheArchitectWakeBoundStartsAgainWhenARootIsReadmitted(t *testing.T) {
 		"the root stood at admitted past the bound with nothing registered")
 
 	// The re-admission: the next generation of the tree, a slot taken now and the entry its
-	// promotion raised now, which is what the record carries after promoteHolds.
+	// promotion raised now, which is what the record carries after promoteHolds. Its clear of the
+	// whole tree raises the tree's run with the root's generation (record.Postgres.ClearTreeGeneration).
 	readmitted := issue(t, pool, root)
 	readmitted.Generation = architectWakeGeneration + 1
 	putIssue(t, pool, readmitted)
+	if _, err := pool.Exec(context.Background(), `update issues set tree_generation = generation where key = $1`, root); err != nil {
+		t.Fatalf("raise the tree's run of %s with its re-admission: %v", root, err)
+	}
 	takeSlotAt(t, pool, root, fixedNow)
 	putArchitectRow(t, pool, root, seededEntry+1, fixedNow)
 	markGivenEntry(t, pool, architectToken(t, root), seededEntry+1)

@@ -149,10 +149,12 @@ func TestChildIssueSuspensionKeepsItsParentRunning(t *testing.T) {
 			if _, err := st.OpenTreeLifecycle(g.ctx, testProject, testTree, treelifecycle.AuthorityWorkflow); err != nil {
 				t.Fatal(err)
 			}
+			// The root's tree run is its generation, as PutIssue records a root: the column's
+			// default serves only an insert that names none.
 			if _, err := st.Pool().Exec(g.ctx, `insert into issues
-				(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
-				values ($1, $1, 'LEGION', 'root', 'implementing', 7, 'in_progress', 'A', 1),
-					($2, $1, 'LEGION', 'child', 'done', 2, 'done', 'B', 1)`, testTree, childIssue); err != nil {
+				(key, tree, project, title, phase, generation, tree_generation, status, rank, last_dispatch_seq)
+				values ($1, $1, 'LEGION', 'root', 'implementing', 7, 7, 'in_progress', 'A', 1),
+					($2, $1, 'LEGION', 'child', 'done', 2, 2, 'done', 'B', 1)`, testTree, childIssue); err != nil {
 				t.Fatal(err)
 			}
 			parent := g.spawn(rootSpec(t))

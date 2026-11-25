@@ -1446,7 +1446,11 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 			return fmt.Errorf("read whether re-admitted %s ran as a tree of its own: %w", stored.Key, err)
 		}
 	}
+	// Every re-admission opens a new run of the tree the issue roots from here on: a root's own
+	// comes back through ClearTreeGeneration below, and a member that leaves its tree starts its
+	// own tree's run at its new generation (record.Postgres.PutIssue). The copy says so too.
 	stored.Generation++
+	stored.TreeGeneration = stored.Generation
 	stored.Status, stored.DispatchStatus = "todo", "todo"
 	stored.Rank = o.Rank
 	stored.Priority = o.Priority
@@ -2404,13 +2408,15 @@ func (a *Admission) catchingUpFor(key string) bool {
 // waits, and the state names what for — and a re-admission, which opens a new generation, tells
 // it anew, because that run's architect has not heard it.
 //
-// The run is the tree root's generation, not the waiting issue's own: re-admission raises the
-// root's and leaves every member's where it stands (workflow's linger), so a sub-parent that
-// waited for its unreleased children before the park would be marked told for ever and the new
-// run's architect would never hear of that wait. The mark is keyed on the tree as well, because
-// a generation names a run only within one tree: a sub-parent handed over as a root of its own
-// numbers its run from its own record (readmit), which can be the number the tree it left was
-// at. The mark's own table says so (20261104004500_children_first_notices).
+// The run is the tree's (the root's record.Issue.TreeRun), not the waiting issue's own:
+// re-admission raises it and leaves every member's generation where it stands (workflow's
+// linger), so a sub-parent that waited for its unreleased children before the park would be
+// marked told for ever and the new run's architect would never hear of that wait. A root's next
+// change raises the root's own generation and not the tree's run, so it ends no run of the tree's
+// architect and tells it nothing again. The mark is keyed on the tree as well, because a
+// generation names a run only within one tree: a sub-parent handed over as a root of its own
+// starts its tree's run at its own generation (readmit), which can be the number the tree it left
+// was at. The mark's own table says so (20261104004500_children_first_notices).
 //
 // The parents are told in key order so that one pass's rows read the same whatever order the
 // judgement's map iterated in.
@@ -2428,7 +2434,7 @@ func (a *Admission) tellChildrenFirst(ctx context.Context, tx pgx.Tx, issues []r
 		if !recorded {
 			continue
 		}
-		told, err := a.store.TellChildrenFirst(ctx, tx, key, parent.Tree, byKey[parent.Tree].Generation, now)
+		told, err := a.store.TellChildrenFirst(ctx, tx, key, parent.Tree, byKey[parent.Tree].TreeRun(), now)
 		if err != nil {
 			return err
 		}

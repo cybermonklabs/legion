@@ -73,7 +73,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // Merge where none stands, and an unclassified merge history as the empty class.
 const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, members_owed, priority, ` +
 	`coalesce(merge_number, 0), coalesce(merge_head, ''), coalesce(merge_sha, ''), coalesce(merge_base, ''), coalesce(merge_repo, ''), merged_at, coalesce(merge_history, ''), ` +
-	`close_wait_since, close_wait, closed_on_checks_at, coalesce(next_change, 0), next_changes, merger_completion_owed, standing_told_at`
+	`close_wait_since, close_wait, closed_on_checks_at, coalesce(next_change, 0), next_changes, merger_completion_owed, standing_told_at, tree_generation`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -220,8 +220,8 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		return fmt.Errorf("record issue %s: GitHub's spelling %s names another repository than %s", issue.Key, issue.GitHubRepo, issue.Repo)
 	case issue.Generation > maxInt64:
 		return fmt.Errorf("put issue %s: generation %d does not fit a bigint", issue.Key, issue.Generation)
-	case issue.NextChange > maxInt64:
-		return fmt.Errorf("put issue %s: next change %d does not fit a bigint", issue.Key, issue.NextChange)
+	case issue.NextChange > maxInt64 || issue.TreeGeneration > maxInt64:
+		return fmt.Errorf("put issue %s: next change %d or tree generation %d does not fit a bigint", issue.Key, issue.NextChange, issue.TreeGeneration)
 	}
 	noteIssueWrite(ctx, issue.Key)
 	var heldFrom any
@@ -279,8 +279,13 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// neither half names them: a whole new record of a merged issue, a re-entered child's among
 	// them, keeps its merge, and an inserted row takes merge_history's default, NONE. The wait's
 	// columns (close_wait_since to standing_told_at) are the record's own, written whole from the
-	// copy as every other field is. tree_generation is the generation in both halves, so the
-	// tree's run is the root's generation, as every reader of it has read it until now.
+	// copy as every other field is. tree_generation is the tree's run (Issue.TreeGeneration): an
+	// insert writes the record's, or its generation where it gives none, and an update writes it
+	// only where the write moves the issue to another tree, which takes the issue's generation: a
+	// root that a hand-over or an orphan's re-admission made starts its tree's run at its own
+	// generation, and the tree it left keeps its own. Every other update leaves it, so a root's next
+	// change, which raises the root's generation, leaves the tree's run, and only a rerun of the
+	// whole tree raises it (ClearTreeGeneration).
 	var closeWait any
 	if len(issue.CloseWait) > 0 {
 		closeWait = []byte(issue.CloseWait)
@@ -295,7 +300,7 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		close_wait_since, close_wait, closed_on_checks_at, next_change, next_changes, merger_completion_owed, standing_told_at, tree_generation)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15::text, ''), $16, $17, $18, $19, $20, $21, $22, $23, nullif($24::text, ''), nullif($25::text, ''), $26, $27,
 		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), $31,
-		$32, $33, $34, $35, $36, $37, $38, $7)
+		$32, $33, $34, $35, $36, $37, $38, coalesce(nullif($39::bigint, 0), $7))
 		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
@@ -311,13 +316,15 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		priority = excluded.priority,
 		close_wait_since = excluded.close_wait_since, close_wait = excluded.close_wait, closed_on_checks_at = excluded.closed_on_checks_at,
 		next_change = excluded.next_change, next_changes = excluded.next_changes, merger_completion_owed = excluded.merger_completion_owed,
-		standing_told_at = excluded.standing_told_at, tree_generation = excluded.generation
+		standing_told_at = excluded.standing_told_at,
+		tree_generation = case when issues.tree = excluded.tree then issues.tree_generation else excluded.generation end
 		where issues.repo = excluded.repo and issues.default_branch = excluded.default_branch and issues.github_repo = excluded.github_repo`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
 		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent, issue.Priority.Level(),
 		issue.CloseWaitSince, closeWait, issue.ClosedOnChecksAt, nextChange, issue.NextChanges, issue.MergerCompletionOwed, issue.StandingToldAt,
+		int64(issue.TreeGeneration),
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
@@ -530,14 +537,15 @@ func scanIssue(row scanner) (*Issue, error) {
 	var mergedAt, closeWaitSince, closedOnChecksAt, standingToldAt *time.Time
 	var mergeHistory string
 	var closeWait []byte
-	var nextChange int64
+	var nextChange, treeGeneration int64
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt, &issue.MembersOwed, &priority,
 		&issue.Merge.Number, &issue.Merge.Head, &issue.Merge.SHA, &issue.Merge.Base, &issue.Merge.Repo, &mergedAt, &mergeHistory,
-		&closeWaitSince, &closeWait, &closedOnChecksAt, &nextChange, &issue.NextChanges, &issue.MergerCompletionOwed, &standingToldAt); err != nil {
+		&closeWaitSince, &closeWait, &closedOnChecksAt, &nextChange, &issue.NextChanges, &issue.MergerCompletionOwed, &standingToldAt,
+		&treeGeneration); err != nil {
 		return nil, err
 	}
 	issue.Merge.MergedAt = utcOrZero(mergedAt)
@@ -550,6 +558,10 @@ func scanIssue(row scanner) (*Issue, error) {
 		return nil, fmt.Errorf("issue %s has negative next change %d", issue.Key, nextChange)
 	}
 	issue.NextChange = uint64(nextChange)
+	if treeGeneration < 0 {
+		return nil, fmt.Errorf("issue %s has negative tree generation %d", issue.Key, treeGeneration)
+	}
+	issue.TreeGeneration = uint64(treeGeneration)
 	// The column's check holds it to Dispatch's 0 to 3 or null, each of which DispatchPriority reads.
 	issue.Priority, _ = DispatchPriority(priority)
 	if declaredAt != nil {
@@ -1642,9 +1654,15 @@ func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string,
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
 // new generation of the whole tree, and its children carried the old one's pull request, gate and
 // handoffs into it — a child re-entered at the new generation read a handoff of the last.
+// The clear is the one rerun of the whole tree, so it raises the tree's run too: the root's
+// tree_generation takes the root's generation, which the re-admission beside it raised. A root's
+// next change raises its generation alone and never calls this (ClearChangeGeneration).
 func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
-	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
-		fmt.Sprintf("clear the generation of tree %s", tree), now)
+	describe := fmt.Sprintf("clear the generation of tree %s", tree)
+	if _, err := tx.Exec(ctx, `update issues set tree_generation = generation where key = $1 and tree = key`, tree); err != nil {
+		return fmt.Errorf("%s: raise its tree generation: %w", describe, err)
+	}
+	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree, describe, now)
 }
 
 // ClearChangeGeneration empties one issue's facts of the generation a next change leaves: its
@@ -1678,12 +1696,13 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 	// carried (the claim store's pending_task_deliveries.carried_news) is left as it stands:
 	// each item and opening of it is marked with the run it was rendered in, the generation of
 	// its issue and of its tree's root (DeliveryNewsItem.Generation and TreeGeneration), and
-	// the write beside this clear raises one of the two for every issue it covers (its callers:
-	// workflow's ReenterChild and moveIntoTree raise the issue's own, admit's readmit the
-	// root's). So that copy counts as a credit nowhere after the clear, neither in the read of
-	// what an audience took nor in the fold of its turn's result (the SQL function
-	// design_news_current), and a prompt of it whose turn starts after the clear confirms
-	// nothing for the next run: the news stays owed to that run, which its own start tells.
+	// the write beside this clear, or the clear itself, raises one of the two for every issue it
+	// covers (workflow's ReenterChild and moveIntoTree raise the issue's own, admit's readmit the
+	// root's, and ClearTreeGeneration the tree's). So that copy counts as a credit nowhere after
+	// the clear, neither in the read of what an audience took nor in the fold of its turn's
+	// result (the SQL function design_news_current), and a prompt of it whose turn starts after
+	// the clear confirms nothing for the next run: the news stays owed to that run, which its own
+	// start tells.
 	if _, err := tx.Exec(ctx, "delete from design_news_told where "+where, key); err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}

@@ -285,8 +285,8 @@ func ArchitectStartTask(start ArchitectStart) string {
 		writeGateOpen(&task, start)
 	case len(start.Gate.Rows) > 0:
 		writeGateStanding(&task, start)
-	case start.Root.TakenBack, start.Served > 0 && start.Served < start.Root.Generation, start.ServedEntry > 0,
-		start.MembersRun && start.Root.Generation > 1:
+	case start.Root.TakenBack, start.Served > 0 && start.Served < start.Root.TreeRun(), start.ServedEntry > 0,
+		start.MembersRun && start.Root.TreeRun() > 1:
 		writeEarlierGeneration(&task, start)
 	default:
 		writeFreshTree(&task, start)
@@ -310,7 +310,7 @@ func writeFreshTree(task *strings.Builder, start ArchitectStart) {
 	}
 	fmt.Fprintf(task, "%s is yours and %s %d, holding an admission slot%s. "+
 		"Take it up in this turn, as your role says: claim it in Dispatch, have its root spec written and %s, then",
-		start.Root.Key, ArchitectFreshTreeLabel, start.Root.Generation, runs, ArchitectDecompositionLabel)
+		start.Root.Key, ArchitectFreshTreeLabel, start.Root.TreeRun(), runs, ArchitectDecompositionLabel)
 	writeGateAsk(task, start.Gate.Steps, "")
 	task.WriteString(closing)
 }
@@ -391,7 +391,7 @@ func writeEarlierGeneration(task *strings.Builder, start ArchitectStart) {
 	fmt.Fprintf(task, "%s is yours and its tree %s and is open again at generation %d, holding an admission slot. "+
 		"Re-admission cleared the old generation and its design gate with it. "+
 		"Take it up in this turn, as your role says: claim it in Dispatch, then",
-		start.Root.Key, ArchitectReadmittedLabel, start.Root.Generation)
+		start.Root.Key, ArchitectReadmittedLabel, start.Root.TreeRun())
 	writeGateAsk(task, start.Gate.Steps, " again")
 	task.WriteString(" Decompose nothing anew. Its own first phase starts only once its design gate opens again.")
 }

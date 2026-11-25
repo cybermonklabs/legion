@@ -379,12 +379,13 @@ func (r *heldTaskRig) linger() {
 }
 
 // readmit is the root's next generation, as admission records one: running again, so its architect
-// has a tree to hear for.
+// has a tree to hear for, and its tree's run raised with it (readmitOutboxRoot).
 func (r *heldTaskRig) readmit() {
 	r.t.Helper()
 	r.root.Generation++
+	r.root.TreeGeneration = r.root.Generation
 	r.root.Phase, r.root.Status, r.root.LingerUntil = phase.Admitted, "in_progress", nil
-	r.put(r.root)
+	readmitOutboxRoot(r.t, r.pool, r.records, r.root)
 }
 
 // enqueueStart queues the architect start of the root's generation, naming what the root keeps and

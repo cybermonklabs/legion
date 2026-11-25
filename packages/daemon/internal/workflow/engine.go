@@ -815,7 +815,7 @@ func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 	if resolution.Refusal != "" {
 		return e.refuseChild(ctx, tx, root, fact.Key, fact.Parent, fact.ResolvedRepo, resolution)
 	}
-	if err := e.enterChild(ctx, tx, root, fact, root.Generation, resolution); err != nil {
+	if err := e.enterChild(ctx, tx, root, fact, root.TreeRun(), resolution); err != nil {
 		return err
 	}
 	e.HearRepository(ctx, resolution.GitHubRepo)

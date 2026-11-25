@@ -2435,9 +2435,15 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			return err
 		}
 	} else {
-		if payload.Generation != issue.Generation {
+		// A start of a tree root's architect runs on the tree's generation, which a next change of
+		// the root leaves (record.Issue.ArchitectGeneration); every other row serves the issue's own.
+		current := issue.Generation
+		if payload.Op == "start" && payload.Role == claim.RoleArchitect {
+			current = issue.ArchitectGeneration()
+		}
+		if payload.Generation != current {
 			r.log.Info("outbox supervise row serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
-				"generation", payload.Generation, "current", issue.Generation, "op", payload.Op, "role", payload.Role)
+				"generation", payload.Generation, "current", current, "op", payload.Op, "role", payload.Role)
 			return nil
 		}
 		if payload.Phase != "" && payload.Phase != issue.Phase {

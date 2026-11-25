@@ -314,7 +314,8 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 			if !itemStands(item, tree.gates[item.Step], heard.told) {
 				continue
 			}
-			items[i] = inRun(rekeyed(item, heard.told), issue.Generation, tree.root.Generation)
+			generation, treeGeneration := newsRun(listener.audience, *issue, tree.root)
+			items[i] = inRun(rekeyed(item, heard.told), generation, treeGeneration)
 			heard.items = append(heard.items, i)
 			// An item told by the unread history it carries asks the record nothing of it.
 			if items[i].From != nil || items[i].HistoryUnread == nil {
@@ -399,7 +400,7 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 //     told it, or the gate is closed and the delivery carried none.
 func (heard *newsListened) openingAtSend() *record.DeliveryOpening {
 	listener, open := heard.listener, heard.tree.open
-	generation, treeGeneration := heard.issue.Generation, heard.tree.root.Generation
+	generation, treeGeneration := newsRun(listener.audience, heard.issue, heard.tree.root)
 	switch {
 	case open && heard.told.OpeningOwed:
 		return &record.DeliveryOpening{Issue: listener.issue, Audience: listener.audience, Seq: heard.told.Opening,
@@ -483,8 +484,8 @@ func rekeyed(item record.DeliveryNewsItem, told record.DesignTold) record.Delive
 	return item
 }
 
-// inRun is item marked with the run the send renders it in: generation, the generation of the
-// item's issue, and treeGeneration, that of the root of the tree the issue stands in
+// inRun is item marked with the run the send renders it in (newsRun): generation, the run of the
+// item's audience on its issue, and treeGeneration, the run of the tree the issue stands in
 // (record.DeliveryNewsItem.Generation and TreeGeneration), as the transaction reads them. The
 // credit of the prompt that carries it counts only while the record still holds that run (the SQL
 // function design_news_current), so a send after a clear of a generation marks the item with the
@@ -492,6 +493,20 @@ func rekeyed(item record.DeliveryNewsItem, told record.DesignTold) record.Delive
 func inRun(item record.DeliveryNewsItem, generation, treeGeneration uint64) record.DeliveryNewsItem {
 	item.Generation, item.TreeGeneration = generation, treeGeneration
 	return item
+}
+
+// newsRun is the run news told to audience on issue is rendered in, as design_news_current reads
+// it back: the tree's generation of root for the tree's architect, told on its root, and the
+// issue's own generation for every other audience and issue, beside the tree's generation of the
+// root of the tree the issue stands in. A root's next change raises the root's own generation
+// alone, so news its architect took counts on, and news its holders took of the run that ended
+// counts nothing.
+func newsRun(audience record.DesignAudience, issue, root record.Issue) (generation, treeGeneration uint64) {
+	generation = issue.Generation
+	if audience == record.AudienceArchitect && claim.IsTreeRoot(issue.Key, issue.Tree) {
+		generation = issue.TreeRun()
+	}
+	return generation, root.TreeRun()
 }
 
 // carriedChange is what a send tells of item, a carried item as re-keyed against its told row

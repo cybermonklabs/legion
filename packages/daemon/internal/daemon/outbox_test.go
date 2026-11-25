@@ -2721,6 +2721,27 @@ func putOutboxIssue(t *testing.T, pool *store.Pool, records record.Store, issue 
 	}
 }
 
+// readmitOutboxRoot records root at the generation a re-admission gave it and raises its tree's run
+// with it, as the re-admission's clear of the whole tree does (record.Postgres.ClearTreeGeneration):
+// PutIssue alone writes a root's next change, which leaves the tree's run.
+func readmitOutboxRoot(t *testing.T, pool *store.Pool, records record.Store, root record.Issue) {
+	t.Helper()
+	if err := putReadmittedRoot(context.Background(), pool, records, root); err != nil {
+		t.Fatalf("re-admit %s at generation %d: %v", root.Key, root.Generation, err)
+	}
+}
+
+// putReadmittedRoot is readmitOutboxRoot's write, for a caller that reports its own failure.
+func putReadmittedRoot(ctx context.Context, pool *store.Pool, records record.Store, root record.Issue) error {
+	return store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := records.PutIssue(ctx, tx, root); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `update issues set tree_generation = generation where key = $1 and tree = key`, root.Key)
+		return err
+	})
+}
+
 // holdSlot gives each of issues the admission slot its promotion grants it (admit's promoteHolds).
 // A start of a phase worker now queues the row that carries the task with NeedsSlot set, and that
 // row stays unclaimable while no slots row names its issue (record.Store's outboxInOrder), so a
@@ -3291,7 +3312,7 @@ func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
 
 	// The tree is re-admitted at generation 2 while that architect still runs.
 	root.Generation = 2
-	putOutboxIssue(t, pool, records, root)
+	readmitOutboxRoot(t, pool, records, root)
 	start := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: 2}, time.Now())
 	if err := runner.execute(ctx, start); err != nil {
 		t.Fatalf("start the running architect for generation 2: %v", err)
