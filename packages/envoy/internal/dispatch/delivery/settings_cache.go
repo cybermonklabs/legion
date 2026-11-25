@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -34,14 +35,18 @@ const settingsRetryInterval = 30 * time.Second
 type SettingsCache struct {
 	pool *store.Pool
 	wake <-chan struct{}
+	// log is where the cache writes a read that failed and a malformed deploy repository: the
+	// intakes' logger (intakeTuning.log), given at construction.
+	log *slog.Logger
 
 	current atomic.Pointer[DeliverySettings]
 }
 
 // newSettingsCache builds a cache over pool's delivery_settings that reads again on each signal on
-// wake. It holds nothing until Run (or reload) has read the row.
-func newSettingsCache(pool *store.Pool, wake <-chan struct{}) *SettingsCache {
-	return &SettingsCache{pool: pool, wake: wake}
+// wake and logs to logger, the intakes' (startIntakes passes intakeTuning.log); a nil logger is the
+// default logger as it is now. It holds nothing until Run (or reload) has read the row.
+func newSettingsCache(pool *store.Pool, wake <-chan struct{}, logger *slog.Logger) *SettingsCache {
+	return &SettingsCache{pool: pool, wake: wake, log: cmp.Or(logger, slog.Default())}
 }
 
 // Load returns the latest settings the cache read whose deploy repository is a well-formed
@@ -85,12 +90,12 @@ func (c *SettingsCache) reload(ctx context.Context) bool {
 		return true
 	case err != nil:
 		if ctx.Err() == nil {
-			slog.Error("dispatch delivery: read settings for the intakes", "error", err)
+			c.log.Error("dispatch delivery: read settings for the intakes", "error", err)
 		}
 		return false
 	}
 	if _, _, err := refs.SplitGitHubRepo(settings.DeployRepo); err != nil {
-		slog.Error("dispatch delivery: deploy_repo setting", "error", err)
+		c.log.Error("dispatch delivery: deploy_repo setting", "error", err)
 		return true
 	}
 	c.current.Store(&settings)

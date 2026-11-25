@@ -433,7 +433,7 @@ exit %[2]d
 	isTerminal := stdinIsTerminal
 	stdinIsTerminal = func() bool { return true }
 	t.Cleanup(func() { stdinIsTerminal = isTerminal })
-	c.installPlugin(api.DaemonAPIVersion)
+	c.installPlugin(api.DaemonAPIVersion())
 	return c
 }
 
@@ -670,7 +670,7 @@ func TestControllerStartFetchesTheSecretWithTheOperatorBearer(t *testing.T) {
 	got := requests[1]
 	if got.method != http.MethodPost || got.path != "/legion/v1/controller/secret" ||
 		got.authorization != "Bearer "+controllerOperatorToken || got.contentType != "application/json" ||
-		string(got.body) != fmt.Sprintf(`{"pluginContract":%d}`, api.DaemonAPIVersion) || got.status != http.StatusOK {
+		string(got.body) != fmt.Sprintf(`{"pluginContract":%d}`, api.DaemonAPIVersion()) || got.status != http.StatusOK {
 		t.Fatalf("secret request = %s %s auth %q type %q body %q → %d", got.method, got.path, got.authorization, got.contentType, got.body, got.status)
 	}
 }
@@ -1182,7 +1182,7 @@ func TestControllerSecretWithoutTheConfiguredStepsIsRefused(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(tc.body))
 		}))
-		_, _, err := fetchControllerSecret(context.Background(), server.URL, controllerOperatorToken, api.DaemonAPIVersion)
+		_, _, err := fetchControllerSecret(context.Background(), server.URL, controllerOperatorToken, api.DaemonAPIVersion())
 		server.Close()
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("fetchControllerSecret(%s) error = %v; want it to name %q", tc.body, err, tc.want)
@@ -1194,7 +1194,7 @@ func TestControllerSecretWithoutTheConfiguredStepsIsRefused(t *testing.T) {
 		_, _ = w.Write([]byte(`{"secret":"s","designGateSteps":[]}`))
 	}))
 	defer server.Close()
-	secret, steps, err := fetchControllerSecret(context.Background(), server.URL, controllerOperatorToken, api.DaemonAPIVersion)
+	secret, steps, err := fetchControllerSecret(context.Background(), server.URL, controllerOperatorToken, api.DaemonAPIVersion())
 	if err != nil || secret != "s" || steps == nil || len(steps) != 0 {
 		t.Fatalf("fetchControllerSecret of the empty list = %q, %v, %v; want the secret and a list that gates nothing", secret, steps, err)
 	}
@@ -1293,7 +1293,7 @@ func TestControllerStartAgainstADaemonBeforeContract12NamesTheSideToUpgrade(t *t
 		"envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
 	}})
 	code, _, errb := c.run()
-	want := fmt.Sprintf("%s/legion/v1/controller/secret: the daemon speaks a daemon API contract older than 12, and this legion speaks %d; upgrade the daemon to this legion's release, or start the controller with the legion built with that daemon\n", old.URL, api.DaemonAPIVersion)
+	want := fmt.Sprintf("%s/legion/v1/controller/secret: the daemon speaks a daemon API contract older than 12, and this legion speaks %d; upgrade the daemon to this legion's release, or start the controller with the legion built with that daemon\n", old.URL, api.DaemonAPIVersion())
 	if code != 1 || !strings.HasSuffix(errb, want) {
 		t.Fatalf("legion controller start = %d, stderr %q; want 1 and a refusal ending %q", code, errb, want)
 	}
@@ -1436,10 +1436,10 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 	t.Run("a plugin in the operator's Oh My Pi profile that speaks another contract, naming both", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
-		c.installPlugin(api.DaemonAPIVersion - 1)
+		c.installPlugin(api.DaemonAPIVersion() - 1)
 		manifest := filepath.Join(c.home, ".omp", "plugins", "node_modules", "@sjawhar", "pi-legion", "package.json")
 		c.refused(fmt.Sprintf("pi-legion at %s (package 9.9.9) speaks daemon API contract %d; this daemon requires %d.",
-			manifest, api.DaemonAPIVersion-1, api.DaemonAPIVersion))
+			manifest, api.DaemonAPIVersion()-1, api.DaemonAPIVersion()))
 		c.wantNoMintRequest()
 		c.wantNothingLaunchedOrWritten(c.defaultDir)
 	})
@@ -1497,8 +1497,8 @@ func TestControllerStartHoldsTheCopyOhMyPiLoadsToTheContract(t *testing.T) {
 	t.Run("the loaded copy speaks the contract; the profile's own does not", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
-		c.installPluginAt(filepath.Join(c.home, ".omp"), api.DaemonAPIVersion-1)
-		c.loads(c.installPluginAt(filepath.Join(c.home, "project", ".omp"), api.DaemonAPIVersion))
+		c.installPluginAt(filepath.Join(c.home, ".omp"), api.DaemonAPIVersion()-1)
+		c.loads(c.installPluginAt(filepath.Join(c.home, "project", ".omp"), api.DaemonAPIVersion()))
 		if code, _, errb := c.run(); code != 0 || !c.launched() {
 			t.Fatalf("legion controller start = %d (launched %t), stderr %q; want the controller started", code, c.launched(), errb)
 		}
@@ -1506,10 +1506,10 @@ func TestControllerStartHoldsTheCopyOhMyPiLoadsToTheContract(t *testing.T) {
 	t.Run("the loaded copy speaks another contract; the profile's own speaks this one", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
-		loaded := c.installPluginAt(filepath.Join(c.home, "project", ".omp"), api.DaemonAPIVersion-1)
+		loaded := c.installPluginAt(filepath.Join(c.home, "project", ".omp"), api.DaemonAPIVersion()-1)
 		c.loads(loaded)
 		c.refused(fmt.Sprintf("pi-legion at %s (package 9.9.9) speaks daemon API contract %d; this daemon requires %d.",
-			filepath.Join(loaded, "package.json"), api.DaemonAPIVersion-1, api.DaemonAPIVersion))
+			filepath.Join(loaded, "package.json"), api.DaemonAPIVersion()-1, api.DaemonAPIVersion()))
 		c.wantNoMintRequest()
 		c.wantNothingLaunchedOrWritten(c.defaultDir)
 	})
@@ -2032,7 +2032,7 @@ func TestControllerStartStopsTheRefreshLoopWhenTheCapabilityIsSuperseded(t *test
 	})
 	// Mint a second capability, which supersedes the one this controller holds.
 	status, _, err := (operator{base: d.url, bearer: controllerOperatorToken}).do(context.Background(), http.MethodPost,
-		"/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion})
+		"/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()})
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("mint a second capability: status %d, err %v", status, err)
 	}

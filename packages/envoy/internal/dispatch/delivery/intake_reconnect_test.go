@@ -502,7 +502,7 @@ const (
 // process started. holderFake is what the holder's fake GitHub does with a fetch.
 func startConnectionEventProcesses(t *testing.T, holderFake holderGitHubFake) *connectionEventProcesses {
 	t.Helper()
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	// A NATS server of this row's own rather than the package's shared one (testnats.URL): the
 	// row reads the server's monitoring endpoint for the subscribers on one deliver subject, and
 	// on the shared server that endpoint answers for every test running beside this one.

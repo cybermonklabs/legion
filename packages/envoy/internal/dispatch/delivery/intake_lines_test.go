@@ -49,7 +49,7 @@ func TestALineThatComesAfterItsDeliveryKeepsTheDeliverysCadence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			lines := &deliveryLines{}
+			lines := newDeliveryLines(slog.Default())
 			ctx, cancel := context.WithCancel(logging.NewContext(context.Background(), lines.logger()))
 			defer cancel()
 			returned := make(chan error, 1)

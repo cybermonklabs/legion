@@ -568,7 +568,7 @@ func TestAKeyFreePullRequestLinkedOnItsIssueIsListedAtItsPushedHeadWithNoDeliver
 	issue := seedHeadIssue(t, ctx, pool, 9301)
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
-	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil, tuningFor(t).log), unrenamed())
 	const opened, pushed = "4301430143014301430143014301430143014301", "e273e273e273e273e273e273e273e273e273e273"
 	const branch, body = "test/nats-hooked-server", "No key here."
 	deliver := func(number int, action, head string, at time.Time) {

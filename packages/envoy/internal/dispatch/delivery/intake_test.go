@@ -32,10 +32,13 @@ import (
 // deliveryTestParallelism is how many of this package's tests run at once when the command line
 // names no -parallel. Every test calls t.Parallel except those that change or read back something
 // the whole process shares, which stay serial and run before the rest: a package variable a test
-// shortens (githubPageRetryWait, decodeEnvelope), the default logger (captureLogs), t.Setenv, the
-// process's goroutines, a select on a short time.After or a quiet window close to what it waits
-// for, a measurement of the machine's speed, or a read of Postgres's whole-server views. An
-// intake's own timers and hooks are its tuning (tuningFor), which no other test's intake reads.
+// shortens (githubPageRetryWait, decodeEnvelope), the default logger (captureLogs), which a test
+// reads when it needs a line of something that does not write to the intake's logger -- the bus
+// client, duty -- or requires that no component wrote some line, t.Setenv, the process's
+// goroutines, a select on a short time.After or a quiet window close to what it waits for, a
+// measurement of the machine's speed, or a read of Postgres's whole-server views. An intake's own
+// timers, hooks and logger are its tuning (tuningFor, captureIntakeLogs), which no other test's
+// intake reads.
 // Each parallel test has a database of its own (storetest.Open's clone) and a JetStream account of
 // its own (testnats.URL), and waits on NATS and Postgres far more than on a core. go test's default
 // of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's database
@@ -51,11 +54,12 @@ var tunings = struct {
 }{byTest: map[string]*intakeTuning{}}
 
 // tuningFor is the tuning (intakeTuning) of every intake test t builds, and the one t changes to
-// shorten a timer or hook a step of those intakes: made for t on its first use and dropped when t
-// ends, as a copy of its nearest ancestor test's when one has a tuning and production's
-// (newIntakeTuning) otherwise. Each test has its own, so a test that changes it runs beside tests
-// that do not, and every intake one test builds shares it, as they shared the package variables it
-// replaces. Set its durations and createDurable before the intakes start; its atomics at any time.
+// shorten a timer, hook a step or read the lines of those intakes: made for t on its first use and
+// dropped when t ends, as a copy of its nearest ancestor test's when one has a tuning and
+// production's (newIntakeTuning) otherwise. Each test has its own, so a test that changes it runs
+// beside tests that do not, and every intake one test builds shares it, as they shared the package
+// variables it replaces. Set its durations, createDurable and log before the intakes start; its
+// atomics at any time.
 func tuningFor(t testing.TB) *intakeTuning {
 	tunings.Lock()
 	defer tunings.Unlock()
@@ -93,6 +97,7 @@ func copyTuning(from *intakeTuning) *intakeTuning {
 		holdRenew:      from.holdRenew,
 		holdMargin:     from.holdMargin,
 		createDurable:  from.createDurable,
+		log:            from.log,
 	}
 	to.callWait.Store(from.callWait.Load())
 	to.drainWait.Store(from.drainWait.Load())
@@ -321,8 +326,13 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 }
 
 // captureLogs sends every slog record from here on to a buffer, as JSON, until the test ends, and
-// answers the records written so far. Intake logs from NATS's delivery goroutine, so the buffer is
-// locked. Call it before startIntake, so the default logger is restored only once intake stops.
+// answers the records written so far: the default logger's, and the logger of every intake the
+// test builds (tuningFor) and every intake StartIntakes builds, which log to the default. Intake
+// logs from NATS's delivery goroutine, so the buffer is locked. Call it before startIntake, so the
+// default logger is restored only once intake stops. It is for a test that reads a line of
+// something that does not take the intake's logger -- the bus client, duty -- or that requires no
+// component at all to have written some line; such a test is serial. A test that reads its
+// intakes' lines alone calls captureIntakeLogs.
 func captureLogs(t *testing.T) func() []map[string]any {
 	t.Helper()
 	return captureLogsAt(t, slog.LevelInfo)
@@ -334,16 +344,35 @@ func captureLogsAt(t *testing.T, level slog.Level) func() []map[string]any {
 	t.Helper()
 	var buffer lockedBuffer
 	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, &slog.HandlerOptions{Level: level}))
-	return func() []map[string]any {
-		var records []map[string]any
-		for _, line := range strings.Split(strings.TrimSpace(buffer.String()), "\n") {
-			var record map[string]any
-			if line != "" && json.Unmarshal([]byte(line), &record) == nil {
-				records = append(records, record)
-			}
+	tuningFor(t).log = slog.Default()
+	return func() []map[string]any { return loggedRecords(&buffer) }
+}
+
+// captureIntakeLogs points the logger of every intake the test builds after it (tuningFor), and
+// of the settings caches it builds for them (loadedSettingsCache), at a buffer of the test's own,
+// as JSON, and answers the records written so far. The default logger is left alone, so the test
+// reads its own intakes' lines, none of another test's, and may run beside other tests; what does
+// not take the intake's logger -- the bus client, the store, duty, the Attributor -- still writes
+// to the default. Call it before the test builds its intakes, which read their logger once they
+// run.
+func captureIntakeLogs(t *testing.T) func() []map[string]any {
+	t.Helper()
+	var buffer lockedBuffer
+	tuningFor(t).log = slog.New(slog.NewJSONHandler(&buffer, nil))
+	return func() []map[string]any { return loggedRecords(&buffer) }
+}
+
+// loggedRecords is every JSON record buffer holds, in the order written, skipping a line that does
+// not decode.
+func loggedRecords(buffer *lockedBuffer) []map[string]any {
+	var records []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buffer.String()), "\n") {
+		var record map[string]any
+		if line != "" && json.Unmarshal([]byte(line), &record) == nil {
+			records = append(records, record)
 		}
-		return records
 	}
+	return records
 }
 
 // lockedBuffer is a buffer safe to write from one goroutine while another reads it.
@@ -389,9 +418,10 @@ func shrinkOwedReadWriteTimeout(t *testing.T) {
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and
 // never again: what an intake under test routes by when nothing changes its settings meanwhile.
 // With no row it holds nothing, as a server's cache does before the settings are first written.
+// It logs to the test's intake logger (tuningFor), as the cache startIntakes builds does.
 func loadedSettingsCache(t *testing.T, ctx context.Context, pool *store.Pool) *SettingsCache {
 	t.Helper()
-	settings := newSettingsCache(pool, nil)
+	settings := newSettingsCache(pool, nil, tuningFor(t).log)
 	if !settings.reload(ctx) {
 		t.Fatal("read delivery_settings into the cache")
 	}

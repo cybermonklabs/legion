@@ -144,6 +144,8 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 // down with it, and the message stayed outstanding until the ack wait handed it to the next
 // process.
 func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
+	// The default logger, not the intake's: the row requires that no component logged a line about
+	// an acknowledgement, the bus client among them, and StartIntakes' intakes log to the default.
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -337,7 +339,8 @@ func TestIntakesWhoseSecondConnectFailsStartNeither(t *testing.T) {
 // delivery intake's bind on the same client is refused with bus.ErrSubscriptionHeld and logged at
 // ERROR, and the job intake's durable keeps its subscriber.
 func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	shared := intakeTestClient(t)
 	github := newFakeGitHub(t).newTestClient()

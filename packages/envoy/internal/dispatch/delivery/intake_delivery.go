@@ -299,7 +299,7 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		d.held = nil
 		d.mu.Unlock()
 		for _, msg := range held {
-			d.handBack(slog.Default(), msg)
+			d.handBack(d.tuning.log, msg)
 		}
 		// nats.go ends a drain on a goroutine of its own, once the callback has run every message
 		// the client had buffered, and reports it only by the subscription turning invalid. It ends
@@ -314,7 +314,7 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 			})
 			lost := !answered || !connected
 			if lost || d.handling.Err() != nil || time.Since(waitedFrom) >= time.Duration(d.tuning.drainWait.Load()) {
-				slog.Error("dispatch delivery: the intake's subscription did not finish draining; unsubscribing it", "waited", time.Since(waitedFrom), "connection_lost", lost)
+				d.tuning.log.Error("dispatch delivery: the intake's subscription did not finish draining; unsubscribing it", "waited", time.Since(waitedFrom), "connection_lost", lost)
 				callNATS(d.tuning, "unsubscribe the intake's subscription", func() (struct{}, error) {
 					return struct{}{}, draining.Unsubscribe()
 				})
@@ -340,10 +340,10 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 // (callLeftRunning), and answered is false. That goroutine holds nothing of the stop's; a call
 // through the bus client that holds the client's own lock while it reads nats.go's state
 // (Connected, and DrainSubscription through it) holds that lock until nats.go answers. Its failure
-// is logged when it ends, with attrs; a connection already closed is how a call that outlived the
-// stop ends when the client closes at shutdown, and is logged as that rather than as an error; a
-// publish refused because the connection is reconnecting (ErrReconnectBufExceeded) is logged at
-// INFO.
+// is logged when it ends, with attrs, to the intake's logger (tuning.log), as the WARN line is; a
+// connection already closed is how a call that outlived the stop ends when the client closes at
+// shutdown, and is logged as that rather than as an error; a publish refused because the
+// connection is reconnecting (ErrReconnectBufExceeded) is logged at INFO.
 func callNATS[T any](tuning *intakeTuning, what string, call func() (T, error), attrs ...any) (value T, answered bool) {
 	answers := make(chan T, 1)
 	go func() {
@@ -351,11 +351,11 @@ func callNATS[T any](tuning *intakeTuning, what string, call func() (T, error), 
 		switch {
 		case err == nil:
 		case errors.Is(err, natsgo.ErrConnectionClosed):
-			slog.Info("dispatch delivery: "+what+": the connection had closed", append(attrs, "error", err)...)
+			tuning.log.Info("dispatch delivery: "+what+": the connection had closed", append(attrs, "error", err)...)
 		case errors.Is(err, natsgo.ErrReconnectBufExceeded):
-			slog.Info("dispatch delivery: "+what+": the connection is reconnecting, so the message is left with the durable for its ack wait", append(attrs, "error", err)...)
+			tuning.log.Info("dispatch delivery: "+what+": the connection is reconnecting, so the message is left with the durable for its ack wait", append(attrs, "error", err)...)
 		default:
-			slog.Error("dispatch delivery: "+what, append(attrs, "error", err)...)
+			tuning.log.Error("dispatch delivery: "+what, append(attrs, "error", err)...)
 		}
 		answers <- v
 	}()
@@ -366,7 +366,7 @@ func callNATS[T any](tuning *intakeTuning, what string, call func() (T, error), 
 	case value = <-answers:
 		return value, true
 	case <-timer.C:
-		slog.Warn(callLeftRunning, append(attrs, "call", what, "waited", wait)...)
+		tuning.log.Warn(callLeftRunning, append(attrs, "call", what, "waited", wait)...)
 		return value, false
 	}
 }
@@ -387,7 +387,7 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 		return
 	}
 	d.mu.Unlock()
-	d.handBack(slog.Default(), msg)
+	d.handBack(d.tuning.log, msg)
 }
 
 // handBack publishes msg's hand-back to the durable, so the server redelivers it at once, or
@@ -483,7 +483,7 @@ func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 	}
 	written, admitted := d.admitHandBack()
 	if !admitted {
-		slog.Info(handBackSealed, "subject", msg.Subject)
+		d.tuning.log.Info(handBackSealed, "subject", msg.Subject)
 		return
 	}
 	if hook := d.afterHandBackAdmitted.Load(); hook != nil {
@@ -630,7 +630,7 @@ func (d *intakeDelivery) receive(msg *natsgo.Msg) {
 	}
 	key, envelope, wanted := d.key(msg)
 	if !wanted {
-		d.acknowledge(slog.Default(), msg)
+		d.acknowledge(d.tuning.log, msg)
 		return
 	}
 	if !d.keys.run(key, intakeMessage{msg: msg, envelope: envelope}) {

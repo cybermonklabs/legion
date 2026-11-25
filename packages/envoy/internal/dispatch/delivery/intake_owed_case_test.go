@@ -94,7 +94,7 @@ func TestTheIntakesReadSettlesTheReadALinkOwedInAnotherCase(t *testing.T) {
 			github := serveGitHubPulls(t, fake, "Acme/Widgets")
 			at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
 			github.set("Acme/Widgets", number, "open", head, branch, "", at)
-			intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
+			intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil, tuningFor(t).log), unrenamed())
 			payload, err := json.Marshal(prEnvelope("Acme/Widgets", number, "synchronize", head, branch, "", at))
 			if err != nil {
 				t.Fatal(err)

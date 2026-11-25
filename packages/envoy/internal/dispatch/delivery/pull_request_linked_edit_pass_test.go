@@ -71,7 +71,7 @@ func TestALinkedPullRequestWhoseBodyIsEditedIsComparedBeforeAnyResult(t *testing
 				}
 			}
 			if c.action != "" {
-				intake := newIntake(tuningFor(t), nil, pool, nil, client, nil, newSettingsCache(pool, nil), unrenamed())
+				intake := newIntake(tuningFor(t), nil, pool, nil, client, nil, newSettingsCache(pool, nil, tuningFor(t).log), unrenamed())
 				payload, err := json.Marshal(prEnvelope("acme/widgets", number, c.action, head, "topic", body, at))
 				if err != nil {
 					t.Fatal(err)

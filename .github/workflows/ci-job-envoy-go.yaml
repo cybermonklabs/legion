@@ -89,6 +89,7 @@ jobs:
           cache: false
       # go-envoy-test: this job builds and runs the test binary of every package of the envoy
       # module, a set no other job builds, so it keeps a family of its own.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -98,6 +99,11 @@ jobs:
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
       # the run shows which Postgres the tests below ran on.
       - name: Postgres service version
@@ -149,14 +155,17 @@ jobs:
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
       # 127 s; with the xid window tests in, one run on a two-vCPU pod took the API 134.082 s and
       # delivery 4.106 s (INFRA-636), and the documents package's line, with fifteen of its tests,
-      # took 55.972 s (job 137362821700). 10 minutes each is ample.
+      # took 55.972 s (job 137362821700). The API line also runs the issue list's 200 ms bound,
+      # TestAPriorityListAnswersWithinItsBoundOnEveryPlan, which seeds 13,298 issues and makes
+      # about 840 timed reads: 37 s on an eight-CPU build pod (INFRA-5609), and the whole API line
+      # took 106.397 s in this job (job 139092511342). 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
-          go test -count=1 -timeout 10m -run '^(TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestXidGapJudgmentNeedsReadableThreadClocks)$' ./internal/dispatch/store/storetest
+          go test -count=1 -timeout 10m -run '^(TestABeginThatFindsNoTracerMemoryIsUnknown|TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestWithoutNamesTheTracersMemoryIsWhatWasMappedSinceTheTraceStarted|TestXidGapJudgmentNeedsReadableThreadClocks)$' ./internal/dispatch/store/storetest
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
           go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
-          go test -count=1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec|TestXidWindowsUnderTheParentStatusRule)$' ./internal/dispatch/api
+          go test -count=1 -timeout 10m -run '^(TestAPriorityListAnswersWithinItsBoundOnEveryPlan|TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec|TestXidWindowsUnderTheParentStatusRule)$' ./internal/dispatch/api
           GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound|TestXidWindowAnchorBlockBackfill|TestXidWindowBlockIndexWindowArm|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowCatchesADocumentCallInsideTheWindow|TestXidWindowClosedIssueSettlementVersionWrite|TestXidWindowEditNoticeSweep|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowReconcileTaskProgress|TestXidWindowRigCatchesAGapAfterTheFirstWrite|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigJudgesAWriteThePollerNeverSaw|TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps|TestXidWindowRigNeverExcusesASleepForSoftirqs|TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite|TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes|TestXidWindowRigReadsTheMachinesLoadAsTheMachines|TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes|TestXidWindowSettlementVersionWrite)$' ./internal/dispatch/docs
         working-directory: packages/envoy
         # This step judges the xid window tests' statement-free gaps (storetest.XidJudgesGaps).
@@ -360,6 +369,12 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header. The three
+      # settings it turns off are PostgreSQL 16's too.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       # The three tests whose subject differs between PostgreSQL 16 and 18, by name
       # (POSTGRES16_TESTS in .github/scripts/ci_job_reads.py). The attribution's database guard
       # (migration 20261117111040's attribution_database_refusal) reads pg_database's locale

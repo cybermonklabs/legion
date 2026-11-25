@@ -544,7 +544,7 @@ func consumerGenerationMetadata() map[string]string {
 // writes goes straight to the log under the same decision.
 func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	msg := message.msg
-	lines := &deliveryLines{}
+	lines := newDeliveryLines(in.tuning.log)
 	log := lines.logger()
 	handling := logging.NewContext(d.handling, log)
 	// redeliver is set where the head row was not stored and the read it is owed could not be

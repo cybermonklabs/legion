@@ -53,7 +53,7 @@ func TestTheSettleOfAnOwedReadWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 		<-answer
 	}
 	settles := &statementWaitTracer{match: "delete from pull_request_reads_owed"}
-	intake := newIntake(tuningFor(t), nil, storetest.Traced(t, pool, settles, nil), nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
+	intake := newIntake(tuningFor(t), nil, storetest.Traced(t, pool, settles, nil), nil, fake.newTestClient(), nil, newSettingsCache(pool, nil, tuningFor(t).log), unrenamed())
 	payload, err := json.Marshal(prEnvelope("acme/widgets", number, "synchronize", head, branch, "", at))
 	if err != nil {
 		t.Fatal(err)
@@ -209,7 +209,7 @@ func TestTheReadsPlaceAtTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			github.set("acme/widgets", number, "open", head, branch, "", at)
 			places := &statementWaitTracer{match: "nextval('pull_request_reads_owed_revision_seq')"}
-			intake := newIntake(tuningFor(t), nil, storetest.Traced(t, pool, places, nil), nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
+			intake := newIntake(tuningFor(t), nil, storetest.Traced(t, pool, places, nil), nil, fake.newTestClient(), nil, newSettingsCache(pool, nil, tuningFor(t).log), unrenamed())
 			payload, err := json.Marshal(prEnvelope("acme/widgets", number, "synchronize", head, branch, "", at))
 			if err != nil {
 				t.Fatal(err)
