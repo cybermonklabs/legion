@@ -2,6 +2,7 @@ package record
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -374,6 +375,98 @@ func TestAStepStartKeepsItsCommitsAndItsFixCheck(t *testing.T) {
 		want = StepStart{Starts: 2, Agent: implementer, StartedAt: at, Run: RunOpen}
 		if got, err := store.StepStarts(t.Context(), tx, "LEGION-1", implementing1); err != nil || got != want {
 			t.Fatalf("StepStarts of the next start, which names no commit = %+v, %v; want %+v", got, err, want)
+		}
+	})
+}
+
+// A step that starts beside a fix, or that a fix's start reaches while it runs, pushes to a
+// branch of its own, bound to that one start of its place (SetStepPushBranch) beside the fix the
+// start named (MarkStepBesideFix). The binding outlives the fix: after fix 1 ended, with its way
+// still to take, the start reads its branch B at the same count with BesideFix 1, and a binding a
+// later fix asks for keeps B. It ends with the start's run: an ended run takes no binding, the
+// next start of the place reads no branch and no fix, and a write naming the old count changes
+// nothing and answers ErrStepStartMismatch.
+//
+// The control, a kept subtest: with the seam keepPreviousPushBranch the next start keeps B, which
+// the subtest asserts, so the reset is what clears it.
+func TestAStepKeepsItsBoundBranchUntilItsEntryEnds(t *testing.T) {
+	const (
+		issue  = "LEGION-1"
+		tester = "legion-legion-legion-1-tester"
+		bound  = "legion-beside/LEGION-1/3/a/fix-1/tester"
+		later  = "legion-beside/LEGION-1/3/a/fix-2/tester"
+	)
+	testing2 := StepPlace{Task: "a", Kind: "step", Place: 2}
+	at := time.Date(2026, 11, 24, 15, 0, 0, 0, time.UTC)
+	// play binds B to the tester's start beside fix 1, ends fix 1, ends the tester's run and starts
+	// it again, on records, and answers the start after the fix ended and after the next start.
+	play := func(t *testing.T, records *Postgres) (afterFix, next StepStart) {
+		t.Helper()
+		st := migratedStore(t)
+		ctx := t.Context()
+		inTx(t, st, func(tx pgx.Tx) {
+			fix := TaskFix{Issue: issue, Generation: 3, Task: "a", Fix: 1, State: FixReading, Check: fixCheck, Head: fixHeadX, Place: 1}
+			must(t, records.PutFix(ctx, tx, fix))
+			fix.State, fix.Entry = FixRunning, 4
+			must(t, records.UpdateFix(ctx, tx, fix))
+			var starts int64
+			if _, err := records.RaiseStepStarts(ctx, tx, issue, testing2, func(count int64) StepRecord {
+				starts = count
+				return StepRecord{ID: fmt.Sprint(count), Task: "a", Step: 2, Kind: "step", Agent: tester, StartedAt: &at}
+			}); err != nil {
+				t.Fatalf("RaiseStepStarts of the tester: %v", err)
+			}
+			must(t, records.MarkStepBesideFix(ctx, tx, issue, testing2, starts, 1))
+			must(t, records.SetStepPushBranch(ctx, tx, issue, testing2, starts, bound))
+
+			fix.State, fix.Result, fix.EndHead = FixEnded, "passed", fixHeadY
+			must(t, records.UpdateFix(ctx, tx, fix))
+			must(t, records.SetStepPushBranch(ctx, tx, issue, testing2, starts, later))
+			var err error
+			if afterFix, err = records.StepStarts(ctx, tx, issue, testing2); err != nil {
+				t.Fatalf("StepStarts after the fix ended: %v", err)
+			}
+
+			if _, ended, err := records.EndStepStart(ctx, tx, issue, testing2, ""); err != nil || !ended {
+				t.Fatalf("EndStepStart of the tester's run = %t, %v; want it ended", ended, err)
+			}
+			if err := records.SetStepPushBranch(ctx, tx, issue, testing2, starts, bound); !errors.Is(err, ErrStepStartMismatch) {
+				t.Errorf("a binding of the ended run = %v, want ErrStepStartMismatch", err)
+			}
+			if _, err := records.RaiseStepStarts(ctx, tx, issue, testing2, func(count int64) StepRecord {
+				return StepRecord{ID: fmt.Sprint(count), Task: "a", Step: 2, Kind: "step", Agent: tester, StartedAt: &at}
+			}); err != nil {
+				t.Fatalf("RaiseStepStarts of the tester again: %v", err)
+			}
+			if err := records.SetStepPushBranch(ctx, tx, issue, testing2, starts, bound); !errors.Is(err, ErrStepStartMismatch) {
+				t.Errorf("a binding naming the old count %d = %v, want ErrStepStartMismatch", starts, err)
+			}
+			if err := records.MarkStepBesideFix(ctx, tx, issue, testing2, starts, 1); !errors.Is(err, ErrStepStartMismatch) {
+				t.Errorf("a fix marked on the old count %d = %v, want ErrStepStartMismatch", starts, err)
+			}
+			if next, err = records.StepStarts(ctx, tx, issue, testing2); err != nil {
+				t.Fatalf("StepStarts after the next start: %v", err)
+			}
+		})
+		return afterFix, next
+	}
+
+	t.Run("the binding lasts until the start's run ends", func(t *testing.T) {
+		afterFix, next := play(t, NewStore())
+		want := StepStart{Starts: 1, Agent: tester, StartedAt: at, Run: RunOpen, BesideFix: 1, PushBranch: bound}
+		if afterFix != want {
+			t.Errorf("the tester's start after fix 1 ended = %+v, want B kept at the same count with BesideFix 1: %+v", afterFix, want)
+		}
+		want = StepStart{Starts: 2, Agent: tester, StartedAt: at, Run: RunOpen}
+		if next != want {
+			t.Errorf("the tester's next start = %+v, want no branch and no fix: %+v", next, want)
+		}
+	})
+
+	t.Run("control: keepPreviousPushBranch carries B into the next start", func(t *testing.T) {
+		_, next := play(t, &Postgres{keepPreviousPushBranch: true})
+		if next.Starts != 2 || next.PushBranch != bound {
+			t.Errorf("the next start with the reset taken out = %+v, want count 2 still bound to %s, the fault the reset clears", next, bound)
 		}
 	})
 }
