@@ -1,0 +1,18 @@
+# go-cipher-repository-forwarded: Rewrite forwards the Cipher-Repository header the broker
+# read, so the service sees which repository the broker minted for, while the model removes
+# it from every request it rewrites. Caught by the comparison fuzz test: the model's rewrite
+# holds no such header. Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/airlock.go
++++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
+@@ -613,9 +613,7 @@
+ 	out := *r
+ 	out.Headers = make([][2]string, 0, len(r.Headers))
+ 	for _, h := range r.Headers {
+-		if fold.ASCII(h[0]) == CipherRepositoryHeader {
+-			continue
+-		}
++		// MUTANT: Cipher-Repository is forwarded to the service, where the model removes it.
+ 		for _, n := range names {
+ 			if fold.ASCII(h[0]) == fold.ASCII(n) {
+ 				h[1] = substitute(g.Placeholder, value, h[1])

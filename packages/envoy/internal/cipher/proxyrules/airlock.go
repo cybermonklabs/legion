@@ -1,6 +1,11 @@
-// Package proxyrules holds the airlock's rules file and the two answers the broker's proxy
-// port takes from it: whether a request may carry a secret, and the request with the
-// grant's placeholder swapped for the secret's real value in the headers the rules name.
+// Package proxyrules holds the airlock's rules and the two answers the broker's proxy port
+// takes from them: whether a request may carry a secret, and the request with the grant's
+// placeholder swapped for the secret's real value in the headers its kind names. The rules are
+// the profiles file's kinds - for each, the hosts a credential of the kind may go to, the
+// headers it goes into and the methods and paths it may travel on - and one binding for each
+// name the policy serves behind the proxy: the kind its secret's proxy tag names, or a
+// transitional inline rule, and its profile's own allow, which narrows that one name and
+// never widens its kind.
 //
 // The package holds no HTTP and no database code, because a Lean model of exactly these
 // functions is proved and a differential fuzz test drives the Go functions against the

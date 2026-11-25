@@ -8,15 +8,15 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
 +++ b/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
-@@ -305,7 +305,11 @@
+@@ -428,8 +428,11 @@
  
  def rewriteReq (rules : Rules) (g : Grant) (value : String) (r : Request) : Option Request :=
    match check rules g value r with
--  | .ok sr => some { r with headers := r.headers.map (swapHeader (allowedHeaders sr) g.placeholder value) }
 +  -- MUTANT: each position is answered with the first swapped header of that name, so a
 +  -- request with two headers of one name comes back carrying the first one's value twice.
-+  | .ok sr =>
-+    let swapped := r.headers.map (swapHeader (allowedHeaders sr) g.placeholder value)
+   | .ok bk =>
+-    some { r with headers := (r.headers.filter keepHeader).map (swapHeader (allowedHeaders bk.2) g.placeholder value) }
++    let swapped := (r.headers.filter keepHeader).map (swapHeader (allowedHeaders bk.2) g.placeholder value)
 +    some { r with headers := swapped.map fun h => (swapped.find? (fun k => k.1 == h.1)).getD h }
    | .error _ => none
  

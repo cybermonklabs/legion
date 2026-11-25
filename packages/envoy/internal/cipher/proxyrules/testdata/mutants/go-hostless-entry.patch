@@ -1,16 +1,16 @@
-# go-hostless-entry: Validate accepts an entry that names no host, so a file whose proxy block
-# binds its value nowhere starts the broker. Caught by the comparison fuzz test: the model's
+# go-hostless-entry: Validate accepts a kind that names no host, so a file whose kind binds its
+# credential nowhere starts the broker. Caught by the comparison fuzz test: the model's
 # validate still answers false for such a file (theorem T4). Applied with patch -p1 from a copy.
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -119,8 +119,7 @@
- 			return fmt.Errorf("%s: the name is repeated", entry(i, s))
- 		case s.Kind != "" && s.Kind != KindAWS && s.Kind != KindAzure && s.Kind != KindDPoP:
- 			return fmt.Errorf("%s: kind %q is not %q, %q, %q or %q", entry(i, s), s.Kind, "", KindAWS, KindAzure, KindDPoP)
--		case len(s.Hosts) == 0:
--			return fmt.Errorf("%s: the entry names no host", entry(i, s))
-+		// MUTANT: an entry that names no host is accepted.
+@@ -179,7 +179,8 @@
+ 		case !kindNameOK(k.Name):
+ 			return fmt.Errorf("%s: the name is not one lowercase word", at)
  		}
- 		// A host HostShapeOK refuses binds the secret nowhere although the entry names it to bind
- 		// one: the command gets its placeholder and no call of it is ever swapped.
+-		if err := hostsOK(at, k.Hosts); err != nil {
++		// MUTANT: a kind that names no host is accepted.
++		if err := hostsOK(at, k.Hosts); err != nil && len(k.Hosts) > 0 {
+ 			return err
+ 		}
+ 		kinds[k.Name] = true

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("<\x03\x82@\xccfm\xe2\xae")

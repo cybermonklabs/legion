@@ -1,10 +1,16 @@
 /-!
 # Airlock core model
 
-The broker swaps placeholder `P` of grant `G` (for secret `S`) with `S`'s real value,
-only in the request headers the rules name for `S`, only on a CONNECT host the rules
-bind to `S`, and only when the TLS name and the Host header equal that host. The query
-and the body are never touched.
+The rules are the profiles file's kinds and one binding for each name the broker serves
+behind the proxy. A binding names the kind its secret's `proxy` tag names (or holds the
+inline rule of a transitional `dpop` proxy block), and may carry its profile's own `allow`.
+
+The broker swaps placeholder `P` of grant `G` (for the name `S`) with `S`'s real value,
+only in the request headers `S`'s kind names, only on a CONNECT host that kind binds, only
+when the TLS name and the Host header equal that host, and only when both the kind's `allow`
+and the binding's own `allow` allow the request, so a profile narrows its kind and never
+widens it. The query and the body are never touched, and every `Cipher-Repository` header
+is removed.
 
 Strings are Lean `String`s (valid UTF-8); the Go side refuses to send anything else.
 Basic credentials are decoded in the model itself (base64, Go `StdEncoding` semantics:
@@ -19,24 +25,44 @@ namespace Airlock
 
 /-! ## Data -/
 
+/-- One method and path prefix a credential may travel on. A kind's row holds no host; a
+profile's row may hold one of its kind's hosts, and then allows the request on that host
+alone. `host` is an `Option` because Go writes the field `omitempty`: a row with no host
+reaches this model with no `host` key, which reads as `none`, and `none` and `some ""` are
+both Go's empty host. -/
 structure Allow where
   method : String
   pathPrefix : String
+  host : Option String := none
   deriving Repr, BEq
 
-structure SecretRule where
+/-- One kind of the profiles file: the hosts it binds, the headers its credential goes
+into and its `allow`. Its ways, variables, placeholder prefix and longest grant are no part
+of the decision, and the Go side's JSON keys for them are not read here. -/
+structure Kind where
   name : String
   hosts : List String
   /-- `none` means the default `["authorization"]`. Compared ASCII-case-insensitively. -/
   headers : Option (List String) := none
+  /-- `none`: any method and path. `some []`: nothing allowed. -/
   allow : Option (List Allow) := none
-  /-- `""`, `"aws"`, `"azure"` or `"dpop"`. A plain `String`, not an `Option`, because the Go
-  side sends the empty string for an entry with no kind. -/
-  kind : String := ""
+  deriving Repr
+
+/-- One name behind the proxy: the kind it is decided under, or an inline rule (a binding
+names one or holds the other, never both), and its profile's own `allow`, `none` when the
+profile has none. `way` is the way its secret's type takes into a call, no part of the
+decision. -/
+structure Binding where
+  name : String
+  kind : String
+  way : String
+  allow : Option (List Allow) := none
+  inline : Option Kind := none
   deriving Repr
 
 structure Rules where
-  secrets : List SecretRule
+  kinds : List Kind
+  names : List Binding
   deriving Repr
 
 structure Grant where
@@ -54,6 +80,9 @@ structure Request where
   hostHeader : String
   method : String
   path : String
+  /-- The path as the command sent it, percent-encoding kept: the one form that tells an
+  encoded `/` from a `/`. -/
+  rawPath : String
   headers : List (String × String)
   query : String
   body : String
@@ -176,11 +205,22 @@ def substitute (p value v : String) : String :=
 
 /-! ## Rules -/
 
-def lookup (rules : Rules) (name : String) : Option SecretRule :=
-  rules.secrets.find? (·.name == name)
+/-- A name's binding: the first binding of that name, as Go's `Rules.Lookup` finds it. -/
+def lookup (rules : Rules) (name : String) : Option Binding :=
+  rules.names.find? (·.name == name)
 
-def allowedHeaders (sr : SecretRule) : List String :=
-  (sr.headers.getD ["authorization"]).map lowerAscii
+/-- The kind a binding is decided under: its inline rule, or the first kind of the name it
+names, as Go's `Rules.KindOf` answers; `none` for a kind the rules do not declare, which a
+valid file never holds. -/
+def kindOf (rules : Rules) (b : Binding) : Option Kind :=
+  match b.inline with
+  | some k => some k
+  | none => rules.kinds.find? (·.name == b.kind)
+
+/-- The headers a credential of the kind goes into, ASCII-lower-cased: the kind's own list,
+or `["authorization"]` when it names none (Go's `Kind.HeaderNames`). -/
+def allowedHeaders (k : Kind) : List String :=
+  (k.headers.getD ["authorization"]).map lowerAscii
 
 /-- Exact names, or `*.suffix` patterns matching one or more labels before `suffix`.
 Both sides are compared ASCII-lower-cased. -/
@@ -193,9 +233,28 @@ def hostBound (hosts : List String) (host : String) : Bool :=
   let h := lowerAscii host
   pats.contains h || go h.toList
 
+/-- A path prefix holds a path when the path is the prefix, or continues it at a `/`
+boundary: a prefix that ends with `/`, or a path whose next character is `/`. So
+`"/storage-limit"` holds `"/storage-limit"` and `"/storage-limit/7"` and not
+`"/storage-limitX"`. Read on characters where Go reads bytes; for valid UTF-8 the two
+agree, since a prefix of characters is a prefix of bytes ending at a character's end and `/`
+is one byte. -/
+def prefixOK (pre path : String) : Bool :=
+  let p := pre.toList
+  let s := path.toList
+  p.isPrefixOf s && (s.length == p.length || p.getLast? == some '/' || (s.drop p.length).head? == some '/')
+
+/-- One row allows a request of its method whose path its prefix holds and, for a row that
+names a host, whose CONNECT host is that host, the row's host compared ASCII-lower-cased. -/
+def rowOK (a : Allow) (r : Request) : Bool :=
+  let h := a.host.getD ""
+  a.method == r.method && (h.isEmpty || lowerAscii h == r.connectHost) && prefixOK a.pathPrefix r.path
+
+/-- `none` allows any method and path; a list allows what one of its rows allows, so `some []`
+allows nothing. -/
 def allowOK : Option (List Allow) → Request → Bool
   | none, _ => true
-  | some l, r => l.any fun a => a.method == r.method && a.pathPrefix.toList.isPrefixOf r.path.toList
+  | some l, r => l.any fun a => rowOK a r
 
 /-- The header names a service may read the request's method from instead of the method on
 the request line: `X-HTTP-Method-Override` is the one Google's APIs honour, and
@@ -220,12 +279,21 @@ segment at that end on both - so the two sides refuse the same paths. -/
 def hasDotSegment (path : String) : Bool :=
   (path.splitOn "/").any fun s => s == "." || s == ".."
 
+/-- The path holds an empty segment: two slashes in a row. A reader that merges them reads
+`"/a//b"` as `"/a/b"` and one that does not reads another route, so the airlock carries
+neither. A trailing slash is no empty segment here. -/
+def hasEmptySegment (path : String) : Bool := contains path "//"
+
+/-- The path as the command sent it holds a percent-encoded `/`, `%2F` or `%2f`: the decoded
+path reads it as a separator and a service may read it as a byte of one segment. -/
+def hasEncodedSlash (rawPath : String) : Bool := contains (lowerAscii rawPath) "%2f"
+
 def namesUnique : List String → Bool
   | [] => true
   | n :: ns => !ns.contains n && namesUnique ns
 
-/-- The four kinds an entry may name. -/
-def kindOK (k : String) : Bool := k == "" || k == "aws" || k == "azure" || k == "dpop"
+/-- A kind's name is one lowercase word: `a`-`z` alone, never empty. -/
+def kindNameOK (n : String) : Bool := !n.isEmpty && n.toList.all Char.isLower
 
 /-- A character a host label may hold: a letter, a digit or a hyphen. -/
 def hostCharOK (c : Char) : Bool :=
@@ -262,85 +330,106 @@ def hostShapeOK (h : String) : Bool :=
   let labels := splitDots name
   !name.isEmpty && labels.all labelOK && !(labels.getLast?.getD []).all Char.isDigit
 
-/-- Rules-file validation. This is the same answer as Go's `Validate` returning `nil`:
-the names are distinct, a kind is `""`, `"aws"`, `"azure"` or `"dpop"`, every entry names a host,
-and every host is one the airlock can bind. An entry is a proxy block, and one that binds its
-value to no host would hold the value back and carry it nowhere, so it is refused here (theorem
-`T4`); `check` still refuses every request for one ("secret not behind airlock"), since a
-decision does not assume a validated file. Who decides a request for a secret is no part of an
-entry: that is the key's own judge tag, which the broker's policy load bounds, not the rules
-file. -/
+/-- One kind's hosts, or one inline rule's: at least one, each one `hostShapeOK` takes. -/
+def hostsOK (hosts : List String) : Bool := !hosts.isEmpty && hosts.all hostShapeOK
+
+/-- Rules validation. This is the same answer as Go's `Validate` returning `nil`: the kinds'
+names are distinct, each one lowercase word, and each kind names a host and only hosts the
+airlock can bind; the bindings' names are distinct, and a binding holds an inline rule and
+names no kind, its rule naming a host and only hosts the airlock can bind, or names a kind the
+rules declare. A kind of no host would hold every value of the kind back and carry it
+nowhere, so it is refused here (theorem `T4`); `check` still refuses every request for one
+("secret not behind airlock"), since a decision does not assume a validated file. -/
 def validate (rules : Rules) : Bool :=
-  namesUnique (rules.secrets.map (·.name)) &&
-  rules.secrets.all fun s =>
-    kindOK s.kind && !s.hosts.isEmpty && s.hosts.all hostShapeOK
+  let declared := rules.kinds.map (·.name)
+  namesUnique declared &&
+  rules.kinds.all (fun k => kindNameOK k.name && hostsOK k.hosts) &&
+  namesUnique (rules.names.map (·.name)) &&
+  rules.names.all fun b =>
+    match b.inline with
+    | some k => b.kind.isEmpty && hostsOK k.hosts
+    | none => declared.contains b.kind
 
 /-! ## Decision and rewrite -/
 
-/-- The one decision both `decideReq` and `rewriteReq` take: the entry the request may
-carry, or the reason it may not. The reasons and the order they are reported in are the
-contract with Go's `check`.
+/-- The one decision both `decideReq` and `rewriteReq` take: the binding and the kind the
+request is carried under, or the reason it may not be. The reasons and the order they are
+reported in are the contract with Go's `check`.
 
-Two of the eleven refusals are about the request rather than about the entry. The CONNECT
-port must be 443: every name the decision compares - the CONNECT host, the TLS name and the
-Host header - carries no port, so 443 is the only port the rules speak about, and another
-port of one name is another service. It is read above the two name comparisons because the
-port is part of what the CONNECT named.
+The name's binding gives its kind, whose hosts and `allow` bind every secret of the kind,
+and its profile's own `allow`, which narrows that one name: a request goes through only when
+both allow it (theorem `no_widen`), so a profile never widens its kind.
 
-A path that holds a dot segment is refused whatever the entry's `allow` says, an entry with
-no `allow` included: an entry's path prefix bounds the path the service will read, and a
-reader that resolves dot segments first - which is what RFC 3986 section 5.2.4 says a path
-means - reads `"/v1/../admin"` as `"/admin"`, outside a `"/v1/"` prefix the literal path is
-inside. A path two readers resolve differently is a path neither can be held to, so it is
-refused rather than resolved here, which keeps one path in the decision and in what is
-forwarded, and lets this model prove the bound in a line where `remove_dot_segments` would
-be a page. It is read directly above the `allow` test because it is what makes that rule
-mean what it says.
+The CONNECT port must be 443: every name the decision compares - the CONNECT host, the TLS
+name and the Host header - carries no port, so 443 is the only port the rules speak about,
+and another port of one name is another service. It is read above the two name comparisons
+because the port is part of what the CONNECT named.
 
-A request carrying a method override header is refused when, and only when, the entry has an
-`allow` list. `allowOK` compares the method on the request line, while a service that reads
-`X-HTTP-Method-Override` (Google's APIs do) or one of its two other spellings acts on the
-method that header names, so an entry allowing `{POST, /prefix}` would carry the value on a
-PATCH or a DELETE under that prefix. The header is refused rather than the method it names,
-because which services read it, and which of them read which spelling, is not something the
-rules file says. An entry with no `allow` list allows every method already, so such a header
-takes nothing away from it and is not refused. It is read directly below the `allow` test,
-for the same reason the dot segment is read directly above it: it is what makes that rule
-mean what it says.
+A path that holds a dot segment, an empty segment or a percent-encoded `/` is refused
+whatever the `allow` lists say, a kind with no `allow` included: an `allow` prefix bounds the
+path the service will read, and a reader that resolves dot segments (RFC 3986 section
+5.2.4), merges slashes or decodes `%2F` first reads another path than the literal one the
+prefix holds. A path two readers resolve differently is a path neither can be held to, so it
+is refused rather than resolved here. They are read directly above the `allow` tests because
+they are what makes those rules mean what they say.
 
-The last test reads **every** header of the request, not only the ones the entry names,
-and an entry with a `kind` is not exempt: a request that already carries the real value
-learnt it somewhere other than this swap, so the airlock refuses it. -/
+A request carrying a method override header is refused when, and only when, the kind or the
+profile has an `allow` list. `allowOK` compares the method on the request line, while a
+service that reads `X-HTTP-Method-Override` (Google's APIs do) or one of its two other
+spellings acts on the method that header names, so a list allowing `{POST, /prefix}` would
+carry the value on a PATCH or a DELETE under that prefix. With neither list every method is
+allowed already, so such a header takes nothing away and is not refused. It is read directly
+below the `allow` tests.
+
+The last test reads **every** header of the request, not only the ones the kind names, and
+no way is exempt: a request that already carries the real value learnt it somewhere other
+than this swap, so the airlock refuses it. -/
 def check (rules : Rules) (g : Grant) (value : String) (r : Request) :
-    Except String SecretRule :=
+    Except String (Binding × Kind) :=
   if g.placeholder.isEmpty then .error "empty placeholder" else
   match lookup rules g.secret with
   | none => .error "unknown secret"
-  | some sr =>
-    if sr.hosts.isEmpty then .error "secret not behind airlock"
-    else if !hostBound sr.hosts r.connectHost then .error "host not bound"
-    else if r.connectPort != 443 then .error "connect port is not 443"
-    else if r.sni != r.connectHost then .error "sni mismatch"
-    else if r.hostHeader != r.connectHost then .error "host header mismatch"
-    else if hasDotSegment r.path then .error "path has a dot segment"
-    else if !allowOK sr.allow r then .error "not allowed by rule"
-    else if sr.allow.isSome && hasMethodOverride r then
-      .error "request carries a method override header"
-    else if r.headers.any (fun h => carries value h.2) then
-      .error "request already carries the value"
-    else .ok sr
+  | some b =>
+    match kindOf rules b with
+    | none => .error "secret not behind airlock"
+    | some k =>
+      if k.hosts.isEmpty then .error "secret not behind airlock"
+      else if !hostBound k.hosts r.connectHost then .error "host not bound"
+      else if r.connectPort != 443 then .error "connect port is not 443"
+      else if r.sni != r.connectHost then .error "sni mismatch"
+      else if r.hostHeader != r.connectHost then .error "host header mismatch"
+      else if hasDotSegment r.path then .error "path has a dot segment"
+      else if hasEmptySegment r.path then .error "path has an empty segment"
+      else if hasEncodedSlash r.rawPath then .error "path has an encoded slash"
+      else if !allowOK k.allow r then .error "not allowed by rule"
+      else if !allowOK b.allow r then .error "not allowed by the profile's rule"
+      else if (k.allow.isSome || b.allow.isSome) && hasMethodOverride r then
+        .error "request carries a method override header"
+      else if r.headers.any (fun h => carries value h.2) then
+        .error "request already carries the value"
+      else .ok (b, k)
 
 def decideReq (rules : Rules) (g : Grant) (value : String) (r : Request) : Decision :=
   match check rules g value r with
   | .ok _ => .allow
   | .error e => .refuse e
 
+/-- The header that names the repository a GitHub request is for, which the broker reads to
+mint a token for that one repository. The proxy removes it from every request it reads, so no
+service ever sees what the broker read. ASCII-lower-cased, as every header name here is
+compared. -/
+def cipherRepositoryHeader : String := "cipher-repository"
+
+/-- A header the rewrite keeps: every one but `Cipher-Repository`, in any case spelling. -/
+def keepHeader (h : String × String) : Bool := lowerAscii h.1 != cipherRepositoryHeader
+
 def swapHeader (allowed : List String) (p value : String) (h : String × String) : String × String :=
   if allowed.contains (lowerAscii h.1) then (h.1, substitute p value h.2) else h
 
 def rewriteReq (rules : Rules) (g : Grant) (value : String) (r : Request) : Option Request :=
   match check rules g value r with
-  | .ok sr => some { r with headers := r.headers.map (swapHeader (allowedHeaders sr) g.placeholder value) }
+  | .ok bk =>
+    some { r with headers := (r.headers.filter keepHeader).map (swapHeader (allowedHeaders bk.2) g.placeholder value) }
   | .error _ => none
 
 end Airlock

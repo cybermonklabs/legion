@@ -187,35 +187,45 @@ func (s *src) port() uint16 {
 }
 
 var (
-	// Every seed of the committed corpus decodes its hosts through this list by its length,
-	// so adding an entry here changes what every seed means: a seed that isolated one
-	// refusal can start drawing a host that masks it. The hosts validate refuses for their
-	// shape are compared against the model in TestModelAgreesOnHostShapes instead.
-	hostPool   = []string{"api.github.com", "*.github.com", "github.com", "*.com", "*.", "API.GitHub.com", "*.GitHub.COM", "uploads.github.com", "a.b.github.com", ".github.com", "githu\u212a.com", "githuk.com", "\u0130.github.com", ""}
-	namePool   = []string{"gh", "aws", "GH", ""}
-	hdrPool    = []string{"authorization", "Authorization", "AUTHORIZATION", "x-api-key", "X-Api-Key", "x-api-\u212aey", "proxy-authorization", "cookie"}
-	methodPool = []string{"GET", "POST", "get"}
-	// overridePool is the three headers check refuses under an entry with an allow list,
-	// each in a case the ASCII fold has to work on, with two near misses: a longer name
+	// Every seed of the committed corpus decodes its draws through these lists by their
+	// lengths, so adding an entry to one changes what every seed means: a seed that isolated
+	// one refusal can start drawing an entry that masks it. The hosts validate refuses for
+	// their shape are compared against the model in TestModelAgreesOnHostShapes instead.
+	hostPool = []string{"api.github.com", "*.github.com", "github.com", "*.com", "*.", "API.GitHub.com", "*.GitHub.COM", "uploads.github.com", "a.b.github.com", ".github.com", "githu\u212a.com", "githuk.com", "\u0130.github.com", "", "api.anthropic.com"}
+	// kindNamePool holds the names a kind and a binding draw alike, so a binding often names a
+	// kind the rules declare: three names Validate takes, and three it refuses (a capital, a
+	// hyphen and the empty name), so its "one lowercase word" refusal is reached.
+	kindNamePool = []string{"github", "anthropic", "slack", "Anthropic", "git-hub", ""}
+	namePool     = []string{"gh", "ANTHROPIC_ADMIN_HDO", "GH", ""}
+	// hdrPool holds Cipher-Repository in three spellings the ASCII fold takes and a longer name
+	// it does not, so the rewrite's removal of that header is compared on both sides.
+	hdrPool    = []string{"authorization", "Authorization", "AUTHORIZATION", "x-api-key", "X-Api-Key", "x-api-\u212aey", "proxy-authorization", "cookie", "Cipher-Repository", "cipher-repository", "CIPHER-REPOSITORY", "cipher-repositoryx"}
+	methodPool = []string{"GET", "POST", "get", "DELETE", "PUT"}
+	// overridePool is the three headers check refuses under a kind or a profile with an allow
+	// list, each in a case the ASCII fold has to work on, with two near misses: a longer name
 	// that only starts like one of them, and the KELVIN SIGN spelling that the fold here
 	// leaves alone where strings.EqualFold would not.
 	overridePool = []string{"x-http-method-override", "X-HTTP-Method-Override", "x-http-method", "X-Http-Method", "x-method-override", "X-METHOD-OVERRIDE", "x-http-method-overridden", "x-http-met\u212aod"}
-	// pathPool holds paths with no dot segment, paths that carry one (so check's "path has a
-	// dot segment" refusal is reached), and two near misses - "..foo" and "..." are segments
-	// no reader resolves - so the comparison covers where each side draws that line.
-	pathPool = []string{"/", "/repos/x", "/repos", "/admin", "", "/v1/../admin", "/a/./b", "/..", "/.", "/v1/things/../../admin", "/v1/..foo", "/v1/.../x"}
+	// pathPool holds paths with no dot segment, paths that carry one, and two near misses -
+	// "..foo" and "..." are segments no reader resolves; paths with an empty segment; and paths
+	// at, past and beside the "/" boundary of each prefix of prefixPool ("/repos", "/repos/x"
+	// and "/reposX"; "/storage-limit", "/storage-limit/7" and "/storage-limitX"), so the
+	// comparison covers where each side draws each of those lines.
+	pathPool = []string{"/", "/repos/x", "/repos", "/admin", "", "/v1/../admin", "/a/./b", "/..", "/.", "/v1/things/../../admin", "/v1/..foo", "/v1/.../x",
+		"/reposX", "/repos/", "/a//b", "//", "/repos//x", "/v1/organizations/workspaces", "/v1/organizations", "/v1/organizationsX", "/v1/messages",
+		"/storage-limit", "/storage-limitX", "/storage-limit/7"}
 	// portPool is the CONNECT port: 443 five times in eight, so a case reaches the refusals
 	// below the port, and otherwise a port the rules say nothing about.
 	portPool   = []uint16{443, 443, 443, 443, 443, 80, 8443, 0}
-	prefixPool = []string{"/", "/repos", "", "/r", "/admin/"}
-	phPool     = []string{"PH_gh_1", "ph", "", "a", "=", "user"}
-	valuePool  = []string{"REAL", "ghp_secret", "", "PH_gh_1", "a:b", "\u00e9"}
-	// kindPool holds the four kinds Validate takes, a wrong one, and two right ones in the
-	// wrong case, so validate's kind refusal is reached from both sides of the comparison.
-	kindPool   = []string{"", "aws", "azure", "dpop", "gcp", "AWS", "DPoP"}
-	piecePool  = []string{"user", "token ", " ", "\t", "x"}
-	schemePool = []string{"Basic ", "basic ", "BASIC ", "Basic  ", "Basic\t", "Basi "}
-	tailPool   = []string{"\v", " ", "\t", "\n", "\u00a0", "\u0085"}
+	prefixPool = []string{"/", "/repos", "", "/r", "/admin/", "/repos/", "/v1/organizations/", "/storage-limit"}
+	// encodedSlashPool is what the raw path may hold in place of a "/": the two spellings
+	// check refuses and two near misses, an encoded "%" before "2F" and a cut-off escape.
+	encodedSlashPool = []string{"%2F", "%2f", "%252F", "%2"}
+	phPool           = []string{"PH_gh_1", "ph", "", "a", "=", "user"}
+	valuePool        = []string{"REAL", "ghp_secret", "", "PH_gh_1", "a:b", "\u00e9"}
+	piecePool        = []string{"user", "token ", " ", "\t", "x"}
+	schemePool       = []string{"Basic ", "basic ", "BASIC ", "Basic  ", "Basic\t", "Basi "}
+	tailPool         = []string{"\v", " ", "\t", "\n", "\u00a0", "\u0085"}
 )
 
 func (s *src) list(n int, f func() string) []string {
@@ -288,35 +298,90 @@ func (s *src) headerValue(g Grant, value string) string {
 	return scheme + enc
 }
 
+// allow draws an allow list: nil (any method and path), empty (nothing allowed), or one to
+// three rows. One row in hostOdds names a host: a profile's rows draw it often, since a
+// profile's row may name one of its kind's hosts, and a kind's rows rarely, since CheckKind
+// refuses that at the policy load while Validate and the decision read it like any row.
+func (s *src) allow(hostOdds byte) []Allow {
+	switch s.u8() % 3 {
+	case 0:
+		return nil
+	case 1:
+		return []Allow{}
+	}
+	rows := []Allow{}
+	for m := 1 + int(s.u8()%3); m > 0; m-- {
+		a := Allow{Method: s.pick(methodPool), PathPrefix: s.pick(prefixPool)}
+		if s.u8()%hostOdds == 0 {
+			a.Host = s.pick(hostPool)
+		}
+		rows = append(rows, a)
+	}
+	return rows
+}
+
+// kind draws one kind: its name, its hosts, its headers and its allow. Hosts is never nil:
+// the model's hosts is a List String, and JSON null is no list, so a nil slice would be a case
+// the model refuses to parse rather than a case about a kind with no host. The empty list is
+// that case, and list gives it. The fields no decision reads (ways, variables, the placeholder
+// prefix and max_grant) are left unset.
+func (s *src) kind() Kind {
+	k := Kind{Name: s.pick(kindNamePool)}
+	k.Hosts = s.list(int(s.u8()%3), func() string { return s.pick(hostPool) })
+	switch s.u8() % 3 { // nil: the default ["authorization"]; empty: no header; or names
+	case 1:
+		k.Headers = []string{}
+	case 2:
+		k.Headers = s.list(1+int(s.u8()%3), func() string { return s.pick(hdrPool) })
+	}
+	k.Allow = s.allow(8)
+	return k
+}
+
+// rawPath draws the path as the command sent it: the decoded path itself one time in two;
+// the path with its last "/" written as an escape of encodedSlashPool; or the path with one
+// appended, so check's "path has an encoded slash" refusal and its near misses are reached on
+// paths every other rule allows.
+func (s *src) rawPath(path string) string {
+	switch s.u8() % 4 {
+	case 2:
+		if j := strings.LastIndexByte(path, '/'); j >= 0 {
+			return path[:j] + s.pick(encodedSlashPool) + path[j+1:]
+		}
+		return path
+	case 3:
+		return path + s.pick(encodedSlashPool)
+	default:
+		return path
+	}
+}
+
 func genCase(data []byte) wireCase {
 	s := &src{b: data}
-	rules := Rules{Secrets: []SecretRule{}}
+	// Kinds and Names are never nil, for the reason a kind's Hosts is not.
+	rules := Rules{Kinds: []Kind{}, Names: []Binding{}}
 	for n := int(s.u8() % 4); n > 0; n-- {
-		sr := SecretRule{Name: s.pick(namePool), Kind: s.pick(kindPool)}
-		// Hosts is never nil: the model's hosts is a List String, and JSON null is no
-		// list, so a nil slice would be a case the model refuses to parse rather than a
-		// case about an entry with no host. The empty list is that case, and list gives it.
-		sr.Hosts = s.list(int(s.u8()%3), func() string { return s.pick(hostPool) })
-		switch s.u8() % 3 { // nil: the default ["authorization"]; empty: no header; or names
-		case 1:
-			sr.Headers = []string{}
-		case 2:
-			sr.Headers = s.list(1+int(s.u8()%3), func() string { return s.pick(hdrPool) })
-		}
-		switch s.u8() % 3 { // nil: any method and path; empty: nothing allowed; or rows
-		case 1:
-			sr.Allow = []Allow{}
-		case 2:
-			sr.Allow = []Allow{}
-			for m := 1 + int(s.u8()%3); m > 0; m-- {
-				sr.Allow = append(sr.Allow, Allow{Method: s.pick(methodPool), PathPrefix: s.pick(prefixPool)})
+		rules.Kinds = append(rules.Kinds, s.kind())
+	}
+	// A binding names a kind drawn from the pool the kinds' names are drawn from, carries its
+	// profile's own allow (nil, empty or rows, which often name a host), and one time in six
+	// holds an inline rule, which three times in four names no kind beside it and otherwise
+	// does, a binding Validate refuses.
+	for n := int(s.u8() % 4); n > 0; n-- {
+		b := Binding{Name: s.pick(namePool), Kind: s.pick(kindNamePool), Allow: s.allow(2)}
+		if s.u8()%6 == 0 {
+			inline := s.kind()
+			b.Inline = &inline
+			if s.u8()%4 != 0 {
+				b.Kind = ""
 			}
 		}
-		rules.Secrets = append(rules.Secrets, sr)
+		rules.Names = append(rules.Names, b)
 	}
 	g := Grant{Secret: s.pick(namePool), Placeholder: s.pick(phPool)}
 	value := s.pick(valuePool)
 	r := &Request{ConnectHost: s.pick(hostPool), ConnectPort: s.port(), Method: s.pick(methodPool), Path: s.pick(pathPool), Headers: [][2]string{}}
+	r.RawPath = s.rawPath(r.Path)
 	r.SNI, r.HostHeader = r.ConnectHost, r.ConnectHost
 	if s.u8()%4 == 0 {
 		r.SNI = s.pick(hostPool)
@@ -330,9 +395,9 @@ func genCase(data []byte) wireCase {
 	r.Query = s.compose(g, value, false)
 	r.Body = s.compose(g, value, false)
 	// One request in four carries a method override header, so check's refusal of one under
-	// an entry with an allow list is reached from both sides. The draw is the last one of
-	// the case, after the query and the body, so that a seed written before it still names
-	// the case it names: a byte string that has run out answers 0 here, and 0 adds nothing.
+	// a kind or a profile with an allow list is reached from both sides. The draw is the last
+	// one of the case, after the query and the body: a byte string that has run out answers 0
+	// here, and 0 adds nothing.
 	if s.u8()%4 == 1 {
 		r.Headers = append(r.Headers, [2]string{s.pick(overridePool), s.compose(g, value, false)})
 	}
@@ -348,72 +413,89 @@ func allValidUTF8(c wireCase) bool {
 	return utf8.Valid(b) && !bytes.Contains(b, []byte(`\ufffd`))
 }
 
+// compare sends one case to both sides and fails t when the two answer differently. It answers
+// the one answer, which a caller may hold to more. Compared as values, not as bytes: Lean's
+// Json.compress prints an object's keys sorted and encoding/json prints a struct's fields in
+// declaration order, so the same answer is two different lines.
+func compare(t testing.TB, c wireCase) answer {
+	t.Helper()
+	line, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := leanModel(t).ask(t, line)
+	got := goAnswer(c)
+	if !reflect.DeepEqual(want, got) {
+		wj, _ := json.Marshal(want)
+		gj, _ := json.Marshal(got)
+		t.Fatalf("Go and the Lean model disagree\ncase: %s\nlean: %s\ngo:   %s", line, wj, gj)
+	}
+	return got
+}
+
 // FuzzAirlock compares the two sides on every case the byte string generates. The committed
-// corpus under testdata/fuzz/FuzzAirlock reaches every refusal reason and both answers of
-// Validate, so `go test -run FuzzAirlock` is already the differential test; -fuzz goes on
-// from those seeds.
+// corpus under testdata/fuzz/FuzzAirlock reaches every refusal reason, both answers of Validate
+// and each of its refusals, and each mutant of testdata/mutants, so `go test -run FuzzAirlock`
+// is already the differential test; -fuzz goes on from those seeds. Before the generated cases,
+// the anthropic kind's calls of TestTheAnthropicKind go to both sides as they are.
 func FuzzAirlock(f *testing.F) {
 	if modelPath() == "" {
 		f.Skip("AIRLOCK_MODEL names no built airlock-model; lake build in lean/ writes one to " + modelBuildPath)
 	}
-	f.Add([]byte{}) // the empty byte string: no entry, no header, every pool at its head
+	for _, c := range anthropicCases() {
+		compare(f, c)
+	}
+	f.Add([]byte{}) // the empty byte string: no kind, no binding, no header, every pool at its head
 	f.Fuzz(func(t *testing.T, data []byte) {
 		c := genCase(data)
 		if !allValidUTF8(c) {
 			t.Skip()
 		}
-		line, err := json.Marshal(c)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Compared as values, not as bytes: Lean's Json.compress prints an object's keys
-		// sorted and encoding/json prints a struct's fields in declaration order, so the
-		// same answer is two different lines.
-		want := leanModel(t).ask(t, line)
-		got := goAnswer(c)
-		if !reflect.DeepEqual(want, got) {
-			wj, _ := json.Marshal(want)
-			gj, _ := json.Marshal(got)
-			t.Fatalf("Go and the Lean model disagree\ncase: %s\nlean: %s\ngo:   %s", line, wj, gj)
-		}
+		compare(t, c)
 	})
 }
 
-// TestTheModelRefusesAHostlessEntry: a rules file whose entry binds no host is refused on both
-// sides, since an entry is a proxy block and every proxy block names a host (theorem T4 of the
-// model). A proxy request for the entry is still refused as a secret not behind the airlock, on
-// both sides. It needs the model, as TestModelAgreesOnHostShapes does, so scripts/database-skips.sh
-// expects its skip and the airlock-lean job's seed step runs it by name.
+// TestTheModelRefusesAHostlessEntry: rules whose kind binds no host, or whose binding holds an
+// inline rule that binds none, are refused on both sides, since a kind binds its credential to
+// its hosts (theorem T4 of the model). A proxy request for a name of it is still refused as a
+// secret not behind the airlock, on both sides. It needs the model, as
+// TestModelAgreesOnHostShapes does, so scripts/database-skips.sh expects its skip and the
+// airlock-lean job's seed step runs it by name.
 func TestTheModelRefusesAHostlessEntry(t *testing.T) {
 	if modelPath() == "" {
 		t.Skip("AIRLOCK_MODEL names no built airlock-model; lake build in lean/ writes one to " + modelBuildPath)
 	}
-	c := wireCase{
-		Rules: Rules{Secrets: []SecretRule{{Name: "HOSTLESS", Hosts: []string{}}}},
-		Grant: Grant{Secret: "HOSTLESS", Placeholder: "PH"},
-		Value: "the-value-not-a-secret",
-		Request: &Request{
-			ConnectHost: "api.example.com", ConnectPort: 443, SNI: "api.example.com", HostHeader: "api.example.com",
-			Method: "GET", Path: "/", Headers: [][2]string{{"Authorization", "Bearer PH"}},
+	for name, rules := range map[string]Rules{
+		"a kind of no host": {
+			Kinds: []Kind{{Name: "hostless", Hosts: []string{}}},
+			Names: []Binding{{Name: "HOSTLESS", Kind: "hostless"}},
 		},
-	}
-	line, err := json.Marshal(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, got := leanModel(t).ask(t, line), goAnswer(c)
-	if !reflect.DeepEqual(want, got) {
-		t.Fatalf("Go and the Lean model disagree\ncase: %s\nlean: %+v\ngo:   %+v", line, want, got)
-	}
-	if got.Valid || got.Allow || got.Reason != "secret not behind airlock" {
-		t.Fatalf("the host-less entry answers %+v; want an invalid file and a refusal, secret not behind airlock", got)
+		"an inline rule of no host": {
+			Kinds: []Kind{},
+			Names: []Binding{{Name: "HOSTLESS", Inline: &Kind{Name: "minted", Hosts: []string{}}}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := compare(t, wireCase{
+				Rules: rules,
+				Grant: Grant{Secret: "HOSTLESS", Placeholder: "PH"},
+				Value: "the-value-not-a-secret",
+				Request: &Request{
+					ConnectHost: "api.example.com", ConnectPort: 443, SNI: "api.example.com", HostHeader: "api.example.com",
+					Method: "GET", Path: "/", RawPath: "/", Headers: [][2]string{{"Authorization", "Bearer PH"}},
+				},
+			})
+			if got.Valid || got.Allow || got.Reason != "secret not behind airlock" {
+				t.Fatalf("the host-less rule answers %+v; want invalid rules and a refusal, secret not behind airlock", got)
+			}
+		})
 	}
 }
 
 // TestModelAgreesOnHostShapes compares Go's Validate with the Lean model's validate over the
-// host shapes the rules file may hold, the ones no request can ever match among them. They are
-// read here rather than added to hostPool, because every seed of the committed corpus decodes
-// its hosts through that list by its length.
+// host shapes the rules may hold, the ones no request can ever match among them, as a kind's
+// host and as an inline rule's. They are read here rather than added to hostPool, because every
+// seed of the committed corpus decodes its hosts through that list by its length.
 func TestModelAgreesOnHostShapes(t *testing.T) {
 	if modelPath() == "" {
 		t.Skip("AIRLOCK_MODEL names no built airlock-model; lake build in lean/ writes one to " + modelBuildPath)
@@ -426,30 +508,26 @@ func TestModelAgreesOnHostShapes(t *testing.T) {
 		"slack_com", "*.*.com", "sl\u212aack.com",
 	}
 	for _, host := range hosts {
-		t.Run(host, func(t *testing.T) {
-			c := wireCase{
-				Rules:   Rules{Secrets: []SecretRule{{Name: "gh", Hosts: []string{host}, Headers: []string{"authorization"}}}},
-				Grant:   Grant{Secret: "gh", Placeholder: "agent-secrets-placeholder-gh"},
-				Value:   "the-value",
-				Request: &Request{ConnectHost: "slack.com", ConnectPort: 443, Method: "GET", Path: "/", SNI: "slack.com", HostHeader: "slack.com", Headers: [][2]string{}},
-			}
-			if !allValidUTF8(c) {
-				t.Skip("the case does not go over the wire as valid UTF-8")
-			}
-			line, err := json.Marshal(c)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := leanModel(t).ask(t, line)
-			got := goAnswer(c)
-			if !reflect.DeepEqual(want, got) {
-				wj, _ := json.Marshal(want)
-				gj, _ := json.Marshal(got)
-				t.Fatalf("Go and the Lean model disagree on host %q\nlean: %s\ngo:   %s", host, wj, gj)
-			}
-			if want.Valid != HostShapeOK(host) {
-				t.Errorf("the model calls the file valid=%v for host %q, and HostShapeOK says %v", want.Valid, host, HostShapeOK(host))
-			}
-		})
+		for _, as := range []string{"kind", "inline"} {
+			t.Run(as+" "+host, func(t *testing.T) {
+				k := Kind{Name: "slack", Hosts: []string{host}, Headers: []string{"authorization"}}
+				rules := Rules{Kinds: []Kind{k}, Names: []Binding{{Name: "gh", Kind: "slack"}}}
+				if as == "inline" {
+					rules = Rules{Kinds: []Kind{}, Names: []Binding{{Name: "gh", Inline: &k}}}
+				}
+				c := wireCase{
+					Rules:   rules,
+					Grant:   Grant{Secret: "gh", Placeholder: "agent-secrets-placeholder-gh"},
+					Value:   "the-value",
+					Request: &Request{ConnectHost: "slack.com", ConnectPort: 443, Method: "GET", Path: "/", RawPath: "/", SNI: "slack.com", HostHeader: "slack.com", Headers: [][2]string{}},
+				}
+				if !allValidUTF8(c) {
+					t.Skip("the case does not go over the wire as valid UTF-8")
+				}
+				if got := compare(t, c); got.Valid != HostShapeOK(host) {
+					t.Errorf("both sides call the rules valid=%v for host %q, and HostShapeOK says %v", got.Valid, host, HostShapeOK(host))
+				}
+			})
+		}
 	}
 }

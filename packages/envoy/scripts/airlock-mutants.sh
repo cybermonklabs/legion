@@ -14,7 +14,10 @@
 #     naming the model this checkout already built;
 #   - a model mutant (lean-*.patch) must fail `lake build` in the copy, because a proof no
 #     longer holds, or, when it still builds, fail that same comparison against the mutated
-#     model. The line says which of the two caught it;
+#     model. The line says which of the two caught it, and for the build, the theorems of
+#     Airlock/Proofs.lean its errors are in. A build that fails in another file (the model or
+#     the program around it) is a mutant that does not build, and fails the run rather than
+#     counting as caught;
 #   - a proxy mutant (proxy-*.patch, internal/cipher/proxy/testdata/mutants) must fail the
 #     tests its own header names, one `# must fail: <Test>` line each, run as
 #     `go test -run '^(<Test>|...)$' ./internal/cipher/proxy/`, which runs each once with
@@ -75,7 +78,8 @@ Applies each mutant of internal/cipher/proxyrules/testdata/mutants, of
 internal/cipher/proxy/testdata/mutants, of internal/cipher/policy/testdata/mutants and of
 internal/cipher/requests/testdata/mutants to a copy of packages/envoy under $TMPDIR and
 requires that copy to fail: a go-*.patch must fail the comparison fuzz test over the committed
-seed corpus, a lean-*.patch must fail `lake build`, because a proof no longer holds, or that
+seed corpus, a lean-*.patch must fail `lake build` in a theorem of Airlock/Proofs.lean, because
+a proof no longer holds (an error in any other file fails the run), or that
 same comparison against the mutated model, and a proxy-*.patch, policy-*.patch or
 requests-*.patch must fail every test of its package its own `# must fail: <Test>` lines name,
 and is counted by those tests alone, after those tests pass on an unpatched copy; a mutant whose
@@ -226,9 +230,36 @@ compare() {
 	return 2
 }
 
-# failing_seed names the first corpus seed the comparison failed on, for the PASS: line.
+# failing_seed names the first corpus seed the comparison failed on, for the PASS: line, or the
+# fixed cases FuzzAirlock compares before its corpus when the failure came from one of those.
 failing_seed() {
-	sed -n 's|^ *--- FAIL: FuzzAirlock/\([^ ]*\).*|\1|p' "$1" | head -n 1
+	local seed
+	seed="$(sed -n 's|^ *--- FAIL: FuzzAirlock/\([^ ]*\).*|\1|p' "$1" | head -n 1)"
+	echo "${seed:-none, but a fixed case before the corpus}"
+}
+
+# failed_proofs reads a failed `lake build` log of the copy's Lean project <lean dir> and sets
+# FAILED_THEOREMS to the theorem of Airlock/Proofs.lean each error is in, once each in the order
+# first named, read off the line the error names, and OUTSIDE to each error in another file. A
+# mutant is caught by the build only when a proof no longer holds: an error in the model or in
+# the program that runs it is a mutant that does not build, which would otherwise read as a
+# catch.
+failed_proofs() {
+	local lean_dir="$1" log="$2" file line theorem
+	FAILED_THEOREMS=""
+	OUTSIDE=""
+	while IFS=: read -r file line; do
+		if [[ "$file" != Airlock/Proofs.lean ]]; then
+			OUTSIDE="$OUTSIDE $file:$line"
+			continue
+		fi
+		theorem="$(awk -v at="$line" 'NR > at { exit } /^theorem / { name = $2 } END { print name }' "$lean_dir/$file")"
+		theorem="${theorem:-(no theorem above $file:$line)}"
+		case " $FAILED_THEOREMS " in
+		*" $theorem "*) ;;
+		*) FAILED_THEOREMS="${FAILED_THEOREMS:+$FAILED_THEOREMS }$theorem" ;;
+		esac
+	done < <(sed -n 's|^error: \([^:]*\):\([0-9][0-9]*\):.*|\1:\2|p' "$log")
 }
 
 # must_fail is the tests a proxy or policy mutant's header names, one `# must fail: <Test>` line
@@ -344,9 +375,19 @@ for name in "${mutants[@]}"; do
 	fi
 
 	if [[ "$name" == lean-* ]]; then
-		if ! (cd "$copy/packages/envoy/internal/cipher/proxyrules/lean" && lake build) >"$log" 2>&1; then
-			reason="$(grep -m1 -E 'error:' "$log" | cut -c1-120)"
-			echo "PASS: $name — caught by lake build, a proof no longer holds: ${reason:-see the build log} ($((SECONDS - started))s)"
+		lean_dir="$copy/packages/envoy/internal/cipher/proxyrules/lean"
+		if ! (cd "$lean_dir" && lake build) >"$log" 2>&1; then
+			failed_proofs "$lean_dir" "$log"
+			reason="$(grep -m1 -E '^error: ' "$log" | cut -c1-120)"
+			if [[ -n "$OUTSIDE" ]]; then
+				echo "FAIL: $name — the mutant does not build outside the proofs, at$OUTSIDE: ${reason:-see the build log}"
+				failures=$((failures + 1))
+			elif [[ -z "$FAILED_THEOREMS" ]]; then
+				echo "FAIL: $name — lake build failed and named no line of a proof: $(tail -n 3 "$log" | tr '\n' ' ')"
+				failures=$((failures + 1))
+			else
+				echo "PASS: $name — caught by lake build, a proof no longer holds: $FAILED_THEOREMS (${reason#error: }) ($((SECONDS - started))s)"
+			fi
 			continue
 		fi
 		model="$copy/packages/envoy/internal/cipher/proxyrules/lean/.lake/build/bin/airlock-model"

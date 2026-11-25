@@ -7,14 +7,15 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
 +++ b/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
-@@ -305,7 +305,9 @@
+@@ -428,8 +428,10 @@
  
  def rewriteReq (rules : Rules) (g : Grant) (value : String) (r : Request) : Option Request :=
    match check rules g value r with
--  | .ok sr => some { r with headers := r.headers.map (swapHeader (allowedHeaders sr) g.placeholder value) }
 +  -- MUTANT: the swap appends the real value to the request's method, so the method the
 +  -- service reads is one the decision never saw and carries the value on the request line.
-+  | .ok sr => some { r with method := r.method ++ value, headers := r.headers.map (swapHeader (allowedHeaders sr) g.placeholder value) }
+   | .ok bk =>
+-    some { r with headers := (r.headers.filter keepHeader).map (swapHeader (allowedHeaders bk.2) g.placeholder value) }
++    some { r with method := r.method ++ value, headers := (r.headers.filter keepHeader).map (swapHeader (allowedHeaders bk.2) g.placeholder value) }
    | .error _ => none
  
  end Airlock
