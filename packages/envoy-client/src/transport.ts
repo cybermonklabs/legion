@@ -7,6 +7,7 @@ import {
   LISTENER_CALL_ATTEMPTS,
   LISTENER_CALL_RETRY_DELAY_MS,
   LISTENER_CALL_TIMEOUT_MS,
+  MESSAGE_NOT_SENT_PREFIX,
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
@@ -843,6 +844,15 @@ export class EnvoyApiError extends Error {
   /** The topics a registration's project refusal names (`topic_not_in_project`,
    *  `repository_not_in_project`), each as the registration carried it, when the body names any. */
   readonly refused: readonly string[] | undefined;
+  /**
+   * Whether the call sent nothing, by the listener's own word: its `503` for a send or a publish
+   * the message bus refused before anything went out, because the deployed stream does not capture
+   * the topic (`MESSAGE_NOT_SENT_PREFIX`), and no earlier attempt of the call got a 5xx or no
+   * answer, after which the message may have been stored (`shown.afterUnanswered`). Nothing was
+   * stored, so the message may be sent again later: the listener's text says so, and `request`
+   * sends it once more under the same key, as it does every 5xx.
+   */
+  readonly notSent: boolean;
 
   /**
    * `details.responseBody` is the answer's body as it came, which the readers of a refusal's
@@ -851,7 +861,9 @@ export class EnvoyApiError extends Error {
    * place, which can echo the request back, so the message names it through `bodyForText`: one
    * line with `shown.tokens` (the credential's secret, and the tokens the client presented lately)
    * and any `Authorization`, `Bearer` or `DPoP` value redacted, and the origin a redirect pointed
-   * at (`shown.redirectTo`). Neither is kept.
+   * at (`shown.redirectTo`). Neither is kept. `shown.afterUnanswered` says an earlier attempt of
+   * the same call got a 5xx or no answer, so the listener's word that this one sent nothing is not
+   * the call's: the message says so after the listener's, and `notSent` is false.
    */
   constructor(
     readonly details: {
@@ -862,7 +874,11 @@ export class EnvoyApiError extends Error {
       readonly status: number;
       readonly responseBody: string;
     },
-    shown: { readonly tokens?: Tokens; readonly redirectTo?: string | undefined } = {}
+    shown: {
+      readonly tokens?: Tokens;
+      readonly redirectTo?: string | undefined;
+      readonly afterUnanswered?: boolean;
+    } = {}
   ) {
     let parsed: z.infer<typeof ErrorWireSchema> | undefined;
     try {
@@ -875,12 +891,18 @@ export class EnvoyApiError extends Error {
       shown.redirectTo === undefined
         ? ""
         : ` (a redirect to ${shown.redirectTo}, which this client does not follow)`;
+    const notSentAnswer =
+      details.status === 503 && parsed?.error.startsWith(`${MESSAGE_NOT_SENT_PREFIX}: `) === true;
+    const earlier =
+      notSentAnswer && shown.afterUnanswered === true
+        ? " An earlier attempt got no answer, a 5xx or a 408, so that attempt may have stored the message."
+        : "";
     // The reason joins the message: a refused registration must fail with the listener's own
     // machine-readable why in what the session is shown, not only in the client's field.
     super(
       parsed === undefined
         ? `${details.method} ${details.url} failed with ${details.status}${redirected}: ${bodyForText(details.responseBody, shown.tokens ?? "", "the listener's error JSON")}`
-        : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
+        : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}${earlier}`
     );
     this.expected = parsed?.expected;
     this.code = parsed?.code;
@@ -891,6 +913,7 @@ export class EnvoyApiError extends Error {
     this.claimReleased = parsed?.claim_released;
     this.retryAfterSeconds = parsed?.retry_after_seconds;
     this.refused = parsed?.refused;
+    this.notSent = notSentAnswer && shown.afterUnanswered !== true;
   }
 }
 
@@ -901,14 +924,15 @@ const mintedDedupeKey = new RegExp(MINTED_DEDUPE_KEY_PATTERN);
  * A send that ended without the listener's word that it was stored: an attempt got no answer at
  * all (the request timed out, its connection failed, or a 2xx answer's body did not arrive or did
  * not parse), or got a 5xx or a 408 (a hop's timeout, which can come after the hop forwarded the
- * send), so the message may or may not have reached its target, even when a later attempt was
- * refused. Every attempt carried `idempotencyKey`. The listener sends under the dedupe key
+ * send) other than the listener's word that it sent nothing (`EnvoyApiError.notSent`), so the
+ * message may or may not have reached its target, even when a later attempt was refused. Every
+ * attempt carried `idempotencyKey`. The listener sends under the dedupe key
  * `agent.<target>.<idempotencyKey>`, and when that key is one a repeat is recognised by
  * (`MINTED_DEDUPE_KEY_PATTERN`: a lower-case UUID and a target with no dot), the stream stores
  * one copy and the recipient's plugin drops a repeat inside `DELIVERY_DUPLICATE_WINDOW_MS`, which
  * states the rare cases where a recipient that restarted still sees it twice (`resendSafe`). A
- * send refused with a 4xx other than a 408 on every attempt it made stays an `EnvoyApiError`.
- * `last` (also the `cause`) is what the last attempt got.
+ * send refused with a 4xx other than a 408, or answered that it was not sent, on every attempt it
+ * made stays an `EnvoyApiError`. `last` (also the `cause`) is what the last attempt got.
  */
 export class EnvoySendUnconfirmedError extends Error {
   override readonly name = "EnvoySendUnconfirmedError";
@@ -984,8 +1008,9 @@ export type EnvoyClient = {
 type RequestOptions = {
   readonly timeoutMs?: number;
   readonly retry?: boolean;
-  /** Called for each attempt that got no answer, a 5xx or a 408: one the listener may have acted
-   *  on (`mayHaveReachedServer`). */
+  /** Called for each attempt that got no answer, or a 5xx or a 408 (`mayHaveReachedServer`) other
+   *  than the listener's word that it sent nothing (`EnvoyApiError.notSent`): one the listener may
+   *  have acted on. */
   readonly onUnanswered?: () => void;
   /**
    * Called when the call fails on an attempt that reached no route of the listener: its
@@ -1162,6 +1187,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
   ): Promise<string> => {
     const url = `${baseUrl}${path}`;
     const tries = options.retry === false ? 1 : attempts;
+    // Whether an earlier attempt got no answer, a 5xx or a 408, after which the listener may have
+    // acted on the call: a later answer that it sent nothing then speaks for that attempt alone.
+    let unanswered = false;
     for (let attempt = 0; attempt < tries; attempt += 1) {
       options.onAttempt?.();
       const outcome = await attemptOnce(
@@ -1171,6 +1199,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         options.actingSession
       );
       if ("unanswered" in outcome) {
+        unanswered = true;
         options.onUnanswered?.();
         if (attempt + 1 < tries) {
           await waitForRetry(retryDelayMs);
@@ -1201,16 +1230,24 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           status: response.status,
           responseBody: body,
         },
-        { tokens: redacted, redirectTo: redirectOrigin(response, url, redacted) }
+        {
+          tokens: redacted,
+          redirectTo: redirectOrigin(response, url, redacted),
+          afterUnanswered: unanswered,
+        }
       );
-      // An attempt answered with a 5xx or a 408 may have reached the listener, which may have
-      // acted on it (`mayHaveReachedServer`, `onUnanswered`), and is sent again. The listener
-      // writes no 408, so one is a hop's timeout, and a hop can count it after it forwarded the
-      // whole request. A 429 is not sent again: the listener's 429 is `sender_rate_limited`, its
-      // answer to this message, whose sentence the agent reads to decide when to send it again.
-      // Any other 4xx is the listener's answer too.
+      // An attempt answered with a 5xx or a 408 is sent again (`mayHaveReachedServer`). The listener
+      // writes no 408, so one is a hop's timeout, and a hop can count it after it forwarded the whole
+      // request. Such an attempt may have reached the listener, which may have acted on it
+      // (`onUnanswered`), except the listener's 503 that says nothing was sent (`notSent`), which is
+      // sent again under the same key but is no attempt the listener may have acted on. A 429 is not
+      // sent again: the listener's 429 is `sender_rate_limited`, its answer to this message, whose
+      // sentence the agent reads to decide when to send it again. Any other 4xx is its answer too.
       if (mayHaveReachedServer(response.status)) {
-        options.onUnanswered?.();
+        if (!error.notSent) {
+          unanswered = true;
+          options.onUnanswered?.();
+        }
         if (attempt + 1 < tries) {
           await waitForRetry(retryDelayMs);
           continue;
@@ -1311,10 +1348,11 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // An attempt the listener may have acted on keeps the send unconfirmed, whatever a later
       // attempt got: a first attempt can store the message and lose its answer, and the retry
       // then find the target gone. A last attempt that reached no route of the listener (its
-      // auth gate's 401 to a request sent without the credential that could not be minted)
-      // stored nothing, so where no earlier attempt may have, the send was refused. A listener
-      // still starting answers such a request 503 from its starting gate instead, which reads as
-      // an attempt it may have acted on, so that send ends unconfirmed.
+      // auth gate's 401 to a request sent without the credential that could not be minted), or
+      // that the listener answered it sent nothing (`EnvoyApiError.notSent`), stored nothing, so
+      // where no earlier attempt may have, the send was refused. A listener still starting answers
+      // such a request 503 from its starting gate instead, which reads as an attempt it may have
+      // acted on, so that send ends unconfirmed.
       let unanswered = false;
       let notSent = false;
       // The attempts this send made, which the unconfirmed error names: fewer than the client's
@@ -1355,7 +1393,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         if (taken !== undefined) return taken;
         response = EnvelopeResponseSchema.parse(raw);
       } catch (error) {
-        const refused = notSent || (error instanceof EnvoyApiError && error.details.status < 500);
+        const refused =
+          notSent ||
+          (error instanceof EnvoyApiError && (error.details.status < 500 || error.notSent));
         if (refused && !unanswered) throw error;
         throw new EnvoySendUnconfirmedError(input.targetSessionID, idempotencyKey, made, error);
       }
