@@ -22,6 +22,7 @@ import (
 // record's own status with it. The status Dispatch last showed stays where it is: only a Dispatch
 // event or admission's own observation writes that, once the queued write echoes back.
 func TestTheStatusRepairQueuesTheStatusWriteTheDaemonLost(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "todo", "todo"))
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
@@ -42,6 +43,7 @@ func TestTheStatusRepairQueuesTheStatusWriteTheDaemonLost(t *testing.T) {
 // since the record's own status already reads in_progress, which is why the repair enqueues its
 // row directly.
 func TestTheStatusRepairWritesThePhasesStatusAndNotTheRecords(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Reviewing, "in_progress", "in_progress"))
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
@@ -54,6 +56,7 @@ func TestTheStatusRepairWritesThePhasesStatusAndNotTheRecords(t *testing.T) {
 // One case per rule the repair skips an issue by. Each of these issues differs from the status of
 // its phase, and each is left alone.
 func TestTheStatusRepairSkipsEveryIssueItsRulesExclude(t *testing.T) {
+	t.Parallel()
 	lingerUntil := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name string
@@ -130,6 +133,7 @@ func TestTheStatusRepairSkipsEveryIssueItsRulesExclude(t *testing.T) {
 // would queue could never be written: the outbox writes a status only where Dispatch shows the
 // row's observed or target status, and a status out of the workflow the record holds is the status Dispatch shows.
 func TestTheStatusRepairSkipsARecordedStatusOutOfTheWorkflow(t *testing.T) {
+	t.Parallel()
 	for _, shown := range []string{"backlog", "icebox", "triage", "done"} {
 		t.Run(shown, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -145,6 +149,7 @@ func TestTheStatusRepairSkipsARecordedStatusOutOfTheWorkflow(t *testing.T) {
 
 // The boot runs the repair too, so a write lost before a restart is queued again by the restart.
 func TestTheBootQueuesTheStatusWriteTheDaemonLost(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Testing, "testing", "in_progress"))
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
@@ -161,6 +166,7 @@ func TestTheBootQueuesTheStatusWriteTheDaemonLost(t *testing.T) {
 // issue, the status recorded and the status written. A run that queues nothing writes its line
 // too, which is how a reader tells a quiet run from a run that never happened.
 func TestTheStatusRepairLogsEachRepairAndEveryRun(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "todo", "todo"))
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})

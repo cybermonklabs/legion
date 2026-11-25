@@ -44,6 +44,7 @@ func declaredSeq(t *testing.T, pool *pgxpool.Pool) int64 {
 // and is recorded as the hand-back the next admission pass decides on. A question anyone else
 // opens, and an approval request, hand back nothing: the root is not waiting on either.
 func TestOnlyATreeSessionsQuestionDeclaresAHandBack(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		fact intake.DispatchAskOpened
@@ -73,6 +74,7 @@ func TestOnlyATreeSessionsQuestionDeclaresAHandBack(t *testing.T) {
 // that follows begins there, so a question answered before it does not answer the wait the next
 // question starts (round 22's declared_seq finding).
 func TestTheNewestHandBackIsTheOneTheWaitBeginsAt(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	apply("q1", intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-q1", Kind: record.AskQuestion, AuthorSession: askArchitect.ID, Mark: askSeq(5)})
 	apply("q2", intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-q2", Kind: record.AskQuestion, AuthorSession: askArchitect.ID, Mark: askSeq(9)})
@@ -85,6 +87,7 @@ func TestTheNewestHandBackIsTheOneTheWaitBeginsAt(t *testing.T) {
 // again — a redelivered event of the generation before, or of the turn the handout started — and
 // declares nothing.
 func TestALateHandBackAtOrBelowTheHandoutDeclaresNothing(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	seedRecord(t, pool, func(tx pgx.Tx) error { return record.NewStore().StartHandout(context.Background(), tx, "LEGION-208") })
 	// The root's record holds sequence 1, so the handout stands there.
@@ -103,6 +106,7 @@ func TestALateHandBackAtOrBelowTheHandoutDeclaresNothing(t *testing.T) {
 // wait on — one another tree opened, an approval request no gate names, or the request of a gate
 // already open — declares nothing, whoever leaves it with the person.
 func TestAReplyOnAnAskTheRootCannotWaitOnDeclaresNothing(t *testing.T) {
+	t.Parallel()
 	approved := 2
 	for _, tc := range []struct {
 		name string
@@ -143,6 +147,7 @@ func TestAReplyOnAnAskTheRootCannotWaitOnDeclaresNothing(t *testing.T) {
 // that leaves the root's awaited question closed takes it away from the person, and with nothing
 // else with them the wait is answered by the retraction it restored.
 func TestARestoredAskDeclaresNothingAndCanEndTheWait(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	seedIssue(t, pool, awaitingRoot(3))
 	seedQuestion(t, pool, "ask-q", 4)
@@ -161,6 +166,7 @@ func TestARestoredAskDeclaresNothingAndCanEndTheWait(t *testing.T) {
 // An act Dispatch recorded at or before the wait began is one the person gave before the work was
 // handed back to them, and answers nothing.
 func TestOnlyAPersonsActAfterTheWaitBeganAnswersIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		ask    string
@@ -197,6 +203,7 @@ func TestOnlyAPersonsActAfterTheWaitBeganAnswersIt(t *testing.T) {
 // the awaited question back to the agent while a second question is still with the person: the
 // wait moves to that question, and the person's answer of it ends the wait.
 func TestAnItemLeavingThePersonMovesTheWait(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	seedIssue(t, pool, awaitingRoot(3))
 	seedQuestion(t, pool, "ask-q", 4)
@@ -217,6 +224,7 @@ func TestAnItemLeavingThePersonMovesTheWait(t *testing.T) {
 // A session handing the last question of the wait to the agent's turn leaves the person asked
 // nothing, so the wait is answered: the architect looks again rather than waiting for good.
 func TestASessionHandingTheLastQuestionToTheAgentAnswersTheWait(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	seedIssue(t, pool, awaitingRoot(3))
 	seedQuestion(t, pool, "ask-q", 4)
@@ -230,6 +238,7 @@ func TestASessionHandingTheLastQuestionToTheAgentAnswersTheWait(t *testing.T) {
 // A close of the awaited question by anyone who is not a person ends the wait when nothing else is
 // with the person, named by who closed it, so the resume task can say so.
 func TestACloseOfTheAwaitedQuestionAnswersTheWaitWithItsCloser(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		actor  dispatch.Actor
@@ -258,6 +267,7 @@ func TestACloseOfTheAwaitedQuestionAnswersTheWaitWithItsCloser(t *testing.T) {
 // have decided what the work depends on, and the resume task says how the spec stands. A review
 // Dispatch recorded before the wait began answers nothing.
 func TestAPersonsReviewOfTheSpecAnswersAQuestionWait(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		kind   intake.DispatchArtifactKind
@@ -293,6 +303,7 @@ func TestAPersonsReviewOfTheSpecAnswersAQuestionWait(t *testing.T) {
 // A changes request that answered a root's wait is named by the task its architect resumes with,
 // so no design-changes-requested notice is sent for it as well.
 func TestAChangesRequestThatAnswersAWaitIsNotAlsoToldAsANotice(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	seedIssue(t, pool, awaitingRoot(3))
 	seedQuestion(t, pool, "ask-q", 4)
@@ -308,6 +319,7 @@ func TestAChangesRequestThatAnswersAWaitIsNotAlsoToldAsANotice(t *testing.T) {
 // A changes request told to a root that holds its slot is work the daemon handed its architect, so
 // it is a handout: a hand-back of the turn before it declares nothing afterwards.
 func TestAChangesRequestToldByNoticeIsAHandout(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
 	apply("q", intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, AuthorSession: askArchitect.ID, Mark: askSeq(5)})
@@ -329,6 +341,7 @@ func TestAChangesRequestToldByNoticeIsAHandout(t *testing.T) {
 // before its review: the question the architect handed back after the review still stands, so the
 // root waits on the person as it would had the events arrived in order. (Round 1, standard P3-3.)
 func TestALateChangesRequestKeepsANewerHandBack(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
 	apply("q", intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, AuthorSession: askArchitect.ID, Mark: askSeq(20)})
@@ -344,6 +357,7 @@ func TestALateChangesRequestKeepsANewerHandBack(t *testing.T) {
 // The hand-back's own time is where the wait begins: the root's record keeps it beside its
 // sequence, and `legion state` shows it as the wait's `since`. (Round 1, standard P3-1.)
 func TestAHandBackRecordsWhenTheWaitBegins(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	at := time.Date(2026, 9, 23, 1, 2, 3, 0, time.UTC)
 	apply("q", intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, AuthorSession: askArchitect.ID,
@@ -358,6 +372,7 @@ func TestAHandBackRecordsWhenTheWaitBegins(t *testing.T) {
 // The registration's own approval is the daemon's, not a review that followed the request.
 // (Round 1, outside-whole P2-1.)
 func TestAnOffGateStillTellsAnOlderChangesRequest(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedAdmittedTree(t, pool, 1)
 	v := 2
@@ -381,6 +396,7 @@ func TestAnOffGateStillTellsAnOlderChangesRequest(t *testing.T) {
 // answers the wait, and the architect is told the review once, by the resume task, with no notice
 // beside it. (Round 2, the standard, adversarial and outside-whole P3-1.)
 func TestAnUnsequencedChangesReadThenItsLiveEventTellsTheReviewOnce(t *testing.T) {
+	t.Parallel()
 	t0 := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 	pool, apply := askRig(t)
 	root := awaitingRoot(3)
@@ -410,6 +426,7 @@ func TestAnUnsequencedChangesReadThenItsLiveEventTellsTheReviewOnce(t *testing.T
 // A changes request a read gives no sequence to cannot be placed against a root's wait: it is
 // neither told nor recorded as told, and its own sequenced event decides later.
 func TestAnUnplaceableChangesRequestIsNeitherToldNorRecorded(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	seedIssue(t, pool, awaitingRoot(3))
 	seedQuestion(t, pool, "ask-q", 4)
@@ -428,6 +445,7 @@ func TestAnUnplaceableChangesRequestIsNeitherToldNorRecorded(t *testing.T) {
 // A changes request recorded as told because the resume task would name it is no longer recorded
 // that way when the root leaves the workflow before it resumed: the next admission tells it.
 func TestAChangesRequestARootNeverResumedForIsNotRecordedAsTold(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	root := awaitingRoot(3)
 	answered := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
@@ -464,6 +482,7 @@ func gateWaitRoot(t *testing.T, pool *pgxpool.Pool, since int64) {
 // is not a person — moves the wait to the question still with the person, and with nothing else
 // with them answers it on that request, so the architect looks again rather than waiting for good.
 func TestTheGatesRequestLeavingThePersonMovesOrAnswersTheWait(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		question bool
@@ -503,6 +522,7 @@ func TestTheGatesRequestLeavingThePersonMovesOrAnswersTheWait(t *testing.T) {
 // turn; a version recorded before the wait began, or read with the request still with the person,
 // is one the person is asked to review, so the wait moves to it and goes on.
 func TestANewerVersionAnswersAGateWaitOnlyWhenItFollowsIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		fact     intake.DispatchArtifact
@@ -536,6 +556,7 @@ func TestANewerVersionAnswersAGateWaitOnlyWhenItFollowsIt(t *testing.T) {
 // the wait began, is likewise no longer recorded as told when the root leaves unresumed; one placed
 // before it, which a notice told, keeps its record. (Round 3, adversarial P3-1.)
 func TestALaterChangesRequestARootNeverResumedForIsNotRecordedAsTold(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		seq     int64
@@ -564,6 +585,7 @@ func TestALaterChangesRequestARootNeverResumedForIsNotRecordedAsTold(t *testing.
 // that wait (record.KeepsSlot; blockers.waitsOf leaves a root in awaiting_person out), and its
 // children start with its resume (advanceAdmittedTree), not with the gate's opening.
 func TestAHeldChildDoesNotStartWhileItsRootWaitsOnAPerson(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := awaitingRoot(3)
 	answered := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
@@ -586,6 +608,7 @@ func TestAHeldChildDoesNotStartWhileItsRootWaitsOnAPerson(t *testing.T) {
 // answered, and that holds no slot again yet, is a candidate record.Waiting lists, so a judgement
 // that read liveness alone would start its children before the root resumes.
 func TestAHeldChildDoesNotStartWhileItsHandedOverRootWaitsOnAPerson(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := awaitingRoot(3)
 	answered := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
@@ -611,6 +634,7 @@ func TestAHeldChildDoesNotStartWhileItsHandedOverRootWaitsOnAPerson(t *testing.T
 // resumes told the gate is closed until its spec is registered. Either way the pass reports the
 // change, so admission reads the record again and resumes an answered root in that same pass.
 func TestAGateWaitIsDecidedOnceTheGateIsSwitchedOff(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		question bool
@@ -682,6 +706,7 @@ func reconcileGateOff(t *testing.T, pool *pgxpool.Pool) bool {
 // the gate back on before the root resumes, its task says the gate was off when the wait was
 // answered and that the spec is not approved, never that a person approved it.
 func TestAGateWaitTheGateOffAnsweredClaimsNoApprovalOnceTheGateIsOnAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := askRoot()
 	root.Phase = phase.AwaitingPerson
@@ -712,6 +737,7 @@ func TestAGateWaitTheGateOffAnsweredClaimsNoApprovalOnceTheGateIsOnAgain(t *test
 // own question, though an older question of the tree is also with the person, and answers nothing
 // when none is (the question's own handlers decide that wait).
 func TestAQuestionWaitUnderGateOffIsLeftAsItIs(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		older bool
@@ -742,6 +768,7 @@ func TestAQuestionWaitUnderGateOffIsLeftAsItIs(t *testing.T) {
 // A wait on the gate under gates.design: off whose gate stands open is answered by the open gate in
 // the pass that finds it, not moved first to a question of the tree still with the person.
 func TestAnOpenGateAnswersAGateWaitUnderGateOffBeforeAnyQuestionMovesIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := askRoot()
 	root.Phase = phase.AwaitingPerson

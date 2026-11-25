@@ -437,8 +437,11 @@ func (r *personHandoverRig) reviews(artifactID string) []scratchReview {
 	return listed
 }
 
-// editDocument applies ops to artifactID as a session through Dispatch's edits route, which
-// versions the document in the route's own transaction, and answers the version it wrote.
+// editDocument applies ops to artifactID as the person through Dispatch's edits route, which
+// versions the document in the route's own transaction, and answers the version it wrote. Each
+// document it edits is the spec of a labelled root. Once the daemon's role-holder publications
+// have marked the project, Dispatch refuses such a write from a session that is no architect of
+// the root (403 DOCUMENT_WRITER_NOT_ARCHITECT), and no architect holds these roots in backlog.
 func (r *personHandoverRig) editDocument(artifactID string, ops ...map[string]string) int {
 	r.t.Helper()
 	var edited struct {
@@ -446,14 +449,14 @@ func (r *personHandoverRig) editDocument(artifactID string, ops ...map[string]st
 			Number int `json:"number"`
 		} `json:"version"`
 	}
-	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{"ops": ops}, &edited, asSession)
+	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{"ops": ops}, &edited, asPerson)
 	if edited.Version == nil {
 		r.t.Fatalf("the edit of %s wrote no version", artifactID)
 	}
 	return edited.Version.Number
 }
 
-// revise replaces find with with in artifactID as a session and answers the new version.
+// revise replaces find with with in artifactID as the person and answers the new version.
 func (r *personHandoverRig) revise(artifactID, find, with string) int {
 	r.t.Helper()
 	return r.editDocument(artifactID, map[string]string{"op": "replace", "find": find, "with": with})
@@ -892,15 +895,15 @@ func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *
 //  5. the person approves the spec of a labelled child in backlog, under that root: nothing;
 //  6. the person approves the running root's registered gate document: its gate opens as today,
 //     the state's design gate approved at that version, and no handover is queued;
-//  7. the carried case: on a labelled root in backlog a session writes a decision block into the spec;
+//  7. the carried case: on a labelled root in backlog the person writes a decision block into the spec;
 //     the person approves it, which queues the root (todo, waiting), and moves it to backlog again; the
 //     person then answers the block, and Dispatch records a carried approval of the version the
 //     answer wrote, in the person's name: the daemon applies it writing nothing;
-//  8. the recorded root in backlog of step 1, its spec revised by a session, is approved by the person
+//  8. the recorded root in backlog of step 1, its spec revised by the person, is approved by the person
 //     at the new version: todo within 60 s, admission.waiting names it, and no design-approved
 //     notice is queued for it, since its own gate only records the approval;
-//  9. the root of step 3, moved to backlog again by the person and its spec revised by a session, is approved
-//     again by the person at the new version: todo again, a second queue.
+//  9. the root of step 3, moved to backlog again by the person and its spec revised by the person, is
+//     approved again by the person at the new version: todo again, a second queue.
 func TestAPersonsApprovalOfABacklogRootsSpecIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
 	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
@@ -944,8 +947,10 @@ func TestAPersonsApprovalOfABacklogRootsSpecIsQueuedByTheDaemonAgainstScratchDis
 	r.applied(r.newestEvent(unlabelled.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == review.Version }))
 	r.notQueued(unlabelled.Key, "backlog", 0)
 
-	// 5. A labelled child in backlog.
-	child := r.create(asSession, "Subtask beneath undelegated work", map[string]any{"labels": []string{"legion"}, "parent": unlabelled.Key})
+	// 5. A labelled child in backlog. The person files it: Dispatch refuses a session that is no
+	// architect a create of an issue Legion runs under a parent (403 DOCUMENT_WRITER_NOT_ARCHITECT),
+	// and a person's label hands over a root alone (intake's LabelledTriageRoot).
+	child := r.create(asPerson, "Subtask beneath undelegated work", map[string]any{"labels": []string{"legion"}, "parent": unlabelled.Key})
 	r.setStatus(child.Key, "backlog")
 	review = r.approve(child.PrimaryArtifactID)
 	r.applied(r.newestEvent(child.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == review.Version }))
