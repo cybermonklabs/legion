@@ -267,10 +267,15 @@ func TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRu
 // Each case sets INFRA's setting as TestABootOfAMarkedOrOldStoreWhoseReadFindsTheCursorsStoreUnchangedAppliesNothing
 // does: A read well in the rig's store, B whose starting read fails, then C read well in a store of
 // its own, so A's store is the recorded old store; for the marked store, B's message marks B's
-// store. C's URL comes to serve the dropped store at 40, with no write of the setting. Work queued
+// store. C's URL comes to serve the dropped store at 41, with no write of the setting. Work queued
 // on INFRA's runner keeps it busy with no read in flight, 16 messages of C's store wait behind
 // that work, and the dropped store's boot at 41 arrives past the cap. The runner is let go. Within
 // 75 s, a minute on the intake's clock, INFRA's cursor follows the dropped store at 41.
+//
+// C serves the store at the boot's sequence, as a daemon that published the boot does: a daemon
+// commits each event before it publishes it. So the cursor reaches 41 whichever delivery makes
+// the store read: the boot's redelivery, or, where the runner stays crowded past the boot's
+// stateMaxHolds hand-backs, the first message that waited on the runner.
 //
 // At d69f92b6, judgeCrowded finished the boot as a message of a dropped store (cursor.forgets)
 // while no read was in flight: it owed nothing, and INFRA stayed on C's store.
@@ -306,7 +311,7 @@ func TestABootOfADroppedStorePastTheCapFindsTheSettingsDaemonAgain(t *testing.T)
 			}
 
 			// The redeploy: C's URL serves the dropped store, with no write of the setting.
-			c.serves(daemonStateIn("INFRA", 40, inPhase("reviewing"), tc.store, bootRun))
+			c.serves(daemonStateIn("INFRA", 41, inPhase("reviewing"), tc.store, bootRun))
 			rig.clock.advance(ReadRetryAfter + time.Second)
 			release := make(chan struct{})
 			let := sync.OnceFunc(func() { close(release) })
