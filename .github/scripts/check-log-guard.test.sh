@@ -295,6 +295,35 @@ check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 1 proble
 # closes is a call.
 echo "case: the forms that run no command read as none, and those that run one as one, as bash runs them"
 cat >"$work/forms.sh" <<'SH'
+bash -c 'FOO=1 curl -sS https://example.com/E'
+eval 'if curl -sS https://example.com/F; then :; fi'
+( trap 'X=1 command curl -sS https://example.com/G' EXIT )
+bash -c '! curl -sS https://example.com/H'
+bash -c '{ curl -sS https://example.com/I; }'
+eval 'while ! curl -sS https://example.com/J; do :; done'
+sh -c 'GOFLAGS=-mod=mod go test ./...'
+bash -c 'ci_log_guard curl -sS https://example.com/routed-in-string'
+b2=(curl -sS https://example.com/K)
+eval "eval '\"\${b2[@]}\"'"
+eval 'a1=(curl -sS https://example.com/L)'
+"${a1[@]}"
+eval "a2=(curl -sS https://example.com/M)"
+"${a2[@]}"
+eval 'declare -a a3=(curl -sS https://example.com/N)'
+"${a3[@]}"
+eval 'a4=(curl -sS https://example.com/O)'
+f4() { "${a4[@]}"; }
+f4
+bash -c 'eval "a5=(curl -sS https://example.com/P)"; "${a5[@]}"'
+case x in "$(: # )
+curl -sS https://example.com/Q)") : ;; esac
+case "" in "$(: # "
+)") curl -sS https://example.com/R ;; esac
+(( $(: # )
+curl -sS https://example.com/S; echo 1)))
+env "${@:2}" curl -sS https://example.com/T
+a6=()
+env "${a6[@]:0}" curl -sS https://example.com/U
 x=$(cat <<'EOF'
 hello
 EOF )
@@ -380,14 +409,14 @@ curl -sS https://example.com/j
 EOT
 SH
 mkdir -p "$work/bin"
-for client in curl gh jq; do
+for client in curl gh jq go; do
   printf '#!/bin/sh\necho %s >>"%s/ran"\n' "$client" "$work" >"$work/bin/$client"
   chmod +x "$work/bin/$client"
 done
 : >"$work/ran"
 (cd "$work" && PATH="$work/bin:$PATH" bash -c ". '$script_dir/ci-log-guard.sh'; . ./forms.sh" >/dev/null 2>&1)
-check "bash runs gh three times, curl twenty-eight and jq once" \
-  "$(is "$(sort "$work/ran" | uniq -c | tr -s ' \n' ' ')" " 28 curl 3 gh 1 jq ")"
+check "bash runs curl forty-five times, go once, gh three times and jq once" \
+  "$(is "$(sort "$work/ran" | uniq -c | tr -s ' \n' ' ')" " 45 curl 3 gh 1 go 1 jq ")"
 root=$(fixture forms "$(cat "$work/forms.sh")")
 run_check "$root"
 check "fails" "$(is "$status" 1)"
@@ -401,13 +430,19 @@ check "and not the quoted body's" "$(is "$(contains "$out" 'repos/o/w')" false)"
 # function, a here-string, a piped echo, xargs -I, an alias, an ANSI-C escape, two subshells, a
 # case pattern, env with an expansion of many words, env -S); y to D: review 6058074395's (a body
 # ended by `EOF )`, `EOF<tab>)` or a backtick close, an array set outside an eval string and run
-# inside it, and a quoted paren in `((` and in a case pattern's substitution).
-for form in e f g h i j k l m n o p q r s t u v w x y z A B C D; do
+# inside it, and a quoted paren in `((` and in a case pattern's substitution); E to U: review 6065555289's (a client behind an assignment or a keyword in
+# a `-c`, eval or trap string, an array used in an eval inside an eval, an array an eval or a
+# `bash -c` string assigns and the text after it runs, a `#` comment inside a `$(…)` in a case
+# pattern or in arithmetic, and env handed a slice).
+for form in e f g h i j k l m n o p q r s t u v w x y z A B C D E F G H I J K L M N O P Q R S T U; do
   check "names the curl of form $form" "$(contains "$out" "step \"Fetch\" runs .[^\`]*https://example.com/$form.")"
 done
 check "names the stderr guard after the string, and not the one inside it" \
   "$(contains "$out" 'runs .ci_log_guard_stderr gh api repos/o/t" ; ci_log_guard_stderr gh api repos/o/u.: ci_log_guard_stderr blocks only stderr')"
-check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 31 problem(s)$')"
+check "names the go behind an assignment in a sh -c string" \
+  "$(contains "$out" 'step "Fetch" runs .go test \./\.\.\.., a go command')"
+check "and not the curl a string runs under ci_log_guard" "$(is "$(contains "$out" 'routed-in-string')" false)"
+check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 49 problem(s)$')"
 
 echo "case: each routed form passes"
 root=$(fixture routed "$(cat <<'SH'

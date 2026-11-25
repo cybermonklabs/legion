@@ -706,6 +706,63 @@ for step in 'Bash -c of eval of a body' 'Eval of eval of a body' 'Bash -c of a b
   check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
 done
 
+# The forms of review 6065555289: an array that an eval or a `bash -c` string assigns is the text's
+# too, so the text after the string, or a function of it, runs its values; a `#` comment inside a
+# `$(…)` hides the parens and quotes after it, as bash reads a command substitution; and env takes a
+# slice of an array or of the positional parameters as its arguments. Each runs bunx in a
+# credentialed job under bash, and each is refused by name.
+echo "case: an array an eval string assigns, a comment inside a substitution, and env slices, in a credentialed job"
+root=$(fixture eval-array-comment-forms)
+add_publish_step "$root" "$(cat <<'YAML'
+      - name: Eval of a single-quoted array
+        run: |
+          eval 'a=(bunx evil-package)'
+          "${a[@]}"
+      - name: Eval of a double-quoted array
+        run: |
+          eval "a=(bunx evil-package)"
+          "${a[@]}"
+      - name: Eval of a declared array
+        run: |
+          eval 'declare -a a=(bunx evil-package)'
+          "${a[@]}"
+      - name: Eval of an array a function runs
+        run: |
+          eval 'a=(bunx evil-package)'
+          f() { "${a[@]}"; }
+          f
+      - name: Bash -c of an eval of an array
+        run: |
+          bash -c 'eval "a=(bunx evil-package)"; "${a[@]}"'
+      - name: Comment in a case pattern's substitution
+        run: |
+          case x in "$(: # )
+          bunx evil-package)") : ;; esac
+      - name: Comment hiding a quote in a case pattern's substitution
+        run: |
+          case "" in "$(: # "
+          )") bunx evil-package ;; esac
+      - name: Comment in arithmetic's substitution
+        run: |
+          (( $(: # )
+          bunx evil-package)))
+      - name: Env with a slice of the parameters
+        run: |
+          env "${@:2}" bunx evil-package
+      - name: Env with a slice of an array
+        run: |
+          env "${a[@]:0}" bunx evil-package
+YAML
+)"$'\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+for step in 'Eval of a single-quoted array' 'Eval of a double-quoted array' 'Eval of a declared array' \
+  'Eval of an array a function runs' 'Bash -c of an eval of an array' 'Comment in a case pattern'"'"'s substitution' \
+  'Comment hiding a quote in a case pattern'"'"'s substitution' 'Comment in arithmetic'"'"'s substitution' \
+  'Env with a slice of the parameters' 'Env with a slice of an array'; do
+  check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
+done
+
 echo "case: a built binary under out/ in a credentialed job"
 root=$(fixture out-path)
 add_publish_step "$root" $'      - name: Smoke test\n        run: out/legion version\n'

@@ -124,10 +124,27 @@ VALUED = {"go": {"-C"}, "git": {"-C", "-c", "--git-dir", "--work-tree"},
 
 
 class RawScanner(Scanner):
-    """shell_commands' scanner, keeping each simple command's words as written."""
+    """shell_commands' scanner, keeping each simple command as (routed, words): past the
+    assignments and keywords before it, routed when its first word is one of WRAPPERS, kept whole
+    when it is one of RUNNERS (run_commands reads through those), and otherwise read as the
+    command, or the commands of the string it hands a shell (`bash -c`, eval, a trap), that
+    command_of names. That string is read by a RawScanner too (string_scanner builds this
+    scanner's type), with the text's arrays and aliases, so each command in it is read the same
+    way: `bash -c 'FOO=1 curl …'` and `eval 'if curl …; then :; fi'` run curl, and
+    `bash -c 'ci_log_guard curl …'` runs it routed."""
 
     def record(self, words: list) -> None:
-        self.commands.append(words)
+        words = list(words)
+        shed_prefix(words, KEYWORDS, runners=())
+        if not words:
+            return
+        if words[0] in WRAPPERS:
+            self.commands.append((True, words[1:]))
+        elif words[0].rsplit("/", 1)[-1] in RUNNERS:
+            self.commands.append((False, words))
+        else:
+            for found in command_of(words, self):
+                self.commands.append(found if isinstance(found, tuple) else (False, found))
 
 
 def commands(run: str) -> list:
@@ -140,19 +157,7 @@ def commands(run: str) -> list:
             rest.append("")
         else:
             rest.append(line)
-    scanner = RawScanner()
-    for words in scanner.scan("\n".join(rest)):
-        words = list(words)
-        shed_prefix(words, KEYWORDS, runners=())
-        if words and words[0] in WRAPPERS:
-            out.append((True, words[1:]))
-        elif words and words[0].rsplit("/", 1)[-1] in RUNNERS:
-            out.append((False, words))
-        elif words:
-            # A string the command hands a shell (eval, `bash -c`, a trap) is read with this text's
-            # arrays and aliases.
-            out += [(False, w) for w in command_of(words, scanner)]
-    return out
+    return out + RawScanner().scan("\n".join(rest))
 
 
 def _word_start(line: str, i: int) -> bool:

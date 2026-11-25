@@ -21,7 +21,9 @@ string and the command around them resume, so a word after the close is that com
 "$(cut …)" gh` runs `is`); `(…)` is a subshell, whose commands are its own, and `((` opens
 arithmetic only where bash reads it so, the `)` closing its inner `(` followed at once by `)`
 (`((cmd) || true)` is two subshells), its parentheses counted as bash's matched-pair parse counts
-them, none inside a quoted string (`((echo "))"; cmd) || true)` is two subshells too); an unquoted `;`, `&`, `|`, `(`, `)` or newline ends a
+them, none inside a quoted string (`((echo "))"; cmd) || true)` is two subshells too) nor in a
+comment a `#` at word start begins inside a `$(…)` (`$(: # )` + newline + `cmd)` is one
+substitution); an unquoted `;`, `&`, `|`, `(`, `)` or newline ends a
 command, and a redirection's target (`>/dev/null`, `>> "$GITHUB_OUTPUT"`, `2>&1`) is not one of its
 words. A here-document's body, from the newline after its `<<WORD` (or `<<-WORD`, whose body's
 lines may start with tabs) to the line that is WORD (or, inside a `$(…)` or a backtick pair, WORD,
@@ -33,7 +35,8 @@ echo or printf pipes straight into such a shell (`echo 'cmd' | bash`). Any other
 with an unquoted WORD bash expands its `$(…)` and backtick substitutions, which are read as the
 commands they run; commands_of's `every_body`, the release check's rule, reads every body as
 commands instead, in a string the text hands a shell (`bash -c '…'`, eval, a trap) too. Such a
-string is read by the rules of the text that holds it, knowing its arrays and aliases. Arithmetic (`$(( … ))`, `(( … ))`) runs no command but its substitutions
+string is read by the rules of the text that holds it, sharing its arrays and aliases, so an array
+an eval or `bash -c` string assigns is the text's too (`eval 'a=(cmd)'`, then `"${a[@]}"`). Arithmetic (`$(( … ))`, `(( … ))`) runs no command but its substitutions
 (`$(( $(cmd) ))` runs `cmd`). An array's values (`tools+=(curl jq)`), to the first `)` outside
 their quotes and comments, are words of no command, but a substitution among them runs, `<(…)` and
 `>(…)` too. A case pattern runs no command but its substitutions (`case x in "$(cmd)")` runs cmd),
@@ -45,7 +48,7 @@ text itself says what: `"${name[@]}"` of an array the text assigns is each list 
 assignment gives it, wherever the assignment stands; an alias the text defines is its text
 (whether or not expand_aliases is set: this reads more, never less); a `$'…'` word is decoded;
 env's `-S STRING` is STRING's words, and the `$@`, `$*` and `${name[@]}` words env is handed are
-arguments of env; `trap 'cmd' …` runs cmd; `function NAME {` and `coproc [NAME]` stand before the
+arguments of env, and so are their slices (`"${@:2}"`, `"${a[@]:0}"`); `trap 'cmd' …` runs cmd; `function NAME {` and `coproc [NAME]` stand before the
 command. Any other built word, a variable or a substitution in command position (`"$tool" build`,
 `$cmd`, `"$@"`), is read as that word, not as a command this reader can name.
 
@@ -135,11 +138,12 @@ class Scanner:
 
     def string_scanner(self) -> "Scanner":
         """A scanner of a string this text hands a shell to run (a `-c` script, eval's words, a
-        trap's string): by the same rules, knowing the arrays and aliases of the whole text, and
-        collecting those the string itself defines."""
+        trap's string): by the same rules, sharing the arrays and aliases of the whole text, so
+        one the string assigns is the text's too (`eval 'a=(cmd)'`, then `"${a[@]}"`), as it is
+        in the shell that runs an eval or a trap. Its first pass collects into those, so a text's
+        own first pass, which reads the strings its commands hand a shell, collects them too."""
         part = type(self)()
-        part.arrays = {name: [list(values) for values in lists] for name, lists in self.arrays.items()}
-        part.aliases = dict(self.aliases)
+        part.arrays, part.aliases = self.arrays, self.aliases
         part.every_body = self.every_body
         return part
 
@@ -607,11 +611,14 @@ def is_arithmetic(text: str, i: int) -> bool:
     return text[inner:inner + 1] == ")"
 
 
-def arithmetic_end(text: str, i: int) -> int:
+def arithmetic_end(text: str, i: int, commands: bool = False) -> int:
     """Just past the `)` that closes the `(` at `i` (for a `((`, past its `))`), counting the
     parentheses between as bash's matched-pair parse does: none inside a `'…'` or `"…"` string
-    (double_quote_end) or after a backslash."""
-    depth = 0
+    (double_quote_end) or after a backslash. With `commands`, the parentheses hold commands (a
+    `$(…)`, or a subshell inside one), where a `#` at the start of a word starts a comment to the
+    end of its line, as bash's parse of a command substitution reads it (`$(: # )` + newline +
+    `cmd)` is one substitution); a `$(` inside is read so too, wherever it stands."""
+    depth, start = 0, i
     while i < len(text):
         char = text[i]
         if char == "\\":
@@ -623,6 +630,13 @@ def arithmetic_end(text: str, i: int) -> int:
             continue
         if char == '"':
             i = double_quote_end(text, i)
+            continue
+        if char == "$" and text[i + 1:i + 2] == "(" and text[i + 2:i + 3] != "(":
+            i = arithmetic_end(text, i + 1, commands=True)
+            continue
+        if commands and char == "#" and i > start and text[i - 1] in " \t\n;&|()<>":
+            end = text.find("\n", i)
+            i = len(text) if end < 0 else end
             continue
         if char == "(":
             depth += 1
@@ -646,7 +660,7 @@ def double_quote_end(text: str, i: int) -> int:
         elif char == '"':
             return i + 1
         elif char == "$" and text[i + 1:i + 2] == "(":
-            i = arithmetic_end(text, i + 1)
+            i = arithmetic_end(text, i + 1, commands=text[i + 2:i + 3] != "(")
         elif char == "`":
             end = text.find("`", i + 1)
             i = len(text) if end < 0 else end + 1
@@ -666,7 +680,7 @@ def substitutions(text: str) -> list[str]:
             i += 2
             continue
         if text.startswith("$(", i) and not text.startswith("$((", i):
-            end = arithmetic_end(text, i + 1)
+            end = arithmetic_end(text, i + 1, commands=True)
             found.append(text[i + 2:end - 1])
             i = end
             continue
@@ -835,8 +849,8 @@ def quoted_line_starts(text: str) -> dict:
 # A word that is wholly an expansion of many words: `$@`, `$*`, `${@}`, `${name[@]}`, `${name[*]}`,
 # `${!name[@]}`, and an operator form such as `set -u`'s `${name[@]+"${name[@]}"}`, its quotes taken
 # off as the scanner takes them.
-WHOLE_EXPANSION = re.compile(r"\$[@*]|\$\{[@*]\}|\$\{!?[A-Za-z_][A-Za-z0-9_]*\[[@*]\]"
-                             r"(?::?[-+=?](?:[^{}]|\$\{[^{}]*\})*)?\}")
+WHOLE_EXPANSION = re.compile(r"\$[@*]|\$\{[@*](?::[^{}]*)?\}|\$\{!?[A-Za-z_][A-Za-z0-9_]*\[[@*]\]"
+                             r"(?::?[-+=?](?:[^{}]|\$\{[^{}]*\})*|:[^{}]*)?\}")
 
 
 def commands_of(run: str, every_body: bool = False, within: "Scanner | None" = None) -> list[list[str]]:
