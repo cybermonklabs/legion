@@ -4,7 +4,9 @@ body: |-
   sends that session to the Envoy listener as `previous_session_id`. The claim stays a hard claim.
   The listener then hands the unread direct and role messages of the replaced session to the new
   session. Plugin interface version 6, which pi-envoy reads; install it with the
-  `@sjawhar/pi-legion` released beside it.
+  `@sjawhar/pi-legion` released beside it. A soft claim that names the session it supersedes (a
+  fork, a branch or a handoff) and fails, a `503` included, names that session again on the next
+  pass, so the listener still writes the handover record once the claim stands.
 time: 2026-11-25T02:45:35Z
 custom:
     Issue: replaced-session-handover
