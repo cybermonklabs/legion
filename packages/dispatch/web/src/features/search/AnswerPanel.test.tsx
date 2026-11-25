@@ -457,6 +457,7 @@ test("the project chip asking the same words of another project lets the kept an
       key: "DEMO",
       name: "Demo",
       open_asks: 0,
+      proven_sessions: false,
     },
   ]);
   const user = userOnFakeClock();
