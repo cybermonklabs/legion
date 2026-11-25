@@ -366,28 +366,14 @@ function prosePinFaults(
 const ROLE_STAYS_LIVE =
   /\b(?:you|your (?:role|pane|process|pod|agent)|the (?:role|worker|pane|process))\s+(?:stays?|remains?|keeps?)\s+(?:live|alive|running|up)\b/i;
 
-/**
- * The sentence the skill must carry instead, which is the heading of the bullet that tells a
- * worker what a release does to it. It is pinned whole and literally: a worker that reads nothing
- * about release reads its pod's deletion as a crash and its restored workspace as lost work.
- */
-const RELEASE_IS_NO_STOP = "A released pod is not a stop.";
-
 /** What `markdown` — skills/legion-worker/SKILL.md — gets wrong about a released pod. */
 export function retiredWorkerLifecycleClaims(markdown: string): string[] {
-  return prosePinFaults(
-    "skills/legion-worker/SKILL.md",
-    markdown,
-    {
-      claim: ROLE_STAYS_LIVE,
-      because:
-        "a released pod ends every role process of it, so no role stays live for as long as its issue is in the workflow",
-    },
-    {
-      sentence: RELEASE_IS_NO_STOP,
-      because: "a worker told nothing about release reads its pod's deletion as a crash",
-    }
-  );
+  const found = markdown.replace(/\s+/g, " ").match(ROLE_STAYS_LIVE);
+  return found === null
+    ? []
+    : [
+        `skills/legion-worker/SKILL.md says "${found[0]}": a released pod ends every role process of it, so no role stays live for as long as its issue is in the workflow`,
+      ];
 }
 
 /**

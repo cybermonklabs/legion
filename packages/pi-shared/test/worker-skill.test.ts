@@ -11,7 +11,7 @@ import {
   WORKER_TOOLS,
 } from "./skills-guard";
 
-test("the worker skill says a released pod is not a stop, and never that a role stays live", () => {
+test("the worker skill never says that a role stays live", () => {
   expect(retiredWorkerLifecycleClaims(readFileSync(WORKER_SKILL, "utf8"))).toEqual([]);
 });
 

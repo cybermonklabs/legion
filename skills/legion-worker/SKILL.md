@@ -57,11 +57,6 @@ Quote the answer verbatim to the architect.
 
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
 
-- A released pod is not a stop.
-  Your session, phase and task are kept.
-  The next pod restores your unpushed tracked work.
-  Nothing else of the disk survives but a volume the deployment keeps.
-
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
 
 ## Commits and pushes
