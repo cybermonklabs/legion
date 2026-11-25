@@ -182,7 +182,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/near-copy-checks/{id}":                {target: "/api/v1/near-copy-checks/$nearCopy", statement: statementOf(`\bfrom\s+near_copy_checks\b`)},
 	"GET /api/v1/going/capability":                     {target: "/api/v1/going/capability", fromMemory: "it answers whether the deployment configured a model"},
 	"GET /api/v1/agents":                               {target: "/api/v1/agents", statement: statementOf(`\ba\.author->>'kind'\s*=\s*'session'`)},
-	"GET /api/v1/agents/{session_id}/answers":          {target: "/api/v1/agents/$session/answers?since=$answersSince", statement: statementOf(`\bwith\s+reached\s+as\b`)},
+	"GET /api/v1/agents/{session_id}/answers":          {target: "/api/v1/agents/$session/answers?since=$answersSince", statement: statementOf(`\bwith\s+reached_by_destination\s+as\b`)},
 	"GET /api/v1/agents/{session_id}/messages":         {target: "/api/v1/agents/$session/messages", statement: statementOf(`\bwith\s+recursive\s+direct_roots\s+as\b`)},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}": {target: "/api/v1/agents/$session/artifacts/$fileSlug", statement: statementOf(`\bfrom\s+artifacts\s+where\s+ref_key\s*=\s*\$1\b`)},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": {target: "/api/v1/agents/$session/artifacts/$fileSlug/versions/1",
