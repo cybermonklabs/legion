@@ -1144,6 +1144,72 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": "envoy-listener", "ENVOY_ACCOUNT_TOKEN_FILE": "/run/token"}, "ENVOY_ACCOUNT_GOOGLE_AUDIENCE")
 		},
+		"DISPATCH_PROJECT_OWNER_FALLBACK": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": " operator@example.com "}); boot.ProjectOwnerFallback != "operator@example.com" {
+				t.Errorf("ProjectOwnerFallback = %q", boot.ProjectOwnerFallback)
+			}
+			if boot := resolveWith(t, nil); boot.ProjectOwnerFallback != "" {
+				t.Errorf("unset: ProjectOwnerFallback = %q", boot.ProjectOwnerFallback)
+			}
+			for _, value := range []string{"Operator@example.com", "operator", "operator@", "@example.com", "operator@example.com,carol@example.com", "op erator@example.com"} {
+				refusedWith(t, map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": value}, "DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email")
+			}
+			// Its reader is the boot's owner check (store.EnsureProjectOwners): over a project
+			// with no owner a process refuses to serve, naming
+			// the project and both repairs, until the setting names a full member, whom the boot
+			// then makes the project's owner.
+			t.Run("boot", func(t *testing.T) {
+				ctx := context.Background()
+				database := storetest.Open(t)
+				if _, err := database.Pool.Exec(ctx, `
+					insert into people (email, member_kind) values ('operator@example.com', 'full');
+					alter table projects disable trigger projects_owner_from_default;
+					insert into projects (key, name, default_assignee) values ('STRAY', 'Its default never signed in', 'gone@example.com');
+					alter table projects enable trigger projects_owner_from_default;
+				`); err != nil {
+					t.Fatalf("seed a project with no owner: %v", err)
+				}
+				refused := startDispatchProcess(t, database.Pool.Config().ConnString())
+				refused.WaitExit(t, "its start over a project with no owner")
+				output := refused.Output.String()
+				if code := refused.Cmd.ProcessState.ExitCode(); code != 1 {
+					t.Errorf("unset: Dispatch exited %d over a project with no owner, want 1:\n%s", code, output)
+				}
+				for _, named := range []string{"STRAY", "DISPATCH_PROJECT_OWNER_FALLBACK", "envoy-dispatch project-owner <KEY> <email>"} {
+					if !strings.Contains(output, named) {
+						t.Errorf("unset: Dispatch refused its start without naming %q:\n%s", named, output)
+					}
+				}
+				served := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+					Env: map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": "operator@example.com"},
+				})
+				served.waitHealthy(t)
+				var owner string
+				if err := database.Pool.QueryRow(ctx, `select owner from projects where key = 'STRAY'`).Scan(&owner); err != nil || owner != "operator@example.com" {
+					t.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK=operator@example.com: STRAY's owner after the boot = %q, %v; want the operator", owner, err)
+				}
+				// The grant is recorded as an operator's grant is: one project.access_changed of
+				// change owner on STRAY, by the fallback's system actor, and the server's record of
+				// it, naming no previous owner and the operator as the owner it left.
+				var appended, records int
+				var actor, payload, recordOwner string
+				if err := database.Pool.QueryRow(ctx, `
+					select count(*), coalesce(max(e.actor->>'kind') || ':' || max(e.actor->>'id'), '<none>'),
+						coalesce(max(e.payload::text), '<none>'), count(c.event_id),
+						coalesce(max(c.principal), '<none>') || '|' || coalesce(max(c.owner), '<none>')
+					from events e left join project_access_changes c on c.event_id = e.id
+					where e.project_key = 'STRAY' and e.type = 'project.access_changed'
+				`).Scan(&appended, &actor, &payload, &records, &recordOwner); err != nil {
+					t.Fatalf("read STRAY's access events: %v", err)
+				}
+				if appended != 1 || records != 1 || actor != "system:DISPATCH_PROJECT_OWNER_FALLBACK" ||
+					payload != `{"change": "owner", "project": "STRAY"}` || recordOwner != "|operator@example.com" {
+					t.Errorf("STRAY's grant: %d event(s) by %s carrying %s, %d record(s) %s; want one event of change owner by "+
+						"system:DISPATCH_PROJECT_OWNER_FALLBACK and one record naming no previous owner and the operator",
+						appended, actor, payload, records, recordOwner)
+				}
+			})
+		},
 		"DISPATCH_APP_CLIENT_ID": func(t *testing.T) {
 			if clientID, source, err := loadApp(t, map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env"}); err != nil || clientID != "Iv1.env" || source != "env" {
 				t.Errorf("set: client %q from %q, %v; want the variable over app.json", clientID, source, err)
