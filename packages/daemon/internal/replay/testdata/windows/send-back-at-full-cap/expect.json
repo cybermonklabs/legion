@@ -32,6 +32,7 @@
         "hours": 1.6666666666666667
       },
       "priorityTaken": 0.21428571428571427,
+      "priorityTakenBanded": 0.21428571428571427,
       "loops": {
         "send_back": {
           "rounds": 1,

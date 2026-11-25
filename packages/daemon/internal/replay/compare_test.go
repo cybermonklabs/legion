@@ -26,7 +26,7 @@ const compareHours = 6
 
 // sampleCard is a scorecard over [compareFrom, compareFrom+hours) with a value in every measure of
 // R4 and three issues with times: ACME-1 with a first slot at the start and a done two hours on,
-// ACME-2 with a first slot half an hour on, ACME-3 with none.
+// ACME-2 with a first slot half an hour on, ACME-3 with none; it gives no urgent work.
 func sampleCard(hours int) Scorecard {
 	date := compareFrom.Format(time.DateOnly)
 	return Scorecard{
@@ -37,6 +37,7 @@ func sampleCard(hours int) Scorecard {
 		PastReviewHolding:    Occupancy{Average: 1, Max: 2, Hours: 5},
 		PastReviewNotHolding: Occupancy{Average: 1.5, Max: 3, Hours: 7.5},
 		PriorityTaken:        0.2,
+		PriorityTakenBanded:  0.2,
 		Loops: map[string]LoopHours{string(CauseReviewChanges): {Rounds: 4, Hours: 10}, string(CauseConflict): {Rounds: 2, Hours: 10},
 			string(CauseSendBack): {Rounds: 3, Hours: 6}, string(CauseTestFailed): {Rounds: 2, Hours: 4}},
 		Waits:           map[string]WaitHours{string(WaitLinkRemoved): {Count: 2, Hours: 8}, string(WaitOpen): {Count: 1, Hours: 3}},
@@ -46,6 +47,7 @@ func sampleCard(hours int) Scorecard {
 		MedianSlotWaitMinutes: 10,
 		FirstSlot:             map[string]time.Time{"ACME-1": compareFrom, "ACME-2": compareFrom.Add(30 * time.Minute)},
 		DoneAt:                map[string]time.Time{"ACME-1": compareFrom.Add(2 * time.Hour)},
+		UrgentWaits:           map[string]UrgentWait{},
 		Assumptions:           []int{},
 		Scenario:              MainBranch.NeverStarted,
 	}
@@ -56,7 +58,8 @@ func sampleCard(hours int) Scorecard {
 // of started work that waits only for a slot and of every other measure, 0.05 of the share of
 // priority taken, and 60 minutes at the median of each issue's first-slot error; a measure the
 // record lacks stands at 0 there, so any replayed value of it fails; and the numbers R5 tests not —
-// the issues the start state could not place and the first day apart — fail no branch.
+// the issues the start state could not place, the first day apart, and priority taken in today's
+// line's order (priorityTakenBanded), which is not one of R5's tests — fail no branch.
 func TestValidationGaps(t *testing.T) {
 	date := compareFrom.Format(time.DateOnly)
 	shiftFirstSlots := func(minutes float64) func(*Scorecard) {
@@ -116,17 +119,24 @@ func TestValidationGaps(t *testing.T) {
 	t.Run("numbers no test of R5 reads", func(t *testing.T) {
 		replay := clone(recorded)
 		replay.Unplaced = 40
+		replay.PriorityTakenBanded = 0.9
 		first := sampleCard(compareHours)
 		first.Done = 100
 		replay.FirstDayApart = &first
 		got := ValidateBranch(recorded, MainBranchAt, []Scorecard{replay})
 		if !got.Pass() {
-			t.Errorf("a replay that differs from the record only in its unplaced issues and its first day apart fails %v", got.Failed)
+			t.Errorf("a replay that differs from the record only in its unplaced issues, its priority taken in today's line's order and its first day apart fails %v",
+				got.Failed)
 		}
+		shown := false
 		for _, check := range got.Measures {
-			if (check.Measure == "unplaced" || strings.HasPrefix(check.Measure, firstDayPrefix)) && check.Tested {
+			shown = shown || check.Measure == "priorityTakenBanded"
+			if (check.Measure == "unplaced" || check.Measure == "priorityTakenBanded" || strings.HasPrefix(check.Measure, firstDayPrefix)) && check.Tested {
 				t.Errorf("the validation tests %s, which no gap of R5 names", check.Measure)
 			}
+		}
+		if !shown {
+			t.Errorf("the validation does not show priorityTakenBanded")
 		}
 	})
 }
@@ -431,7 +441,7 @@ func TestBestRuleDecision(t *testing.T) {
 		if !slices.Equal(d.Best, []string{"keep-past-review"}) || d.Branches != 4 {
 			t.Errorf("the decision names %v best over %d branches, want [keep-past-review] over 4", d.Best, d.Branches)
 		}
-		if got := trade(d, "cover").Measures[2]; got != (MeasureTrade{Measure: "priorityTaken", Worse: 4}) {
+		if got := trade(d, "cover").Measures[2]; got != (MeasureTrade{Measure: "priorityTakenBanded", Worse: 4}) {
 			t.Errorf("cover's trade on priority taken is %+v, want worse on all 4 branches", got)
 		}
 	})
@@ -445,9 +455,9 @@ func TestBestRuleDecision(t *testing.T) {
 		}
 		want := map[string][]MeasureTrade{
 			"keep-past-review": {{Measure: "done", Better: 4}, {Measure: "waitOnlyForSlot.hours", Worse: 4},
-				{Measure: "priorityTaken", Level: 4}, {Measure: "otherDelays.hours", Level: 4}},
+				{Measure: "priorityTakenBanded", Level: 4}, {Measure: "otherDelays.hours", Level: 4}},
 			"returned-by-rank": {{Measure: "done", Worse: 4}, {Measure: "waitOnlyForSlot.hours", Level: 4},
-				{Measure: "priorityTaken", Level: 4}, {Measure: "otherDelays.hours", Level: 4}},
+				{Measure: "priorityTakenBanded", Level: 4}, {Measure: "otherDelays.hours", Level: 4}},
 		}
 		for rule, measures := range want {
 			if got := trade(d, rule).Measures; !slices.Equal(got, measures) {
@@ -546,10 +556,10 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 	}
 	before := recorded("window-two", 0, "legion-v19.57.3", "1111111111111111111111111111111111111111")
 	before.Stretches = 4
-	before.Scorecard.Priorities = comparisonUrgentIssues()
+	before.Scorecard.UrgentWaits = comparisonUrgentWaits(0.5)
 	after := recorded("window-one", 1, "legion-v20.42.5", "2222222222222222222222222222222222222222")
 	after.Stretches, after.Conflicted = 10, 3
-	after.Scorecard.Priorities = comparisonUrgentIssues()
+	after.Scorecard.UrgentWaits = comparisonUrgentWaits(0.5)
 	after.Conflicts = ConflictModel{Stretches: 10, Conflicts: 3, Base: Coefficient{Estimate: -2, Low: -3, High: -1},
 		Term: Coefficient{Estimate: 0.5, Low: -0.25, High: 1.25}, Level: conflictLevel, Phases: map[phase.Phase]PhaseFit{
 			phase.Merging: {Stretches: 6, Conflicts: 1}, phase.Testing: {Stretches: 4, Conflicts: 2, Term: &Coefficient{Estimate: 1.5, Low: 0.5, High: 2.5}}}}
@@ -577,9 +587,9 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 			snapshot.Rule, snapshot.Branch, snapshot.Seed, snapshot.Slowdown = rule.Name, at.Branch.Name, seed, at.Slowdown
 			snapshot.Done += r
 			snapshot.PriorityTaken += 0.001 * float64(seed)
-			snapshot.Priorities = comparisonUrgentIssues()
 			slotWait := comparisonSlotWait(w.Order, r, branchIndex[at.Label()])
 			snapshot.FirstSlot["ACME-2"] = compareFrom.Add(time.Duration(slotWait * float64(time.Hour)))
+			snapshot.UrgentWaits = comparisonUrgentWaits(slotWait)
 			line := snapshot
 			line.SlotHoursInTurn += 0.5
 			cards = append(cards, snapshot)
@@ -686,8 +696,10 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 				}
 			}
 			var urgentRows []string
-			// P0: first slots at 0 and slotWait, done at 2 and 6 (one cut).
-			// P1: first todo at hour 1, no slot or done (both waits cut at hour 6).
+			// As comparisonUrgentWaits gives them, in hours: P0's first slots at 0 and slotWait, done
+			// at 2 and 6 (one cut); P1's first todo at hour 1, no slot or done (both waits cut at hour
+			// 6). Every seed of a branch gives the same, so each cell is that value over the seeds.
+			seeds := len(w.seeds(at.Branch, plan.perDraw))
 			for _, measure := range []struct {
 				name  string
 				value func(slotWait float64) float64
@@ -709,7 +721,8 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 			} {
 				row := "| " + measure.name + " |"
 				for r := range rules {
-					row += " " + formatNumber(measure.value(comparisonSlotWait(w.Order, r, index))) + " |"
+					value := measure.value(comparisonSlotWait(w.Order, r, index))
+					row += " " + spreadCell(value, value, value, seeds) + " |"
 				}
 				urgentRows = append(urgentRows, row)
 			}
@@ -774,10 +787,16 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 	})
 }
 
-func comparisonUrgentIssues() map[string]IssuePriority {
-	return map[string]IssuePriority{
-		"ACME-1": {"P0", compareFrom}, "ACME-2": {"P0", compareFrom},
-		"ACME-3": {"P1", compareFrom.Add(time.Hour)},
+// comparisonUrgentWaits is the wait of urgent work of a made-up run whose ACME-2 takes its first
+// slot slotWait hours on, worked by hand over the window of compareHours from compareFrom, with no
+// run-out: ACME-1 and ACME-2, P0 at their first todo at the start, take their first slots at 0 and
+// slotWait, ACME-1 is done 2 hours on and ACME-2 not by hour 6, a cut wait; ACME-3, P1 from hour 1,
+// has no slot and no done by hour 6, two cut waits of 5 hours.
+func comparisonUrgentWaits(slotWait float64) map[string]UrgentWait {
+	minutes := slotWait * 60
+	return map[string]UrgentWait{
+		"P0": {Issues: 2, FirstSlot: WaitMinutes{MedianMinutes: minutes / 2, P90Minutes: minutes}, Done: WaitMinutes{MedianMinutes: 240, P90Minutes: 360, Cut: 1}},
+		"P1": {Issues: 1, FirstSlot: WaitMinutes{MedianMinutes: 300, P90Minutes: 300, Cut: 1}, Done: WaitMinutes{MedianMinutes: 300, P90Minutes: 300, Cut: 1}},
 	}
 }
 
@@ -1345,78 +1364,56 @@ func priorityWorkWindow(t *testing.T) Window {
 	return b.build()
 }
 
-// The comparison's document gives, for each window, the measures of its P0 issues and of its P1
-// issues, in its record and under each rule: how many turned todo in the window with that priority,
-// how many took a first slot at or after that first todo and how many reached done after it, and the
-// median and the 90th percentile (nearest rank) of the hours from the first todo to each. The
-// issues, their priorities and their first todos are read from the record's events, by one code
-// for the record and the replay (traceMeasures).
+// The comparison's document gives the wait of P0 work and of P1 work (urgentWaits) in hours: for
+// each window in its record's scorecard, read from its record by the code a replay is measured by
+// (Measure), and for each rule on each branch in the table of every measure, read from the runs'
+// snapshot scorecards. The record is priorityWorkWindow's, worked by hand, its waits cut at the
+// window's end, 14:00, as it holds no run-out:
 //
-// The record is priorityWorkWindow's, worked by hand. Its scorecard names ACME-1 (P0, 09:00),
-// ACME-2 (P1, 09:10), ACME-3 (P0, 09:20), ACME-4 (P1, 09:40) and ACME-5 (P2, 09:50); not ACME-6,
-// which has no priority, nor ACME-7, which turned todo before the window. In the record the P0
-// issues take their first slot 0 and 55 minutes after their first todo (median 0.4583 hours, 90th
-// percentile 0.9167) and are done 2 hours and 2 hours 55 minutes after it (2.4583, 2.9167); the P1
-// issues 0 and 45 minutes (0.375, 0.75) and 2 hours and 2 hours 45 minutes (2.375, 2.75).
+//	P0: ACME-1, todo at 09:00, its first slot then and its done at 11:00: 0 and 120 minutes.
+//	    ACME-3, todo at 09:20, its first slot at 10:15 and its done at 12:15: 55 and 175.
+//	    ACME-7, todo from 08:30, before the window, and still todo at its start, so counted from
+//	    09:00, and never promoted: 300 and 300, both cut.
+//	    The first slot: a median of 55 (0.9167 hours) and a 90th percentile of 300 (5), one cut;
+//	    the done: 175 (2.9167) and 300 (5), one cut.
+//	P1: ACME-2, todo at 09:10: 0 and 120; ACME-4, todo at 09:40: 45 and 165. The first slot: 22.5
+//	    (0.375) and 45 (0.75), none cut; the done: 142.5 (2.375) and 165 (2.75), none cut.
 //
-// The runs are made up, one seed of the main branch under each of two rules, both windows holding
-// that record. Under main only ACME-1 takes a slot, at 09:00, and is done at 11:00, so the P0 issues
-// have one time of each and the P1 issues none. Under p0-at-once ACME-1 and ACME-2 run as in the
-// record, ACME-3 takes its slot at its first todo, 09:20, and is done at 11:20, and ACME-4 takes a
-// slot at 09:30, before its first todo, which counts in no time, and is done at 12:25.
-func TestTheComparisonGivesTheP0AndP1MeasuresOfEachRule(t *testing.T) {
+// ACME-5, at P2, and ACME-6, with no priority, count in neither. The runs are made up, one seed of
+// the main branch under each of two rules: under main the P0 work waits 5 hours to its first slot
+// and to its done, both cut for two of its three issues, and no P1 issue counts, so its median and
+// percentile read none; under p0-at-once the waits are the record's.
+func TestTheComparisonGivesTheWaitOfUrgentWorkOfEachRecordAndRule(t *testing.T) {
 	card, err := Score(priorityWorkWindow(t))
 	if err != nil {
 		t.Fatal(err)
-	}
-	wantPriorities := map[string]IssuePriority{"ACME-1": {"P0", clock(9, 0)}, "ACME-2": {"P1", clock(9, 10)}, "ACME-3": {"P0", clock(9, 20)},
-		"ACME-4": {"P1", clock(9, 40)}, "ACME-5": {"P2", clock(9, 50)}}
-	if !maps.EqualFunc(card.Priorities, wantPriorities, func(a, b IssuePriority) bool { return a.Priority == b.Priority && a.FirstTodo.Equal(b.FirstTodo) }) {
-		t.Errorf("the record's scorecard gives the priorities %+v, want %+v", card.Priorities, wantPriorities)
 	}
 	wantSlots := map[string]time.Time{"ACME-1": clock(9, 0), "ACME-2": clock(9, 10), "ACME-3": clock(10, 15), "ACME-4": clock(10, 25)}
 	wantDone := map[string]time.Time{"ACME-1": clock(11, 0), "ACME-2": clock(11, 10), "ACME-3": clock(12, 15), "ACME-4": clock(12, 25)}
 	if !maps.EqualFunc(card.FirstSlot, wantSlots, time.Time.Equal) || !maps.EqualFunc(card.DoneAt, wantDone, time.Time.Equal) {
 		t.Fatalf("the record's scorecard gives the first slots %v and the done %v, want %v and %v", card.FirstSlot, card.DoneAt, wantSlots, wantDone)
 	}
-	recorded := func(times map[string]time.Time) func(string) time.Time {
-		return func(key string) time.Time { return times[key] }
+	recorded := map[string]UrgentWait{
+		"P0": {Issues: 3, FirstSlot: WaitMinutes{MedianMinutes: 55, P90Minutes: 300, Cut: 1}, Done: WaitMinutes{MedianMinutes: 175, P90Minutes: 300, Cut: 1}},
+		"P1": {Issues: 2, FirstSlot: WaitMinutes{MedianMinutes: 22.5, P90Minutes: 45}, Done: WaitMinutes{MedianMinutes: 142.5, P90Minutes: 165}},
 	}
-	for priority, want := range map[string]PriorityMeasure{
-		"P0": {Issues: 2, Slotted: 2, ToSlotMedian: 0.458333, ToSlotP90: 0.916667, Done: 2, ToDoneMedian: 2.458333, ToDoneP90: 2.916667},
-		"P1": {Issues: 2, Slotted: 2, ToSlotMedian: 0.375, ToSlotP90: 0.75, Done: 2, ToDoneMedian: 2.375, ToDoneP90: 2.75},
-	} {
-		got := priorityMeasures(card.Priorities, priority, recorded(card.FirstSlot), recorded(card.DoneAt))
-		if got.Issues != want.Issues || got.Slotted != want.Slotted || got.Done != want.Done {
-			t.Errorf("the record's %s issues measure %+v, want %+v", priority, got, want)
-		}
-		for _, value := range []struct {
-			name      string
-			got, want float64
-		}{{"to the first slot, median", got.ToSlotMedian, want.ToSlotMedian}, {"to the first slot, 90th percentile", got.ToSlotP90, want.ToSlotP90},
-			{"to done, median", got.ToDoneMedian, want.ToDoneMedian}, {"to done, 90th percentile", got.ToDoneP90, want.ToDoneP90}} {
-			assertNear(t, priority+" "+value.name, value.got, value.want)
-		}
+	if !maps.Equal(card.UrgentWaits, recorded) {
+		t.Fatalf("the record's scorecard gives the urgent waits %+v, want %+v", card.UrgentWaits, recorded)
 	}
-
-	replays := map[string]struct{ firstSlot, doneAt map[string]time.Time }{
-		record.MainRule.Name: {firstSlot: map[string]time.Time{"ACME-1": clock(9, 0)}, doneAt: map[string]time.Time{"ACME-1": clock(11, 0)}},
-		"p0-at-once": {
-			firstSlot: map[string]time.Time{"ACME-1": clock(9, 0), "ACME-2": clock(9, 10), "ACME-3": clock(9, 20), "ACME-4": clock(9, 30)},
-			doneAt:    map[string]time.Time{"ACME-1": clock(11, 0), "ACME-2": clock(11, 10), "ACME-3": clock(11, 20), "ACME-4": clock(12, 25)},
-		},
+	replayed := map[string]map[string]UrgentWait{
+		record.MainRule.Name: {"P0": {Issues: 3, FirstSlot: WaitMinutes{MedianMinutes: 300, P90Minutes: 300, Cut: 2}, Done: WaitMinutes{MedianMinutes: 300, P90Minutes: 300, Cut: 2}}},
+		"p0-at-once":         recorded,
 	}
 	windows := madeUpWindows(record.MainRule.Name, record.MainRule.Name)
 	for i := range windows {
-		windows[i].Scorecard.Priorities, windows[i].Scorecard.FirstSlot, windows[i].Scorecard.DoneAt = card.Priorities, card.FirstSlot, card.DoneAt
+		windows[i].Scorecard.UrgentWaits = card.UrgentWaits
 	}
 	dir := t.TempDir()
 	writeMadeUpRuns(t, dir, windows, []record.SlotRule{replayedRule(t, record.MainRule.Name), replayedRule(t, "p0-at-once")},
 		runPlan{branches: []BranchAt{MainBranchAt}, perDraw: 1},
 		func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (Scorecard, Scorecard, runRecord) {
 			snapshot, line, ran := madeUpRun(w, r, rule, at, seed)
-			line.FirstSlot, line.DoneAt = replays[rule.Name].firstSlot, replays[rule.Name].doneAt
-			ran.Gaps = Gaps(snapshot, line)
+			snapshot.UrgentWaits = replayed[rule.Name]
 			return snapshot, line, ran
 		})
 	runs, err := ReadRuns(dir)
@@ -1427,23 +1424,42 @@ func TestTheComparisonGivesTheP0AndP1MeasuresOfEachRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	head := tableHead("priority", []string{"rule", "issues", "with a first slot", "to the first slot, median", "to the first slot, 90th percentile",
-		"done", "to done, median", "to done, 90th percentile"})
-	rows := []string{
-		"| P0 | the record | 2 | 2 | 0.4583 | 0.9167 | 2 | 2.4583 | 2.9167 |",
-		"| P0 | `main` | 2 | 1 | 0 | 0 | 1 | 2 | 2 |",
-		"| P0 | `p0-at-once` | 2 | 2 | 0 | 0 | 2 | 2 | 2 |",
-		"| P1 | the record | 2 | 2 | 0.375 | 0.75 | 2 | 2.375 | 2.75 |",
-		"| P1 | `main` | 2 | 0 | none | none | 0 | none | none |",
-		"| P1 | `p0-at-once` | 2 | 1 | 0 | 0 | 2 | 2.375 | 2.75 |",
-	}
-	if !strings.Contains(document, "## P0 and P1 work under each rule\n") {
-		t.Errorf("the document holds no part of P0 and P1 work:\n%s", document)
-	}
+	recordRows := []string{"| P0 issues | 3 |", "| P0 to first slot, median | 0.9167 |", "| P0 to first slot, 90th percentile | 5 |",
+		"| P0 to first slot, cut waits | 1 |", "| P0 to done, median | 2.9167 |", "| P0 to done, 90th percentile | 5 |", "| P0 to done, cut waits | 1 |",
+		"| P1 issues | 2 |", "| P1 to first slot, median | 0.375 |", "| P1 to first slot, 90th percentile | 0.75 |", "| P1 to first slot, cut waits | 0 |",
+		"| P1 to done, median | 2.375 |", "| P1 to done, 90th percentile | 2.75 |", "| P1 to done, cut waits | 0 |"}
+	ruleRows := []string{"| P0 issues | 3 | 3 |", "| P0 to first slot, median | 5 | 0.9167 |", "| P0 to first slot, 90th percentile | 5 | 5 |",
+		"| P0 to first slot, cut waits | 2 | 1 |", "| P0 to done, median | 5 | 2.9167 |", "| P0 to done, 90th percentile | 5 | 5 |",
+		"| P0 to done, cut waits | 2 | 1 |", "| P1 issues | 0 | 2 |", "| P1 to first slot, median | none | 0.375 |",
+		"| P1 to first slot, 90th percentile | none | 0.75 |", "| P1 to first slot, cut waits | 0 | 0 |", "| P1 to done, median | none | 2.375 |",
+		"| P1 to done, 90th percentile | none | 2.75 |", "| P1 to done, cut waits | 0 | 0 |"}
 	for _, w := range windows {
-		section := "### " + w.Name + "\n\n" + head + "\n" + strings.Join(rows, "\n") + "\n"
-		if !strings.Contains(document, section) {
-			t.Errorf("the document holds no section\n%s\nin:\n%s", section, document)
-		}
+		scorecard := section(t, document, "## The scorecard of each window, read from its record", "### "+w.Name+"\n", "\n### ")
+		assertComparisonRows(t, scorecard, w.Name+"'s record", recordRows)
+		table := section(t, document, "## Every measure for every rule, window and branch", "### "+w.Name+", `"+MainBranchAt.Label()+"` (", "\n### ")
+		assertComparisonRows(t, table, w.Name+" on "+MainBranchAt.Label(), ruleRows)
 	}
+	if !strings.Contains(document, "counts from the window's start") {
+		t.Errorf("the document does not say that an issue todo before the window counts from its start")
+	}
+}
+
+// section is the part of document after the heading part and from the heading within it to the
+// next end after that heading, which the test fails where the document holds neither heading.
+func section(t *testing.T, document, part, heading, end string) string {
+	t.Helper()
+	start := strings.Index(document, part)
+	if start < 0 {
+		t.Fatalf("the document holds no %q", part)
+	}
+	document = document[start:]
+	start = strings.Index(document, heading)
+	if start < 0 {
+		t.Fatalf("the document holds no %q after %q", heading, part)
+	}
+	document = document[start:]
+	if stop := strings.Index(document[len(heading):], end); stop >= 0 {
+		document = document[:len(heading)+stop]
+	}
+	return document
 }

@@ -32,6 +32,7 @@
         "hours": 1.3333333333333333
       },
       "priorityTaken": 0.125,
+      "priorityTakenBanded": 0.125,
       "loops": {},
       "waits": {},
       "slotHoursInTurn": 7.916666666666667,

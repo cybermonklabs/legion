@@ -56,6 +56,21 @@
       "doneAt": {},
       "assumptions": [1, 4, 6, 7, 9, 10, 11, 15],
       "scenario": "none",
+      "urgentWaits": {
+        "P0": {
+          "issues": 1,
+          "firstSlot": {
+            "medianMinutes": 11,
+            "p90Minutes": 11,
+            "cut": 0
+          },
+          "done": {
+            "medianMinutes": 35,
+            "p90Minutes": 35,
+            "cut": 1
+          }
+        }
+      },
       "from": "2001-03-05T10:20:00Z"
     },
     "signals": {
@@ -114,6 +129,21 @@
       "doneAt": {},
       "assumptions": [1, 4, 6, 7, 9, 10, 15],
       "scenario": "none",
+      "urgentWaits": {
+        "P0": {
+          "issues": 1,
+          "firstSlot": {
+            "medianMinutes": 11,
+            "p90Minutes": 11,
+            "cut": 0
+          },
+          "done": {
+            "medianMinutes": 35,
+            "p90Minutes": 35,
+            "cut": 1
+          }
+        }
+      },
       "from": "2001-03-05T10:20:00Z"
     }
   },

@@ -23,7 +23,10 @@ type Costs struct {
 	// WaitOnlyForSlot is the hours of started work that waits only for a slot, reading (a).
 	WaitOnlyForSlot float64 `json:"waitOnlyForSlot"`
 	// PriorityTaken is the time-average share of pairs of a holder and an issue that waits for a
-	// slot in which the holder ranks below.
+	// slot in which the holder ranks below, in today's line's order, the priority band first
+	// (Scorecard.PriorityTakenBanded): every rule is judged on that one scale. Both windows were
+	// recorded before the line put priority first, and the document gives the share by rank alone
+	// (Scorecard.PriorityTaken) beside it.
 	PriorityTaken float64 `json:"priorityTaken"`
 	// OtherDelays is the hours of every send-back loop, of every cause, and of every wait on
 	// another issue, whatever ended it.
@@ -33,7 +36,7 @@ type Costs struct {
 // costsOf is the costs card gives, its loops and waits summed in the order of their keys so the
 // same card always gives the same sum.
 func costsOf(card Scorecard) Costs {
-	c := Costs{Done: float64(card.Done), WaitOnlyForSlot: card.WaitOnlyForSlot.Hours, PriorityTaken: card.PriorityTaken}
+	c := Costs{Done: float64(card.Done), WaitOnlyForSlot: card.WaitOnlyForSlot.Hours, PriorityTaken: card.PriorityTakenBanded}
 	for _, cause := range slices.Sorted(maps.Keys(card.Loops)) {
 		c.OtherDelays += card.Loops[cause].Hours
 	}
@@ -69,11 +72,12 @@ type costMeasure struct {
 
 // costMeasures is the issues finished and the owner's three costs, each with R5's gap: 10% of the
 // issues finished, 30% of the hours of started work that waits only for a slot, 0.05 of the share
-// of priority taken, and 30% of the hours of the other delays.
+// of priority taken, read in today's line's order (priorityTakenBanded, which no test of R5 reads,
+// judged within the gap R5 gives the share by rank alone), and 30% of the hours of the other delays.
 var costMeasures = []costMeasure{
 	{name: "done", higherBetter: true, gap: gapTenth, of: func(c Costs) float64 { return c.Done }},
 	{name: "waitOnlyForSlot.hours", gap: gapThirty, of: func(c Costs) float64 { return c.WaitOnlyForSlot }},
-	{name: "priorityTaken", gap: gapPriority, of: func(c Costs) float64 { return c.PriorityTaken }},
+	{name: "priorityTakenBanded", gap: gapPriority, of: func(c Costs) float64 { return c.PriorityTaken }},
 	{name: "otherDelays.hours", gap: gapThirty, of: func(c Costs) float64 { return c.OtherDelays }},
 }
 
@@ -695,14 +699,14 @@ func (c comparison) breakEven(window, rule string) BreakEvenResult {
 // runs alone, so it is the same whether one process made every run or many processes each made a
 // part: the windows, rules, build commits of the runs, branches, seeds and factors it read; the
 // rule it names best, or that none is, with each rule's trade and why each candidate added to the
-// spec's rules is compared; each window's scorecard read from its record; what each rule's grace
-// keeps over the waits that gave a slot back in each window's record; each window's validation;
-// the forecast across the change, with the workflow commits it carries too; which window measures
-// how a rule changes conflicts; the value of every measure for every rule, window and branch, read
-// from the snapshot timeline, with the lowest and the highest seed; where each issue's times are;
-// the measures of each window's P0 and P1 work in its record and under each rule
-// (writePriorities); the gap of each measure between the snapshot and the line timelines; each
-// rule's break-even slowdown factor; and the assumptions and the scenario each run used. Every
+// spec's rules is compared; each window's scorecard read from its record, the wait of its P0 and
+// P1 work among it; what each rule's grace keeps over the waits that gave a slot back in each
+// window's record; each window's validation; the forecast across the change, with the workflow
+// commits it carries too; which window measures how a rule changes conflicts; the value of every
+// measure for every rule, window and branch, read from the snapshot timeline, with the lowest and
+// the highest seed, the wait of P0 and P1 work among them (urgentRows); where each issue's times
+// are; the gap of each measure between the snapshot and the line timelines; each rule's
+// break-even slowdown factor; and the assumptions and the scenario each run used. Every
 // number in it is computed from the runs. Beside it, issues is the comparison's issues file
 // (writeIssues), which the document names by the base name of issuesFile, the path it is written
 // to (IssuesFile).
@@ -746,7 +750,6 @@ func (r Runs) Comparison(issuesFile string) (document, issues string, err error)
 	p.line("`%s`, beside this document, gives for each window and each rule each issue that held a slot in the record or in the rule's replay on the main branch (`%s`): its first slot and its done in the record and in the replay, each replayed time the median over the main branch's seeds.",
 		filepath.Base(issuesFile), MainBranchAt.Label())
 	p.line("")
-	c.writePriorities(p)
 	c.writeGaps(p)
 	c.writeBreakEven(p)
 	c.writeAssumptions(p)
@@ -810,86 +813,66 @@ func (c comparison) writeIssues(p *printer) {
 	}
 }
 
-// PriorityMeasure is the measures of the issues of one Dispatch priority in one window, in its
-// record or under one rule (priorityMeasures): how many issues of that priority turned todo in the
-// window (Scorecard.Priorities); how many of them took a first slot at or after that first todo,
-// and the median and the 90th percentile (nearest rank) of the hours from the first todo to it;
-// and the same of their done.
-type PriorityMeasure struct {
-	Issues                  int
-	Slotted                 int
-	ToSlotMedian, ToSlotP90 float64
-	Done                    int
-	ToDoneMedian, ToDoneP90 float64
+// urgentRow is one row the document gives the wait of urgent work in (urgentRows): its name, the
+// priority whose wait it reads (UrgentWait, Scorecard.UrgentWaits), its value in that wait, and
+// whether it is a median or a percentile, which a scorecard with no issue of the priority gives
+// none of.
+type urgentRow struct {
+	name, priority string
+	time           bool
+	value          func(UrgentWait) float64
 }
 
-// priorityMeasures is the measures of the issues of priorities whose priority is priority (P0 to
-// P3, record.Priority.String), each issue's first slot and done given by firstSlot and doneAt, the
-// zero time for none. An issue counts in a time only where that time stands at or after its first
-// todo: a first slot before it, taken before a person set the issue back to todo, says nothing of
-// how long its todo waited.
-func priorityMeasures(priorities map[string]IssuePriority, priority string, firstSlot, doneAt func(key string) time.Time) PriorityMeasure {
-	var m PriorityMeasure
-	var toSlot, toDone []float64
-	for key, issue := range priorities {
-		if issue.Priority != priority {
+// urgentRows is each row the document gives the wait of urgent work in, for P0 and then for P1
+// (urgentPriorities): the issues; and, of the wait to the first slot and then of the wait to done,
+// the median and the 90th percentile in hours and the cut waits.
+func urgentRows() []urgentRow {
+	var rows []urgentRow
+	for _, priority := range urgentPriorities {
+		name := priority.String()
+		rows = append(rows, urgentRow{name: name + " issues", priority: name, value: func(w UrgentWait) float64 { return float64(w.Issues) }})
+		for _, wait := range []struct {
+			to string
+			of func(UrgentWait) WaitMinutes
+		}{{"to first slot", func(w UrgentWait) WaitMinutes { return w.FirstSlot }}, {"to done", func(w UrgentWait) WaitMinutes { return w.Done }}} {
+			rows = append(rows,
+				urgentRow{name: name + " " + wait.to + ", median", priority: name, time: true,
+					value: func(w UrgentWait) float64 { return wait.of(w).MedianMinutes / 60 }},
+				urgentRow{name: name + " " + wait.to + ", 90th percentile", priority: name, time: true,
+					value: func(w UrgentWait) float64 { return wait.of(w).P90Minutes / 60 }},
+				urgentRow{name: name + " " + wait.to + ", cut waits", priority: name,
+					value: func(w UrgentWait) float64 { return float64(wait.of(w).Cut) }})
+		}
+	}
+	return rows
+}
+
+// cell is row's value over cards as a table prints a measure: the mean over them, with the lowest
+// and the highest card's beside it for more than one (spreadCell). A card with no issue of the
+// row's priority counts 0 in its issues and its cut waits, and is left out of a median or a
+// percentile, which is none where no card gives one.
+func (row urgentRow) cell(cards []Scorecard) string {
+	values := make([]float64, 0, len(cards))
+	for _, card := range cards {
+		wait, ok := card.UrgentWaits[row.priority]
+		if !ok && row.time {
 			continue
 		}
-		m.Issues++
-		if at := firstSlot(key); !at.IsZero() && !at.Before(issue.FirstTodo) {
-			toSlot = append(toSlot, at.Sub(issue.FirstTodo).Hours())
-		}
-		if at := doneAt(key); !at.IsZero() && !at.Before(issue.FirstTodo) {
-			toDone = append(toDone, at.Sub(issue.FirstTodo).Hours())
-		}
+		values = append(values, row.value(wait))
 	}
-	m.Slotted, m.ToSlotMedian, m.ToSlotP90 = len(toSlot), median(toSlot), percentile(toSlot, 0.9)
-	m.Done, m.ToDoneMedian, m.ToDoneP90 = len(toDone), median(toDone), percentile(toDone, 0.9)
-	return m
+	if len(values) == 0 && row.time {
+		return "none"
+	}
+	mean, low, high := spread(values)
+	return spreadCell(mean, low, high, len(values))
 }
 
-// writePriorities writes, for each window, the measures of its P0 issues and of its P1 issues
-// (priorityMeasures), in its record and under each rule: the issues and their first todo are the
-// window's own, read from its record (Scorecard.Priorities), and each issue's first slot and done
-// are the record's, or the median over the main branch's seeds of the rule's replay (medianTime),
-// as the issues file gives them (writeIssues).
-func (c comparison) writePriorities(p *printer) {
-	p.line("## P0 and P1 work under each rule")
-	p.line("")
-	p.line("For each window, the issues of a priority are the issues of its project that turned todo in the window with that Dispatch priority on the event that turned them, read from the window's record.")
-	p.line("The time to an issue's first slot and the time to its done run from that first todo, and an issue counts in each only where the first slot or the done in the window comes at or after it.")
-	p.line("The record's times are its own; each rule's are the median over the main branch's seeds (`%s`), as the issues file gives them.", MainBranchAt.Label())
-	p.line("Each time is the median and the 90th percentile (nearest rank), in hours, over the issues that have one, and `none` where no issue has one.")
-	firstSlotOf := func(card Scorecard) map[string]time.Time { return card.FirstSlot }
-	doneAtOf := func(card Scorecard) map[string]time.Time { return card.DoneAt }
-	hours := func(count int, value float64) string {
-		if count == 0 {
-			return "none"
-		}
-		return formatNumber(value)
-	}
-	for _, w := range c.windows {
-		p.line("")
-		p.line("### %s", w.Name)
-		p.line("")
-		p.line("%s", tableHead("priority", []string{"rule", "issues", "with a first slot", "to the first slot, median", "to the first slot, 90th percentile",
-			"done", "to done, median", "to done, 90th percentile"}))
-		row := func(priority, source string, m PriorityMeasure) {
-			p.line("| %s | %s | %d | %d | %s | %s | %d | %s | %s |", priority, source, m.Issues, m.Slotted, hours(m.Slotted, m.ToSlotMedian),
-				hours(m.Slotted, m.ToSlotP90), m.Done, hours(m.Done, m.ToDoneMedian), hours(m.Done, m.ToDoneP90))
-		}
-		for _, priority := range []string{record.P0.String(), record.P1.String()} {
-			row(priority, "the record", priorityMeasures(w.Scorecard.Priorities, priority,
-				func(key string) time.Time { return w.Scorecard.FirstSlot[key] }, func(key string) time.Time { return w.Scorecard.DoneAt[key] }))
-			for _, rule := range c.rules {
-				cards := lineCards(c.runs.parts[partKey{window: w.Name, rule: rule}].runs[MainBranchAt.Label()])
-				row(priority, "`"+rule+"`", priorityMeasures(w.Scorecard.Priorities, priority,
-					func(key string) time.Time { return medianTime(cards, key, firstSlotOf) },
-					func(key string) time.Time { return medianTime(cards, key, doneAtOf) }))
-			}
-		}
-	}
-	p.line("")
+// writeUrgentNote writes what the document says beside each table of the wait of urgent work
+// (urgentRows).
+func writeUrgentNote(p *printer) {
+	p.line("The rows of P0 and P1 give the wait of urgent work (`urgentWaits`), in hours: an issue counts at the highest of its own Dispatch priorities from its first todo in the window to its first slot, and an issue that was todo before the window and stands todo at its start counts from the window's start.")
+	p.line("Its waits run to its first slot and to its done by the end of the run, the window's run-out included; an issue with none by then counts with its wait to that end, a cut wait, and the median and the 90th percentile include the cut waits, whose number stands beside them.")
+	p.line("A run with no issue of a priority counts 0 in its issues and its cut waits, and none in its median and its percentile.")
 }
 
 // medianTime is the median over cards of the time that times gives key, a card that gives none
@@ -1044,8 +1027,9 @@ func (c comparison) writeDecision(p *printer, forecast ForecastResult) {
 	decision := c.decision()
 	p.line("## The rule named best (R7)")
 	p.line("")
-	p.line("A rule is named best when, on every branch of both windows that passes R5, it is no worse than `main` by more than R5's gap on the issues finished (`done`, %s) and on each of the owner's three costs — started work that waits only for a slot (`waitOnlyForSlot.hours`, %s), priority taken by holders (`priorityTaken`, %s) and the other delays (`otherDelays.hours`: the hours of every send-back loop and every wait on another issue, %s) — and better on at least one, each read from the snapshot timeline as the mean of the branch's seeds.",
+	p.line("A rule is named best when, on every branch of both windows that passes R5, it is no worse than `main` by more than R5's gap on the issues finished (`done`, %s) and on each of the owner's three costs — started work that waits only for a slot (`waitOnlyForSlot.hours`, %s), priority taken by holders in today's line's order, the priority band first (`priorityTakenBanded`, %s, the gap R5 gives the share by rank alone) and the other delays (`otherDelays.hours`: the hours of every send-back loop and every wait on another issue, %s) — and better on at least one, each read from the snapshot timeline as the mean of the branch's seeds.",
 		gapTenth, gapThirty, gapPriority, gapThirty)
+	p.line("Both windows were recorded before the line put priority first, so the tables of every measure give priority taken by rank alone (`priorityTaken`), the order of their own lines, beside it.")
 	for i, w := range c.windows {
 		if !c.validations[i].MainPasses() {
 			p.line("%s gives no comparison: its main branch fails R5, so none of its branches is read.", w.Name)
@@ -1128,9 +1112,13 @@ func coded[S ~string](names []S) []string {
 }
 
 // writeScorecards writes each window's scorecard, read from its record, with the issues done by
-// anyone beside Legion's done (Scorecard.DoneByAnyone).
+// anyone beside Legion's done (Scorecard.DoneByAnyone) and the wait of its urgent work
+// (urgentRows), whose cut waits run to the end of the window's record.
 func (c comparison) writeScorecards(p *printer) {
 	p.line("## The scorecard of each window, read from its record")
+	p.line("")
+	writeUrgentNote(p)
+	p.line("The record's waits are cut at the end of the window's record.")
 	for _, w := range c.windows {
 		p.line("")
 		p.line("### %s", w.Name)
@@ -1142,6 +1130,9 @@ func (c comparison) writeScorecards(p *printer) {
 		}
 		p.line("| doneByAnyone | %d |", w.Scorecard.DoneByAnyone)
 		p.line("| issues with a first slot | %d |", len(w.Scorecard.FirstSlot))
+		for _, row := range urgentRows() {
+			p.line("| %s | %s |", row.name, row.cell([]Scorecard{w.Scorecard}))
+		}
 	}
 	p.line("")
 }
@@ -1204,10 +1195,14 @@ func (c comparison) writeConflicts(p *printer) {
 }
 
 // writeMatrix writes the value of every measure for every rule, window and branch, read from the
-// snapshot timeline, a table for each window and branch with a column for each rule, and below them
-// the issues done by anyone, which only a run's line timeline gives (Scorecard.DoneByAnyone).
+// snapshot timeline, a table for each window and branch with a column for each rule, the wait of
+// urgent work among them (urgentRows), and below them the issues done by anyone, which only a run's
+// line timeline gives (Scorecard.DoneByAnyone).
 func (c comparison) writeMatrix(p *printer) {
 	p.line("## Every measure for every rule, window and branch (the snapshot timeline)")
+	p.line("")
+	writeUrgentNote(p)
+	p.line("`priorityTaken` ranks by rank alone, the order of the recorded windows' lines, and `priorityTakenBanded` in today's line's order, the band of the Dispatch priority that places each issue first.")
 	for i, w := range c.windows {
 		for _, at := range c.branches {
 			values := map[string][][]float64{}
@@ -1247,6 +1242,13 @@ func (c comparison) writeMatrix(p *printer) {
 				for _, column := range values[name] {
 					mean, low, high := spread(column)
 					row += " " + spreadCell(mean, low, high, len(column)) + " |"
+				}
+				p.line("%s", row)
+			}
+			for _, urgent := range urgentRows() {
+				row := "| " + urgent.name + " |"
+				for _, rule := range c.rules {
+					row += " " + urgent.cell(snapshotCards(c.runs.parts[partKey{window: w.Name, rule: rule}].runs[at.Label()])) + " |"
 				}
 				p.line("%s", row)
 			}

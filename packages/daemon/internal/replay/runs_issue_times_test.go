@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,7 +16,8 @@ import (
 func issueTimesRuns(t *testing.T, dir, name, rule string, named bool, from, to, recordedAt, replayedAt time.Time) []BranchAt {
 	t.Helper()
 	rec := windowRecord{Name: name, Project: "ACME", From: from, To: to,
-		Scorecard:     Scorecard{From: from, To: to, FirstSlot: map[string]time.Time{"ACME-1": recordedAt}, DoneAt: map[string]time.Time{}},
+		Scorecard: Scorecard{From: from, To: to, FirstSlot: map[string]time.Time{"ACME-1": recordedAt}, DoneAt: map[string]time.Time{},
+			UrgentWaits: map[string]UrgentWait{}},
 		WaitsGaveBack: []waitGaveBack{}}
 	if named {
 		rec.Rule = rule
@@ -34,12 +36,12 @@ func issueTimesRuns(t *testing.T, dir, name, rule string, named bool, from, to, 
 	for _, at := range branches {
 		part.Branches = append(part.Branches, partRun{Branch: at.Branch.Name, Slowdown: at.Slowdown, Seeds: []int64{1}})
 		run := runDir(dir, name, rule, at, 1)
-		line := Scorecard{From: from, To: to, FirstSlot: map[string]time.Time{}, DoneAt: map[string]time.Time{}}
+		line := Scorecard{From: from, To: to, FirstSlot: map[string]time.Time{}, DoneAt: map[string]time.Time{}, UrgentWaits: map[string]UrgentWait{}}
 		if !replayedAt.IsZero() {
 			line.FirstSlot["ACME-1"] = replayedAt
 		}
 		must(writeJSON(filepath.Join(run, runFile), runRecord{Rule: rule, Branch: at.Branch, Seed: 1, Slowdown: 1}))
-		must(writeJSON(filepath.Join(run, scorecardFile), Scorecard{From: from, To: to}))
+		must(writeJSON(filepath.Join(run, scorecardFile), Scorecard{From: from, To: to, UrgentWaits: map[string]UrgentWait{}}))
 		must(writeJSON(filepath.Join(run, lineScorecardFile), line))
 	}
 	must(writeJSON(filepath.Join(dir, name, rule, partFile), part))
@@ -110,5 +112,71 @@ func TestAValidationWhoseReplaysGiveNoIssueTimeIsRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), window) {
 		t.Errorf("the refusal %q does not name the window %s", err, window)
+	}
+}
+
+// A run written before its scorecards held the wait of urgent work and priority taken in today's
+// line's order (urgentWaits, priorityTakenBanded) is refused by every report read from runs, with
+// an error that names the run and says it must be run again: read, it would give 0 in each of those
+// measures, and the decision would judge a rule on priority taken it never measured. So is a
+// window's record.json written before its scorecard held them. The test writes the runs of
+// issueTimesRuns and then takes urgentWaits out of one run's scorecard.json, and, apart, out of the
+// window's record.json.
+func TestRunsWrittenBeforeTheUrgentWaitsAreRefused(t *testing.T) {
+	const window, rule = "old-runs", "legion-v20.42.5"
+	from := time.Date(2001, time.March, 5, 0, 0, 0, 0, time.UTC)
+	strip := func(t *testing.T, path string) {
+		t.Helper()
+		var fields map[string]any
+		if err := readJSON(path, &fields); err != nil {
+			t.Fatal(err)
+		}
+		scorecard := fields
+		if inner, ok := fields["scorecard"].(map[string]any); ok {
+			scorecard = inner
+		}
+		delete(scorecard, "urgentWaits")
+		delete(scorecard, "priorityTakenBanded")
+		if err := writeJSON(path, fields); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, old := range []struct {
+		name string
+		file func(dir string) string
+	}{
+		{"a run's scorecard.json", func(dir string) string {
+			return filepath.Join(runDir(dir, window, rule, MainBranchAt, 1), scorecardFile)
+		}},
+		{"a run's scorecard-line.json", func(dir string) string {
+			return filepath.Join(runDir(dir, window, rule, MainBranchAt, 1), lineScorecardFile)
+		}},
+		{"the window's record.json", func(dir string) string { return filepath.Join(dir, window, recordFile) }},
+	} {
+		t.Run(old.name, func(t *testing.T) {
+			dir := t.TempDir()
+			issueTimesRuns(t, dir, window, rule, true, from, from.Add(24*time.Hour), from.Add(time.Hour), from.Add(time.Hour))
+			if _, err := ReadRuns(dir); err != nil {
+				t.Fatalf("the runs as written are refused: %v", err)
+			}
+			path := old.file(dir)
+			if _, err := os.Stat(path); err != nil {
+				t.Fatal(err)
+			}
+			strip(t, path)
+			_, err := ReadRuns(dir)
+			if err == nil {
+				t.Fatalf("runs with %s written before the urgent waits are read", old.name)
+			}
+			named := filepath.Dir(path)
+			if old.name == "the window's record.json" {
+				named = path
+			}
+			for _, want := range []string{named, "urgentWaits", "priorityTakenBanded", "again"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal %q does not say %q", err, want)
+				}
+			}
+		})
 	}
 }

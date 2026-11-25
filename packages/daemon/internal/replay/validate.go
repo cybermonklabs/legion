@@ -79,11 +79,14 @@ const FirstSlotTest = "firstSlot error median"
 
 // R5Gap is spec R5's gap of the measure name (a name MeasuresOf gives), and false for a number of
 // a scorecard that no test of R5 reads: the issues the start state could not place, which is no
-// measure of R4, and the measures of the window's first day apart (assumption 6), which a report
-// shows beside the window's own and does not test.
+// measure of R4; the measures of the window's first day apart (assumption 6), which a report
+// shows beside the window's own and does not test; and priority taken in today's line's order
+// (priorityTakenBanded), which is not one of R5's tests, whose list names the share of priority
+// taken once, read by rank alone (priorityTaken), the order of the recorded windows' lines. R7
+// reads its error across the change of the rule.
 func R5Gap(name string) (Gap, bool) {
 	switch {
-	case strings.HasPrefix(name, firstDayPrefix), name == "unplaced":
+	case strings.HasPrefix(name, firstDayPrefix), name == "unplaced", name == "priorityTakenBanded":
 		return Gap{}, false
 	case name == "done", strings.HasPrefix(name, "slotsGivenByDay["):
 		return gapTenth, true
@@ -505,6 +508,7 @@ func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) 
 		p.line("The branches that give no comparison: %s.", strings.Join(labels, ", "))
 	}
 	p.line("The first-slot test passes where the median error of each issue's first slot is within %s minutes; the measures of the first day apart are shown and not tested.", gapFirstSlot)
+	p.line("`priorityTakenBanded`, priority taken in today's line's order, is shown and is not one of R5's tests, which read priority taken by rank alone (`priorityTaken`), the order of the recorded windows' lines; R7 reads its error across the change of the rule.")
 	p.line("")
 	p.line("| branch | seeds | R5 | tests failed | first slot error: median | 90th percentile | done error: median | 90th percentile |")
 	p.line("| --- | --- | --- | --- | --- | --- | --- | --- |")

@@ -31,6 +31,7 @@
         "hours": 0.0
       },
       "priorityTaken": 0.3333333333333333,
+      "priorityTakenBanded": 0.3333333333333333,
       "loops": {},
       "waits": {},
       "slotHoursInTurn": 1.75,
@@ -51,6 +52,21 @@
       "doneAt": {},
       "assumptions": [1, 9, 15],
       "scenario": "none",
+      "urgentWaits": {
+        "P0": {
+          "issues": 2,
+          "firstSlot": {
+            "medianMinutes": 15,
+            "p90Minutes": 30,
+            "cut": 1
+          },
+          "done": {
+            "medianMinutes": 40,
+            "p90Minutes": 50,
+            "cut": 2
+          }
+        }
+      },
       "from": "2001-03-05T09:00:00Z"
     }
   },

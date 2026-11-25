@@ -67,9 +67,10 @@ var firstStartHolds = []record.HeldReason{record.HeldTreeClosed, record.HeldTree
 	record.HeldRootAwaitingPerson, record.HeldDesignGate, record.HeldDispatchBlocker, record.HeldChildrenFirst,
 	record.HeldAcceptedAncestor}
 
-// newSnapshots is the snapshot timeline of a replay of [from, to), its ranks read by ranks.
-func newSnapshots(from, to time.Time, ranks rankFunc) *snapshots {
-	return &snapshots{timeline: Timeline{From: from, To: to, Issues: map[string]*Course{}}, ranks: ranks,
+// newSnapshots is the snapshot timeline of a replay of [from, to) that runs to end, its ranks and
+// priorities read by ranks.
+func newSnapshots(from, to, end time.Time, ranks rankFunc) *snapshots {
+	return &snapshots{timeline: Timeline{From: from, To: to, End: end, Issues: map[string]*Course{}}, ranks: ranks,
 		waits: map[string]*standingWait{}, live: map[string]bool{}, records: map[string]record.Issue{}, keys: map[string]struct{}{},
 		working: map[string]bool{}, byIssue: map[string][]supervise.Claim{}}
 }
@@ -234,7 +235,7 @@ func (s *snapshots) settle(at time.Time, claims map[claim.Token]supervise.Claim,
 			state = IssueState{}
 		}
 		if holds || state.Waiting {
-			state.Tree, state.Rank, state.RootRank = tree, s.ranks(key, at), s.ranks(tree, at)
+			s.ranks.place(&state, key, tree, at)
 		}
 		if state != (IssueState{}) || s.timeline.Issues[key] != nil {
 			s.timeline.course(key).set(at, state)

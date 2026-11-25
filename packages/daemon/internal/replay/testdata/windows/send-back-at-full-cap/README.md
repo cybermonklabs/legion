@@ -91,6 +91,7 @@ ACME-1 10:50 to 11:10 (20 minutes) and 13:50 to 14:30 (40), ACME-2 12:40 to 13:2
 09:10 to 10:50: ACME-2 (`a1`) waits while ACME-1 (`a0`) holds, a share of 0.
 11:10 to 12:40: ACME-1 (`a0`) waits while ACME-2 (`a1`) holds, a share of 1.
 The average is 1.5/7 = 0.214285….
+No issue of the window has a Dispatch priority, so every issue stands in the band after P3 and the band moves no rank: `priorityTakenBanded`, the share in today's line's order, is the same 0.214285….
 
 **Loops.**
 One round of `send_back`, from the move back at 11:10 to ACME-1's return to accepting at 13:50: 160 minutes, 2.6666… hours.

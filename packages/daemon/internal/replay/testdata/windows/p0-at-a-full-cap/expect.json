@@ -51,6 +51,21 @@
       "doneAt": {},
       "assumptions": [1, 9, 15],
       "scenario": "none",
+      "urgentWaits": {
+        "P0": {
+          "issues": 1,
+          "firstSlot": {
+            "medianMinutes": 0,
+            "p90Minutes": 0,
+            "cut": 0
+          },
+          "done": {
+            "medianMinutes": 40,
+            "p90Minutes": 40,
+            "cut": 1
+          }
+        }
+      },
       "from": "2001-03-05T09:00:00Z"
     },
     "before-p0": {
@@ -84,6 +99,7 @@
         "hours": 0.0
       },
       "priorityTaken": 0.6666666666666666,
+      "priorityTakenBanded": 0.6666666666666666,
       "loops": {},
       "waits": {},
       "slotHoursInTurn": 0.9166666666666666,
@@ -103,6 +119,21 @@
       "doneAt": {},
       "assumptions": [1, 9, 15],
       "scenario": "none",
+      "urgentWaits": {
+        "P0": {
+          "issues": 1,
+          "firstSlot": {
+            "medianMinutes": 40,
+            "p90Minutes": 40,
+            "cut": 1
+          },
+          "done": {
+            "medianMinutes": 40,
+            "p90Minutes": 40,
+            "cut": 1
+          }
+        }
+      },
       "from": "2001-03-05T09:00:00Z"
     }
   }

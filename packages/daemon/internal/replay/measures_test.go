@@ -2,7 +2,9 @@ package replay
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"sort"
 	"strings"
@@ -122,6 +124,182 @@ func TestPriorityInversionShare(t *testing.T) {
 	assertNear(t, "priorityTaken", Measure(tl).PriorityTaken, 0.625)
 }
 
+// scorecardJSON reads card as scorecard.json writes it into v, so a test reads a measure by the JSON
+// name a fixture window's expect.json gives it.
+func scorecardJSON(t *testing.T, card Scorecard, v any) {
+	t.Helper()
+	raw, err := json.Marshal(card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, v); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// urgentWaitJSON is one priority's wait of urgent work as scorecard.json writes it (urgentWaits).
+type urgentWaitJSON struct {
+	Issues    int          `json:"issues"`
+	FirstSlot waitTimeJSON `json:"firstSlot"`
+	Done      waitTimeJSON `json:"done"`
+}
+
+// waitTimeJSON is one wait of urgent work as scorecard.json writes it: its median and its 90th
+// percentile in minutes, and how many of its waits the end of the run cut.
+type waitTimeJSON struct {
+	MedianMinutes float64 `json:"medianMinutes"`
+	P90Minutes    float64 `json:"p90Minutes"`
+	Cut           int     `json:"cut"`
+}
+
+// urgentWorkWindow is a window from 09:00 to 12:00 under main, its inputs reaching back to the
+// daemon's boot at 08:00 and its run-out to 13:00, whose issues are worked by hand. ACME-4, at P0,
+// was filed todo at 08:30, before the window, and stands todo at its start. ACME-1, at P0, is filed
+// todo at 09:10; ACME-2, at P1, at 09:20, and a person raises it to P0 at 09:40; ACME-3, at P1, at
+// 09:30; ACME-6, at P2, at 09:45; and ACME-5, at P1, at 10:00, which a person raises to P0 at 10:20.
+// ACME-1 is promoted at 09:10, ACME-2 at 09:50, ACME-5 at 10:00 and ACME-4 at 10:30. ACME-1 and
+// ACME-4 each work 15 minutes in each phase to their done two hours after their promotion, at 11:10
+// and, in the run-out, at 12:30; ACME-2 and ACME-5 are not done by 13:00; ACME-3 and ACME-6 are
+// never promoted.
+func urgentWorkWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(12, 0))
+	b.window.After = Duration(time.Hour)
+	b.boot(clock(8, 0))
+	level := func(n int) *int { return &n }
+	filed := func(at time.Time, key, rank string, priority *int) {
+		b.file(at, key, filing{Title: "Ship the " + key + " change", Status: "todo", Rank: rank, Labels: handedToLegion, Priority: priority})
+	}
+	worked := func(key string, promoted time.Time) {
+		b.rootThroughReview(promoted, key)
+		stepThrough(b, builtStep{promoted.Add(75 * time.Minute), key, phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved},
+			builtStep{promoted.Add(90 * time.Minute), key, phase.Accepting, phase.Retro, workflow.TriggerSignOff},
+			builtStep{promoted.Add(105 * time.Minute), key, phase.Retro, phase.Merging, workflow.TriggerRetroCompleted},
+			builtStep{promoted.Add(120 * time.Minute), key, phase.Merging, phase.Done, workflow.TriggerPullRequestMerged})
+	}
+	raised := func(at time.Time, key string) {
+		b.edit(at, key, func(issue *builtIssue) { issue.Priority = level(0) })
+	}
+	filed(clock(8, 30), "ACME-4", "a4", level(0))
+	filed(clock(9, 10), "ACME-1", "a1", level(0))
+	worked("ACME-1", clock(9, 10))
+	filed(clock(9, 20), "ACME-2", "a2", level(1))
+	filed(clock(9, 30), "ACME-3", "a3", level(1))
+	raised(clock(9, 40), "ACME-2")
+	filed(clock(9, 45), "ACME-6", "a6", level(2))
+	b.rootPromoted(clock(9, 50), "ACME-2")
+	filed(clock(10, 0), "ACME-5", "a5", level(1))
+	b.rootPromoted(clock(10, 0), "ACME-5")
+	raised(clock(10, 20), "ACME-5")
+	worked("ACME-4", clock(10, 30))
+	return b.build()
+}
+
+// The wait of urgent work (spec R4) reads, for P0 and for P1 apart, the issues whose own Dispatch
+// priority is that one at their first todo in the span, or is raised to it at or before their first
+// slot, each counted in the highest of those; the median and the 90th percentile (nearest rank) of
+// the minutes from that first todo to the first slot and to the done; and how many of those waits
+// the end of the run cut: an issue with no first slot, or no done, by the end of the window's
+// run-out counts with its wait to that end. An issue that stood todo from before the span counts
+// from the span's start. The record of urgentWorkWindow, worked by hand, the run-out's end, 13:00,
+// cutting the waits:
+//
+//	P0: ACME-1, P0 at its first todo, 09:10: its first slot 0 minutes on, its done 120.
+//	    ACME-2, P1 at 09:20, raised to P0 at 09:40, before its first slot at 09:50: 30; no done
+//	    by 13:00, 220, cut.
+//	    ACME-4, todo from before the window, counted from 09:00: its first slot at 10:30, 90, and
+//	    its done in the run-out at 12:30, 210, not cut.
+//	    The first slot: 0, 30 and 90, a median of 30 and a 90th percentile of 90, none cut. The
+//	    done: 120, 210 and 220, a median of 210 and a 90th percentile of 220, one cut.
+//	P1: ACME-3, P1 at 09:30, no first slot and no done by 13:00: 210 and 210, both cut.
+//	    ACME-5, P1 at 10:00, its first slot then, 0, and raised to P0 at 10:20, after it, so P1;
+//	    no done by 13:00: 180, cut.
+//	    The first slot: 0 and 210, a median of 105 and a 90th percentile of 210, one cut. The
+//	    done: 180 and 210, a median of 195 and a 90th percentile of 210, two cut.
+//
+// ACME-6, at P2, counts in neither.
+func TestUrgentWorkWaits(t *testing.T) {
+	card, err := Score(urgentWorkWindow(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read struct {
+		UrgentWaits map[string]urgentWaitJSON `json:"urgentWaits"`
+	}
+	scorecardJSON(t, card, &read)
+	want := map[string]urgentWaitJSON{
+		"P0": {Issues: 3, FirstSlot: waitTimeJSON{MedianMinutes: 30, P90Minutes: 90}, Done: waitTimeJSON{MedianMinutes: 210, P90Minutes: 220, Cut: 1}},
+		"P1": {Issues: 2, FirstSlot: waitTimeJSON{MedianMinutes: 105, P90Minutes: 210, Cut: 1}, Done: waitTimeJSON{MedianMinutes: 195, P90Minutes: 210, Cut: 2}},
+	}
+	if !maps.Equal(read.UrgentWaits, want) {
+		t.Errorf("the record's scorecard gives the urgent waits %+v, want %+v", read.UrgentWaits, want)
+	}
+}
+
+// The record of the fixture window urgent-work-waits gives the wait of urgent work its README works
+// out by hand, which its expect.json holds under main: the record gives ACME-2 its slot at 09:30,
+// as a replay under a rule that starts a P0 issue above the cap does, and every wait is cut at
+// 10:15, the end of the window's run-out, not at 10:00. The window's replay under main waits for
+// that start (pendingUntilBuilt); the record reads the waits by the same code (Measure).
+func TestTheRecordOfUrgentWorkWaitsGivesItsHandWorkedWaits(t *testing.T) {
+	window, expect := readFixture(t, "urgent-work-waits")
+	card, err := Score(window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := expect.Rules[record.MainRule.Name].UrgentWaits; !maps.Equal(card.UrgentWaits, want) {
+		t.Errorf("the record of urgent-work-waits gives the urgent waits %+v, want %+v", card.UrgentWaits, want)
+	}
+}
+
+// bothOrdersWindow is a window from 09:00 to 11:00 under main at a cap of 1, its inputs reaching
+// back to the daemon's boot at 08:00. ACME-1, at P2 and ranked a1, is filed todo and promoted at
+// 09:00 and holds the one slot to the window's end. ACME-2, at P0 and ranked a2, is filed todo at
+// 09:00, and ACME-3, with no priority and ranked a0, at 10:00; both wait for a slot to the end.
+func bothOrdersWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(11, 0))
+	b.capped(1)
+	b.boot(clock(8, 0))
+	level := func(n int) *int { return &n }
+	filed := func(at time.Time, key, rank string, priority *int) {
+		b.file(at, key, filing{Title: "Ship the " + key + " change", Status: "todo", Rank: rank, Labels: handedToLegion, Priority: priority})
+	}
+	filed(clock(9, 0), "ACME-1", "a1", level(2))
+	b.rootPromoted(clock(9, 0), "ACME-1")
+	filed(clock(9, 0), "ACME-2", "a2", level(0))
+	filed(clock(10, 0), "ACME-3", "a0", nil)
+	return b.build()
+}
+
+// Priority taken is read in two orders (spec R4): by rank alone, record.RankLess over the tree
+// root's rank and then the issue's own (priorityTaken), the order of the lines the recorded windows
+// ran; and in today's line's order (priorityTakenBanded), first by the band of the Dispatch
+// priority that places each issue (record.PriorityOf: its own, else its tree root's; none after
+// P3) and then by rank. The record of bothOrdersWindow, worked by hand:
+//
+//	09:00 to 10:00: ACME-1 (P2, a1) holds and ACME-2 (P0, a2) waits. By rank ACME-2 stands below
+//	ACME-1, a share of 0; with the band P0 comes before P2, a share of 1.
+//	10:00 to 11:00: ACME-3 (none, a0) waits too. By rank ACME-3 stands above ACME-1 and ACME-2
+//	below it, 1 of 2; with the band ACME-2 stands above ACME-1 and ACME-3, with none, after P2,
+//	below it, 1 of 2.
+//
+// By rank the share is (0 + 0.5)/2 = 0.25; with the band, (1 + 0.5)/2 = 0.75.
+func TestPriorityInversionShareInBothOrders(t *testing.T) {
+	card, err := Score(bothOrdersWindow(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read struct {
+		PriorityTaken       float64  `json:"priorityTaken"`
+		PriorityTakenBanded *float64 `json:"priorityTakenBanded"`
+	}
+	scorecardJSON(t, card, &read)
+	assertNear(t, "priorityTaken", read.PriorityTaken, 0.25)
+	if read.PriorityTakenBanded == nil {
+		t.Fatalf("the record's scorecard gives no priorityTakenBanded")
+	}
+	assertNear(t, "priorityTakenBanded", *read.PriorityTakenBanded, 0.75)
+}
+
 // Each send-back loop is counted by its cause (causes.go), one round for each move back inside the
 // span, its hours from the move back to the issue's next entry into the phase the move left, or to
 // the span's end; and each wait on another issue by what ended it, its hours inside the span, a
@@ -233,7 +411,7 @@ func TestScorecardOfTheRecord(t *testing.T) {
 			}
 			want.Source, want.Rule, want.Branch, want.Seed, want.Slowdown = "record", "", "", 0, 0
 			want.Assumptions, want.Scenario = []int{}, ""
-			want.DoneByAnyone, want.GateClosedHours, want.Priorities = got.DoneByAnyone, got.GateClosedHours, got.Priorities
+			want.DoneByAnyone, want.GateClosedHours = got.DoneByAnyone, got.GateClosedHours
 			for _, diff := range scorecardDiffs(got, want) {
 				t.Errorf("the record of %s: %s", name, diff)
 			}

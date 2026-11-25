@@ -32,6 +32,7 @@
         "hours": 2.6666666666666665
       },
       "priorityTaken": 0.07142857142857142,
+      "priorityTakenBanded": 0.07142857142857142,
       "loops": {},
       "waits": {
         "blocker_done": {

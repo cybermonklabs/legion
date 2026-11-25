@@ -723,6 +723,10 @@ The allowances are:
 
 A branch that misses an allowance gives no comparison.
 A window whose main branch misses one gives no comparison at all.
+`priorityTakenBanded`, priority taken in today's line's order, is printed beside the other measures and is not one of these tests.
+They read priority taken by rank alone (`priorityTaken`), the order of the recorded windows' lines.
+R7 judges a rule on it by its error across the change of the rule, not by an allowance of these tests.
+The wait of urgent work (`urgentWaits`) is not one of these tests either, and `validate` does not print it.
 
 Beside the tests, `validate` prints three diagnostics, which test nothing:
 
@@ -777,7 +781,7 @@ The document gives:
 
 - the build commit of each run, the commit of the `legion` binary that made it, with the number of runs that each build commit made
 
-- each window's scorecard, read from its record, with the issues done by anyone (`doneByAnyone`) beside Legion's `done`
+- each window's scorecard, read from its record, with the issues done by anyone (`doneByAnyone`) beside Legion's `done`, and the wait of its P0 and P1 work ([The wait of urgent work](#the-wait-of-urgent-work))
 
 - for each rule with a grace, what the grace keeps on each window, read from the window's record: how many of the waits on another issue that gave a slot back the grace keeps the slot through, of how many such waits, and the slot-hours that it keeps ([`wait-grace` and its grace](#wait-grace-and-its-grace))
 
@@ -787,11 +791,9 @@ The document gives:
 
 - which window measures how a rule changes conflicts
 
-- the value of every measure for every rule, window and branch, with the lowest and the highest seed, and below each table the issues done by anyone, which only each run's line timeline gives
+- the value of every measure for every rule, window and branch, with the lowest and the highest seed, the wait of P0 and P1 work among them, and below each table the issues done by anyone, which only each run's line timeline gives
 
 - the name of the issues file, and what it gives
-
-- for each window, the P0 issues and the P1 issues, in the record and under each rule: how many turned todo in the window, how many took a first slot after that first todo and how many reached done after it, and the median and the 90th percentile of the hours to each
 
 - the gap of each measure between the snapshot and the line timelines
 
@@ -803,7 +805,10 @@ The document gives:
 
 A rule is best when it is no worse than `main` on each of four numbers by more than that number's allowance, and better on at least one.
 That must be true in every branch of both windows that passes the validation.
-The four numbers are the issues finished, the hours of started work that waits only for a slot, the priority taken by holders, and the hours of the other delays.
+The four numbers are the issues finished, the hours of started work that waits only for a slot, the priority taken by holders in today's line's order (`priorityTakenBanded`), and the hours of the other delays.
+Every rule is read in that one order, whatever order its own line keeps, so that the rules stand on one scale.
+Until the comparison reads its error across the change of the rule, it judges `priorityTakenBanded` within 0.05, the allowance of `priorityTaken`.
+Both windows were recorded before the line put priority first, so each table gives priority taken by rank alone (`priorityTaken`) beside it.
 
 The part on the graces gives one row for each window and each rule with a grace.
 For the fixture windows `one-minute-wait` and `two-waiters-one-blocker` of the tool's tests, it reads:
@@ -842,23 +847,27 @@ For a comparison of the tool's tests, one section of the issues file reads:
 | ACME-5 | no slot | 2001-03-05T10:40Z | not done | not done |
 ```
 
-The part on P0 and P1 work reads the issues, their priorities and their first todos from each window's record (`priorities`).
-Each issue's first slot and done are the record's, or, under a rule, the median over the seeds of the main branch, as the issues file gives them.
-An issue counts in a time only where its first slot or its done in the window comes at or after its first todo.
-Each time is the median and the 90th percentile by nearest rank, in hours, over the issues that have one, and `none` where no issue has one.
-For a comparison of the tool's tests, one window's table reads:
+Each window's scorecard and each table of every measure give the wait of P0 and P1 work in fourteen rows, in hours ([The wait of urgent work](#the-wait-of-urgent-work)).
+A table gives, under each rule, the mean over the branch's seeds, with the lowest and the highest seed beside it for more than one.
+A seed that has no issue of a priority counts 0 in its issues and its cut waits, and counts in no median or percentile, which read `none` where no seed has one.
+The record's own rows cut each wait at the end of the window's record.
+For a comparison of the tool's tests, one window's rows on the main branch read:
 
 ```text
-### window-1
-
-| priority | rule | issues | with a first slot | to the first slot, median | to the first slot, 90th percentile | done | to done, median | to done, 90th percentile |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| P0 | the record | 2 | 2 | 0.4583 | 0.9167 | 2 | 2.4583 | 2.9167 |
-| P0 | `main` | 2 | 1 | 0 | 0 | 1 | 2 | 2 |
-| P0 | `p0-at-once` | 2 | 2 | 0 | 0 | 2 | 2 | 2 |
-| P1 | the record | 2 | 2 | 0.375 | 0.75 | 2 | 2.375 | 2.75 |
-| P1 | `main` | 2 | 0 | none | none | 0 | none | none |
-| P1 | `p0-at-once` | 2 | 1 | 0 | 0 | 2 | 2.375 | 2.75 |
+| P0 issues | 3 | 3 |
+| P0 to first slot, median | 5 | 0.9167 |
+| P0 to first slot, 90th percentile | 5 | 5 |
+| P0 to first slot, cut waits | 2 | 1 |
+| P0 to done, median | 5 | 2.9167 |
+| P0 to done, 90th percentile | 5 | 5 |
+| P0 to done, cut waits | 2 | 1 |
+| P1 issues | 0 | 2 |
+| P1 to first slot, median | none | 0.375 |
+| P1 to first slot, 90th percentile | none | 0.75 |
+| P1 to first slot, cut waits | 0 | 0 |
+| P1 to done, median | none | 2.375 |
+| P1 to done, 90th percentile | none | 2.75 |
+| P1 to done, cut waits | 0 | 0 |
 ```
 
 To split the work, run each part with `--only-window <name>` and `--only-rule <name>` into one `--runs` directory, with no `--out`.
@@ -868,7 +877,7 @@ Then write the document and the issues file from the parts' directories with `--
 ## The measures
 
 Every scorecard gives these measures over the window, from `--from` to `--to`, also where the window has a run-out after `--to`.
-Nothing after `--to` counts, and a stretch, a wait or a loop that goes on past `--to` is cut at `--to`.
+Nothing after `--to` counts, and a stretch, a wait or a loop that goes on past `--to` is cut at `--to`, but for the wait of urgent work, which runs on through the run-out.
 A replay reads them from its own run, and `legion replay scorecard` reads them from the record, by the same code.
 So a difference between the two is a difference of the replay, not of two readings.
 
@@ -914,11 +923,14 @@ Three more numbers describe the slots given out:
 
 ### Priority taken by holders
 
-`priorityTaken` reads, at each moment, every pair of a holder and an issue that waits for a slot.
-It is the share of those pairs in which the holder ranks below the waiting issue, as an average over the window.
+`priorityTaken` and `priorityTakenBanded` read, at each moment, every pair of a holder and an issue that waits for a slot.
+Each is the share of those pairs in which the holder ranks below the waiting issue, as an average over the window.
 An issue that waits for a slot is a member of the line, in either part, that holds no slot, that no wait holds back, and that `admission.blocked` and `admission.held` do not name.
-The rank is the line's own order: `record.RankLess` over the Dispatch rank of each issue's tree root, and then over the issue's own rank.
-At a moment with no pair, the share is 0.
+Each reads every rule in one order, so that rules whose own lines order differently are read on one scale.
+`priorityTaken` ranks by `record.RankLess` over the Dispatch rank of each issue's tree root, and then over the issue's own rank: the order of the lines that the recorded windows ran.
+`priorityTakenBanded` ranks in today's line's order: first by the band of the Dispatch priority that places each issue, its own or else its tree root's (`record.PriorityOf`), P0 first and an issue with none after P3, and then as `priorityTaken` ranks.
+`validate` tests `priorityTaken` and the forecast reads it, and `compare` judges the rules on `priorityTakenBanded`.
+At a moment with no pair, each share is 0.
 
 ### Other delays
 
@@ -961,6 +973,26 @@ At a moment with no pair, the share is 0.
   An issue is in flight from the pass that first gives it a slot to its move to done or out of the workflow, and again from a reopened issue's next start.
   An issue that gave its slot back stays in flight.
 
+### The wait of urgent work
+
+`urgentWaits[P0]` and `urgentWaits[P1]` give the wait of P0 work and of P1 work apart, each where an issue counts in it.
+An issue counts only where Legion works it: an issue of the window's project that enters the workflow in the record, a root handed to Legion or a child of a tree in the workflow.
+An issue that nobody handed to Legion, which a window holds for its events alone, counts in neither.
+An issue counts as P0, or as P1, where its own Dispatch priority is that one at its first todo in the window, or a person raises it to that one before its first slot, at the slot's moment included.
+It counts in the highest of those.
+Its first todo is the first Dispatch event in the window that shows it todo where the event before it did not.
+An issue that was todo before the window and stands todo at its start counts from the window's start.
+Its waits run from that moment to its first slot after it and to its first move to done after it.
+These waits run on past `--to` through the run-out: an issue with no first slot, or no done, by the end of the run-out counts with its wait to that end, a cut wait.
+The record's scorecard cuts at the end of the window's record, the same way.
+
+- `.issues`: how many issues count.
+
+- `.firstSlot` and `.done`: the wait to the first slot and the wait to done, each with `.medianMinutes` and `.p90Minutes`, the median and the 90th percentile by nearest rank over the issues, cut waits included, and `.cut`, how many of the waits are cut.
+
+A replay reads each issue's first todo and its priorities from the record's Dispatch events, as it reads the ranks, and its first slot and its done from its own run.
+`firstDayApart` gives no wait of urgent work.
+
 ### What else a scorecard holds
 
 - `unplaced`: the issues that the start state could not place.
@@ -970,11 +1002,6 @@ At a moment with no pair, the share is 0.
 - `gateClosedHours[<KEY>]`: for each tree, by its root's key, the hours of the window in which its design gate stood closed, from the gate's first fact on.
   A tree whose gate never stood closed has no entry.
   Like `doneByAnyone`, only a trace gives it, the record's and a replay's own log, by one code, so `validate` can compare them.
-
-- `priorities[<KEY>]`: for each issue of the window's project that turned todo in the window with a Dispatch priority on the event that turned it, that priority (`P0` to `P3`) and the time of that event, its first todo in the window (`firstTodo`).
-  An issue that stood todo from before the window, or that turned todo with no priority, has no entry.
-  Like `doneByAnyone`, only a trace gives it, by one code for the record and a replay.
-  `compare` reads the record's entries for its part on P0 and P1 work.
 
 - `rule`, `branch`, `seed` and `slowdown`: what a replay ran.
   A record's scorecard carries none of them.
@@ -1493,7 +1520,7 @@ slots: 4 of 4 in use: 2 working (oldest 2026-10-05T10:12Z), 0 stopped, 1 person 
 
 [Running Legion](/legion/legion/running-legion/#observe) says what each state and each count of that line means, and what `legion state --json` carries of it.
 A replay measures from the same states, so a reading of production and a replay use one set of words.
-`waitOnlyForSlot` is the line's `wait only for a slot`, `startedWithoutSlot` its `in all`, and `priorityTaken` places holders and waiting issues in the order of its last sentence ([The measures](#the-measures)).
+`waitOnlyForSlot` is the line's `wait only for a slot`, `startedWithoutSlot` its `in all`, and `priorityTaken` places holders and waiting issues in the order of the line before the priority band, `priorityTakenBanded` in the order of today's line ([The measures](#the-measures)).
 
 ## The signals
 

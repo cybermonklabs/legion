@@ -227,5 +227,11 @@ The two may differ by the reconstruction error the tool reports; these windows h
 - In `medianSlotWaitMinutes`, a queued root waits for a slot from its filing (or the end of its links), a child from the moment its first phase can start, and a returned issue from its owed start or the end of its wait.
   An issue that takes its slot in the pass where it begins to wait waited 0; an even count takes the mean of the two middle values.
 
+- `priorityTakenBanded` is `priorityTaken` in today's line's order, the band of the issue's own Dispatch priority, else its tree root's, first (P0 first, none after P3).
+  In a window where no issue has a priority every issue stands in one band, so the two are equal; `expect.json` gives `priorityTakenBanded` wherever it is not 0.
+
+- `urgentWaits` holds `P0` and `P1` where an issue counts in them, and is left out of `expect.json` where none does.
+  Its waits run past `to` to the end of the run-out, and are cut there (`cut`) for an issue with no first slot or no `done` by then; an issue that stood `todo` from before `from` counts from `from`.
+
 - `assumptions`: the numbers of the assumptions (`assumptions.go`) the run's measures rest on, each named where the run holds the fact it is about: 1 always; 2 where an issue stands past its review; 3 where a send-back loop runs or a conflict is drawn; 4 where an issue waits on another issue or a gate closes; 5 where a person's answer or review moves the run; 6 where the start state places an issue; 7 where a hold other than the cap (a design gate, a link on a child, an ancestor, a tree) holds the first start of an issue not yet started (a started issue's wait on another issue is 4); 8 where the window holds an issue handed to Legion that the record never started; 9 where the run gives out a slot, which the line's order chooses; 10 where the window holds a link or a child; 11 where a pass gives out a slot it freed; 13 where a loop moves an issue back; 14 where a cover is taken; 15 where work is left at `to`; 16 where an issue reopens; 17 where a child is filed after its parent started; 18 where the window records a conflict; 23 where a conflict is drawn under `main`; 24 where the daemon is down between two boots; 25 where a blocker is in another project.
   `clock-far-from-now` names 1, 2, 4, 9, 10, 11 and 15 by these.

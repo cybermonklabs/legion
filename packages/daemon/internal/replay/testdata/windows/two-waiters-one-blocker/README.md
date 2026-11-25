@@ -114,6 +114,9 @@ share of 0. 09:15 to 09:45: ACME-4 (`a3`) waits too, under holders ranked above 
 then ACME-2 and ACME-3 from 09:40), a share of 0. 12:10 to 13:10: ACME-2 (`a1`) waits while ACME-4
 (`a3`) and ACME-1 (`a0`) hold: of the two pairs, ACME-4 ranks below ACME-2 and ACME-1 above, a share
 of 1/2. The average is 0.5 × 1/7 = 0.071428….
+No issue of the window has a Dispatch priority, so every issue stands in the band after P3 and
+the band moves no rank: `priorityTakenBanded`, the share in today's line's order, is the same
+0.071428….
 
 **Loops.** None.
 

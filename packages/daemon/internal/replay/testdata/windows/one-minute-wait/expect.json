@@ -32,6 +32,7 @@
         "hours": 1
       },
       "priorityTaken": 0.275,
+      "priorityTakenBanded": 0.275,
       "loops": {},
       "waits": {
         "link_removed": {

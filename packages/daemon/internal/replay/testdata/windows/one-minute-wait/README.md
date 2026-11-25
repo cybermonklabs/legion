@@ -95,6 +95,9 @@ most 1 (the two never overlap); `pastReviewHolding` 0.
 ACME-1 (`a0`) waits, ACME-3 (`a1`) holds; the one pair has the holder below the waiter, a share of
 1. From 10:00 to 10:01 ACME-1 waits on ACME-2, not for a slot, so no pair stands. The average is
 1 × 99/60/6 = 0.275 (`priorityTaken`).
+No issue of the window has a Dispatch priority, so every issue stands in the band after P3 and
+the band moves no rank: `priorityTakenBanded`, the share in today's line's order, is the same
+0.275 under `main` and 0 under `wait-grace`.
 
 **Loops.** None.
 

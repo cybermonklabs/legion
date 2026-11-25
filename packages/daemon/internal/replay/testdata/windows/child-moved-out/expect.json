@@ -32,6 +32,7 @@
         "hours": 2
       },
       "priorityTaken": 0.21428571428571427,
+      "priorityTakenBanded": 0.21428571428571427,
       "loops": {},
       "waits": {
         "child_moved_out": {

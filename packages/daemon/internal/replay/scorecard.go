@@ -39,10 +39,15 @@ type Scorecard struct {
 	// slot and that hold none.
 	PastReviewHolding    Occupancy `json:"pastReviewHolding"`
 	PastReviewNotHolding Occupancy `json:"pastReviewNotHolding"`
-	// PriorityTaken is the time-average share of the pairs of a holder and an issue that waits for
-	// a slot in which the holder ranks below the waiting issue (record.RankLess over the tree
-	// root's rank, then the issue's own).
-	PriorityTaken float64 `json:"priorityTaken"`
+	// PriorityTaken and PriorityTakenBanded are the time-average share of the pairs of a holder and
+	// an issue that waits for a slot in which the holder ranks below the waiting issue, each read in
+	// one order for every rule: PriorityTaken by rank alone (record.RankLess over the tree root's
+	// rank, then the issue's own), the order of the lines the recorded windows ran, which R5 and
+	// the forecast read; PriorityTakenBanded in today's line's order (record.Waiting under the
+	// daemon's own rule, SlotRule.PriorityFirst), the band of the priority that places each issue
+	// first (record.PriorityOf) and then the same, which the comparison judges the rules on.
+	PriorityTaken       float64 `json:"priorityTaken"`
+	PriorityTakenBanded float64 `json:"priorityTakenBanded"`
 	// Loops is the rounds and hours of the send-back loops, by the word of their cause.
 	Loops map[string]LoopHours `json:"loops"`
 	// Waits is the count and hours of the waits on another issue, by what ended each.
@@ -62,6 +67,10 @@ type Scorecard struct {
 	FirstSlot map[string]time.Time `json:"firstSlot"`
 	// DoneAt is when each issue that reached done in the window did, by issue key.
 	DoneAt map[string]time.Time `json:"doneAt"`
+	// UrgentWaits is the wait of urgent work, P0's and P1's apart, each where an issue counts in it
+	// (UrgentWait, urgentWaits): it runs on past To to the end of the run, the window's run-out, and
+	// the first day apart holds none. A record read before it held them has it nil.
+	UrgentWaits map[string]UrgentWait `json:"urgentWaits"`
 	// DoneByAnyone is how many issues of the window's project Dispatch shows reaching done in
 	// [From, To), by any actor: Legion's own done (Done) and a close made outside Legion alike.
 	// GateClosedHours is, for each tree, by its root's key, the hours of [From, To) its design gate
@@ -71,13 +80,6 @@ type Scorecard struct {
 	// the gates has GateClosedHours nil, and one read since an empty map where no tree has a gate.
 	DoneByAnyone    int                `json:"doneByAnyone"`
 	GateClosedHours map[string]float64 `json:"gateClosedHours"`
-	// Priorities is each issue of the window's project that turned todo in [From, To) with a
-	// Dispatch priority on the event that turned it, by issue key: that priority and that moment,
-	// the issue's first todo in the span (IssuePriority). The comparison's measures of P0 and P1
-	// work read it beside each issue's first slot and done (priorityMeasures). It is read from a
-	// trace alone (traceMeasures), as DoneByAnyone is, by one code for the record and a replay; a
-	// record read before it held the priorities has it nil.
-	Priorities map[string]IssuePriority `json:"priorities"`
 	// Assumptions is the assumptions of the spec this run's measures rest on, by number.
 	Assumptions []int `json:"assumptions"`
 	// Scenario is the never-started scenario the run took (Branch.NeverStarted).
@@ -104,12 +106,22 @@ type WaitHours struct {
 	Hours float64 `json:"hours"`
 }
 
-// IssuePriority is one issue's Dispatch priority as the issue event that turned it todo in a
-// window showed it (record.Priority.String: P0 to P3), and that event's moment, the issue's first
-// todo in the window.
-type IssuePriority struct {
-	Priority  string    `json:"priority"`
-	FirstTodo time.Time `json:"firstTodo"`
+// UrgentWait is the wait of the urgent work of one priority in a window (urgentWaits): how many
+// issues count in it, and their waits from the start of each issue's wait to its first slot and to
+// its done.
+type UrgentWait struct {
+	Issues    int         `json:"issues"`
+	FirstSlot WaitMinutes `json:"firstSlot"`
+	Done      WaitMinutes `json:"done"`
+}
+
+// WaitMinutes is one wait of the urgent work of one priority over its issues: the median and the
+// 90th percentile (nearest rank) of their minutes, a cut wait counted to the end of the run, and
+// how many of them are cut.
+type WaitMinutes struct {
+	MedianMinutes float64 `json:"medianMinutes"`
+	P90Minutes    float64 `json:"p90Minutes"`
+	Cut           int     `json:"cut"`
 }
 
 // Score is the scorecard of w read from its record alone, with no replay (spec R4: "The tool also

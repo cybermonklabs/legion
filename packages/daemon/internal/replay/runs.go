@@ -338,16 +338,17 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 // record of the same window (its project, span and run-out) is there, at ws's place, and otherwise
 // read from the window's inputs (windowInputs.record), as it is where the record there was written
 // before it held the waits that gave a slot back (WaitsGaveBack nil), the conflict model with its
-// phases (ConflictModel.Phases nil) or the measures its trace alone gives (Scorecard.GateClosedHours
-// or Scorecard.Priorities nil, traceMeasures); either way it is written back with ws's place, where
-// that changes the file.
+// phases (ConflictModel.Phases nil), the measures its trace alone gives (Scorecard.GateClosedHours
+// nil, traceMeasures) or the wait of urgent work and priority taken in today's line's order
+// (Scorecard.UrgentWaits nil, which Measure gives with them); either way it is written back with
+// ws's place, where that changes the file.
 func windowRecordFor(w Window, ws windowSpec, root string, inputs func() (*windowInputs, error)) (windowRecord, error) {
 	path := filepath.Join(root, ws.name, recordFile)
 	var rec windowRecord
 	held, err := os.ReadFile(path)
 	if err != nil || json.Unmarshal(held, &rec) != nil || rec.Name != ws.name || rec.Project != w.Project || !rec.From.Equal(w.From) ||
 		!rec.To.Equal(w.To) || rec.After != w.After || rec.WaitsGaveBack == nil || rec.Conflicts.Phases == nil || rec.Scorecard.GateClosedHours == nil ||
-		rec.Scorecard.Priorities == nil {
+		rec.Scorecard.UrgentWaits == nil {
 		in, err := inputs()
 		if err != nil {
 			return windowRecord{}, err
@@ -505,8 +506,13 @@ func ReadRuns(dirs ...string) (Runs, error) {
 				continue
 			}
 			var rec windowRecord
-			if err := readJSON(filepath.Join(windowDir, recordFile), &rec); err != nil {
+			path := filepath.Join(windowDir, recordFile)
+			if err := readJSON(path, &rec); err != nil {
 				return Runs{}, err
+			}
+			if rec.Scorecard.UrgentWaits == nil {
+				return Runs{}, fmt.Errorf("replay: %s was written before a scorecard held the wait of urgent work and priority taken in today's line's order (urgentWaits, priorityTakenBanded); "+
+					"run its window again, which writes it anew", path)
 			}
 			if _, seen := runs.windows[rec.Name]; !seen {
 				runs.windows[rec.Name] = rec
@@ -595,7 +601,9 @@ func readPart(dir string, key partKey, keepIssues bool) (*partRead, error) {
 }
 
 // readRun reads one run's three files from dir; keepIssues keeps each issue's times of its line
-// scorecard.
+// scorecard. A run whose scorecards were written before they held the wait of urgent work and
+// priority taken in today's line's order (Scorecard.UrgentWaits nil, which Measure gives with
+// them) is refused, naming it: read, it would give every report 0 in each of those measures.
 func readRun(dir string, keepIssues bool) (runRead, error) {
 	var read runRead
 	var ran runRecord
@@ -607,6 +615,10 @@ func readRun(dir string, keepIssues bool) (runRead, error) {
 	}
 	if err := readJSON(filepath.Join(dir, lineScorecardFile), &read.line); err != nil {
 		return runRead{}, err
+	}
+	if read.snapshot.UrgentWaits == nil || read.line.UrgentWaits == nil {
+		return runRead{}, fmt.Errorf("replay: the run in %s was written before its scorecards held the wait of urgent work and priority taken in today's line's order (urgentWaits, priorityTakenBanded); "+
+			"it must be run again: delete its directory and run its part again", dir)
 	}
 	read.costs = costsOf(read.snapshot)
 	dropIssueTimes(&read.snapshot)
@@ -623,10 +635,10 @@ func readRun(dir string, keepIssues bool) (runRead, error) {
 	return read, nil
 }
 
-// dropIssueTimes empties card's times and priorities of each issue, and its first day's, which only
-// a validation's, a forecast's and a comparison's issues file's line scorecards are read for.
+// dropIssueTimes empties card's times of each issue, and its first day's, which only a
+// validation's, a forecast's and a comparison's issues file's line scorecards are read for.
 func dropIssueTimes(card *Scorecard) {
-	card.FirstSlot, card.DoneAt, card.Priorities = nil, nil, nil
+	card.FirstSlot, card.DoneAt = nil, nil
 	if card.FirstDayApart != nil {
 		day := *card.FirstDayApart
 		day.FirstSlot, day.DoneAt = nil, nil
@@ -742,6 +754,15 @@ func (r Runs) Forecast(before, after, rule string) (ForecastResult, error) {
 	}
 	f.Checks = ForecastChecks(to.Scorecard, cards)
 	return f, nil
+}
+
+// snapshotCards is the snapshot scorecard of each run of runs, in their order.
+func snapshotCards(runs []runRead) []Scorecard {
+	cards := make([]Scorecard, 0, len(runs))
+	for _, run := range runs {
+		cards = append(cards, run.snapshot)
+	}
+	return cards
 }
 
 // lineCards is the line scorecard of each run of runs, in their order, each with its run's seed.

@@ -88,6 +88,7 @@ The pairs of a holder and an issue that waits for a slot, and the share in which
 | 12:00 | 13:00 | ACME-3, ACME-4 | none | no pair | 0 |
 
 The average over the 4 hours is (0.5 × 0.5 + 1 × 0.25)/4 = 0.5/4 = 0.125 (`priorityTaken`).
+No issue of the window has a Dispatch priority, so every issue stands in the band after P3 and the band moves no rank: `priorityTakenBanded`, the share in today's line's order, is the same 0.125.
 
 **Loops and waits.**
 None.

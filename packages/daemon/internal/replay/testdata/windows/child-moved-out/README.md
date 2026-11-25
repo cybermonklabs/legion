@@ -87,6 +87,9 @@ average of 0.214285…, at most 1.
 **Priority taken.** 09:10 to 09:30: ACME-3 (`a1`) waits while ACME-1 (`a0`) holds, a share of 0.
 10:30 to 12:00: ACME-1 (`a0`) waits while ACME-3 (`a1`) holds, a share of 1. The average is
 1.5/7 = 0.214285….
+No issue of the window has a Dispatch priority, so every issue stands in the band after P3 and
+the band moves no rank: `priorityTakenBanded`, the share in today's line's order, is the same
+0.214285….
 
 **Loops.** None.
 

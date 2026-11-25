@@ -21,8 +21,10 @@ import (
 // replay are measured by one code, and the gap between a replay's two timelines is the error of
 // reading a course from its lines.
 type Timeline struct {
-	// From and To are the window's span.
-	From, To time.Time
+	// From and To are the window's span, and End where the run ends: To, or the end of the
+	// window's run-out past To (Window.End), to which the wait of urgent work counts a wait that
+	// has not ended by then (urgentWaits). The zero time reads as To.
+	From, To, End time.Time
 	// Issues is each issue's course, by key.
 	Issues map[string]*Course
 }
@@ -43,6 +45,18 @@ type Course struct {
 	Rounds []CourseRound
 	// Waits is each wait of the issue on another issue, by the moment it began.
 	Waits []CourseWait
+	// Todo is the moment the issue's wait as urgent work begins (urgentWaits, urgencyOf): its first
+	// todo in the span, or the span's start where it stood todo there from before; zero for an
+	// issue that did neither. Priorities is its own Dispatch priority from Todo on: the priority at
+	// Todo, then each other one its issue events show after it, in time order.
+	Todo       time.Time
+	Priorities []PriorityAt
+}
+
+// PriorityAt is an issue's own Dispatch priority from a moment on, as its issue events show it.
+type PriorityAt struct {
+	At       time.Time
+	Priority record.Priority
 }
 
 // CourseRound is one round of a send-back loop that moved no phase: from the merge forward's ask
@@ -70,10 +84,12 @@ type Stint struct {
 type IssueState struct {
 	// Tree is the key of the issue's tree root; Rank and RootRank are the Dispatch ranks of the
 	// issue and of that root, which record.RankLess compares to place it (the true ranks, which a
-	// replay's own copy of Dispatch does not show under FirstStarts recorded, design 10.7). They
-	// are set for a holder and an issue that waits for a slot alone, the two a pair of priority
-	// taken is made of.
+	// replay's own copy of Dispatch does not show under FirstStarts recorded, design 10.7); and
+	// Priority is the Dispatch priority that places it in today's line's band, its own or else its
+	// root's (record.PriorityOf). They are set for a holder and an issue that waits for a slot
+	// alone, the two a pair of priority taken is made of (rankFunc.place).
 	Tree, Rank, RootRank string
+	Priority             record.Priority
 	// InFlight says the daemon has started the issue's work and it has not reached done or left
 	// the workflow (`replay.md`, "The measures").
 	InFlight bool
@@ -168,29 +184,43 @@ func upTo(ts []time.Time, at time.Time) int {
 	return sort.Search(len(ts), func(i int) bool { return ts[i].After(at) })
 }
 
-// rankFunc is the Dispatch rank of an issue at a moment.
-type rankFunc func(key string, at time.Time) string
+// rankFunc is what places an issue on the board at a moment: its Dispatch rank and its own
+// Dispatch priority.
+type rankFunc func(key string, at time.Time) (string, record.Priority)
 
-// ranksOf is the rank of each issue of t at each moment as its Dispatch events show it: the rank
-// of its newest issue event at or before the moment, or of its first for a moment before every
-// one, and "" for an issue the window holds no issue event of. A replay reads the ranks of its
-// record's trace, the true ones, whatever its own copy of Dispatch shows (design 10.7). Each
-// issue's events are indexed once, and a rank is read by binary search.
+// ranksOf is the rank and the own priority of each issue of t at each moment as its Dispatch
+// events show them: those of its newest issue event at or before the moment, or of its first for a
+// moment before every one, and "" and none for an issue the window holds no issue event of. A
+// replay reads the ranks and the priorities of its record's trace, the true ones, whatever its own
+// copy of Dispatch shows (design 10.7). Each issue's events are indexed once, and each is read by
+// binary search.
 func ranksOf(t Trace) rankFunc {
 	shown := make(map[string]shownStates, len(t.Issues))
 	for key, iss := range t.Issues {
 		shown[key] = shownOf(iss)
 	}
-	return func(key string, at time.Time) string {
+	return func(key string, at time.Time) (string, record.Priority) {
 		s := shown[key]
 		if len(s.states) == 0 {
-			return ""
+			return "", record.NoPriority
 		}
-		if state := s.stateAt(at); state != nil {
-			return state.Rank
+		state := s.stateAt(at)
+		if state == nil {
+			state = s.states[0]
 		}
-		return s.states[0].Rank
+		return state.Rank, state.Priority
 	}
+}
+
+// place sets in state what places key, in tree, on the board at at: its tree, the ranks of the
+// issue and of its tree root, and the priority that places it in today's line's band, its own or
+// else its root's (record.PriorityOf), as ranks reads them. Both timelines place a holder and an
+// issue that waits for a slot by it.
+func (ranks rankFunc) place(state *IssueState, key, tree string, at time.Time) {
+	rank, own := ranks(key, at)
+	rootRank, rootPriority := ranks(tree, at)
+	state.Tree, state.Rank, state.RootRank = tree, rank, rootRank
+	state.Priority = record.PriorityOf(record.Issue{Priority: own}, record.Issue{Priority: rootPriority})
 }
 
 // shownStates is an issue's Dispatch state as each of its issue events shows it, in time order,
@@ -304,7 +334,8 @@ type issueIndex struct {
 	// done.
 	shown shownStates
 	done  []time.Time
-	// rankChanges is each moment an issue event changed its rank.
+	// rankChanges is each moment an issue event changed its rank or its priority, which place it
+	// and the members of the tree it roots on the board.
 	rankChanges []time.Time
 	// flight is its stretches in flight (IssueTrace.inFlight).
 	flight [][2]time.Time
@@ -322,14 +353,14 @@ type issueIndex struct {
 // indexIssue indexes iss, the gate of the tree it roots read as gateStepsOf reads it.
 func indexIssue(iss *IssueTrace, gateLines bool) *issueIndex {
 	x := &issueIndex{iss: iss, shown: shownOf(iss), flight: iss.inFlight(), gate: gateStepsOf(iss, gateLines)}
-	done, rank := false, ""
+	done, rank, priority := false, "", record.NoPriority
 	for i, state := range x.shown.states {
 		if isDone := state.Status == record.DoneStatus; i == 0 || isDone != done {
 			done = isDone
 			x.done = append(x.done, x.shown.at[i])
 		}
-		if i == 0 || state.Rank != rank {
-			rank = state.Rank
+		if i == 0 || state.Rank != rank || state.Priority != priority {
+			rank, priority = state.Rank, state.Priority
 			x.rankChanges = append(x.rankChanges, x.shown.at[i])
 		}
 	}
@@ -410,19 +441,22 @@ func (r *lineReader) of(key string) *issueIndex {
 // lineTimeline is the timeline read from t (the line timeline of design 10.1 (b)): the record's,
 // or a replay's read from its own log through the window's line kinds. Each issue of t's project
 // is read at each moment its state can change — a line or an event of its own, of its tree root,
-// of an issue its links or its parent chain name, a rule's part beginning — with its ranks from
-// ranks and the rule the daemon ran at that moment from rule. An issue is in flight from the first
-// slot it took after an entry to its run's end; it stands in the line's returned part while in
-// flight it holds no slot in a phase the rule keeps one in, unheld, where the daemon's line places
-// it there (returnedAt: it owes the start of the move into its phase, or a pass gave its slot back
-// for a wait), blocked while a link or children wait of it stands; and in the starting part while,
-// not yet started, the daemon's line places it there (startingAt: a queued root handed to Legion in
-// todo, or a todo child of a tree that stands in the workflow under an open design gate, its root
-// waiting on no person), blocked while a blocker its links name is not done or its own open
-// children hold it. Its waits are those of the measures (issueWaits), and each move back takes the
-// cause the trace read it with (Move.Cause), a merger's move back for a conflicting head a conflict.
+// of an issue its links or its parent chain name, a rule's part beginning — with its ranks and its
+// priority from ranks and the rule the daemon ran at that moment from rule. An issue is in flight
+// from the first slot it took after an entry to its run's end; it stands in the line's returned
+// part while in flight it holds no slot in a phase the rule keeps one in, unheld, where the
+// daemon's line places it there (returnedAt: it owes the start of the move into its phase, or a
+// pass gave its slot back for a wait), blocked while a link or children wait of it stands; and in
+// the starting part while, not yet started, the daemon's line places it there (startingAt: a
+// queued root handed to Legion in todo, or a todo child of a tree that stands in the workflow under
+// an open design gate, its root waiting on no person), blocked while a blocker its links name is
+// not done or its own open children hold it. Its waits are those of the measures (issueWaits), and
+// each move back takes the cause the trace read it with (Move.Cause), a merger's move back for a
+// conflicting head a conflict.
+// It runs to t's end, the end of the window's run-out, and each issue's wait as urgent work is read
+// from t's issue events (readUrgency).
 func lineTimeline(t Trace, ranks rankFunc, rule func(time.Time) record.SlotRule) Timeline {
-	tl := Timeline{From: t.From, To: t.To, Issues: map[string]*Course{}}
+	tl := Timeline{From: t.From, To: t.To, End: t.End, Issues: map[string]*Course{}}
 	r := &lineReader{t: t, ranks: ranks, rule: rule, index: map[string]*issueIndex{}}
 	for _, move := range t.Slots {
 		if move.Given {
@@ -463,7 +497,61 @@ func lineTimeline(t Trace, ranks rankFunc, rule func(time.Time) record.SlotRule)
 			c.Waits = waits
 		}
 	}
+	tl.readUrgency(t)
 	return tl
+}
+
+// readUrgency sets, for each issue of t's project that Legion works, one t holds an entry into the
+// workflow of (Entry: a root handed to Legion, or a child of a tree in the workflow), and whose wait
+// as urgent work begins in t's span (urgencyOf), the moment it begins and the issue's own Dispatch
+// priority from then on, as t's issue events show them (Course.Todo, Course.Priorities), making a
+// course for an issue tl holds none of. An issue no one handed to Legion, which a window holds for
+// its events alone, is no work of Legion's and waits for no slot. The line timeline reads them from
+// its own trace, and a replay's snapshot timeline from its record's, as it reads the ranks.
+func (tl *Timeline) readUrgency(t Trace) {
+	for key, iss := range t.Issues {
+		if iss.Project != t.Project || len(iss.Entries) == 0 {
+			continue
+		}
+		if since, priorities := urgencyOf(iss, t.From, t.To); !since.IsZero() {
+			c := tl.course(key)
+			c.Todo, c.Priorities = since, priorities
+		}
+	}
+}
+
+// urgencyOf is where iss's wait as urgent work begins and its own Dispatch priority from then on
+// (Course.Todo, Course.Priorities): at its first todo in [from, to), the first issue event in the
+// span that shows it todo where the issue event before it, of any moment, did not, or at from where
+// the newest issue event before from shows it todo; and the priority its issue events show at that
+// moment, then each other one an issue event after it shows, of any moment. Zero and none for an
+// issue that neither turned todo in the span nor stood todo at its start.
+func urgencyOf(iss *IssueTrace, from, to time.Time) (time.Time, []PriorityAt) {
+	var since, lastAt time.Time
+	var last *DispatchIssueState
+	var priorities []PriorityAt
+	for _, event := range iss.Dispatch {
+		state := event.Issue
+		if state == nil {
+			continue
+		}
+		if since.IsZero() && !event.At.Before(from) {
+			switch {
+			case last != nil && last.Status == "todo":
+				since, priorities = from, []PriorityAt{{At: from, Priority: last.Priority}}
+			case state.Status == "todo" && event.At.Before(to):
+				since = event.At
+			}
+		}
+		if !since.IsZero() && (len(priorities) == 0 || priorities[len(priorities)-1].Priority != state.Priority) {
+			priorities = append(priorities, PriorityAt{At: event.At, Priority: state.Priority})
+		}
+		last, lastAt = state, event.At
+	}
+	if since.IsZero() && last != nil && last.Status == "todo" && lastAt.Before(from) {
+		since, priorities = from, []PriorityAt{{At: from, Priority: last.Priority}}
+	}
+	return since, priorities
 }
 
 // recordedWaitStarts is, for each of keys that t's record shows waiting for a slot at at, the
@@ -588,9 +676,9 @@ func measuredStretches(iss *IssueTrace, flight [][2]time.Time) []waitStretch {
 // moments is every moment from the trace's start to its end at which x's issue's state can
 // change, in order, and the window's start: each of its own entries, visits, slots, turns, waits,
 // stretches in flight and issue events, each change of a rule's part, each change of the done-ness
-// of an issue its links name, for each tree it entered as a child each change of the root's rank,
-// design gate, visits, lingers and waits on a person, and for each issue its Dispatch parent chain
-// has named each of that issue's entries, visits, lingers and issue events.
+// of an issue its links name, for each tree it entered as a child each change of the root's rank
+// or priority, design gate, visits, lingers and waits on a person, and for each issue its Dispatch
+// parent chain has named each of that issue's entries, visits, lingers and issue events.
 func (r *lineReader) moments(x *issueIndex) []time.Time {
 	t, iss := r.t, x.iss
 	times := []time.Time{t.From}
@@ -705,7 +793,7 @@ func (r *lineReader) stateAt(x *issueIndex, at time.Time) IssueState {
 		return IssueState{}
 	}
 	if state.Holds || state.Waiting {
-		state.Tree, state.Rank, state.RootRank = tree, r.ranks(iss.Key, at), r.ranks(tree, at)
+		r.ranks.place(&state, iss.Key, tree, at)
 	}
 	return state
 }

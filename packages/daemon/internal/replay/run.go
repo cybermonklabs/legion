@@ -332,7 +332,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		claims:   map[claim.Token]supervise.Claim{},
 		inFlight: map[string]bool{}, started: map[string]time.Time{}, childWait: map[string]time.Time{}, placed: map[int]time.Time{},
 		signOffs: map[string]bool{}, drops: map[string]string{}, used: map[int]bool{1: true, assumeRootRanksByNextStart: starts != nil},
-		snap:     newSnapshots(w.From, w.To, in.ranks),
+		snap:     newSnapshots(w.From, w.To, w.End(), in.ranks),
 		counters: Divergence{Refused: []RefusedMove{}, Finished: map[int]int{}, TurnsLeftOut: map[int]int{}, DrawnWork: drawn},
 	}
 	d.conflicts, d.merges, d.loops, d.stretchFrom = conflicts, in.merges, recordedLoops(script), map[string]time.Time{}
@@ -367,6 +367,9 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	// An issue that waits for a slot at the start began that wait where the record shows, its start
 	// state being the record's.
 	result.snapshot.beginWaitsAt(recordedWaitStarts(trace, in.ranks, w.From, result.snapshot.startWaiters()))
+	// Each issue's wait as urgent work begins where the record's issue events show, as its ranks
+	// and priorities are the record's: a person's todo and a person's priority are kept as recorded.
+	result.snapshot.readUrgency(trace)
 	d.counters.NoWorkAdmissions, d.counters.NoWorkSlotHours = len(d.noWork), result.snapshot.heldHours(d.noWork)
 	result.Divergence = d.counters
 	result.Scorecard = d.scorecard(Measure(result.snapshot))
