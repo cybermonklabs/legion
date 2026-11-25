@@ -1402,6 +1402,19 @@ func (w *workflowRuntime) recordedIssue(ctx context.Context, key string) (*recor
 	return issue, err
 }
 
+// updatePushes is where each role of key pushes at an update round's ask
+// (supervision.updatePushes), the engine's one answer (workflow.(*Engine).UpdatePushes) read in a
+// transaction of its own, as recordedIssue reads: the sweep that asks holds no transaction.
+func (w *workflowRuntime) updatePushes(ctx context.Context, key string) (map[claim.Role]supervise.UpdatePush, error) {
+	var pushes map[claim.Role]supervise.UpdatePush
+	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		pushes, err = w.engine.UpdatePushes(ctx, tx, key)
+		return err
+	})
+	return pushes, err
+}
+
 // reconcile takes Dispatch's bounded boot read to admission. Only admission acts on a snapshot:
 // a move a human made while the daemon was down carries its own event, which the durable stream
 // consumer still holds and delivers with the actor that made it, so nothing here re-derives one.
@@ -1737,6 +1750,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
+	supervision.updatePushes = w.updatePushes
 	if w.pauses != nil {
 		// The flag is read again at each sweep (decision 18), so a pause made or ended through
 		// another daemon of a rolling restart reaches this daemon's machines within one sweep.
