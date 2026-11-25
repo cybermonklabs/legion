@@ -302,10 +302,11 @@ func TestInboxReadMarksOnlyWhatTheNarrowingNames(t *testing.T) {
 	})
 }
 
-// Every refusal, by status and code: the mark itself, the two owner narrowings together, an
-// unknown value in any list - the empty kind among them, which only the list route's own split
-// of an absent ?kind= stands for - a document id that is not one, and a session, for whom the
-// Inbox is nobody's.
+// Every refusal, by status and code: the mark itself - the one ahead of the server's clock is past
+// the minute the product allows (agentStateCutoffSkew) by pastTheRun, so it stays past it however
+// late the request reaches the server - the two owner narrowings together, an unknown value in any
+// list - the empty kind among them, which only the list route's own split of an absent ?kind=
+// stands for - a document id that is not one, and a session, for whom the Inbox is nobody's.
 func TestInboxReadRefusesWhatItCannotMark(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -317,7 +318,7 @@ func TestInboxReadRefusesWhatItCannotMark(t *testing.T) {
 	}{
 		"no mark":          {map[string]any{}, "INVALID_STATE"},
 		"unreadable mark":  {map[string]any{"read_through": "yesterday"}, "INVALID_STATE"},
-		"mark ahead":       {map[string]any{"read_through": time.Now().Add(2 * time.Minute).UTC().Format(time.RFC3339Nano)}, "INVALID_STATE"},
+		"mark ahead":       {map[string]any{"read_through": time.Now().Add(agentStateCutoffSkew + runLeft(t)).UTC().Format(time.RFC3339Nano)}, "INVALID_STATE"},
 		"both owners":      {map[string]any{"read_through": now, "issue": issue.Key, "artifact": "7c9e6679-7425-40de-944b-e07fc1f90ae7"}, "INVALID_QUERY"},
 		"unknown kind":     {map[string]any{"read_through": now, "kind": []string{"ask"}}, "INVALID_QUERY"},
 		"empty kind":       {map[string]any{"read_through": now, "kind": []string{""}}, "INVALID_QUERY"},
@@ -680,11 +681,9 @@ func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
 			return slices.Contains(marks, thread)
 		}))
 		held := holdGateThread(t, database, gate)
-		queued := make(chan int, 1)
-		go func() {
-			queued <- storetest.WaitForLockWaiters(t, held.tx, 2, 10*time.Second)
-			held.release()
-		}()
+		// race holds the test's goroutine until both presses answer, and they answer only once
+		// the gate is released, so a goroutine of its own releases it (releaseOnceQueued).
+		queued := releaseOnceQueued(t, held.tx, 2, held.release)
 		mark := time.Now()
 		later := mark.Add(time.Millisecond)
 		first, second := race(t, round,
@@ -698,8 +697,8 @@ func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
 					"read_through": later.UTC().Format(time.RFC3339Nano),
 				})
 			})
-		if waiters := <-queued; waiters != 2 {
-			t.Fatalf("round %d: %d presses queued on the gate row, want both of them", round, waiters)
+		if waiting := <-queued; waiting.err != nil || waiting.count != 2 {
+			t.Fatalf("round %d: %d presses queued on the gate row, want both of them (read error: %v)", round, waiting.count, waiting.err)
 		}
 		if first.Code != http.StatusOK || second.Code != http.StatusOK {
 			t.Fatalf("round %d: the press in thread_id order %d %s, the press in heap order %d %s",

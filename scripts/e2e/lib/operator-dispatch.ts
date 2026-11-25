@@ -25,15 +25,18 @@ export type OperatorDispatch =
   | { readonly file: string; readonly url: string; readonly token: string }
   | { readonly file: string; readonly notice: string };
 
-/** The operator's Dispatch from `env` and the checkout at `cwd`. Throws naming what prevents it:
+/** The operator's Dispatch from `env` and the checkout at `cwd`. Rejects naming what prevents it:
  * a relative path the rule would use, a file that cannot be read, a URL or token that does not
  * resolve, or a credential this hands on nothing of: only a bearer is a token a script can present
  * on its own. Each file the read found and did not read is written to stderr first, as the
  * `dispatch` command says it. */
-export function operatorDispatch(env: DispatchEnvironment, cwd: string): OperatorDispatch {
+export async function operatorDispatch(
+  env: DispatchEnvironment,
+  cwd: string
+): Promise<OperatorDispatch> {
   const file = sessionConfigFile("command", env);
   if (file.path === null) throw new Error(file.error);
-  const { dispatch, warnings } = sessionDispatchSettings(file, env, { cwd });
+  const { dispatch, warnings } = await sessionDispatchSettings(file, env, { cwd });
   for (const warning of warnings) process.stderr.write(`dispatch: ${warning}\n`);
   if (dispatch.enabled) {
     // Only a bearer is a secret whose holder is whoever has a copy of it. The broker's access
@@ -73,7 +76,7 @@ if (import.meta.main) {
     process.exit(2);
   }
   try {
-    const resolved = operatorDispatch(process.env, process.cwd());
+    const resolved = await operatorDispatch(process.env, process.cwd());
     if ("token" in resolved) {
       holdBearer(bearerFile, resolved.token);
       process.stdout.write(`${JSON.stringify({ file: resolved.file, url: resolved.url })}\n`);

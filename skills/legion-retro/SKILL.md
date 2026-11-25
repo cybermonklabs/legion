@@ -43,12 +43,12 @@ Run every step, even on a mechanical change.
    Read the GitHub review of the last worker step's head where it has a reviewer step.
    - **A pass must stand at the last worker step's head for every `before_merge` check.** The body's `Checks` block carries each.
    - **A check carrying `ci_check` is CI's:** its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
-   - **A `ci_check` check has no pass standing at that head** when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.
+   - **A `ci_check` check has no pass standing at that head** when its derived result is a fail, its run concluded `skipped`, `neutral` or `cancelled`, or it names a job held back without its label, whose run is `absent` or `skipped` until the label is on.
 
    | The check | Do |
    | --- | --- |
    | A `ci_check` run that has not concluded, or one GitHub could not be read for | It is neither a pass nor a fail yet: never wait for, watch or poll it. Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on. When CI settles, the daemon tells the architect and the worker of the phase the issue then stands in |
-   | A `ci_check` name that no run answers (`absent`), and a check whose `run` is a whole test suite | Send it to the architect as a finding, since the check's words are wrong |
+   | A `ci_check` check with any other name that no run answers (`absent`), and a check whose `run` is a whole test suite | Send it to the architect as a finding, since the check's words are wrong |
    | A `ci_check` check whose derived result is a fail | It is the merger's: the change passed every step of its task, and the merger decides at the merge whether the base or the change broke it. Name it in your retro message and complete |
    | Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite | `request_backward_move` with `to: implementing` for the implementer's result, or, where the task has a tester step, `to: testing` for the tester's result. Name the check's block id in the reason |
 
