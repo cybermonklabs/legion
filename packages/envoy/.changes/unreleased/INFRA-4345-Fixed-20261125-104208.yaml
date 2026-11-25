@@ -13,7 +13,10 @@ body: |-
   move's answer names the block it moved, also where it moved the block into or out of a typed
   block, and a move into a typed block from just before it no longer answers that it changed
   nothing. A whole-document upload of a document that holds empty paragraphs keeps the block id,
-  and so the kept decision, of every block it leaves unchanged after them.
+  and so the kept decision, of every block it leaves unchanged after them. A `[^label]` that a
+  `doc-edit` insert or replace writes is a footnote reference where the document, or any operation
+  of the same batch, defines that label, so `doc-read` prints `[^1]` with no backslash; one that no
+  definition names is stored as before.
 time: 2026-11-25T10:42:08Z
 custom:
     Issue: INFRA-4345
