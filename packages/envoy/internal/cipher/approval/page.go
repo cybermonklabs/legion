@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
@@ -128,12 +129,13 @@ type profileView struct {
 }
 
 // profileViewOf is p as the page prints it, from the live profiles file and the record's own
-// target (requests.RecordProfile). A GitHub profile that names no repository reaches every one
-// its installations on its accounts reach, and a record that names no target asks for the whole
+// target (requests.RecordProfile), and the hosts rules, the live policy's proxy rules, send its
+// credential to (proxyHostsOf). A GitHub profile that names no repository reaches every one its
+// installations on its accounts reach, and a record that names no target asks for the whole
 // profile; the page says both rather than print nothing, since each is part of what an approval
 // grants.
-func profileViewOf(p requests.RecordProfile) profileView {
-	v := profileView{Name: p.Name, Source: p.Profile.Source}
+func profileViewOf(p requests.RecordProfile, rules proxyrules.Rules) profileView {
+	v := profileView{Name: p.Name, Source: p.Profile.Source, ProxyHosts: proxyHostsOf(rules, p.Name)}
 	if block := p.Profile.GitHub; block != nil {
 		v.Accounts = strings.Join(block.Accounts, ", ")
 		v.Repositories = "every repository the App's installations on these accounts reach"
@@ -150,10 +152,34 @@ func profileViewOf(p requests.RecordProfile) profileView {
 	if block := p.Profile.Google; block != nil {
 		v.GoogleScopes = strings.Join(block.Scopes, ", ")
 	}
-	if proxy := p.Profile.Proxy; proxy != nil {
-		v.ProxyHosts = strings.Join(proxy.Hosts, ", ")
-	}
 	return v
+}
+
+// proxyHostsOf is the hosts rules let the credential of name go to, as the page prints them, and
+// "" for a name rules bind to no kind, whose credential the release hands to the command: its
+// kind's hosts; or, where the name's profile has an allow of its own and every row of it names a
+// host, those hosts alone, since a request to any other host of the kind matches no row of it
+// (proxyrules' allowOK). An allow of no row allows no request on any host, and the page says so
+// rather than print no line, which would read as a name behind no proxy.
+func proxyHostsOf(rules proxyrules.Rules, name string) string {
+	binding := rules.Lookup(name)
+	kind := rules.KindOf(binding)
+	if kind == nil {
+		return ""
+	}
+	if binding.Allow == nil || slices.ContainsFunc(binding.Allow, func(row proxyrules.Allow) bool { return row.Host == "" }) {
+		return strings.Join(kind.Hosts, ", ")
+	}
+	var hosts []string
+	for _, row := range binding.Allow {
+		if !slices.Contains(hosts, row.Host) {
+			hosts = append(hosts, row.Host)
+		}
+	}
+	if len(hosts) == 0 {
+		return "none: the profile's allow names no request"
+	}
+	return strings.Join(hosts, ", ")
 }
 
 // tokenFields are the hidden fields every decision form carries: the records the page printed with
@@ -416,8 +442,9 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 	}
 	v.JudgeDeciding = v.Pending && d.JudgeDeciding
 	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide && !v.JudgeDeciding
+	rules := p.cfg.Machine.AirlockRules()
 	for _, profile := range d.Profiles {
-		v.Profiles = append(v.Profiles, profileViewOf(profile))
+		v.Profiles = append(v.Profiles, profileViewOf(profile, rules))
 	}
 	v.SessionProjects = d.SessionProjects
 	for _, sp := range d.SecretProjects {
