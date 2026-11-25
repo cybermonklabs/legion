@@ -5,6 +5,11 @@ on:
   pull_request:
     paths:
       - '.github/workflows/**'
+      - '.github/actions/**'
+      - '.github/log-guard-allow.tsv'
+      - '.github/scripts/check-log-guard.sh'
+      - '.github/scripts/shell_commands.py'
+      - '**/*.sh'
 
 # why: .github/ci-notes/workflow-files.md#what-a-newer-push-cancels
 concurrency:

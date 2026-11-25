@@ -12,39 +12,48 @@
 # What it reads: each `run:` of every file of .github/workflows and of each composite action under
 # .github/actions, and each shell script of this repository such a step runs, split into simple
 # commands by .github/scripts/shell_commands.py's scanner (quote aware, a `$(…)` its own command,
-# a here-document's body no command, `${{ … }}` read as a word). A command is routed when its first
-# word, past `VAR=value` assignments and keywords, is one of WRAPPERS, or when its line is the
-# guarded pipeline group `{ …; } 2>&1 | ci_log_guard cat`. A command that is not routed is a
-# finding when its command word (or, through `sh -c`, `bash -c` and `eval`, the word it runs) is a
-# client of NETWORK running a subcommand that reaches a server.
+# `${{ … }}` read as a word). A here-document's body is commands where a shell reads it as its
+# script (`bash <<'EOT'`), and text elsewhere, but with an unquoted delimiter its `$(…)` and
+# backtick substitutions are commands, as are those inside arithmetic (`$(( $(cmd) ))`). A command
+# is routed when its first word, past `VAR=value` assignments and keywords, is one of WRAPPERS, or
+# when its line is the guarded pipeline group `{ …; } 2>&1 | ci_log_guard cat`. A command that is
+# not routed is a finding when its command word (or, through a runner of RUNNERS, `sh -c`,
+# `bash -c` and `eval`, the word it runs) is a client of NETWORK running a subcommand that reaches a
+# server.
 #
 # A script a step runs is the command word of a command it does not route (through a runner, an
 # interpreter such as `bash x.sh` or `. x.sh`, or eval) that names a file of this repository ending
-# in .sh or starting with a `#!` line naming sh, bash or dash: `$GITHUB_WORKSPACE/` (or
-# `${{ github.workspace }}/`) at its start names the repository root, `$GITHUB_ACTION_PATH/` (or
-# `${{ github.action_path }}/`) the composite action's own directory, and any other relative path
-# is read from the step's working directory. The script is read as a step is, and so is each script
-# it runs, its relative paths read from the repository root, where the steps run. A script's
-# finding is the script's own: a row names it as (the script, `-`, `-`, client), whichever steps run
-# it.
+# in .sh. `$GITHUB_WORKSPACE/` (or `${{ github.workspace }}/`) at its start names the repository
+# root and `$GITHUB_ACTION_PATH/` (or `${{ github.action_path }}/`) the composite action's own
+# directory. Any other relative path is read from the directory the text runs in (the step's
+# working directory, which a script inherits from what runs it), else from each directory a literal
+# `cd` of the same text moves to, else from the script's own directory. A path after a variable or
+# a substitution, the way this repository's scripts name the scripts beside them
+# (`"$script_dir/x.sh"`, `"$(dirname "$0")/x.sh"`, `"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/x.sh"`),
+# is read from the script's own directory, else from each directory above it to the repository root,
+# with a variable the script sets to a directory under another (`d="${script_dir}/sub"`) read through
+# it. The script is read as a step is, and so is each script it runs. A script's finding is the
+# script's own: a row names it as (the script, `-`, `-`, client), whichever steps run it.
 #
 # It refuses, naming the file, the job, the step and the command (for a script, the script and the
 # first step that runs it):
 #   1. a finding no row of the allow list names (file, job, step, client), and
 #   2. a row of the allow list that names no finding, or that gives no reason: a row outliving its
 #      step would let the next step of that name through unread.
+# Its last line counts what it could not read: the steps under a shell other than bash or sh, and
+# each word naming a `.sh` that no file of this repository answers (a script a harness writes at
+# run time, such as `"$work/x.sh"`, or a copy of one in a fixture tree), which `unresolved` lists.
 #
-# It does not read: a step under a shell other than bash or sh, a script named through a variable
-# or a `$(…)` (`"$(dirname "$0")/x.sh"`, `"$here/x.sh"`), a program in another language, a command a
-# variable names, a client run under a wrapper this check does not name, and a here-document's
-# body, which runs no command unless a shell reads it on its standard input.
+# It does not read: a program in another language, a command a variable names, and a client run
+# under a wrapper this check does not name.
 #
-#   .github/scripts/check-log-guard.sh          check
-#   .github/scripts/check-log-guard.sh list     print every finding as an allow-list row with no reason
-#   .github/scripts/check-log-guard.sh scripts  print every script it reads, one path a line
+#   .github/scripts/check-log-guard.sh             check
+#   .github/scripts/check-log-guard.sh list        print every finding as an allow-list row with no reason
+#   .github/scripts/check-log-guard.sh scripts     print every script it reads, one path a line
+#   .github/scripts/check-log-guard.sh unresolved  print each file and script name it found no file for
 #
-# CI runs it in ci.yaml's ci-filters job and in .github/workflows/workflow-files.yaml; its tests,
-# check-log-guard.test.sh, in ci.yaml's test job.
+# CI runs it in ci.yaml's ci-filters job and in .github/workflows/workflow-files.yaml, each on a
+# change to what it reads; its tests, check-log-guard.test.sh, in ci.yaml's test job.
 set -euo pipefail
 
 scripts=$(dirname "$(readlink -f "$0")")
@@ -72,8 +81,6 @@ GROUP = re.compile(r"\{[ \t]*([^{}]*);[ \t]*\}[ \t]*2>&1[ \t]*\|[ \t]*ci_log_gua
 # first unquoted `;`, `&&`, `||`, `|`, `&` or newline, redirects its stdout (stdout_safe).
 STDERR_CALL = re.compile(r"(?<![\w-])ci_log_guard_stderr[ \t]+")
 SHELLS = {None, "bash", "sh"}
-# The first line of a script this check reads that does not end in .sh.
-SHEBANG = re.compile(r"#![^\n]*\b(?:ba|da)?sh\b")
 # The two expressions a step names the repository root and a composite action's own directory
 # with, read as the variables they equal before every other expression is elided.
 DIRECTORY_EXPRESSIONS = ((re.compile(r"\$\{\{\s*github\.workspace\s*\}\}"), "$GITHUB_WORKSPACE"),
@@ -159,6 +166,15 @@ def _scan(line: str, upto: int):
         if quote == "'":
             if ch == "'":
                 quote = None
+        elif quote == "$'":
+            # An ANSI-C string: a backslash escapes the character after it (`$'it\'s'`).
+            if ch == "\\":
+                i += 1
+            elif ch == "'":
+                quote = None
+        elif quote is None and ch == "$" and nxt == "'":
+            quote = "$'"
+            i += 1
         elif ch == "\\":
             i += 1
         elif ch == "`":
@@ -308,7 +324,7 @@ def loose_stderr_guards(run: str) -> list:
     text = EXPRESSION.sub("EXPR", run).replace("\\\n", " ")
     starts = quoted_line_starts(text)
     for number, line in enumerate(text.split("\n")):
-        opened = starts.get(number, "").lstrip("$")  # _scan reads `$'` as `'`
+        opened = starts.get(number, "")
         if not opened and line.lstrip(" \t").startswith("#"):
             continue
         read = opened + line
@@ -340,6 +356,13 @@ RUNNERS = {
     "env": ({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}, 0),
     "command": (set(), 0),
     "time": (set(), 0),
+    # flock takes its lock file before the command (`flock x git fetch`), and runs a `-c` string as
+    # sh -c does (run_commands); ionice, setsid and unshare run the words after their options.
+    "flock": ({"-w", "--wait", "--timeout", "-E", "--conflict-exit-code"}, 1),
+    "ionice": ({"-c", "--class", "-n", "--classdata", "-p", "--pid", "-P", "--pgid", "-u", "--uid"}, 0),
+    "setsid": (set(), 0),
+    "unshare": ({"-S", "--setuid", "-G", "--setgroups", "-R", "--root", "-w", "--wd", "--map-user", "--map-group",
+                 "--propagation", "--kill-child"}, 0),
     # .github/scripts/gh-read.sh's two: each runs the command after it, and prints the stderr of
     # every run it ends on itself (unless --stderr names a file), outside any block, so a step that
     # calls one is read as calling the client.
@@ -362,11 +385,15 @@ def run_commands(words: list) -> list:
             return []
         while words and words[0].startswith("-") and words[0] != "-":
             flag = words.pop(0)
+            if runner == "flock" and flag in ("-c", "--command") and words:
+                return [run for inner in command_of(["sh", "-c", words[0]]) for run in run_commands(inner)]
             if flag in valued and words:
                 words.pop(0)
         while runner == "env" and words and ASSIGNMENT.match(words[0]):
             words.pop(0)
         del words[:plain]
+        if runner == "flock" and len(words) > 1 and words[0] in ("-c", "--command"):
+            return [run for inner in command_of(["sh", "-c", words[1]]) for run in run_commands(inner)]
     if not words:
         return []
     if words[0].rsplit("/", 1)[-1] in INTERPRETERS or words[0] == "eval":
@@ -407,59 +434,107 @@ def workdir_of(document: dict, holder: dict, step: dict):
     """The directory a step runs in, from the repository root, or None where an expression names it."""
     given = str(step.get("working-directory") or ((holder.get("defaults") or {}).get("run") or {}).get(
         "working-directory") or ((document.get("defaults") or {}).get("run") or {}).get("working-directory") or ".")
-    return None if "${{" in given else given
+    given = re.sub(r"^\$\{\{\s*github\.workspace\s*\}\}", ".", given)
+    return None if "${{" in given else os.path.normpath(given)
 
 
-def script_path(word: str, workdir, action) -> str:
-    """The shell script of this repository a command's first word names, as a path from the
-    repository root, or '': `$GITHUB_WORKSPACE/` names the root and `$GITHUB_ACTION_PATH/` the
-    composite action's directory (`action`, None outside one); any other relative path is read from
-    `workdir` (None: not known), and a word holding any other variable, a substitution or a glob
-    names nothing this check can read."""
+# A script named from a directory a variable or a substitution holds: `"$script_dir/x.sh"`,
+# `"$(dirname "$0")/x.sh"`, `"$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/x.sh"`. The
+# scanner keeps a variable as written and a substitution as a lone `$` (or a backtick).
+FROM_DIRECTORY = re.compile(r"(?:\$\{?[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\}?|\$|`)(/[^$`*?\[~]+\.sh)")
+# A variable a script sets to a directory under another one, `drivers="${script_dir}/role-takeover"`,
+# which a script path after it is read through (subdirectories).
+SUBDIRECTORY = re.compile(r"(?m)^[ \t]*(?:(?:readonly|local|export|declare(?:[ \t]+-\w+)?)[ \t]+)?"
+                          r"([A-Za-z_][A-Za-z0-9_]*)=\"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?(/[^\"$`\s;&|]+)\"?[ \t]*$")
+
+
+def subdirectories(text: str) -> dict:
+    """{a variable of `text` set to a directory under another variable: that directory's path below
+    it} (SUBDIRECTORY)."""
+    return {name: below.rstrip("/") for name, below in SUBDIRECTORY.findall(text)}
+
+
+def script_path(word: str, workdir, action, own, moved=(), below=None) -> tuple:
+    """(the shell script of this repository a command's first word names, as a path from the
+    repository root, or ''; whether the word names a script, a word ending in .sh, that it could
+    not find). `$GITHUB_WORKSPACE/` names the root and `$GITHUB_ACTION_PATH/` the composite
+    action's directory (`action`, None outside one); any other relative path is read from
+    `workdir` (None: not known), else from each directory a `cd` of the same text moves to (`moved`),
+    else from `own`. A path after a variable or a substitution (FROM_DIRECTORY) is read from `own`, the directory of the script the word is in (the step's directory for a step), and,
+    where no such file is there, from each directory above it to the repository root: the
+    directory the variable holds is one of those wherever this repository's scripts compute it. A
+    variable `below` maps to a directory under another is read as that directory."""
     for prefix, base in (("$GITHUB_WORKSPACE/", "."), ("${GITHUB_WORKSPACE}/", "."),
                          ("$GITHUB_ACTION_PATH/", action), ("${GITHUB_ACTION_PATH}/", action)):
         if word.startswith(prefix):
             word, workdir = word[len(prefix):], base
             break
-    if workdir is None or not word or any(c in word for c in "$`*?[~") or word.startswith("/"):
-        return ""
-    if "/" not in word and not word.endswith(".sh"):
-        return ""  # a bare name is looked up on PATH
-    path = os.path.normpath(os.path.join(workdir, word))
-    if path.startswith("..") or os.path.isabs(path) or not os.path.isfile(path):
-        return ""
-    if path.endswith(".sh"):
-        return path
-    with open(path, errors="replace") as script:
-        return path if SHEBANG.match(script.readline()) else ""
+    candidates = []
+    computed = FROM_DIRECTORY.fullmatch(word)
+    if computed and own is not None:
+        name = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", word)
+        rest = computed.group(1)[1:]
+        if name and name.group(1) in (below or {}):
+            rest = below[name.group(1)].lstrip("/") + "/" + rest
+        directory = own
+        while True:
+            candidates.append(os.path.normpath(os.path.join(directory, rest)))
+            if directory in (".", ""):
+                break
+            directory = os.path.dirname(directory) or "."
+    elif workdir is not None and word and not any(c in word for c in "$`*?[~") and not word.startswith("/"):
+        if "/" in word or word.endswith(".sh"):  # a bare name other than x.sh is looked up on PATH
+            candidates += [os.path.normpath(os.path.join(base, word))
+                           for base in (workdir, *moved, *((own,) if own is not None else ()))]
+    for path in candidates:
+        if path.endswith(".sh") and not path.startswith("..") and not os.path.isabs(path) and os.path.isfile(path):
+            return path, False
+    return "", word.endswith(".sh")
+
+
+def is_script(job: str, label: str) -> bool:
+    """Whether a finding's (job, step) is a script's own, which names neither."""
+    return (job, label) == ("-", "-")
 
 
 def subject(file: str, job: str, label: str) -> str:
     """How a problem names where its command is: a step, or a script and the first step that runs it."""
-    if (job, label) != ("-", "-"):
+    if not is_script(job, label):
         return f"job {job} step \"{label}\""
     by_file, by_job, by_label = scripts[file]
     return f"the script {file} (job {by_job} step \"{by_label}\" of {by_file} runs it)"
 
 
-def read(text: str, key: tuple, workdir, action, runner: tuple) -> None:
-    """Notes the findings of a step's run: or a script's text, under `key` (file, job, step), and
-    reads each script it runs that this check has not read: from the repository root, with the
-    composite action's directory `action` and `runner`, the step that ran the first of them."""
-    text = without_heredocs(EXPRESSION.sub("EXPR", text))
-    for routed, words in commands(text):
+def read(text: str, key: tuple, workdir, action, runner: tuple, own) -> None:
+    """Notes the findings of a step's run: or of a script's text under `key` (file, job, step), and
+    reads each script it runs that this check has not read yet, as a script of its own. `workdir`
+    is where the text runs, `own` the directory a path after a variable is read from (script_path),
+    `action` the composite action's directory, and `runner` the step that runs the first of them.
+    A script runs in the directory of the step or the script that runs it, so its relative paths
+    are read from there (`workdir`)."""
+    text = EXPRESSION.sub("EXPR", text)
+    found = commands(text)
+    below = subdirectories(text)
+    # The directories a literal `cd` of this text moves to, from where it runs: a relative script
+    # path after it is read from there too (script_path).
+    moved = [os.path.normpath(os.path.join(workdir or ".", words[1])) for _, words in found
+             if len(words) == 2 and words[0] == "cd" and not any(c in words[1] for c in "$`*?[~")
+             and not words[1].startswith("/")]
+    for routed, words in found:
         if routed:
             continue
         client = network_client(words)
         if client:
             findings.setdefault(key + (client,), []).append(" ".join(words))
         for run in run_commands(words):
-            script = script_path(run[0], workdir, action)
+            script, missed = script_path(run[0], workdir, action, own, moved, below)
+            if missed:
+                unresolved.setdefault((key[0], run[0]), runner)
             if script and script not in scripts:
                 scripts[script] = runner
                 with open(script, errors="replace") as handle:
-                    read(handle.read(), (script, "-", "-"), ".", action, runner)
-    loose.extend(key + (line,) for line in loose_stderr_guards(text))
+                    read(handle.read(), (script, "-", "-"), workdir, action, runner, os.path.dirname(script))
+    loose.extend(key + (line,) for line in loose_stderr_guards(without_heredocs(text)))
 
 
 files = sorted(p for p in Path(".github/workflows").iterdir() if p.suffix in (".yaml", ".yml"))
@@ -467,6 +542,7 @@ files += sorted(p for p in Path(".github/actions").glob("*/action.y*ml"))
 findings = {}  # (file, job, step, client) -> [command text]; a script's job and step are `-`
 loose = []  # (file, job, step, line): a ci_log_guard_stderr whose stdout reaches the log
 scripts = {}  # each script read -> (file, job, step) of the first step that runs it
+unresolved = {}  # (the file, a word naming a script this check found no file for) -> the step that ran it
 unread = 0
 for path in files:
     document = yaml.safe_load(path.read_text()) or {}
@@ -487,7 +563,8 @@ for path in files:
             for expression, variable in DIRECTORY_EXPRESSIONS:
                 run = expression.sub(lambda _: variable, run)
             key = (str(path), str(job_id), label)
-            read(run, key, workdir_of(document, holder, step), action, key)
+            workdir = workdir_of(document, holder, step)
+            read(run, key, workdir, action, key, workdir)
 
 if not files:
     print("::error::check-log-guard: read no workflow file and no composite action, so it checked nothing")
@@ -499,6 +576,10 @@ if MODE == "list":
     sys.exit(0)
 if MODE == "scripts":
     print("\n".join(sorted(scripts)))
+    sys.exit(0)
+if MODE == "unresolved":
+    for file, word in sorted(unresolved):
+        print(f"{file}\t{word}")
     sys.exit(0)
 
 rows = {}
@@ -529,14 +610,15 @@ for key, number in sorted(rows.items(), key=lambda item: item[1]):
         file, job, label, client = key
         problems.append(f"::error file={ALLOW},line={number}::row {number} names "
                         + (f"the script {file} running {client} unguarded, and no script a step runs does"
-                           if (job, label) == ("-", "-") else
+                           if is_script(job, label) else
                            f"job {job} step \"{label}\" of {file} running {client} unguarded, and no such step "
                            f"does") + ": remove the row")
 
 for problem in problems:
     print(problem)
 print(f"check-log-guard: {len(files)} files and {len(scripts)} scripts, {len(findings)} unguarded network commands, "
-      f"every one on {ALLOW}; {unread} steps under another shell not read" if not problems
+      f"every one on {ALLOW}; {unread} steps under another shell not read, and {len(unresolved)} script names "
+      f"no file of this repository answers not read (`check-log-guard.sh unresolved` lists them)" if not problems
       else f"::error::check-log-guard: {len(problems)} problem(s)")
 sys.exit(1 if problems else 0)
 PY

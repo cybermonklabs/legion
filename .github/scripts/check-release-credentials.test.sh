@@ -553,6 +553,26 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names go" "$(contains "$out" "job 'pi_envoy_publish' holds a credential, but step 'Build the daemon' runs 'go'")"
 
+# A here-document a shell reads as its script runs its lines: `bash <<'EOT'` holding `bunx …` runs
+# bunx, whatever the delimiter's quoting. One a shell does not read is text, but an unquoted one's
+# `$(…)` runs, and so does a substitution inside arithmetic.
+echo "case: a dependency command in a here-document a shell reads, in a credentialed job"
+root=$(fixture heredoc-shell)
+add_publish_step "$root" $'      - name: Run a script from a here-document\n        run: |\n          bash <<\'EOT\'\n          bunx evil-package\n          EOT\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names bunx" "$(contains "$out" "job 'pi_envoy_publish' holds a credential, but step 'Run a script from a here-document' runs 'bunx'")"
+root=$(fixture heredoc-substitution)
+add_publish_step "$root" $'      - name: Expand a here-document\n        run: |\n          cat <<EOF\n          $(bun install)\n          EOF\n          n=$(( $(bunx count) + 1 ))\n'
+run_check "$root"
+check "an unquoted body's substitution exits 1" "$(is "$status" 1)"
+check "names bun, and the substitution in arithmetic, bunx" \
+  "$(contains "$out" "step 'Expand a here-document' runs 'bun', 'bunx'")"
+root=$(fixture heredoc-text)
+add_publish_step "$root" $'      - name: Print a here-document\n        run: |\n          cat <<\'EOF\'\n          bunx evil-package\n          $(bun install)\n          EOF\n'
+run_check "$root"
+check "a quoted body a shell does not read exits 0" "$(is "$status" 0)"
+
 echo "case: a built binary under out/ in a credentialed job"
 root=$(fixture out-path)
 add_publish_step "$root" $'      - name: Smoke test\n        run: out/legion version\n'

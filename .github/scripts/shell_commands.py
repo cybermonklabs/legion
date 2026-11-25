@@ -21,10 +21,14 @@ command around them resume, so a word after the close is that command's (`is "$(
 `is`); `(…)` is a subshell, whose commands are its own; an unquoted `;`, `&`, `|`, `(`, `)` or
 newline ends a command, and a redirection's target (`>/dev/null`, `>> "$GITHUB_OUTPUT"`, `2>&1`) is
 not one of its words. A here-document's body, from the newline after its `<<WORD` (or `<<-WORD`,
-whose body's lines may start with tabs) to the line that is WORD, runs no command, whatever its
-quoting; nor does arithmetic (`$(( … ))`, `(( … ))`), a case pattern (`curl | jq)`, from the
-`in` or the `;;`, `;&` or `;;&` before it to its unquoted `)`), or the name of a function a `()`
-defines (`curl() {`). Each command sheds its leading `VAR=value` assignments and the keywords that
+whose body's lines may start with tabs) to the line that is WORD, is a script when the command it
+feeds is a shell reading its standard input (`bash <<'EOT'`, `sudo bash -s <<EOT`, `. /dev/stdin
+<<EOT`: feeds_shell), and is read as one; any other body is text, but with an unquoted WORD bash
+expands its `$(…)` and backtick substitutions, which are read as the commands they run. Arithmetic
+(`$(( … ))`, `(( … ))`) and an array's values (`tools+=(curl jq)`) run no command but their
+substitutions (`$(( $(cmd) ))` runs `cmd`); nor does a case pattern (`curl | jq)`, from the `in` or the `;;`, `;&` or `;;&` before it to its
+unquoted `)`), or the name of a function a `()` defines (`curl() {`). Each command sheds its
+leading `VAR=value` assignments and the keywords that
 precede a command (if, then, for, do, time, exec, env, `{`, `}`, …) or wrap one (`ci_log_guard` and
 `ci_log_guard_stderr`, .github/scripts/ci-log-guard.sh's, which run the words after them), and the
 first word left is the command; an
@@ -125,48 +129,66 @@ class Scanner:
 
     def read_heredoc(self, text: str, i: int) -> int:
         """Reads the delimiter of the here-document whose `<<` ends just before `i`, and returns
-        where reading resumes. The body, from the next newline to the delimiter's own line, is
-        skipped there (skip_heredocs)."""
+        where reading resumes. The body, from the next newline to the delimiter's own line, is read
+        there (skip_heredocs): whether the delimiter is quoted, and whether the command it feeds is
+        a shell reading its standard input (feeds_shell), decide how."""
         self.end_word()
         strip = text[i:i + 1] == "-"
         i += strip
         while text[i:i + 1] in (" ", "\t"):
             i += 1
-        delimiter = ""
+        delimiter, quoted = "", False
         while i < len(text) and text[i] not in " \t\n;&|<>()":
             if text[i] in "'\"":
+                quoted = True
                 end = text.find(text[i], i + 1)
                 end = len(text) if end < 0 else end
                 delimiter += text[i + 1:end]
                 i = end + 1
             elif text[i] == "\\":
+                quoted = True
                 delimiter += text[i + 1:i + 2]
                 i += 2
             else:
                 delimiter += text[i]
                 i += 1
         if delimiter:
-            self.heredocs.append((delimiter, strip))
+            self.heredocs.append((delimiter, strip, quoted, feeds_shell(self.words)))
         return i
 
     def skip_heredocs(self, text: str, i: int) -> int:
-        """Skips the body of each here-document pending, from `i`, the start of a line, noting it
-        in `bodies`; a body no delimiter line ends runs to the end, as bash reads it."""
-        for delimiter, strip in self.heredocs:
+        """Reads the body of each here-document pending, from `i`, the start of a line; a body no
+        delimiter line ends runs to the end, as bash reads it. A body a shell reads on its standard
+        input is commands, read as a script. Any other body is text, noted in `bodies`, but bash
+        expands the `$(…)` and backtick substitutions of a body whose delimiter is unquoted, so
+        those are read as commands."""
+        for delimiter, strip, quoted, shell in self.heredocs:
             start = i
             while i < len(text):
                 end = text.find("\n", i)
                 line = text[i:] if end < 0 else text[i:end]
                 after = len(text) if end < 0 else end + 1
                 if (line.lstrip("\t") if strip else line) == delimiter:
-                    self.bodies.append((start, i))
-                    i = after
                     break
                 i = after
+            body = text[start:i]
+            if shell:
+                self.commands += type(self)().scan(body)
             else:
                 self.bodies.append((start, i))
+                if not quoted:
+                    self.scan_substitutions(body)
+            if i < len(text):
+                end = text.find("\n", i)
+                i = len(text) if end < 0 else end + 1
         self.heredocs = []
         return i
+
+    def scan_substitutions(self, text: str) -> None:
+        """Reads each `$(…)` and backtick substitution of `text`, which is no command itself (an
+        unquoted here-document's body, arithmetic), as the commands bash runs to expand it."""
+        for inner in substitutions(text):
+            self.commands += type(self)().scan(inner)
 
     def read_pattern(self, text: str, i: int) -> int:
         """Reads the character at `i` of a case pattern list, and returns where reading resumes.
@@ -236,9 +258,11 @@ class Scanner:
                     open_subs.append(("tick", quote, self.suspend("`")))
                     quote = None
             elif char == "$" and text[i + 1:i + 3] == "((":
-                # Arithmetic, `$(( … ))`: a value, never a command, and its `<<` a shift.
+                # Arithmetic, `$(( … ))`: a value, and its `<<` a shift; a substitution in it runs.
                 self.add(char)
-                i = arithmetic_end(text, i + 1)
+                end = arithmetic_end(text, i + 1)
+                self.scan_substitutions(text[i + 3:end - 2])
+                i = end
                 continue
             elif char == "$" and after == "(":
                 open_subs.append(("paren", quote, self.suspend("$")))
@@ -273,7 +297,9 @@ class Scanner:
                 self.started = True
                 self.at_word_start = False
             elif char == "(" and after == "(" and self.at_word_start and not self.words:
-                i = arithmetic_end(text, i)  # `(( … ))`, an arithmetic command
+                end = arithmetic_end(text, i)  # `(( … ))`, an arithmetic command
+                self.scan_substitutions(text[i + 2:end - 2])
+                i = end
                 continue
             elif char == "(" and FUNCTION_PARENS.match(text, i) and self.is_function_name():
                 self.words, self.word, self.started, self.at_word_start = [], "", False, True
@@ -282,6 +308,14 @@ class Scanner:
             elif char in "<>" and after == "(":
                 open_subs.append(("paren", None, self.suspend(char + "(")))
                 i += 1
+            elif char == "(" and self.started and ARRAY_ASSIGNMENT.fullmatch(self.word):
+                # `tools+=(curl jq)`, `helm=(go run "$HELM")`: an array's values, no command; a
+                # substitution among them runs.
+                end = arithmetic_end(text, i)
+                self.scan_substitutions(text[i + 1:end - 1])
+                self.add("(…)")
+                i = end
+                continue
             elif char == "(":
                 self.end_command()
                 open_subs.append(("paren", None, None))
@@ -325,6 +359,8 @@ class Scanner:
 
 # The `()` after a function's name, with any blanks inside it.
 FUNCTION_PARENS = re.compile(r"\([ \t]*\)")
+# The word before an array's `(`: `name=`, `name+=`, `name[i]=`.
+ARRAY_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
 
 
 def arithmetic_end(text: str, i: int) -> int:
@@ -339,6 +375,76 @@ def arithmetic_end(text: str, i: int) -> int:
                 return i + 1
         i += 1
     return i
+
+
+def substitutions(text: str) -> list[str]:
+    """The text inside each outermost `$(…)` (not `$((`) and backtick pair of `text`, which bash
+    expands in an unquoted here-document's body and in arithmetic. A quote there is a character,
+    not a quote, so the parentheses are counted as written, as bash counts them in a body."""
+    found, i = [], 0
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text.startswith("$(", i) and not text.startswith("$((", i):
+            end = arithmetic_end(text, i + 1)
+            found.append(text[i + 2:end - 1])
+            i = end
+            continue
+        if text[i] == "`":
+            end = text.find("`", i + 1)
+            end = len(text) if end < 0 else end
+            found.append(text[i + 1:end])
+            i = end + 1
+            continue
+        i += 1
+    return found
+
+
+# The shells whose standard input is a script when they are given no script and no `-c` (or `-s`),
+# and what can stand before one, with the options of each that take a value.
+STDIN_SHELLS = {"bash", "sh", "dash", "zsh"}
+BEFORE_SHELL = {"sudo": {"-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-D", "-R"}, "env": {"-u", "-C", "-S"},
+                "exec": {"-a"}, "command": set(), "nohup": set(), "nice": {"-n"}, "timeout": {"-s", "-k"},
+                "stdbuf": {"-i", "-o", "-e"}}
+
+
+def feeds_shell(words: list[str]) -> bool:
+    """Whether a here-document written after `words`, the words of its command so far, is read by
+    a shell as its script: the command is bash, sh, dash or zsh (behind sudo, env, exec, command,
+    nohup, nice, timeout or stdbuf), given no script and no `-c`, as in `bash <<'EOT'`,
+    `sudo bash -s <<EOT` and `. /dev/stdin <<EOT`."""
+    words = list(words)
+    while words and (ASSIGNMENT.match(words[0]) or words[0] in SKIP_WORDS):
+        words.pop(0)
+    while words and words[0].rsplit("/", 1)[-1] in BEFORE_SHELL:
+        runner = words.pop(0).rsplit("/", 1)[-1]
+        while words and (words[0].startswith("-") or ASSIGNMENT.match(words[0])):
+            flag = words.pop(0)
+            if flag in BEFORE_SHELL[runner] and words:
+                words.pop(0)
+        if runner == "timeout" and words:
+            words.pop(0)  # the duration
+    if not words:
+        return False
+    if words[0] in ("source", ".") and words[1:] in (["/dev/stdin"], ["/proc/self/fd/0"], ["/dev/fd/0"]):
+        return True
+    if words[0].rsplit("/", 1)[-1] not in STDIN_SHELLS:
+        return False
+    rest, stdin = words[1:], False
+    while rest:
+        word = rest.pop(0)
+        if word == "--":
+            return stdin or not rest
+        elif word.startswith(("-", "+")) and not word.startswith("--"):
+            if "c" in word[1:]:
+                return False
+            stdin = stdin or "s" in word[1:]
+            if word[-1] in "oO":
+                rest = rest[1:]  # `-eo pipefail`: the option's name
+        elif not word.startswith("--"):
+            return stdin  # with -s, the arguments; else a script file
+    return True
 
 
 def without_heredocs(text: str) -> str:

@@ -59,8 +59,11 @@ copy_repo() {
 copy_repo "$work/repo"
 run_check "$work/repo"
 check "the tree as it is passes" "$(is "$status" 0)"
+# The one case that holds this repository's own tree: when it fails, the reason is the check's.
+[ "$status" = 0 ] || printf '%s\n' "$out"
 check "and says how many commands it read" "$(contains "$out" 'unguarded network commands, every one on')"
 check "and that it read the scripts the steps run" "$(contains "$out" ' files and [1-9][0-9]* scripts, ')"
+check "and how many script names it found no file for" "$(contains "$out" ' and [0-9][0-9]* script names no file')"
 cat >>"$work/repo/.github/workflows/ci-job-test.yaml" <<'YAML'
   planted:
     runs-on: ubuntu-24.04
@@ -91,6 +94,20 @@ check "fails" "$(is "$status" 1)"
 check "naming the script, the step that runs it and the fetch" \
   "$(contains "$out" '^::error file=.github/scripts/ci-filters-generate.sh::the script .github/scripts/ci-filters-generate.sh (job changes step "[^"]*" of .github/workflows/ci.yaml runs it) runs .timeout -k 5 60 git fetch -q --no-tags --depth=1 origin \$base 2., a git command')"
 check "and counts that one problem" "$(contains "$out" '^::error::check-log-guard: 1 problem(s)$')"
+
+# Two scripts CI runs that the check read only once it read the paths this repository's scripts
+# name each other by (`"$(dirname "${BASH_SOURCE[0]}")/…"`, `"$script_dir/…"`): runner-shutdown.sh,
+# which ci-ok.sh sources, and post-check-run.sh, which ci-ok-report.sh runs.
+for planted in runner-shutdown.sh post-check-run.sh; do
+  echo "case: a git fetch planted in $planted fails by name"
+  copy_repo "$work/repo-$planted"
+  printf '\ngit fetch origin main\n' >>"$work/repo-$planted/.github/scripts/$planted"
+  run_check "$work/repo-$planted"
+  check "fails" "$(is "$status" 1)"
+  check "naming the script and the fetch" \
+    "$(contains "$out" "^::error file=.github/scripts/$planted::the script .github/scripts/$planted (job [^ ]* step \"[^\"]*\" of [^ ]* runs it) runs .git fetch origin main., a git command")"
+  check "and counts that one problem" "$(contains "$out" '^::error::check-log-guard: 1 problem(s)$')"
+done
 
 # A script is the first word of a command the step does not route, read through an interpreter,
 # a runner or `.`, from the repository root ($GITHUB_WORKSPACE, ${{ github.workspace }}), the step's
@@ -139,6 +156,68 @@ done
 check "reads no script the step runs under the guard" "$(is "$(contains "$out" 'guarded-whole')" false)"
 check "and counts nine problems" "$(contains "$out" '^::error::check-log-guard: 9 problem(s)$')"
 
+# A path after a variable or a substitution is read from the script's own directory, else from
+# each directory above it; a variable set to a directory under another is read through it; a
+# relative path after a literal `cd` is read from where the cd went. A script a harness writes at
+# run time is no file of the tree, and is counted as not read, not refused.
+echo "case: the paths this repository's scripts name each other by are read"
+root=$(fixture siblings '.github/scripts/top.sh')
+mkdir -p "$root/.github/scripts/sub" "$root/scripts" "$root/sub2"
+cat >"$root/.github/scripts/top.sh" <<'SH'
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+"$script_dir/by-variable.sh"
+bash "$(dirname "$0")/by-dirname.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/by-root.sh"
+readonly drivers="${script_dir}/sub"
+"${drivers}/by-subdir.sh"
+cd sub2 && ./after-cd.sh
+SH
+printf 'git fetch origin main\n' >"$root/.github/scripts/by-variable.sh"
+printf 'curl -sS https://example.com/a\n' >"$root/.github/scripts/by-dirname.sh"
+printf 'gh api repos/o/r\n' >"$root/scripts/by-root.sh"
+printf 'go build ./x\n' >"$root/.github/scripts/sub/by-subdir.sh"
+printf 'docker pull ghcr.io/o/i\n' >"$root/sub2/after-cd.sh"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+for found in ".github/scripts/by-variable.sh $by_fetch runs .git fetch origin main." \
+  ".github/scripts/by-dirname.sh $by_fetch runs .curl -sS https://example.com/a." \
+  "scripts/by-root.sh $by_fetch runs .gh api repos/o/r." \
+  ".github/scripts/sub/by-subdir.sh $by_fetch runs .go build ./x." \
+  "sub2/after-cd.sh $by_fetch runs .docker pull ghcr.io/o/i."; do
+  check "names \`${found%% *}\`" "$(contains "$out" "::the script $found")"
+done
+check "and counts five problems" "$(contains "$out" '^::error::check-log-guard: 5 problem(s)$')"
+root=$(fixture made-at-run-time "$(printf '%s\n' 'work=$(mktemp -d)' '"$work/made.sh"')")
+run_check "$root"
+check "a script the step writes at run time passes" "$(is "$status" 0)"
+check "counted as one name it found no file for" "$(contains "$out" ' and 1 script names no file')"
+check "which \`unresolved\` lists" \
+  "$(contains "$("$root/.github/scripts/check-log-guard.sh" unresolved 2>&1)" $'^.github/workflows/app.yaml\t\\$work/made.sh$')"
+
+echo "case: a client behind flock, ionice, setsid or unshare fails by name"
+root=$(fixture more-runners "$(cat <<'SH'
+flock x git fetch origin main
+ionice -c 3 git fetch origin a
+setsid git fetch origin b
+unshare --user -w /tmp git fetch origin c
+flock -w 5 x -c 'curl -sS https://example.com/e'
+SH
+)")
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+for found in 'flock x git fetch origin main' 'ionice -c 3 git fetch origin a' 'setsid git fetch origin b' \
+  'unshare --user -w /tmp git fetch origin c'; do
+  check "names \`$found\`" "$(contains "$out" "step \"Fetch\" runs \`$found\`")"
+done
+check "reads flock's -c string" "$(contains "$out" 'step "Fetch" runs .flock -w 5 x -c curl -sS https://example.com/e.')"
+check "and counts five problems" "$(contains "$out" '^::error::check-log-guard: 5 problem(s)$')"
+
+echo "case: a stderr guard after an ANSI-C string holding an escaped quote fails by name"
+root=$(fixture ansi-c "$(printf '%s\n' "v=\$'it\\'s'; ci_log_guard_stderr gh api repos/o/x")")
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the call" "$(contains "$out" 'ci_log_guard_stderr gh api repos/o/x.: ci_log_guard_stderr blocks only stderr')"
+
 echo "case: a row naming a script allows its command, and a row naming a client the script runs not fails"
 root=$(fixture script-rows '.github/scripts/fetch.sh' \
   "$(printf '.github/scripts/fetch.sh\t-\t-\tgit\tit fetches a repository the job made on disk\n.github/scripts/fetch.sh\t-\t-\tcurl\tits curl is gone')")
@@ -149,13 +228,15 @@ check "naming the row of the client the script does not run" \
   "$(contains "$out" 'row 3 names the script .github/scripts/fetch.sh running curl unguarded, and no script a step runs does: remove the row')"
 check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 1 problem(s)$')"
 
-# The reader's forms that run no command, each proved against bash: the body runs under bash with
-# a stand-in for each client on PATH that logs its name, and the check names exactly the clients
-# bash ran. An ANSI-C string, a word after a `$(…)`, a case pattern, a here-document's body, the
-# name of a function `()` defines and arithmetic's `<<` run nothing; the command inside the case
-# item does, and so does `command curl`, which skips the function. A ci_log_guard_stderr call in a
-# string that a line before opened is text, and one after the string closes is a call.
-echo "case: the forms that run no command read as none, as bash runs them"
+# The reader's forms, each proved against bash: the body runs under bash with a stand-in for each
+# client on PATH that logs its name, and the check names exactly the clients bash ran. An ANSI-C
+# string, a word after a `$(…)`, a case pattern, a quoted here-document's body, the name of a
+# function `()` defines and arithmetic's `<<` run nothing; the command inside the case item does,
+# and so does `command curl`, which skips the function. A here-document a shell reads as its
+# script runs its lines, and an unquoted one's substitutions run, as do arithmetic's. A
+# ci_log_guard_stderr call in a string that a line before opened is text, and one after the string
+# closes is a call.
+echo "case: the forms that run no command read as none, and those that run one as one, as bash runs them"
 cat >"$work/forms.sh" <<'SH'
 v=$'curl -sS https://example.com/a \' still quoted'
 v=curl
@@ -172,6 +253,16 @@ n=$(( 1 << 2 ))
 msg="a string a line opens
 ci_log_guard_stderr gh api repos/o/t" ; ci_log_guard_stderr gh api repos/o/u
 command curl -sS https://example.com/c
+bash <<'EOT'
+curl -sS https://example.com/d
+EOT
+cat <<EOF >/dev/null
+$(gh api repos/o/v)
+EOF
+cat <<'EOF' >/dev/null
+$(gh api repos/o/w)
+EOF
+n=$(( $(jq -n 1) + 1 ))
 SH
 mkdir -p "$work/bin"
 for client in curl gh jq; do
@@ -180,15 +271,18 @@ for client in curl gh jq; do
 done
 : >"$work/ran"
 (cd "$work" && PATH="$work/bin:$PATH" bash -c ". '$script_dir/ci-log-guard.sh'; . ./forms.sh" >/dev/null 2>&1)
-check "bash runs gh twice and curl once" "$(is "$(tr '\n' ' ' <"$work/ran")" "gh gh curl ")"
+check "bash runs gh, gh, curl, curl, gh and jq" "$(is "$(tr '\n' ' ' <"$work/ran")" "gh gh curl curl gh jq ")"
 root=$(fixture forms "$(cat "$work/forms.sh")")
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the case item's gh" "$(contains "$out" 'step "Fetch" runs .gh api repos/o/s.')"
 check "names the command curl" "$(contains "$out" 'step "Fetch" runs .command curl -sS https://example.com/c.')"
+check "names the curl of the body bash reads" "$(contains "$out" 'step "Fetch" runs .curl -sS https://example.com/d.')"
+check "names the gh of the unquoted body's substitution" "$(contains "$out" 'step "Fetch" runs .gh api repos/o/v.')"
+check "and not the quoted body's" "$(is "$(contains "$out" 'repos/o/w')" false)"
 check "names the stderr guard after the string, and not the one inside it" \
   "$(contains "$out" 'runs .ci_log_guard_stderr gh api repos/o/t" ; ci_log_guard_stderr gh api repos/o/u.: ci_log_guard_stderr blocks only stderr')"
-check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 3 problem(s)$')"
+check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 5 problem(s)$')"
 
 echo "case: each routed form passes"
 root=$(fixture routed "$(cat <<'SH'
