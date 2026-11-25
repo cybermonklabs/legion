@@ -399,7 +399,9 @@ var errChangeRefused = errors.New("GitHub's answer holds no reading of the chang
 //     concludes failure, as C2 asks (verdict.Inputs.Unread);
 //   - no answer at all (a transport error, a timeout, a 5xx, a rate limit, a read token not
 //     minted) is no decision yet (verdict.Inputs.Unanswered, verdict.Undecided): the writer writes
-//     nothing, leaves any earlier run as it stands, and the next write or sweep reads again.
+//     nothing, leaves any earlier run as it stands, and the next write or sweep reads again; a 401,
+//     or a 403 that is no rate limit, is read so too, which decides nothing and is seen, since the
+//     writer warns after noAnswerSweeps sweeps (undecided).
 //
 // Merging the two would turn a success that stands into failure, and start the merger's notice to
 // the owner, on an outage of GitHub's rather than on an answer about the change. readCommits answers

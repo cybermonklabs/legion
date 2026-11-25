@@ -259,7 +259,7 @@ func (v *verdictWriter) markForeign(repository string, number int, issue string)
 func (v *verdictWriter) countUnanswered(repository, head string, undecided, sweep bool) (int, bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	key := strings.ToLower(repository) + "@" + head
+	key := unansweredKey(repository, head)
 	switch {
 	case !undecided:
 		delete(v.unanswered, key)
@@ -269,6 +269,25 @@ func (v *verdictWriter) countUnanswered(repository, head string, undecided, swee
 	}
 	v.unanswered[key]++
 	return v.unanswered[key], v.unanswered[key] == noAnswerSweeps
+}
+
+// pruneUnanswered forgets the count of every head of repository that listed, the heads the writers'
+// sweep's list of the repository's open pull requests holds, does not hold: a head that closed or
+// moved on is written by no sweep again, and its count would stay in memory until a restart.
+func (v *verdictWriter) pruneUnanswered(repository string, listed map[string]int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	prefix := unansweredKey(repository, "")
+	for key := range v.unanswered {
+		if head, ok := strings.CutPrefix(key, prefix); ok && listed[head] == 0 {
+			delete(v.unanswered, key)
+		}
+	}
+}
+
+// unansweredKey names head of repository in the writer's unanswered counts.
+func unansweredKey(repository, head string) string {
+	return strings.ToLower(repository) + "@" + head
 }
 
 // queueVerdictWrite is the engine's Config.WriteVerdict, and the outside facts' own ask: it queues a
