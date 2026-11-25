@@ -40,6 +40,7 @@ func (s *sentStatements) statements() []string {
 // what they send. Controller is the control: a read that opened read-only before the others were
 // held to it.
 func TestEachStandaloneReadOfTheStoreOpensReadOnlyAndReadsNoID(t *testing.T) {
+	t.Parallel()
 	seed := migratedStore(t)
 	for _, read := range []struct {
 		name string

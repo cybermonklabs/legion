@@ -1700,6 +1700,21 @@ func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorde
 	return lease.Identity, nil
 }
 
+// knownIdentity is the bot identity role's App commits as where the token source already holds
+// it (appauth.KnownIdentities: the identity a lease of that App fetched), read with no mint and
+// no call to GitHub; false before that App's first lease, and for a token source that answers no
+// such read, a test's fake among them. A bot identity is the App's own and no owner's, so it
+// needs no repository. A launch's table of every role's identity reads it for the roles of the
+// other App than the claim's own (specs.knownIdentity), so it costs that App no mint while the
+// daemon knows its identity.
+func (w *workflowRuntime) knownIdentity(role claim.Role) (runtime.GitIdentity, bool) {
+	known, ok := w.tokens.(appauth.KnownIdentities)
+	if !ok {
+		return runtime.GitIdentity{}, false
+	}
+	return known.KnownIdentity(appauth.AppRoleFor(role))
+}
+
 // ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 // missing or not checked out (outbox.ensureWorkspace), through the outbox, which orders every
 // provision of the shared clones (provisionLocks). The outbox exists from attach on, and attach

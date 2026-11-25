@@ -17,7 +17,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   `Receive`, in both modules, waits for one receive from a channel, such as the answer of a call the test started, and sets no span of its own: it gives up 30 s before the binary's deadline (the daemon module's, a quarter of a `-timeout` under 2 minutes, so its waits still wait under a short `-timeout`), writes why to stderr at once and then fails the test, so a call that waits for ever fails by name, even without `-v`, and a call that is merely slow passes; the launcher rig's waits for a role's connection and for its next frame are such waits.
   A row whose verdict is what a call answers, a refusal or a replaced file, waits for it with `Receive`.
   In both modules, `Until` waits until a reading holds and returns it, at `Poll`, and `Context` is a context for a call that takes one, or for a socket's deadline; `packages/envoy`'s `UntilPolling` is `Until` at a pace of the caller's. Like `Receive`, they end at the binary's own deadline less 30 s, the time the failing test's cleanups run in, and take no bound of their own, so a step that is only slow on a loaded machine fails nothing. Under a `-timeout` of 30 s or less that moment has passed before the test starts, so each of them, and the daemon module's `Eventually`, fails at once.
-  The daemon module's `Eventually` and `Until` have no cap, and that has a cost: a wait whose fact never comes holds its test binary until 30 s before the deadline (in `daemon-go-race`, `-timeout 30m`, about 29.5 minutes), and every later `Eventually` or `Until` in that binary then begins past that moment, asks once and fails. Such a give-up line adds ", a moment that had passed before this wait began: the first give-up line in time order is the cause", so read a red package run from its first give-up line in time order: that one names the wait that never held, and the lines of tests that failed after it in 0.00 s are its side effects.
+  The daemon module's `Eventually` and `Until` have no cap, and that has a cost: a wait whose fact never comes holds its test binary until 30 s before the deadline (in the `daemon-go-race` legs, `-timeout 40m`, about 39.5 minutes), and every later `Eventually` or `Until` in that binary then begins past that moment, asks once and fails. Such a give-up line adds ", a moment that had passed before this wait began: the first give-up line in time order is the cause", so read a red package run from its first give-up line in time order: that one names the wait that never held, and the lines of tests that failed after it in 0.00 s are its side effects.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
 
 - A fifo that the code under test must replace without opening it for writing is planted with the daemon module's `internal/testfifo`.
@@ -519,13 +519,15 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   TMPDIR="$L" GOTMPDIR="$L" go test ./<package>/... -count=1
   ```
 
-## A test in `internal/dispatch/api` or `internal/dispatch/docs` runs beside the others
+## A test in `internal/dispatch/api`, `internal/dispatch/docs` or the daemon's `internal/intake` runs beside the others
 
-Every top-level test of `packages/envoy/internal/dispatch/api` and
-`packages/envoy/internal/dispatch/docs` calls `t.Parallel()` as its first statement, and each
-package's `TestMain` sets how many run at once: 8 in api, 6 in docs. Each test already has a
-database and a server or document service of its own (`storetest.Open`), so run alone it spends
-most of its time waiting on Postgres while the machine's other cores sit idle.
+Every top-level test of `packages/envoy/internal/dispatch/api`,
+`packages/envoy/internal/dispatch/docs` and `packages/daemon/internal/intake` calls `t.Parallel()`
+as its first statement, and each package's `TestMain` sets how many run at once: 8 in api, 6 in
+docs, 4 in intake. Each test already has a database and a server or document service of its own
+(`storetest.Open`; in intake `testpg.Clone` and a NATS server of `testnats`' pool, one per test that
+holds one), so run alone it spends most of its time waiting on Postgres while the machine's other
+cores sit idle.
 
 A test stays serial when it, or a helper it calls, changes or measures something the whole test
 process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), the environment
@@ -567,6 +569,24 @@ adds far more memory than the others: a few hundred megabytes or more of live he
 collection, about three times that under the race detector. Beside the package's other tests
 such a test would take the binary toward the step's limit.
 
+## A test in `packages/daemon/internal/daemon` runs beside the others
+
+Every top-level test of `packages/daemon/internal/daemon` in the default build calls `t.Parallel()`
+as its first statement, and the package's `TestMain` runs 4 at once (`daemonTestParallelism`).
+The live drivers behind `//go:build e2e`, which no unit run compiles, are not held to this. Each
+test already has a database of its own (a clone of the package's template, `testDSN` and
+`isolatedOutboxPool`), its own ports and state directory, and a NATS server of the package's pool
+(`internal/testnats`). go test starts no parallel test until every serial one has run, so a serial
+test runs alone while the runner's other cores wait.
+
+A test that cannot run beside the others says why in a `// Not parallel:` comment on its first
+line: it calls `t.Setenv` or `t.Chdir`; it writes a package variable (`readinessRetry`, through
+`fastReadiness`, or `record.StatusRowKinds`); it changes the process's signal disposition; it is a
+helper process that exits the test binary (`TestIdleRigRoleProcess`); or it holds a wall-clock
+bound that the parallel tests' load could make it miss, which the comment names (`podStopBound`'s
+one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
+comment runs alone for no reason, as 46 tests did by 2026-11-25.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
@@ -590,11 +610,17 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
+Every package of `packages/daemon` runs in CI in exactly one leg that `.github/go-legs.yaml` names
+for it (or under `elsewhere`, with the job that runs it). When you add, remove, rename or move a
+daemon package, change its line there in the same change: every daemon-go leg fails, naming the
+package, while `go list ./...` and the file disagree. Put a new package in the leg its measured
+time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` says how the legs are balanced.
+
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
-under the race detector, once per run, in the `daemon-go-race` job's step "Test the concurrent
-packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`), beside the
-`daemon-go` job; `daemon-go`'s plain step ("Test the Go daemon") leaves it out,
-and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
+under the race detector, once per run, in the race leg `.github/go-legs.yaml` gives it, whose step
+is "Test the concurrent packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`,
+job `daemon-go-race-legs`), beside the plain legs; the plain step ("Test the Go daemon") leaves it
+out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
 figures below were measured while these steps were the `test` job's, but for those of 2026-11-20,
 which are `daemon-go`'s race step's. On CI's runners, while the plain step still ran it, it took at
 most 625 s there over the 49 green main `test` jobs of 2026-11-01 to 2026-11-03, and up to
@@ -697,6 +723,12 @@ to migrate the template its `Clone` copies, so a test binary of `internal/store`
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
 imports no package of the module except `internal/testwait`, which imports none, and so is open to
 every package of it.
+Each of those tests runs beside the others on databases and pools of its own, four at a time unless
+the command line names a `-parallel` (`storeTestParallelism`). A pool writes its refusals, and
+`Transact`'s lines about a commit over that `*Pool` itself, to its own log (`Pool.log`), so a test
+reads its own lines there (`captureLog`) and never swaps the default logger. `Transact`'s lines
+about a commit over any other `TxPool`, a test's wrapper of a `*Pool` included, go to the default
+logger.
 `internal/daemon`'s tests boot daemons, which migrate the database they are given: each test's
 daemons write in a clone of the package's template (`testDSN`), so a boot there finds the schema
 in place, and the tests run beside each other on databases of their own. So do `internal/workflow`'s,

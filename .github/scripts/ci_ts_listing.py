@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ci_filter_coverage import REPO, error
@@ -215,12 +216,25 @@ def pairs() -> list:
             + [("bundle", name, entry, why) for name, entry, why in BUNDLES])
 
 
+def listed_alone(kind: str, path: str) -> tuple:
+    """source_files of one program or bundle, with the refusals it recorded."""
+    refused: list = []
+    return source_files(kind, path, refused), refused
+
+
 def listed_files(filters, problems: list) -> dict:
     """Per LISTED entry of ci_ts_programs.py whose filter is in `filters`, the files of its tree
     that the programs and bundles paired with its sources give, sorted: the filter's listed block.
     A source that cannot be listed leaves the entry out with a refusal recorded, so a caller that
-    finds a problem knows the block is unknown."""
+    finds a problem knows the block is unknown. The sources are listed at once, each tsc or Bun
+    run on a processor of its own, and each one's refusals join `problems` where a listing one
+    after another would have put them."""
     from ci_ts_programs import LISTED
+    asked = dict.fromkeys((kind, path) for name, _tree, sources, _why in LISTED if name in filters
+                          for source in sources for kind, pair, path, _ in pairs()
+                          if pair == source and (REPO / path).exists())
+    with ThreadPoolExecutor(max_workers=max(1, len(asked))) as pool:
+        answers = {asks: pool.submit(listed_alone, *asks) for asks in asked}
     files_of: dict = {}
     blocks: dict = {}
     for name, tree, sources, _why in LISTED:
@@ -236,8 +250,9 @@ def listed_files(filters, problems: list) -> dict:
                 known = False
             for kind, path in sourced:
                 if (kind, path) not in files_of:
-                    if (REPO / path).exists():
-                        files_of[kind, path] = source_files(kind, path, problems)
+                    if (kind, path) in answers:
+                        files_of[kind, path], refused = answers[kind, path].result()
+                        problems += refused
                     else:
                         problems.append(error(".github/scripts/ci_ts_programs.py",
                                               f"{path} is no path of this repository, so filter {source}'s {kind} "

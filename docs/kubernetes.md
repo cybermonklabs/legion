@@ -71,12 +71,16 @@ It carries:
   The git wrapper changes two commands, a commit and a push, and runs every other one unchanged.
   A commit goes to `legion git --real /usr/bin/git`, which adds the commit's `Omp-Session` and `Legion-Role` trailers and then runs the real git.
   It adds each line only when its value is valid, and only when git alone would accept the commit's message and the two lines change nothing else.
+  It adds none when the caller asks git for an isolated configuration, as hermetic tests do: `GIT_CONFIG_NOSYSTEM` set to a value git reads as true, or `GIT_CONFIG_GLOBAL=/dev/null`.
   The two lines record which session and which role made the commit, and they guard nothing.
   A push runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand, after the caller's own global options, and with the push's own `--no-verify` taken out:
   git itself computes the update lines and hands them to that hook, which runs `legion leak-check pre-push`, and `jj git push` makes its push by shelling out to the `git` its `PATH` names, so this one wrapper catches a role's own push and jj's.
   git takes the last `-c` of a name, so that placement outranks a caller's own `-c core.hooksPath` and the runtime's `core.hooksPath=/dev/null` pin alike, and the pin still holds for every other command.
   The jj wrapper gives jj that wrapper as `git.executable-path` on every command line, and once more as the line's last layer after a push, which outranks every configuration file and a `[[--scope]]` for one command alike.
   It reads a command as jj does, aliases and `ui.default-command` expanded, runs the expansion it read, and before a `jj git push` or a `jj gerrit upload` checks that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not, or where it cannot read the command.
+  Then it hands a `jj git push` to `legion jj --real /usr/local/bin/jj`, which runs the push step and then the real jj with the line it read, but for a revision argument whose meaning the rewrite changed, which then names the commits it named before the step, as the step left them, and with `--ignore-working-copy` where the step took its one snapshot of the working copy, so the push takes no second one (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
+  The step gives each commit the push sends the author of the role its first `Legion-Role` trailer names, from `LEGION_ROLE_IDENTITIES` (contract entry `20261125161436`, below), and prints one `legion jj:` line for each commit it rewrote.
+  It sets no author on an immutable commit, one a remote bookmark holds, one only a git tag names or one whose role has no identity, nor, but for an empty author, where it prints that it could not.
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
   The rules read a push's added paths and diff as git writes them and scan each one as it arrives, and a refusal names at most 1000 lines and counts the rest, so the pass holds one line, the record in hand, and one commit's author, committer and message, whatever the number and size of the push's files; what grows with the push is the list of its commit ids, and with one long line that line's size, held whole a few times over (a 73 MB line took 416 MiB), since a split line could hide a match that crosses the split.
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
@@ -3723,6 +3727,21 @@ A tree it drew in that window has its answer in `issues.memory_*` alone, and the
 this release finds no row for that tree, runs it in no arm — so it too changes arm mid-life — and settles the children it hands over at no variant.
 Copy those trees over by hand before reading the exposure again, with the back-fill's own `select` and `on conflict (issue_key, experiment) do nothing`, since the rows copied at the first deploy stand.
 Every answer a project's other experiments drew is in that table alone, so the rolled-back release reads none of them, and a project that still declares `experiments` is refused at load until the key is taken out.
+
+**The identities of an issue's roles in each role's process (contract entry `20261125161436`, `role-identities`).**
+A release that carries contract entry `20261125161436` tells every workflow role's pane and pod `LEGION_ROLE_IDENTITIES`, the git identity of each role of the issue.
+Its value is one JSON object from each role to the `name` and `email` that role's App commits as, keys sorted.
+The daemon writes it from the identities it already resolves for each role.
+A launch whose other App's lease cannot be minted still happens: its table holds the roles of its own App alone, the daemon logs a warning naming the claim, that App and the error, and the step leaves the author of a commit whose trailer names a role left out as it is.
+The controller gets none, and `legion controller start` drops one it inherits.
+The push step of `legion jj` reads it before each `jj git push`, and gives a commit the push sends the author of the role that the commit's first `Legion-Role` trailer names, with the exceptions that [Worker image](#worker-image) names.
+The variable is the daemon's own under both runtimes, so `runtime.kubernetes.pod.env` and `runtime.tmux.pane_env` are refused for setting it, and so is a provider key of that name.
+
+To roll this release back to a release without that entry, re-pin the earlier release, with no change to `legion.yaml`.
+There is no SQL to run and no column to drop: the change adds no store migration, and no record holds the table.
+What the rollback costs is the step:
+the earlier daemon tells no role the table, so the step does nothing, and a commit can again reach the remote with another role's App as its author.
+A tmux daemon rolled back leaves `<state_dir>/bin/jj`, which runs a `legion jj` command that the older `legion` does not have, so every pane's `jj` fails until the operator deletes that file (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
 
 ### Contract discipline
 
@@ -9821,9 +9840,9 @@ each issue's pod (every role of it alike) and the image probe's.
   token`, or `agent-secrets: the token login failed; retrying` with the class the failure was sorted into, the schedule that class takes and the cause), and `GET /legion/v1/state`'s `agentSecretsLogin` reads its `state`:
   `none` before the first login finishes, `issued` while a credential that has not expired is held (a renewal that failed beside it included), or `failed` (daemon API contract 22).
   Pod enrollment fails closed and retries until a login succeeds.
-  After a login given no HTTP answer, or a 5xx answer from the broker or its front door (the broker is down, out of reach, or cannot reach its database), the daemon waits 2 s before the next, doubling each time to at most 10 s, so after an outage it logs in again within about 10 s of the broker serving.
+  After a login given no HTTP answer, or a 408, a 429 or a 5xx from the broker or its front door, the daemon waits 2 s before the next, doubling each time to at most 10 s, so it logs in again within about 10 s of the broker serving; after a 429, at least its `Retry-After`, at most 5 minutes.
   Every other transport failure — a refused or reset connection, a timeout, an unreachable network, a resolver that failed for any other reason — is the broker out of reach too, and takes that same short wait.
-  After a login the broker refused (a 4xx, 429 included), one a fault on the daemon's own side ended (a TLS handshake that failed or a TLS alert, or a host name that does not resolve), or a token file it could not read, it waits 30 s, doubling each time to at most 5 minutes, because no wait of seconds changes any of those: its trust store, its broker URL or its resolver has to change.
+  After a login the broker refused (any other 4xx), one a fault on the daemon's own side ended (a TLS handshake that failed or a TLS alert, or a host name that does not resolve), or a token file it could not read, it waits 30 s, doubling each time to at most 5 minutes, because no wait of seconds changes any of those: its trust store, its broker URL or its resolver has to change.
   On both schedules it waits whether or not it still holds a credential, and a successful login resets both waits.
   One line is logged per failed login: its class (`broker-unavailable`, `daemon-side-fault`, `broker-refusal` or `login-not-made`), the schedule that class takes (`short` or `long`), the wait before the next login, and the cause.
   Running the daemon off the cluster (the Stage 4a live proof), `token_file` holds a token the operator mints, at most an hour long, for a ServiceAccount of the proof's own that `BROKER_SERVICE_LOGINS` lists for `legion-daemon` and no running daemon uses, with `kubectl create token <account> -n <namespace> --audience <the broker's audience> --duration 1h`:
@@ -10498,7 +10517,8 @@ Containers, in order:
    Every assignment to this pod -- the first, and a live idle worker re-prompted after another role's pod has touched the shared working copy -- first adopts `@` for the assigned role:
    the daemon sends the shim an `adopt-working-copy` frame (`jjUser`, `jjEmail`, `timeoutMs` — never a command or a path), the shim runs the same `jj metaedit --update-author` in its own workspace (`LEGION_WORKSPACE`/`LEGION_ROOT_WORKSPACE`) and answers `adopt-working-copy-result`;
    `ok: false` fails the delivery exactly as a failed `metaedit` does on tmux.
-   The metaedit fills an empty author, and `jj git push` refuses a commit with an empty author.
+   The metaedit fills an empty author.
+   `jj git push` refuses a commit with an empty author, but the push step of `legion jj` first gives such a commit the author of the role that its `Legion-Role` trailer names, where the step's rules let it (`docs/deployment.md`).
 
 Volumes and mounts:
 

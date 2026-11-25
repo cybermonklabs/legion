@@ -19,7 +19,7 @@
 // in what or in the reading is written as \n.
 //
 // The cost of no cap: a wait whose fact never comes holds its test binary until 30 s before the
-// deadline (in CI's race step, -timeout 30m, about 29.5 minutes), and every later wait of
+// deadline (in CI's race legs, -timeout 40m, about 39.5 minutes), and every later wait of
 // Eventually or Until in that binary begins with the margin already passed, asks its question
 // once and fails. Such a give-up adds ", a moment that had passed before this wait began: the
 // first give-up line in time order is the cause" before its reading, so the first give-up line in
