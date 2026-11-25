@@ -34,5 +34,6 @@ GATE = gate("step_models_chain", STEP_MODELS_CHAIN_JOB, runs=[
     (".github/actions/pull-test-images/**", at(STEP_MODELS_CHAIN_JOB, "Pull the NATS test container images")),
     (f"{DAEMON}/internal/testnats/nats.go", f"{at(STEP_MODELS_CHAIN_JOB, 'Pull the NATS test container images')} "
                                             f"const Image, the image of the package's own broker"),
-) + ceiling_reads(STEP_MODELS_CHAIN_JOB) + install_jj(STEP_MODELS_CHAIN_JOB) + install_omp(STEP_MODELS_CHAIN_JOB)
+) + ceiling_reads(STEP_MODELS_CHAIN_JOB) + crash_safety_reads(STEP_MODELS_CHAIN_JOB) + install_jj(STEP_MODELS_CHAIN_JOB)
+  + install_omp(STEP_MODELS_CHAIN_JOB)
   + setup_go(STEP_MODELS_CHAIN_JOB, f"{DAEMON}/go.mod") + bun_job(STEP_MODELS_CHAIN_JOB))
