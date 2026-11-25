@@ -785,8 +785,8 @@ provider_keys:
   `instructions` appends nothing.
   The launch follows the record, not the mode:
   a tree the daemon drew into the memory group keeps its overlays and its instructions while the
-  block still names them, whatever the mode is now, so `mode: off` stops new draws and takes
-  memory from no tree already running with it.
+  block still names them, whatever the mode is now, so `mode: off` gives every new tree no arm and
+  takes memory from no tree already running with it.
   Taking the files away is removing them from the block.
   The loader refuses a `mode` that is no word of the three, and a mode other than `off` that names
   no `config_files`.
@@ -804,8 +804,13 @@ provider_keys:
   (`experiments: {plan-length: {mode: random, unit: issue, variants: [{name: long, config_files: [/etc/legion-experiments/plan-length.yml]}, {name: control}]}}`).
   An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it
   once.
-  `mode` is `off`, the default, which draws for no unit, `on`, which gives every new unit the arm
-  `on_variant` names, or `random`, which draws among the arms by their weights.
+  `mode` is `off`, `on` or `random`, and `off` is the default.
+  `off` gives every new unit no arm, and the daemon records that unit at the empty arm, with the
+  mode `off` and the instant.
+  The record keeps that arm as `""`, and `legion state --json` shows `""` too.
+  The plain `legion state` line prints it as `none`.
+  `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their
+  weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
   `roles` lists the issue roles whose launches load the experiment's arms, each once, and every

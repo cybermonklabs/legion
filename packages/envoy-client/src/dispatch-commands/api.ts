@@ -113,6 +113,16 @@ export const WRITE_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/projects/{key}/artifacts", commands: ["artifact"] },
   { method: "POST", pattern: "/api/v1/markdown/round-trip", commands: ["artifact"] },
   { method: "POST", pattern: "/api/v1/projects", commands: ["project"] },
+  {
+    method: "PUT",
+    pattern: "/api/v1/projects/{key}/proven-sessions",
+    commands: ["project-update"],
+  },
+  {
+    method: "DELETE",
+    pattern: "/api/v1/projects/{key}/proven-sessions",
+    commands: ["project-update"],
+  },
   { method: "POST", pattern: "/api/v1/projects/{key}/related", commands: ["related"] },
   {
     method: "POST",

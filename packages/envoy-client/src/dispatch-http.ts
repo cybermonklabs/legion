@@ -1602,6 +1602,24 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "projects"]);
   }
 
+  /** `PUT /api/v1/projects/{key}/proven-sessions`: turn the project's proven-sessions setting on.
+   *  A bearer names its session in `actor`. It answers the project as `listProjects` lists it. A
+   *  token scoped to another project is 403 PROJECT_SCOPE. */
+  async turnOnProvenSessions(
+    project: string,
+    input: { readonly actor?: Actor } = {}
+  ): Promise<Project> {
+    return this.#json("PUT", ["api", "v1", "projects", project, "proven-sessions"], input);
+  }
+
+  /** `DELETE /api/v1/projects/{key}/proven-sessions`: turn the project's proven-sessions setting
+   *  off. The route needs the person scope, so a credential without it is 403
+   *  OAUTH_SCOPE_REQUIRED, and its writer is the person the credential acts for. It answers the
+   *  project as `listProjects` lists it. A token scoped to another project is 403 PROJECT_SCOPE. */
+  async turnOffProvenSessions(project: string): Promise<Project> {
+    return this.#json("DELETE", ["api", "v1", "projects", project, "proven-sessions"]);
+  }
+
   /** `GET /api/v1/projects/{key}/architecture-sources`: the project's architecture sources, one
    *  per repository, in the order the project added them; `[]` when it has none.
    *
@@ -2267,8 +2285,9 @@ export class DispatchClient {
   }
 
   /** `GET /api/v1/projects/{key}/plans`: each finished issue of the project, newest close first,
-   *  with its plan, each retro's rating, its time and its count of failed steps. `since` and
-   *  `until` bound the close to `[since, until)`, and a bound left out is not sent. */
+   *  with its plan, each retro's rating, its time, its count of failed steps, and the experiment
+   *  and the variant the step records of its newest run name, null where they name none. `since`
+   *  and `until` bound the close to `[since, until)`, and a bound left out is not sent. */
   async listProjectPlans(
     project: string,
     window: { readonly since?: string | undefined; readonly until?: string | undefined } = {}

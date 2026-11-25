@@ -394,7 +394,7 @@ func checkRefusal(t *testing.T, exchange corpusExchange, token *Token, err error
 	var refused *RefusedError
 	permanent := asRefused(err, &refused) && refused.Permanent()
 	if permanent != exchange.Expect.Permanent {
-		t.Errorf("the client reads the refusal as permanent=%t, want %t: only a refusal no later trade can cure stops a renewal loop, and the broker's 429 is not one", permanent, exchange.Expect.Permanent)
+		t.Errorf("the client reads the refusal as permanent=%t, want %t: only a refusal no later trade can cure stops a renewal loop, and an outage (a 408 or a 429) is not one", permanent, exchange.Expect.Permanent)
 	}
 }
 
