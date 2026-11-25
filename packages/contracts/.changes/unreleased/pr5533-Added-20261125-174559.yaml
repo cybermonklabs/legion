@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  The step record's types gain `set_model` and `answers`, and the plans read gains
+  `set_model_steps`. A shared formatter prints a record's set model and its counts the same way in
+  the command and the Steps tab. `STEP_ANSWERS_MAX` is 16, the most models one step record lists.
+time: 2026-11-25T17:45:59Z
+custom:
+    Issue: pr5533

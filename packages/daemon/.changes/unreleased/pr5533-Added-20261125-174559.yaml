@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+  A step record now names the model its agent's launch was set to, and each model that answered
+  the agent's own calls, with its count. The shim around each harness counts its launch's calls by
+  the model that answered, and sends its final totals at exit. Before each event that can start or
+  end a step, the daemon reads its agents' totals, for at most 5 s. It keeps each read it used, so
+  a restart loses none. Where it can have missed a call, the record says that it does not know the
+  counts. A launch still starting when its step ends leaves the counts unknown. The Claude Code
+  bridge now reports each response once, and names the set model from Claude Code's first `init`
+  line.
+
+  The release adds the migration `20261125171320_launch_model_totals`. A rollback past this release
+  runs its way back first: `docs/kubernetes.md`, "Rolling back the release that counts each step's
+  models", gives it.
+time: 2026-11-25T17:45:59Z
+custom:
+    Issue: pr5533
