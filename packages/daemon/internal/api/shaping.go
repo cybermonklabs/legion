@@ -949,9 +949,9 @@ const shapedAnswersContract = 193
 // served the keys of 256 without this object.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract the key arrived at stays where it is. It moves only with this
-// change's own number, and answers.go's SupportedContracts names the constant rather than its
-// number for that reason.
+// that constant, and the contract the key arrived at stays where it is. The cutover froze this
+// number in answers.go's frozenContracts. It does not move with DaemonAPIVersion() or the entry
+// numbers a build assigns.
 const dispatchCredentialContract = 275
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting

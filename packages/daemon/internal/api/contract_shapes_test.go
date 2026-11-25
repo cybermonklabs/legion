@@ -69,10 +69,11 @@ const keyPathRule = "a key path is one key of a body, written as the dotted path
 // in the fixture's entry in `packages/contracts/src/legion-api.test.ts`.
 //
 // A domain is held under the field's own key path, and it is the sorted set of the values whose
-// arrival (answers.go's EnumeratedFields) is at or below that contract: what a reader there
-// admits, and not what the fixture bodies happen to carry.
+// arrival (answers.go's EnumeratedFields) is at or below that contract and that no entry at or
+// below it retired (entryTestRows.retiredValues): what a reader there admits, and not what the
+// fixture bodies happen to carry.
 const valueDomainRule = "a value domain is held under the key path of a field answers.go's EnumeratedFields declares, " +
-	"and holds the sorted values whose arrival is at or below that contract"
+	"and holds the sorted values whose arrival is at or below that contract and that no entry at or below it retired"
 
 // frozenRecordsMissing is what a missing fixture reads as: what it holds, and the rules its
 // records are read by.
@@ -964,9 +965,10 @@ func enumeratedPathsOf(fields []EnumeratedField, id AnswerID) []string {
 	return paths
 }
 
-// domainsOf is what one contract admits at each enumerated field: values that had arrived and
-// had not yet been retired by an entry. A retired value remains in the declaration history but
-// leaves the answer domain from the retiring entry onward. An answer with no declared field
+// domainsOf is what one contract admits at each enumerated field of one answer: the values whose
+// arrival is at or below it and that no entry at or below it retired (entryTestRows.retiredValues),
+// sorted, by the field's key path (valueDomainRule). A retired value keeps its row of the table,
+// which serves it to a reader below the entry that retired it. An answer with no declared field
 // reads as an empty map, never nil, so every record writes `domains`.
 func domainsOf(fields []EnumeratedField, id AnswerID, contract int) map[string][]string {
 	domains := map[string][]string{}
@@ -1554,12 +1556,13 @@ func allShapeProblems(records map[shapeKey]contractShape, served map[shapeKey]an
 // is no row of the table and has no record to keep.
 //
 // Each domain a record carries is one of an enumerated field of its answer, and holds the values
-// whose arrival is at or below that contract (answers.go's EnumeratedFields, domainsOf). A field
-// whose values a contract admits any of has its domain on that contract's record. A record that
-// holds no domain for a field admits no value of it, as one holding an empty domain does, so a
-// field whose every value arrived above a contract needs no domain on that contract's record:
-// the records of older contracts stay as they are when an entry adds a field. A domain of a field
-// the table dropped or renamed is red here rather than left standing.
+// whose arrival is at or below that contract and that no entry at or below it retired
+// (entryTestRows.retiredValues; answers.go's EnumeratedFields, domainsOf). A field whose values a
+// contract admits any of has its domain on that contract's record. A record that holds no domain
+// for a field admits no value of it, as one holding an empty domain does, so a field whose every
+// value arrived above a contract needs no domain on that contract's record: the records of older
+// contracts stay as they are when an entry adds a field. A domain of a field the table dropped or
+// renamed is red here rather than left standing.
 func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	if rewritingFixtures() {
 		t.Skip("the fixtures are being rewritten; run the suite again without -update")
@@ -1698,7 +1701,8 @@ func recordSetProblems(t *testing.T, dir string) []string {
 	// rather than a domain nothing records, and every arrival is a contract this daemon serves a
 	// shape for. A value older than the field's own answer is no error — the record answer
 	// arrived at 193 and carries all nine values of `answeredBy` from its first record — since a
-	// domain is every value whose arrival is at or below the contract (domainsOf).
+	// domain is every value whose arrival is at or below the contract, but a value an entry at or
+	// below it retired (entryTestRows.retiredValues; domainsOf).
 	for _, field := range EnumeratedFields() {
 		if !slices.ContainsFunc(Answers(), func(answer Answer) bool { return answer.ID == field.Answer }) {
 			errorf("answers.go's EnumeratedFields declares `%s` of the %s answer, which is no row of Answers", field.KeyPath, field.Answer)
@@ -1745,7 +1749,7 @@ func recordSetProblems(t *testing.T, dir string) []string {
 				continue
 			}
 			if frozen && !slices.Equal(domain, admitted) {
-				errorf("the records hold `%s` on the %s answer at contract %d admitting %v and the table says %v: a domain holds the sorted values whose arrival is at or below the contract",
+				errorf("the records hold `%s` on the %s answer at contract %d admitting %v and the table says %v: a domain holds the sorted values whose arrival is at or below the contract and that no entry at or below it retired",
 					path, record.Answer, record.Contract, domain, admitted)
 			}
 			if !frozen && !slices.IsSorted(domain) {
@@ -1753,7 +1757,7 @@ func recordSetProblems(t *testing.T, dir string) []string {
 			}
 			for _, value := range domain {
 				if !frozen && !slices.Contains(admitted, value) {
-					errorf("the records hold `%s` on the %s answer at contract %d admitting `%s`, and the rows of that contract admit %v: a domain holds only values whose arrival is at or below the contract",
+					errorf("the records hold `%s` on the %s answer at contract %d admitting `%s`, and the rows of that contract admit %v: a domain holds only values whose arrival is at or below the contract and that no entry at or below it retired",
 						path, record.Answer, record.Contract, value, admitted)
 				}
 			}

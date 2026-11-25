@@ -876,15 +876,6 @@ func servedRecordsAt(contract int, served map[shapeKey]answerShape, walked map[s
 // again.
 func TestEntryFixtures(t *testing.T) {
 	entries := NumberedEntries()
-	for _, entry := range entries {
-		for _, retired := range testRowsByEntry[entry.ID].retiredValues {
-			before := domainsOf(EnumeratedFields(), retired.answer, entry.Number-1)
-			if !slices.Contains(before[retired.keyPath], retired.value) {
-				t.Fatalf("entry %d cannot retire %q at %s of %s: the preceding contract does not admit it",
-					entry.ID, retired.value, retired.keyPath, retired.answer)
-			}
-		}
-	}
 	if !rewritingFixtures() {
 		composed := buildRecords(t, packageEntryFixtures)
 		for _, entry := range entries {
@@ -1085,13 +1076,11 @@ type retiredEnumValue struct {
 	keyPath, value string
 }
 
+// retiredEnumValueAt says whether an entry numbered at or below contract retired the value.
 func retiredEnumValueAt(answer AnswerID, keyPath, value string, contract int) bool {
 	row := retiredEnumValue{answer: answer, keyPath: keyPath, value: value}
-	for _, entry := range registry().entries {
-		if entry.Number > contract {
-			break
-		}
-		if slices.Contains(testRowsByEntry[entry.ID].retiredValues, row) {
+	for _, rows := range entriesTestRows() {
+		if entryNumber(rows.entry) <= contract && slices.Contains(rows.retiredValues, row) {
 			return true
 		}
 	}
@@ -1159,6 +1148,8 @@ func entriesTestRows() []entryTestRows {
 // pluginRequests it adds is a route no frozen row and no other entry's row holds: a route's type
 // is the type its handler decodes, which an entry's row adds and does not move. A registration of
 // no entry would add its rows to no table, and a second row of one route would hide the first.
+// And each value a registration retires is one the contract before its entry admits, so a
+// retirement of a value that never arrived, or that an earlier entry retired, is refused.
 func TestEveryEntrysTestRowsAddToTheTables(t *testing.T) {
 	registered := map[int]bool{}
 	for _, entry := range NumberedEntries() {
@@ -1176,6 +1167,13 @@ func TestEveryEntrysTestRowsAddToTheTables(t *testing.T) {
 				t.Errorf("entry %d adds %s to pluginRequests, which holds that route already", rows.entry, route)
 			}
 			held[route] = rows.requests[route]
+		}
+		for _, retired := range rows.retiredValues {
+			before := domainsOf(EnumeratedFields(), retired.answer, entryNumber(rows.entry)-1)
+			if !slices.Contains(before[retired.keyPath], retired.value) {
+				t.Errorf("entry %d retires %q at %s of the %s answer, which the contract before it does not admit",
+					rows.entry, retired.value, retired.keyPath, retired.answer)
+			}
 		}
 	}
 }

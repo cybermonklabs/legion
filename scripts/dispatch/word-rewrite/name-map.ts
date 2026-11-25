@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { daemonContract } from "../../../packages/contracts/src/daemon-contract.ts";
 import { holdsWord } from "./pattern.ts";
 
 /**
@@ -36,24 +35,10 @@ export interface MapEntry {
 /** The daemon contract that removed the child operation `park_child` (cybermonklabs/legion#4573). */
 export const CHILD_OPERATION_REMOVED = 205;
 
-/** The daemon API contract number of the working tree at `root`. */
+/** The daemon API contract number of the working tree at `root`: L plus its count of entry
+ *  fixtures, as `daemonContract` of packages/contracts counts them for a checkout. */
 export function readContract(root: string): number {
-  const script = join(root, "scripts/daemon-contract.sh");
-  let text: string;
-  try {
-    text = execFileSync("bash", [script], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`Cannot read this checkout's daemon API contract: ${reason}`, { cause: error });
-  }
-  const output = text.trim();
-  const contract = Number(output);
-  if (!/^[1-9][0-9]*$/.test(output) || !Number.isSafeInteger(contract)) {
-    throw new Error(
-      `${script} did not print a positive integer contract: ${JSON.stringify(output)}`
-    );
-  }
-  return contract;
+  return daemonContract({}, root);
 }
 
 const dispatchMerge = { dispatchHolds: "merge" } as const;

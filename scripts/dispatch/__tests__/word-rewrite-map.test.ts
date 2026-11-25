@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { daemonContract } from "../../../packages/contracts/src/daemon-contract.ts";
 import {
@@ -18,21 +16,6 @@ import {
 const ROOT = join(import.meta.dir, "..", "..", "..");
 const RECORDED = daemonContract({}, ROOT);
 
-test("readContract refuses a failed script or invalid output", () => {
-  const root = mkdtempSync(join(tmpdir(), "word-rewrite-contract-"));
-  try {
-    const scripts = join(root, "scripts");
-    mkdirSync(scripts);
-    const script = join(scripts, "daemon-contract.sh");
-    writeFileSync(script, "echo 42; echo 'fixture missing' >&2; exit 1\n");
-    expect(() => readContract(root)).toThrow(/Cannot read.*[\s\S]*fixture missing/);
-    writeFileSync(script, "echo 42-extra\n");
-    expect(() => readContract(root)).toThrow("did not print a positive integer contract");
-  } finally {
-    rmSync(root, { recursive: true });
-  }
-});
-
 function reach(daemon: number | "none" | null, dispatchHoldsMerge = false): Reach {
   return {
     daemonAtLeast: (contract) => daemon === "none" || (daemon !== null && daemon >= contract),
@@ -48,10 +31,6 @@ function entry(old: string): MapEntry {
 
 /** The map of old names to new names. This file is one of the places the word may stand. */
 describe("the map", () => {
-  test("its daemon contract is the one this checkout records, read and not written down", () => {
-    expect(readContract(ROOT)).toBe(RECORDED);
-  });
-
   test("an entry gated on a contract applies only at or above it, or where the run names no daemon", () => {
     const notice = entry("parked-decision");
     expect(notice.from).toEqual({ contract: RECORDED });

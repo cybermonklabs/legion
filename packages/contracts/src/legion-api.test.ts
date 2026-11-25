@@ -5,6 +5,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import {
   type ContractRecords,
+  type ContractShape,
   composeEntries,
   daemonApiRecords,
   entryFixtures,
@@ -280,8 +281,9 @@ const schemas: Record<string, z.ZodType> = {
   //
   // `domains` is the other half of a record: for each field of that answer the daemon's table
   // declares enumerated (`enumerated-fields.json`), under the field's own key path, the sorted
-  // values whose arrival is at or below that contract — what a reader there admits, and not
-  // what any sample body carries. An answer with no such field writes `{}`. The rule it stands
+  // values whose arrival is at or below that contract and that no entry at or below it retired
+  // (an entry fixture's `removeValues`) — what a reader there admits, and not what any sample
+  // body carries. An answer with no such field writes `{}`. The rule it stands
   // for is that a value refuses a reader as a key does: a body carrying a value the reader's
   // enumeration does not name is refused whole, which is why the record carries the domain and
   // the daemon serves an unadmitted value down.
@@ -657,6 +659,13 @@ function enumeratedFields(roots: Record<string, z.ZodType>): {
 // it, so the row is passed over here; a row no record carries at all is compared as any other,
 // and fails.
 //
+// One kind of value has no member of this module to meet either: a value an entry retired, by its
+// `removeValues`. The daemon's table still declares it, for a reader below that entry, and this
+// build's enumeration no longer names it. Such a value is told apart by the records too: the
+// record of L admits it and the record of this build's own contract does not. Only such a value is
+// passed over; every other declared value is compared, so one this build's enumeration does not
+// name fails whether or not a record admits it.
+//
 // The rows and the records are this build's (`daemon-api-records.ts`): `enumerated-fields.json`
 // and `contract-shapes.json`, which hold the numbered entries', with the rows and the records
 // each entry fixture adds over them, so a value an entry adds is compared as one the file holds.
@@ -672,17 +681,17 @@ test("every enumerated field the daemon declares holds this build's own values",
   // and in the record of any earlier one.
   const ownPaths = new Set<string>();
   const earlierPaths = new Set<string>();
-  // A released value can be retired: its declaration stays, but the current domain drops it.
-  const ownDomains = new Map(
-    build.records
-      .filter((record) => record.contract === build.contract)
-      .map((record) => [record.answer, record.domains])
-  );
+  // Each answer's domains, by key path, in the record of L and in that of this build's own
+  // contract: a value the first admits and the second does not is one an entry retired.
+  const lastDomains = new Map<string, ContractShape["domains"]>();
+  const ownDomains = new Map<string, ContractShape["domains"]>();
   for (const record of build.records) {
     const paths = record.contract === build.contract ? ownPaths : earlierPaths;
     for (const keyPath of record.keyPaths) {
       paths.add(`${record.answer} ${keyPath}`);
     }
+    if (record.contract === build.last) lastDomains.set(record.answer, record.domains);
+    if (record.contract === build.contract) ownDomains.set(record.answer, record.domains);
   }
 
   for (const row of rows) {
@@ -702,8 +711,15 @@ test("every enumerated field the daemon declares holds this build's own values",
     if (read === undefined) {
       continue;
     }
+    const own = ownDomains.get(row.answer)?.[row.keyPath] ?? [];
+    const retired = (lastDomains.get(row.answer)?.[row.keyPath] ?? []).filter(
+      (value) => !own.includes(value)
+    );
     expect(
-      ownDomains.get(row.answer)?.[row.keyPath],
+      row.values
+        .map((value) => value.value)
+        .filter((value) => !retired.includes(value))
+        .sort(),
       `the daemon's \`${row.keyPath}\` of the ${row.answer} answer and this build's enumeration name different values`
     ).toEqual([...read].sort());
   }

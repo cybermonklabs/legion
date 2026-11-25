@@ -772,7 +772,7 @@ func (r *keptDecisionsRig) readWithTheReleaseBefore(tree, dsn string, told []kep
 // legion.yaml scripts/e2e/stage1-skeleton.sh writes, under the stub OMP and the plugin manifests
 // that script gives it, and answers GET /readyz and GET /legion/v1/state with 200, a state that
 // holds each of issues; then it stops, and its log holds no error naming a table. The manifest
-// declares the contract this checkout's pi-legion declares; where the binary's boot gate refuses
+// declares this build's contract (api.DaemonAPIVersion()); where the binary's boot gate refuses
 // it and names the contract it requires, the manifest takes that one and the binary starts once
 // more. Its private tmux server, `legion-<project's claim token>`, is a real daemon's name for a
 // seeded project such as LEGION, so the daemon runs under a TMUX_TMPDIR of its own, and the
