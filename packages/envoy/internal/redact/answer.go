@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // Answer is the body of an HTTP answer as every client of this repository reads it (ReadAnswer):
@@ -179,14 +180,23 @@ func (a Answer) StreamTo(w io.Writer) (int64, error) {
 func Holds(a Answer, test func(body []byte) bool) bool { return test(a.bytes()) }
 
 // Echoes reports whether text, words a caller read from a's bytes and hands on where no print of
-// the rule reads them (an id a route answers back as it came), holds a run of a credential a's
-// requests carried, by the rule Tokens redacts such a run by: text that echoes one, as whatever
-// answers in its server's place can. It reads the credentials of a's own requests, so a caller
-// whose transport presents a credential it never holds (a token a broker rotates) asks it of the
-// answer that carried one. It answers no text, and false for the zero Answer.
+// the rule reads them (an id a route answers back as it came), holds a run of TokenPiece
+// characters of a credential a's requests carried, found as Tokens finds such a run: text that
+// echoes one, as whatever answers in its server's place can. It reads the credentials of a's own
+// requests, so a caller whose transport presents a credential it never holds (a token a broker
+// rotates) asks it of the answer that carried one. A value shorter than TokenPiece, which the
+// record counts too (a query value such as the `true` of a read's `?blocks=true`), holds no such
+// run, so a word that equals it is no echo: Tokens redacts such a value only whole, where it
+// stands alone in a print, and a run is what a credential is echoed by. It answers no text, and
+// false for the zero Answer.
 func Echoes(a Answer, text string) bool {
-	carried := a.carried()
-	return len(carried) > 0 && Tokens(text, -1, carried...) != text
+	var runs []string
+	for _, credential := range a.carried() {
+		if utf8.RuneCountInString(strings.TrimSpace(credential)) >= TokenPiece {
+			runs = append(runs, credential)
+		}
+	}
+	return len(runs) > 0 && Tokens(text, -1, runs...) != text
 }
 
 // ContainsFold reports whether body holds phrase, which must be lower-case ASCII, in whatever
