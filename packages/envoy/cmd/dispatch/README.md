@@ -3689,7 +3689,7 @@ Where a write states facts beyond its node, each such fact is a term of its own,
 
 - `blocks-child`, the child that moves issues, their documents, a block's text and rank, results and components: the text and rank values of each block whose text a version wrote; an issue's `child_of` and `needs`; an artifact's `part_of` its issue and a document version's node; a result's node with its values and tuples, its screenshots and its retraction; a component's node with its `part_of`, `depends_on` and `affects`; and a criterion's `authored_by`.
 
-- `asks-child`, the child that moves decisions, readings, asks and their answers: an ask's `answer_state`, question, options, `authored_by`, `anchored_to` and `owned_by` that `ask.opened` states, and what its other `ask.*` events state, an edit, an answer, a resolution and a follower; a Keep; and an agent's decision and its reading.
+- `asks-child`, the child that moves decisions, readings, asks and their answers: an ask's `answer_state`, question, options, `authored_by`, `anchored_to` and `owned_by` that `ask.opened` states, and what its other `ask.*` events state, an edit, an answer, a resolution and a follower; a Keep; an ask block copy's `copied_from` (`ask_copy`), and an ask node's `invalid` reason and its retraction (`ask_invalid`, over `block.invalid`); and an agent's decision and its reading.
 
 - `lenses-child`, the child that moves interactions, lenses, lens kinds, constraints and risks: an interaction and its frames, a lens and its finding blocks, a lens kind, a constraint and a risk.
 

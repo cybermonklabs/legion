@@ -410,6 +410,17 @@ func storeKinds() []StoreKind {
 		Driver: "decision_keeps.kept_at in the window: a kept_by and a kept_text_sum on the decision",
 		count:  `(select count(*) from decision_keeps where kept_at > ` + sizingWindow + `)`,
 	}, {
+		Name: "ask_copy", MovedBy: movedWithAsks, Tuples: 1,
+		Driver: "document_blocks.changed_at in the window of an ask block that names an ask of another document of its" +
+			" owner and that no ask row of its own document names, a copy of that ask: the copy's copied_from, which" +
+			" a settlement claims once and no table projects",
+		count: `(select count(*) from document_blocks b join artifacts d on d.id = b.artifact_id
+			where b.type = 'ask' and b.changed_at > ` + sizingWindow + `
+			  and not exists (select 1 from asks own where own.block_artifact_id = b.artifact_id and own.block_id = b.block_id)
+			  and exists (select 1 from asks source join artifacts s on s.id = source.block_artifact_id
+			              where source.block_id = b.block_id and source.block_artifact_id <> b.artifact_id
+			                and s.issue_key is not distinct from d.issue_key and s.project_key = d.project_key))`,
+	}, {
 		Name: "ask_invalid", MovedBy: movedWithAsks, Tuples: 2,
 		Driver: "block.invalid events in the window, each a settlement's flag of a block that fails the strict read:" +
 			" at most the reason as its ask node's invalid value, where the block has an ask row, and the retraction" +

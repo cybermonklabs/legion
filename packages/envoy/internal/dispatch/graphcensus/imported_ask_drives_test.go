@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -31,17 +32,18 @@ const invalidBlock = "sized-invalid"
 // opens, each the real site reached as its own lock-step driver reaches it, over the rig the
 // drives before them wrote (importedDrives). They run in this order: alice's answer of the ask a
 // session opened; the close of an issue of its own holding an open ask, and its reopen; the
-// settlement of an ask block whose question a person's edit emptied; the settlement that carries a
-// person's approval onto an approval request a session opened; and the step's catch-up of an
-// unfollow a build before this one recorded.
+// settlement of a copy of the notes' ask block on a document of its own; the settlement of an ask
+// block whose question a person's edit emptied; the settlement that carries a person's approval
+// onto an approval request a session opened; and the step's catch-up of an unfollow a build
+// before this one recorded.
 func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	t.Helper()
 	ctx := context.Background()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	// What each drive's Ready writes for the drive and its check: the issue the close and the
-	// reopen take, the document whose ask block is emptied and that ask, and the document the
-	// carry settles and its approval request.
-	var closing, invalid, invalidAsk, carried, request string
+	// reopen take, the copy, the document whose ask block is emptied and that ask, and the document
+	// the carry settles and its approval request.
+	var closing, copied, invalid, invalidAsk, carried, request string
 	return []graphcensus.StoreDrive{{
 		// alice answers the ask ses_asker opened (closeAskTx), through the one writer of an ask's
 		// answer state (asks.Settled.Queue).
@@ -86,6 +88,33 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Counts: map[graphcensus.StoredKind][]string{
 			{graphstore.KindAsk, graphstore.TupleAnswerState}: {"ask_opened"},
 			{graphstore.KindAsk, graphstore.TupleResolution}:  {"ask_resolved"},
+		},
+	}, {
+		// The settlement of a document of the issue holding a copy of the notes' ask block, whose
+		// ask is open: the copy opens none, and the settlement claims the copy's copied_from. The
+		// version it writes keeps the copy's source on the block's opener (docs' keptAskState), whose
+		// copied_from_document is a dispatch:// address the block index reads as the block's mention
+		// of the notes, as it read the same opener the release before stored.
+		Name: "docs/ask_blocks.go#claimCopies", Database: r.database,
+		Sites: []string{"docs/ask_blocks.go#claimCopies"},
+		Ready: func(t *testing.T) {
+			copied = decoded[struct {
+				Artifact model.Artifact `json:"artifact"`
+			}](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
+				"name": "copy.md", "content": ":::ask{#sizing-ask}\nWhich store do the writers take?\n:::\n",
+			}, "alice", http.StatusCreated)).Artifact.ID
+		},
+		Drive: func(t *testing.T) {
+			r.documents.SettleNow(copied)
+			r.awaitTrue(t, "the settlement claiming the copy's copied_from", `
+				select exists (select 1 from document_blocks d
+					join graph_tuples t on t.from_kind = d.node_kind and t.from_id = d.node_address
+					where d.artifact_id = $1::uuid and d.block_id = 'sizing-ask' and t.kind = $2)
+			`, copied, graphstore.TupleCopiedFrom)
+		},
+		Counts: map[graphcensus.StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.TupleCopiedFrom}: {"ask_copy"},
+			{refs.BlockNodeKind, "mentions"}:                 {"block_ref"},
 		},
 	}, {
 		// The settlement of a document whose ask block, opened by an earlier settlement, a person's
