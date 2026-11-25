@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
@@ -37,7 +38,9 @@ func copyOf(issues ...Issue) []DispatchIssueRow {
 // MaxChainLinks+1 rows from each, a key already on the walk's path ending it; the copy's children
 // of each key the walk started from; and the records themselves. It starts from every record, a
 // done one too, where Store.ChainRows starts only from records not at done: a test that holds a
-// done record reads a walk from it that the store would not make.
+// done record reads a walk from it that the store would not make. It knows no project boundary
+// (inProjectParentSQL): every row a caller copies is of one project, and the boundary's own tests
+// read the store.
 func chainsOf(records []Issue, copied []DispatchIssueRow) *Chains {
 	byKey := make(map[string]DispatchIssueRow, len(copied))
 	for _, row := range copied {
@@ -283,6 +286,135 @@ func TestALoopAndAChainOver32LinksAreUnknown(t *testing.T) {
 		must(t, err)
 		if chain := named.Chain("TREE-9"); !chain.Known() || !slices.Equal(chain.Links, []string{"TREE-1"}) {
 			t.Errorf("the chain of TREE-9 named to the read = %v, %q at %s; want TREE-1, known", chain.Links, chain.Cause, chain.At)
+		}
+	})
+}
+
+// A chain stops at its project's boundary (R19 of dispatch://INFRA-3320), as Dispatch's own walk
+// does: a Dispatch parent of another project is no issue above, whether the copy holds no row of
+// it or holds that project's row of it, the issue at work in that project's daemon's records. So
+// the issue right under such a parent is a root, its own top issue and gate root, and its own
+// architect's: a notice its parent's architect would hear goes to its own (OwningIssue from the
+// parent), and the other project's architect acts on nothing of it (ArchitectActsOn). An issue of
+// the same project further down reads its chain up to the last link of its own project, with that
+// link above it. ReadChains and ReadChainsOf make the one walk, so both answer so, and nothing of
+// the issue's project stands under the other project's issue.
+func TestAChainEndsAtAParentInAnotherProject(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	const (
+		unrowed = "LEGION-40" // under OTHER-40, which the copy holds no row of
+		top     = "LEGION-42" // under OTHER-42, which the copy holds, at work in project OTHER
+		under   = "LEGION-41" // under LEGION-42
+		foreign = "OTHER-42"
+	)
+	inTx(t, st, func(tx pgx.Tx) {
+		other := chainIssue(foreign, foreign, "", phase.Implementing, "in_progress")
+		other.Project, other.HoldsGate = "OTHER", true
+		for _, issue := range []Issue{
+			chainIssue(unrowed, unrowed, "OTHER-40", phase.Implementing, "in_progress"),
+			chainIssue(top, top, foreign, phase.Implementing, "in_progress"),
+			chainIssue(under, top, top, phase.Implementing, "in_progress"),
+			other,
+		} {
+			must(t, records.PutIssue(ctx, tx, issue))
+			putCopy(t, ctx, tx, issue)
+		}
+	})
+
+	project, err := claim.ProjectToken("LEGION")
+	must(t, err)
+	architect := func(key string) claim.Token {
+		t.Helper()
+		token, err := claim.NewToken(project, key, claim.RoleArchitect)
+		must(t, err)
+		return token
+	}
+	everyArchitectRuns := func(claim.Token) bool { return true }
+	inTx(t, st, func(tx pgx.Tx) {
+		pass, err := ReadChains(ctx, tx, records, "LEGION", nil)
+		must(t, err)
+		of, err := ReadChainsOf(ctx, tx, records, "LEGION", []string{unrowed, under, top})
+		must(t, err)
+		for _, read := range []struct {
+			name   string
+			chains *Chains
+		}{{"ReadChains", pass}, {"ReadChainsOf", of}} {
+			for _, tc := range []struct {
+				key, top string
+				links    []string
+			}{
+				{unrowed, unrowed, nil},
+				{top, top, nil},
+				{under, top, []string{top}},
+			} {
+				chains := read.chains
+				if chain := chains.Chain(tc.key); !chain.Known() || !slices.Equal(chain.Links, tc.links) {
+					t.Errorf("%s: the chain of %s = %v, %q at %s; want %v, known: a parent of another project ends it",
+						read.name, tc.key, chain.Links, chain.Cause, chain.At, tc.links)
+				}
+				if root, top, gate := chains.IsRoot(tc.key), chains.TopIssue(tc.key), chains.GateRoot(tc.key); root != (tc.key == tc.top) ||
+					top != tc.top || gate != tc.top {
+					t.Errorf("%s: %s a root %t, its top issue %s and its gate root %s; want a root %t, and %s for both",
+						read.name, tc.key, root, top, gate, tc.key == tc.top, tc.top)
+				}
+				if owner := OwningIssue(project, chains, tc.key, true, everyArchitectRuns); owner != tc.top {
+					t.Errorf("%s: the owner walk from above %s ends at %q, want %s: no issue of another project is above it", read.name, tc.key, owner, tc.top)
+				}
+				if ArchitectActsOn(project, chains, architect(foreign), tc.key) || !ArchitectActsOn(project, chains, architect(tc.top), tc.key) {
+					t.Errorf("%s: on %s %s's architect acts %t and %s's %t; want only %s's", read.name, tc.key,
+						foreign, ArchitectActsOn(project, chains, architect(foreign), tc.key), tc.top, ArchitectActsOn(project, chains, architect(tc.top), tc.key), tc.top)
+				}
+			}
+		}
+		if beneath := pass.Under(foreign); len(beneath) != 0 {
+			t.Errorf("under %s = %v, want nothing of project LEGION", foreign, beneath)
+		}
+	})
+}
+
+// A child of another project is no child of the wait (R9 of dispatch://INFRA-3320), as a parent
+// of another project is no issue above it: the copy's children of a parent are those of the
+// parent's own project (Chains.Children, Store.HasDispatchChildren), so an open child of another
+// project holds none of the parent's phase starts (OpenChildWaits), while an open child of the
+// parent's own project, the control, does.
+func TestAChildInAnotherProjectIsNoChildOfTheWait(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	parent := chainIssue("LEGION-50", "LEGION-50", "", phase.Implementing, "in_progress")
+	foreign := chainIssue("OTHER-51", "OTHER-51", parent.Key, phase.Implementing, "in_progress")
+	foreign.Project = "OTHER"
+	control := chainIssue("LEGION-52", "LEGION-52", "", phase.Implementing, "in_progress")
+	own := chainIssue("LEGION-53", control.Key, control.Key, phase.Implementing, "in_progress")
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, issue := range []Issue{parent, foreign, control, own} {
+			must(t, records.PutIssue(ctx, tx, issue))
+			putCopy(t, ctx, tx, issue)
+		}
+	})
+
+	inTx(t, st, func(tx pgx.Tx) {
+		chains, err := ReadChains(ctx, tx, records, "LEGION", nil)
+		must(t, err)
+		if children := chains.Children(parent.Key); len(children) != 0 {
+			t.Errorf("the children of %s = %v, want none: %s is of another project", parent.Key, children, foreign.Key)
+		}
+		for key, want := range map[string]bool{parent.Key: false, control.Key: true} {
+			has, err := records.HasDispatchChildren(ctx, tx, "LEGION", key)
+			must(t, err)
+			if has != want {
+				t.Errorf("whether %s has a Dispatch child = %t, want %t", key, has, want)
+			}
+		}
+		waits, err := OpenChildWaits(ctx, tx, records, "LEGION", []Issue{parent, control})
+		must(t, err)
+		if wait, held := waits[parent.Key]; held {
+			t.Errorf("%s waits for %+v, want no wait: its one open child is of another project", parent.Key, wait.Open)
+		}
+		if open := waits[control.Key].Open; len(open) != 1 || open[0].Key != own.Key {
+			t.Errorf("%s waits for %+v, want its open child %s", control.Key, open, own.Key)
 		}
 	})
 }

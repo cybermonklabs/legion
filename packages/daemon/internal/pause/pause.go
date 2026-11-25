@@ -523,7 +523,7 @@ func StopRow(pause store.Pause, stop store.PauseStopClaim) (store.PauseRow, erro
 // rows that have not run would never find it. Such a claim is one the operator's spawn made
 // under this daemon's project token (api's spawn), which the pause stops as it stops every other.
 func StopKey(pause store.Pause, issue string) string {
-	if project, _, _ := strings.Cut(issue, "-"); project == pause.Project {
+	if claim.KeyProject(issue) == pause.Project {
 		return issue
 	}
 	return pause.Project

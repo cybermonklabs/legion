@@ -73,22 +73,25 @@ func (e *Engine) tellParentChange(ctx context.Context, tx pgx.Tx, issue *record.
 // root they name nothing of its documents, as main's move of an issue into another tree cleared
 // the issue's generation. The gate root before is the issue itself where it holds its own gate in
 // Legion's work, which no change of parent moves, else oldParent's gate root on the same reading,
-// else, with no old parent, the issue itself. Where it forgets, an issue in Legion's work whose
-// phase holder is now owed the new gate's approved versions has the reconcile of that tree's news
-// queued (queueMovedNews), so its holder is told them. A move under the same gate root forgets
-// nothing.
+// else, with no old parent, the issue itself. An old parent of another project was no issue above
+// the issue (record.InProjectParent, the chain's project boundary for a link the copy no longer
+// holds), so the issue stood as a root under it, and its gate root before is read as with no old
+// parent. Where it forgets, an issue in Legion's work whose phase holder is now owed the new gate's
+// approved versions has the reconcile of that tree's news queued (queueMovedNews), so its holder
+// is told them. A move under the same gate root forgets nothing.
 func (e *Engine) forgetToldAcrossGateRoots(ctx context.Context, tx pgx.Tx, issue record.Issue, oldParent string) error {
+	above := record.InProjectParent(issue.Key, oldParent)
 	keys := []string{issue.Key}
-	if oldParent != "" {
-		keys = append(keys, oldParent)
+	if above != "" {
+		keys = append(keys, above)
 	}
 	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, keys)
 	if err != nil {
 		return err
 	}
 	before := issue.Key
-	if !(chains.HoldsOwnGate(issue.Key) && record.InLegionsWork(issue)) && oldParent != "" {
-		before = chains.GateRoot(oldParent)
+	if !(chains.HoldsOwnGate(issue.Key) && record.InLegionsWork(issue)) && above != "" {
+		before = chains.GateRoot(above)
 	}
 	after := chains.GateRoot(issue.Key)
 	if before == after {
@@ -232,9 +235,11 @@ func (e *Engine) reparentRead(ctx context.Context, tx pgx.Tx, fact intake.Repare
 
 // reparentArchitects is the issues whose architects a change of parent tells (R18): the issue's
 // own, "" where the store records no architect claim of it; the architect above it before, the
-// owner walk from oldParent, "" where neither oldParent nor an issue above it is in Legion's work;
-// and the architect above it now, the owner walk from the issue's parent, "" where no issue above
-// it is in Legion's work. A walk that meets an unknown chain is "" too.
+// owner walk from oldParent, "" where neither oldParent nor an issue above it is in Legion's work,
+// and "" where oldParent is of another project, which was no issue above the issue
+// (record.InProjectParent): the issue stood under it as a root, its own architect's; and the
+// architect above it now, the owner walk from the issue's parent, "" where no issue above it is in
+// Legion's work. A walk that meets an unknown chain is "" too.
 type reparentArchitects struct {
 	own, before, now string
 }
@@ -255,9 +260,10 @@ func (e *Engine) reparentArchitects(ctx context.Context, tx pgx.Tx, issue record
 	if err != nil {
 		return reparentArchitects{}, err
 	}
+	above := record.InProjectParent(issue.Key, oldParent)
 	keys := []string{issue.Key}
-	if oldParent != "" {
-		keys = append(keys, oldParent)
+	if above != "" {
+		keys = append(keys, above)
 	}
 	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, keys)
 	if err != nil {
@@ -279,11 +285,11 @@ func (e *Engine) reparentArchitects(ctx context.Context, tx pgx.Tx, issue record
 	if claims[own] != nil {
 		told.own = issue.Key
 	}
-	if oldParent != "" {
-		if parent, recorded := chains.Record(oldParent); recorded && record.InLegionsWork(parent) {
-			told.before = walk.Owner(oldParent, false)
-		} else if len(chains.Above(oldParent)) > 0 {
-			told.before = walk.Owner(oldParent, true)
+	if above != "" {
+		if parent, recorded := chains.Record(above); recorded && record.InLegionsWork(parent) {
+			told.before = walk.Owner(above, false)
+		} else if len(chains.Above(above)) > 0 {
+			told.before = walk.Owner(above, true)
 		}
 	}
 	if len(chains.Above(issue.Key)) > 0 {

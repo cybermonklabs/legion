@@ -144,6 +144,42 @@ func TestALoopOfPresentRowsIsReadRightAgain(t *testing.T) {
 	}
 }
 
+// A re-read stops at a parent of another project, as the chain does (R19 of
+// dispatch://INFRA-3320): CAPTURE-400's chain is unknown for the row of CAPTURE-401 the copy
+// lacks, and Dispatch serves CAPTURE-401 under OTHER-5, an issue at work in project OTHER. The
+// re-read asks Dispatch for the issue and that link alone, writes no row of the other project into
+// the copy, and leaves the chain known and the key dropped.
+func TestAReReadStopsAtAParentInAnotherProject(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	client := &tickDispatch{}
+	w, _ := rereadRuntime(t, pool, client)
+	const key, parent, foreign = "CAPTURE-400", "CAPTURE-401", "OTHER-5"
+	seedRereadIssue(t, pool, key)
+	seedRereadRow(t, pool, key, parent, 1)
+	client.serve(dispatch.Issue{Key: key, Project: "CAPTURE", Status: "in_progress", Parent: &[]string{parent}[0], LastSeq: 2})
+	client.serve(dispatch.Issue{Key: parent, Project: "CAPTURE", Status: "in_progress", Parent: &[]string{foreign}[0], LastSeq: 2})
+	client.serve(dispatch.Issue{Key: foreign, Project: "OTHER", Status: "in_progress", LastSeq: 2})
+	if rereadKnown(t, pool, key) {
+		t.Fatal("the chain of an issue whose parent has no row in the copy reads known before any re-read")
+	}
+
+	pending := map[string]*chainReread{key: {due: time.Now(), delay: chainRereadFirst, logged: map[string]bool{}}}
+	if next := w.rereadDue(context.Background(), pending, time.Now()); !next.IsZero() || len(pending) != 0 {
+		t.Fatalf("after one re-read the re-read holds %v, next due %s, want the chain known and dropped", pending, next)
+	}
+	if asked, want := client.asked(), []string{key, parent}; !slices.Equal(asked, want) {
+		t.Fatalf("Dispatch was asked %v, want %v: %s is of another project, where the chain ends", asked, want, foreign)
+	}
+	var rows int
+	if err := pool.QueryRow(context.Background(), `select count(*) from dispatch_issues where key = $1`, foreign).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("the copy holds %d rows of %s (%v), want none", rows, foreign, err)
+	}
+	if !rereadKnown(t, pool, key) {
+		t.Fatalf("the chain of %s is still unknown after the re-read", key)
+	}
+}
+
 // rereadRuntime is tickRuntime with a logger the test reads.
 func rereadRuntime(t *testing.T, pool *store.Pool, client dispatch.Client) (*workflowRuntime, *syncBuffer) {
 	t.Helper()

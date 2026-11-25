@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
@@ -815,10 +816,9 @@ func transportFailure(err error) error {
 }
 
 // DaemonSession is the session the daemon writes every Dispatch status and message of the issue key
-// under: legion-daemon:<PROJECT>, PROJECT being the key's.
+// under: legion-daemon:<PROJECT>, PROJECT being the key's (claim.KeyProject).
 func DaemonSession(key string) string {
-	project, _, _ := strings.Cut(key, "-")
-	return "legion-daemon:" + project
+	return "legion-daemon:" + claim.KeyProject(key)
 }
 
 func daemonActor(key string) actor {

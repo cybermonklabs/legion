@@ -7,8 +7,11 @@ body: |-
   and calls to the architect the new chain names, and the issue's own architect, the one above it
   before and the one above it now each get one `reparented` notice, an architect that is two of
   them only one. An issue keeps its own run, phase, sessions, slot, design gate and pull
-  request across a change of parent. Where the copy does not hold an issue's chain up to its top,
-  the chain is unknown: the daemon starts nothing new on it, refuses an architect's call on it with
+  request across a change of parent. A chain stops at its project's boundary, as Dispatch's own
+  walk does: a parent of another project is no issue above, so an issue right under one is a root
+  of its own, its own architect's, and a child of another project holds no wait of its parent's.
+  Where the copy does not hold an issue's chain up to its top, the chain is unknown: the daemon
+  starts nothing new on it, refuses an architect's call on it with
   `CHAIN_UNKNOWN`, lists the issue held `chain_unknown` when it has not started, and reads the
   chain again until it is known. The adoption of a closed tree's members, orphan roots, the stored
   ancestry and the hand-over of a lingering tree's children go. This release replaces #5303's

@@ -7,6 +7,8 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading DispatchReading) error {
@@ -167,8 +169,8 @@ func (s *Postgres) DispatchIssues(ctx context.Context, tx pgx.Tx, project string
 // cannot read counts as unfinished for ever (blockers.Blocked), which would hold its slot back
 // for good. The table is keyed by the issue alone, so a key names one row and project is the
 // row's own. DispatchIssues and DispatchChildren keep their project term: the first is the
-// daemon's listing of its own project, and a parent link cannot cross a project, so a child of
-// one is of that project too.
+// daemon's listing of its own project, and a child of another project is no child the second
+// answers, as a parent of another project is no link of a chain (inProjectParentSQL).
 func (s *Postgres) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []string) ([]DispatchIssueRow, error) {
 	if len(keys) == 0 {
 		return nil, nil
@@ -189,6 +191,11 @@ func (s *Postgres) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []strin
 // later step reads it to decide whether a parent's own first phase waits for a child of its own
 // that is still open, which is a question about every child Dispatch knows of, recorded here or
 // not, so it is the mirror that answers it rather than the daemon's records.
+//
+// It answers the children of project alone: a child of another project is no open child of a
+// wait, as a parent of another project is no link of that child's chain (inProjectParentSQL, R19
+// of dispatch://INFRA-3320). The hold such a child puts on its parent's acceptance is Dispatch's
+// (FOREIGN_CHILD_OPEN, in packages/envoy/internal/dispatch/api/issue_parent.go), not this wait's.
 func (s *Postgres) DispatchChildren(ctx context.Context, tx pgx.Tx, project string, parents []string) (map[string][]DispatchIssueRow, error) {
 	children := make(map[string][]DispatchIssueRow, len(parents))
 	if len(parents) == 0 {
@@ -215,7 +222,10 @@ func (s *Postgres) DispatchChildren(ctx context.Context, tx pgx.Tx, project stri
 // MaxChainLinks+1 links: one more than Dispatch allows, which is what tells a chain a stale row
 // made too long from the longest Dispatch keeps. A link the copy holds no row of is read as a row
 // that is not Present, which ends its walk, so a missing row is a fact of the answer rather than
-// a gap in it. The walk is the copy's alone: nothing of the daemon's records decides a link.
+// a gap in it. A parent of another project ends the walk as a parent of none does
+// (inProjectParentSQL): the row reads with no parent, so its chain is known and ends there, and no
+// walk climbs from a row of one project to a row of another. The walk is the copy's alone:
+// nothing of the daemon's records decides a link.
 //
 // Each key is answered once, whichever walks reached it, with the fewest links above a start it
 // stands at, 0 for a key a walk started from. The rows of every walk together are the chain of
@@ -241,16 +251,45 @@ func (s *Postgres) ChainRowsOf(ctx context.Context, tx pgx.Tx, keys []string) ([
 	return read, nil
 }
 
+// inProjectParentSQL is the parent the walk climbs to from the copy's row d: d's parent where that
+// parent is of d's own project, and null, a parent of none, where it is of another. It is the
+// statement of the project boundary every chain the daemon reads from the copy stops at (R19 of
+// dispatch://INFRA-3320): a parent of another project is no issue above, as Dispatch's own walk
+// climbs only to a parent of the issue's project (legionWalkSQL, in
+// packages/envoy/internal/dispatch/api/issue_parent.go). The parent's project is its row's where
+// the copy holds one, and otherwise its key's: the part before the one `-` a Dispatch key holds
+// (claim.KeyProject). It reads d alone, not the walk that reached it, so each key reads with one
+// parent whichever walk reached it; and since no walk climbs past the boundary, every row a walk
+// reaches is of the project of the row it started from. InProjectParent is the same rule in Go,
+// for a parent the copy holds no link to.
+const inProjectParentSQL = `case when coalesce((select p.project from dispatch_issues p where p.key = d.parent),
+		split_part(d.parent, '-', 1)) = d.project then d.parent end`
+
+// InProjectParent is parent as a link of key's chain: parent where its key is of key's own
+// project (claim.KeyProject), and "", a parent of none, where it is of another. It is the chain
+// walk's project boundary (inProjectParentSQL) for a parent the copy holds no link to: the old
+// parent of a change of parent, whose link the copy has already replaced (workflow's reparent
+// reads), and a parent Dispatch answers while the daemon reads a chain again (the daemon's
+// rereadChain) or reads the chains a status call names (api's dispatchReads.readings). It reads
+// the parent's key where the walk reads the parent's row first, and the two agree: Dispatch never
+// moves an issue to another project, so a row's project is its key's.
+func InProjectParent(key, parent string) string {
+	if parent == "" || claim.KeyProject(parent) != claim.KeyProject(key) {
+		return ""
+	}
+	return parent
+}
+
 // chainRows is the one walk ChainRows and ChainRowsOf make, from the keys starts selects with
-// args, up each row's parent to MaxChainLinks+1 links, each key once at the fewest links above a
-// start it stands at.
+// args, up each row's parent of its own project (inProjectParentSQL) to MaxChainLinks+1 links,
+// each key once at the fewest links above a start it stands at.
 func chainRows(ctx context.Context, tx pgx.Tx, starts string, args ...any) ([]ChainRow, error) {
 	rows, err := tx.Query(ctx, `with recursive starts (key) as (`+starts+`
 		), walk (key, depth, parent, status, labels, present, path) as (
-			select s.key, 0, d.parent, d.status, d.labels, d.key is not null, array[s.key]
+			select s.key, 0, `+inProjectParentSQL+`, d.status, d.labels, d.key is not null, array[s.key]
 			from starts s left join dispatch_issues d on d.key = s.key
 			union all
-			select w.parent, w.depth + 1, d.parent, d.status, d.labels, d.key is not null, w.path || w.parent
+			select w.parent, w.depth + 1, `+inProjectParentSQL+`, d.status, d.labels, d.key is not null, w.path || w.parent
 			from walk w left join dispatch_issues d on d.key = w.parent
 			where w.present and w.parent is not null and w.depth < `+strconv.Itoa(MaxChainLinks+1)+` and w.parent <> all(w.path)
 		)

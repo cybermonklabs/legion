@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -74,7 +74,7 @@ func seeDropped(ctx context.Context, pool store.TxPool, seen seenEvent) error {
 // the cursor was kept, and any it dropped or terminated, are read as the consumer left them
 // (decision 11 of dispatch://INFRA-4730).
 func DispatchEventsSeen(ctx context.Context, pool store.TxPool, key string, events []json.RawMessage, through int64) (bool, error) {
-	project, _, _ := strings.Cut(key, "-")
+	project := claim.KeyProject(key)
 	var ids []string
 	for _, raw := range events {
 		var header struct {

@@ -101,9 +101,11 @@ func (w *workflowRuntime) rereadDue(ctx context.Context, pending map[string]*cha
 // holds the chain known afterwards. It reads the issue and then each issue above it, by the parent
 // each answer names, one GetIssue each, up to record.MaxChainLinks links and never one key twice:
 // every row of the chain is read, a present row included, since a stale row and a loop that two
-// late moves made are present rows whose values are wrong. A link Dispatch no longer serves (404)
-// ends the read there and leaves the chain unknown, logged once per key (reread.logged); any
-// other failed read ends it too, and the chain is read again at its next turn.
+// late moves made are present rows whose values are wrong. A parent of another project ends the
+// read as no parent does (record.InProjectParent), since it ends the chain (R19 of
+// dispatch://INFRA-3320): the re-read reads and writes nothing of another project. A link Dispatch
+// no longer serves (404) ends the read there and leaves the chain unknown, logged once per key
+// (reread.logged); any other failed read ends it too, and the chain is read again at its next turn.
 //
 // The readings are applied through the Mirror as the controller tick's re-read of Dispatch is
 // (intake.ControllerTick.Observed, blockers.Mirror): each link's reading in one fact, before the
@@ -136,7 +138,7 @@ func (w *workflowRuntime) rereadChain(ctx context.Context, key string, reread *c
 		read = append(read, issue)
 		next = ""
 		if issue.Parent != nil {
-			next = *issue.Parent
+			next = record.InProjectParent(issue.Key, *issue.Parent)
 		}
 	}
 	if err := w.applyChainReadings(ctx, key, read, nil); err != nil {

@@ -34,8 +34,19 @@ func ProjectToken(project string) (string, error) {
 // IsIssueKey reports whether key is a Dispatch issue key (`LEGION-208`).
 func IsIssueKey(key string) bool { return issueKey.MatchString(key) }
 
-// KeyOfProject reports whether an outbox row keyed key belongs to project: the key's part before
-// its first `-` — the whole key where it has none, as a row keyed by a project itself is (a pause's
+// KeyProject is the project a Dispatch key names: its part before its first `-`, the whole key
+// where it has none, as a row keyed by a project itself is. It is the daemon module's one reading
+// of a key's project in Go, which every reader of one takes: KeyOfProject, record's
+// InProjectParent (a chain's project boundary for a parent the copy holds no link to), and the
+// daemon's own-key checks. The SQL that reads a key's project reads the same part,
+// `split_part(key, '-', 1)` (record's dueRowsSQL and inProjectParentSQL).
+func KeyProject(key string) string {
+	project, _, _ := strings.Cut(key, "-")
+	return project
+}
+
+// KeyOfProject reports whether an outbox row keyed key belongs to project: the key's project
+// (KeyProject) — the whole key where it has none, as a row keyed by a project itself is (a pause's
 // stop of a claim of another project's issue, a controller notice, the gated-steps publish) — is
 // project, compared without regard to case, so that project may be the Dispatch key (`LEGION`) or
 // the claim token's project (`legion`, which ProjectToken lowercases one to one from every key a
@@ -48,8 +59,7 @@ func IsIssueKey(key string) bool { return issueKey.MatchString(key) }
 // run only by the daemon whose project its key names, against that daemon's own claims, so a daemon
 // that writes it writes into another project's work.
 func KeyOfProject(project, key string) bool {
-	keyProject, _, _ := strings.Cut(key, "-")
-	return strings.EqualFold(keyProject, project)
+	return strings.EqualFold(KeyProject(key), project)
 }
 
 // ErrKeyOfAnotherProject is the refusal of a write of an outbox row whose key is not of the

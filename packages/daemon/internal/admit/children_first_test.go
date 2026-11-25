@@ -268,6 +268,34 @@ func TestARootWithNoChildrenStartsPlanningAtItsGatesOpening(t *testing.T) {
 	}
 }
 
+// A5. A child of another project holds no children-first wait (R9 of dispatch://INFRA-3320): a
+// parent's children are those of its own project, as a chain stops at its project's boundary, so a
+// root whose one open Dispatch child is of another project, at work in that project's daemon's
+// records, starts planning at its gate's opening on the slot it holds and is told of no wait, as
+// the root with no children above does.
+func TestAChildOfAnotherProjectHoldsNoChildrenFirstWait(t *testing.T) {
+	pool := migratedPool(t)
+	admission := cfTree(t, pool, 3)
+	const child = "OTHER-2"
+	parent := cfRoot
+	putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: otherProject, Title: child, Tree: child, Parent: &parent, Phase: phase.Implementing, Generation: 1,
+		Status: "in_progress", DispatchStatus: "in_progress", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
+
+	openGate(t, pool, admission, "gate-approved")
+
+	if got := issue(t, pool, cfRoot); got.Phase != phase.Planning {
+		t.Fatalf("the root whose one open child %s is of another project, at its gate's opening = %#v, want it planning", child, got)
+	}
+	assertSlots(t, pool, []record.Slot{{Issue: cfRoot, Index: 0, AdmittedAt: fixedNow}})
+	if told := childrenFirstNotices(t, pool, cfRoot); len(told) != 0 {
+		t.Fatalf("children-first notices = %+v, want none: %s is no child of the wait", told, child)
+	}
+	if blocked := blockedNow(t, pool, admission); len(blocked) != 0 {
+		t.Fatalf("blocked = %#v, want nothing", blocked)
+	}
+}
+
 // A5. One children-first notice per parent per run of its own: every fact, tick and boot runs the
 // admission pass again, and a child filed later during one wait is no second telling, nor is a new
 // run of the issue above it, while a run the parent has not had yet is (R17 of

@@ -918,8 +918,10 @@ func (d *dispatchReads) issue(w http.ResponseWriter, r *http.Request, key string
 // status call brings the copy of Dispatch's issues up to date with before the workflow decides it
 // over the copy (intake.StatusCall.Readings; decision 5 of dispatch://INFRA-4730). Every link is
 // read, a row the copy holds included, since a stale row and a loop two late moves made are rows
-// whose values are wrong. A link the read cannot reach ends that chain's walk there: the copy
-// decides on what it holds, and an unknown chain refuses the call (CHAIN_UNKNOWN).
+// whose values are wrong. A parent of another project ends the walk as no parent does
+// (record.InProjectParent), since it ends the chain (R19 of dispatch://INFRA-3320), so the call
+// reads and writes nothing of another project. A link the read cannot reach ends that chain's walk
+// there: the copy decides on what it holds, and an unknown chain refuses the call (CHAIN_UNKNOWN).
 func (d *dispatchReads) readings(ctx context.Context, keys []string) []intake.IssueStatus {
 	var readings []intake.IssueStatus
 	taken := map[string]bool{}
@@ -934,10 +936,11 @@ func (d *dispatchReads) readings(ctx context.Context, keys []string) []intake.Is
 			if reading, ok := intake.ReadingOf(next, issue); ok {
 				readings = append(readings, reading)
 			}
-			next = ""
+			parent := ""
 			if issue.Parent != nil {
-				next = *issue.Parent
+				parent = record.InProjectParent(next, *issue.Parent)
 			}
+			next = parent
 		}
 	}
 	return readings

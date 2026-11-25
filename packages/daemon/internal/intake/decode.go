@@ -333,8 +333,7 @@ func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, *se
 // projectIssueKey says whether key is an issue key of project, which the daemon decodes events
 // of; any other key is another daemon's.
 func projectIssueKey(key, project string) bool {
-	keyProject, _, _ := strings.Cut(key, "-")
-	return keyProject == project && claim.IsIssueKey(key)
+	return claim.KeyProject(key) == project && claim.IsIssueKey(key)
 }
 
 // DecodeDispatchEvent decodes one event of issue key of project as Dispatch's issue event log

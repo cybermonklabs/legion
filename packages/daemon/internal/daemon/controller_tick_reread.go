@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -287,8 +287,7 @@ func (w *workflowRuntime) readBlocker(ctx context.Context, key string) (intake.I
 }
 
 // ownDispatchKey says whether key is an issue of this daemon's own Dispatch project, by its key's
-// project as intake's decodeDispatchFact reads it (`<PROJECT>-<number>`).
+// project as intake's decodeDispatchFact reads it (claim.KeyProject).
 func (w *workflowRuntime) ownDispatchKey(key string) bool {
-	project, _, _ := strings.Cut(key, "-")
-	return project == w.dispatchProject
+	return claim.KeyProject(key) == w.dispatchProject
 }

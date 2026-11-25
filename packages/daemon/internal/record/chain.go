@@ -15,7 +15,8 @@ import (
 const MaxChainLinks = 32
 
 // ChainRow is one row of the copy a chain read reached (Store.ChainRows): Key's parent, status and
-// labels as the copy holds them, "" for no parent, and Depth, the fewest links above a key the read
+// labels as the copy holds them, "" for no parent and for a parent of another project, which ends
+// a chain as no parent does (inProjectParentSQL), and Depth, the fewest links above a key the read
 // started from that Key stands at, 0 for such a key itself. Present is false where the copy holds
 // no row of Key, a link no chain can be read past; Parent, Status and Labels are then empty.
 type ChainRow struct {
@@ -31,7 +32,8 @@ type ChainRow struct {
 type ChainCause string
 
 const (
-	// ChainKnown is a chain read to its top: its last link, or the issue itself, has no parent.
+	// ChainKnown is a chain read to its top: its last link, or the issue itself, has no parent of
+	// its own project.
 	ChainKnown ChainCause = ""
 	// ChainMissingRow is a chain the copy holds no row of one of its issues, the issue itself
 	// included; Chain.At is that issue.
@@ -76,7 +78,11 @@ func (c Chain) sameFromEachLink() bool {
 // number of issues or links, and the one reader every question of above, under, root and gate
 // root asks. Its chains are the copy's alone (dispatch_issues): nothing of the daemon's records
 // decides a link, and the records decide only which issues on a chain are in Legion's work
-// (InLegionsWork) and which hold their own gate (Issue.HoldsGate).
+// (InLegionsWork) and which hold their own gate (Issue.HoldsGate). Each chain stops at its
+// project's boundary (inProjectParentSQL, R19): a parent of another project is no issue above, so
+// a chain ends at its last issue of its own project, and an issue right under such a parent is a
+// root, its own architect's and its own gate root; and a child of another project is none of
+// Children.
 //
 // Each key's chain is walked once and kept: a walk that reads a chain to its top, or to a row the
 // copy lacks, keeps that chain's remainder for each link it passed, and a later walk that reaches

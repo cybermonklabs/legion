@@ -1,7 +1,9 @@
 package workflow
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -302,6 +304,51 @@ func TestAReparentSeedOfTheReleaseBeforeIsToldAsR18Says(t *testing.T) {
 	}
 	if !strings.Contains(told[0].Reason, "changed from LEGION-208 to LEGION-300") || !strings.Contains(told[0].Reason, "phase implementing") {
 		t.Fatalf("the words %q do not name the record's old parent and its phase", told[0].Reason)
+	}
+}
+
+// A change of parent from a parent of another project tells no architect of that project (R18
+// and R19 of dispatch://INFRA-3320). OTHER-9 is a root at work in project OTHER, recorded by that
+// project's daemon, its row in the copy under its own project. LEGION-700, at work in a slot and
+// holding no gate of its own (a person moved it there from a tree of its own project), stood under
+// OTHER-9 as a root, since a parent of another project is no issue above. Moved under LEGION-208,
+// a root at work, it tells its own architect and LEGION-208's, never OTHER-9's, and the gate root
+// the move is read to leave is LEGION-700 itself, not OTHER-9. The seed and the words still name
+// Dispatch's parent it left.
+func TestAMoveFromAParentInAnotherProjectTellsNoArchitectOfThatProject(t *testing.T) {
+	pool := migratedPool(t)
+	const foreign, moved = "OTHER-9", "LEGION-700"
+	seedLiveRoot(t, pool, reparentFirst, 0)
+	seedIssue(t, pool, record.Issue{Key: foreign, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: foreign, Project: "OTHER", Title: foreign, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U", HoldsGate: true})
+	seedGate(t, pool, record.DesignGate{Issue: foreign, ArtifactID: "artifact-" + foreign, LatestVersion: 1, ApprovedVersion: new(1)})
+	seedIssue(t, pool, record.Issue{Key: moved, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: moved, Parent: new(foreign), Project: "LEGION", Title: moved, Phase: phase.Implementing, Generation: 1,
+		Status: "in_progress", DispatchStatus: "in_progress", Rank: "Z", LastDispatchSeq: 4})
+	seedSlot(t, pool, record.Slot{Issue: moved, Index: 1, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	for _, key := range []string{reparentFirst, moved} {
+		seedArchitectClaim(t, pool, key)
+	}
+	var logged bytes.Buffer
+	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logged, nil)))
+
+	applyMirrored(t, pool, engine, "moved-under-208", intake.DispatchIssue{Key: moved, ResolvedRepo: "sjawhar/legion", Seq: 5,
+		Type: "issue.updated", Status: "in_progress", Title: moved, Parent: reparentFirst, Rank: "Z"})
+	seeds := reparentSeeds(t, pool, moved)
+	if len(seeds) != 1 || seeds[0].OldParent != foreign || seeds[0].Parent != reparentFirst {
+		t.Fatalf("the re-parent seeds of %s = %#v, want one from %s to %s", moved, seeds, foreign, reparentFirst)
+	}
+	if log := logged.String(); !strings.Contains(log, "gate_root_before="+moved) || strings.Contains(log, "gate_root_before="+foreign) {
+		t.Fatalf("the move's change of gate root was logged as %q, want it from %s itself: %s was no issue above it", log, moved, foreign)
+	}
+
+	applyMirrored(t, pool, engine, "read", intake.ReparentRead{Issue: moved, Seed: seeds[0]})
+	told := noticesOfKind(t, pool, moved, "reparented")
+	if got := slices.Sorted(slices.Values(toldTo(told))); !slices.Equal(got, []string{reparentFirst, moved}) {
+		t.Fatalf("the reparented notices go to %v, want one each to %s and %s and none to %s", got, reparentFirst, moved, foreign)
+	}
+	if !strings.Contains(told[0].Reason, "changed from "+foreign+" to "+reparentFirst) {
+		t.Fatalf("the words %q do not name the Dispatch parent %s left", told[0].Reason, moved)
 	}
 }
 

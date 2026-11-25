@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 )
@@ -58,8 +58,7 @@ func (f *OwnWriteFailure) Error() string { return f.Code + ": " + f.Message }
 // It answers why the record did not take the write, nil where it did or where there was nothing to
 // apply: the write has landed, so the record is left to the write's event.
 func ApplyOwnStatusWrite(ctx context.Context, own OwnStatusWrite, eventID string, written dispatch.Issue) *OwnWriteFailure {
-	project, _, _ := strings.Cut(written.Key, "-")
-	if written.LastSeq <= 0 || own.DispatchProject != "" && project != own.DispatchProject {
+	if written.LastSeq <= 0 || own.DispatchProject != "" && claim.KeyProject(written.Key) != own.DispatchProject {
 		return nil
 	}
 	event := intake.OwnStatusWrite(written)

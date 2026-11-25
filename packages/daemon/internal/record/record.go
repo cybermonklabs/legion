@@ -2261,9 +2261,11 @@ type Store interface {
 	// ChainRows is every row of the copy (dispatch_issues) a decision pass's chains reach, by key,
 	// in one query whatever the number of chains and links: the walk starts from every record of
 	// project at a phase other than done, every row of the project's copy at todo and each of
-	// extra, and follows each row's parent up to MaxChainLinks+1 links, ending a walk at a key it
-	// has already passed. A key the walk reaches and the copy holds no row of reads as a row that
-	// is not Present, which ends that walk. ReadChains is its one reader.
+	// extra, and follows each row's parent of its own project up to MaxChainLinks+1 links, ending a
+	// walk at a key it has already passed. A parent of another project ends the walk as no parent
+	// does, and the row reads with no parent (a chain stops at its project's boundary, R19). A key
+	// the walk reaches and the copy holds no row of reads as a row that is not Present, which ends
+	// that walk. ReadChains is its one reader.
 	ChainRows(ctx context.Context, tx pgx.Tx, project string, extra []string) ([]ChainRow, error)
 	// ChainRowsOf is ChainRows for a walk that starts from keys alone and no other issue, in one
 	// query whatever the chains' depth: the rows of each key's chain and no others, so a decision
