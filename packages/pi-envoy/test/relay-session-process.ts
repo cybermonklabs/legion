@@ -11,12 +11,14 @@
  * listener's HTTP routes in `globalThis.fetch` (`standInListenerFetch`: every registration
  * accepted, no role held) and hands the broker's token exchange to the real fetch; then it opens
  * the session `<session id>` and lets its first pass settle, and, given `<wait for>`, waits until
- * a notice or a line holds that text. That wait has no bound of its own: the row's limit names a
- * run that never sees the text, and the kill `runRelaySession` gives the process ends it. The
- * relay socket itself is Bun's own WebSocket, to the stand-in. What it prints is its
- * `RelaySessionReport`.
+ * a notice or a line holds that text, through the shared wait (`@legion/test-fixtures/wait`). This
+ * process is no `bun test`, so that wait ends at `LEGION_PROOF_DEADLINE_MS`, epoch milliseconds the
+ * row sets before the kill `runRelaySession` gives the process; a run that never sees the text
+ * fails there, naming it, with the notices and lines it saw. The relay socket itself is Bun's own
+ * WebSocket, to the stand-in. What it prints is its `RelaySessionReport`.
  */
 import type { PiApi } from "@legion/pi-shared/pi-types";
+import { until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import envoyExtension from "../extensions/envoy";
 import { RELAY_SESSION_REPORT, type RelaySessionReport } from "./relay-session-report";
@@ -57,9 +59,16 @@ const start: EventHandler | undefined = handlers.get("session_start");
 if (start === undefined) throw new Error("the extension registered no session_start handler");
 await start({}, context);
 
-// Polled, not raced: the text arrives as a notice or a log line, which nothing here can await.
-while (waitFor !== undefined && ![...notices, ...lines].some((text) => text.includes(waitFor))) {
-  await Bun.sleep(25);
+// Asked again until it holds, not raced: the text arrives as a notice or a log line, which nothing
+// here can await.
+if (waitFor !== undefined) {
+  await until(`a notice or an envoy: line that holds ${JSON.stringify(waitFor)}`, () =>
+    [...notices, ...lines].some((text) => text.includes(waitFor))
+  ).catch((error: unknown) => {
+    // The row reads stderr when the process reports nothing.
+    console.error(`notices ${JSON.stringify(notices)}, lines ${JSON.stringify(lines)}`);
+    throw error;
+  });
 }
 
 const report: RelaySessionReport = { notices, lines };
