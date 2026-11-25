@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -595,8 +595,8 @@
+@@ -646,8 +646,8 @@
  		return nil, "host header mismatch"
  	case hasDotSegment(r.Path):
  		return nil, "path has a dot segment"

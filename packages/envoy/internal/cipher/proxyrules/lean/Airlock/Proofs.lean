@@ -66,11 +66,11 @@ theorem no_widen {rules : Rules} {g : Grant} {value : String} {r : Request} {b :
 /-- Everything `check` establishes when it accepts: the binding and the kind, that the kind
 names a host and binds the CONNECT host, that the CONNECT port is 443, that the TLS name and
 the Host header are that host, that the path holds no dot segment, that a request under either
-`allow` list (`listed`) holds no empty segment in its path and, as the command sent it, no
-encoded slash and no backslash, that the kind's `allow` and the binding's `allow` both allow
-the request (read from `no_widen`), that a request under either `allow` list carries no method
-override header and no method override parameter, and that no header of the incoming request
-carries the value. -/
+`allow` list (`listed`) holds no empty segment and no dot segment with a `;` parameter in its
+path and, as the command sent it, no encoded slash, no backslash and no double-encoded `/`, `.`
+or `\`, that the kind's `allow` and the binding's `allow` both allow the request (read from
+`no_widen`), that a request under either `allow` list carries no method override header and no
+method override parameter, and that no header of the incoming request carries the value. -/
 theorem check_ok {rules : Rules} {g : Grant} {value : String} {r : Request} {b : Binding}
     {k : Kind} (h : check rules g value r = .ok (b, k)) :
     lookup rules g.secret = some b ∧ kindOf rules b = some k ∧ k.hosts ≠ [] ∧
@@ -79,6 +79,8 @@ theorem check_ok {rules : Rules} {g : Grant} {value : String} {r : Request} {b :
       hasDotSegment r.path = false ∧ (listed k b && hasEmptySegment r.path) = false ∧
       (listed k b && hasEncodedSlash r.rawPath) = false ∧
       (listed k b && hasBackslash r.rawPath) = false ∧
+      (listed k b && hasDotSegmentParameter r.path) = false ∧
+      (listed k b && hasDoubleEncoding r.rawPath) = false ∧
       allowOK k.allow r = true ∧ allowOK b.allow r = true ∧
       (listed k b && hasMethodOverride r) = false ∧
       (listed k b && hasMethodOverrideParameter r.query) = false ∧
@@ -97,7 +99,7 @@ theorem check_ok {rules : Rules} {g : Grant} {value : String} {r : Request} {b :
   have hok : (Except.ok (b', k') : Except String (Binding × Kind)) = .ok (b, k) := by
     ok_of_refusals h
   cases hok
-  refine ⟨hl, hk, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hka, hba, ?_, ?_, ?_⟩ <;>
+  refine ⟨hl, hk, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hka, hba, ?_, ?_, ?_⟩ <;>
     (simp_all; try ok_of_refusals h)
 
 /-- `rewriteReq` succeeds exactly when `decideReq` allows: a swap happens exactly when the
@@ -177,7 +179,7 @@ theorem T1 {rules : Rules} {g : Grant} {value : String} {r r' : Request}
   split at h
   · rename_i bk hc
     cases h
-    obtain ⟨hl, hk, -, -, -, -, -, -, -, -, -, -, -, -, -, hfresh⟩ := check_ok hc
+    obtain ⟨hl, hk, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, hfresh⟩ := check_ok hc
     refine ⟨bk.1, bk.2, hl, hk, rfl, rfl, ?_⟩
     intro hd hm hcar
     obtain ⟨h0, hm0, rfl⟩ := List.mem_map.mp hm
@@ -192,10 +194,11 @@ theorem T1 {rules : Rules} {g : Grant} {value : String} {r r' : Request}
 /-- T2: a rewrite happens only on a CONNECT host the name's kind binds, only on port 443 of
 that host, only when the TLS name and the Host header both equal that host, and only on a path
 that holds no dot segment. When the kind or the binding has an `allow` list (`listed`), it also
-happens only on a path that holds no empty segment and that the command sent with no encoded
-slash and no backslash, and only on a request that carries no method override header and no
-method override parameter. The answer goes to the same host, port, TLS name and Host, on the
-same path as the command sent it.
+happens only on a path that holds no empty segment and no dot segment with a `;` parameter, and
+that the command sent with no encoded slash, no backslash and no double-encoded `/`, `.` or `\`,
+and only on a request that carries no method override header and no method override parameter.
+The answer goes to the same host, port, TLS name and Host, on the same path as the command sent
+it, with the same query.
 
 The port is part of the statement because every name compared here carries none, so 443 is
 the only port the rules speak about. The path rules are part of it because an `allow` prefix
@@ -212,6 +215,8 @@ theorem T2 {rules : Rules} {g : Grant} {value : String} {r r' : Request}
       hasDotSegment r.path = false ∧ (listed k b && hasEmptySegment r.path) = false ∧
       (listed k b && hasEncodedSlash r.rawPath) = false ∧
       (listed k b && hasBackslash r.rawPath) = false ∧
+      (listed k b && hasDotSegmentParameter r.path) = false ∧
+      (listed k b && hasDoubleEncoding r.rawPath) = false ∧
       (listed k b && hasMethodOverride r) = false ∧
       (listed k b && hasMethodOverrideParameter r.query) = false ∧
       r'.connectHost = r.connectHost ∧ r'.connectPort = r.connectPort ∧ r'.sni = r.sni ∧
@@ -221,9 +226,9 @@ theorem T2 {rules : Rules} {g : Grant} {value : String} {r r' : Request}
   split at h
   · rename_i bk hc
     cases h
-    obtain ⟨hl, hk, -, hb, hp, hs, hh, hd, he, hx, hbs, -, -, hm, hq, -⟩ := check_ok hc
-    exact ⟨bk.1, bk.2, hl, hk, hb, hp, hs, hh, hd, he, hx, hbs, hm, hq, rfl, rfl, rfl, rfl, rfl,
-      rfl, rfl⟩
+    obtain ⟨hl, hk, -, hb, hp, hs, hh, hd, he, hx, hbs, hdp, hde, -, -, hm, hq, -⟩ := check_ok hc
+    exact ⟨bk.1, bk.2, hl, hk, hb, hp, hs, hh, hd, he, hx, hbs, hdp, hde, hm, hq, rfl, rfl, rfl,
+      rfl, rfl, rfl, rfl⟩
   · cases h
 
 /-- T4: every kind of a valid rules file names a host, every inline rule names a host, and

@@ -1,2 +1,2 @@
 go test fuzz v1
-[]byte("\xe26\x82e")
+[]byte("uԉ\xe7")

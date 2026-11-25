@@ -5,10 +5,10 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -601,7 +601,9 @@
- 		return nil, "path has an encoded slash"
- 	case listed && hasBackslash(r.RawPath):
- 		return nil, "path has a backslash"
+@@ -656,7 +656,9 @@
+ 		return nil, "path has a parameter on a dot segment"
+ 	case listed && hasDoubleEncoding(r.RawPath):
+ 		return nil, "path has a double-encoded character"
 -	case !allowOK(k.Allow, r):
 +	// MUTANT: a name whose profile has an allow of its own skips its kind's allow, so a
 +	// profile row the kind does not allow widens the kind.

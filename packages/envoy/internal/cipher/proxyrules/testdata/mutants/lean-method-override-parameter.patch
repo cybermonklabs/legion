@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
 +++ b/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
-@@ -431,8 +431,7 @@
+@@ -482,8 +482,7 @@
        else if !allowOK b.allow r then .error "not allowed by the profile's rule"
        else if listed k b && hasMethodOverride r then
          .error "request carries a method override header"

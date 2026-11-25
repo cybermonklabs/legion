@@ -1,0 +1,19 @@
+# go-dot-segment-parameter: check drops the refusal of a dot segment with a ";" parameter under
+# an allow list, so "/v1/..;/admin" passes a "/v1/" prefix and Tomcat, Jetty or Spring, which cut
+# the parameter off before they resolve dot segments, read /admin. Caught by the comparison fuzz
+# test: the model still answers "path has a parameter on a dot segment". Applied with patch -p1
+# from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/airlock.go
++++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
+@@ -652,8 +652,8 @@
+ 		return nil, "path has an encoded slash"
+ 	case listed && hasBackslash(r.RawPath):
+ 		return nil, "path has a backslash"
+-	case listed && hasDotSegmentParameter(r.Path):
+-		return nil, "path has a parameter on a dot segment"
++	// MUTANT: a dot segment with a ";" parameter is no longer refused under an allow list, so
++	// a server that cuts the parameter off first reads "/v1/..;/admin" as /admin.
+ 	case listed && hasDoubleEncoding(r.RawPath):
+ 		return nil, "path has a double-encoded character"
+ 	case !allowOK(k.Allow, r):

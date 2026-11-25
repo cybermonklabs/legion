@@ -1,0 +1,18 @@
+# go-double-encoding: check drops the refusal of a "%25" before the escape of a "/", "." or "\"
+# under an allow list, so a server that decodes twice reads another path than the allow prefix
+# held. Caught by the comparison fuzz test: the model still answers "path has a double-encoded
+# character". Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/airlock.go
++++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
+@@ -654,8 +654,8 @@
+ 		return nil, "path has a backslash"
+ 	case listed && hasDotSegmentParameter(r.Path):
+ 		return nil, "path has a parameter on a dot segment"
+-	case listed && hasDoubleEncoding(r.RawPath):
+-		return nil, "path has a double-encoded character"
++	// MUTANT: a double-encoded "/", "." or "\" is no longer refused under an allow list, so a
++	// server that decodes twice reads another path than the allow prefix held.
+ 	case !allowOK(k.Allow, r):
+ 		return nil, "not allowed by rule"
+ 	case !allowOK(b.Allow, r):

@@ -6,7 +6,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -595,11 +595,13 @@
+@@ -646,11 +646,13 @@
  		return nil, "host header mismatch"
  	case hasDotSegment(r.Path):
  		return nil, "path has a dot segment"
@@ -21,5 +21,5 @@
 -	case listed && hasBackslash(r.RawPath):
 +	case hasBackslash(r.RawPath):
  		return nil, "path has a backslash"
- 	case !allowOK(k.Allow, r):
- 		return nil, "not allowed by rule"
+ 	case listed && hasDotSegmentParameter(r.Path):
+ 		return nil, "path has a parameter on a dot segment"

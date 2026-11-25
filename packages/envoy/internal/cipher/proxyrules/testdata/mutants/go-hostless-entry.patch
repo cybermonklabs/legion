@@ -4,7 +4,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -183,7 +183,8 @@
+@@ -184,7 +184,8 @@
  		case !kindNameOK(k.Name):
  			return fmt.Errorf("%s: the name is not one lowercase word", at)
  		}

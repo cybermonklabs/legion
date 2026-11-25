@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -599,8 +599,8 @@
+@@ -650,8 +650,8 @@
  		return nil, "path has an empty segment"
  	case listed && hasEncodedSlash(r.RawPath):
  		return nil, "path has an encoded slash"
@@ -13,6 +13,6 @@
 -		return nil, "path has a backslash"
 +	// MUTANT: a path sent with a "\" is no longer refused under an allow list, so a service
 +	// that takes "\" for "/" reads "/v1/x\..\..\admin" as /admin.
- 	case !allowOK(k.Allow, r):
- 		return nil, "not allowed by rule"
- 	case !allowOK(b.Allow, r):
+ 	case listed && hasDotSegmentParameter(r.Path):
+ 		return nil, "path has a parameter on a dot segment"
+ 	case listed && hasDoubleEncoding(r.RawPath):

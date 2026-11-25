@@ -6,7 +6,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -607,8 +607,8 @@
+@@ -662,8 +662,8 @@
  		return nil, "not allowed by the profile's rule"
  	case listed && hasMethodOverride(r):
  		return nil, "request carries a method override header"

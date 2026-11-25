@@ -1,2 +1,2 @@
 go test fuzz v1
-[]byte("$\xa5$\xf2\x0f6rC\x84:\xc5")
+[]byte("\xa0\x9b\xa48l0\xdd(\x94Ā")

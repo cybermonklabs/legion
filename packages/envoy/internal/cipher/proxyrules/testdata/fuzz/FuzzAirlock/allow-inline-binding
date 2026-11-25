@@ -1,2 +1,2 @@
 go test fuzz v1
-[]byte("d\xe1&\xf59Bb\x83")
+[]byte("D\xd2#A\xa8T\x93\x97")

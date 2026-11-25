@@ -701,13 +701,15 @@ func TestTheConnectPortAndTheDotSegmentRefusals(t *testing.T) {
 	})
 }
 
-// TestThePathRulesUnderAnAllowList covers the three path rules beside the dot segment: a path
+// TestThePathRulesUnderAnAllowList covers the five path rules beside the dot segment: a path
 // with two slashes in a row, which a reader that merges them reads as another route; a path the
 // command sent with "/" percent-encoded, which the decoded path reads as a separator and a service
-// may read as a byte of one segment; and a path the command sent with a "\" in either spelling,
-// which a reader may take for a "/". Each is refused when the kind or the profile has an allow
-// list, and above those lists. With neither list every path is allowed already, so each is
-// carried: real clients send such paths, Cloud Storage's JSON API among them, which names the
+// may read as a byte of one segment; a path the command sent with a "\" in either spelling, which
+// a reader may take for a "/"; a dot segment with a ";" parameter, which Tomcat, Jetty and Spring
+// cut off before they resolve dot segments; and a "%25" before the escape of a "/", "." or "\",
+// which a server that decodes twice reads as one. Each is refused when the kind or the profile has
+// an allow list, and above those lists. With neither list every path is allowed already, so each
+// is carried: real clients send such paths, Cloud Storage's JSON API among them, which names the
 // object dir/obj "dir%2Fobj".
 func TestThePathRulesUnderAnAllowList(t *testing.T) {
 	anyPath := []Allow{{Method: "GET", PathPrefix: "/"}}
@@ -724,6 +726,8 @@ func TestThePathRulesUnderAnAllowList(t *testing.T) {
 		empty     = "path has an empty segment"
 		encoded   = "path has an encoded slash"
 		backslash = "path has a backslash"
+		parameter = "path has a parameter on a dot segment"
+		double    = "path has a double-encoded character"
 		dot       = "path has a dot segment"
 	)
 	lists := []struct {
@@ -747,17 +751,31 @@ func TestThePathRulesUnderAnAllowList(t *testing.T) {
 		{"Cloud Storage's object dir/obj", "/storage/v1/b/b/o/dir/obj", "/storage/v1/b/b/o/dir%2Fobj", encoded},
 		{"an encoded slash, lower case", "/a/b", "/a%2fb", encoded},
 		{"an encoded slash at the end", "/v1/things/", "/v1/things%2F", encoded},
-		{"an encoded percent before 2F is no encoded slash", "/v1/%2Fthings", "/v1/%252Fthings", ""},
+		{"an encoded percent before 2F", "/v1/%2Fthings", "/v1/%252Fthings", double},
 		{"a cut-off escape is no encoded slash", "/v1/things", "/v1/things%2", ""},
 		{"an encoded slash in the decoded path alone is not read", "/v1/%2Fthings", "/v1/things", ""},
 		{"a literal backslash", `/v1\things`, `/v1\things`, backslash},
 		{"an encoded backslash that walks out of /v1/", `/v1/x\..\..\admin`, "/v1/x%5C..%5C..%5Cadmin", backslash},
 		{"an encoded backslash, lower case", `/a\b`, "/a%5cb", backslash},
-		{"an encoded percent before 5C is no backslash", "/a%5Cb", "/a%255Cb", ""},
+		{"an encoded percent before 5C", "/a%5Cb", "/a%255Cb", double},
 		{"a backslash in the decoded path alone is not read", `/a\b`, "/a/b", ""},
+		{"a dot-dot segment with an empty parameter", "/v1/..;/admin", "/v1/..;/admin", parameter},
+		{"a dot-dot segment with a parameter", "/v1/..;jsessionid=1/admin", "/v1/..;jsessionid=1/admin", parameter},
+		{"a dot segment with a parameter", "/v1/.;/things", "/v1/.;/things", parameter},
+		{"a dot-dot segment whose ; was sent as %3B", "/v1/..;/admin", "/v1/..%3B/admin", parameter},
+		{"a dot-dot segment whose dots were sent as %2e", "/v1/..;/admin", "/v1/%2e%2e;/admin", parameter},
+		{"three dots before a ; are no dot segment", "/v1/...;/x", "/v1/...;/x", ""},
+		{"a ; before the dots", "/v1/;../x", "/v1/;../x", ""},
+		{"dots after a name before the ;", "/v1/a..;/x", "/v1/a..;/x", ""},
+		{"a double-encoded dot", "/v1/%2e%2e/admin", "/v1/%252e%252e/admin", double},
+		{"a double-encoded slash, lower case", "/v1/a%2fb", "/v1/a%252fb", double},
+		{"an encoded percent before another letter", "/v1/%41", "/v1/%2541", ""},
+		{"a cut-off double escape", "/v1/%2", "/v1/%252", ""},
 		{"the dot segment is read first, and with no list too", "/v1/..//x", "/v1/..//x", dot},
 		{"the empty segment is read before the encoded slash", "/v1//x", "/v1/%2F/x", empty},
 		{"the encoded slash is read before the backslash", "/v1/x/y", "/v1/x%2F%5Cy", encoded},
+		{"the backslash is read before the dot-segment parameter", `/v1/..;/a\b`, "/v1/..;/a%5Cb", backslash},
+		{"the dot-segment parameter is read before the double encoding", "/v1/..;/a%2Fb", "/v1/..;/a%252Fb", parameter},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			for _, l := range lists {
@@ -782,6 +800,8 @@ func TestThePathRulesUnderAnAllowList(t *testing.T) {
 			{"/v1//things", "/v1//things", empty},
 			{"/v1/things", "/v1%2Fthings", encoded},
 			{`/v1/a\b`, "/v1/a%5Cb", backslash},
+			{"/v1/x/..;/y", "/v1/x/..;/y", parameter},
+			{"/v1/a%2Fb", "/v1/a%252Fb", double},
 		} {
 			if got := decide(t, []Allow{{Method: "GET", PathPrefix: "/v1/"}}, nil, c.path, c.rawPath); got != c.want {
 				t.Errorf("Decide on %q (sent as %q) = %q, want %q", c.path, c.rawPath, got, c.want)
@@ -980,9 +1000,10 @@ func TestTheMethodOverrideRefusal(t *testing.T) {
 }
 
 // TestTheMethodOverrideParameterRefusal covers the refusal of a query parameter a service reads
-// the method from: "_method", in the cases and the encoding a client may send it in and wherever
-// it stands in the query, with or without a value; the near misses the whole-name comparison and
-// the split on "&" draw a line at; and the one shape that is not refused, a kind and a profile
+// the method from: a name that decodes, as Express and PHP decode it, to "_method", in the cases,
+// the escapes and the PHP spellings a client may send it in and wherever it stands in the query,
+// with or without a value; a name that does not decode; the near misses the whole-name comparison
+// and the split on "&" draw a line at; and the one shape that is not refused, a kind and a profile
 // with no allow list, which allow every method already.
 func TestTheMethodOverrideParameterRefusal(t *testing.T) {
 	const refused = "request carries a method override parameter"
@@ -1006,12 +1027,25 @@ func TestTheMethodOverrideParameterRefusal(t *testing.T) {
 		{"_METHOD, every letter folded", "_METHOD=PUT", refused},
 		{"_method with its _ percent-encoded", "%5Fmethod=PUT", refused},
 		{"_method with its _ percent-encoded in lower case", "%5fmethod=PUT", refused},
-		// Near misses: the name is compared whole, and only the text before its first "=".
+		{"_method with an encoded space before it", "%20_method=PUT", refused},
+		{"_method with a space before it", "page=2& _method=PUT", refused},
+		{"_method with an opening bracket for its _", "[method=PUT", refused},
+		{"_method with a dot and an encoded letter", ".meth%6fd=PUT", refused},
+		// A name that does not decode is one the airlock cannot say the service reads otherwise.
+		{"_method with an escape that does not decode", "_method%zz=1", refused},
+		{"another name with a cut-off escape", "q%=1", refused},
+		{"another name with an escape of no hex digit", "%G0=1", refused},
+		// Near misses: the name is decoded and compared whole, and only the text before its
+		// first "=".
 		{"a longer name that ends like it", "x_method=PUT", ""},
 		{"a longer name that starts like it", "_methods=PUT", ""},
+		{"a longer name that starts like it, encoded", "%5Fmethods=PUT", ""},
+		{"a longer name that ends like it, encoded", "x%5Fmethod=PUT", ""},
+		{"a name that decodes to _method and a dot after it", "_method%2e=PUT", ""},
+		{"a + before method, which the trim takes", "+method=PUT", ""},
 		{"_method as a value", "a=_method", ""},
+		{"a value that does not decode", "a=%zz", ""},
 		{"_method after a semicolon, which the query is not split on", "a=1;_method=PUT", ""},
-		{"a name with a space before it", "page=2& _method=PUT", ""},
 		{"no query at all", "", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -1044,6 +1078,34 @@ func TestTheMethodOverrideParameterRefusal(t *testing.T) {
 			t.Errorf("with the value carried too: Decide = %q, want %q", got, refused)
 		}
 	})
+}
+
+// TestAnEncodedMethodOverrideParameterIsRefused is the four names a service reads as "_method"
+// that a comparison of the name as sent let through: an escaped letter, an escaped "_" and
+// letters, a "." for the "_", and a "+" before it, each under an allow of {POST, /v1/} on a POST
+// whose "_method" names DELETE. Express's querystring and PHP's $_GET decode each one to
+// "_method", and PHP reads a "." as "_" and drops a leading space, so a service that honours
+// "_method" would run DELETE. With no allow list each is carried, as every method is.
+func TestAnEncodedMethodOverrideParameterIsRefused(t *testing.T) {
+	for _, query := range []string{
+		"_meth%6Fd=DELETE",
+		"%5F%6Detho%64=DELETE",
+		".method=DELETE",
+		"+_method=DELETE",
+	} {
+		t.Run(query, func(t *testing.T) {
+			rules, r := decideRules(), decideRequest()
+			rules.Kinds[0].Allow = []Allow{{Method: "POST", PathPrefix: "/v1/"}}
+			r.Method, r.Query = "POST", query
+			if got := decided(t, rules, decideGrant(), decideValue, r); got != "request carries a method override parameter" {
+				t.Errorf("POST /v1/things?%s under {POST, /v1/}: Decide = %q, want %q", query, got, "request carries a method override parameter")
+			}
+			rules.Kinds[0].Allow = nil
+			if got := decided(t, rules, decideGrant(), decideValue, r); got != "" {
+				t.Errorf("POST /v1/things?%s with no allow list: Decide = %q, want it carried", query, got)
+			}
+		})
+	}
 }
 
 // withoutCipherRepository is headers less every Cipher-Repository header, which Rewrite removes.

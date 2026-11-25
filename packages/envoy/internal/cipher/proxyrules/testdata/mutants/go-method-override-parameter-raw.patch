@@ -1,0 +1,20 @@
+# go-method-override-parameter-raw: check compares a query parameter's name as it was sent,
+# folded, with "_method" and "%5fmethod", as the rule did before it decoded names, so
+# "_meth%6Fd", "%5F%6Detho%64", ".method" and "+_method", which Express and PHP read as
+# "_method", get through under an allow list. Caught by the comparison fuzz test: the model
+# decodes each name and still answers "request carries a method override parameter". Applied
+# with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/airlock.go
++++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
+@@ -501,7 +501,9 @@
+ 				read[i] = '_'
+ 			}
+ 		}
+-		if fold.ASCII(string(read)) == methodOverrideParameter {
++		// MUTANT: the name is compared as it was sent, folded, so "_meth%6Fd", ".method" and
++		// "+_method", which a service decodes to "_method", get through.
++		if n := fold.ASCII(raw); n == "_method" || n == "%5fmethod" {
+ 			return true
+ 		}
+ 	}

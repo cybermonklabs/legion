@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -597,8 +597,8 @@
+@@ -648,8 +648,8 @@
  		return nil, "path has a dot segment"
  	case listed && hasEmptySegment(r.Path):
  		return nil, "path has an empty segment"
@@ -15,4 +15,4 @@
 +	// service that reads "%2F" as a byte of one segment reads another path than the prefix held.
  	case listed && hasBackslash(r.RawPath):
  		return nil, "path has a backslash"
- 	case !allowOK(k.Allow, r):
+ 	case listed && hasDotSegmentParameter(r.Path):

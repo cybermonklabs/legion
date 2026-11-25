@@ -208,31 +208,38 @@ var (
 	overridePool = []string{"x-http-method-override", "X-HTTP-Method-Override", "x-http-method", "X-Http-Method", "x-method-override", "X-METHOD-OVERRIDE", "x-http-method-overridden", "x-http-met\u212aod"}
 	// pathPool holds paths with no dot segment, paths that carry one, and two near misses -
 	// "..foo" and "..." are segments no reader resolves; paths with an empty segment; a path
-	// with a literal backslash; and paths at, past and beside the "/" boundary of each prefix
-	// of prefixPool ("/repos", "/repos/x" and "/reposX"; "/storage-limit", "/storage-limit/7"
-	// and "/storage-limitX"), so the comparison covers where each side draws each of those
-	// lines.
+	// with a literal backslash; dot segments with a ";" parameter and two near misses, "...;"
+	// and ";.."; and paths at, past and beside the "/" boundary of each prefix of prefixPool
+	// ("/repos", "/repos/x" and "/reposX"; "/storage-limit", "/storage-limit/7" and
+	// "/storage-limitX"), so the comparison covers where each side draws each of those lines.
 	pathPool = []string{"/", "/repos/x", "/repos", "/admin", "", "/v1/../admin", "/a/./b", "/..", "/.", "/v1/things/../../admin", "/v1/..foo", "/v1/.../x",
 		"/reposX", "/repos/", "/a//b", "//", "/repos//x", "/v1/organizations/workspaces", "/v1/organizations", "/v1/organizationsX", "/v1/messages",
-		"/storage-limit", "/storage-limitX", "/storage-limit/7", `/repos\x`}
+		"/storage-limit", "/storage-limitX", "/storage-limit/7", `/repos\x`,
+		"/repos/..;/admin", "/repos/..;x=1/admin", "/repos/.;/x", "/repos/...;/x", "/repos/;../x"}
 	// portPool is the CONNECT port: 443 five times in eight, so a case reaches the refusals
 	// below the port, and otherwise a port the rules say nothing about.
 	portPool   = []uint16{443, 443, 443, 443, 443, 80, 8443, 0}
 	prefixPool = []string{"/", "/repos", "", "/r", "/admin/", "/repos/", "/v1/organizations/", "/storage-limit"}
 	// separatorPool is what the raw path may hold in place of a "/": the two spellings of an
-	// encoded "/" and the three of a "\" that check refuses under an allow list, and three near
-	// misses, an encoded "%" before "2F" or "5C" and a cut-off escape.
-	separatorPool = []string{"%2F", "%2f", "%252F", "%2", "%5C", "%5c", `\`, "%255C"}
-	// methodParameterPool is a query parameter a request may carry: "_method" in the spellings
-	// check refuses under an allow list, with a value and without, and five near misses, a name
-	// longer at either end, "_method" as a value, after a ";", which the query is not split on,
-	// and after a space.
-	methodParameterPool = []string{"_method=PUT", "_method", "_METHOD=delete", "%5Fmethod=PUT", "%5fmethod=", "x_method=PUT", "_methods=PUT", "a=_method", "a=1;_method=PUT", " _method=PUT"}
-	phPool              = []string{"PH_gh_1", "ph", "", "a", "=", "user"}
-	valuePool           = []string{"REAL", "ghp_secret", "", "PH_gh_1", "a:b", "\u00e9"}
-	piecePool           = []string{"user", "token ", " ", "\t", "x"}
-	schemePool          = []string{"Basic ", "basic ", "BASIC ", "Basic  ", "Basic\t", "Basi "}
-	tailPool            = []string{"\v", " ", "\t", "\n", "\u00a0", "\u0085"}
+	// encoded "/", the three of a "\" and the three of a double-encoded "/", "." or "\" that
+	// check refuses under an allow list, and three near misses, a cut-off escape, an encoded "%"
+	// before another escape and a cut-off double escape.
+	separatorPool = []string{"%2F", "%2f", "%252F", "%2", "%5C", "%5c", `\`, "%255C", "%252e", "%2541", "%252"}
+	// methodParameterPool is a query parameter a request may carry: names check reads as
+	// "_method" under an allow list - as sent, folded, escaped in part or whole, with a "." or a
+	// "[" for its "_", with a "+", a space or an escaped space before it, with a value and
+	// without - names that do not decode, and near misses: a name longer at either end, as sent
+	// or escaped, "_method" as a value, after a ";", which the query is not split on, a "+"
+	// before "method", a dot after "_method", and a value that does not decode.
+	methodParameterPool = []string{"_method=PUT", "_method", "_METHOD=delete", "%5Fmethod=PUT", "%5fmethod=",
+		"_meth%6Fd=DELETE", "%5F%6Detho%64=PUT", ".method=PUT", "+_method=PUT", "%20_method=PUT", " _method=PUT", "[method=PUT",
+		"_method%zz=1", "q%=1",
+		"x_method=PUT", "_methods=PUT", "x%5Fmethod=PUT", "a=_method", "a=1;_method=PUT", "+method=PUT", "_method%2e=PUT", "a=%zz"}
+	phPool     = []string{"PH_gh_1", "ph", "", "a", "=", "user"}
+	valuePool  = []string{"REAL", "ghp_secret", "", "PH_gh_1", "a:b", "\u00e9"}
+	piecePool  = []string{"user", "token ", " ", "\t", "x"}
+	schemePool = []string{"Basic ", "basic ", "BASIC ", "Basic  ", "Basic\t", "Basi "}
+	tailPool   = []string{"\v", " ", "\t", "\n", "\u00a0", "\u0085"}
 )
 
 func (s *src) list(n int, f func() string) []string {

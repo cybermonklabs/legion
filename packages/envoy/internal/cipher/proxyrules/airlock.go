@@ -25,6 +25,7 @@ package proxyrules
 import (
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -468,23 +469,39 @@ func hasMethodOverride(r *Request) bool {
 	return false
 }
 
-// methodOverrideParameters are the query parameter names a service may read the request's
-// method from instead of the method on the request line: Laravel, Symfony and Express's
-// method-override middleware read a "_method" parameter, and "%5fmethod" is that name with its
-// "_" percent-encoded, which a service decodes to the same name. They are held
-// ASCII-lower-cased, as each parameter's name is compared.
-var methodOverrideParameters = []string{"_method", "%5fmethod"}
+// methodOverrideParameter is the query parameter name a service may read the request's method
+// from instead of the method on the request line: Laravel, Symfony and Express's method-override
+// middleware read "_method".
+const methodOverrideParameter = "_method"
 
 // hasMethodOverrideParameter reports whether the query, as the command sent it, holds a parameter
-// of one of those names, whatever its value or none: the query is split on "&", and a part's name
-// is its text before its first "=", or the whole part when it has none. As with the header, the
-// value is the service's to read, so the airlock refuses the parameter rather than deciding which
-// method it names. A "_method" field of a form body is not read: the decision never reads the
-// body, which internal/cipher/proxy streams to the service unread.
+// that a service reads as "_method", whatever its value or none. The query is split on "&", and a
+// part's name is its text before its first "=", or the whole part when it has none. Each name is
+// read as those services read it, since a name compared as it was sent would let
+// "_meth%6Fd=DELETE" through to one that decodes it: it is decoded with url.QueryUnescape, which
+// reads "+" as a space, as Express's querystring and PHP's $_GET do; its leading spaces are
+// dropped, and ".", " " and "[" are read as "_", as PHP reads a variable name, so ".method" and
+// "+_method" are "_method" too; and it is compared after fold.ASCII. A name that does not decode,
+// a "%" with no two hex digits after it, is one no reader of the airlock's can say the service
+// does not read as "_method", so it counts as one. As with the header, the value is the service's
+// to read, so the airlock refuses the parameter rather than deciding which method it names.
+//
+// A "_method" field of a form body is not refused, and Rails, Laravel and Symfony honour one:
+// the decision reads no body, which internal/cipher/proxy streams to the service unread.
 func hasMethodOverrideParameter(query string) bool {
 	for _, part := range strings.Split(query, "&") {
-		name, _, _ := strings.Cut(part, "=")
-		if slices.Contains(methodOverrideParameters, fold.ASCII(name)) {
+		raw, _, _ := strings.Cut(part, "=")
+		name, err := url.QueryUnescape(raw)
+		if err != nil {
+			return true
+		}
+		read := []byte(strings.TrimLeft(name, " "))
+		for i, c := range read {
+			if c == '.' || c == ' ' || c == '[' {
+				read[i] = '_'
+			}
+		}
+		if fold.ASCII(string(read)) == methodOverrideParameter {
 			return true
 		}
 	}
@@ -535,6 +552,39 @@ func hasBackslash(rawPath string) bool {
 	return strings.Contains(rawPath, `\`) || strings.Contains(fold.ASCII(rawPath), "%5c")
 }
 
+// hasDotSegmentParameter reports whether the path holds a segment whose text before its first
+// ";" is "." or "..": "/v1/..;/admin", "/v1/..;x/admin" or "/a/.;/b". Tomcat, Jetty and Spring
+// cut a ";" parameter off a segment before they resolve dot segments, so they read
+// "/v1/..;/admin" as "/admin", where the whole-segment dot rule (hasDotSegment) sees no dot
+// segment. It reads the decoded path, which holds a ";" for a ";" the command sent as "%3B" and a
+// "." for a "%2E", so each of those spellings is read too.
+func hasDotSegmentParameter(path string) bool {
+	for _, segment := range strings.Split(path, "/") {
+		if before, _, _ := strings.Cut(segment, ";"); before == "." || before == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// doubleEncoded are the escapes of a "%" followed by the escape of a "/", a "." or a "\", held
+// ASCII-lower-cased as the raw path is compared.
+var doubleEncoded = []string{"%252f", "%252e", "%255c"}
+
+// hasDoubleEncoding reports whether the path as the command sent it holds "%25" followed by
+// "2F", "2E" or "5C", in either case. One decoding reads it as "%2F", "%2E" or "%5C", which the
+// other path rules do not refuse, and a server that decodes a second time reads a "/", a "." or a
+// "\" there, so an allow prefix would bound one path and that server read another.
+func hasDoubleEncoding(rawPath string) bool {
+	folded := fold.ASCII(rawPath)
+	for _, e := range doubleEncoded {
+		if strings.Contains(folded, e) {
+			return true
+		}
+	}
+	return false
+}
+
 // check is the one decision both Decide and Rewrite take: the kind the request is carried under,
 // or the reason it may not be. The reasons, and the order they are reported in, are the Lean
 // model's.
@@ -551,14 +601,15 @@ func hasBackslash(rawPath string) bool {
 //
 // A path that holds a dot segment is refused for every kind: no client means one, and a reader
 // that resolves it (RFC 3986 section 5.2.4) reads another path than the literal one. A path that
-// holds an empty segment, or a raw path that holds a percent-encoded "/" or a "\" in any
-// spelling, is refused when, and only when, the kind or the profile has an allow list: an allow
-// prefix bounds the path the service will read, and a reader that merges slashes, decodes "%2F"
-// or takes "\" for "/" first reads another path than the literal one the prefix holds. With
-// neither list every path of the kind's hosts is allowed already, so such a path escapes no
-// prefix, and real clients send them: Cloud Storage's JSON API names the object dir/obj as
-// "dir%2Fobj", and an S3 key may hold "//". The path rules are read directly above the allow
-// lists because they are what makes those rules mean what they say.
+// holds an empty segment or a dot segment with a ";" parameter, or a raw path that holds a
+// percent-encoded "/", a "\" in any spelling, or a double-encoded "/", "." or "\", is refused
+// when, and only when, the kind or the profile has an allow list: an allow prefix bounds the path
+// the service will read, and a reader that merges slashes, cuts ";" parameters before it resolves
+// dot segments, decodes "%2F", takes "\" for "/" or decodes twice first reads another path than
+// the literal one the prefix holds. With neither list every path of the kind's hosts is allowed
+// already, so such a path escapes no prefix, and real clients send them: Cloud Storage's JSON API
+// names the object dir/obj as "dir%2Fobj", and an S3 key may hold "//". The path rules are read
+// directly above the allow lists because they are what makes those rules mean what they say.
 //
 // A request carrying a method override header, or a method override parameter in its query, is
 // refused when, and only when, the kind or the profile has an allow list. allowOK compares the
@@ -601,6 +652,10 @@ func check(rules Rules, g Grant, value string, r *Request) (*Kind, string) {
 		return nil, "path has an encoded slash"
 	case listed && hasBackslash(r.RawPath):
 		return nil, "path has a backslash"
+	case listed && hasDotSegmentParameter(r.Path):
+		return nil, "path has a parameter on a dot segment"
+	case listed && hasDoubleEncoding(r.RawPath):
+		return nil, "path has a double-encoded character"
 	case !allowOK(k.Allow, r):
 		return nil, "not allowed by rule"
 	case !allowOK(b.Allow, r):

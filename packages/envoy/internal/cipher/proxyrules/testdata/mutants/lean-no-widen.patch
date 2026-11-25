@@ -6,10 +6,10 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
 +++ b/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
-@@ -427,7 +427,9 @@
-       else if listed k b && hasEmptySegment r.path then .error "path has an empty segment"
-       else if listed k b && hasEncodedSlash r.rawPath then .error "path has an encoded slash"
-       else if listed k b && hasBackslash r.rawPath then .error "path has a backslash"
+@@ -478,7 +478,9 @@
+         .error "path has a parameter on a dot segment"
+       else if listed k b && hasDoubleEncoding r.rawPath then
+         .error "path has a double-encoded character"
 -      else if !allowOK k.allow r then .error "not allowed by rule"
 +      -- MUTANT: a name whose profile has an allow of its own skips its kind's allow, so a
 +      -- profile row the kind does not allow widens the kind.
