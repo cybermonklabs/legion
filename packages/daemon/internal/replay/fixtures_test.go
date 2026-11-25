@@ -68,10 +68,11 @@ var k1Facts = []string{
 }
 
 // fixtureExpect is a fixture window's expect.json: the Scorecard a replay must give under each
-// rule it names, on the branch it names (the main branch where it names none); for the window of
-// an issue that never starts, the same for each never-started scenario in place of the rules; and,
-// for a window that holds every trigger, each issue's sequence of moves a replay under the
-// window's recorded rule must make.
+// rule it names, on the branch it names (the main branch where it names none); the text the
+// refusal of each run it names refused must hold; for the window of an issue that never starts,
+// the same for each never-started scenario in place of the rules; and, for a window that holds
+// every trigger, each issue's sequence of moves a replay under the window's recorded rule must
+// make.
 type fixtureExpect struct {
 	Branch    string                          `json:"branch,omitempty"`
 	Rules     map[string]Scorecard            `json:"rules,omitempty"`
@@ -80,6 +81,12 @@ type fixtureExpect struct {
 	// Checks supplements the scorecard with fields from run.json and structured log lines.
 	// Keys are rule names. In a log line only the named attributes have to match.
 	Checks map[string]fixtureChecks `json:"checks,omitempty"`
+	// Refused is, by rule, the text that Run's refusal of a replay of the window under that rule
+	// must hold, on the window's branch: a run R10 makes no comparison on, such as one whose rule
+	// starts a P0 issue outside the cap on a window that lacks the history of an ancestor the
+	// priority of an issue rests on (p0-inherited-ancestor-missing). A rule it names has no
+	// Scorecard in Rules and no Checks.
+	Refused map[string]string `json:"refused,omitempty"`
 }
 
 type fixtureChecks struct {
@@ -96,13 +103,15 @@ type fixtureMove struct {
 }
 
 // fixtureRun is one replay a fixture window asks for: a rule, a branch, and the Scorecard the
-// replay must give. The run's seed and slowdown factor are the Scorecard's own, so a window whose
-// fact rests on a factor (forty-two-more-in-flight) is replayed at that factor.
+// replay must give, or, for a run expect.json names refused, the text Run's refusal must hold
+// (refusal) in its place. The run's seed and slowdown factor are the Scorecard's own, so a window
+// whose fact rests on a factor (forty-two-more-in-flight) is replayed at that factor.
 type fixtureRun struct {
-	name   string
-	rule   string
-	branch Branch
-	want   Scorecard
+	name    string
+	rule    string
+	branch  Branch
+	want    Scorecard
+	refusal string
 }
 
 // refusingNoMove is, by fixture window, the rule under which TestFixtureWindows also fails for each
@@ -118,7 +127,9 @@ var refusingNoMove = map[string]string{"conflict-from-fitted-rate": "legion-v20.
 // here, and runs every window — not a sample — under every rule its expect.json names (every
 // never-started scenario, for never-starts), through Run on a database of its own on
 // LEGION_TEST_PG_DSN's server. It fails naming the window, the rule and each measure whose value
-// differs from the one worked out by hand, floats compared to within fixtureTolerance; for a
+// differs from the one worked out by hand, floats compared to within fixtureTolerance; for a run
+// expect.json names refused, a replay Run makes rather than refuses, or refuses with an error that
+// does not hold the text expect.json gives; for a
 // window whose expect.json holds moves, each issue whose sequence of (from, to, trigger) in the
 // replay's own log differs from the recorded one under the window's recorded rule, which a move
 // the replay refused breaks; for a run refusingNoMove names, each move its replay refused; and, for
@@ -149,7 +160,17 @@ func TestFixtureWindows(t *testing.T) {
 					skipUntilBuilt(t)
 					out := t.TempDir()
 					result, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, run.rule), Branch: run.branch,
-						Seed: run.want.Seed, Slowdown: cmp.Or(run.want.Slowdown, 1), PGDSN: dsn, Out: out})
+						Seed: cmp.Or(run.want.Seed, 1), Slowdown: cmp.Or(run.want.Slowdown, 1), PGDSN: dsn, Out: out})
+					if run.refusal != "" {
+						switch {
+						case err == nil:
+							t.Errorf("window %s, rule %s, branch %s: the replay ran, want a refusal naming %q", name, run.rule, run.branch.Name, run.refusal)
+						case !strings.Contains(err.Error(), run.refusal):
+							t.Errorf("window %s, rule %s, branch %s: the replay was refused with %q, want a refusal naming %q", name, run.rule,
+								run.branch.Name, err, run.refusal)
+						}
+						return
+					}
 					if err != nil {
 						t.Fatalf("window %s, rule %s, branch %s: the replay failed: %v", name, run.rule, run.branch.Name, err)
 					}
@@ -321,8 +342,10 @@ func readFixtureExpect(dir string) (fixtureExpect, error) {
 	return expect, nil
 }
 
-// runs is every replay e asks for, in order: each rule of Rules on e's branch, and each rule of
-// each never-started scenario of Scenarios on the main branch with that scenario.
+// runs is every replay e asks for, in order: each rule of Rules on e's branch, each rule of
+// Refused on e's branch, and each rule of each never-started scenario of Scenarios on the main
+// branch with that scenario. It refuses a rule Refused names with no text, or with a Scorecard in
+// Rules or Checks beside it, since a refused run gives neither.
 func (e fixtureExpect) runs() ([]fixtureRun, error) {
 	var runs []fixtureRun
 	branch, err := BranchNamed(cmp.Or(e.Branch, MainBranch.Name))
@@ -331,6 +354,15 @@ func (e fixtureExpect) runs() ([]fixtureRun, error) {
 	}
 	for _, rule := range slices.Sorted(maps.Keys(e.Rules)) {
 		runs = append(runs, fixtureRun{name: rule, rule: rule, branch: branch, want: e.Rules[rule]})
+	}
+	for _, rule := range slices.Sorted(maps.Keys(e.Refused)) {
+		_, scored := e.Rules[rule]
+		_, checked := e.Checks[rule]
+		if e.Refused[rule] == "" || scored || checked {
+			return nil, fmt.Errorf("%s names %q refused with the text %q, beside a Scorecard (%t) or output checks (%t)", fixtureExpectFile,
+				rule, e.Refused[rule], scored, checked)
+		}
+		runs = append(runs, fixtureRun{name: rule, rule: rule, branch: branch, refusal: e.Refused[rule]})
 	}
 	for _, scenario := range slices.Sorted(maps.Keys(e.Scenarios)) {
 		name := MainBranch.Name

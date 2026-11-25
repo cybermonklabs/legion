@@ -81,6 +81,11 @@ The last five files hold the records of R11's signals, and each is optional.
 - `signals`: for each signal (`idle`, `queue`, `provider`, `kills`, `approvals`), the spans `{from, to}` in which the window holds a record of it, in time order.
   A window holds no record of a signal outside its spans, and a window that names no span of a signal, as every window collected before these records, holds no record of it at all.
 
+- `missingAncestors`: each issue on the Dispatch parent chain of an issue that the window holds, up to 32 levels above it, whose events `collect` could not read, sorted.
+  Dispatch answers that it has no such issue, as it answers for an issue that it does not show the reader.
+  The priority that Dispatch resolves for an issue below such an ancestor may rest on it (R10).
+  A window collected before `collect` read each ancestor names none, and holds the events of each issue's parent alone.
+
 The tool reads these kinds of daemon line:
 
 - the `admission:` lines of each slot given out or taken back, and of each wait
@@ -229,12 +234,15 @@ A file that a flag names itself is read whatever its name.
 ### Run `collect`
 
 `collect` reads from Dispatch the events of each issue that the lines name.
-It also reads the events of each blocker, parent and child that those events name, in any project.
+It also reads the events of each blocker and child that those events name, in any project.
 It lists every issue of the project, of every status, a page at a time (`GET /api/v1/issues?project=<KEY>&limit=&offset=`), and reads the events of each one too, so that the approvals signal reads every ask of the project.
 It reads each issue from its first event up to `--to` plus `--after`.
 It pages Dispatch's whole event log (`GET /api/v1/events/log`) from its first event to `--to` plus `--after`, and keeps the project's settings events.
 A settings event before the reach sets the value at the reach's start, so the read starts at the log's first event; on 2026-11-25 the whole log took 1,148 pages of 1,000 events and about five minutes.
 An issue of the project that the event log names and the listing missed, as a listing read a page at a time can, is read too.
+Then it follows the Dispatch parent chain of each issue that it read, in any project, and reads the events of each ancestor, up to 32 levels above the issue.
+Dispatch resolves an issue's priority from the nearest issue above it that has one, by a walk of the chain that reads 32 levels, so an issue higher up is none of the replay's inputs, and `collect` neither reads it nor names it.
+It reads each parent that an issue's events show at any moment, so a parent that the issue left is read too.
 Every read is a `GET`, and a read that Dispatch refuses for now (429, a 5xx, or no answer) is tried again with a growing wait.
 Set `DISPATCH_URL` to your Dispatch server.
 The token comes from the file that `--dispatch-token-file` names, else from the file that `DISPATCH_TOKEN_FILE` names, else from `DISPATCH_TOKEN`.
@@ -255,6 +263,7 @@ legion replay collect \
 It prints the number of daemon lines that it read and that it kept, the lines that it read twice, the lines that were no daemon line, and the issues whose events it read.
 It prints the issues that the project's listing holds, the settings events, and the lines of each record of the signals that it kept.
 It names each issue that Dispatch does not have.
+It names apart each ancestor among them, which `window.json` names in `missingAncestors`.
 
 The window holds a record of the idle share over the whole reach, from the daemon's lines.
 It holds a record of the approvals from the moment the project's default assignee is known: from the reach's start where `--default-assignee` gives it or a settings event before the reach sets it, else from the first settings event in the reach that sets it.

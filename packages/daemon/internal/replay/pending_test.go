@@ -24,7 +24,18 @@ var pendingUntilBuilt = map[string]string{
 	"TestFixtureWindows/urgent-work-waits/main":         d16Main,
 	"TestFixtureWindows/signal-crosses-with-no-event":   "t32",
 	"TestFixtureWindows/no-crossing-due":                "t32",
+	"TestFixtureWindows/p0-inherited-across-projects":   t39Resolved + "; under p0-at-once ACME-2 and ACME-4 wait at the cap",
+	"TestFixtureWindows/p0-inherited-ancestor-missing":  t39Resolved + "; p0-at-once replays the window rather than refuse it",
+	"TestFixtureWindows/p0-recorded-descendant-update":  t39Resolved + "; under p0-at-once ACME-2 waits at the cap",
+	"TestFixtureWindows/one-free-slot-opposite-order":   t39Resolved + "; under p0-at-once ACME-1 takes the free slot, not ACME-2",
 }
+
+// t39Resolved is the task of the four windows of spec v36's R10 that rest on the priority Dispatch
+// resolves for an issue (pendingUntilBuilt): until it, a replay reads each issue's own priority
+// under every rule, so each window's run under main misses the urgent waits and the banded priority
+// taken its README works out from the resolved priority, and its run under p0-at-once misses the
+// start or the refusal its README gives.
+const t39Resolved = "t39 (the replay's resolved priority)"
 
 // d16Main is the task of a run under main of a window of R10 (pendingUntilBuilt).
 const d16Main = "t27 under ruling D16: main starts no P0 issue outside the cap until cybermonklabs/legion#5488 merges; " +

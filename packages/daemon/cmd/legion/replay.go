@@ -59,15 +59,16 @@ lines or one JSON array; any of them gzipped or not. The lines of every kind the
 reads, written in [--from − --before, --to + --after), are kept in time order, a line read twice
 once.
 
-The events of every issue those lines name, and of every blocker, parent and child those
-issues' events name, in any project, are read from Dispatch (DISPATCH_URL) from each issue's
-first event up to --to + --after, with GET alone, and so are those of every issue of the
-project, which collect lists (GET /api/v1/issues?project=, a page at a time, every status). The
-project's settings events (settings.project_default_assignee.updated among them) are read from
-Dispatch's whole event log (GET /api/v1/events/log), from its first event to --to + --after,
-since an event before the reach sets what holds at its start. The token is the file
---dispatch-token-file names, else the file DISPATCH_TOKEN_FILE names, else DISPATCH_TOKEN; it is
-never printed.
+The events of every issue those lines name, and of every blocker and child those issues' events
+name, in any project, are read from Dispatch (DISPATCH_URL) from each issue's first event up to
+--to + --after, with GET alone, and so are those of every issue of the project, which collect
+lists (GET /api/v1/issues?project=, a page at a time, every status), and those of every issue on
+the Dispatch parent chain of each issue read, in any project, up to 32 levels above it, as far as
+Dispatch's own walk of a chain reads for the priority it resolves. The project's settings events
+(settings.project_default_assignee.updated among them) are read from Dispatch's whole event log
+(GET /api/v1/events/log), from its first event to --to + --after, since an event before the
+reach sets what holds at its start. The token is the file --dispatch-token-file names, else the
+file DISPATCH_TOKEN_FILE names, else DISPATCH_TOKEN; it is never printed.
 
 The deployment's records of the signals, each optional, are read in the same reach: --provider,
 the model provider's record, one line a minute; --launcher-log, the launcher's lines of the
@@ -86,8 +87,9 @@ window.json records the project, the span, --before, --after, the cap of each ch
 lines and the daemon's start lines show, the line kinds the log holds, the deployment's settings
 (the flags below, each defaulting to the daemon's own default), the parts of the span (--part),
 the collector's commit (--collector, else the binary's own), the default assignee, the spans
-each signal has a record in and the sha256 of every file. Run collect-merges next for each base
-branch, and collect-queue for each repository.`
+each signal has a record in, each ancestor whose events Dispatch does not show
+(missingAncestors), and the sha256 of every file. Run collect-merges next for each base branch,
+and collect-queue for each repository.`
 
 // newReplayCollectCommand is `legion replay collect` (replay.Collect).
 func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -179,6 +181,10 @@ func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
 			collected.ProjectIssues, *project, collected.SettingsEvents, len(w.Provider), len(w.Launcher), len(w.Memory))
 		if len(collected.Missing) > 0 {
 			fmt.Fprintf(stdout, "legion replay collect: Dispatch has no issue %s\n", strings.Join(collected.Missing, ", "))
+		}
+		if len(collected.MissingAncestors) > 0 {
+			fmt.Fprintf(stdout, "legion replay collect: window.json names the ancestors on a Dispatch parent chain that Dispatch does not show (missingAncestors): %s\n",
+				strings.Join(collected.MissingAncestors, ", "))
 		}
 		return 0
 	})

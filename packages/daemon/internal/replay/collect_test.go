@@ -617,10 +617,12 @@ func collectCaptured(t *testing.T) collectRun {
 // not read, or that is no daemon line; window.json holds the project, the
 // span, the reach, the cap of each change (the earlier line's 150, then the daemon's start line's
 // 157), the kinds the log holds, the settings, the part, the collector and the default assignee;
-// the events are each captured issue's that a line names, up to the span's end, the blocker's and
-// parent's those events name, the child a child.added names, and each issue of the project that
-// the listing of its issues or the event log names and no line does (ACME-55, ACME-77), every
-// other key Dispatch did not have listed as missing; and the merges are the captured page's five
+// the events are each captured issue's that a line names, up to the span's end, the blockers those
+// events name, the child a child.added names, each issue of the project that the listing of its
+// issues or the event log names and no line does (ACME-55, ACME-77), and each ancestor up the
+// parent chain of each of them, every other key Dispatch did not have listed as missing, and the
+// three parents among them (ACME-24 of ACME-27, ACME-15 of ACME-58 and ACME-54 of ACME-55) as
+// missing ancestors too, which window.json names; and the merges are the captured page's five
 // first-parent commits, read over two pages with the commit below it, which the walk passes and
 // does not keep.
 // The signals' records are each one's lines in the reach: the provider's minutes, the launcher's
@@ -738,13 +740,17 @@ func TestCollectWritesAWindowThatReadsBackAndSendsGetAlone(t *testing.T) {
 			}
 		}
 	}
-	missing := map[string]bool{"ACME-24": true, "ACME-15": true, "ACME-52": true, "ACME-53": true, "ACME-60": true, "ACME-42": true, "ACME-41": true}
+	missing := map[string]bool{"ACME-24": true, "ACME-15": true, "ACME-52": true, "ACME-53": true, "ACME-54": true, "ACME-60": true, "ACME-42": true,
+		"ACME-41": true}
 	for _, n := range []int{1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 18, 22, 26, 28, 30, 31, 33, 34, 35, 36, 37, 38, 39, 40, 43, 44, 45, 46, 47, 48, 49, 50, 51, 56, 57} {
 		missing[fmt.Sprintf("ACME-%d", n)] = true
 	}
 	wantMissing := slices.Sorted(maps.Keys(missing))
 	if !slices.Equal(run.collected.Missing, wantMissing) {
 		t.Errorf("the collect lists as missing %v, want %v", run.collected.Missing, wantMissing)
+	}
+	if want := []string{"ACME-15", "ACME-24", "ACME-54"}; !slices.Equal(run.collected.MissingAncestors, want) || !slices.Equal(read.MissingAncestors, want) {
+		t.Errorf("the collect lists as missing ancestors %v and window.json %v, want %v", run.collected.MissingAncestors, read.MissingAncestors, want)
 	}
 	for _, request := range run.dispatch {
 		for _, unread := range []string{"ACME-70", "ACME-71"} {
@@ -950,5 +956,181 @@ func TestCollectReadsTheRunOutAfterTheWindow(t *testing.T) {
 	}
 	if !reflect.DeepEqual(read.Events["ACME-9"], events[:2]) {
 		t.Errorf("ACME-9's events are\n  %s\nwant those before the run-out's end\n  %s", read.Events["ACME-9"], events[:2])
+	}
+}
+
+// chainServed is what a Dispatch stub serves of the parent chains of an ancestor collect's tests:
+// each issue's events by key, oldest first, each an hour before the span starts, inside the
+// collect's reach, with ids in the order filed.
+type chainServed struct {
+	t      *testing.T
+	events map[string][]json.RawMessage
+	id     int64
+}
+
+// file appends to key's events the issue event that shows it under parent ("" for none), blocked
+// by blockers: its issue.created where key has no event yet, and an issue.updated after.
+func (c *chainServed) file(key, parent string, blockers ...string) {
+	c.t.Helper()
+	project, _, _ := strings.Cut(key, "-")
+	seq := int64(len(c.events[key]) + 1)
+	kind := "issue.created"
+	if seq > 1 {
+		kind = "issue.updated"
+	}
+	var shown any
+	if parent != "" {
+		shown = parent
+	}
+	c.id++
+	event, err := json.Marshal(map[string]any{"id": 910000 + c.id, "issue_key": key, "artifact_id": nil, "project": project, "seq": seq,
+		"type": kind, "actor": map[string]any{"kind": "user", "id": "acme-person"}, "notify": true,
+		"created_at": collectFrom.Add(-time.Hour + time.Duration(c.id)*time.Second),
+		"payload": map[string]any{"key": key, "project": project, "status": "todo", "parent": shown, "blocked_by": append([]string{}, blockers...),
+			"priority": nil}})
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	if c.events == nil {
+		c.events = map[string][]json.RawMessage{}
+	}
+	c.events[key] = append(c.events[key], compactJSON(c.t, event))
+}
+
+// collectChains collects the window of one slot line of ACME-1, half an hour into the span,
+// against a Dispatch stub that serves served's events and lists listed as ACME's issues, and
+// answers what the collect gave, the window read back, and each issue whose events Dispatch was
+// asked for, with how many times.
+func collectChains(t *testing.T, served chainServed, listed []string) (Collected, Window, map[string]int) {
+	t.Helper()
+	logs := filepath.Join(t.TempDir(), "daemon.log")
+	line := fmt.Sprintf(`{"time":%q,"level":"INFO","msg":"admission: slot taken","issue":"ACME-1","slots":1,"cap":9}`,
+		collectFrom.Add(30*time.Minute).Format(time.RFC3339Nano))
+	if err := os.WriteFile(logs, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server, seen := dispatchStub(t, dispatchServed{events: served.events, issues: map[string][]string{"ACME": listed}})
+	settings, err := DaemonSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "window")
+	collected, err := Collect(context.Background(), CollectConfig{Project: "ACME", From: collectFrom, To: collectTo, Before: 2 * time.Hour,
+		Logs: []string{logs}, Dispatch: NewDispatchReader(server.URL, stubDispatchToken), Settings: settings,
+		Collector: "0123456789abcdef0123456789abcdef01234567", Out: out})
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	read, err := ReadWindow(out)
+	if err != nil {
+		t.Fatalf("ReadWindow of the collected window: %v", err)
+	}
+	asked := map[string]int{}
+	for _, request := range seen.all() {
+		path, _, _ := strings.Cut(request.Target, "?")
+		if key, ok := strings.CutPrefix(path, "/api/v1/issues/"); ok {
+			if key, ok := strings.CutSuffix(key, "/events"); ok {
+				asked[key]++
+			}
+		}
+	}
+	return collected, read, asked
+}
+
+// A collect follows the Dispatch parent chain of each issue it holds to its top, in any project,
+// and reads the events of each ancestor, so a replay can resolve an issue's priority from the
+// nearest issue above it that has one, as Dispatch's `resolved_priority` does (spec R10), at each
+// change of a parent too. ACME-1, which the window's line names, was filed under
+// ACME-3 and moved under ACME-2; ACME-2 stands under ACMEAUX-1, of another project, and ACMEAUX-1
+// under ACMEAUX-2, the top, three levels above ACME-1. ACME-5, which only the project's listing
+// names, stands under ACMEAUX-3. The window holds the events of each of the seven, names no
+// ancestor missing, and Dispatch was asked for each issue once. It fails where the collect leaves
+// out an ancestor, as check k1's negative control asks of the collector.
+func TestCollectFollowsEachParentChainToItsTopAcrossProjects(t *testing.T) {
+	t.Parallel()
+	served := chainServed{t: t}
+	served.file("ACME-1", "ACME-3")
+	served.file("ACME-1", "ACME-2")
+	served.file("ACME-3", "")
+	served.file("ACME-2", "ACMEAUX-1")
+	served.file("ACMEAUX-1", "ACMEAUX-2")
+	served.file("ACMEAUX-2", "")
+	served.file("ACME-5", "ACMEAUX-3")
+	served.file("ACMEAUX-3", "")
+	collected, read, asked := collectChains(t, served, []string{"ACME-1", "ACME-5"})
+	want := slices.Sorted(maps.Keys(served.events))
+	if got := slices.Sorted(maps.Keys(read.Events)); !slices.Equal(got, want) {
+		t.Errorf("the window holds the events of %v, want of each issue and each of its ancestors, %v", got, want)
+	}
+	for key, events := range served.events {
+		if !reflect.DeepEqual(read.Events[key], events) {
+			t.Errorf("the events of %s are\n  %s\nwant\n  %s", key, read.Events[key], events)
+		}
+	}
+	if len(collected.MissingAncestors) != 0 || len(read.MissingAncestors) != 0 || len(collected.Missing) != 0 {
+		t.Errorf("the collect names %v missing and %v (window.json %v) as missing ancestors, want none", collected.Missing,
+			collected.MissingAncestors, read.MissingAncestors)
+	}
+	for _, key := range want {
+		if asked[key] != 1 {
+			t.Errorf("Dispatch was asked for the events of %s %d times, want once", key, asked[key])
+		}
+	}
+}
+
+// An ancestor whose events Dispatch does not give is named, in window.json's missingAncestors and in
+// what the collect answers, so a replay that needs it says so rather than guess it (spec R10).
+// Dispatch answers that it has no such issue for an issue it does not have and for one it does not
+// show the reader alike. ACME-1, which the window's line names, is blocked by ACME-9 and stands
+// under ACMEAUX-1, which stands under ACMEAUX-2; the stub serves neither ACME-9 nor ACMEAUX-2. The
+// collect names both missing, and ACMEAUX-2 alone as a missing ancestor, since a blocker is no
+// ancestor.
+func TestCollectNamesEachAncestorDispatchDoesNotShow(t *testing.T) {
+	t.Parallel()
+	served := chainServed{t: t}
+	served.file("ACME-1", "ACMEAUX-1", "ACME-9")
+	served.file("ACMEAUX-1", "ACMEAUX-2")
+	collected, read, asked := collectChains(t, served, nil)
+	if want := []string{"ACMEAUX-2"}; !slices.Equal(collected.MissingAncestors, want) || !slices.Equal(read.MissingAncestors, want) {
+		t.Errorf("the collect names %v as missing ancestors and window.json %v, want %v", collected.MissingAncestors, read.MissingAncestors, want)
+	}
+	if want := []string{"ACME-9", "ACMEAUX-2"}; !slices.Equal(collected.Missing, want) {
+		t.Errorf("the collect names %v missing, want %v", collected.Missing, want)
+	}
+	if got, want := slices.Sorted(maps.Keys(read.Events)), []string{"ACME-1", "ACMEAUX-1"}; !slices.Equal(got, want) {
+		t.Errorf("the window holds the events of %v, want of %v", got, want)
+	}
+	if asked["ACMEAUX-2"] != 1 {
+		t.Errorf("Dispatch was asked for ACMEAUX-2's events %d times, want once", asked["ACMEAUX-2"])
+	}
+}
+
+// A collect reads a parent chain up to 32 levels above the issue, the most Dispatch's own walk of a
+// chain reads (refs.IssueDepthCap), and no further, and an
+// ancestor above that is no missing input. ACME-1, which the window's line names, stands under
+// ACMEAUX-1, ACMEAUX-n under ACMEAUX-n+1, and ACMEAUX-32 under ACMEAUX-33, which the stub does not
+// serve: the window holds ACME-1's events and those of ACMEAUX-1 to ACMEAUX-32, Dispatch is asked
+// for no ACMEAUX-33, and the collect names nothing missing.
+func TestCollectReadsAChainUpTo32LevelsAboveAnIssue(t *testing.T) {
+	t.Parallel()
+	served := chainServed{t: t}
+	served.file("ACME-1", "ACMEAUX-1")
+	want := []string{"ACME-1"}
+	for level := 1; level <= 32; level++ {
+		key := fmt.Sprintf("ACMEAUX-%d", level)
+		served.file(key, fmt.Sprintf("ACMEAUX-%d", level+1))
+		want = append(want, key)
+	}
+	collected, read, asked := collectChains(t, served, nil)
+	slices.Sort(want)
+	if got := slices.Sorted(maps.Keys(read.Events)); !slices.Equal(got, want) {
+		t.Errorf("the window holds the events of %v, want of ACME-1 and the 32 levels above it, %v", got, want)
+	}
+	if asked["ACMEAUX-33"] != 0 {
+		t.Errorf("Dispatch was asked for ACMEAUX-33's events, 33 levels above ACME-1, %d times; want none", asked["ACMEAUX-33"])
+	}
+	if len(collected.Missing) != 0 || len(collected.MissingAncestors) != 0 || len(read.MissingAncestors) != 0 {
+		t.Errorf("the collect names %v missing and %v (window.json %v) as missing ancestors, want none", collected.Missing,
+			collected.MissingAncestors, read.MissingAncestors)
 	}
 }

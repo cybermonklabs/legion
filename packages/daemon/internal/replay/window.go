@@ -141,6 +141,13 @@ type Window struct {
 	// Signals is, for each signal of R11 the window holds a record of, the spans it holds one in,
 	// in time order; a signal it names no span of has no record anywhere in the window (Q4).
 	Signals map[string][]Span `json:"signals,omitempty"`
+	// MissingAncestors is each issue on the Dispatch parent chain of an issue the window holds, up
+	// to Dispatch's walk of 32 levels above it (ancestorLevels), whose events collect could not read,
+	// since Dispatch answered that it has no such issue, as it answers for an issue it does not show
+	// the reader: an input that the priority Dispatch resolves for an issue below it may rest on
+	// (spec R10), sorted. None where collect read every ancestor, or where it was collected before
+	// collect read ancestors, and window.json then names none.
+	MissingAncestors []string `json:"missingAncestors,omitempty"`
 
 	// Log is log.jsonl's lines, in the file's order.
 	Log []json.RawMessage `json:"-"`

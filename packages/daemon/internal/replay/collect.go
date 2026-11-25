@@ -289,6 +289,11 @@ type Collected struct {
 	// Missing is each issue key a line, an event or the project's listing names that Dispatch
 	// answers it does not have, sorted; the window holds no events of it.
 	Missing []string
+	// MissingAncestors is each key of Missing that stands on the Dispatch parent chain of an issue
+	// the window holds, up to ancestorLevels above it: the window's MissingAncestors, which
+	// `legion replay collect` prints apart, since the priority Dispatch resolves for an issue below
+	// it may rest on it.
+	MissingAncestors []string
 	// SettingsEvents is how many settings events of the project the event log held up to the
 	// reach's end, and ProjectIssues how many issues Dispatch's listing of the project holds.
 	SettingsEvents, ProjectIssues int
@@ -302,16 +307,19 @@ type Collected struct {
 // minute. From Dispatch, with GET alone, it pages the whole event log from its first event to the
 // reach's end and keeps the project's settings events, the ones before the reach included, since
 // they set what holds at its start; it lists every issue of the project; and it reads the events
-// of every issue the lines name, of every blocker, parent and child those issues' events name, in
-// any project, and of every issue of the project the listing or the event log names, each issue's
-// from its first event up to the reach's end, at most cfg.Concurrency at once. Each read Dispatch
-// refuses for now (429, a 5xx, no answer) is tried again with a growing wait.
+// of every issue the lines name, of every blocker and child those issues' events name, in any
+// project, of every issue of the project the listing or the event log names, and of every issue on
+// the Dispatch parent chain of each of those, in any project, up to ancestorLevels above it
+// (readAncestors), each issue's from its first event up to the reach's end, at most
+// cfg.Concurrency at once. Each read Dispatch refuses for now (429, a 5xx, no answer) is tried
+// again with a growing wait.
 // window.json records the project, the span, Before, the run-out After, the cap of each change the
 // slot lines and the daemon's start lines show, the line kinds the log holds, cfg's settings, parts,
-// collector and default assignee, the sha256 of each file, and the spans of each signal's record
-// (collectedSignals). A line of a kind the trace reads that its reader refuses fails the collect,
-// naming the file and the line, so a window is never written that the trace cannot read; so does a
-// line of a signal's record its reader refuses.
+// collector and default assignee, the sha256 of each file, the spans of each signal's record
+// (collectedSignals), and each ancestor Dispatch answered it does not have (MissingAncestors). A
+// line of a kind the trace reads that its reader refuses fails the collect, naming the file and the
+// line, so a window is never written that the trace cannot read; so does a line of a signal's
+// record its reader refuses.
 func Collect(ctx context.Context, cfg CollectConfig) (Collected, error) {
 	if err := cfg.check(); err != nil {
 		return Collected{}, err
@@ -419,9 +427,13 @@ func Collect(ctx context.Context, cfg CollectConfig) (Collected, error) {
 	if err := reader.read(ctx, slices.Sorted(maps.Keys(project))); err != nil {
 		return Collected{}, err
 	}
+	if w.MissingAncestors, err = reader.readAncestors(ctx); err != nil {
+		return Collected{}, err
+	}
 	w.Events = reader.events
 	w.Merges = map[string][]Merge{}
 	collected.Missing = slices.Sorted(slices.Values(reader.missing))
+	collected.MissingAncestors = w.MissingAncestors
 	if err := w.Write(cfg.Out); err != nil {
 		return Collected{}, fmt.Errorf("replay: collect: %w", err)
 	}
@@ -1065,14 +1077,13 @@ func capOfLine(line LogLine) (int, bool) {
 	return 0, false
 }
 
-// issuesAnEventNames is every issue a Dispatch event names as related to its own: an issue
-// event's blockers and parent, and the child a parent's child.added, child.removed or
-// child.status names.
+// issuesAnEventNames is every issue a Dispatch event names as related to its own but its parent: an
+// issue event's blockers, and the child a parent's child.added, child.removed or child.status
+// names. A parent is an ancestor, which a collect follows further (readAncestors).
 func issuesAnEventNames(event json.RawMessage) ([]string, error) {
 	var named struct {
 		Payload struct {
 			BlockedBy []string `json:"blocked_by"`
-			Parent    *string  `json:"parent"`
 			ChildKey  string   `json:"child_key"`
 		} `json:"payload"`
 	}
@@ -1080,13 +1091,88 @@ func issuesAnEventNames(event json.RawMessage) ([]string, error) {
 		return nil, err
 	}
 	names := append([]string{}, named.Payload.BlockedBy...)
-	if named.Payload.Parent != nil {
-		names = append(names, *named.Payload.Parent)
-	}
 	if named.Payload.ChildKey != "" {
 		names = append(names, named.Payload.ChildKey)
 	}
 	return names, nil
+}
+
+// parentOf is the Dispatch parent an event shows its issue under, "" for none: an issue event's
+// parent.
+func parentOf(event json.RawMessage) (string, error) {
+	var shown struct {
+		Payload struct {
+			Parent *string `json:"parent"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(event, &shown); err != nil {
+		return "", err
+	}
+	if shown.Payload.Parent == nil {
+		return "", nil
+	}
+	return *shown.Payload.Parent, nil
+}
+
+// ancestorLevels is how far up the Dispatch parent chain of an issue a collect reads: the levels
+// Dispatch's own walk of a chain reads (refs.IssueDepthCap, the most links a write lets an issue
+// sit below its root), whose nearest issue with a priority gives the priority Dispatch resolves for
+// the issue (its `resolved_priority`, spec R10). An issue further up is none of its inputs, so
+// a collect neither reads nor names it.
+const ancestorLevels = 32
+
+// readAncestors reads the events of each issue on the Dispatch parent chain of every issue r holds,
+// in any project, up to ancestorLevels above it, and answers each such ancestor Dispatch answered
+// it does not have, sorted. It walks a level at a time: level 1 is each parent an event of an issue
+// r holds names, at any moment, so a parent the issue left is read as well as the one it stands
+// under, and level k + 1 each parent an event of an issue first read at level k names. So an
+// ancestor is read once, at the level of its nearest descendant among the issues r held, and an
+// issue r holds already is read again by none.
+func (r *eventReader) readAncestors(ctx context.Context) ([]string, error) {
+	tried := make(map[string]bool, len(r.events)+len(r.missing))
+	for key := range r.events {
+		tried[key] = true
+	}
+	gone := make(map[string]bool, len(r.missing))
+	for _, key := range r.missing {
+		tried[key], gone[key] = true, true
+	}
+	missing := make(map[string]bool)
+	level := slices.Sorted(maps.Keys(r.events))
+	for depth := 1; depth <= ancestorLevels && len(level) > 0; depth++ {
+		parents := make(map[string]bool)
+		for _, key := range level {
+			for _, event := range r.events[key] {
+				parent, err := parentOf(event)
+				if err != nil {
+					return nil, fmt.Errorf("replay: collect: an event of %s: %w", key, err)
+				}
+				switch {
+				case !claim.IsIssueKey(parent):
+				case gone[parent]:
+					missing[parent] = true
+				case !tried[parent]:
+					parents[parent] = true
+				}
+			}
+		}
+		next := slices.Sorted(maps.Keys(parents))
+		known := len(r.missing)
+		if err := r.read(ctx, next); err != nil {
+			return nil, err
+		}
+		for _, key := range r.missing[known:] {
+			gone[key], missing[key] = true, true
+		}
+		level = nil
+		for _, key := range next {
+			tried[key] = true
+			if _, held := r.events[key]; held {
+				level = append(level, key)
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(missing)), nil
 }
 
 // eventReader reads issues' event logs from Dispatch for a collect, limit at once, keeping each

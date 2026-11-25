@@ -1,0 +1,43 @@
+{
+  "format": 1,
+  "project": "ACME",
+  "from": "2001-03-05T09:00:00Z",
+  "to": "2001-03-05T10:00:00Z",
+  "before": "0s",
+  "caps": [
+    {
+      "at": "2001-03-05T09:00:00Z",
+      "cap": 1
+    }
+  ],
+  "parts": [
+    {
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T10:00:00Z",
+      "release": "fixture",
+      "commit": "0d3786da536722f2eb26a793ab1b9827b6e90f47",
+      "rule": "main"
+    }
+  ],
+  "tickInterval": "1h0m0s",
+  "gateSteps": [],
+  "linger": "2h0m0s",
+  "reviewRoundCap": 3,
+  "stalledTreeNotice": "6h0m0s",
+  "workerSilence": "4h0m0s",
+  "workerBackground": "4h0m0s",
+  "experiments": [],
+  "lines": [
+    "admission: slot taken",
+    "daemon: opening the store; a connection error that the next attempt can clear is tried again",
+    "supervise: a turn started",
+    "supervise: launched"
+  ],
+  "collector": "0d3786da536722f2eb26a793ab1b9827b6e90f47",
+  "files": {
+    "events/ACME-1.jsonl": "37f6a2579f15b0dcc8785ba946cda8aeeda71097179d31c29d472b943ab3ef4d",
+    "events/ACME-2.jsonl": "11ec010d31ba2d9527c4dbeb6889d5354b47449227930bb773291e99564ac0d1",
+    "log.jsonl": "ae4eb81c9a5b07d94e03d46b7f12eee606ee9611b48d2ab4b96e80a994b742b3"
+  },
+  "missingAncestors": ["ACMEAUX-1"]
+}

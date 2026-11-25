@@ -31,15 +31,26 @@ This file gives the conventions every window is written and worked by, once: the
 | `conflict-in-retro` | a conflict in retro returns work to implementing | `legion-v20.42.5` |
 | `signal-crosses-with-no-event` | the tick still starts P0 and returns a slot, but only the signal deadline starts lower-priority work | `main`, `signals` |
 | `no-crossing-due` | no deadline is due at first, and a new kill moves the pending deadline before it fires | `signals` |
+| `p0-inherited-across-projects` | at a full cap, a child that inherits P0 from another project's ancestor starts, an explicit P1 child waits, and an ancestor's raise moves a waiting issue to P0 at that moment | `main`, `p0-at-once` |
+| `p0-inherited-ancestor-missing` | the same window without the required ancestor's record: the rule with the new P0 start is refused, naming it | `main`; `p0-at-once` refused |
+| `p0-recorded-descendant-update` | Dispatch's recorded update of a child whose own priority stays null and whose resolved priority becomes P0 starts it at a full cap | `main`, `p0-at-once` |
+| `one-free-slot-opposite-order` | one free slot and two issues below P0 in opposite order under the recorded rule and by resolved priority | `main`, `p0-at-once` |
 
 The three windows of R10, the start of a P0 issue outside the cap, run it under `p0-at-once`, and under `main` once cybermonklabs/legion#5488 merges and `main` starts a P0 issue outside the cap.
 Until then each run under `main` waits on the skip list (`pending_test.go`, ruling D16), and its expected values are those of the run under `p0-at-once`.
+
+The four windows of spec v36's R10 rest on the priority Dispatch resolves for an issue: its own, else that of the nearest issue above it on its Dispatch parent chain that has one, in any project, up to 32 levels.
+`main`, the recorded rule on this branch, starts an issue outside the cap on its own P0 alone and orders its line by the issue's own priority, else its tree root's; `p0-at-once` reads the resolved priority for the P0 start and the line's order; and the measures read it under every rule, so `urgentWaits` and `priorityTakenBanded` count an issue at its resolved priority under `main` too.
+Their record names an issue's parent in another project, ACMEAUX, as its events do; `p0-recorded-descendant-update` is Dispatch's record from a release that serves `resolved_priority`, and the three others are from before it, so the replay reconstructs the resolved priority from the window's parent chains.
+Each waits on the skip list (`pending_test.go`) until the replay reads the resolved priority (plan task t39).
 
 ## What a directory holds
 
 - `window.json`, `log.jsonl` and `events/<KEY>.jsonl` (and `merges/<owner>__<name>.jsonl` in `clock-far-from-now` and `conflict-from-fitted-rate`, which hold base-branch commits), in the format of `window.go`: `ReadWindow` checks each input against the sha256 `files` records.
   A window that holds a record of R11's signals holds its inputs too, each optional: `launcher/log.jsonl` (`{time, pod, text}`, the launcher's lines, in `signal-crosses-with-no-event` and `no-crossing-due`), `signals/provider.jsonl`, `signals/memory.jsonl`, `queue/<owner>__<name>.jsonl` and `settings/events.jsonl`.
   Its `window.json` names each signal's spans in `signals` (`{"kills": [{"from", "to"}]}`), and may give `defaultAssignee` and the P0 bound's changes in `p0Bounds` (`[{"at", "bound"}]`, in `p0-at-its-bound`).
+  It may name in `missingAncestors` each ancestor on a Dispatch parent chain whose events `collect` could not read (`["ACMEAUX-1"]`, in `p0-recorded-descendant-update`).
+  Every other window names none: each holds the events of every parent its events name, but `p0-inherited-ancestor-missing`, which lacks ACMEAUX-1's as a window collected before `collect` read each ancestor can.
   `replay.md`'s "The records of the signals" gives each file's form.
   After an edit of an input, write its new hash into `files`: `sha256sum log.jsonl events/*.jsonl`, adding `merges/*.jsonl` and each signal input where the window has them.
   `TestFixtureWindows` reads every window with `ReadWindow` before it replays it (it needs `LEGION_TEST_PG_DSN`), and `TestTheFixtureWindowsCoverK1` reads each window of k1's list without a database, so a hash that differs fails them.
@@ -64,6 +75,9 @@ Until then each run under `main` waits on the skip list (`pending_test.go`, ruli
 
   - `checks`: optional additional assertions by rule. `run` lists exact fields in `run.json`. A missing field fails even if its expected value is zero or an empty array. `log` lists structured lines, comparing each named attribute. These assertions cover the bound refusal, deadline history, slot pass kinds and timed signal values.
 
+  - `refused` (optional): `{"<rule>": "<text>"}`, each rule under which `legion replay run` must refuse the window, on the window's branch, with an error that holds the text, in place of a `Scorecard` in `rules` and of `checks`.
+    `p0-inherited-ancestor-missing` names `p0-at-once`, whose refusal must name `ACMEAUX-1`, the ancestor whose history the window lacks.
+
 The values of `expect.json` are those of `scorecard.json`, the snapshot timeline (`replay.md`, the files of `legion replay run`): the timeline the replay builds from the store as each admission pass leaves it, not `scorecard-line.json`, the one `BuildTrace` builds again from the replay's own log lines.
 The two may differ by the reconstruction error the tool reports; these windows hold the exact one.
 
@@ -72,7 +86,7 @@ The two may differ by the reconstruction error the tool reports; these windows h
 - Every window is one day, 2001-03-05 (`clock-far-from-now` too), a few hours long, with an admission cap of 1 to 3 (43 in `forty-two-more-in-flight`), so each value is a sum of a few whole minutes.
   Most windows start at the daemon's boot, with an empty start state. The conflict windows in accepting and retro and the signal window with a crossing start after boot and seed the state from the earlier record.
 
-- Issue keys are `ACME-<n>`. `ACMEAUX-1` is a synthetic blocker from a different project.
+- Issue keys are `ACME-<n>`. `ACMEAUX-<n>` are synthetic issues of a different project: a blocker in `signal-crosses-with-no-event`, and the Dispatch parents of roots handed to Legion in the four windows of spec v36's R10.
   A root handed to Legion is filed `todo` with the label `legion` by a person (`user:acme-person`);
   a child is filed under its parent by the role that files it (its claim token as a session) with no label, `todo` (recorded at once under a live tree) or `backlog` (not released, which Dispatch still counts as an open child).
   An issue Legion does not work has no label.
@@ -232,9 +246,10 @@ The two may differ by the reconstruction error the tool reports; these windows h
 
 - `priorityTakenBanded` is `priorityTaken` in today's line's order, the band of the issue's own Dispatch priority, else its tree root's, first (P0 first, none after P3).
   In a window where no issue has a priority every issue stands in one band, so the two are equal; `expect.json` gives `priorityTakenBanded` wherever it is not 0.
+  The four windows of spec v36's R10 band each issue by its resolved priority, and count it in `urgentWaits` by it, under every rule.
 
 - `urgentWaits` holds `P0` and `P1` where an issue counts in them, and is left out of `expect.json` where none does.
   Its waits run past `to` to the end of the run-out, and are cut there (`cut`) for an issue with no first slot or no `done` by then; an issue that stood `todo` from before `from` counts from `from`.
 
-- `assumptions`: the numbers of the assumptions (`assumptions.go`) the run's measures rest on, each named where the run holds the fact it is about: 1 always; 2 where an issue stands past its review; 3 where a send-back loop runs or a conflict is drawn; 4 where an issue waits on another issue or a gate closes; 5 where a person's answer or review moves the run; 6 where the start state places an issue; 7 where a hold other than the cap (a design gate, a link on a child, an ancestor, a tree) holds the first start of an issue not yet started (a started issue's wait on another issue is 4); 8 where the window holds an issue handed to Legion that the record never started; 9 where the run gives out a slot, which the line's order chooses; 10 where the window holds a link or a child; 11 where a pass gives out a slot it freed; 13 where a loop moves an issue back; 14 where a cover is taken; 15 where work is left at `to`; 16 where an issue reopens; 17 where a child is filed after its parent started; 18 where the window records a conflict; 23 where a conflict is drawn under `main`; 24 where the daemon is down between two boots; 25 where a blocker is in another project.
+- `assumptions`: the numbers of the assumptions (`assumptions.go`) the run's measures rest on, each named where the run holds the fact it is about: 1 always; 2 where an issue stands past its review; 3 where a send-back loop runs or a conflict is drawn; 4 where an issue waits on another issue or a gate closes; 5 where a person's answer or review moves the run; 6 where the start state places an issue; 7 where a hold other than the cap (a design gate, a link on a child, an ancestor, a tree) holds the first start of an issue not yet started (a started issue's wait on another issue is 4); 8 where the window holds an issue handed to Legion that the record never started; 9 where the run gives out a slot, which the line's order chooses; 10 where the window holds a link or a child, a root's Dispatch parent of an issue Legion does not work included; 11 where a pass gives out a slot it freed; 13 where a loop moves an issue back; 14 where a cover is taken; 15 where work is left at `to`; 16 where an issue reopens; 17 where a child is filed after its parent started; 18 where the window records a conflict; 23 where a conflict is drawn under `main`; 24 where the daemon is down between two boots; 25 where a blocker is in another project.
   `clock-far-from-now` names 1, 2, 4, 9, 10, 11 and 15 by these.

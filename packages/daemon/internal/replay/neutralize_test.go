@@ -408,6 +408,41 @@ func TestNeutralizeRenamesANameTheSameInEveryFile(t *testing.T) {
 	}
 }
 
+// Neutralize renames the keys of window.json's missingAncestors as it renames every key: each is
+// the neutral key of the same issue in every other file, and a key of a project that stands
+// nowhere else in the window is renamed too. The private window names as missing ancestors
+// NIMBUS-400, whose events it holds, and VEGA-5, of a project no other file names.
+func TestNeutralizeRenamesTheMissingAncestors(t *testing.T) {
+	t.Parallel()
+	w := privateRecord(t)
+	w.MissingAncestors = []string{"NIMBUS-400", "VEGA-5"}
+	in := filepath.Join(t.TempDir(), "private")
+	if err := w.Write(in); err != nil {
+		t.Fatal(err)
+	}
+	scratch := t.TempDir()
+	out := filepath.Join(scratch, "neutral")
+	names, err := Neutralize(NeutralizeConfig{In: in, Out: out, Project: "ACME", Map: filepath.Join(scratch, "map.json"), Deny: []string{privateWord}})
+	if err != nil {
+		t.Fatalf("Neutralize: %v", err)
+	}
+	assertNoneHeld(t, out, append(slices.Clone(privateNames), "vega"), true)
+	neutral, err := ReadWindow(out)
+	if err != nil {
+		t.Fatalf("ReadWindow of the neutral window: %v", err)
+	}
+	root, other := names.Keys["NIMBUS-400"], names.Keys["VEGA-5"]
+	if root != "ACME-1" || other == "" || strings.HasPrefix(other, "VEGA") {
+		t.Fatalf("NIMBUS-400 and VEGA-5 are %q and %q; want ACME-1, as in every other file, and a neutral key", root, other)
+	}
+	if want := []string{root, other}; !slices.Equal(neutral.MissingAncestors, want) {
+		t.Errorf("the neutral window.json names the missing ancestors %v, want %v", neutral.MissingAncestors, want)
+	}
+	if _, held := neutral.Events[root]; !held {
+		t.Errorf("the neutral window holds no events of %s, the key its missing ancestor NIMBUS-400 became", root)
+	}
+}
+
 // The map of a neutralization holds every private name, so it is never written where the neutral
 // window is: a map inside the output is refused, and so is a map already there, which a second
 // run would otherwise write over; neither refusal writes the output or the map.
