@@ -915,12 +915,12 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 	defer s.finishLiveWrite(write)
 	s.hooks.pauseLiveWrite(write.artifactID, PauseAfterCommit)
 	defer s.closeShadow(write)
+	if s.beforePublish != nil {
+		s.beforePublish(write)
+	}
 	// Committed, the write has no more use for its fork, so the fork goes before the publish,
 	// which loads the room when no room holds the document (coldFork). The room's shadow keeps it
 	// (newShadow).
-	if s.checkRendering != nil {
-		s.checkRendering("publish", write)
-	}
 	write.releaseFork()
 	if !s.roomHeld(write.artifactID) {
 		if len(write.updates) > 0 {
