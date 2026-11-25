@@ -58,6 +58,8 @@ EXCLUDED = excluded('worker_image', "gates worker-image.yaml's image build; .git
     'scripts/third-party-notices.ts',
     'scripts/go-third-party-notices.sh',
     'scripts/assemble-third-party-notices.sh',
+    'scripts/daemon-contract.sh',
+    'scripts/daemon-contract-order.sh',
     '!**/node_modules/**',
     '!**/dist/**',
     '!**/build/**',

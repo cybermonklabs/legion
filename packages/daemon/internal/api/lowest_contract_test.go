@@ -53,7 +53,7 @@ func TestTheStateReportsTheLowestContractOfTheClaimsThatHoldAProcess(t *testing.
 	)
 	claims := []supervise.Claim{
 		claimInPod("legion-legion-legion-208-planner", statePodUID, 52),
-		claimInPod("legion-legion-legion-208-implementer", statePodUID, DaemonAPIVersion),
+		claimInPod("legion-legion-legion-208-implementer", statePodUID, DaemonAPIVersion()),
 		// The lowest of the fleet, and in another pod than the caller's: the number is the
 		// project's, not one pod's.
 		claimInPod("legion-legion-legion-210-planner", otherPod, lowest),
@@ -120,14 +120,14 @@ func TestTheStateReportsTheSnapshotsOwnClaimsAndNotTheFixturesValue(t *testing.T
 	}
 	server := NewServer("127.0.0.1", 8437, Options{
 		Steps: config.DesignGateRootIssues.Steps(),
-		State: fakeSource{state: fixture, claims: podClaims(DaemonAPIVersion)}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
+		State: fakeSource{state: fixture, claims: podClaims(DaemonAPIVersion())}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
 	})
 	recorder := httptest.NewRecorder()
 
 	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil))
 
 	reported, carried := lowestServed(t, recorder.Body.Bytes())
-	if !carried || reported != DaemonAPIVersion {
-		t.Errorf("the lowest plugin contract = %d (carried %v), want the %d every claim of the snapshot records", reported, carried, DaemonAPIVersion)
+	if !carried || reported != DaemonAPIVersion() {
+		t.Errorf("the lowest plugin contract = %d (carried %v), want the %d every claim of the snapshot records", reported, carried, DaemonAPIVersion())
 	}
 }

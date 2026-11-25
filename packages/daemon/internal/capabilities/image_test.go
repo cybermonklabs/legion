@@ -1021,6 +1021,125 @@ func TestReadModelFallback(t *testing.T) {
 	})
 }
 
+// scriptedOmp is an omp that answers `--version` and `--help` by printing version and help, and
+// exits code on either; any other argv is refused as the fake omp refuses one. It prints with the
+// shell's own printf, since the stubs' PATH holds no cat.
+func scriptedOmp(t *testing.T, version, help string, code int) string {
+	t.Helper()
+	quoted := func(text string) string { return "'" + strings.ReplaceAll(text, "'", `'\''`) + "'" }
+	omp := filepath.Join(t.TempDir(), "omp")
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"--version) printf '%s\\n' " + quoted(version) + "; exit " + strconv.Itoa(code) + " ;;\n" +
+		"--help) printf '%s\\n' " + quoted(help) + "; exit " + strconv.Itoa(code) + " ;;\n" +
+		"*) echo \"fake omp: unexpected argv: $*\" >&2; exit 64 ;;\nesac\n"
+	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return omp
+}
+
+// withoutSessionID is the flags table of a fork release before the flag
+// (v18.18.6-sami.20261117-013345, as its `omp --help` prints it): flags that begin with the words
+// and mention sessions, and none that is --session-id.
+const withoutSessionID = `omp v18.18.6
+
+FLAGS
+  -c, --continue                        Continue previous session
+  -r, --resume=<value>                  Resume a session (by ID prefix, path, or picker if omitted)
+      --restore=<value>                 Resume a session as --resume does, then go on with what its last process left unfinished
+      --session-dir=<value>             Directory for session storage and lookup
+      --no-session                      Don't save session (ephemeral)
+
+Plugin Options:
+  --plugin-dir <path>        Load plugin from directory (repeatable)`
+
+// ReadSessionIDFlag is taken when a line of Oh My Pi's help names --session-id in its flag column
+// — with its value, after a short flag, or alone at the line's end — and absent when the help
+// lists no such flag, though a description mentions the words or a longer flag begins with them.
+func TestReadSessionIDFlagReadsTheFlagColumnOfTheHelp(t *testing.T) {
+	s := newStubs(t)
+	for name, testCase := range map[string]struct {
+		help, want string
+	}{
+		"the first release with the flag": {withoutSessionID + "\n      --session-id=<value>              Start a new session under this id (a lowercase UUID); refused when a stored session already holds it", bootprobe.SessionIDFlagTaken},
+		"after a short flag":              {withoutSessionID + "\n  -s, --session-id=<value>  Start a new session under this id", bootprobe.SessionIDFlagTaken},
+		"alone at the line's end":         {"FLAGS\n      --session-id", bootprobe.SessionIDFlagTaken},
+		"a release before the flag":       {withoutSessionID, bootprobe.SessionIDFlagAbsent},
+		"the words in a description":      {withoutSessionID + "\n      --fork=<value>   Start a session under a new id, as --session-id does", bootprobe.SessionIDFlagAbsent},
+		"a longer flag":                   {withoutSessionID + "\n      --session-id-file=<value>   Read the session id from a file", bootprobe.SessionIDFlagAbsent},
+	} {
+		t.Run(name, func(t *testing.T) {
+			img := s.image()
+			img.Launch = scriptedOmp(t, "omp/18.18.6", testCase.help, 0)
+			got, err := ReadSessionIDFlag(context.Background(), img)
+			if err != nil || got != testCase.want {
+				t.Errorf("ReadSessionIDFlag = %q, %v, want %q", got, err, testCase.want)
+			}
+		})
+	}
+}
+
+// A help Oh My Pi did not give — a run that fails, prints nothing, or cannot start — is an error
+// naming the command and what it printed, never a state: the probe writes it as unread.
+func TestReadSessionIDFlagIsAnErrorWhenTheHelpIsNotRead(t *testing.T) {
+	s := newStubs(t)
+	for name, testCase := range map[string]struct {
+		launch func(t *testing.T) string
+		want   func(launch string) string
+	}{
+		"a failing command": {
+			func(t *testing.T) string { return scriptedOmp(t, "omp/18.18.6", "Error: the profile is locked", 1) },
+			func(launch string) string { return launch + " --help exited 1: Error: the profile is locked" },
+		},
+		"no help": {
+			func(t *testing.T) string { return scriptedOmp(t, "omp/18.18.6", "", 0) },
+			func(launch string) string { return launch + " --help printed no help: " },
+		},
+		"a launch that cannot run": {
+			func(*testing.T) string { return "/nonexistent/omp" },
+			func(launch string) string { return launch + " --help exited 127" },
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			img := s.image()
+			img.Launch = testCase.launch(t)
+			got, err := ReadSessionIDFlag(context.Background(), img)
+			if want := testCase.want(img.Launch); err == nil || got != "" || !strings.HasPrefix(err.Error(), want) {
+				t.Errorf("ReadSessionIDFlag = %q, %v, want no state and an error beginning %q", got, err, want)
+			}
+		})
+	}
+}
+
+// ReadOmpVersion is the first line Oh My Pi printed for --version, trimmed, read through the
+// launch as a shell fragment; a run that fails or prints nothing is an error naming the command.
+func TestReadOmpVersion(t *testing.T) {
+	s := newStubs(t)
+	t.Run("the first line", func(t *testing.T) {
+		img := s.image()
+		img.Launch = "/usr/bin/env LEGION_TEST_UNUSED=1 " + scriptedOmp(t, "  omp/18.18.6  \nbuilt from sami.20261117-074351", withoutSessionID, 0)
+		if got, err := ReadOmpVersion(context.Background(), img); err != nil || got != "omp/18.18.6" {
+			t.Errorf("ReadOmpVersion = %q, %v, want %q", got, err, "omp/18.18.6")
+		}
+	})
+	t.Run("a failing command", func(t *testing.T) {
+		img := s.image()
+		img.Launch = scriptedOmp(t, "omp: cannot read its install", withoutSessionID, 1)
+		_, err := ReadOmpVersion(context.Background(), img)
+		if want := img.Launch + " --version exited 1: omp: cannot read its install"; err == nil || err.Error() != want {
+			t.Errorf("ReadOmpVersion = %v, want %q", err, want)
+		}
+	})
+	t.Run("no version", func(t *testing.T) {
+		img := s.image()
+		img.Launch = scriptedOmp(t, " ", withoutSessionID, 0)
+		_, err := ReadOmpVersion(context.Background(), img)
+		if want := img.Launch + " --version printed no version: "; err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("ReadOmpVersion = %v, want an error beginning %q", err, want)
+		}
+	})
+}
+
 // envValue is name's value in env, the last assignment winning as it does for the process env
 // starts.
 func TestEnvValueTakesTheLastAssignment(t *testing.T) {

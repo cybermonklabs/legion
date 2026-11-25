@@ -286,7 +286,7 @@ func runWithIdlePs(operation func()) {
 // their maximum, so nothing it frees is handed back to the system): the window allocates out of
 // what that collection freed, memory the heap has used before, as it does with the collector on.
 // Each marked BEGIN then holds the process's memory still (XidTracer.lockTransaction,
-// xidHoldMemory), mappings the collection or an earlier window made included.
+// xidHoldWindowMemory), mappings the collection or an earlier window made included.
 func runWithoutCollector(operation func()) {
 	limit := debug.SetMemoryLimit(math.MaxInt64)
 	defer debug.SetMemoryLimit(limit)
