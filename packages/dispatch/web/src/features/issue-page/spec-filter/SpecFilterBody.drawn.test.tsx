@@ -25,6 +25,7 @@ import type {
   Actor,
   CheckBlock,
   Decision,
+  DecisionLink,
   IssueCheckResults,
   IssueCoverage,
   IssueDecisions,
@@ -487,8 +488,9 @@ test("a person's decision stands once beside its statements, in their own words"
   }
 });
 
-// R5, the tester's F7: one line on each statement's own row, with no focus and no hover: the
-// words the decision came from, as a link to that decision, who decided and when.
+// R5, the tester's F7: one line on each statement's own row, with no focus and no hover: after
+// "because:", the question the person answered by its first sentence, then the words the
+// decision came from, as a link to that decision, who decided and when.
 test("each statement carries one line naming the decision that shaped it, with a link to it", () => {
   const ask = answeredAsk("ask-1", { text: "Put the decisions beside the statements. Please." });
   const { read, view } = drawBody(
@@ -506,8 +508,9 @@ test("each statement carries one line naming the decision that shaped it, with a
     const lines = textsOf(view, "[data-spec-because]");
     expect(lines).toHaveLength(2);
     for (const line of lines) {
-      expect(line).toContain(SPEC_WORDS.because);
-      expect(line).toContain("“Put the decisions beside the statements.”");
+      expect(line).toContain(
+        `${SPEC_WORDS.because} Does the built page work for you? “Put the decisions beside the statements.”`
+      );
       expect(line).toContain(READER);
       expect(line).toContain("14 Nov");
     }
@@ -779,26 +782,141 @@ test("an agent's decision draws its words with each reference named, in its cell
   }
 });
 
-// R5: where the answered question is the statement's own parent, its parent line and its
-// decision line are one line, so the question is drawn once.
-test("the question a statement hangs under is drawn once, as the group's heading", () => {
-  const { read, view } = drawBody(
-    issueTree([
-      answeredAsk("ask-1", { text: "Keep the memo in the pane. It reads better there." }, [
-        statement("r1"),
-      ]),
-    ])
-  );
+// R5: the cell gives the question an answer answers by its first sentence whole, ending at its
+// first sentence end as the answer's quote does and with no limit of characters, also where the
+// group's heading is that question. The heading draws the question's first line, which R1 cuts
+// at 100 characters inside a longer sentence; the cell, and the line under the statement before
+// the quote, draw the whole sentence and nothing of the next.
+test("a cell whose group is headed by its question draws the question's first sentence whole", () => {
+  const first =
+    "Should the Spec view draw every statement of the spec whole, with each of its words, rather than cut it at six lines?";
+  expect(first.length).toBeGreaterThan(100);
+  const ask = {
+    ...answeredAsk("ask-1", { text: "Keep the memo in the pane. It reads better there." }, [
+      statement("r1"),
+    ]),
+    text: `${first} Then a second sentence follows it.`,
+  };
+  const { read, view } = drawBody(issueTree([ask]));
   try {
-    const heading = view.container.querySelector("[data-spec-group-heading]")?.textContent ?? "";
-    expect(heading).toContain("question");
-    expect(heading).toContain("Does the built page work for you?");
-    const source = view.container.querySelector("[data-spec-source]")?.textContent ?? "";
-    expect(source).not.toContain("Does the built page work for you?");
+    const heading =
+      view.container.querySelector("[data-spec-group-heading] > p:last-child")?.textContent ?? "";
+    expect(heading.endsWith("…"), "the heading is not the question's first line, cut by R1").toBe(
+      true
+    );
+    expect(first.startsWith(heading.slice(0, -1))).toBe(true);
+    const cell = view.container.querySelector("[data-spec-cell]");
+    expect(cell?.getAttribute("data-decision-id")).toBe("ask-1");
+    expect(
+      textsOf(view, "[data-spec-cell] [data-spec-question]"),
+      "the cell under its question's heading does not draw that question's first sentence whole"
+    ).toEqual([first]);
+    expect(
+      textsOf(view, "[data-spec-because] [data-spec-question]"),
+      "the because line does not draw the question's first sentence whole"
+    ).toEqual([first]);
+    const because = textsOf(view, "[data-spec-because]")[0] ?? "";
+    expect(because.startsWith(`${SPEC_WORDS.because} ${first} “Keep the memo in the pane.”`)).toBe(
+      true
+    );
+    for (const drawn of [cell?.querySelector("[data-spec-source]")?.textContent ?? "", because]) {
+      expect(drawn, "a whole first sentence is drawn with an ellipsis").not.toContain("…");
+      expect(drawn, "the question's second sentence is drawn").not.toContain("Then a second");
+    }
     expect(textsOf(view, "[data-spec-quote]")).toEqual(["“Keep the memo in the pane.”"]);
   } finally {
     view.unmount();
     read.mockRestore();
+  }
+});
+
+/** `ref`'s tie as `shaped` makes it, made at `created`, whose far end - the statement - last
+ *  changed at `changed`. */
+function tieChangedAt(ref: string, created: string, changed: string | null): DecisionLink {
+  const tie = shaped(ref);
+  return { ...tie, created_at: created, to: { ...tie.to, changed_at: changed } };
+}
+
+// R5: where a statement's words changed after the tie that names its decision, its because line
+// says "Changed since": the tie's far end's `changed_at` is later than the tie's `created_at`,
+// both of today's decisions read, read as the times they name. A statement the decision named
+// after its last change says nothing of it, and so does r3, whose two times would order the
+// other way read as text: its far end changed 0.12 s past the second, before the tie made
+// 0.123456 s past it, though "…00.12Z" sorts after "…00.123456Z".
+test("a statement changed after its tie says Changed since", () => {
+  const { read, view } = drawBody(
+    issueTree([statement("r1"), statement("r2"), statement("r3"), decisionNode("d1")]),
+    [
+      decision({
+        block_id: "d1",
+        kind: "agent",
+        links: [
+          tieChangedAt(statementRef("r1"), "2026-11-14T10:00:00Z", "2026-11-15T08:00:00Z"),
+          tieChangedAt(statementRef("r2"), "2026-11-14T10:00:00Z", "2026-11-14T09:00:00Z"),
+          tieChangedAt(
+            statementRef("r3"),
+            "2026-11-14T10:00:00.123456Z",
+            "2026-11-14T10:00:00.12Z"
+          ),
+        ],
+      }),
+    ]
+  );
+  const lineOf = (block: string): string =>
+    rowOf(view, `spec#b-${block}`).querySelector("[data-spec-because]")?.textContent ?? "";
+  try {
+    expect(lineOf("r1")).toContain(`${SPEC_WORDS.because} “The decision d1.”`);
+    expect(
+      lineOf("r1").endsWith(` · ${SPEC_WORDS.changed_since}`),
+      "the statement changed after its tie does not say Changed since after who and when"
+    ).toBe(true);
+    for (const block of ["r2", "r3"]) {
+      expect(lineOf(block)).toContain(`${SPEC_WORDS.because} “The decision d1.”`);
+      expect(lineOf(block), `${block}, unchanged since its tie, says Changed since`).not.toContain(
+        SPEC_WORDS.changed_since
+      );
+    }
+    expect(textsOf(view, "[data-spec-changed-since]")).toEqual([SPEC_WORDS.changed_since]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R5: an agent's decision's words are drawn whole in its cell, with no limit of lines, with the
+// focus on the cell or without it. The words are laid out 9,600 px tall, which a cut at six lines
+// would hold back behind "more · N words"; the cell draws every line of them and no such control.
+test("an agent's decision draws its words whole in its cell at any length, with the focus or without it", async () => {
+  const words = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
+  const text = `Draw every statement whole. ${words}`;
+  const restore = layOut(9600);
+  const near = installIntersectionObserver();
+  const { read, view } = drawBody(
+    issueTree([statement("r1"), statement("r2"), decisionNode("d1", { text })]),
+    [decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))], text })]
+  );
+  const cell = view.container.querySelector<HTMLElement>("[data-spec-cell][data-decision-id]");
+  const expectWhole = async (when: string): Promise<void> => {
+    // The page measures only the words of rows near the viewport, so a cut would be read once
+    // they are measured.
+    await measureNearWords(near);
+    const drawn = cell?.querySelector<HTMLElement>("[data-spec-quote] [data-node-words]");
+    expect(drawn?.textContent, `the cell's words are not drawn ${when}`).toBe(text);
+    expect(drawn?.style.maxHeight, `the cell's words are cut ${when}`).toBe("");
+    expect(cell?.querySelector("[data-node-more]"), `the cell draws "more" ${when}`).toBeNull();
+  };
+  try {
+    if (cell === null) throw new Error("the body draws no cell for the agent's decision");
+    await expectWhole("with no focus");
+    act(() => cell.focus());
+    await expectWhole("with the focus on the cell");
+    act(() => rowOf(view, "spec#b-r2").focus());
+    await expectWhole("once the focus left the cell");
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    near.restore();
+    restore();
   }
 });
 
@@ -1117,8 +1235,8 @@ test("each statement carries how it stands, by a shape with its own name", () =>
   }
 });
 
-// A statement's own words carry its number where the spec wrote one, and are drawn as the
-// outline draws an agent's words - whole here, where no layout cuts them.
+// A statement's own words carry its number where the spec wrote one, and are drawn as its author
+// wrote them, whole.
 test("a statement's words are drawn as its author wrote them", () => {
   const words =
     "**R1.** Every node's words are on the page without opening it; an agent's long words " +
@@ -1128,6 +1246,95 @@ test("a statement's words are drawn as its author wrote them", () => {
     expect(
       view.container.querySelector("[data-spec-statement] [data-node-words]")?.textContent
     ).toBe(words);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R6: a statement's words are whole, with no limit of lines, with the focus or without it, and
+// the chips it carries stay after its last word, as a row of the outline draws its trail. The
+// words are laid out 9,600 px tall, which a cut at six lines would hold back behind "more · N
+// words" with a fade, its chips moved beside that control; the row draws every line, no such
+// control and no fade, and its trail stays the last child of its words' box.
+test("a statement's words are drawn whole at any length, with no more control, with the focus or without it", async () => {
+  const words = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
+  const restore = layOut(9600);
+  const near = installIntersectionObserver();
+  const { read, view } = drawBody(
+    issueTree([
+      statement("r1"),
+      statement("r2", { gaps: ["shaped_disagreement"], text: `**R2.** ${words}` }),
+    ])
+  );
+  const expectWhole = async (when: string): Promise<void> => {
+    // The page measures only the words of rows near the viewport, so a cut would be read once
+    // they are measured.
+    await measureNearWords(near);
+    const row = rowOf(view, "spec#b-r2");
+    const box = row.querySelector<HTMLElement>("[data-node-words]");
+    expect(box?.textContent, `the statement's words are not drawn ${when}`).toContain("word60");
+    expect(box?.style.maxHeight, `the statement's words are cut ${when}`).toBe("");
+    expect(box?.className, `the statement's words are clipped ${when}`).not.toContain("clip");
+    expect(box?.querySelector(':scope > span[aria-hidden="true"]'), `a fade ${when}`).toBeNull();
+    expect(row.querySelector("[data-node-more]"), `the statement draws "more" ${when}`).toBeNull();
+    expect(
+      box?.lastElementChild?.hasAttribute("data-node-trail"),
+      `the statement's chips do not follow its last word ${when}`
+    ).toBe(true);
+  };
+  try {
+    await expectWhole("with no focus");
+    act(() => rowOf(view, "spec#b-r2").focus());
+    await expectWhole("with the focus on it");
+    act(() => rowOf(view, "spec#b-r1").focus());
+    await expectWhole("once the focus left it");
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    near.restore();
+    restore();
+  }
+});
+
+// R6: at the right end of a statement's first line, before its mark, stands the count of the
+// checks that serve it - the coverage read's `checks`, which the tree carries on the node - as a
+// number and its word, outside the statement's words. It is a link to the Verification view with
+// the focus on that statement's row, out of the tab order, and `f` reaches it as it reaches every
+// link of a row. A statement no check serves draws no count.
+test("a statement's count of checks links to the Verification view at its row, and is drawn only where a check serves it", async () => {
+  const user = userEvent.setup();
+  const { read, view } = drawBody(
+    issueTree([
+      statement("r1", { counts: { checks: 3, planTasks: 0 } }),
+      statement("r2", { counts: { checks: 1, planTasks: 0 } }),
+      statement("r3", { counts: { checks: 0, planTasks: 0 }, gaps: ["no_check"] }),
+    ])
+  );
+  const countOf = (block: string): HTMLElement | null =>
+    rowOf(view, `spec#b-${block}`).querySelector<HTMLElement>("[data-spec-checks]");
+  try {
+    const three = countOf("r1");
+    if (three === null) throw new Error("a statement three checks serve draws no count");
+    expect(three.textContent).toBe(`3 ${VERIFICATION_WORDS.check_many}`);
+    expect(countOf("r2")?.textContent).toBe(`1 ${VERIFICATION_WORDS.check_one}`);
+    expect(countOf("r3"), "a statement no check serves draws a count").toBeNull();
+    expect(three.getAttribute("href")).toBe(`/issues/${KEY}/verification#b-r1`);
+    expect(countOf("r2")?.getAttribute("href")).toBe(`/issues/${KEY}/verification#b-r2`);
+    expect(three.getAttribute("tabindex"), "the count is in the tab order").toBe("-1");
+    const row = rowOf(view, "spec#b-r1");
+    expect(row.querySelector("[data-node-words] [data-spec-checks]")).toBeNull();
+    const mark = row.querySelector(":scope > svg[data-glyph]");
+    if (mark === null) throw new Error("the statement draws no mark");
+    expect(
+      three.compareDocumentPosition(mark) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "the count does not stand before the mark"
+    ).not.toBe(0);
+    act(() => row.focus());
+    await user.keyboard("f");
+    expect(document.activeElement, "f does not reach the count").toBe(three);
+    await user.click(three);
+    expect(locationOf(view)).toBe(`/issues/${KEY}/verification#b-r1`);
   } finally {
     view.unmount();
     read.mockRestore();
@@ -1224,12 +1431,10 @@ test("the body draws one tree, named as the outline is, of the statements and th
 });
 
 // R10, R17: a gap the mark does not already say is drawn with the statement's words, in the
-// few words the page knows it by: while the words are whole it stands in the trail after their
-// last word, a direct child of the words' box, and
-// nowhere else in the row. The one for a statement no check serves is the mark at the right of
-// the row, and is not said twice: that statement draws no trail at all.
-test("a gap the mark does not say is drawn after the statement's words, and no check is not said twice", async () => {
-  const near = installIntersectionObserver();
+// few words the page knows it by: it stands in the trail after their last word, a direct child
+// of the words' box, and nowhere else in the row. The one for a statement no check serves is the
+// mark at the right of the row, and is not said twice: that statement draws no trail at all.
+test("a gap the mark does not say is drawn after the statement's words, and no check is not said twice", () => {
   const { read, view } = drawBody(
     issueTree([
       statement("r1", { gaps: ["shaped_disagreement"] }),
@@ -1237,9 +1442,6 @@ test("a gap the mark does not say is drawn after the statement's words, and no c
     ])
   );
   try {
-    // The page measures only the words of rows near the viewport, so a cut is read once they
-    // are measured.
-    await measureNearWords(near);
     const rows = [...view.container.querySelectorAll("[data-spec-statement]")];
     expect(
       rows[0]?.querySelector("[data-node-words]")?.lastElementChild?.hasAttribute("data-node-trail")
@@ -1259,7 +1461,6 @@ test("a gap the mark does not say is drawn after the statement's words, and no c
   } finally {
     view.unmount();
     read.mockRestore();
-    near.restore();
   }
 });
 
@@ -1664,8 +1865,9 @@ test("Retry over a failed read of the Verification document's blocks reads them 
 });
 
 /** Lays every element out `height` px tall until the answer is called, as
- *  `NodeRow.drawn.test.tsx` does: no DOM of a unit test lays anything out, and a statement's cut
- *  reads its words' own boxes (`measureClamp`). */
+ *  `NodeRow.drawn.test.tsx` does: no DOM of a unit test lays anything out, and a row's cut reads
+ *  its words' own boxes (`measureClamp`), so a case that shows a statement or a cell drawn whole
+ *  lays its words out taller than a cut at six lines would leave them. */
 function layOut(height: number): () => void {
   const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
@@ -1683,21 +1885,18 @@ function layOut(height: number): () => void {
 }
 
 // Review 5928280634 on pull request 4234 (thread 4592007127): a press focuses what it lands on as
-// it goes down, and a statement taking the focus for a link inside it drew its words whole under
-// the pointer - the cut and "more" gone - while the statement that had the focus lost its look,
-// so the link moved off the pointer and the press followed nothing. The focus a press gives a
-// statement is taken once the press is over, as the outline takes a row's (`IssueTree.tsx`'s
-// `focusRow`). happy-dom lays nothing out, so this reads the order: nothing the body draws changes
-// while the press is held, and then the pressed statement takes the focus.
-test("a press on a link inside a cut statement leaves every statement as drawn until it ends, and then the statement takes the focus", async () => {
+// it goes down, and a statement taking the focus for a link inside it drew itself differently
+// under the pointer - its words whole where they were cut, before a statement's words were drawn
+// whole at every length - while the statement that had the focus lost its look, so the link
+// moved off the pointer and the press followed nothing. The focus a press gives a statement is
+// taken once the press is over, as the outline takes a row's (`IssueTree.tsx`'s `focusRow`).
+// happy-dom lays nothing out, so this reads the order: nothing the body draws changes while the
+// press is held, and then the pressed statement takes the focus.
+test("a press on a link inside a statement leaves every statement as drawn until it ends, and then the statement takes the focus", async () => {
   const user = userEvent.setup();
-  const words = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
-  const long = `**R2.** Read [the guide](https://example.com/guide) first. ${words}`;
-  // 64 words over 400 lines of 24 px: six lines are drawn and the rest held back.
-  const restore = layOut(9600);
-  const near = installIntersectionObserver();
+  const linked = "**R2.** Read [the guide](https://example.com/guide) first.";
   const { read, view } = drawBody(
-    issueTree([statement("r1"), statement("r2", { text: long, tree: displayTree(long) })])
+    issueTree([statement("r1"), statement("r2", { text: linked, tree: displayTree(linked) })])
   );
   const looksFocused = (id: string) => rowOf(view, id).className.includes(pageFocusedRow);
   try {
@@ -1706,13 +1905,9 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
     const pressed = rowOf(view, "spec#b-r2");
     const link = await waitFor(() => {
       const found = pressed.querySelector<HTMLElement>("[data-node-words] a");
-      if (found === null) throw new Error("the cut statement draws no link in its words");
+      if (found === null) throw new Error("the statement draws no link in its words");
       return found;
     });
-    // The page measures only the words of rows near the viewport, so the cut is read once they
-    // are measured.
-    await measureNearWords(near);
-    await waitFor(() => expect(pressed.querySelector("[data-node-more]")).not.toBeNull());
     // What is read is who holds the focus, not where the link leads.
     link.addEventListener("click", (event) => event.preventDefault());
 
@@ -1722,10 +1917,6 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
       false
     );
     expect(
-      pressed.querySelector("[data-node-more]"),
-      "the held press drew the cut statement's words whole"
-    ).not.toBeNull();
-    expect(
       looksFocused("spec#b-r1"),
       "the held press took the focused look from the statement that had it"
     ).toBe(true);
@@ -1733,14 +1924,11 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
 
     await user.pointer({ keys: "[/MouseLeft]" });
     await waitFor(() => expect(looksFocused("spec#b-r2")).toBe(true));
-    expect(pressed.querySelector("[data-node-more]")).toBeNull();
     expect(looksFocused("spec#b-r1")).toBe(false);
     expect(focusedNodeIn(view)).toEqual({ id: "spec#b-r2", type: "requirement" });
   } finally {
     view.unmount();
     read.mockRestore();
-    near.restore();
-    restore();
   }
 });
 

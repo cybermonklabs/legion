@@ -456,8 +456,8 @@ test("every other decision that shaped a statement is named after the first", ()
 });
 
 // R5: "The line is drawn whether or not" other decisions apply: the answered question a
-// statement hangs under heads its run, so its parent line and its decision line stay one, and a
-// decision whose tie names the statement is named after it, not in its place.
+// statement hangs under heads its run, and a decision whose tie names the statement is named
+// after it, not in its place.
 test("a statement under an answered question keeps that answer when a tie names it too", () => {
   const groups = bodyOf(
     issueTree([
@@ -794,7 +794,7 @@ test("a person's answer written as a bulleted list is quoted by its first item a
   expect(groups[0]?.runs[0]?.decision?.quote).toBe("keep it");
 });
 
-// R1 and R5: the question line is the question's one line, cut from its first block's words
+// R1 and R5: the question is given by its first sentence, cut from its first block's words
 // (`lineWordsRaw`) with each reference unnamed: a second block never runs into it, and a name's
 // label ends none of it.
 test("a question line is its first block's line, cut before the reference in it is named", () => {
@@ -804,6 +804,102 @@ test("a question line is its first block's line, cut before the reference in it 
   };
   const groups = bodyOf(issueTree([ask]), [], READER, [], LABELLED);
   expect(groups[0]?.runs[0]?.decision?.question).toBe("Does R2. Every address… keep its address");
+});
+
+// R5: the question an answer answers is given by its first sentence whole, ending at its first
+// sentence end as the answer's quote does, with no limit of characters: R1's 100-character cut
+// is a row's first line, and no cut of the question the cell and the because line give, also
+// where the statement hangs under that question.
+test("a question is given by its first sentence whole, past 100 characters", () => {
+  const first =
+    "Should the Spec view draw every statement of the spec whole, with each of its words, rather than cut it at six lines?";
+  expect(first.length).toBeGreaterThan(100);
+  const text = `${first} Then a second sentence follows it.`;
+  const groups = bodyOf(
+    issueTree([
+      { ...answeredAsk("ask-1", { text: "Keep it whole." }, [statement("r1")]), text },
+      { ...answeredAsk("ask-2", { text: "Keep it whole." }), text },
+      statement("r2"),
+    ]),
+    [
+      decision({
+        asks: ["ask-2"],
+        block_id: "d1",
+        kind: "person",
+        links: [shaped(statementRef("r2"))],
+      }),
+    ]
+  );
+  expect(groups.map((group) => group.runs[0]?.decision?.question)).toEqual([first, first]);
+});
+
+// R5: where a statement's words changed after the tie that names the decision its run is headed
+// by, it carries Changed since: the tie's far end's `changed_at` is later than the tie's
+// `created_at`, read as the instants they name, and a time that cannot be read is no change. A
+// decision that names a statement in two of its blocks holds two ties to it, and the statement
+// changed since that decision only where it changed after both. Only the head's tie decides it,
+// never that of a decision that only informed the statement, and the answered question a
+// statement hangs under has no tie, so a run it heads never says it.
+test("a statement changed after the tie of the decision heading its run, and only that tie, carries Changed since", () => {
+  const tie = (block: string, created: string, changed: string | null) => {
+    const made = shaped(statementRef(block));
+    return { ...made, created_at: created, to: { ...made.to, changed_at: changed } };
+  };
+  const before = "2026-11-14T09:00:00Z";
+  const tied = "2026-11-14T10:00:00Z";
+  const after = "2026-11-14T11:00:00Z";
+  const later = "2026-11-14T12:00:00Z";
+  const groups = bodyOf(
+    issueTree([
+      answeredAsk("ask-1", { text: "Keep it whole." }, [statement("r6")]),
+      ...["r1", "r2", "r3", "r4", "r5", "r7"].map((block) => statement(block)),
+      ...["d1", "d2", "d3", "d4"].map((block) => decisionNode(block)),
+    ]),
+    [
+      decision({
+        block_id: "d1",
+        kind: "agent",
+        links: [
+          tie("r1", tied, after),
+          tie("r2", tied, before),
+          tie("r3", "yesterday", after),
+          tie("r4", tied, "not a time"),
+          // Named in two of its blocks: changed after the first tie and before the second.
+          tie("r5", tied, after),
+          { ...tie("r5", later, after), from_block: "d1-again" },
+          tie("r7", tied, null),
+        ],
+      }),
+      // A decision that only informs r2, which changed after this decision's tie to it.
+      decision({ block_id: "d2", kind: "agent", links: [tie("r2", tied, after)] }),
+      // An agent's decision that only informs r6, which changed after its tie, under the
+      // answered question that heads r6's run.
+      decision({ block_id: "d3", kind: "agent", links: [tie("r6", tied, after)] }),
+      // The person's own decision for the question r6 hangs under, changed after its tie.
+      decision({
+        asks: ["ask-1"],
+        block_id: "d4",
+        kind: "person",
+        links: [tie("r6", tied, after)],
+      }),
+    ]
+  );
+  const changed = Object.fromEntries(
+    groups.flatMap((group) =>
+      group.runs.flatMap((run) =>
+        run.statements.map((one) => [one.node.id.replace("spec#b-", ""), one.changedSince])
+      )
+    )
+  );
+  expect(changed).toEqual({
+    r1: true,
+    r2: false,
+    r3: false,
+    r4: false,
+    r5: false,
+    r6: false,
+    r7: false,
+  });
 });
 
 // Review thread 4592007145: `presets.ts` cuts a parent's line by R1's rule with each reference

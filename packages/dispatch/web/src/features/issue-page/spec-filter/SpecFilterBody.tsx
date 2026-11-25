@@ -32,6 +32,7 @@ import {
 } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { useAgentText } from "../../refs/AgentName";
+import { blockFragment } from "../../refs/block-reference";
 import { standsFailed } from "../../refs/reference-target";
 import {
   buildReferencePath,
@@ -52,9 +53,10 @@ import {
   useReleaseFocus,
 } from "../IssueTree";
 import { CLEARANCE } from "../identity-block";
+import { presetPath } from "../issue-address";
 import type { TreeNode } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
-import { MoreWords, NodeEdges, useClamp, useRowOnScreen } from "../NodeRow";
+import { NodeEdges, useRowOnScreen } from "../NodeRow";
 import { shortDay } from "../node-time";
 import { useIssueNames } from "../one-line";
 import { useTakeOutlineRequest } from "../outline-request";
@@ -106,22 +108,28 @@ const NOTHING = (): void => {};
  * carries, then two columns, Decided by and Statement. In the left column stands, once per run
  * of statements one decision shaped, that decision in the words it came from, with a bracket
  * tying it to its statements; in the right column each statement's words in full, with one line
- * under them naming the decision that shaped them, and its mark at the right of the row. At
- * 900 px and below it is one column and each decision stands above its statements, as
- * `page-v3-spec-390.png` draws it.
+ * under them naming the decision that shaped them, and at the right of its first line the count
+ * of the checks that serve it and its mark. At 900 px and below it is one column and each
+ * decision stands above its statements, as `page-v3-spec-390.png` draws it.
  *
  * Which decision shaped which statement is `spec-decided-by.ts`, which is pure; this module
  * draws it and holds two rules of its own:
  *
- * - **The question is drawn once.** Where the decision's own question is the node the
- *   statements hang under, the group's heading is that question and the cell does not say it
- *   again: "where the answered ask is the node's own parent, its parent line and its decision
- *   line are one line" (R5).
+ * - **The question is drawn whole beside its answer, also under its own heading.** A group's
+ *   heading draws its parent's first line by R1's one-line rule, which cuts it at 100
+ *   characters. The cell gives the question an answer answers by its first sentence whole, and
+ *   the line under each statement gives it again before the quote, also where the group's
+ *   heading is that question (R5), so a question the heading cuts is read whole beside the
+ *   statements its answer shaped.
  * - **A statement's own words carry its number.** The picture draws a tag, "R1", at the right
  *   of each statement; the model holds no short name for a statement, and a block id is an
  *   identifier, which R22 refuses where a name belongs. The spec's own words open "**R5.**"
  *   where its author wrote a number, and the row draws them in full, so the number a reader
  *   cites is the author's own.
+ *
+ * Every word a statement and a decision hold is drawn whole, with no limit of lines, with the
+ * focus or without it (R5, R6): a statement's words, and an agent's decision's words in its
+ * cell. The focus on a cell adds only a person's whole answer as stored and "Author unknown".
  *
  * After its column heads the body draws the issue's three sentences under their labels, and the
  * two rows under them, as the picture's first group, in the statements' column, as the
@@ -131,11 +139,13 @@ const NOTHING = (): void => {};
  * with the outline's keys (`useTreeKeymap.ts`): the statements are its rows, the focused one is
  * its one tab stop, the arrows and `j`/`k` move between them, `w` moves to the decision beside
  * a statement, the arrows and `j`/`k` move on from that decision to the statement after or
- * before its run, and Enter goes to a statement in the conversation, where it is edited. `r`
- * replies to a statement once a statement can be a target of the outline's writer, which
- * the body already passes to the keymap. The focus on a statement puts its facts in Details, as
- * a row of the outline does, and the focus on a decision puts that decision's; an address
- * naming a statement (`/spec#b-<block>`) puts the focus on it (R10, R19).
+ * before its run, `f` steps through a statement's links - its count of checks among them, which
+ * opens the Verification view on that statement - and Enter goes to a statement in the
+ * conversation, where it is edited. `r` replies to a statement once a statement can be a target
+ * of the outline's writer, which the body already passes to the keymap. The focus on a
+ * statement puts its facts in Details, as a row of the outline does, and the focus on a decision
+ * puts that decision's; an address naming a statement (`/spec#b-<block>`) puts the focus on it
+ * (R10, R19).
  */
 export function SpecFilterBody({
   addressActs,
@@ -317,10 +327,10 @@ export function SpecFilterBody({
   const writer = useOutlineWriter();
   const tree = useRef<HTMLDivElement | null>(null);
   const [focused, setFocused] = useState<string | undefined>(undefined);
-  // The run whose cell holds the focus itself, which draws its decision whole (R5), named by
-  // the run's first statement; undefined while the focus is on a statement or on a control
-  // inside a cell. The body holds it, as it holds the focused statement, so a press defers both
-  // alike (`press`).
+  // The run whose cell holds the focus itself, which draws a person's whole answer as stored and
+  // "Author unknown" where no author is drawn (R5), named by the run's first statement;
+  // undefined while the focus is on a statement or on a control inside a cell. The body holds
+  // it, as it holds the focused statement, so a press defers both alike (`press`).
   const [openCell, setOpenCell] = useState<string | undefined>(undefined);
   // Where the tree's one tab stop rests, which outlives the focus leaving it (R9).
   const [stop, setStop] = useState<string | undefined>(undefined);
@@ -360,7 +370,8 @@ export function SpecFilterBody({
   // The focus on a decision's cell is the reader reading that decision: no statement draws the
   // focused look any longer, and Details draws the node the cell is drawn as, or the issue's own
   // facts beside a run no decision shaped. The tab stop stays on the last statement (R9).
-  // `open` names the run whose cell draws its words whole, where the cell itself has the focus.
+  // `open` names the run whose cell draws what only the focus draws, where the cell itself has
+  // the focus.
   const takeCell = useCallback(
     (decision: SpecDecision | undefined, open: string | undefined) => {
       setFocused(undefined);
@@ -373,15 +384,15 @@ export function SpecFilterBody({
     [root, setFocusedNode]
   );
   // R7 under a press, as the outline holds it (`usePressFocus`). A press focuses what it lands
-  // on as it goes down, before it ends, so a statement taking the focus for a link inside it
-  // would draw its words whole - the cut, "more" and the chips beside it gone - and the
-  // statement or cell the focus left would draw its own cut again, while the press is held: a
-  // link inside or under a cut statement moved off the pointer, and the press ended on something
-  // else, so it followed no link (review 5928280634 on pull request 4234). So the focus a press
-  // gives a statement or a cell - any focus inside it, a link's included - is taken once the
-  // press is over, and only while that statement or cell still holds the focus; a key's move
-  // takes it at once. Each item is the statement's or the cell's element, which says whether it
-  // still holds the focus, with what taking the focus does for it.
+  // on as it goes down, before it ends, so whatever the focus draws would come and go under the
+  // pointer while the press is held: a cell taking the focus would draw a person's whole answer,
+  // and the cell the focus left would take its own away, so what stood under the pointer moved
+  // off it and the press ended on something else, following no link. A statement cut at six
+  // lines did so before its words were drawn whole (review 5928280634 on pull request 4234). So
+  // the focus a press gives a statement or a cell - any focus inside it, a link's included - is
+  // taken once the press is over, and only while that statement or cell still holds the focus; a
+  // key's move takes it at once. Each item is the statement's or the cell's element, which says
+  // whether it still holds the focus, with what taking the focus does for it.
   const press = usePressFocus<{ readonly item: HTMLElement; readonly take: () => void }>(
     ({ take }) => take(),
     ({ item }) => item.contains(document.activeElement)
@@ -1024,7 +1035,7 @@ function Group({
    *  how it stands. */
   marked: boolean;
   /** Takes a focus inside a run's cell, with the decision the cell draws, and the run whose
-   *  cell draws its words whole where the cell itself has the focus. */
+   *  cell draws what only the focus draws where the cell itself has the focus. */
   onCellFocus: (
     cell: HTMLElement,
     decision: SpecDecision | undefined,
@@ -1032,7 +1043,7 @@ function Group({
   ) => void;
   /** Takes a focus inside a statement's row. */
   onFocus: (row: HTMLElement, node: TreeNode) => void;
-  /** The run whose cell draws its decision whole, by its first statement. */
+  /** The run whose cell has the focus itself, by its first statement. */
   openCell: string | undefined;
   /** What a key reported, and the statement it was pressed on. */
   report?: { readonly line: string; readonly row: string };
@@ -1060,7 +1071,6 @@ function Group({
             onFocus={(cell, itself) =>
               onCellFocus(cell, run.decision, itself ? run.statements[0]?.node.id : undefined)
             }
-            parent={group.parent}
             statements={run.statements}
           />
           <div className="flex min-w-0 flex-col" role="presentation">
@@ -1120,26 +1130,29 @@ function GroupHeading({ parent }: { parent: SpecParent }): ReactNode {
  * asks read hold an answer, and says nothing before that or where either failed with none,
  * since it does not know.
  *
- * A person's words are quoted, their first sentence in plain words; an agent's are drawn whole
- * as a row draws a node's words (`RowText`), each reference by its name, and cut as an agent's
- * are at six lines. The focus on the cell draws a person's whole answer character for character
- * under its first sentence (R5: "The focus on the line draws the whole answer word for word"),
- * an agent's words whole, and "Author unknown" where the model holds no author; `w` on a
- * statement is how a keyboard reader puts it there. The focused cell's words are placed on
- * screen and below the column heads (`useOnScreenUnderHeads`): they are what it draws, and they
- * stay at the top of a run taller than the screen while the cell's own box runs past it.
+ * A person's words are quoted, their first sentence word for word in plain words with no limit
+ * of characters; an agent's are drawn whole as a row draws a node's words (`RowText`), each
+ * reference by its name, with no limit of lines, with the focus or without it. Where the words
+ * answer a question, the cell gives that question's first sentence whole, ending at its first
+ * sentence end as the answer's quote does, also where the group's heading is that question,
+ * whose heading draws only its first line (R5). The focus on the cell draws a person's whole
+ * answer character for character under its first sentence (R5: "The focus on the cell draws the
+ * whole answer character for character"), and "Author unknown" where the model holds no author;
+ * `w` on a statement is how a keyboard reader puts it there. The focused cell's words are placed
+ * on screen and below the column heads (`useOnScreenUnderHeads`): they are what it draws, and
+ * they stay at the top of a run taller than the screen while the cell's own box runs past it.
+ * Every link the words hold is out of the tab order, as every control inside a row is (R9).
  */
 function DecisionCell({
   decision,
   focused,
   known,
   onFocus,
-  parent,
   statements,
 }: {
   decision: SpecDecision | undefined;
-  /** Whether the cell itself has the focus, which draws its words whole (`SpecFilterBody`'s
-   *  `openCell`). */
+  /** Whether the cell itself has the focus, which draws a person's whole answer and "Author
+   *  unknown" (`SpecFilterBody`'s `openCell`). */
   focused: boolean;
   /** Whether the cell knows what shaped its run, which is when a run with no decision can say
    *  that none shaped it. */
@@ -1147,17 +1160,16 @@ function DecisionCell({
   /** Takes a focus anywhere in the cell, which no statement holds any longer: the cell, and
    *  whether the focus is on the cell itself. */
   onFocus: (cell: HTMLElement, itself: boolean) => void;
-  parent: SpecParent | undefined;
   statements: readonly SpecStatement[];
 }): ReactNode {
   const words = useRef<HTMLDivElement | null>(null);
   const press = useOnScreenUnderHeads(words, focused);
+  // The links of an agent's words, and every link that arrives in them later, leave the tab
+  // order, as `CutWords` took them out while it drew those words: the tree is one tab stop, and
+  // `f` reaches a link of the cell once the focus is on it.
+  useOutOfTabOrder(words, true);
   const rule = decision === undefined ? pageHairBorder : "border-page-decision";
   const cap = decision === undefined ? pageHairBg : pageKindBullet.decision;
-  // The question the words answer, unless the statements hang under it already: there the
-  // group's heading is that question, and the two are one line (R5).
-  const question =
-    decision?.question === undefined || decision.id === parent?.id ? undefined : decision.question;
   return (
     <div
       aria-level={1}
@@ -1173,9 +1185,9 @@ function DecisionCell({
       data-spec-statements={statements.map((statement) => statement.node.id).join(" ")}
       // An item of the outline, as the statements beside it are: it is where the focus goes
       // from a statement (R5's `w`), and the prototype's own cell takes the focus the same way.
-      // Its words are drawn whole only while the cell itself has the focus, never a control
-      // inside it: `f` and a press put the focus on its link, and words growing around the link
-      // would move it from where the reader found it.
+      // A person's whole answer and "Author unknown" are drawn only while the cell itself has
+      // the focus, never a control inside it: `f` and a press put the focus on its link, and
+      // words growing around the link would move it from where the reader found it.
       onFocus={(event) => onFocus(event.currentTarget, event.target === event.currentTarget)}
       onPointerDown={press}
       role="treeitem"
@@ -1214,15 +1226,17 @@ function DecisionCell({
                 <Quote decision={decision} />
               </p>
             ) : (
-              // A block, since a text drawn from its reading holds paragraphs, lists and links.
+              // A block, since a text drawn from its reading holds paragraphs, lists and links,
+              // drawn whole with no limit of lines (R5) in the words' box the page styles a
+              // node's drawn words by (`styles.css`).
               <div className="flex min-w-0 flex-col [overflow-wrap:anywhere]" data-spec-quote="">
-                <CutWords className={`text-sm leading-[21px] ${pageInkText}`} whole={focused}>
+                <div className={`text-sm leading-[21px] ${pageInkText}`} data-node-words="">
                   <RowText
                     markdown={decision.words.markdown}
                     source={decision.words.source}
                     tree={decision.words.tree}
                   />
-                </CutWords>
+                </div>
               </div>
             )}
             {focused && decision.whole !== undefined ? (
@@ -1238,7 +1252,12 @@ function DecisionCell({
               {dotted([
                 {
                   key: "question",
-                  part: question === undefined ? null : <span {...authorText}>{question}</span>,
+                  part:
+                    decision.question === undefined ? null : (
+                      <span data-spec-question="" {...authorText}>
+                        {decision.question}
+                      </span>
+                    ),
                 },
                 {
                   drawn: decision.by !== undefined || focused,
@@ -1310,14 +1329,13 @@ function WholeOf({ decision }: { decision: SpecDecision }): ReactNode {
 
 /**
  * One statement: its bullet, its words with the chips it carries after the last of them, the
- * line naming the decision that shaped it, and its mark at the right of the row (R5, R6, R17,
- * R34). Its words are cut as an agent's are on every row of the page, at six lines where more
- * than 20 words would be hidden, with a row's own "more · N words" opening the rest in place
- * (`MoreWords`: a statement of twenty lines opened every view on a wall of text); the focused
- * statement draws them whole. The row draws its own box rather than `CutWords`, so its chips
- * stand after its last word while the words are whole, and beside "more" while they are cut, as
- * a row of the outline draws them, which `CutWords`, drawing its words and nothing after them,
- * cannot.
+ * line naming the decision that shaped it, and at the right end of its first line the count of
+ * the checks that serve it (`CheckCount`) and its mark (R5, R6, R17, R34). Its words are whole,
+ * with no limit of lines, with the focus or without it (R6): the view is where a statement is
+ * read, so it draws every word of it, as its author wrote it. Its chips stand on the words' own
+ * line after their last word, as a row of the outline draws its trail (`NodeRow.tsx`), which is
+ * why the row draws its own box of words rather than `CutWords`, which draws its words and
+ * nothing after them.
  */
 function Statement({
   context,
@@ -1345,21 +1363,18 @@ function Statement({
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
   const press = useOnScreenUnderHeads(row, focused);
-  const clamp = useClamp(words, true);
   useOutOfTabOrder(words, true);
-  const [opened, setOpened] = useState(false);
-  const clamped = clamp !== undefined && !opened && !focused;
-  // "more · N words" opens the rest of cut words and closes it again; the focused statement
-  // draws its words whole, so it draws no such control.
-  const more = clamp !== undefined && !focused;
+  // The count of the checks that serve it, drawn only where one does, and where its reference
+  // names the block the Verification view puts the focus on.
+  const checks = node.counts?.checks ?? 0;
+  const toChecks = checks > 0 ? verificationPath(node) : undefined;
   // Every gap and chip on the statement but the gap its mark already says: "No check" is the
   // mark at the right of the row and the word for it in the legend (R17), and a chip beside it
   // would say it twice. The rest are drawn as the outline draws them (R4, R10).
   const edged = { ...node, gaps: node.gaps.filter((gap) => gap !== "no_check") };
   const edges = edged.alsoUnder.length > 0 || edged.chips.length > 0 || edged.gaps.length > 0;
   // The chips at the end of the words, on their line, as a row of the outline draws its trail
-  // (`NodeRow.tsx`); where the words are cut they stand beside "more" instead, so a cut never
-  // hides one.
+  // (`NodeRow.tsx`).
   const trail = edges ? (
     <span
       className={`ml-1.5 inline-flex max-w-full flex-wrap items-baseline gap-x-2 align-baseline text-xs leading-6 ${pageQuietText}`}
@@ -1371,7 +1386,9 @@ function Statement({
   return (
     <div
       aria-level={1}
-      className={`grid min-w-0 grid-cols-[18px_minmax(0,1fr)_26px] items-start gap-x-2 rounded-md py-[3px] pr-1.5 outline-none max-[761px]:grid-cols-[16px_minmax(0,1fr)_22px] max-[761px]:gap-x-1.5 ${
+      className={`grid min-w-0 ${
+        toChecks === undefined ? STATEMENT_COLUMNS.plain : STATEMENT_COLUMNS.counted
+      } items-start gap-x-2 rounded-md py-[3px] pr-1.5 outline-none max-[761px]:gap-x-1.5 ${
         focused ? pageFocusedRow : ""
       }`}
       data-node-context={context ? "" : undefined}
@@ -1402,40 +1419,20 @@ function Statement({
       </span>
       <div className="flex min-w-0 flex-col">
         <div
-          className={`relative text-[15px] leading-6 ${context ? pageQuietText : pageWordsText} ${
-            clamped ? "overflow-clip" : ""
-          }`}
+          className={`text-[15px] leading-6 ${context ? pageQuietText : pageWordsText}`}
           data-node-words=""
           ref={words}
-          style={clamped ? { maxHeight: clamp.height } : undefined}
         >
           <RowText markdown={node.text} source={node.source} tree={node.tree} />
           {/* A direct child of the words' box, which `styles.css` reads to draw the words
               inline, so the trail follows the last word. */}
-          {clamped ? null : trail}
-          {clamped && !clamp.pictures ? (
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-[linear-gradient(transparent,var(--color-page-paper))]"
-            />
-          ) : null}
+          {trail}
         </div>
-        {more ? (
-          <p className="flex min-w-0 flex-wrap items-baseline">
-            {/* Out of the tab order, as every control inside a row is (R9). */}
-            <MoreWords
-              hidden={clamp.hidden}
-              onToggle={() => setOpened((held) => !held)}
-              opened={opened}
-              tabStops={false}
-            />
-            {clamped ? trail : null}
-          </p>
-        ) : null}
         <Because decision={decision} statement={statement} />
         <RowReport line={report} />
       </div>
-      {/* No mark until its reads hold an answer; the row's third column keeps its width, so
+      {toChecks === undefined ? null : <CheckCount count={checks} to={toChecks} />}
+      {/* No mark until its reads hold an answer; the row's last column keeps its width, so
           the row does not move when the mark comes. */}
       {marked ? (
         <NodeGlyph
@@ -1445,6 +1442,54 @@ function Statement({
       ) : null}
     </div>
   );
+}
+
+/** The columns of a statement's row: its bullet, its words, which take whatever the row leaves
+ *  (`minmax(0,1fr)`) so no run of words widens the row past its box, then its count of checks,
+ *  as wide as its own words, where it draws one, and its mark; each narrower below 761 px. */
+const STATEMENT_COLUMNS = {
+  counted:
+    "grid-cols-[18px_minmax(0,1fr)_auto_26px] max-[761px]:grid-cols-[16px_minmax(0,1fr)_auto_22px]",
+  plain: "grid-cols-[18px_minmax(0,1fr)_26px] max-[761px]:grid-cols-[16px_minmax(0,1fr)_22px]",
+} as const;
+
+/**
+ * The count of the checks that serve a statement, at the right end of its first line before its
+ * mark (R6): the coverage read's `checks` for it, which the tree carries as the node's
+ * `counts.checks` (`tree-drafts.ts`'s `addRequirements`), as a number and the word for one check
+ * or for several. It is a link to the Verification view with the focus on the statement's row
+ * (`verificationPath`), out of the tab order as every control inside a row is (R9), so the
+ * tree's `f` reaches it. It never wraps, and its column is only as wide as it while the words
+ * take what the row leaves, so it makes no row scroll sideways at 320 px.
+ */
+function CheckCount({ count, to }: { count: number; to: string }): ReactNode {
+  return (
+    <Link
+      className={`${INLINE_LINK} text-xs leading-6 whitespace-nowrap ${pageQuietText}`}
+      data-spec-checks={count}
+      tabIndex={-1}
+      to={to}
+    >
+      <span {...authorText}>{count}</span>
+      <span {...pageChrome}>
+        {" "}
+        {count === 1 ? VERIFICATION_WORDS.check_one : VERIFICATION_WORDS.check_many}
+      </span>
+    </Link>
+  );
+}
+
+/** The address of the Verification view with the focus on `node`'s row: that view's own address
+ *  on the issue that holds the node (`presetPath`), with the node's block as its fragment
+ *  (`/verification#b-<block id>`), as the address of a block in the conversation is built
+ *  (`conversationPath`); undefined where its reference names no block of an issue. */
+function verificationPath(node: Pick<TreeNode, "reference">): string | undefined {
+  const route = node.reference === undefined ? undefined : parseNodeReference(node.reference);
+  if (route === undefined || !("key" in route)) return undefined;
+  const block = "block" in route ? route.block : undefined;
+  return block === undefined
+    ? undefined
+    : `${presetPath(route.key, "verification")}${blockFragment(block.id)}`;
 }
 
 /** A row the filter kept that is no statement: a node an address named, which outranks the
@@ -1514,8 +1559,11 @@ function RowReport({ line }: { line: string | undefined }): ReactNode {
 }
 
 /**
- * The one line under a statement that names the decision that shaped it (R5): the words it
- * came from, as the link to the whole of that decision, who decided and when, and then every
+ * The one line under a statement that names the decision that shaped it (R5, the tester's F7):
+ * after "because:", the question's first sentence whole where the decision answers a question,
+ * as the cell gives it (`SpecDecision.question`); then the words it came from, as the link to
+ * the whole of that decision; who decided and when; "Changed since" where the statement's words
+ * changed after the tie that names that decision (`SpecStatement.changedSince`); and then every
  * other decision that informed it, each a link to it. A statement no decision shaped draws no
  * line here: its cell says so beside it (R35). The quote is plain words, an agent's its first
  * line: the link is one line, and a text drawn with its own links can stand inside no link.
@@ -1530,6 +1578,9 @@ function Because({
   if (decision === undefined && statement.alsoShapedBy.length === 0) return null;
   const route = routeOf(decision);
   const quoted = decision === undefined ? null : <Quote decision={decision} />;
+  // What the line says after the quote: who decided, when, and that the statement changed since.
+  const changed = statement.changedSince;
+  const after = decision?.by !== undefined || decision?.at !== undefined || changed;
   return (
     <p
       className={`mb-0.5 min-w-0 text-xs leading-[18px] [overflow-wrap:anywhere] ${pageQuietText}`}
@@ -1538,6 +1589,13 @@ function Because({
       {decision === undefined ? null : (
         <>
           <span {...pageChrome}>{SPEC_WORDS.because} </span>
+          {decision.question === undefined ? null : (
+            <>
+              <span data-spec-question="" {...authorText}>
+                {decision.question}
+              </span>{" "}
+            </>
+          )}
           {route === undefined ? (
             quoted
           ) : (
@@ -1551,9 +1609,7 @@ function Because({
               {quoted}
             </Link>
           )}
-          {decision.by === undefined && decision.at === undefined ? null : (
-            <span {...pageChrome}> — </span>
-          )}
+          {after ? <span {...pageChrome}> — </span> : null}
           {dotted([
             {
               drawn: decision.by !== undefined,
@@ -1561,6 +1617,14 @@ function Because({
               part: <Author actor={decision.by} />,
             },
             { key: "day", part: decision.at === undefined ? null : <Day at={decision.at} /> },
+            {
+              key: "changed",
+              part: changed ? (
+                <span data-spec-changed-since="" {...pageChrome}>
+                  {SPEC_WORDS.changed_since}
+                </span>
+              ) : null,
+            },
           ])}
         </>
       )}
