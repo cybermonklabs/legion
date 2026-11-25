@@ -948,6 +948,25 @@ type MergeQueueReadDone struct {
 
 func (f MergeQueueReadDone) namedIssue() (string, bool) { return f.Issue, true }
 
+// CloseChecksRead is the outbox's read of Dispatch's states for the close of Issue
+// (record.CloseRead), carried back as a fact: never decoded from an event. Generation is the
+// generation the read was queued for, and ReadAt the moment its row began its first Dispatch call,
+// so a read in flight across an entry into verifying is not taken as a read after it. Answer is
+// what Dispatch answered, in the layout the close's stored read keeps (record.CheckReadAnswer): the
+// results, the results at the newest merge's final head where the close needs them, the issue's
+// children, and the Verification document's approval. It is nil where the read failed, and Failure
+// then says why. The workflow stores it as the issue's newest read (record.CheckRead) and judges
+// the close on it.
+type CloseChecksRead struct {
+	Issue      string
+	Generation uint64
+	ReadAt     time.Time
+	Failure    string
+	Answer     *record.CheckReadAnswer
+}
+
+func (f CloseChecksRead) namedIssue() (string, bool) { return f.Issue, true }
+
 // ConflictConfirmDone is the outbox's second read of a conflicting head (record.ConflictConfirm)
 // finishing with no answer that decides: never decoded from an event. GitHub answered UNKNOWN for
 // pull request Number of Issue at the row's last attempt, or, with Unread, no read of it
