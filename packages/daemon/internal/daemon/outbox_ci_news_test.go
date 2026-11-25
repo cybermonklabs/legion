@@ -116,7 +116,7 @@ func ciPrompt(t *testing.T, role claim.Role, generation uint64, head string, rea
 const staleLine = "outbox CI news finished undelivered: the work it is for is no longer current"
 
 // releasedLine is main's line of a role message to a role whose pod is released.
-const releasedLine = "outbox role message finished undelivered: its role's pod is released"
+const releasedLine = "outbox role message finished undelivered: its role's pod is released, and the message is not worth a wake"
 
 // wokenThenDelivered holds that row id, a row of CI news for role's released reader, wakes the
 // reader's claim, its wakes then numbering wakes, and that its publish is refused while no session
