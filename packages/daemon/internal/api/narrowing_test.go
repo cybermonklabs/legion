@@ -312,6 +312,49 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
+	// Every unrecorded contract between the cause times and the Dispatch credential is served at
+	// causeTimesContract, with the Dispatch credential and gateBasisContract's keys stripped, and a
+	// caller at the Dispatch credential's contract is served it with gateBasisContract's keys alone
+	// stripped: the two rows above the cause times, in the table's order.
+	t.Run("the two highest narrowings write their own lines", func(t *testing.T) {
+		state := populatedState(t)
+		highest := stateNarrowings[len(stateNarrowings)-1]
+		below := stateNarrowings[len(stateNarrowings)-2]
+		if highest.contract != gateBasisContract || below.contract != dispatchCredentialContract {
+			t.Fatalf("the two highest narrowings are contracts %d and %d, want dispatchCredentialContract (%d) and gateBasisContract (%d): name here the keys the newer row takes off",
+				below.contract, highest.contract, dispatchCredentialContract, gateBasisContract)
+		}
+		served := func(body []byte) int {
+			var answer struct {
+				Contract struct {
+					Caller int `json:"caller"`
+				} `json:"contract"`
+			}
+			if err := json.Unmarshal(body, &answer); err != nil {
+				t.Fatalf("decode the state served: %v", err)
+			}
+			return answer.Contract.Caller
+		}
+		for caller := causeTimesContract + 1; caller < dispatchCredentialContract; caller++ {
+			body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), caller)
+			if got := served(body); got != causeTimesContract {
+				t.Fatalf("caller at %d was served contract %d, want %d", caller, got, causeTimesContract)
+			}
+			if bytes.Contains(body, []byte(`"dispatchCredential"`)) {
+				t.Errorf("caller at %d was served dispatchCredential", caller)
+			}
+			wantNarrowings(t, narrowings, caller, []string{"dispatchCredential", highest.dropped})
+		}
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), dispatchCredentialContract)
+		if got := served(body); got != dispatchCredentialContract {
+			t.Fatalf("caller at %d was served contract %d, want %d", dispatchCredentialContract, got, dispatchCredentialContract)
+		}
+		if !bytes.Contains(body, []byte(`"dispatchCredential"`)) {
+			t.Errorf("caller at %d was served no dispatchCredential, the key its own contract added", dispatchCredentialContract)
+		}
+		wantNarrowings(t, narrowings, dispatchCredentialContract, []string{highest.dropped})
+	})
+
 	// The priority narrowing is a row of the table like every other, so a caller below it is told
 	// what it lost: a caller one contract below priorityContract, which states that contract in its
 	// header as every plugin from shapedAnswersContract on does, is served at the recorded contract
@@ -337,9 +380,9 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// what it lost: a caller one contract below assignmentPlanContract, which states that contract
 	// in its header as every plugin from shapedAnswersContract on does, is served at the recorded
 	// contract at or below it (recordedContractAtOrBelow), OwnerPlanContract, so it stands below
-	// that row and the five rows above it, the intake's give-ups, the pod hold, the issues'
-	// priority, the claim views' cause times and gateBasisContract's, alone, and the log holds
-	// those six rows' lines and nothing else. A caller below the give-ups' row alone is
+	// that row and the six rows above it, the intake's give-ups, the pod hold, the issues'
+	// priority, the claim views' cause times, the Dispatch credential and gateBasisContract's,
+	// alone, and the log holds those seven rows' lines and nothing else. A caller below the give-ups' row alone is
 	// TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps's, and one below the cause times'
 	// row TestAnOlderContractIsServedNoCauseTimes's. This subtest does not catch a strip applied
 	// beside the loop, because it reads both its expectation and its answer from stateNarrowings;
@@ -356,8 +399,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 		want := narrowingsExpected(state, below)
-		if len(want) != 6 {
-			t.Fatalf("a caller at %d expects the lines %v, want the plan row's, the give-ups' row's, the pod hold row's, the priority row's, the cause times' row's and gateBasisContract's alone", below, want)
+		if len(want) != 7 {
+			t.Fatalf("a caller at %d expects the lines %v, want the plan row's, the give-ups' row's, the pod hold row's, the priority row's, the cause times' row's, the Dispatch credential row's and gateBasisContract's alone", below, want)
 		}
 		wantNarrowings(t, narrowings, below, want)
 	})
@@ -367,8 +410,9 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// in its header as every plugin from shapedAnswersContract on does, is served at the recorded
 	// contract at or below it (recordedContractAtOrBelow), 232, which stands above
 	// intakeGiveUpsContract with no row of stateNarrowings between, so it stands below that row
-	// and the three rows above it, the issues' priority, the claim views' cause times and
-	// gateBasisContract's, alone, and the log holds those four rows' lines and nothing else. This
+	// and the four rows above it, the issues' priority, the claim views' cause times, the Dispatch
+	// credential and gateBasisContract's, alone, and the log holds those five rows' lines and
+	// nothing else. This
 	// subtest does not catch a strip applied beside the loop, because it reads both its
 	// expectation and its answer from stateNarrowings; the subtest below, which names its line as
 	// a literal, is what catches that.
@@ -382,8 +426,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				podHoldContract, body)
 		}
 		want := narrowingsExpected(state, below)
-		if len(want) != 4 {
-			t.Fatalf("a caller at %d expects the lines %v, want the pod hold row's, the priority row's, the cause times' row's and gateBasisContract's alone", below, want)
+		if len(want) != 5 {
+			t.Fatalf("a caller at %d expects the lines %v, want the pod hold row's, the priority row's, the cause times' row's, the Dispatch credential row's and gateBasisContract's alone", below, want)
 		}
 		wantNarrowings(t, narrowings, below, want)
 	})
@@ -409,10 +453,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// The repositories narrowing is a row of the table like every other, so the caller below it is
 	// told what it lost: a caller one contract below that row, which states that contract in its
 	// header as every plugin from shapedAnswersContract on does, is served at the recorded contract
-	// at or below it (recordedContractAtOrBelow). That contract stands below seven rows of
-	// stateNarrowings, that row and the six above it, the assignments' plan, the intake's
-	// give-ups, the pod hold, the issues' priority, the claim views' cause times and
-	// gateBasisContract's, so the log holds what narrowingsExpected names for it: those seven rows'
+	// at or below it (recordedContractAtOrBelow). That contract stands below eight rows of
+	// stateNarrowings, that row and the seven above it, the assignments' plan, the intake's
+	// give-ups, the pod hold, the issues' priority, the claim views' cause times, the Dispatch
+	// credential and gateBasisContract's, so the log holds what narrowingsExpected names for it: those eight rows'
 	// lines, then the line of each value strip that took a value off this state, the caches
 	// source's among them. This subtest does not catch a strip applied beside the loop, because it
 	// reads both its expectation and its answer from stateNarrowings and valueStrips; the subtests

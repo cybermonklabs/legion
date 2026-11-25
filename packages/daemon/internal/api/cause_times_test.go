@@ -290,17 +290,17 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// gateBasisContract's band, the one row of stateNarrowings above this one, stands above a
-	// caller one contract below causeTimesContract too, so the log holds this band's line and then
-	// that band's.
+	// dispatchCredentialContract's band and gateBasisContract's, the two rows of stateNarrowings
+	// above this one, stand above a caller one contract below causeTimesContract too, so the log
+	// holds this band's line, then dispatchCredential's, then gateBasisContract's.
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
 	above := stateNarrowings[len(stateNarrowings)-1]
 	if above.contract != gateBasisContract {
 		t.Fatalf("the last row of stateNarrowings is contract %d's, want gateBasisContract's %d", above.contract, gateBasisContract)
 	}
-	if len(narrowings) != 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != above.dropped {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q and then gateBasisContract's %q",
-			narrowings, causeTimesContract-1, dropped, above.dropped)
+	if len(narrowings) != 3 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" || narrowings[2].Dropped != above.dropped {
+		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q, one that dropped %q and then gateBasisContract's %q",
+			narrowings, causeTimesContract-1, dropped, "dispatchCredential", above.dropped)
 	}
 }
