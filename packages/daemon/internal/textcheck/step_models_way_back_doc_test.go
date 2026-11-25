@@ -4,7 +4,7 @@ package textcheck
 // go list closure of the text-check run. internal/store's migration_20261125171320_test.go, which
 // runs that migration's way back, reads no text outside its package. So the guide is this one's
 // one row.
-//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:498 reads it under ../../../.. for TestTheStepModelsWayBackIsTheDocsBlock (assertIsTheGuidesBlock, way_back_doc_test.go:174, through wayBackBlockOfTheGuide, :190)
+//ci:reads docs/kubernetes.md `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for TestTheStepModelsWayBackIsTheDocsBlock (`packages/daemon/internal/textcheck/way_back_doc_test.go#assertIsTheGuidesBlock`, through `packages/daemon/internal/textcheck/way_back_doc_test.go#wayBackBlockOfTheGuide`)
 
 import "testing"
 
