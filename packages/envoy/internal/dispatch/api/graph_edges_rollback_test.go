@@ -1,12 +1,16 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -14,13 +18,16 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // rollbackEdge is one edge graph_edges answers, by its ends and its kind.
@@ -237,22 +244,28 @@ func seedRollbackScale(t *testing.T, database *store.Store, issueNode, component
 	}
 }
 
+// rollbackScaleIssue is the issue c-view-arms reads at scale: a row this build's writers leave.
+const rollbackScaleIssue = "ROLL-1250"
+
 // requireAnIssueReadReadsNoRelationTableWhole is c-view-arms' plan of a graph_edges read of one
-// issue at scale. Over seedRollbackScale's rows it takes, under explain (analyze, buffers), the
-// statement each read of one issue the references route makes sends over graph_edges - GET
-// /api/v1/references?from=<issue> and ?to=<issue>, which refs.Edges answers - and finds no Seq Scan
-// of any of rollbackRelationTables in either plan. enable_seqscan stays on (0f8b389c): the hashed
-// `= any` form the planner may take for a probe of a projection row that does not end in
-// `offset 0` reads the probed table whole by a Seq Scan, and with the setting off that scan is
-// priced out and the form hidden. The issue read, ROLL-1250, is a row this build's writers leave,
-// and the issues waiting on it are as many of either build's: graph_edges answers its child_of,
-// its 100 waits and its 100 components out of it, and its one child and the 100 waits on it, 50 by
-// the old blocked_by arm and 50 by the tuple arm, into it.
+// issue at scale. It seeds the rows (seedRollbackScale) and holds the read to
+// requireTheIssueReadAtScale.
 func requireAnIssueReadReadsNoRelationTableWhole(t *testing.T, database *store.Store, issueNode string) {
 	t.Helper()
-	ctx := context.Background()
 	seedRollbackScale(t, database, issueNode, "ROLL/legion")
-	const issue = "ROLL-1250"
+	requireTheIssueReadAtScale(t, database)
+}
+
+// requireTheIssueReadAtScale holds the graph_edges read of one issue over seedRollbackScale's rows
+// to the answer it must give and to no Seq Scan of any of rollbackRelationTables (issueReadSeqScans).
+// The issue read, ROLL-1250, is a row this build's writers leave, and the issues waiting on it are
+// as many of either build's: graph_edges answers its child_of, its 100 waits and its 100
+// components out of it, and its one child and the 100 waits on it, 50 by the old blocked_by arm and
+// 50 by the tuple arm, into it.
+func requireTheIssueReadAtScale(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	const issue = rollbackScaleIssue
 	for _, side := range []struct {
 		name string
 		want map[string]int
@@ -279,12 +292,29 @@ func requireAnIssueReadReadsNoRelationTableWhole(t *testing.T, database *store.S
 			t.Fatalf("graph_edges answers the edges %s %s by kind as %v, want %v", side.name, issue, answered, side.want)
 		}
 	}
+	for _, found := range issueReadSeqScans(t, database) {
+		t.Error(found)
+	}
+}
 
+// issueReadSeqScans is c-view-arms' plan of a graph_edges read of one issue at scale. Over
+// seedRollbackScale's rows it takes, under explain (analyze, buffers), the statement each read of
+// one issue the references route makes sends over graph_edges - GET /api/v1/references?from=<issue>
+// and ?to=<issue>, which refs.Edges answers - and answers each Seq Scan of any of
+// rollbackRelationTables in either plan, as the failure that names the table and prints the plan.
+// enable_seqscan stays on (0f8b389c): the hashed `= any` form the planner may take for a probe of a
+// projection row that does not end in `offset 0` reads the probed table whole by a Seq Scan, and
+// with the setting off that scan is priced out and the form hidden.
+func issueReadSeqScans(t *testing.T, database *store.Store) []string {
+	t.Helper()
+	ctx := context.Background()
+	const issue = rollbackScaleIssue
 	connection, err := database.Pool.Acquire(ctx)
 	if err != nil {
 		t.Fatalf("acquire a connection for the plans: %v", err)
 	}
 	defer connection.Release()
+	var found []string
 	for _, direction := range []string{"out", "in"} {
 		kept := &keepingQueryer{queryer: database.Pool}
 		if _, err := refs.Edges(ctx, kept, model.Actor{Kind: "user", ID: "alice"}, refs.Query{Direction: direction, Kind: graphstore.KindIssue, ID: issue}); err != nil {
@@ -304,9 +334,252 @@ func requireAnIssueReadReadsNoRelationTableWhole(t *testing.T, database *store.S
 		text := explainDismissedScaleText(t, connection.Conn(), name, reads[0].sql, reads[0].args)
 		for _, table := range rollbackRelationTables {
 			if explaintest.SeqScansRelation(t, plan, table) {
-				t.Errorf("%s reads %s by a Seq Scan, want each of its rows the read reaches reached through an index:\n%s", name, table, text)
+				found = append(found, fmt.Sprintf("%s reads %s by a Seq Scan, want each of its rows the read reaches reached through an index:\n%s", name, table, text))
 			}
 		}
+	}
+	return found
+}
+
+// The commits the step that deletes the four arms is run and announced under: the boot's own, the
+// commit of an earlier build and the commit of a later one, none the same.
+const (
+	rollbackBootCommit   = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
+	rollbackEarlierBuild = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+	rollbackLaterBuild   = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+)
+
+// rollbackFourArms are the four arms graph_edges holds over document_blocks, block_refs and
+// comments, and the three joins its tuple arm makes to the rows of those tables, as
+// graphcensus.ViewArmsStanding names them, sorted: all of them stand at the head the migrations
+// state, and none once the step that deletes them has run.
+var rollbackFourArms = []string{
+	"block_refs", "comments_anchored_to", "comments_owned_by", "document_blocks",
+	"join_block_refs", "join_comments", "join_document_blocks",
+}
+
+// rollbackFourKinds are the kinds the four arms answer, which a build that writes them as tuples
+// lists in its announcement.
+func rollbackFourKinds() []string {
+	return []string{refs.TupleInDocument, graphstore.TupleMentions, graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy}
+}
+
+// rollbackArmsStanding is which of the four arms and their joins graph_edges still holds, sorted.
+func rollbackArmsStanding(t testing.TB, database *store.Store) []string {
+	t.Helper()
+	var definition string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select pg_get_viewdef('graph_edges'::regclass, true)`).Scan(&definition); err != nil {
+		t.Fatalf("read the graph_edges definition: %v", err)
+	}
+	standing := graphcensus.ViewArmsStanding(definition)
+	slices.Sort(standing)
+	return standing
+}
+
+// rollbackAnnounce writes the announcement of a build, as the fleet's announcer does for each build
+// it serves, listing kinds.
+func rollbackAnnounce(t testing.TB, database *store.Store, commit string, kinds []string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(),
+		`insert into server_build_announcements (commit, tuple_kinds) values ($1, $2)`, commit, kinds); err != nil {
+		t.Fatalf("announce %s listing %v: %v", commit, kinds, err)
+	}
+}
+
+// rollbackRunStep runs the boot's step that deletes the four arms over database, as the boot of
+// commit rollbackBootCommit does it, fresh where that boot created the database from empty, and
+// answers whether graph_edges holds none of the four arms afterwards and what the step logged.
+func rollbackRunStep(t testing.TB, database *store.Store, fresh bool) (gone bool, logged string) {
+	t.Helper()
+	var buffer bytes.Buffer
+	gone, err := graphcensus.RunViewArmsStep(context.Background(), database, rollbackBootCommit, fresh,
+		slog.New(slog.NewTextHandler(&buffer, nil)))
+	if err != nil {
+		t.Fatalf("the step that deletes the four arms failed: %v\nlog:\n%s", err, buffer.String())
+	}
+	return gone, buffer.String()
+}
+
+// rollbackEdgeRows is every row of graph_edges, each column of it as text, sorted.
+func rollbackEdgeRows(t testing.TB, database *store.Store) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select concat_ws('|', from_kind, from_id, kind, to_kind, to_id, created_at::text, coalesce(source_seq::text, '-'))
+		from graph_edges order by 1`)
+	if err != nil {
+		t.Fatalf("read graph_edges: %v", err)
+	}
+	read, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("scan graph_edges: %v", err)
+	}
+	return read
+}
+
+// rollbackEdgeShapes is how many rows of rows (rollbackEdgeRows) hold each (from_kind, kind,
+// to_kind), written `from_kind kind to_kind`.
+func rollbackEdgeShapes(rows []string) map[string]int {
+	shapes := map[string]int{}
+	for _, row := range rows {
+		if fields := strings.Split(row, "|"); len(fields) >= 7 {
+			shapes[fields[0]+" "+fields[2]+" "+fields[3]]++
+		}
+	}
+	return shapes
+}
+
+// rollbackRowsDiffer is where two readings of graph_edges part, empty where they hold every row the
+// same number of times: up to five rows only the first holds and five only the second holds.
+func rollbackRowsDiffer(before, after []string) string {
+	counts := map[string]int{}
+	for _, row := range before {
+		counts[row]++
+	}
+	for _, row := range after {
+		counts[row]--
+	}
+	var lost, gained []string
+	for _, row := range slices.Sorted(maps.Keys(counts)) {
+		switch {
+		case counts[row] > 0 && len(lost) < 5:
+			lost = append(lost, row)
+		case counts[row] < 0 && len(gained) < 5:
+			gained = append(gained, row)
+		}
+	}
+	if len(lost) == 0 && len(gained) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("rows only the reading before holds: %q\nrows only the reading after holds: %q", lost, gained)
+}
+
+// rollbackCountSubjects are the nodes whose backlinks the four arms and their joins decide: the
+// documents, which a block's in_document and a comment's anchored_to and owned_by point at, and the
+// blocks an edge points at, which a pointer or a mention points at.
+func rollbackCountSubjects(t testing.TB, database *store.Store) map[string][]string {
+	t.Helper()
+	subjects := map[string][]string{}
+	for kind, statement := range map[string]string{
+		"artifact": `select ref_key from artifacts where ref_key is not null order by 1`,
+		"block":    `select distinct to_id from graph_edges where to_kind = 'block' order by 1`,
+	} {
+		rows, err := database.Pool.Query(context.Background(), statement)
+		if err != nil {
+			t.Fatalf("read the %s nodes to count: %v", kind, err)
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("scan the %s nodes to count: %v", kind, err)
+		}
+		subjects[kind] = ids
+	}
+	return subjects
+}
+
+// rollbackBacklinkCounts is refs.BacklinkCounts over each of subjects, by the node's kind.
+func rollbackBacklinkCounts(t testing.TB, database *store.Store, subjects map[string][]string) map[string]map[string]int {
+	t.Helper()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	counts := map[string]map[string]int{}
+	for kind, ids := range subjects {
+		counted, err := refs.BacklinkCounts(context.Background(), database.Pool, alice, kind, ids, nil)
+		if err != nil {
+			t.Fatalf("count the backlinks of %d %s nodes: %v", len(ids), kind, err)
+		}
+		counts[kind] = counted
+	}
+	return counts
+}
+
+// stateRollbackView states graph_edges from the arm set arms of store.GraphEdgesView.
+func stateRollbackView(t testing.TB, database *store.Store, arms store.GraphEdgesArms) {
+	t.Helper()
+	stateRollbackViewText(t, database, store.GraphEdgesView(arms))
+}
+
+// stateRollbackViewText states graph_edges from statement.
+func stateRollbackViewText(t testing.TB, database *store.Store, statement string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
+		t.Fatalf("state graph_edges: %v\n%s", err, statement)
+	}
+}
+
+// rollbackCut is text with part, which it holds once, replaced by with: a control's own change to
+// the view, which fails t where the view no longer holds the part it cuts, so that the control
+// stays a change to the statement as it stands.
+func rollbackCut(t testing.TB, text, part, with string) string {
+	t.Helper()
+	if held := strings.Count(text, part); held != 1 {
+		t.Fatalf("the view holds the control's text %d times, want once:\n%s", held, part)
+	}
+	return strings.Replace(text, part, with, 1)
+}
+
+// The parts of the view the controls of c-view-arms change: the arm over issue_links, the child_of
+// arm's probe of the newest tuple, and the probe of issue_links under the tuple arm's case, with
+// and without the `offset 0` that fences it.
+const (
+	rollbackBlockedByArm = `  union all
+  select 'issue', issue_key, 'blocked_by', 'issue', target_key, created_at, null
+  from issue_links where kind = 'blocked_by' and node_kind is null
+`
+	rollbackNewestParentProbe = `and (i.node_kind is null or ` + store.IssueParentMoved + `)`
+	rollbackIssueLinkProbe    = `          when 'issue_link' then exists (
+            select 1 from issue_links projected
+            where projected.issue_key = edge.from_id and projected.kind = 'blocked_by'
+              and projected.target_key = edge.to_id and projected.node_kind = edge.from_kind
+              and projected.node_address = edge.from_id
+            offset 0)`
+	rollbackIssueLinkProbeUnfenced = `          when 'issue_link' then exists (
+            select 1 from issue_links projected
+            where projected.issue_key = edge.from_id and projected.kind = 'blocked_by'
+              and projected.target_key = edge.to_id and projected.node_kind = edge.from_kind
+              and projected.node_address = edge.from_id)`
+)
+
+// rollbackWaitStep waits until the process, booted over a database whose graph_edges holds the four
+// arms, logs a line of its step over them (graphcensus.ViewArmsStepLine), whatever it found, and
+// fails t where the process exits first. The step runs on the boot's backfill goroutine once the
+// backfill has logged that it is done, so no such line comes where that run logged none.
+func rollbackWaitStep(t *testing.T, process *cmdtest.Process) {
+	t.Helper()
+	exited := false
+	output := testwait.Until(t, "the boot's step over graph_edges' four old arms to log how it ended", func() (string, bool) {
+		select {
+		case <-process.Exited:
+			exited = true
+		default:
+		}
+		output := process.Output.String()
+		return output, exited || strings.Contains(output, graphcensus.ViewArmsStepLine)
+	})
+	if !strings.Contains(output, graphcensus.ViewArmsStepLine) {
+		t.Fatalf("the boot logged no line of its step over the four arms before it exited:\n%s", output)
+	}
+}
+
+// rollbackListening is the line a booted envoy-dispatch logs once it serves, with its address.
+var rollbackListening = regexp.MustCompile(`msg="dispatch: listening" addr=(127\.0\.0\.1:[0-9]+)`)
+
+// rollbackRequireServes fails t unless the process, which blockTypeSupertagBoot booted and which has
+// logged the address it listens on, answers GET /healthz with 200 now.
+func rollbackRequireServes(t *testing.T, process *cmdtest.Process) {
+	t.Helper()
+	listening := rollbackListening.FindStringSubmatch(process.Output.String())
+	if listening == nil {
+		t.Fatalf("the process logged no address it listens on:\n%s", process.Output.String())
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	response, err := client.Get("http://" + listening[1] + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz of the process after its step over the four arms: %v\n%s", err, process.Output.String())
+	}
+	body, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Errorf("GET /healthz answers %d after the step left the four arms, want 200: %s", response.StatusCode, body)
 	}
 }
 
@@ -331,7 +604,23 @@ func requireAnIssueReadReadsNoRelationTableWhole(t *testing.T, database *store.S
 // row's own created_at, a component's snapshot's imported_at, an issue's components' updated_at -
 // and the old arms answer none of them: each moved relation reads once through the tuple arm, and
 // the store holds its new value alone, the old one retracted. The cases of an artifact's citations
-// and the deletion of the graph-store spec's four arms are T8c's and T9's.
+// are T8c's.
+//
+// The deletion of the graph-store spec's four arms is T9's, and runs last over each database it
+// needs: the step the boot runs (graphcensus.RunViewArmsStep) leaves the arms over document_blocks,
+// block_refs and comments' anchored_to and owned_by, and the tuple arm's joins to those three
+// tables, in graph_edges where no build has announced itself, where the newest announcement of
+// another build lists none of their kinds, where a row of those tables names no node, and where a
+// block row the release before deleted leaves its tuple standing, the log then naming the block;
+// and it deletes them where the newest announcement lists in_document, mentions, anchored_to and
+// owned_by, or at once over a database the boot created from empty. Over this database, whose every
+// row names its node after the backfill, graph_edges then answers every row it answered before,
+// once, and so do refs.BacklinkCounts, which reads none of the arms from then on
+// (refs.SetFourArmsDeleted), and the outbound references read. Two controls run against a scratch
+// database hold the checks to a view stated without the blocked_by arm and without the child_of
+// arm's probe of the newest tuple, and a third, against this one, to a view whose probe of
+// issue_links does not end in `offset 0`; the fourth control of c-view-arms, the deletion that
+// skips its guard, is the driver's.
 //
 // A document's citations, T8c's: the release before's document, naming no node, cites the target
 // by a refs row that release wrote, which the arm over refs answers once before the backfill and
@@ -350,7 +639,7 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 	}
 	options := architectureAppOptions(t, fake)
 	options.settle = time.Hour
-	handler, database, _ := newTestServer(t, options)
+	handler, database, deps := newTestServer(t, options)
 	ctx := context.Background()
 	keys := createListedIssues(t, handler, "ROLL", 5)
 	parent, target, oldWaiter, oldChild, movedTo := keys[0], keys[1], keys[2], keys[3], keys[4]
@@ -709,9 +998,291 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 		}
 	}
 
+	// The cases of the step that deletes the four arms (c-view-arms), each over a database of its
+	// own, so that none of them reads the counts of another (refs.SetFourArmsDeleted).
+	// A scratch database where the step must leave the arms, one reason at a time: no build has
+	// announced itself, the newest announcement lists none of the kinds, a row names no node, and a
+	// block row the release before deleted leaves its tuple standing.
+	t.Run("the step leaves the four arms where its guard or its proof does not hold", func(t *testing.T) {
+		scratch := storetest.Open(t)
+		scratchHandler, _, scratchDeps := newTestServer(t, testServerOptions{store: scratch})
+		issue := blockTypeSupertagSeed(t, scratchHandler, scratch, scratchDeps, "ARMA")
+		requireKept := func(why, logs string) {
+			t.Helper()
+			gone, logged := rollbackRunStep(t, scratch, false)
+			if gone || !strings.Contains(logged, graphcensus.ViewArmsKeptLine) || !strings.Contains(logged, logs) {
+				t.Errorf("%s: the step answers gone=%t and logs %q, want the arms left and a line of %q naming %q",
+					why, gone, logged, graphcensus.ViewArmsKeptLine, logs)
+			}
+			if standing := rollbackArmsStanding(t, scratch); !slices.Equal(standing, rollbackFourArms) {
+				t.Errorf("%s: graph_edges holds %v after the step, want all of %v", why, standing, rollbackFourArms)
+			}
+		}
+		if standing := rollbackArmsStanding(t, scratch); !slices.Equal(standing, rollbackFourArms) {
+			t.Fatalf("graph_edges holds %v at the head the migrations state, want all of %v", standing, rollbackFourArms)
+		}
+		requireKept("no build other than this one has announced itself", "no build other than this one")
+		rollbackAnnounce(t, scratch, rollbackEarlierBuild, []string{graphstore.TuplePartOf})
+		requireKept("the newest announcement of another build lists none of the kinds", "does not list every kind")
+		rollbackAnnounce(t, scratch, rollbackLaterBuild, rollbackFourKinds())
+
+		var nodeKind, nodeAddress string
+		if err := scratch.Pool.QueryRow(context.Background(),
+			`select node_kind, node_address from document_blocks where node_id = $1`, issue.requirement).Scan(&nodeKind, &nodeAddress); err != nil {
+			t.Fatalf("read the node of the row of %s: %v", issue.requirement, err)
+		}
+		if _, err := scratch.Pool.Exec(context.Background(),
+			`update document_blocks set node_kind = null, node_address = null where node_id = $1`, issue.requirement); err != nil {
+			t.Fatalf("take the node off the row of %s: %v", issue.requirement, err)
+		}
+		requireKept("a row of document_blocks names no node", "name no node")
+		if _, err := scratch.Pool.Exec(context.Background(),
+			`update document_blocks set node_kind = $2, node_address = $3 where node_id = $1`, issue.requirement, nodeKind, nodeAddress); err != nil {
+			t.Fatalf("put the node back on the row of %s: %v", issue.requirement, err)
+		}
+
+		if _, err := scratch.Pool.Exec(context.Background(),
+			`delete from document_blocks where node_id = $1`, issue.requirement); err != nil {
+			t.Fatalf("delete the row of %s as the release before does: %v", issue.requirement, err)
+		}
+		requireKept("a block row the release before deleted leaves its tuple standing", "the census of a kind they answer reads differences")
+		if _, logged := rollbackRunStep(t, scratch, false); !strings.Contains(logged, issue.requirement) {
+			t.Errorf("the step's log does not name the block %s whose row was deleted and whose tuple stands:\n%s", issue.requirement, logged)
+		}
+	})
+	// A scratch database the boot created from empty has no earlier release to roll back to: the
+	// step deletes the arms at once, and the boot after it finds nothing to do.
+	t.Run("the step deletes the four arms at once over a database the boot created from empty", func(t *testing.T) {
+		scratch := storetest.Open(t)
+		scratchHandler, _, scratchDeps := newTestServer(t, testServerOptions{store: scratch})
+		blockTypeSupertagSeed(t, scratchHandler, scratch, scratchDeps, "ARMC")
+		if standing := rollbackArmsStanding(t, scratch); !slices.Equal(standing, rollbackFourArms) {
+			t.Fatalf("graph_edges holds %v at the head the migrations state, want all of %v", standing, rollbackFourArms)
+		}
+		gone, logged := rollbackRunStep(t, scratch, true)
+		if !gone || !strings.Contains(logged, graphcensus.ViewArmsDeletedLine) {
+			t.Errorf("the step answers gone=%t and logs %q, want the arms deleted and the line %q", gone, logged, graphcensus.ViewArmsDeletedLine)
+		}
+		if standing := rollbackArmsStanding(t, scratch); len(standing) != 0 {
+			t.Errorf("graph_edges still holds %v after the step", standing)
+		}
+		gone, logged = rollbackRunStep(t, scratch, true)
+		if !gone || !strings.Contains(logged, graphcensus.ViewArmsNothingToDoLine) {
+			t.Errorf("the second boot's step answers gone=%t and logs %q, want nothing to do and the line %q", gone, logged, graphcensus.ViewArmsNothingToDoLine)
+		}
+	})
+	// The same two databases as the check names them, over a server that really boots
+	// (blockTypeSupertagBoot builds envoy-dispatch and boots it over a database): where a block row
+	// is deleted by SQL, as a build of the release before deletes it, and its tuple stands, the
+	// four arms stay, the server starts and serves, and its log names the block; over a database
+	// with no difference, whose newest announcement naming another build lists the four arms' kinds,
+	// the four are gone.
+	t.Run("a server booted over a block row the release before deleted keeps the four arms and names the block", func(t *testing.T) {
+		scratch := storetest.Open(t)
+		scratchHandler, _, scratchDeps := newTestServer(t, testServerOptions{store: scratch})
+		issue := blockTypeSupertagSeed(t, scratchHandler, scratch, scratchDeps, "ARMD")
+		rollbackAnnounce(t, scratch, rollbackEarlierBuild, rollbackFourKinds())
+		if _, err := scratch.Pool.Exec(context.Background(),
+			`delete from document_blocks where node_id = $1`, issue.requirement); err != nil {
+			t.Fatalf("delete the row of %s as the release before does: %v", issue.requirement, err)
+		}
+		process := blockTypeSupertagBoot(t, scratch.Pool.Config().ConnString())
+		rollbackWaitStep(t, process)
+		// The four arms stay, and the server starts and serves: it answers a request after its step.
+		rollbackRequireServes(t, process)
+		logged := blockTypeSupertagStop(t, process)
+		if !strings.Contains(logged, graphcensus.ViewArmsKeptLine) || !strings.Contains(logged, issue.requirement) {
+			t.Errorf("the boot's log does not hold a line of %q naming the block %s whose row was deleted and whose tuple stands:\n%s",
+				graphcensus.ViewArmsKeptLine, issue.requirement, logged)
+		}
+		if strings.Contains(logged, graphcensus.ViewArmsDeletedLine) {
+			t.Errorf("the boot deleted the four arms over a database whose census reads a difference:\n%s", logged)
+		}
+		if standing := rollbackArmsStanding(t, scratch); !slices.Equal(standing, rollbackFourArms) {
+			t.Errorf("graph_edges holds %v after the boot, want all of %v", standing, rollbackFourArms)
+		}
+	})
+	t.Run("a server booted over a database with no difference deletes the four arms", func(t *testing.T) {
+		scratch := storetest.Open(t)
+		scratchHandler, _, scratchDeps := newTestServer(t, testServerOptions{store: scratch})
+		blockTypeSupertagSeed(t, scratchHandler, scratch, scratchDeps, "ARME")
+		rollbackAnnounce(t, scratch, rollbackEarlierBuild, rollbackFourKinds())
+		process := blockTypeSupertagBoot(t, scratch.Pool.Config().ConnString())
+		rollbackWaitStep(t, process)
+		logged := blockTypeSupertagStop(t, process)
+		if !strings.Contains(logged, graphcensus.ViewArmsDeletedLine) {
+			t.Errorf("the boot's log does not hold the line %q:\n%s", graphcensus.ViewArmsDeletedLine, logged)
+		}
+		if standing := rollbackArmsStanding(t, scratch); len(standing) != 0 {
+			t.Errorf("graph_edges still holds %v after the boot:\n%s", standing, logged)
+		}
+	})
+	// The two controls run against a scratch database: a link the release before wrote, naming no
+	// node, and a parent it moved in place, each read through graph_edges and, for the link, through
+	// the outbound references read, which answer each once. A view stated without the blocked_by arm
+	// loses the link from both; a view whose child_of arm has no probe of the newest tuple reads the
+	// moved parent under neither arm.
+	t.Run("a view stated without the blocked_by arm or the child_of arm's probe fails the checks", func(t *testing.T) {
+		scratch := storetest.Open(t)
+		scratchHandler, _, _ := newTestServer(t, testServerOptions{store: scratch})
+		keys := createListedIssues(t, scratchHandler, "CTRL", 4)
+		linkTarget, waiter, firstParent, movedParent := keys[0], keys[1], keys[2], keys[3]
+		response := dispatchRequest(t, scratchHandler, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": "CTRL", "title": "Its parent moved in place", "force": true, "parent": firstParent,
+		}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create the child: status=%d body=%s", response.Code, response.Body.String())
+		}
+		child := decodeBody[model.Issue](t, response).Key
+		for _, statement := range []struct {
+			what, sql string
+			args      []any
+		}{
+			{"its link, naming no node", `insert into issue_links (issue_key, kind, target_key, created_at) values ($1, 'blocked_by', $2, now() - interval '1 day')`, []any{waiter, linkTarget}},
+			{"its move of a stamped parent, in place", `update issues set parent_key = $2 where key = $1`, []any{child, movedParent}},
+		} {
+			if _, err := scratch.Pool.Exec(context.Background(), statement.sql, statement.args...); err != nil {
+				t.Fatalf("write %s as the release before: %v", statement.what, err)
+			}
+		}
+		link := rollbackEdge{"issue", waiter, "blocked_by", "issue", linkTarget}
+		moved := rollbackEdge{"issue", child, "child_of", "issue", movedParent}
+		left := rollbackEdge{"issue", child, "child_of", "issue", firstParent}
+		// What the checks read: the link in graph_edges and in the references read, and the moved
+		// parent in graph_edges, at its new value and at the old one.
+		observed := func() (linkRows, linkReferences, movedRows, leftRows int) {
+			t.Helper()
+			linkRows, _ = viewAnswers(t, scratch, link)
+			movedRows, _ = viewAnswers(t, scratch, moved)
+			leftRows, _ = viewAnswers(t, scratch, left)
+			return linkRows, outboundAnswers(t, scratchHandler, waiter, model.EdgeKindNeeds, "issue", linkTarget), movedRows, leftRows
+		}
+		if linkRows, linkReferences, movedRows, leftRows := observed(); linkRows != 1 || linkReferences != 1 || movedRows != 1 || leftRows != 0 {
+			t.Fatalf("at the head the migrations state, the link reads %d times in graph_edges and %d in the references read, and the moved parent %d times at its new value and %d at its old, want 1, 1, 1 and 0",
+				linkRows, linkReferences, movedRows, leftRows)
+		}
+		head := store.GraphEdgesView(store.GraphEdgesBlockNodeListed)
+
+		stateRollbackViewText(t, scratch, rollbackCut(t, head, rollbackBlockedByArm, ""))
+		linkRows, linkReferences, movedRows, leftRows := observed()
+		if linkRows != 0 || linkReferences != 0 {
+			t.Errorf("the control, the view without the blocked_by arm, still answers the link %d times in graph_edges and %d in the references read: the check cannot tell a lost link from a standing one",
+				linkRows, linkReferences)
+		}
+		if movedRows != 1 || leftRows != 0 {
+			t.Errorf("the control without the blocked_by arm changed the moved parent's reads to %d at its new value and %d at its old", movedRows, leftRows)
+		}
+		stateRollbackViewText(t, scratch, head)
+
+		stateRollbackViewText(t, scratch, rollbackCut(t, head, rollbackNewestParentProbe, `and i.node_kind is null`))
+		linkRows, linkReferences, movedRows, leftRows = observed()
+		if movedRows != 0 || leftRows != 0 {
+			t.Errorf("the control, the view whose child_of arm has no probe of the newest tuple, answers the moved parent %d times at its new value and %d at its old, want it under neither arm: the check cannot tell it from a standing one",
+				movedRows, leftRows)
+		}
+		if linkRows != 1 || linkReferences != 1 {
+			t.Errorf("the control without the child_of arm's probe changed the link's reads to %d in graph_edges and %d in the references read", linkRows, linkReferences)
+		}
+		stateRollbackViewText(t, scratch, head)
+	})
+
+	// The step over this database, whose every row names its node after the backfill. It holds,
+	// beside the document the release before wrote, a spec with a pointer between two blocks and a
+	// comment on it, so that the kinds the four arms answer - a block's in_document, its pointer, a
+	// comment's anchored_to - are rows of the view the step must leave answered.
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "ROLL", "title": "A spec with a pointer and a remark", "force": true, "spec": "A spec.\n",
+	}, "alice")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create the issue that holds the blocks and the comment: status=%d body=%s", response.Code, response.Body.String())
+	}
+	armsIssue := decodeBody[model.Issue](t, response).Key
+	uploadDocument(t, handler, "/api/v1/issues/"+armsIssue, "spec",
+		"A spec.\n\n:::criterion{#cr1}\nThe criterion.\n:::\n\n"+
+			":::requirement{#r1 serves=\"dispatch://"+armsIssue+"/spec#b-cr1\"}\nThe requirement.\n:::\n")
+	reconcileUntilNothingOwed(t, handler, deps, armsIssue)
+	createBlockAnchoredComment(t, handler, armsIssue, map[string]any{"artifact": "spec", "quote": "The criterion."})
+
+	if standing := rollbackArmsStanding(t, database); !slices.Equal(standing, rollbackFourArms) {
+		t.Fatalf("graph_edges holds %v before the step, want all of %v", standing, rollbackFourArms)
+	}
+	edgesBefore := rollbackEdgeRows(t, database)
+	shapes := rollbackEdgeShapes(edgesBefore)
+	t.Logf("before the step graph_edges answers %d rows, of the shapes %v", len(edgesBefore), shapes)
+	for _, shape := range []string{"block part_of artifact", "block serves block", "comment anchored_to artifact"} {
+		if shapes[shape] == 0 {
+			t.Fatalf("graph_edges answers no %q edge before the step, so its answer after the step proves nothing about that arm: %v", shape, shapes)
+		}
+	}
+	subjects := rollbackCountSubjects(t, database)
+	countsBefore := rollbackBacklinkCounts(t, database, subjects)
+	for kind, counted := range countsBefore {
+		total := 0
+		for _, count := range counted {
+			total += count
+		}
+		if total == 0 {
+			t.Fatalf("no %s node of %v has a backlink before the step, so the counts after it prove nothing", kind, subjects[kind])
+		}
+	}
+
+	// An announcement of another build that lists none of the kinds leaves the arms; once a later
+	// one lists them, the step deletes them, and a second boot finds nothing to do.
+	rollbackAnnounce(t, database, rollbackEarlierBuild, []string{graphstore.TuplePartOf})
+	if gone, logged := rollbackRunStep(t, database, false); gone || !strings.Contains(logged, graphcensus.ViewArmsKeptLine) {
+		t.Fatalf("the step answers gone=%t and logs %q over a fleet that lists none of the kinds, want the arms left", gone, logged)
+	}
+	if standing := rollbackArmsStanding(t, database); !slices.Equal(standing, rollbackFourArms) {
+		t.Fatalf("the step took %v out of graph_edges over a fleet that lists none of the kinds", slices.DeleteFunc(slices.Clone(rollbackFourArms), func(arm string) bool { return slices.Contains(standing, arm) }))
+	}
+	rollbackAnnounce(t, database, rollbackLaterBuild, rollbackFourKinds())
+	if gone, logged := rollbackRunStep(t, database, false); !gone || !strings.Contains(logged, graphcensus.ViewArmsDeletedLine) {
+		t.Fatalf("the step answers gone=%t and logs %q over a fleet that lists their kinds, want the arms deleted", gone, logged)
+	}
+	if standing := rollbackArmsStanding(t, database); len(standing) != 0 {
+		t.Fatalf("graph_edges still holds %v after the step", standing)
+	}
+	if gone, logged := rollbackRunStep(t, database, false); !gone || !strings.Contains(logged, graphcensus.ViewArmsNothingToDoLine) {
+		t.Fatalf("the second boot's step answers gone=%t and logs %q, want nothing to do", gone, logged)
+	}
+	refs.SetFourArmsDeleted(true)
+	t.Cleanup(func() { refs.SetFourArmsDeleted(false) })
+
+	// Every row graph_edges answered it answers, the same number of times, with the same time and
+	// cause; every count and every standing and deleted relation reads as it did.
+	if differ := rollbackRowsDiffer(edgesBefore, rollbackEdgeRows(t, database)); differ != "" {
+		t.Errorf("graph_edges answers other rows once the four arms are gone:\n%s", differ)
+	}
+	countsAfter := rollbackBacklinkCounts(t, database, subjects)
+	for kind, counted := range countsBefore {
+		if !maps.Equal(counted, countsAfter[kind]) {
+			t.Errorf("the backlink counts of the %s nodes were %v before the step and are %v after it", kind, counted, countsAfter[kind])
+		}
+	}
+	read("after the four arms are deleted:")
+
 	// The plan of a read of one issue over 50,000 issue links, 50,000 component dependencies and
 	// 50,000 issue components, of either build (c-view-arms).
 	t.Run("a read of one issue at scale scans no relation table", func(t *testing.T) {
 		requireAnIssueReadReadsNoRelationTableWhole(t, database, stamped.Key)
+	})
+	// The same read at the head the migrations state, which holds the four arms, and with the view
+	// of the step stated again.
+	t.Run("a read of one issue at scale scans no relation table at the head the migrations state", func(t *testing.T) {
+		stateRollbackView(t, database, store.GraphEdgesBlockNodeListed)
+		defer stateRollbackView(t, database, store.GraphEdgesFourArmsDeleted)
+		requireTheIssueReadAtScale(t, database)
+	})
+	// The third control, against this database: the view of the step with the probe of issue_links
+	// stated with no `offset 0`, which Postgres reads as a hashed `= any` over the whole table, so
+	// the plan of the read of one issue holds a Seq Scan of issue_links and the check names it.
+	t.Run("a probe of issue_links with no offset 0 is read whole and fails the check", func(t *testing.T) {
+		stateRollbackViewText(t, database, rollbackCut(t, store.GraphEdgesView(store.GraphEdgesFourArmsDeleted),
+			rollbackIssueLinkProbe, rollbackIssueLinkProbeUnfenced))
+		defer stateRollbackView(t, database, store.GraphEdgesFourArmsDeleted)
+		found := issueReadSeqScans(t, database)
+		if !slices.ContainsFunc(found, func(failure string) bool { return strings.Contains(failure, " reads issue_links by a Seq Scan") }) {
+			t.Errorf("the control, the view with the probe of issue_links stated with no offset 0, passes the check naming no Seq Scan of issue_links: %v", found)
+		}
 	})
 }
