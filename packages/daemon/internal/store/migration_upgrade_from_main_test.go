@@ -278,10 +278,10 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	}
 }
 
-// todaysMainsNewestMigration is #5372's release teardown, the newest migration on main at
-// c227d046. Main already includes issue priority, claim sessions, the experiment assignment plan
-// and the claim cause times.
-const todaysMainsNewestMigration = 20261124143026
+// todaysMainsNewestMigration is #4392's issue pod disks, the newest migration on main at
+// 830cfacb. Main already includes issue priority, claim sessions, the experiment assignment plan,
+// the claim cause times and #5372's release teardown.
+const todaysMainsNewestMigration = 20261124182040
 
 // A database today's main migrated records every embedded migration but the six answer-loop
 // ones: the three tables, thread replies, call tools and released-agent messages. All six stand

@@ -94,7 +94,7 @@ func TestAnAnswerIsPostedAsTheAgentsSession(t *testing.T) {
 		writeJSONStatus(t, w, http.StatusCreated, map[string]any{"id": "reply"})
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	ctx := context.Background()
 	if err := client.ReplyToMessage(ctx, "m-1", 2, "ses_tester", "Plum."); err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestAnAskReadsWithItsAuthorAndReplies(t *testing.T) {
 		_, _ = w.Write(buf.Bytes())
 	}))
 	defer server.Close()
-	ask, err := New(server.URL, dispatchToken).Ask(context.Background(), "a-1")
+	ask, err := New(server.URL, BearerTransport(dispatchToken, nil)).Ask(context.Background(), "a-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestACommentReadsWithItsThread(t *testing.T) {
 			`"reply_to":"c-1","answers":"c-2","created_at":"2026-10-26T12:02:00Z"}]}`))
 	}))
 	defer server.Close()
-	thread, err := New(server.URL, dispatchToken).Thread(context.Background(), "c-1")
+	thread, err := New(server.URL, BearerTransport(dispatchToken, nil)).Thread(context.Background(), "c-1")
 	if err != nil {
 		t.Fatal(err)
 	}
