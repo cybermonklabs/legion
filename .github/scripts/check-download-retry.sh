@@ -57,19 +57,22 @@
 # builds (DOCKERFILES below; a missing one fails this check, so a rename is seen, and a step
 # building a Dockerfile it does not name is refused, so a fifth is seen too: rule 10). Every
 # other file under .github/scripts/, at any depth and whatever it holds, is refused by name, but
-# those harnesses and libraries, that directory's top-level `.py` and `.jq` files and the
+# those harnesses and libraries, that directory's top-level `.py` and `.jq` files, the two
+# scanners ci_citations.py runs (its top-level `.go` and `.ts`, main's #5308) and the
 # bytecode Python writes for them: a file there this check would not read is refused where it
 # stands rather than passed with its fetches unread and a step running it charged nothing for
 # it. So is a top-level `.py` whose `#!` line names any program but `python3` or `python`, a
-# `.jq` whose `#!` line names any but `jq`, and a `.pyc` that opens `#!`, each a program of
+# `.jq` whose `#!` line names any but `jq`, a `.go` or `.ts` whose `#!` line names any but `go`
+# or `bun`, and a `.pyc` that opens `#!`, each a program of
 # another interpreter this check does not read; and a directory there the walk below does not
 # enter, a symbolic link or one of the names it skips. A file there this check does not read as a
 # script, a direct `*.test.sh` harness excepted, named by its literal path, by its name or by a
 # name built from data that ends as its does (unread_named), appears in a step's, an action's or
 # a script's command only where this tree writes one: what `python3` or `python` runs, the filter
 # `jq -f` reads, a command word whose `#!` line names that interpreter, an argument of `echo`,
-# `printf` or `grep`, and the pattern `pkill` matches; any other place, after any wrapper, as any
-# program's argument, as a redirect's file or in the text of a shell's `-c`, is refused by name
+# `printf`, `grep` or `gofmt`, and the pattern `pkill` matches; any other place, after any
+# wrapper, as any program's argument, as a redirect's file or in the text of a shell's `-c`, is
+# refused by name
 # (the reading set and unread_uses below; dispatch://INFRA-1545, rounds 37 and 38). One named
 # through a pattern is read as the reach under item 1 reads a pattern, at a run's target or where
 # its literal text holds `.github/`, and passes in any other form, as `cd .github/scripts && cat
@@ -917,17 +920,21 @@
 #      `run:`, which the shell rules blank as data, or the text a `python3 -c` is handed — is
 #      read by no rule of this check at all: not rule 8, which puts a figure on none of it, and
 #      not rule 1, so a network read written there gets no floor rather than merely no price.
-#      And no rule reads the downloads of a `.py` or `.jq` program under .github/scripts/, nor
+#      And no rule reads the downloads of a `.py`, `.jq`, `.go` or `.ts` program under
+#      .github/scripts/, nor
 #      its runs of other scripts, by `subprocess`, `os.system` or a `.sh` path it holds, whether a
 #      step runs it with `python3` or as its own command word. A CI script it runs is still read,
 #      and each of its downloads is held to the floor at the line it is written on, but the time
 #      that script spends is charged to no step's or job's time limit. This check reads shell
 #      text, and those files are programs of other languages: a language boundary INFRA-1310's
 #      architect accepted (dispatch://INFRA-1545, round 39). The set is the twelve `.py` files
-#      and the one `.jq` this tree writes there, and measured at e6de0788 the one of them that
-#      runs a CI shell script, go-test-step-expansion.py, runs go-tagged-tests.sh, which fetches
-#      nothing. A `.py` or `.jq` whose `#!` line names another interpreter is no such program,
-#      and is refused, as WHAT IT READS says. And in the heredocs rule 6 does read it reads a
+#      and the one `.jq` this tree writes there, and main's two citation scanners,
+#      ci_citations_code.go (the Go standard library alone) and ci_citations_code.ts, which read
+#      the files ci_citations.py hands them and fetch nothing (round 66). Measured at e6de0788,
+#      the one of them that runs a CI shell script, go-test-step-expansion.py, runs
+#      go-tagged-tests.sh, which fetches nothing. A `.py` or `.jq` whose `#!` line names another
+#      interpreter is no such program, and is refused, as WHAT IT READS says. And in the
+#      heredocs rule 6 does read it reads a
 #      `urlopen` alone, so another urllib call, such as `urllib.request.urlretrieve`, gets no
 #      floor either (dispatch://INFRA-1545, round 38). ci.yaml's `Check the package holds every
 #      row of .github/ci-images.yaml` is this tree's instance: its reads are `urlopen` calls inside
@@ -1490,22 +1497,23 @@ WORKFLOWS = Path(".github/workflows")
 ACTIONS = Path(".github/actions")
 SCRIPTS = Path(".github/scripts")
 # The files of .github/scripts/ that are no script, and that this check leaves unread where they
-# sit directly in that directory: its Python programs and its jq filter, but one whose `#!` line
-# names another interpreter than its own (OWN_INTERPRETERS), which is refused as the program of
-# that interpreter it is. Every other file under that directory that it does not read, but a
-# top-level harness, a harness's library and Python's bytecode for those programs, is refused
-# where it stands, and a word naming any file there it does not read but a harness, in a form
-# unread_named reads, is refused in a command anywhere but where this tree writes one (the
-# reading set, unread_uses; dispatch://INFRA-1545, round 38).
-SCRIPT_DATA = (".py", ".jq")
-# What a word naming such a file through a name built from data may end as: a top-level `.py` or
-# `.jq`, or the bytecode Python writes for one under __pycache__, the unread files the reading
-# set does not refuse where they stand (unread_named; dispatch://INFRA-1545, round 38).
+# sit directly in that directory: its Python programs, its jq filter, and the Go and TypeScript
+# scanners ci_citations.py runs with `go run` and `bun` (main's #5308), but a `.py` or a `.jq`
+# whose `#!` line names another interpreter than its own (OWN_INTERPRETERS), which is refused as
+# the program of that interpreter it is. Every other file under that directory that it does not
+# read, but a top-level harness, a harness's library and Python's bytecode for those programs, is
+# refused where it stands, and a word naming any file there it does not read but a harness, in a
+# form unread_named reads, is refused in a command anywhere but where this tree writes one (the
+# reading set, unread_uses; dispatch://INFRA-1545, rounds 38 and 66).
+SCRIPT_DATA = (".py", ".jq", ".go", ".ts")
+# What a word naming such a file through a name built from data may end as: a top-level `.py`,
+# `.jq`, `.go` or `.ts`, or the bytecode Python writes for one under __pycache__, the unread files
+# the reading set does not refuse where they stand (unread_named; dispatch://INFRA-1545, round 38).
 UNREAD_SUFFIXES = SCRIPT_DATA + (".pyc",)
-# What a `.py` or a `.jq` of .github/scripts/ runs under when it is run as a command word: the
-# interpreter its `#!` line must name (interpreter_of), or the shell runs it, or another program
-# does, with no rule reading what it holds (dispatch://INFRA-1545, round 38).
-OWN_INTERPRETERS = {".py": {"python3", "python"}, ".jq": {"jq"}}
+# What a `.py`, `.jq`, `.go` or `.ts` of .github/scripts/ runs under when it is run as a command
+# word: the interpreter its `#!` line must name (interpreter_of), or the shell runs it, or another
+# program does, with no rule reading what it holds (dispatch://INFRA-1545, rounds 38 and 66).
+OWN_INTERPRETERS = {".py": {"python3", "python"}, ".jq": {"jq"}, ".go": {"go"}, ".ts": {"bun"}}
 
 HELPER = ".github/scripts/ci-retry.sh"
 # This file, named by the problems it raises about its own lists.
@@ -5896,7 +5904,7 @@ for path in files:
     problem(path, 1,
             f"{path} is a file under .github/scripts/ this check does not read, whatever it "
             "holds: it reads the `.sh` scripts directly in .github/scripts/ and leaves that "
-            "directory's `.py`, `.jq` and `*.test.sh` files alone, so a file anywhere else "
+            "directory's `.py`, `.jq`, `.go`, `.ts` and `*.test.sh` files alone, so a file anywhere else "
             "there is neither read for its fetches, which no floor then holds, nor charged where "
             "a step runs or sources it. Move a shell script to .github/scripts/<name>.sh, its "
             "name lowercase letters, digits and `-` (a `*.test.sh` harness directly into "
@@ -7360,7 +7368,8 @@ UNREAD_USE = (
     "read as a script. Such a file appears in a command only where this tree writes one: as what "
     "`python3` or `python` runs (a `.py`), as the filter `jq -f` reads (a `.jq`), as a command "
     "word whose `#!` line names that interpreter, as an argument of `echo`, `printf` or `grep`, "
-    "whose text no shell runs, or as the pattern `pkill` matches against running processes. "
+    "whose text no shell runs, or of `gofmt`, which reads a Go file's text and runs none of it, "
+    "or as the pattern `pkill` matches against running processes. "
     "Anywhere else it may run as shell text, be read into a shell or be copied to a file that "
     "runs, and no rule reads what it holds. {cure}")
 UNREAD_CURE = ("Run a Python program with `python3 .github/scripts/<name>.py …` and read a jq "
@@ -7369,9 +7378,10 @@ UNREAD_CURE = ("Run a Python program with `python3 .github/scripts/<name>.py …
                "by that path; a `-test-lib.sh` there is a harness's library, which only a "
                "`.test.sh` harness sources (HARNESS_LIBRARY)")
 # The programs whose arguments may name such a file: `echo`, `printf` and `grep` print or search
-# text no shell runs, and `pkill` matches a pattern against running processes, which reads no
-# file (unread_place; dispatch://INFRA-1545, round 38).
-UNREAD_ARGUMENTS = NONCALL_COMMANDS | {"printf", "pkill"}
+# text no shell runs, `pkill` matches a pattern against running processes, which reads no file,
+# and `gofmt` reads a Go file's text and runs none of it, as lint's formatting step reads main's
+# Go scanner (unread_place; dispatch://INFRA-1545, rounds 38 and 66).
+UNREAD_ARGUMENTS = NONCALL_COMMANDS | {"printf", "pkill", "gofmt"}
 # unseen()'s three reasons, each written once, so that the reason a run is refused with and the
 # key its cure is found under cannot drift apart. A script named with no directory is found by
 # the shell that runs it: `sh x.sh` (dash) through the working directory alone, `bash x.sh`

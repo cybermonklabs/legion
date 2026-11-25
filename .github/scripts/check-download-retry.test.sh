@@ -14646,6 +14646,48 @@ check "exits 0" "$(is "$status" 0)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "refuses nothing" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 0)"
 
+# W17. Main's #5308 puts two programs of other languages directly in .github/scripts/, the Go and
+# TypeScript scanners ci_citations.py runs with `go run` and `bun`, and lint's formatting step
+# names the Go one as an argument of `gofmt` (dispatch://INFRA-1545, round 66). A top-level `.go`
+# and `.ts` pass where they stand, and so does `gofmt -l` given the `.go`, since gofmt reads a
+# file's text and runs none of it. A shell given either file runs it as shell text and is refused
+# at the run, and a `.go` whose first line runs a shell is refused at its line 1.
+echo "case: r66 W17 a top-level .go and .ts under .github/scripts pass, gofmt may name the .go, and a shell given either is refused"
+root=$(fixture r66-w17-scanners)
+printf '// a scanner\npackage main\n\nfunc main() {}\n' > "$root/.github/scripts/r66-scan.go"
+printf '// a scanner\nconsole.log("quiet");\n' > "$root/.github/scripts/r66-scan.ts"
+printf '#!/bin/sh\ncurl -fsSL -o b https://example.com/b\n' > "$root/.github/scripts/r66-shell.go"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the scanner's formatting
+        run: |
+          unformatted=$(gofmt -l .github/scripts/r66-scan.go)
+          test -z "$unformatted"
+      - name: Run the Go scanner with bash
+        run: bash .github/scripts/r66-scan.go
+      - name: Source the TypeScript scanner
+        run: . .github/scripts/r66-scan.ts
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "passes the top-level .go and .ts where they stand" \
+  "$(is "$(contains "$out" '::error file=.github/scripts/r66-scan\.\(go\|ts\),line=1::')" false)"
+check "passes gofmt given the .go" \
+  "$(is "$(contains "$out" "step 'Check the scanner's formatting'")" false)"
+check "refuses bash given the .go, at its run" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::step 'Run the Go scanner with bash' of job 'build' writes ..github/scripts/r66-scan.go. as an argument of .bash., and it names .github/scripts/r66-scan.go, a file under .github/scripts/ this check does not read as a script")"
+check "refuses . given the .ts, at its run" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=14::step 'Source the TypeScript scanner' of job 'build' writes ..github/scripts/r66-scan.ts. as an argument of .\.., and it names .github/scripts/r66-scan.ts, a file under .github/scripts/ this check does not read as a script")"
+check "refuses the .go whose first line runs a shell, at its line 1" \
+  "$(contains "$out" '::error file=.github/scripts/r66-shell.go,line=1::.github/scripts/r66-shell.go is a `.go` directly in .github/scripts/ whose first line, `#!/bin/sh`, runs `sh`, not `go`')"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+
 # W12. The two routes past that rule to shell text the gate does not read (dispatch://INFRA-1545,
 # round 37). A shell, `.` or `source` handed a top-level `.py` or `.jq` runs it as shell text,
 # and is refused at the run with the cure to run the program with `python3` or read the filter
