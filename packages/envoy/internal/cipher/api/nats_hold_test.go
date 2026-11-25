@@ -323,6 +323,7 @@ func (r *holdRig) count(query string, args ...any) int {
 // again above every logged gen, and a second restore is 409 row_exists. Fails if the gen check
 // goes: the stale PUT lands.
 func TestASecondHoldCanBeSetAfterARelease(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	rig.bootstrap()
 	rig.move(1, "prepare", "hold-1")
@@ -369,6 +370,7 @@ func TestASecondHoldCanBeSetAfterARelease(t *testing.T) {
 // listener entry's token is 403; GET lists the row. Fails if the held check goes: the PUT under
 // prepare lands.
 func TestTheCutoverRecordIsWrittenOnlyUnderItsHold(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	rig.bootstrap()
 	rig.move(1, "prepare", "hold-h")
@@ -407,6 +409,7 @@ func TestTheCutoverRecordIsWrittenOnlyUnderItsHold(t *testing.T) {
 // records PUT of kind cohort under the current prepare hold id is stored, and one naming another
 // hold id is 409 hold_mismatch and stores nothing.
 func TestThePrepareOperatorWritesTheCohort(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	rig.bootstrap()
 	rig.move(1, "prepare", "hold-p")
@@ -438,6 +441,7 @@ func TestThePrepareOperatorWritesTheCohort(t *testing.T) {
 // signed delete in nats_hold_record_deletes; a delete naming another hold id, or another kind,
 // deletes nothing and keeps nothing.
 func TestARecordMovesByItsGenAndTheAbortDeletesTheCohortAlone(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	rig.bootstrap()
 	rig.move(1, "prepare", "hold-a")
@@ -488,6 +492,7 @@ func TestARecordMovesByItsGenAndTheAbortDeletesTheCohortAlone(t *testing.T) {
 // older one; each deletes nothing. Signed over the current gen in prepare, it deletes the cohort.
 // Fails if the route deletes on the operator's token alone, or in held.
 func TestTheCohortDeleteIsSignedAndRunsOnlyInPrepare(t *testing.T) {
+	t.Parallel()
 	cohorts := func(rig *holdRig) int {
 		return rig.count(`select count(*) from nats_hold_records where kind = 'cohort'`)
 	}
@@ -544,6 +549,7 @@ func TestTheCohortDeleteIsSignedAndRunsOnlyInPrepare(t *testing.T) {
 // has no floor and serves the older record: the residual the hold's design states, asserted here
 // as such. Fails if the floor goes: the put-back journal is answered 200.
 func TestARecordBelowTheFloorReadsAsUnknown(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	op := rig.operator()
 	rig.bootstrap()
@@ -582,6 +588,7 @@ func TestARecordBelowTheFloorReadsAsUnknown(t *testing.T) {
 // signature), so the genuine record, put back, still reads afterwards. Fails if the floor rises from
 // what the GET read: the genuine record reads 409 below_floor.
 func TestAnUnverifiedRecordRaisesNoFloor(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	op := rig.operator()
 	rig.bootstrap()
@@ -612,6 +619,7 @@ func TestAnUnverifiedRecordRaisesNoFloor(t *testing.T) {
 // should be. Fails if the floor checks only the records present: the deleted journal reads as
 // absent.
 func TestASeenRecordDeletedOutsideTheRoutesReadsAsUnknown(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	op := rig.operator()
 	rig.bootstrap()
@@ -662,6 +670,7 @@ func (r *holdRig) holdTables() string {
 // and would land as the operator's. Fails if the routes accept any listed service: the listener's
 // PUT lands.
 func TestOnlyTheOperatorWritesTheHold(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	rig.bootstrap()
 	rig.move(1, "prepare", "hold-o")
@@ -733,6 +742,7 @@ func mustJSON(v any) string {
 // body signed afresh is stored. Fails if an answer drops its sig or signed_at, or the refusal its
 // restore_gen.
 func TestTheHoldRoutesCarryTheirSignatures(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	op := rig.operator()
 	rig.bootstrap()
@@ -825,6 +835,7 @@ func TestTheHoldRoutesCarryTheirSignatures(t *testing.T) {
 // one valid JSON object: json: cannot unmarshal number 1844674407370955161600123456789 into Go
 // struct field holdRecordBody.expected_gen of type int64`.
 func TestAHoldBodyRefusalNamesNoValue(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	op := rig.operator()
 	rig.bootstrap()

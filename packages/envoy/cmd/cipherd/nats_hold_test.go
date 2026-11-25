@@ -63,6 +63,7 @@ func holdKeyText(t *testing.T) (ed25519.PrivateKey, string) {
 // the REAL compiled binary refuses before it reaches its database. With the switch false, or with
 // both, nothing is refused. Fails if the refusal goes: the binary fails on its database instead.
 func TestTheStartRefusesTheHoldReadWithoutItsOperator(t *testing.T) {
+	t.Parallel()
 	const (
 		listener = "listener/example-hub/*=system:serviceaccount:example-ns:example-listener"
 		operator = "operator/-/*=system:serviceaccount:envoy-operator:envoy-operator"
@@ -139,6 +140,7 @@ func TestTheStartRefusesTheHoldReadWithoutItsOperator(t *testing.T) {
 // key. Fails if the broker refuses to start without a row: nothing listens and /restore cannot
 // answer.
 func TestTheBrokerStartsWithNoVerifiedRow(t *testing.T) {
+	t.Parallel()
 	const (
 		podAudience     = "example-broker-pod"
 		natsAudience    = "envoy-nats"

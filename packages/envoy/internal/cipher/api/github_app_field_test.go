@@ -275,6 +275,7 @@ type oldReleaseAnswer struct {
 // profile the profiles file grants the requester at once; a read-only body is cut to contents and
 // metadata at read, whatever the profile holds, and a write body gets the profile's permissions.
 func TestOldClientBodiesAreAnsweredAsBefore(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
 	s := newGitHubAppFieldServer(t, false)
 	logged := policytest.CaptureLog(t)
 	requesters := map[string]func() caller{
@@ -382,6 +383,7 @@ func TestOldClientBodiesAreAnsweredAsBefore(t *testing.T) {
 // on both routes, and nothing is written or minted. The release half runs on a --target grant of
 // that caller, since with the setting off no narrowed grant can be made at all.
 func TestOldClientBodiesAreRefusedWhenTheSettingIsOff(t *testing.T) {
+	t.Parallel()
 	s := newGitHubAppFieldServer(t, true)
 	refused := func(t *testing.T, what string, status int, raw []byte) {
 		t.Helper()
@@ -434,6 +436,7 @@ func TestOldClientBodiesAreRefusedWhenTheSettingIsOff(t *testing.T) {
 // of them is still served its own --target request, which the airlock holds. Nothing is minted
 // for a refused body.
 func TestTheOldBodyIsAnsweredForNoRequesterTheDeploymentDoesNotName(t *testing.T) {
+	t.Parallel()
 	s := newGitHubAppFieldServer(t, false)
 	other := s.servicePod(t, otherService, otherAccount, "claim-other", "")
 	stranger := s.box(t, "bob@example.com")
@@ -490,6 +493,7 @@ func TestTheOldBodyIsAnsweredForNoRequesterTheDeploymentDoesNotName(t *testing.T
 // Both are refused 400 GITHUB_APP_FIELD_REMOVED, nothing is released and nothing is minted, and
 // each grant still releases as it did, behind the airlock, afterwards.
 func TestAGitHubAppFieldReleasesNoTargetGrant(t *testing.T) {
+	t.Parallel()
 	s := newGitHubAppFieldServer(t, false)
 	pod := s.legionPod(t, "claim-no-steal", "")
 	automatic := s.requestTargeted(t, pod, "GITHUB_READ", "https://github.com/acme/widgets")
@@ -539,6 +543,7 @@ func TestAGitHubAppFieldReleasesNoTargetGrant(t *testing.T) {
 // read_only is refused, so a read-only run's grant never releases a write token. Nothing is
 // released or minted for either, and the release with its own field still answers.
 func TestANarrowedGrantIsReleasedOnlyThroughItsField(t *testing.T) {
+	t.Parallel()
 	s := newGitHubAppFieldServer(t, false)
 	pod := s.legionPod(t, "claim-one-way", "")
 	readOnly, write := oldClientBodies[0], oldClientBodies[1]
@@ -579,6 +584,7 @@ func TestANarrowedGrantIsReleasedOnlyThroughItsField(t *testing.T) {
 // past the airlock, and a narrowed request does not take a --target grant, whose release the
 // airlock holds. Each ask writes a grant of its own, and each releases as its own kind does.
 func TestNeitherFormReusesTheOthersGrant(t *testing.T) {
+	t.Parallel()
 	s := newGitHubAppFieldServer(t, false)
 	pod := s.legionPod(t, "claim-no-reuse", "")
 	body := oldClientBodies[1] // the write form, served as GITHUB_WRITE
@@ -622,6 +628,7 @@ func (s *gitHubAppFieldServer) requestTargeted(t *testing.T, c caller, name stri
 // acme/widgets is granted, and its release holds the name behind the airlock with the target it
 // signed, minted as the profile's bare token of acme's widgets, with the answer on and off.
 func TestATargetRequestIsTheSameWithTheFieldOnAndOff(t *testing.T) {
+	t.Parallel()
 	for _, off := range []bool{false, true} {
 		s := newGitHubAppFieldServer(t, off)
 		pod := s.legionPod(t, "claim-target", "")
@@ -657,6 +664,7 @@ func TestATargetRequestIsTheSameWithTheFieldOnAndOff(t *testing.T) {
 // may not narrow at all — a stored secret served by its own name, with no github block — is
 // refused outright: there is no fallback the release would not admit.
 func TestTheOldBodyKeepsTheProfilesRefusals(t *testing.T) {
+	t.Parallel()
 	s := newGitHubAppFieldServer(t, false)
 	// WORKER_TOKEN is named here so the one case below reaches the servability refusal rather
 	// than the secrets setting's, which TestAnAppTheDeploymentDoesNotNameIsRefused holds.
@@ -717,6 +725,7 @@ var shadowSessionBody = oldClientBody{
 // the same call with BROKER_GITHUB_APP_FIELD=off and the same call from a requester
 // BROKER_GITHUB_APP_FIELD_REQUESTERS does not name: each refused, with nothing minted.
 func TestTheApprovalShadowPodsCallIsAnswered(t *testing.T) {
+	t.Parallel()
 	s := newGitHubAppFieldServer(t, false)
 	pod := s.legionPod(t, "", "session-approval-shadow")
 	status, raw := s.create(t, pod, shadowSessionBody.name, shadowSessionBody.request)
@@ -771,6 +780,7 @@ func TestTheApprovalShadowPodsCallIsAnswered(t *testing.T) {
 // Actions run or a commit status runs as it did. A profile that holds fewer of them asks for
 // fewer, as that broker left out what the installation did not hold.
 func TestAReadOnlyBodyGetsTheReadSetOfTheEarlierBroker(t *testing.T) {
+	t.Parallel()
 	s := newGitHubAppFieldServer(t, false)
 	pod := s.legionPod(t, "claim-read-set", "")
 	status, raw := s.create(t, pod, shadowSessionBody.name, shadowSessionBody.request)
@@ -814,6 +824,7 @@ func TestAReadOnlyBodyGetsTheReadSetOfTheEarlierBroker(t *testing.T) {
 // written and nothing minted, though the profiles file grants it that App's read profile at once
 // — which its own --target request still gets, behind the airlock.
 func TestAnAppTheDeploymentDoesNotNameIsRefused(t *testing.T) {
+	t.Parallel()
 	s := newGitHubAppFieldServer(t, false)
 	s.machine.GitHubAppFieldSecrets = "GITHUB_APP_ADA"
 	pod := s.legionPod(t, "claim-unnamed-app", "")
@@ -839,6 +850,7 @@ func TestAnAppTheDeploymentDoesNotNameIsRefused(t *testing.T) {
 // and the request is refused, which is the case the choice exists to serve. The pod's old body is
 // granted the read profile of that App and released, narrowed, as any other is.
 func TestAnAppServedOnlyByOtherNamesWithAProjectTagIsAnswered(t *testing.T) {
+	t.Parallel()
 	access := &projectaccesstest.Swappable{}
 	access.Serve(projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
 		"PUB": {Visibility: "public", Owner: testApprover},
@@ -896,6 +908,7 @@ func TestAnAppServedOnlyByOtherNamesWithAProjectTagIsAnswered(t *testing.T) {
 // refused 400 GITHUB_APP_FIELD_REMOVED naming the setting once it is not, with nothing released
 // and nothing minted, and releases again when the App is listed again.
 func TestTakingAnAppOutOfTheListRefusesItsReleases(t *testing.T) {
+	t.Parallel()
 	s := newGitHubAppFieldServer(t, false)
 	pod := s.legionPod(t, "claim-rollback", "")
 	body := bodyOf(t, "pod read-only")
