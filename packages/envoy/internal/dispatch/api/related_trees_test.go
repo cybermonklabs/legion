@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -77,7 +78,7 @@ func relatedTreesFixture(t *testing.T, asking, other string) (http.Handler, stri
 	}
 	var handler http.Handler
 	var database *store.Store
-	handler, database, _ = newTestServer(t, testServerOptions{embedder: embedder, relatedBound: meaningVerdictBound(t)})
+	handler, database, _ = newTestServer(t, testServerOptions{embedder: embedder, clock: clocktest.Held()})
 
 	createSuggestionProject(t, handler, asking)
 	host := createSearchIssue(t, handler, asking, "Our own settled questions", "Questions this project settled itself.")

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // metadataServer stands in for a Google machine's metadata server (googleidentity.MetadataHostVar
@@ -190,6 +192,8 @@ func TestAGoogleIdentityTokenTheListenerRefusedIsMintedAgainAndMintsAreShared(t 
 	t.Run("concurrent callers share one mint, and a caller whose context ends stops waiting", func(t *testing.T) {
 		token := accountToken(t, "dispatch@example-project.iam.gserviceaccount.com", time.Now().Add(time.Hour))
 		release := make(chan struct{})
+		var releasing sync.Once
+		open := func() { releasing.Do(func() { close(release) }) }
 		var minted atomic.Int32
 		metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			minted.Add(1)
@@ -198,11 +202,23 @@ func TestAGoogleIdentityTokenTheListenerRefusedIsMintedAgainAndMintsAreShared(t 
 			_, _ = w.Write([]byte(token))
 		}))
 		defer metadata.Close()
+		// Deferred after the server's Close, so it runs first: Close waits for the handler the
+		// mint holds, which returns once release closes.
+		defer open()
 		t.Setenv(googleidentity.MetadataHostVar, strings.TrimPrefix(metadata.URL, "http://"))
 		identity := &googleIdentity{audience: "envoy-listener"}
-		short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		// The first caller's context ends at the moment the row chooses: once its mint has reached
+		// the metadata server, so the caller is waiting on a mint in flight.
+		short, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		if _, err := identity.token(short, time.Now()); !errors.Is(err, ErrAccountToken) {
+		shortAnswer := make(chan error, 1)
+		go func() {
+			_, err := identity.token(short, time.Now())
+			shortAnswer <- err
+		}()
+		testwait.Eventually(t, "the first caller's mint to reach the metadata server", func() bool { return minted.Load() == 1 })
+		cancel()
+		if err := testwait.Receive(t, "the caller whose context ended during the mint to stop waiting", shortAnswer); !errors.Is(err, ErrAccountToken) {
 			t.Fatalf("a caller whose context ended during the mint = %v, want ErrAccountToken", err)
 		}
 		results := make(chan string, 3)
@@ -215,10 +231,10 @@ func TestAGoogleIdentityTokenTheListenerRefusedIsMintedAgainAndMintsAreShared(t 
 				results <- got
 			}()
 		}
-		time.Sleep(100 * time.Millisecond)
-		close(release)
-		for range 3 {
-			if got := <-results; got != token {
+		testwait.Span(t, 100*time.Millisecond, sharedMintWhy)
+		open()
+		for caller := range 3 {
+			if got := testwait.Receive(t, fmt.Sprintf("caller %d of the shared mint to answer once the mint is released", caller+1), results); got != token {
 				t.Fatalf("a caller waiting on the shared mint got %q, want the minted token", got)
 			}
 		}
@@ -227,3 +243,10 @@ func TestAGoogleIdentityTokenTheListenerRefusedIsMintedAgainAndMintsAreShared(t 
 		}
 	})
 }
+
+// sharedMintWhy is why the shared-mint row holds a span before it releases the mint: the three
+// callers must be waiting on the mint in flight, so that one which minted on its own would ask the
+// metadata server a second time.
+const sharedMintWhy = "a caller waiting on the mint in flight leaves no state to read: googleIdentity counts no waiters " +
+	"on its mint, the mint does real HTTP I/O to the metadata stand-in, which synctest cannot hold, and no later " +
+	"action is ordered behind a caller's wait"

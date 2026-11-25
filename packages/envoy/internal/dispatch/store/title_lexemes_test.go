@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/searchtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // 0088-0089 on a database that already holds issues: every stored title gets the lexemes the
@@ -150,7 +151,7 @@ func TestMigrate0089WaitsForAReparentWithoutDeadlockingIt(t *testing.T) {
 	if err := reparent.Commit(ctx); err != nil {
 		t.Fatalf("commit the reparent: %v", err)
 	}
-	if err := <-migrated; err != nil {
+	if err := testwait.Receive(t, "migrate 0089 to return once the reparent committed", migrated); err != nil {
 		t.Fatalf("0089 failed while a reparent held an issue's row: %v", err)
 	}
 }

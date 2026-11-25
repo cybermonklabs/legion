@@ -6,11 +6,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A session reply subject is <inbox>.<session id>.<token>, the token 26 characters of
@@ -42,9 +42,10 @@ func TestASessionReplySubjectNamesItsSessionAndARandomToken(t *testing.T) {
 // inbox (_INBOX.<id>, which the listener's connection probe asked on before), not nats.go's request
 // inbox (_INBOX.<id>.<token>, which Dispatch's agent stream replay asked on before) or the relay's
 // old counter token (_INBOX.<id>.<n>, the same shape), and not the session's id with nothing after
-// it. The server enforces it: a watcher on _INBOX.> hears exactly the admitted publish, and the
-// session's connection is told of every refusal, which is the control that the refusals are the
-// grant's and the watcher is not deaf.
+// it. The server enforces it: a watcher on _INBOX.> hears exactly the admitted publishes, a second
+// admitted one sent after the refused ones among them, and the session's connection is told of
+// every refusal, which is the control that the refusals are the grant's and the watcher is not
+// deaf.
 func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 	t.Parallel()
 	seed, public := testnats.User(t)
@@ -56,7 +57,7 @@ func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 }
 `, public, bus.SessionReplies("ses_one"))
 	_, uri := testnats.StartConfig(t, config, nil, false)
-	watcher, err := natsgo.Connect(uri, natsgo.UserInfo("watcher", "watcher"))
+	watcher, err := testnats.AwaitConnectSeed(t, uri, "", natsgo.UserInfo("watcher", "watcher"))
 	if err != nil {
 		t.Fatalf("connect the watcher: %v", err)
 	}
@@ -65,12 +66,12 @@ func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe the watcher: %v", err)
 	}
-	if err := watcher.Flush(); err != nil {
+	if err := watcher.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the watcher: %v", err)
 	}
 	var mu sync.Mutex
 	var refused []string
-	session, err := testnats.ConnectSeed(t, uri, seed, natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) {
+	session, err := testnats.AwaitConnectSeed(t, uri, seed, natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) {
 		mu.Lock()
 		defer mu.Unlock()
 		refused = append(refused, err.Error())
@@ -89,23 +90,26 @@ func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 		inbox + ".1",
 		inbox + ".ses_one",
 	}
-	for _, subject := range append([]string{own}, others...) {
+	// A second reply subject of the session's own, published after the others: one connection's
+	// publishes reach a subscriber in the order they were sent, so the watcher hearing it next is
+	// the proof that none of the others reached it before it.
+	marker := bus.SessionReplySubject(inbox, "ses_one")
+	for _, subject := range append(append([]string{own}, others...), marker) {
 		if err := session.Publish(subject, []byte("done")); err != nil {
 			t.Fatalf("publish to %s: %v", subject, err)
 		}
 	}
-	if err := session.Flush(); err != nil {
+	if err := session.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the session: %v", err)
 	}
-	msg, err := heard.NextMsg(5 * time.Second)
-	if err != nil || msg.Subject != own {
-		t.Fatalf("the watcher heard %v (%v), want the session's own reply subject %s", msg, err, own)
+	for _, want := range []string{own, marker} {
+		msg, err := heard.NextMsgWithContext(testwait.Context(t))
+		if err != nil || msg.Subject != want {
+			t.Fatalf("the watcher heard %v (%v), want the session's own reply subject %s, and no refused subject before the marker sent after them", msg, err, want)
+		}
 	}
-	if extra, err := heard.NextMsg(300 * time.Millisecond); err == nil {
-		t.Fatalf("the watcher heard a publish to %s, which the grant should refuse", extra.Subject)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	type refusals struct{ Got, Missing []string }
+	testwait.Until(t, fmt.Sprintf("exactly one refusal for each of %v", others), func() (refusals, bool) {
 		mu.Lock()
 		got := slices.Clone(refused)
 		mu.Unlock()
@@ -114,12 +118,6 @@ func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 				return strings.Contains(text, `Permissions Violation for Publish to "`+subject+`"`)
 			})
 		})
-		if len(missing) == 0 && len(got) == len(others) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server refused %v; want exactly one refusal for each of %v (missing %v)", got, others, missing)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return refusals{Got: got, Missing: missing}, len(missing) == 0 && len(got) == len(others)
+	})
 }

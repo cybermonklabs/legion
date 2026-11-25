@@ -260,9 +260,9 @@ func TestNearCopyRefusalReplay(t *testing.T) {
 
 	ctx := context.Background()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
-	// The related-item check is not what is being measured, and it runs on every create: give it
-	// an allowance already spent, so each create answers that it was not made and the replay pays
-	// only for the gate.
+	// The related-item check is not what is being measured, and it runs on every create: spend
+	// its allowance before it starts, so each create answers that it was not made without a read
+	// of its own and the replay pays only for the gate.
 	served.suggestionTimeout = spentRelatedAllowance
 	served.duplicateBound = nearCopyGateBound
 	srv := directServer(deps)

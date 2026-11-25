@@ -3,12 +3,17 @@ package api
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -66,9 +71,14 @@ func recordedPool(t *testing.T, database *store.Store) (*store.Pool, *storetest.
 }
 
 // sweepHorizon is one runner's events.Horizon, one per process as a server keeps one
-// (api.Background's EventHorizon), observing through that process's own pool.
+// (api.Background's EventHorizon), observing through that process's own pool. It warns of a stall
+// at horizontest.StallWarning, as a test server's horizon does, to the test's keeper of the pool's
+// database, so a wait on what its passes judge names the holder (horizontest.PollInProcess).
 func sweepHorizon(pool *store.Pool) *events.Horizon {
-	return events.NewHorizon(pool)
+	horizon := events.NewHorizon(pool)
+	horizon.SetStallWarning(horizontest.StallWarning, horizontest.StallWarning)
+	horizon.SetLogger(horizontest.Logger(pool.Config().ConnConfig.Database))
+	return horizon
 }
 
 // runSweep runs run on a goroutine until the test ends, and fails the test if it does not return
@@ -118,17 +128,18 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 	}
 
 	runSweep(t, func(ctx context.Context) {
-		runSuggestionOutcomeSweep(ctx, firstPool, sweepHorizon(firstPool), nil, sweepRunnerSchedule)
+		runSuggestionOutcomeSweep(ctx, clock.Real(), firstPool, sweepHorizon(firstPool), nil, sweepRunnerSchedule)
 	})
 	runSweep(t, func(ctx context.Context) {
-		runSuggestionOutcomeSweep(ctx, secondPool, sweepHorizon(secondPool), nil, sweepRunnerSchedule)
+		runSuggestionOutcomeSweep(ctx, clock.Real(), secondPool, sweepHorizon(secondPool), nil, sweepRunnerSchedule)
 	})
 	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the cursor: %v", err)
 	}
 
-	waitUntil(t, "one runner to judge the page and the other to read the cursor it advanced", func() bool {
+	// The passes judge a page only once horizon.Safe proves it, so the wait is the horizon's.
+	horizontest.PollInProcess(t, "one runner to judge the page and the other to read the cursor it advanced", database, func() bool {
 		return countStatements(recorded(), firstPassRead) == 1 && countStatements(recorded(), laterPageRead) >= 1
 	})
 
@@ -154,26 +165,86 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 
 // One runner, nothing else on the database: every wake must earn a pass, each one gap after the
 // one before at the soonest, and no wake earns more than one. A pass is counted by the cursor row
-// it holds, one read per pass, since the loop takes no lease and logs nothing of its own.
+// it holds, one read per pass, since the loop takes no lease and logs nothing of its own. The loop
+// runs on a fake clock: it holds each pass a wake earns to its gap there, and the row moves the
+// clock to it. Once the last pass has returned, the loop decides what to arm next and reports that
+// wait (suggestionSchedule.waiting, duty.WokenLoop.Waiting) before it waits: with no wake pending,
+// the report is a rest, and the loop holds no timer on its clock, its own record that nothing it
+// holds can start another pass.
 func TestALoneSuggestionSweepRunnerPassesOnEveryWake(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
-	pool, statements := recordedPool(t, database)
+	tracer := &sweepPassTracer{}
+	pool := storetest.Traced(t, database.Pool, tracer, nil)
 	wake := make(chan struct{}, 1)
+	fake := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
+	schedule, waits := sweepRunnerSchedule, &testwait.Stream[sweepWait]{}
+	schedule.waiting = func(at time.Time, ok bool) {
+		waits.Add(sweepWait{at: at, armed: ok, passes: tracer.passes()})
+	}
 	runSweep(t, func(ctx context.Context) {
-		runSuggestionOutcomeSweep(ctx, pool, sweepHorizon(pool), wake, sweepRunnerSchedule)
+		runSuggestionOutcomeSweep(ctx, fake, pool, sweepHorizon(pool), wake, schedule)
 	})
-	passes := func() int { return countStatements(statements.Statements(), cursorHeld) }
 
 	const wakes = 5
 	for woken := 0; woken <= wakes; woken++ {
-		waitUntil(t, "the pass the last wake earned", func() bool { return passes() == woken+1 })
+		testwait.Until(t, "the pass the last wake earned, moving the loop's clock to the gap it holds", func() ([]time.Time, bool) {
+			if tracer.passes() == woken+1 {
+				return nil, true
+			}
+			armed := fake.Armed()
+			if len(armed) > 0 {
+				fake.Set(armed[0])
+			}
+			return armed, false
+		})
 		if woken < wakes {
 			wake <- struct{}{}
 		}
 	}
-	time.Sleep(4 * sweepRunnerSchedule.minGap)
-	if ran := passes(); ran != wakes+1 {
-		t.Fatalf("a lone runner made %d passes for its start and %d wakes; want %d", ran, wakes, wakes+1)
+	// The loop reports a wait only between passes, so the first report that counts every pass is
+	// the one the last pass's return led to.
+	last := testwait.Next(t, "the loop's report of its wait after its last pass", waits, func(w sweepWait) bool {
+		return w.passes == wakes+1
+	})
+	if last.armed {
+		t.Fatalf("a lone runner armed its timer for %s once its last pass had returned, with no wake pending; want a rest", last.at)
 	}
+	if armed, ran := fake.Armed(), tracer.passes(); ran != wakes+1 || len(armed) != 0 {
+		t.Fatalf("a lone runner made %d passes for its start and %d wakes and holds timers for %v once it rested; want %d and none",
+			ran, wakes, armed, wakes+1)
+	}
+}
+
+// sweepWait is one wait a suggestion sweep's loop reported (suggestionSchedule.waiting): the moment
+// its timer is armed for, false for armed when it rests, and the passes its tracer had counted.
+type sweepWait struct {
+	at     time.Time
+	armed  bool
+	passes int
+}
+
+// sweepPassTracer counts a suggestion sweep's passes on the pool it traces (storetest.Traced): one
+// begun for each statement that holds the cursor row (cursorHeld). That a pass has ended is the
+// loop's own report of the wait after it (suggestionSchedule.waiting).
+type sweepPassTracer struct {
+	mu    sync.Mutex
+	begun int
+}
+
+func (p *sweepPassTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, cursorHeld) {
+		p.mu.Lock()
+		p.begun++
+		p.mu.Unlock()
+	}
+	return ctx
+}
+
+func (p *sweepPassTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (p *sweepPassTracer) passes() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.begun
 }

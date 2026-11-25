@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -36,6 +38,17 @@ const answerSurvivesSpec = "Context\n\n" +
 // their urgency and their multiple being the same.
 const answerSurvivesComposedOpener = `:::ask{urgency="med" multiple="false"}`
 
+// answerSurvivesSettle is the settlement period of the fixture's document service
+// (docs.Deps.Settle): its room settles that long after a write, on the fixture's clock.
+const answerSurvivesSettle = 20 * time.Millisecond
+
+// answerSurvivesQuietBound is how far ahead of the fixture's clock no timer may stand once await
+// has come to rest (requireNoSettlementArmed): a settlement armed past documentSettleReach, which
+// await does not run, would come after the case measured. The only other timers the document
+// service arms in these cases are the compaction queue's checks, a second ahead at the least
+// (compactBackoff) and two minutes for a room's first (compactFirstCheck).
+const answerSurvivesQuietBound = time.Second
+
 // An agent that composes a document's body again writes each ask it holds from the question
 // alone: no id, since a body written rather than rendered names none, and none of the attributes
 // the server keeps, since the agent cannot know the answer a person gave. Driven over the routes
@@ -49,10 +62,13 @@ func TestAnAgentsComposedUploadLeavesTheAnsweredAskAndOpensNoSecondInboxItem(t *
 	before := fixture.answered
 
 	fixture.upload(t, composedBody(t, before.text))
-	// A second ask row is opened by a settlement, and await waits for the settlement itself (the
-	// document owes none), so the measurement that says none was opened follows every settlement
-	// the upload owed.
-	state := fixture.await(t, "the settlement of the body the agent composed", nil)
+	fixture.await(t, "the settlement of the body the agent composed", func(state answerSurvivesState) bool {
+		return state.settled()
+	})
+	// A second ask row is opened by a settlement of its own: await has run every settlement armed
+	// within its reach, and none is armed further out, so the measurement comes after them all.
+	fixture.requireNoSettlementArmed(t)
+	state := fixture.measure(t)
 
 	// Each measurement is reported, so a run against a server that gives the block a fresh id
 	// names that id, the rows it opened and the item it put in the person's Inbox, rather than
@@ -97,10 +113,11 @@ func TestAnUploadThatDropsAnAskBlockStillRetractsItsAsk(t *testing.T) {
 	fixture := seedAnswerSurvives(t)
 
 	fixture.upload(t, composedBody(t, withoutAskBlock(t, fixture.answered.text, "rollout")))
-	// The retraction is written in the settlement's own transaction, which also clears the
-	// document's pending settlement, so once await has seen the document owe none the retraction
-	// is there to read.
-	state := fixture.await(t, "the settlement of the body the agent composed", nil)
+	fixture.await(t, "the settlement of the body the agent composed", func(state answerSurvivesState) bool {
+		return state.settled()
+	})
+	fixture.requireNoSettlementArmed(t)
+	state := fixture.measure(t)
 
 	// Each measurement is reported, as above; the two readings the others stand on are fatal.
 	if slices.Contains(state.blocks, "rollout") {
@@ -130,8 +147,9 @@ func TestAnUploadThatDropsAnAskBlockStillRetractsItsAsk(t *testing.T) {
 // first of them answered by a person.
 type answerSurvivesFixture struct {
 	handler http.Handler
-	// database is the server's store, where await reads whether the document owes a settlement.
-	database    *store.Store
+	// settles is the document service's clock (answerSurvivesHandler), which moves only as await
+	// moves it: a settlement armed on it runs once it is moved there.
+	settles     *clocktest.Fake
 	issueKey    string
 	artifactID  string
 	answeredAsk string
@@ -141,24 +159,45 @@ type answerSurvivesFixture struct {
 	answered answerSurvivesState
 }
 
+// answerSurvivesHandler is blockAskHandler's server with its document service on settles: the
+// room's settle timer runs on that clock (docs.Deps.Clock), so what stands armed on it says
+// whether a settlement is still to come. Shutdown's drain budget runs on settles too, which nothing
+// moves once the test ends, so the cleanup shuts the service down on the shared wait's context: a
+// drain that cannot finish fails the test by name there.
+func answerSurvivesHandler(t *testing.T, settles *clocktest.Fake) http.Handler {
+	t.Helper()
+	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
+		documentService := docs.New(docs.Deps{
+			Store: database, Identity: headerIdentity(database), Settle: answerSurvivesSettle, Clock: settles,
+		})
+		t.Cleanup(func() {
+			if err := docstest.Shutdown(t, testwait.Context(t), documentService); err != nil {
+				t.Errorf("shutdown document service: %v", err)
+			}
+		})
+		return documentService
+	})
+	return handler
+}
+
 // seedAnswerSurvives opens an issue on answerSurvivesSpec, lets the settlement index both of its
 // ask blocks, and answers the first of them as alice through the route the dashboard answers
 // with. It leaves the issue with two ask rows, one answered and one open, and alice's Inbox
 // holding the open one alone.
 func seedAnswerSurvives(t *testing.T) answerSurvivesFixture {
 	t.Helper()
-	handler, database := blockAskHandler(t)
+	settles := clocktest.New(time.Now())
+	handler := answerSurvivesHandler(t, settles)
 	issue := createInteractionIssue(t, handler, "TEST", "A body the agent composed", answerSurvivesSpec)
+	fixture := answerSurvivesFixture{handler: handler, settles: settles, issueKey: issue.Key, artifactID: issue.PrimaryArtifactID}
+	// The settlement that indexes the spec's ask blocks runs on settles, which this wait moves.
+	fixture.await(t, "both of the spec's ask blocks in alice's Inbox", func(state answerSurvivesState) bool {
+		return state.inboxHoldsBlocks("transport", "rollout")
+	})
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "transport", answerSurvivesQuestion)
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "rollout", answerSurvivesRemovedQuestion)
-	fixture := answerSurvivesFixture{
-		handler:     handler,
-		database:    database,
-		issueKey:    issue.Key,
-		artifactID:  issue.PrimaryArtifactID,
-		answeredAsk: blockAskID(t, handler, issue.Key, "transport"),
-		removedAsk:  blockAskID(t, handler, issue.Key, "rollout"),
-	}
+	fixture.answeredAsk = blockAskID(t, handler, issue.Key, "transport")
+	fixture.removedAsk = blockAskID(t, handler, issue.Key, "rollout")
 	answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+fixture.answeredAsk+"/answer", map[string]any{
 		"selected": []string{"REST"},
 	}, "alice")
@@ -166,7 +205,7 @@ func seedAnswerSurvives(t *testing.T) answerSurvivesFixture {
 		t.Fatalf("answer the ask as the person: status=%d body=%s", answered.Code, answered.Body.String())
 	}
 	fixture.answered = fixture.await(t, "the person's answer written onto the block she answered", func(state answerSurvivesState) bool {
-		return strings.Contains(state.text, `state="answered" answered_by="alice"`)
+		return state.settled() && strings.Contains(state.text, `state="answered" answered_by="alice"`)
 	})
 	seeded := []string{fixture.answeredAsk, fixture.removedAsk}
 	slices.Sort(seeded)
@@ -194,19 +233,32 @@ func (f answerSurvivesFixture) upload(t *testing.T, content string) {
 	}
 }
 
-// await polls until the document owes no settlement and, when holds is given, holds is true of
-// what the issue and its document read, and answers that state, so a case waits for the
-// settlement itself rather than for a duration or for a rendering that precedes it. The pending
-// settlement is read before the state, so a settlement that commits between the two reads is in
-// the state answered. A settlement that never runs fails the case with everything the wait read.
-// Its one bound is the test binary's deadline (testwait.UntilPolling).
+// await waits until holds is true of what the issue and its document read and the document service
+// has no settlement armed within documentSettleReach, and answers that state, so a case waits for
+// its settlements rather than for a duration (awaitSettledOn, which moves settles through each
+// settlement armed within that reach as time passing would). A settlement that never reaches holds
+// fails the case with everything the wait read.
 func (f answerSurvivesFixture) await(t *testing.T, what string, holds func(answerSurvivesState) bool) answerSurvivesState {
 	t.Helper()
-	return testwait.UntilPolling(t, 20*time.Millisecond, "the server to show "+what+", with no settlement owed (what it read last)", func() (answerSurvivesState, bool) {
-		owed := documentOwesSettlement(t, f.database, f.artifactID)
+	return awaitSettledOn(t, "the server to show "+what, func() (answerSurvivesState, bool) {
 		state := f.measure(t)
-		return state, !owed && (holds == nil || holds(state))
-	})
+		return state, holds(state)
+	}, f.settles)
+}
+
+// requireNoSettlementArmed fails the case when a deadline within answerSurvivesQuietBound stands
+// armed on settles once await has come to rest: a settlement past await's reach, which would come
+// after the case measured and could open a second ask row then. settles moves only as await moves
+// it, so every settlement armed and not yet run is still armed on it.
+func (f answerSurvivesFixture) requireNoSettlementArmed(t *testing.T) {
+	t.Helper()
+	now, armed := f.settles.Now(), f.settles.Armed()
+	for _, at := range armed {
+		if wait := at.Sub(now); wait < answerSurvivesQuietBound {
+			t.Fatalf("a timer stands armed %s ahead on the document service's clock after the settlements the case awaited: "+
+				"a settlement still to come; want none within %s (every deadline armed: %v)", wait, answerSurvivesQuietBound, armed)
+		}
+	}
 }
 
 // measure reads what every assertion above is made of: every ask row of the issue, the ask block
@@ -254,6 +306,17 @@ func (state answerSurvivesState) String() string {
 		askRowLines(state.rows), state.blocks, askRowLines(state.inbox), state.text)
 }
 
+// settled reports whether the settlement has run over the body the agent uploaded: it writes each
+// ask block's state onto that block's opener, and a body an agent composes carries it on none.
+func (state answerSurvivesState) settled() bool {
+	for _, line := range strings.Split(state.text, "\n") {
+		if strings.HasPrefix(line, ":::ask{") && !strings.Contains(line, ` state="`) {
+			return false
+		}
+	}
+	return true
+}
+
 // row is the ask row of the issue with this id, and whether the issue holds one.
 func (state answerSurvivesState) row(id string) (model.Ask, bool) {
 	for _, ask := range state.rows {
@@ -262,6 +325,16 @@ func (state answerSurvivesState) row(id string) (model.Ask, bool) {
 		}
 	}
 	return model.Ask{}, false
+}
+
+// inboxHoldsBlocks reports whether alice's Inbox shows an ask indexed from each of blockIDs.
+func (state answerSurvivesState) inboxHoldsBlocks(blockIDs ...string) bool {
+	for _, id := range blockIDs {
+		if !slices.ContainsFunc(state.inbox, func(ask model.Ask) bool { return ask.BlockID != nil && *ask.BlockID == id }) {
+			return false
+		}
+	}
+	return true
 }
 
 // composedBody is markdown as an agent composing the document's body writes it again: every ask

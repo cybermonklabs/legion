@@ -37,6 +37,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // defaultTimeout is the window every broker call gets, matching envoy.Client's default.
@@ -59,6 +60,10 @@ type Client struct {
 	// answers from. A Client is built once per process and shared, never copied, which is what
 	// lets it hold a mutex.
 	deviceGrant deviceGrant
+	// clock reads the moment deviceGrant's window (deviceGrantTTL) is kept from and judged at; nil
+	// is the real clock. A test hands a clocktest.Fake (WithClock), so the window lapses when the
+	// test moves the fake and not while its asks run.
+	clock clock.Clock
 }
 
 // Option configures a Client.
@@ -67,6 +72,20 @@ type Option func(*Client)
 // WithTimeout replaces the window every broker call gets.
 func WithTimeout(timeout time.Duration) Option {
 	return func(c *Client) { c.HTTP.Timeout = timeout }
+}
+
+// WithClock sets the clock the metadata read's window (deviceGrantTTL) runs on; nil is the real
+// clock, which a Client has unless this names another.
+func WithClock(c clock.Clock) Option {
+	return func(client *Client) { client.clock = c }
+}
+
+// now is the moment on the client's clock, the real clock's when it has none.
+func (c *Client) now() time.Time {
+	if c.clock == nil {
+		return time.Now()
+	}
+	return c.clock.Now()
 }
 
 // New returns a client for the secrets broker's named-caller API. tokenFile names the file
@@ -336,20 +355,20 @@ type deviceGrant struct {
 // (defaultTimeout): the answer is every caller's, so one browser going away must not cancel the
 // read the others are waiting on and leave them each to start another.
 func (c *Client) ServesDeviceGrant(ctx context.Context) bool {
-	if served, fresh := c.deviceGrant.fresh(); fresh {
+	if served, fresh := c.deviceGrant.fresh(c.now()); fresh {
 		return served
 	}
 	answer, err, _ := c.deviceGrant.flight.Do(metadataPath, func() (any, error) {
 		// The flight's own look at what is remembered: a caller that waited out this flight's
 		// predecessor would otherwise read the broker again for an answer just read.
-		if served, fresh := c.deviceGrant.fresh(); fresh {
+		if served, fresh := c.deviceGrant.fresh(c.now()); fresh {
 			return served, nil
 		}
 		served, err := c.readDeviceGrant(context.WithoutCancel(ctx))
 		if err != nil {
 			return false, err
 		}
-		c.deviceGrant.keep(served)
+		c.deviceGrant.keep(served, c.now())
 		return served, nil
 	})
 	if err != nil {
@@ -362,12 +381,12 @@ func (c *Client) ServesDeviceGrant(ctx context.Context) bool {
 	return answer.(bool)
 }
 
-// fresh is the remembered answer while it is younger than deviceGrantTTL, and false once it is
-// not or where there is none.
-func (d *deviceGrant) fresh() (served, fresh bool) {
+// fresh is the remembered answer while it is younger than deviceGrantTTL at now, and false once
+// it is not or where there is none.
+func (d *deviceGrant) fresh(now time.Time) (served, fresh bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.served, d.read && time.Now().Before(d.until)
+	return d.served, d.read && now.Before(d.until)
 }
 
 // last is the remembered answer however old it is, and read reports whether there is one.
@@ -377,11 +396,11 @@ func (d *deviceGrant) last() (served, read bool) {
 	return d.served, d.read
 }
 
-// keep remembers what a read that succeeded said, for deviceGrantTTL.
-func (d *deviceGrant) keep(served bool) {
+// keep remembers what a read that succeeded at now said, for deviceGrantTTL.
+func (d *deviceGrant) keep(served bool, now time.Time) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.read, d.served, d.until = true, served, time.Now().Add(deviceGrantTTL)
+	d.read, d.served, d.until = true, served, now.Add(deviceGrantTTL)
 }
 
 // readDeviceGrant reads the broker's metadata and answers whether grant_types_supported names the

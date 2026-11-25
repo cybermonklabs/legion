@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -51,7 +52,7 @@ func useNewerAskManifest(t *testing.T) {
 func newerBuildDocuments(t *testing.T, database *store.Store, settle time.Duration) (http.Handler, *docs.Service) {
 	t.Helper()
 	service := docs.New(docs.Deps{Store: database, Settle: settle})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	deps, err := NewDeps(DepsInput{
 		Store:       database,
 		Identity:    headerIdentity(database),
@@ -63,7 +64,7 @@ func newerBuildDocuments(t *testing.T, database *store.Store, settle time.Durati
 		t.Fatalf("new API dependencies of the newer build: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	registerJoined(t, mux, deps)
 	return mux, service
 }
 
@@ -92,7 +93,7 @@ func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReads
 
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
 	// The settlement's log line, read as it lands; the last reading is the whole log so far.
-	refusal := testwait.UntilPolling(t, 10*time.Millisecond, "a settlement to meet the approved version's attribute", func() (string, bool) {
+	refusal := testwait.Until(t, "a settlement to meet the approved version's attribute", func() (string, bool) {
 		log := logged.String()
 		for line := range strings.Lines(log) {
 			if strings.Contains(line, newerAskAttribute) {

@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -257,8 +256,9 @@ func TestAVersionCommittedWhileTheFillRunsIsNotReplacedByTheOlderOneItRead(t *te
 	// later by default here, and a settlement that comes due after that write finds the stored
 	// latest version is not the one its room holds and writes the room's text as a further
 	// version (docs' writeVersionTx), which 20261101182454's trigger puts in document_search in
-	// place of the row this test reads. An hour holds that settlement past the test instead.
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	// place of the row this test reads. A day (stagedAhead) holds that settlement past the test
+	// instead.
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "RACE", "Range survey", "The herd crosses the plateau in spring.")
 	undoDocumentSearch(t, database)
 	notes := uploadIssueDocument(t, handler, issue.Key, "field-notes.md", "# Field notes\n\nQuagga sightings in the north.\n")
@@ -308,16 +308,16 @@ func TestAVersionCommittedWhileTheFillRunsIsNotReplacedByTheOlderOneItRead(t *te
 // awaitFillQueued waits for the fill's batch statement to queue behind a lock, which is what
 // says the batch has read artifact_versions and reached its own insert. The statement's text
 // names it, so no other session queued on the same lock is taken for it. Its one bound is the
-// test binary's deadline (testwait.UntilPolling): a batch a loaded machine starts late still ends
+// test binary's deadline (testwait.Eventually): a batch a loaded machine starts late still ends
 // the wait.
 func awaitFillQueued(t *testing.T, database *store.Store) {
 	t.Helper()
-	testwait.UntilPolling(t, 10*time.Millisecond, "the fill's batch to queue behind the open version write (the sessions its statement has waiting on a lock)", func() (int, bool) {
+	testwait.Eventually(t, "the fill's batch to queue behind the open version write", func() bool {
 		waiting, err := storetest.CountLockWaits(context.Background(), database, "%document_search_backfill for update%")
 		if err != nil {
 			t.Fatalf("read the sessions waiting on a lock: %v", err)
 		}
-		return waiting, waiting > 0
+		return waiting > 0
 	})
 }
 

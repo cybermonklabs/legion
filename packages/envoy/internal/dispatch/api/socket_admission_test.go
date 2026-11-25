@@ -3,14 +3,12 @@ package api
 import (
 	"context"
 	"fmt"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -18,7 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // sentStatement is one statement a store's connection sent, with its arguments.
@@ -100,7 +97,7 @@ func TestASocketOpenReadsTheIssueAndTheCallerOnce(t *testing.T) {
 	counter := &statementCounter{}
 	counted := storetest.TracedStore(t, storetest.Open(t), counter)
 	// No heartbeat resolves the caller again while the test counts.
-	handler, _, cookie, request, documentService := newCookieServerOn(t, counted, time.Hour)
+	handler, _, cookie, request, documentService := newCookieServerOn(t, counted, stagedAhead)
 	if response := request(http.MethodPost, "/api/v1/projects", map[string]string{"key": "TEST", "name": "Test"}); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -125,20 +122,7 @@ func TestASocketOpenReadsTheIssueAndTheCallerOnce(t *testing.T) {
 	for _, open := range []string{"a cold open", "a warm open"} {
 		since := counter.mark()
 		peer := docstest.Dial(t, url, header, room, crdt.New())
-		// docstest's Authenticate waits under a bound of its own, so it is handed one no run reaches,
-		// and the room's answer is waited for here instead, whose one bound is the test binary's
-		// deadline (testwait.Receive). The peer's close at the test's end ends a call still waiting.
-		type authenticated struct {
-			scope string
-			err   error
-		}
-		answered := make(chan authenticated, 1)
-		go func() {
-			scope, err := peer.Authenticate(schemaVersion, math.MaxInt64)
-			answered <- authenticated{scope, err}
-		}()
-		reply := testwait.Receive(t, open+": the room's answer to the socket's auth token", answered)
-		scope, err := reply.scope, reply.err
+		scope, err := peer.Authenticate(t, schemaVersion)
 		if err != nil || scope != "read-write" {
 			t.Fatalf("%s: the socket is authenticated %q (%v), want read-write", open, scope, err)
 		}

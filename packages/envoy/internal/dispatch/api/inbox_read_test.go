@@ -108,14 +108,14 @@ func seedInboxRead(t *testing.T) inboxReadSeed {
 }
 
 // seedHeldInboxRead is seedInboxRead on a server whose mark-all and dismissal statements are
-// bounded by pastTheRun rather than inboxReadStatementTimeout's ten seconds, so the test binary's
-// deadline is the one bound a dismissal a row holds behind its lock has. A row that holds a
+// bounded by stagedAhead rather than inboxReadStatementTimeout's ten seconds, so the shared wait's
+// give-up is the one bound a dismissal a row holds behind its lock has. A row that holds a
 // dismissal behind a lock of its own takes its steps - a write, a reply reaching its queue - while
 // Postgres counts that bound from the moment the dismissal queued, so on the real bound a loaded
 // machine that took ten seconds over them answered a correct run 500.
 func seedHeldInboxRead(t *testing.T) inboxReadSeed {
 	t.Helper()
-	return seedInboxReadOn(t, testServerOptions{inboxStatementBound: pastTheRun})
+	return seedInboxReadOn(t, testServerOptions{inboxStatementBound: stagedAhead})
 }
 
 // seedInboxReadOn is seedInboxRead on a server built from options, with the live session's
@@ -146,7 +146,7 @@ func seedInboxReadOn(t *testing.T, options testServerOptions) inboxReadSeed {
 	agentRoot, agentReply := agentThread(t, handler, "btw", "Deploy is tonight.", "Noted.")
 	seed.agent, seed.agentReply = agentRoot.ID, agentReply.ID
 
-	seed.cutoff = time.Now()
+	seed.cutoff = databaseNow(t, database.Pool)
 	return seed
 }
 
@@ -198,7 +198,7 @@ func TestInboxReadMarksEveryUnreadThreadThroughTheMark(t *testing.T) {
 	// it: the first keeps its later mark, the second stays unread.
 	alreadyRead := seedUnreadThread(t, handler, "/api/v1/issues/"+seed.secondIssue+"/comments", "Read already?")
 	later := seedUnreadThread(t, handler, "/api/v1/issues/"+seed.secondIssue+"/comments", "Not yet read?")
-	cutoff := time.Now()
+	cutoff := databaseNow(t, database.Pool)
 	if response := markThreadRead(t, handler, "alice", alreadyRead, cutoff.Add(time.Second)); response.Code != http.StatusNoContent {
 		t.Fatalf("read %s past the mark: status=%d body=%s", alreadyRead, response.Code, response.Body.String())
 	}
@@ -321,11 +321,12 @@ func TestInboxReadMarksOnlyWhatTheNarrowingNames(t *testing.T) {
 	})
 }
 
-// Every refusal, by status and code: the mark itself - the one ahead of the server's clock is past
-// the minute the product allows (agentStateCutoffSkew) by pastTheRun, so it stays past it however
-// late the request reaches the server - the two owner narrowings together, an unknown value in any
-// list - the empty kind among them, which only the list route's own split of an absent ?kind=
-// stands for - a document id that is not one, and a session, for whom the Inbox is nobody's.
+// Every refusal, by status and code: the mark itself - the one ahead of the server's clock is
+// stagedAhead past it, staged state far past the minute the product allows (agentStateCutoffSkew),
+// so it stays past that minute however late the request reaches the server - the two owner
+// narrowings together, an unknown value in any list - the empty kind among them, which only the
+// list route's own split of an absent ?kind= stands for - a document id that is not one, and a
+// session, for whom the Inbox is nobody's.
 func TestInboxReadRefusesWhatItCannotMark(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -337,7 +338,7 @@ func TestInboxReadRefusesWhatItCannotMark(t *testing.T) {
 	}{
 		"no mark":          {map[string]any{}, "INVALID_STATE"},
 		"unreadable mark":  {map[string]any{"read_through": "yesterday"}, "INVALID_STATE"},
-		"mark ahead":       {map[string]any{"read_through": time.Now().Add(agentStateCutoffSkew + runLeft(t)).UTC().Format(time.RFC3339Nano)}, "INVALID_STATE"},
+		"mark ahead":       {map[string]any{"read_through": time.Now().Add(stagedAhead).UTC().Format(time.RFC3339Nano)}, "INVALID_STATE"},
 		"both owners":      {map[string]any{"read_through": now, "issue": issue.Key, "artifact": "7c9e6679-7425-40de-944b-e07fc1f90ae7"}, "INVALID_QUERY"},
 		"unknown kind":     {map[string]any{"read_through": now, "kind": []string{"ask"}}, "INVALID_QUERY"},
 		"empty kind":       {map[string]any{"read_through": now, "kind": []string{""}}, "INVALID_QUERY"},
@@ -374,7 +375,7 @@ func TestInboxReadRacingASessionReply(t *testing.T) {
 	marks := 0
 	for round := range raceRounds {
 		before, _ := threadMark(t, database, "alice", root.ID)
-		mark := time.Now()
+		mark := databaseNow(t, database.Pool)
 		marked, replied := race(t, round,
 			func() *httptest.ResponseRecorder {
 				return postInboxRead(t, handler, "alice", map[string]any{
@@ -428,7 +429,7 @@ func TestInboxReadRacingOneThreadsOwnMark(t *testing.T) {
 		// A session's reply in each thread leaves both of Alice's rows unread again.
 		sessionComment(t, handler, comments, map[string]any{"body": "Reply", "reply_to": shared.ID})
 		sessionComment(t, handler, comments, map[string]any{"body": "Reply", "reply_to": other.ID})
-		mark := time.Now()
+		mark := databaseNow(t, database.Pool)
 		all, one := race(t, round,
 			func() *httptest.ResponseRecorder {
 				return postInboxRead(t, handler, "alice", map[string]any{
@@ -700,12 +701,11 @@ func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
 			return slices.Contains(marks, thread)
 		}))
 		held := holdGateThread(t, database, gate)
-		// race holds the test's goroutine until both presses answer, and they answer only once
-		// the gate is released, so a goroutine of its own releases it (releaseOnceQueued).
-		queued := releaseOnceQueued(t, held.tx, 2, held.release)
-		mark := time.Now()
+		// The mark is read off the clock that stores it, the database's (least(mark, now())), so
+		// it is never later than the now() of a press that follows it.
+		mark := databaseNow(t, database.Pool)
 		later := mark.Add(time.Millisecond)
-		first, second := race(t, round,
+		finish := startRace(round,
 			func() *httptest.ResponseRecorder {
 				return postInboxRead(t, byThreadID, "alice", map[string]any{
 					"read_through": mark.UTC().Format(time.RFC3339Nano),
@@ -716,8 +716,14 @@ func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
 					"read_through": later.UTC().Format(time.RFC3339Nano),
 				})
 			})
-		if waiting := <-queued; waiting.err != nil || waiting.count != 2 {
-			t.Fatalf("round %d: %d presses queued on the gate row, want both of them (read error: %v)", round, waiting.count, waiting.err)
+		// Both presses queue on the gate row before it is let go. The wait is the test
+		// goroutine's, so a press that never queues fails the round there, by name; the count it
+		// returns is at least two, and a third backend queued there fails below.
+		waiters := storetest.WaitForLockWaiters(t, held.tx, 2)
+		held.release()
+		first, second := finish(t)
+		if waiters != 2 {
+			t.Fatalf("round %d: %d backends queued on the gate row, want the two presses and no other", round, waiters)
 		}
 		if first.Code != http.StatusOK || second.Code != http.StatusOK {
 			t.Fatalf("round %d: the press in thread_id order %d %s, the press in heap order %d %s",
@@ -755,7 +761,7 @@ func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
 // it waited for the first's, and Postgres would break the cycle as a deadlock.
 func TestAMarkAllOverTwoProjectsTakesTheirLocksInLockKeyOrder(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	ctx := context.Background()
 	// Two project keys whose order by name, which the events follow, is the opposite of their
 	// order by lock key.
@@ -792,9 +798,11 @@ func TestAMarkAllOverTwoProjectsTakesTheirLocksInLockKeyOrder(t *testing.T) {
 	if err := store.LockOwner(ctx, holder, store.ProjectOwner(sorted)); err != nil {
 		t.Fatalf("hold %s's owner lock: %v", sorted, err)
 	}
+	// The press's mark is read here, on the test goroutine, off the clock that stores it.
+	through := databaseNow(t, database.Pool).UTC().Format(time.RFC3339Nano)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		answered <- postInboxRead(t, handler, "alice", map[string]any{"read_through": time.Now().UTC().Format(time.RFC3339Nano)})
+		answered <- postInboxRead(t, handler, "alice", map[string]any{"read_through": through})
 	}()
 	if early, answeredEarly, _ := storetest.AwaitOwnerLockWaiter(t, database, "the Mark all read", answered); answeredEarly {
 		t.Fatalf("the press answered %d %s while this test held %s's owner lock", early.Code, early.Body.String(), sorted)

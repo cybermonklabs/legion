@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -170,6 +171,15 @@ func unpublishedEvents(t *testing.T, database *store.Store, issueKey string) int
 	return count
 }
 
+// awaitFirstEventsPublished waits through the shared wait until the outbox beside the row has
+// published every event of issueKey written before it (unpublishedEvents).
+func awaitFirstEventsPublished(t *testing.T, database *store.Store, issueKey string) {
+	t.Helper()
+	testwait.Eventually(t, "the issue's first events published", func() bool {
+		return unpublishedEvents(t, database, issueKey) == 0
+	})
+}
+
 // A session takes a mention's copy only after each earlier event of the same issue that targets
 // it, on both roads a mention's copy takes: the API's own send of the mention, and the outbox's
 // comment_fallback_copies row, which it publishes when that send does not settle. Session s1
@@ -206,8 +216,8 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 			listener, state := newMentionListener(t)
 			// The deployment publishes its events through an outbox, which runs beside the server
 			// below, so a mention's send keeps its order behind the events that outbox still owes.
-			handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{
-				envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true,
+			handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{
+				envoyURL: listener.URL, outboxPublishes: true,
 			})
 			issue := createInteractionIssue(t, handler, "TEST", "A mention after a backed-off event", "before")
 			if tc.fallback {
@@ -222,9 +232,7 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 			state.landed = view.mentionLanded
 			state.mu.Unlock()
 			runOutboxBeside(t, deps, view)
-			waitUntil(t, "the issue's first events published", func() bool {
-				return unpublishedEvents(t, database, issue.Key) == 0
-			})
+			awaitFirstEventsPublished(t, database, issue.Key)
 
 			view.refuseTopics(tc.backsOff)
 			firstComment := decodeMentionedComment(t, sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -232,12 +240,12 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 			}))
 			first := commentEventID(t, database, firstComment.ID)
 			if tc.backsOff {
-				waitUntil(t, "event 1's topic send backed off", func() bool {
+				testwait.Eventually(t, "event 1's topic send backed off", func() bool {
 					attempts, _ := eventAttempts(t, database, first)
 					return attempts > 0
 				})
 			} else {
-				waitUntil(t, "event 1 published", func() bool {
+				testwait.Eventually(t, "event 1 published", func() bool {
 					_, published := eventAttempts(t, database, first)
 					return published
 				})
@@ -258,7 +266,7 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 			if tc.fallback {
 				// The send is held, at the listener or before it, under the sender's live claim;
 				// a claim lease passes, and the outbox holds s1's copy as a fallback row.
-				waitUntil(t, "the mention's send held under a live claim", func() bool {
+				testwait.Eventually(t, "the mention's send held under a live claim", func() bool {
 					return claimedPending(t, database, mention.ID, "session:s1")
 				})
 				ageAttempts(t, database, mention.ID)
@@ -273,17 +281,26 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 				`, mention.ID); err != nil {
 					t.Fatalf("fail the mention's attempt: %v", err)
 				}
+				// The row is made due with the failure, so the outbox's next fallback pass claims it
+				// and decides it with the attempt failed; a pass that claimed it before records
+				// nothing over this write (its record is guarded on its own claim).
+				if _, err := database.Pool.Exec(context.Background(), `
+					update comment_fallback_copies set next_attempt_at = now() - interval '1 second' where comment_id = $1
+				`, mention.ID); err != nil {
+					t.Fatalf("make the mention's fallback row due: %v", err)
+				}
 				release()
-				// Long enough for the fallback pass to publish a row that waits on nothing.
-				time.Sleep(3 * time.Second)
+				awaitFallbackReleased(t, database, mention.ID, contracts.LegacyAgentSubject("s1"))
 			} else if tc.backsOff {
-				// Long enough for a send that waits on nothing to land; one that waits for event 1
-				// is still waiting when it ends.
-				testwait.Holds(3*time.Second, 10*time.Millisecond, func() bool { return len(state.sent()) > 0 })
+				// The send waits behind event 1 on a held lane, so it does not land before it.
+				awaitHeldBehind(t, served.mentions, mention.ID, first)
+				if sent := state.sent(); len(sent) != 0 {
+					t.Fatalf("s1 was sent %v while the mention's send waited behind event 1, want nothing", sent)
+				}
 			}
 			view.refuseTopics(false)
 
-			waitUntil(t, "every event of the issue published and the mention settled", func() bool {
+			testwait.Eventually(t, "every event of the issue published and the mention settled", func() bool {
 				settled := true
 				for _, attempt := range waitForCommentDeliveries(t, database, mention.ID, "the mention's attempts", func([]model.CommentDelivery) bool { return true }) {
 					settled = settled && attempt.State != "pending"
@@ -310,14 +327,69 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 }
 
 // awaitHeldCopy waits until the outbox holds the copy of commentID at destination as a
-// comment_fallback_copies row. Its one bound is the test binary's deadline (waitUntil): a
-// fallback pass a loaded machine runs late still ends the wait, and one that never holds the copy
-// fails the test by name.
+// comment_fallback_copies row.
 func awaitHeldCopy(t *testing.T, database *store.Store, commentID, destination string) {
 	t.Helper()
-	waitUntil(t, "the copy at "+destination+" held as a fallback row", func() bool {
+	testwait.Eventually(t, "the copy at "+destination+" held as a fallback row", func() bool {
 		return slices.ContainsFunc(fallbackCopiesOf(t, database, commentID), func(row heldCopy) bool {
 			return row.destination == destination
 		})
+	})
+}
+
+// awaitFallbackReleased waits until a fallback pass has decided the copy of commentID at
+// destination, due when the wait starts, to wait: its record released the row for the outbox's
+// pending delay (2 s), next_attempt_at that short a time ahead on the database's clock, where a
+// pass still deciding it holds it a claim (fallbackClaim, a minute) out and the row's due moment
+// is behind. A row a pass settled instead is published or settled with nothing sent, and fails the
+// test at once. A try that finds the row not released reads its next_attempt_at and the database's
+// clock beside it.
+func awaitFallbackReleased(t *testing.T, database *store.Store, commentID, destination string) {
+	t.Helper()
+	testwait.Until(t, "a fallback pass to release the copy at "+destination+" to wait", func() (string, bool) {
+		var settled, published, released bool
+		var next *time.Time
+		var now time.Time
+		if err := database.Pool.QueryRow(context.Background(), `
+			select settled_at is not null, published,
+				next_attempt_at > now() and next_attempt_at < now() + interval '30 seconds',
+				next_attempt_at, now()
+			from comment_fallback_copies where comment_id = $1 and destination = $2
+		`, commentID, destination).Scan(&settled, &published, &released, &next, &now); err != nil {
+			t.Fatalf("read the copy of %s at %s: %v", commentID, destination, err)
+		}
+		if settled {
+			t.Fatalf("the copy of %s at %s was settled (published %v) while the event it waits behind was owed", commentID, destination, published)
+		}
+		due := "none"
+		if next != nil {
+			due = next.Format(time.RFC3339Nano)
+		}
+		return fmt.Sprintf("next attempt at %s, the database's clock at %s: released for the pending delay: %v",
+			due, now.Format(time.RFC3339Nano), released), released
+	})
+}
+
+// awaitHeldBehind waits until sender holds the send of commentID on a held lane, behind the
+// earlier event eventID. A try that finds the send on no held lane reads every held lane, the event
+// it waits behind and the comments queued on it.
+func awaitHeldBehind(t *testing.T, sender *mentionSender, commentID string, eventID int64) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("the send of comment %s held behind event %d", commentID, eventID), func() (string, bool) {
+		sender.mu.Lock()
+		defer sender.mu.Unlock()
+		lanes := make([]string, 0, len(sender.waits))
+		for lane, wait := range sender.waits {
+			comments := make([]string, 0, len(sender.lanes[lane]))
+			for _, send := range sender.lanes[lane] {
+				if send.comment.ID == commentID {
+					return fmt.Sprintf("held behind event %d", wait.by.EventID), wait.by.EventID == eventID
+				}
+				comments = append(comments, send.comment.ID)
+			}
+			lanes = append(lanes, fmt.Sprintf("%+v behind event %d holds %v", lane, wait.by.EventID, comments))
+		}
+		slices.Sort(lanes)
+		return fmt.Sprintf("on no held lane; the held lanes: %v", lanes), false
 	})
 }

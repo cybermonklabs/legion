@@ -8,9 +8,9 @@ import (
 	"net/url"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // commentCommitHold is the comment write's test seam (server.beforeCommentCommit). It hands the
@@ -72,24 +72,55 @@ func heldCommentCreated(t *testing.T, held []model.Event) (model.Event, string) 
 	return model.Event{}, ""
 }
 
-// heldEventOnTheStream waits up to within for an event of held to arrive on published, and
-// answers the first that does. Events the server's other work publishes meanwhile are passed
-// over: what is held against the stream is this write's own events, not an empty stream.
-func heldEventOnTheStream(published <-chan model.Event, held []model.Event, within time.Duration) (model.Event, bool) {
-	deadline := time.After(within)
+// heldEventOnTheStream waits for an event of held to arrive on published, and answers the first
+// that does. Events the server's other work publishes meanwhile are passed over: what is held
+// against the stream is this write's own events, not an empty stream. The wait has no bound of
+// its own: it answers false when the stream closes or the test's give-up comes first
+// (testwait.Context).
+func heldEventOnTheStream(t *testing.T, published <-chan model.Event, held []model.Event) (model.Event, bool) {
+	t.Helper()
+	giveUp := testwait.Context(t).Done()
 	for {
 		select {
 		case event, open := <-published:
 			if !open {
 				return model.Event{}, false
 			}
-			if slices.ContainsFunc(held, func(appended model.Event) bool { return appended.ID == event.ID }) {
+			if isHeldEvent(held, event) {
 				return event, true
 			}
-		case <-deadline:
+		case <-giveUp:
 			return model.Event{}, false
 		}
 	}
+}
+
+// heldEventPublished answers the first event of held among those published already holds, and
+// waits for none. Events the server's other work published are passed over, as
+// heldEventOnTheStream passes them. It is the proof of an absence read from state: the server
+// hands each event to the broker's subscribers on the write's own goroutine (server.publish,
+// events.Stream.Publish's send into each subscriber's buffer), so once the test has heard from
+// that goroutine after a point of its run, every event it published before that point is in the
+// buffer already, and no span is needed for it to arrive.
+func heldEventPublished(published <-chan model.Event, held []model.Event) (model.Event, bool) {
+	for {
+		select {
+		case event, open := <-published:
+			if !open {
+				return model.Event{}, false
+			}
+			if isHeldEvent(held, event) {
+				return event, true
+			}
+		default:
+			return model.Event{}, false
+		}
+	}
+}
+
+// isHeldEvent reports whether event is one of held, by its id.
+func isHeldEvent(held []model.Event, event model.Event) bool {
+	return slices.ContainsFunc(held, func(appended model.Event) bool { return appended.ID == event.ID })
 }
 
 // commentNodeReadable reports whether the API answers the comment's node, read as any reader
@@ -124,6 +155,11 @@ func commentNodeReadable(t *testing.T, handler http.Handler, ref string) bool {
 // again with the hold ending the write in a rollback, and no event of it ever arrives. So a
 // publish before the commit, and a publish for a write that rolled back, each fail here, and the
 // failure prints the event and the node address it could not read.
+//
+// Each absence is read from the stream's buffer, with no span (heldEventPublished): the write
+// publishes on its own goroutine, which reaches the hold, and later writes its answer, after any
+// publish of its own before either. Every wait is the shared wait's, whose one bound is the
+// test's give-up.
 func TestNoEventOutrunsItsNode(t *testing.T) {
 	t.Parallel()
 	handler, _, deps, served := newRegisteredTestServer(t, testServerOptions{})
@@ -141,20 +177,29 @@ func TestNoEventOutrunsItsNode(t *testing.T) {
 				map[string]string{"body": "The write c-read-cost holds open, ending in a " + ending + "."}, "alice")
 		}()
 		var held []model.Event
-		select {
-		case held = <-hold.held:
-		case response := <-answered:
+		var early *httptest.ResponseRecorder
+		testwait.Until(t, ending+": the comment write to reach its hold before the commit, or to answer", func() (string, bool) {
+			select {
+			case held = <-hold.held:
+				return "held", true
+			case early = <-answered:
+				return "answered", true
+			default:
+				return "neither held nor answered", false
+			}
+		})
+		if early != nil {
 			t.Fatalf("%s: the comment write answered %d %s without reaching its hold before the commit",
-				ending, response.Code, response.Body.String())
-		case <-time.After(10 * time.Second):
-			t.Fatalf("%s: the comment write never reached its hold before the commit", ending)
+				ending, early.Code, early.Body.String())
 		}
 		created, comment := heldCommentCreated(t, held)
 		node := "dispatch://" + issue.Key + "/comment/" + comment
 		t.Logf("%s: the write is held open with comment.created %d appended for the comment %s", ending, created.ID, node)
 
 		// The transaction is open. Nothing of it is on the stream, and its node is not readable.
-		if event, arrived := heldEventOnTheStream(published, held, 500*time.Millisecond); arrived {
+		// The write reached its hold on its own goroutine, after anything it published before its
+		// commit, so such an event is in the stream's buffer by now (heldEventPublished).
+		if event, arrived := heldEventPublished(published, held); arrived {
 			readable := commentNodeReadable(t, handler, node)
 			t.Fatalf("%s: event %d (%s) arrived on the event stream while the write that appended it was still open, and its node %s read as readable=%t: an event outran its commit",
 				ending, event.ID, event.Type, node, readable)
@@ -166,9 +211,9 @@ func TestNoEventOutrunsItsNode(t *testing.T) {
 
 		if ending == "commit" {
 			hold.release <- nil
-			event, arrived := heldEventOnTheStream(published, []model.Event{created}, 10*time.Second)
+			event, arrived := heldEventOnTheStream(t, published, []model.Event{created})
 			if !arrived {
-				t.Fatalf("commit: the committed comment.created %d never arrived on the event stream", created.ID)
+				t.Fatalf("commit: the committed comment.created %d had not arrived on the event stream by the test's give-up", created.ID)
 			}
 			// Read at once, before anything else this goroutine does: the event is the reader's
 			// cue to read the node it announces.
@@ -187,7 +232,11 @@ func TestNoEventOutrunsItsNode(t *testing.T) {
 		if response := awaitResponse(t, answered); response.Code != http.StatusServiceUnavailable {
 			t.Fatalf("rollback: the comment write the hold rolled back answered %d %s, want the hold's 503", response.Code, response.Body.String())
 		}
-		if event, arrived := heldEventOnTheStream(published, held, time.Second); arrived {
+		// The write wrote its answer on its own goroutine, after anything it published there
+		// (server.publish), so an event it published for the rolled-back transaction is in the
+		// stream's buffer by now; and the node read below shows the transaction committed nothing,
+		// so there is no committed event of it for anything else to publish.
+		if event, arrived := heldEventPublished(published, held); arrived {
 			t.Fatalf("rollback: event %d (%s) of a write that rolled back arrived on the event stream, announcing the node %s, which readable=%t",
 				event.ID, event.Type, node, commentNodeReadable(t, handler, node))
 		}

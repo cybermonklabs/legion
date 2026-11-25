@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -46,7 +47,7 @@ func TestAMarkAnchoredCommentAsksItsFlushBeforeTheDocumentsLock(t *testing.T) {
 			// room-sync member of this database and every flush is asked of it.
 			second := storetest.SecondProcess(t, database)
 			other := docs.New(docs.Deps{Store: second, Identity: headerIdentity(second), Settle: time.Hour})
-			t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
+			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), other) })
 			runDocumentRoomSync(t, second, other)
 
 			issue := createInteractionIssue(t, handler, "TEST", "Anchored to a browser's mark", "The quick brown fox")

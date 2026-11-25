@@ -16,15 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// fastPageRetries shrinks the wait between page retries for a test that means to exercise one.
-// Production's wait is a second, which would only make these tests slower.
-func fastPageRetries(t *testing.T) {
-	t.Helper()
-	previous := githubPageRetryWait
-	githubPageRetryWait = time.Millisecond
-	t.Cleanup(func() { githubPageRetryWait = previous })
-}
-
 // TestWalkWindowedVisitsAWindowItCannotHalveWhole pins the one case where visit receives more
 // than maxResults at once. GitHub's date qualifiers cannot split finer than a second, so a window
 // under two seconds is the floor: one whose total is past maxResults but within githubResultCap
@@ -93,15 +84,21 @@ func maximalRun(id int64, created time.Time) map[string]any {
 
 // runsPage serves one page of a runs listing the way GitHub does: the runs created inside the
 // request's own created=A..B window, newest first, cut to its per_page and page, with the
-// window's whole count as total_count.
+// window's whole count as total_count. A request whose window it cannot read is refused
+// (refuseRequest): it runs on the fake server's goroutine.
 func runsPage(t *testing.T, w http.ResponseWriter, r *http.Request, runs []map[string]any) {
 	t.Helper()
-	since, until := parseCreatedWindow(t, r.URL.Query().Get("created"))
+	since, until, err := parseCreatedWindow(r.URL.Query().Get("created"))
+	if err != nil {
+		refuseRequest(t, w, "%v", err)
+		return
+	}
 	var inWindow []map[string]any
 	for _, run := range runs {
 		created, err := time.Parse(time.RFC3339, run["created_at"].(string))
 		if err != nil {
-			t.Fatalf("parse fixture created_at: %v", err)
+			refuseRequest(t, w, "parse fixture created_at: %v", err)
+			return
 		}
 		if !created.Before(since) && !created.After(until) {
 			inWindow = append(inWindow, run)
@@ -123,22 +120,21 @@ func runsPage(t *testing.T, w http.ResponseWriter, r *http.Request, runs []map[s
 	mustEncode(t, w, map[string]any{"total_count": len(inWindow), "workflow_runs": inWindow[start:end]})
 }
 
-// parseCreatedWindow reads back the created=ISO..ISO qualifier the run listing sends.
-func parseCreatedWindow(t *testing.T, created string) (time.Time, time.Time) {
-	t.Helper()
+// parseCreatedWindow reads back the created=ISO..ISO qualifier the run listing sends, and answers
+// an error naming what it could not read: a fake's handler refuses the request with it
+// (refuseRequest), since it runs on the server's goroutine.
+func parseCreatedWindow(created string) (since, until time.Time, err error) {
 	bounds := strings.SplitN(created, "..", 2)
 	if len(bounds) != 2 {
-		t.Fatalf("created qualifier = %q, want ISO..ISO", created)
+		return since, until, fmt.Errorf("created qualifier = %q, want ISO..ISO", created)
 	}
-	since, err := time.Parse(time.RFC3339, bounds[0])
-	if err != nil {
-		t.Fatalf("parse created since %q: %v", bounds[0], err)
+	if since, err = time.Parse(time.RFC3339, bounds[0]); err != nil {
+		return since, until, fmt.Errorf("parse created since %q: %w", bounds[0], err)
 	}
-	until, err := time.Parse(time.RFC3339, bounds[1])
-	if err != nil {
-		t.Fatalf("parse created until %q: %v", bounds[1], err)
+	if until, err = time.Parse(time.RFC3339, bounds[1]); err != nil {
+		return since, until, fmt.Errorf("parse created until %q: %w", bounds[1], err)
 	}
-	return since, until
+	return since, until, nil
 }
 
 // TestListWorkflowRunsPagesABusyDeployRepositoryUnderTheResponseLimit is the deploy-run failure
@@ -194,7 +190,6 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 // that failed once failed the whole pass, which then restarted its 28-day window from the
 // beginning and failed again. GitHub reports a query it gave up on as a 502 or a 504.
 func TestListWorkflowRunsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *testing.T) {
-	fastPageRetries(t)
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
 	runs := make([]map[string]any, 0, 25)
@@ -248,7 +243,6 @@ func smallRun(id int64, created time.Time) map[string]any {
 // failure: one slow search page failed the whole installation's search, and with no progress kept
 // the next pass restarted the same 28-day window.
 func TestSearchMergedPullRequestsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *testing.T) {
-	fastPageRetries(t)
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
 
@@ -260,7 +254,8 @@ func TestSearchMergedPullRequestsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *t
 			Variables map[string]any `json:"variables"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode GraphQL request: %v", err)
+			refuseRequest(t, w, "decode GraphQL request: %v", err)
+			return
 		}
 		after, _ := body.Variables["after"].(string)
 		mu.Lock()
@@ -317,7 +312,6 @@ func searchNode(number int, merged string) map[string]any {
 // requests, past one installation's hourly rate limit -- could never finish one, since each pass
 // restarted it from the beginning.
 func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
-	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	// This test is the regular runs/deploy step's: a finished backfill lists nothing, so every
@@ -353,7 +347,11 @@ func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
 	failing := true
 	var windowStarts []time.Time
 	fake.handle("GET /repos/acme/widgets/actions/workflows/.github%2Fworkflows%2Fdeploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
-		since, _ := parseCreatedWindow(t, r.URL.Query().Get("created"))
+		since, _, err := parseCreatedWindow(r.URL.Query().Get("created"))
+		if err != nil {
+			refuseRequest(t, w, "%v", err)
+			return
+		}
 		mu.Lock()
 		windowStarts = append(windowStarts, since)
 		refuse := failing && !since.Before(failFrom)
@@ -438,7 +436,6 @@ func countRuns(t *testing.T, ctx context.Context, pool *store.Pool) int {
 // that is removed, or whose repositories move to another, leaves a row keyed by an id no listing
 // answers for again, and nothing else would ever collect it.
 func TestReconcilePrunesProgressOfAnInstallationThatNoLongerExists(t *testing.T) {
-	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	scope := searchProgressScope(settings)

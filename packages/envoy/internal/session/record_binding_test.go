@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"testing"
@@ -18,31 +19,36 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/kvwatch/kvwatchtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// openBindingRegistry opens a registry on the test's own session bucket and waits until its copy
-// follows the bucket.
+// openBindingRegistry opens a registry on the test's own session bucket, its records' TTL staged
+// (stagedSessionTTL), and waits until its copy follows the bucket (kvwatchtest.AwaitFollowing),
+// whose give-up prints the watcher's state as the last try read it.
 func openBindingRegistry(t *testing.T, client *bus.Client, options ...SessionRegistryOption) *SessionRegistry {
 	t.Helper()
-	r, err := OpenSessionRegistry(t.Context(), client.Conn, append([]SessionRegistryOption{WithSessionReplicas(1), WithSessionTTL(time.Minute)}, options...)...)
+	r, err := OpenSessionRegistry(t.Context(), client.Conn, append([]SessionRegistryOption{WithSessionReplicas(1), WithSessionTTL(stagedSessionTTL)}, options...)...)
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
 	t.Cleanup(r.StopWatch)
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	kvwatchtest.AwaitFollowing(t, "the session registry's copy to follow its bucket", r.watcher)
 	return r
 }
 
 // awaitApplied waits until the registry's copy has taken the record stored for key at revision,
 // whether it kept it or evicted it: the copy's fence holds the revision of every record it applied.
+// A give-up prints the revision the fence held for key at the last try.
 func awaitApplied(t *testing.T, r *SessionRegistry, key string, revision uint64) {
 	t.Helper()
-	waitFor(t, 5*time.Second, func() bool {
+	testwait.Until(t, fmt.Sprintf("the registry's copy to apply %s's record at revision %d", key, revision), func() (string, bool) {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		_, epoch := r.watcher.Handle()
-		return r.cache.FenceFor(epoch, key) >= revision
+		fenced := r.cache.FenceFor(epoch, key)
+		return fmt.Sprintf("the fence holds revision %d for %s in epoch %d", fenced, key, epoch), fenced >= revision
 	})
 }
 
@@ -50,7 +56,7 @@ func awaitApplied(t *testing.T, r *SessionRegistry, key string, revision uint64)
 // from the stream's leader.
 func storedValue(t *testing.T, conn *natsgo.Conn, key string) []byte {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -103,7 +109,9 @@ func TestASessionRecordNamingAnotherKeyReadsAbsent(t *testing.T) {
 	requireAbsent(t, r, "ses_absent", "a copy of ses_priv's record onto a never-used key")
 
 	// The same copy onto S_pub's occupied key is refused: a direct-get copy of a bound record can
-	// never overwrite a different session's live record, and S_pub keeps its own.
+	// never overwrite a different session's live record, and S_pub keeps its own. Two seconds, main's
+	// span, is how long the refusal is watched for: ServerCopyRefused says why no state of the server
+	// and no later action reaches it.
 	testnats.ServerCopyRefused(t, client.Conn, bus.SessionBucket, "ses_pub", bus.SessionBucket, "ses_priv")
 	if entry, err := r.Refresh(context.Background(), "ses_pub"); err != nil || entry.MachineID != "shared-a" {
 		t.Fatalf("Refresh(ses_pub) after the refused copy = %+v, %v; want its own record, machine shared-a", entry, err)

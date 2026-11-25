@@ -12,6 +12,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -93,7 +94,7 @@ type roomState struct {
 	// shadow is what the latest committed live write left the room to measure again the classes
 	// of the browser updates stored after its own (roomShadow), nil while none is left.
 	shadow     *roomShadow
-	settle     *time.Timer
+	settle     clock.Timer
 	unrecorded map[pmdoc.MarkRef]time.Time
 	// departed is when each user whose browsers have all left this room lost the last of them,
 	// under both spellings a mark's `by` can carry (recordMarkAuthorDeparture). An unrecorded

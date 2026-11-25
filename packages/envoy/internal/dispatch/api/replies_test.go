@@ -399,7 +399,7 @@ func TestMarkThreadReadClearsTheRowUntilTheNextReply(t *testing.T) {
 	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	if response := markThreadRead(t, handler, "alice", root.ID, time.Now()); response.Code != http.StatusNoContent {
+	if response := markThreadRead(t, handler, "alice", root.ID, databaseNow(t, database.Pool)); response.Code != http.StatusNoContent {
 		t.Fatalf("mark on a closed issue: status=%d body=%s", response.Code, response.Body.String())
 	}
 	if listsThread(getMyReplies(t, handler, "alice", ""), root.ID) {
@@ -421,7 +421,7 @@ func TestMarkThreadReadRefusesWhatItCannotStore(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Refusals", "A spec")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Root"}, "alice")
-	if response := markThreadRead(t, handler, "alice", root.ID, time.Now().Add(2*time.Minute)); response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_STATE"`) {
+	if response := markThreadRead(t, handler, "alice", root.ID, time.Now().Add(stagedAhead)); response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_STATE"`) {
 		t.Fatalf("future mark: status=%d body=%s", response.Code, response.Body.String())
 	}
 	if response := markThreadRead(t, handler, "alice", "not-a-uuid", time.Now()); response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"THREAD_ID_INPUT"`) {
@@ -443,6 +443,12 @@ const raceRounds = 50
 // a loaded machine runs slowly pass.
 func race(t *testing.T, round int, first, second func() *httptest.ResponseRecorder) (*httptest.ResponseRecorder, *httptest.ResponseRecorder) {
 	t.Helper()
+	return startRace(round, first, second)(t)
+}
+
+// startRace starts both writes together and answers the wait for both, which the caller runs on
+// the test goroutine once it has seen, there, what it needs to see while the writes are held.
+func startRace(round int, first, second func() *httptest.ResponseRecorder) func(*testing.T) (*httptest.ResponseRecorder, *httptest.ResponseRecorder) {
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	var a, b *httptest.ResponseRecorder
@@ -452,8 +458,11 @@ func race(t *testing.T, round int, first, second func() *httptest.ResponseRecord
 	close(start)
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
-	testwait.Receive(t, fmt.Sprintf("round %d: both writes to finish", round), done)
-	return a, b
+	return func(t *testing.T) (*httptest.ResponseRecorder, *httptest.ResponseRecorder) {
+		t.Helper()
+		testwait.Receive(t, fmt.Sprintf("round %d's two writes to both finish", round), done)
+		return a, b
+	}
 }
 
 // readThrough is Alice's read mark on a thread.
@@ -480,7 +489,7 @@ func TestMarkThreadReadRacingASessionReply(t *testing.T) {
 		issue := createInteractionIssue(t, handler, "TEST", "Race", "A spec")
 		root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Racing"}, "alice")
 		for round := range raceRounds {
-			mark := time.Now()
+			mark := databaseNow(t, database.Pool)
 			marked, replied := race(t, round,
 				func() *httptest.ResponseRecorder { return markThreadRead(t, handler, "alice", root.ID, mark) },
 				func() *httptest.ResponseRecorder {
@@ -512,7 +521,7 @@ func TestMarkThreadReadRacingASessionReply(t *testing.T) {
 			"body": "Racing", "target": "session:s1", "delivery": "btw",
 		}, "alice")
 		for round := range raceRounds {
-			mark := time.Now()
+			mark := databaseNow(t, database.Pool)
 			body := "Reply " + time.Now().Format(time.RFC3339Nano)
 			marked, replied := race(t, round,
 				func() *httptest.ResponseRecorder { return markThreadRead(t, handler, "alice", root.ID, mark) },
@@ -563,7 +572,7 @@ func TestMarkThreadReadRacingABlockAskAnswerThatRefreshesAnAnchor(t *testing.T) 
 		}
 		sessionComment(t, handler, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{"body": "Reply", "ask_id": askID})
 		selected := []string{"REST", "gRPC"}[round%2]
-		mark := time.Now()
+		mark := databaseNow(t, database.Pool)
 		marked, answered := race(t, round,
 			func() *httptest.ResponseRecorder { return markThreadRead(t, handler, "alice", askID, mark) },
 			func() *httptest.ResponseRecorder {

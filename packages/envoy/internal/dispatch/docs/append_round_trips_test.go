@@ -7,16 +7,17 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A round trip is one exchange with Postgres: the client sends and waits for the server. It is
@@ -189,25 +190,24 @@ func (r *roundTripRecorder) roomLockRuns(room string) [][]roundTrip {
 	return runs
 }
 
-// connOf waits up to within for a round trip naming room whose SQL holds statement, and returns
-// the connection it went on: the one the call that made it runs on, whose backend a lock wait
-// watches (storetest.WaitForQueuedBehind). pgx reports a query as it starts, before the server
-// answers, so the connection is named while the call still waits on its lock. The caller resets
-// the recorder first, so the trip found is the call's own.
-func (r *roundTripRecorder) connOf(t *testing.T, room, statement string, within time.Duration) *pgx.Conn {
+// connOf waits for a round trip naming room whose SQL holds statement, and returns the connection
+// it went on: the one the call that made it runs on, whose backend a lock wait watches
+// (storetest.WaitForQueuedBehind). pgx reports a query as it starts, before the server answers,
+// so the connection is named while the call still waits on its lock. The caller resets the
+// recorder first, so the trip found is the call's own.
+func (r *roundTripRecorder) connOf(t *testing.T, room, statement string) *pgx.Conn {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
+	var conn *pgx.Conn
+	waitFor(t, "a round trip running "+statement+" for document "+room, func() bool {
 		for _, trip := range r.recorded() {
 			if !trip.batch && !trip.prepare && trip.names(room) && strings.Contains(trip.sql[0], statement) {
-				return trip.conn
+				conn = trip.conn
+				return true
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no round trip ran %q for document %s within %s", statement, room, within)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+		return false
+	})
+	return conn
 }
 
 // labelsOn names, in order, the round trips the recorder holds for conn, which is how far the
@@ -315,10 +315,10 @@ func tracedRoomService(t *testing.T) (*Service, string, *roundTripRecorder) {
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(traced),
 		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Settle:    stagedAhead,
 	})
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -403,8 +403,8 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 	}
 
 	// The keystroke's batch lingers for the room's next keystrokes before it goes
-	// (roomAppendLinger), so it reaches the lock a linger after the room applied it; roomWait
-	// covers that, as it covers the rest of the room's own work.
+	// (roomAppendLinger), so it reaches the lock a linger after the room applied it; testwait's
+	// one bound, which the wait below runs on, covers that, as it covers the room's other work.
 	editAsConnectedPeer(t, service, artifactID, 1, storedOrderBob, replaceRun("Second.", "Second, bob."))
 	storetest.WaitForLockWaiters(t, holder, 1)
 	written := make(chan error, 1)
@@ -422,7 +422,7 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 	// that never waited at its read. The wait returns at once if the write answers without having
 	// queued, and the trips it has made say where it queued: its transaction, the document's
 	// owner row and the room's lock, with none of its append's.
-	writeConn := recorder.connOf(t, artifactID, "pg_advisory_xact_lock(hashtext", roomWait(t))
+	writeConn := recorder.connOf(t, artifactID, "pg_advisory_xact_lock(hashtext")
 	if err, early := storetest.WaitForQueuedBehind(t, holder, writeConn.PgConn().PID(), written); early {
 		t.Fatalf("the live write answered %v before it queued behind the room's lock: it waited on no lock of the room", err)
 	}
@@ -439,13 +439,8 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 		t.Fatalf("release the room's lock: %v", err)
 	}
 
-	select {
-	case err := <-written:
-		if err != nil {
-			t.Fatalf("the live write: %v", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("the live write never finished once the room's lock was free")
+	if err := testwait.Receive(t, "the live write to finish once the room's lock was free", written); err != nil {
+		t.Fatalf("the live write: %v", err)
 	}
 	waitForLandedAppends(t, service, artifactID)
 	report := assertStoredOrder(t, service, artifactID)

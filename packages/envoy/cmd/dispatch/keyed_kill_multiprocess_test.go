@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -14,43 +15,53 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// backDateKeyLease moves the lease the row under key holds back by, past the lease a repeat
-// judges it against (contracts.IdempotencyLease), and returns the moment it lapsed. Nothing
-// renews that lease - the process that took it is dead - so the minute it has left is wall clock
-// and nothing about the take-over, which is what the row is for; the webhook redelivery row moves
-// its claim's time the same way (backDateRedeliveryClaim).
-func backDateKeyLease(t *testing.T, database *store.Store, key string, by time.Duration) time.Time {
+// ageKeyLease sets the lease the row under key holds to age old on the database's clock, the
+// clock a repeat judges it by against contracts.IdempotencyLease, and returns the moment that
+// lease ends on that clock. Nothing renews that lease - the process that took it is dead - so the
+// time it has left is wall clock and nothing about the take-over, which is what the row is for;
+// the webhook redelivery row moves its claim's time the same way (backDateRedeliveryClaim).
+func ageKeyLease(t *testing.T, database *store.Store, key string, age time.Duration) time.Time {
 	t.Helper()
-	tag, err := database.Pool.Exec(context.Background(), `
-		update request_keys set leased_at = leased_at - make_interval(secs => $2)
-		where idempotency_key = $1 and status is null and leased_at is not null
-	`, key, by.Seconds())
-	if err != nil {
-		t.Fatalf("back-date the lease of %s: %v", key, err)
+	var rows int
+	var end time.Time
+	if err := database.Pool.QueryRow(context.Background(), `
+		with aged as (
+			update request_keys set leased_at = now() - make_interval(secs => $2)
+			where idempotency_key = $1 and status is null and leased_at is not null
+			returning leased_at
+		)
+		select count(*), coalesce(max(leased_at), now()) + make_interval(secs => $3) from aged
+	`, key, age.Seconds(), contracts.IdempotencyLease.Seconds()).Scan(&rows, &end); err != nil {
+		t.Fatalf("set the lease of %s %v old: %v", key, age, err)
 	}
-	if rows := tag.RowsAffected(); rows != 1 {
-		t.Fatalf("back-date the lease of %s: %d rows, want the one the dead process holds", key, rows)
+	if rows != 1 {
+		t.Fatalf("set the lease of %s %v old: %d rows, want the one the dead process holds", key, age, rows)
 	}
-	return time.Now()
+	return end
 }
 
-// leaseMargin is how far short of the dead run's lease the row stops on its way past it: the
-// lease is moved back to leaseMargin before its end, where a repeat must still be refused, and
-// then the rest of the way, where the take-over must happen. It is the boundary's resolution -
-// a lease judged at anything below contracts.IdempotencyLease-leaseMargin takes the key over at
-// the first step and fails the row - and it is also the slack the two repeats around it have on
-// a loaded machine, which is why it is ten seconds and not one.
+// leaseMargin is how far short of its end the row first sets the dead run's lease: leaseMargin
+// before the end, where a repeat must still be refused, and then past the end, where the
+// take-over must happen. It is the boundary's resolution: a lease judged at anything below
+// contracts.IdempotencyLease-leaseMargin takes the key over at the first step and fails the row.
+// A repeat that reaches its lease check more than leaseMargin after the lease was set, on a
+// loaded machine, finds the lease ended and takes the key over rightly. The row tells that from a
+// lease judged short by the database's clock read once the repeat has answered: before the
+// lease's end, the take-over was early; at or past it, the run came too late to place the end,
+// logs so, and goes on to the take-over's own checks.
 const leaseMargin = 10 * time.Second
 
 // INFRA-258. A process killed while it runs a keyed write leaves the write's key held under a lease
 // nothing renews any more. The other process answers a repeat under that key 409 KEY_IN_FLIGHT while
 // the lease lasts - the first run might still be alive - and, once the lease has lapsed with nothing
 // committed, takes the key over and makes the write, once; a repeat after that is its replay. The
-// lease is moved back rather than waited out (backDateKeyLease), in two steps, so the row keeps the
-// lease's end and not only what happens past it: to leaseMargin before the end, where the repeat
-// must still be refused, and then past the end, where the take-over must come.
+// lease is set rather than waited out (ageKeyLease), in two steps, so the row keeps the lease's
+// end and not only what happens past it: to leaseMargin before the end, where the repeat must
+// still be refused, and then past the end, where the take-over must come.
 //
 // The slow-write test hook holds A's run after its key is claimed and before its handler writes,
 // which is where a process dies with nothing of the write committed; the kill is SIGKILL, so no
@@ -81,11 +92,9 @@ func TestAKeyedWriteAProcessDiedRunningIsTakenOverOnceItsLeaseLapses(t *testing.
 		}
 		return rows == 1
 	}
-	for deadline := time.Now().Add(30 * time.Second); !held(); time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("process A never claimed the key:\n%s", pair.a.Output.String())
-		}
-	}
+	testwait.Until(t, "process A to claim the key", func() (fmt.Stringer, bool) {
+		return pair.a.Output, held()
+	})
 	if err := pair.a.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill process A: %v", err)
 	}
@@ -106,23 +115,29 @@ func TestAKeyedWriteAProcessDiedRunningIsTakenOverOnceItsLeaseLapses(t *testing.
 		t.Fatalf("a repeat inside the dead run's lease: code %s, want %s", answer.code(), contracts.IdempotencyKeyInFlight)
 	}
 	// The refusal under a lease just taken is read; the rest of the lease is wall clock, since
-	// nothing renews a lease whose process is gone, so it is moved back rather than waited out -
-	// first to leaseMargin before its end, where the key is still the dead run's and a repeat
-	// must still be refused. A lease judged shorter than it is lapses here, and the row says so.
-	backDateKeyLease(t, pair.database, "killed-press", contracts.IdempotencyLease-leaseMargin)
-	if answer = repeat(); answer.status != http.StatusConflict || answer.code() != contracts.IdempotencyKeyInFlight {
-		t.Fatalf("a repeat %v before the dead run's lease ends: %v, want 409 %s: the key is still the dead run's "+
-			"until its %v lease is out", leaseMargin, answer, contracts.IdempotencyKeyInFlight, contracts.IdempotencyLease)
-	}
-	// Then the rest of the way, past the end, where the take-over must come.
-	lapsed := backDateKeyLease(t, pair.database, "killed-press", leaseMargin+time.Second)
-	for answer.status == http.StatusConflict {
-		if time.Since(lapsed) > 30*time.Second {
-			t.Fatalf("process B never took the key over: still %v %v after the dead run's lease lapsed",
-				answer, time.Since(lapsed))
+	// nothing renews a lease whose process is gone, so it is set rather than waited out - first to
+	// leaseMargin before its end, where the key is still the dead run's and a repeat must still be
+	// refused. A lease judged shorter than it is lapses here, and the row says so; a repeat that
+	// reached its check only once the end had passed on the database's clock took the key over
+	// rightly and places nothing, which the row logs.
+	end := ageKeyLease(t, pair.database, "killed-press", contracts.IdempotencyLease-leaseMargin)
+	answer = repeat()
+	if answer.status != http.StatusConflict || answer.code() != contracts.IdempotencyKeyInFlight {
+		if checked := testdb.Now(t, pair.database.Pool); checked.Before(end) {
+			t.Fatalf("a repeat %v before the dead run's lease ends: %v, want 409 %s: the key is still the dead run's "+
+				"until its %v lease is out (the database's clock read %s once it answered, before the lease's end at %s)",
+				leaseMargin, answer, contracts.IdempotencyKeyInFlight, contracts.IdempotencyLease,
+				checked.Format(time.RFC3339Nano), end.Format(time.RFC3339Nano))
 		}
-		time.Sleep(200 * time.Millisecond)
-		answer = repeat()
+		t.Logf("the repeat sent %v before the dead run's lease ends answered %v once the lease had ended on the "+
+			"database's clock, so this run does not place the lease's end", leaseMargin, answer)
+	} else {
+		// Then past the end, where the take-over must come.
+		ageKeyLease(t, pair.database, "killed-press", contracts.IdempotencyLease+time.Second)
+		testwait.Until(t, "process B to take the key over once the dead run's lease lapsed", func() (httpAnswer, bool) {
+			answer = repeat()
+			return answer, answer.status != http.StatusConflict
+		})
 	}
 	if answer.status != http.StatusCreated || answer.header.Get(contracts.IdempotencyReplayedHeader) != "" {
 		t.Fatalf("the repeat once the lease lapsed: %v replayed=%q, want the write made by process B", answer,

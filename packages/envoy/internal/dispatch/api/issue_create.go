@@ -532,7 +532,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	// The new issue holds no relation, so every id it names is stated and none is retracted.
 	if len(advances) > 0 {
-		if err := writeIssueAdvances(r.Context(), tx, key, nil, advances, actor, time.Now().UTC()); err != nil {
+		if err := writeIssueAdvances(r.Context(), tx, key, nil, advances, actor, s.stampedNow().UTC()); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

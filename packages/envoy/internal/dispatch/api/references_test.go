@@ -13,13 +13,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -403,213 +403,88 @@ func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
 	}
 }
 
-// A closure read that runs past referencesClosureBound answers 503 REFERENCES_TIMEOUT naming that
-// bound, and gives its connection back. refs is locked in another connection until the test ends,
-// so the read, which reads refs, waits however fast it would run, and only the bound can end it: a
-// read with no bound never answers, and the wait for the answer fails. The answer names the
-// constant whatever ended the read, so the read is held to its bound from both sides:
-//   - From below, on the test's own clock around the request: the read starts inside the request,
-//     and the bound ends it only once the bound has passed since it started, less the millisecond
-//     setStatementBudget rounds down: the statement it cuts was given what was left of the bound,
-//     and the budget is spent (errClosureBudgetSpent) only with less than a millisecond left. A
-//     loaded machine only lengthens that clock, so it cannot fail a read that keeps its bound.
-//   - On the server's own statements on the read's connection (requireReadEndedAtItsBudget): its
-//     first budget statement gives no more than the bound; each later budget statement gives no
-//     more than what is left of the bound once the read has run from its first budget statement
-//     to the end of the statement before; from its last budget statement to the rollback
-//     boundedClosure sends once the read has ended, the read runs at least the budget that
-//     statement gave, less a millisecond; and it ends on Postgres's statement timeout, which the
-//     budget sets, not on the context. Each of these holds however late this process runs the
-//     product's goroutines, so the test's own setup and scheduling count for nothing.
+// A closure walk that runs past referencesClosureBound answers 503 REFERENCES_TIMEOUT and gives
+// its connection back. refs is locked in another connection, so the walk, which reads refs, waits
+// however fast it would run, and the bound is what ends it. The control is the first read, before
+// the lock: the same request answers 200.
 //
-// A read ended sooner or later than its bound fails. The control is the first read, before the
-// lock: the same request answers 200.
+// What ended the walk is told by the answer and by the statements the server sent, not by how
+// long it took. The server runs on a clock that stands still until the test moves it
+// (clocktest.New), so the context bound boundedClosure arms on the server's clock, a second past
+// referencesClosureBound, never fires, and the budget the read gives its first statement is the
+// whole bound, to the millisecond: a REFERENCES_TIMEOUT can only be Postgres ending the walk at the
+// statement_timeout that budget sets, and the statement that sets it before the walk's first
+// statement (setStatementBudget), which the server's pool traces (statementCounter), names the
+// bound in milliseconds. The walk's first statement waits on the lock, so that is the one budget
+// the request sends. While the request waits, pg_stat_activity must show the walk blocked by the
+// lock: that is the control that the walk reached the database, and that the later count of 0
+// means the walk ended rather than that the read cannot see it. The read counts the backends of
+// this test's database that another backend blocks (pg_blocking_pids), but for its own: the lock's
+// holder, idle in its transaction, blocks and is not blocked, and nothing but the walk reads refs
+// once the lock is held, so the count is 1 while the request waits and 0 once the bound has ended
+// the walk. A backend's state can lag the answer by a moment, so the freed state is waited for.
 func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
 	t.Parallel()
-	span := &requestSpan{}
-	handler, database, _ := newTestServer(t, testServerOptions{tracer: span})
+	statements := &statementCounter{}
+	handler, database, _ := newTestServer(t, testServerOptions{clock: clocktest.New(time.Now()), tracer: statements})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 	if response := issueReferencesRequest(t, handler, issue.Key, ""); response.Code != http.StatusOK {
 		t.Fatalf("references before the lock: status=%d body=%s, want 200", response.Code, response.Body.String())
 	}
 	holdLock(t, database, "lock table refs in access exclusive mode")
-	acquired := database.Pool.Stat().AcquiredConns()
-	span.arm()
-	type answer struct {
-		response *httptest.ResponseRecorder
-		took     time.Duration
+	blocked := blockedBackends(t, database)
+	if count := blocked(); count != 0 {
+		t.Fatalf("%d backends of the test's database wait on a lock before the request, want none", count)
 	}
-	answered := make(chan answer, 1)
-	go func() {
-		began := time.Now()
-		response := issueReferencesRequest(t, handler, issue.Key, "")
-		answered <- answer{response: response, took: time.Since(began)}
-	}()
-	got := testwait.Receive(t, "the answer of references past the bound while refs stays locked", answered)
-	response := got.response
+	acquired := database.Pool.Stat().AcquiredConns()
+	since := statements.mark()
+
+	answered := startReferencesRequest(handler, issue.Key)
+	awaitWalkBlocked(t, blocked, answered, "the lock on refs")
+	response := testwait.Receive(t, fmt.Sprintf("the route to answer, with its walk bound to a %s statement_timeout", referencesClosureBound), answered)
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("references past the bound: status=%d body=%s, want 503", response.Code, response.Body.String())
 	}
 	if refusal := decodeBody[apiErrorBody](t, response); refusal.Code != "REFERENCES_TIMEOUT" || !strings.Contains(refusal.Error, referencesClosureBound.String()) {
 		t.Errorf("references past the bound answered %s, want REFERENCES_TIMEOUT naming the %s bound", response.Body.String(), referencesClosureBound)
 	}
-	if lower := referencesClosureBound - time.Millisecond; got.took < lower {
-		t.Errorf("references past the bound answered %s after the request began, before %s, its %s bound less the millisecond its budget rounds down", got.took, lower, referencesClosureBound)
+	whole := fmt.Sprintf("%dms", referencesClosureBound.Milliseconds())
+	if budgets := closureBudgets(statements, since); !slices.Equal(budgets, []string{whole}) {
+		t.Errorf("the walk's request gave its statements the budgets %v, want the one %s its blocked first statement was given: the statement_timeout is what bounds the walk", budgets, whole)
 	}
-	requireReadEndedAtItsBudget(t, span, "references past the bound")
-	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("the walk to give its connection back: the pool's acquired connections down to the %d it held before the request", acquired), func() (int32, bool) {
-		conns := database.Pool.Stat().AcquiredConns()
-		return conns, conns <= acquired
+	type freed struct {
+		AcquiredConns int32
+		Blocked       int
+	}
+	testwait.Until(t, fmt.Sprintf("the pool to hold no more than the %d connections it held before the request and no backend to be blocked: the bound frees the walk's backend and the walk gives its connection back", acquired), func() (freed, bool) {
+		reading := freed{AcquiredConns: database.Pool.Stat().AcquiredConns(), Blocked: blocked()}
+		return reading, reading.AcquiredConns <= acquired && reading.Blocked == 0
 	})
-}
-
-// requestSpan is a tracer on the server's pool (testServerOptions.tracer) that reads one bounded
-// closure read on the server's own statements, from the hooks pgx calls as each starts and ends:
-// from the read's first budget statement after arm (setStatementBudget, which closureBudget sends
-// before each statement of the read, starting it with refs.ClosureTag) to the start of the
-// rollback boundedClosure sends on that same connection once the read has ended. It keeps the
-// first budget the read gave and the last, each with when its statement started and when the
-// statement before it on that connection ended, and the error of the first statement to fail on
-// that connection, the one the bound cut. Statements of other connections, the server's
-// background work among them, count for nothing.
-type requestSpan struct {
-	mu    sync.Mutex
-	armed bool
-	// conn is the read's connection; first and last are its first and its latest budget
-	// statements; lastEnd is when the latest statement on conn ended; ended is when the rollback
-	// started, and err the first error a statement on conn answered.
-	conn        *pgx.Conn
-	first, last spanBudget
-	lastEnd     time.Time
-	ended       time.Time
-	err         error
-}
-
-// spanBudget is one budget statement of the read: the statement_timeout it gave, as set_config
-// takes it ("1998ms"), when it started, and when the statement before it on the read's connection
-// ended (zero for the read's first budget statement).
-type spanBudget struct {
-	gave    string
-	started time.Time
-	after   time.Time
-}
-
-// arm starts the span at the next budget statement the server's pool starts.
-func (s *requestSpan) arm() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.armed = true
-}
-
-func (s *requestSpan) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	budget := strings.HasPrefix(data.SQL, refs.ClosureTag) && strings.Contains(data.SQL, "set_config('statement_timeout'")
-	switch {
-	case budget && s.armed && (s.conn == nil || conn == s.conn) && s.ended.IsZero():
-		statement := spanBudget{started: time.Now(), after: s.lastEnd}
-		if len(data.Args) == 1 {
-			statement.gave, _ = data.Args[0].(string)
-		}
-		if s.conn == nil {
-			s.conn, s.first = conn, statement
-		}
-		s.last = statement
-	case s.conn != nil && conn == s.conn && s.ended.IsZero() && data.SQL == "rollback":
-		s.ended = time.Now()
-	}
-	return ctx
-}
-
-func (s *requestSpan) TraceQueryEnd(_ context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.conn == nil || conn != s.conn || !s.ended.IsZero() {
-		return
-	}
-	s.lastEnd = time.Now()
-	if s.err == nil && data.Err != nil {
-		s.err = data.Err
-	}
-}
-
-// spanReading is what requestSpan read of the read: its first and last budget statements, when
-// its rollback started (zero when none did), and the first error a statement of it answered.
-type spanReading struct {
-	first, last spanBudget
-	ended       time.Time
-	err         error
-}
-
-func (s *requestSpan) read() spanReading {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return spanReading{first: s.first, last: s.last, ended: s.ended, err: s.err}
-}
-
-// requireReadEndedAtItsBudget requires the bounded closure read span timed, which what names, to
-// have kept its budget, on the server's own statements on the read's connection: its first budget
-// statement gave no more than referencesClosureBound; its last budget statement gave no more than
-// what was left of the bound once the read had run from its first budget statement to the end of
-// the statement before the last (the read started before the first, and closureBudget reads the
-// time left only after the statement before has ended, so on the one clock of this process the
-// product had spent at least that span, whenever it ran); from its last budget statement to its
-// rollback it ran at least the budget that statement gave, less a millisecond, since the statement
-// that budget was for starts after it; and it ended on Postgres's statement timeout (57014), which
-// the budget sets. Under pgx's default context handler a statement the context ends answers an
-// error of pgx's own, so a read the context ended fails here. No check reads how long the read
-// took: a process that runs the product late only widens the margins these checks leave.
-func requireReadEndedAtItsBudget(t *testing.T, span *requestSpan, what string) {
-	t.Helper()
-	read := span.read()
-	switch {
-	case read.first.gave == "":
-		t.Errorf("%s gave its read no statement_timeout budget on the server's pool (setStatementBudget): the read is not bounded in the database", what)
-		return
-	case read.ended.IsZero():
-		t.Errorf("%s never rolled back its read's transaction on the read's connection", what)
-		return
-	}
-	if ms, err := strconv.ParseInt(strings.TrimSuffix(read.first.gave, "ms"), 10, 64); err != nil || ms > referencesClosureBound.Milliseconds() {
-		t.Errorf("%s gave the read's first statement a statement_timeout of %q, want at most its %s bound", what, read.first.gave, referencesClosureBound)
-	}
-	ms, err := strconv.ParseInt(strings.TrimSuffix(read.last.gave, "ms"), 10, 64)
-	if kept := time.Duration(ms)*time.Millisecond - time.Millisecond; err != nil || read.ended.Sub(read.last.started) < kept {
-		t.Errorf("%s ended its read (%v) %s after its last budget statement, which gave %q: it did not keep that budget, less a millisecond", what, read.err, read.ended.Sub(read.last.started), read.last.gave)
-	}
-	if !read.last.after.IsZero() {
-		spent := read.last.after.Sub(read.first.started)
-		if left := referencesClosureBound - spent; time.Duration(ms)*time.Millisecond > left {
-			t.Errorf("%s gave its last budget statement %q after its read had run at least %s, more than the %s left of its %s bound: its statements do not share the one bound", what, read.last.gave, spent, left, referencesClosureBound)
-		}
-	}
-	var timeout *pgconn.PgError
-	if !errors.As(read.err, &timeout) || timeout.Code != "57014" || !strings.Contains(timeout.Message, "statement timeout") {
-		t.Errorf("%s ended its read with %v, want Postgres's statement timeout (57014) that its budget sets, not its context", what, read.err)
-	}
 }
 
 // The statements of an issue's references read share the one budget of referencesClosureBound
 // (c-bound-later). The issue's links hold an issue and an ask, whose node loaders,
 // loadIssueNodes and loadAskNodes, are the only statements of the read that read events, and
-// they run after the out and in statements. events is locked, and refs is locked for 1.5 s, from
-// other connections: the out statement waits out the lock on refs, and a loader then waits on
-// events. A read that gave each statement the whole bound would wait 1.5 s and then 2 s more, and
-// the context's 3 s would end it; with one budget the loader's statement ends at 2 s, on the
-// statement timeout the budget set, and the route answers 503 REFERENCES_TIMEOUT then
-// (requireReadEndedAtItsBudget reads which ended it, on the server's own statements). The 1.5 s
-// is a hold the test releases: load only delays the release, and a release after the budget is
-// spent makes the out statement the one the bound cuts, on the same statement timeout, which a
-// correct read still answers. The read gives its connection back: the pool then holds exactly the
-// connections it held with events locked, the lock's own among them. The control is the first
-// read, before the locks: the same request answers 200.
+// they run after the out and in statements. events is locked, and refs is locked, from other
+// connections: the out statement waits on the lock on refs, and a loader then waits on events.
+// The server runs on a clock that stands still until the test moves it (clocktest.New): the test
+// moves it 1.5 s on once pg_stat_activity shows the out statement blocked on refs, and then lets
+// refs go. The out statement's budget is then the whole bound, and every statement after it has
+// the 500 ms the bound leaves past those 1.5 s, to the millisecond (setStatementBudget): a read
+// that gave each statement the whole bound would give the loaders 2000 ms. With 500 ms the
+// loader's statement ends at its statement_timeout and the route answers 503 REFERENCES_TIMEOUT;
+// the context's bound, a second past the bound on the same clock, never fires. The read gives its
+// connection back: the pool then holds exactly the connections it held with events locked, the
+// lock's own among them. The control is the first read, before the locks: the same request
+// answers 200.
 func TestIssueReferencesRefuseWhenALaterStatementReachesTheBound(t *testing.T) {
 	t.Parallel()
+	statements := &statementCounter{}
+	clock := clocktest.New(time.Now())
 	// No document settles during the test, so no write of the server's own waits on events with a
-	// connection of the pool (blockIndexHandler's server, here with requestSpan on its pool).
-	span := &requestSpan{}
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, tracer: span})
+	// connection of the pool.
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead, clock: clock, tracer: statements})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 	linked := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -625,35 +500,91 @@ func TestIssueReferencesRefuseWhenALaterStatementReachesTheBound(t *testing.T) {
 	holdLock(t, database, "lock table events in access exclusive mode")
 	acquired := database.Pool.Stat().AcquiredConns()
 	releaseRefs := holdLock(t, database, "lock table refs in access exclusive mode")
-	refsReleased := make(chan struct{})
-	go func() {
-		defer close(refsReleased)
-		time.Sleep(1500 * time.Millisecond)
-		releaseRefs()
-	}()
-	// Cleanups run last first, so this wait ends before holdLock's own release of refs runs.
-	t.Cleanup(func() { testwait.Receive(t, "the release of refs", refsReleased) })
-	span.arm()
-	started := time.Now()
-	response := issueReferencesRequest(t, handler, issue.Key, "")
-	took := time.Since(started)
-	testwait.Receive(t, "the release of refs, 1.5 s after the read began", refsReleased)
+	blocked := blockedBackends(t, database)
+	since := statements.mark()
+	answered := startReferencesRequest(handler, issue.Key)
+	awaitWalkBlocked(t, blocked, answered, "the lock on refs")
+	const waitedOnRefs = 1500 * time.Millisecond
+	clock.Advance(waitedOnRefs)
+	releaseRefs()
+	response := testwait.Receive(t, "the route to answer once a loader's statement reached what was left of the bound", answered)
 	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("references with events locked: status=%d after %s body=%s, want 503 after %s", response.Code, took, response.Body.String(), referencesClosureBound)
+		t.Fatalf("references with events locked: status=%d body=%s, want 503", response.Code, response.Body.String())
 	}
 	if refusal := decodeBody[apiErrorBody](t, response); refusal.Code != "REFERENCES_TIMEOUT" || !strings.Contains(refusal.Error, referencesClosureBound.String()) {
 		t.Errorf("references with events locked answered %s, want REFERENCES_TIMEOUT naming the %s bound", response.Body.String(), referencesClosureBound)
 	}
-	// From below on the test's own clock, which load only lengthens; the rest on the server's own
-	// statements.
-	if lower := referencesClosureBound - time.Millisecond; took < lower {
-		t.Errorf("references with events locked answered after %s, before %s, its %s bound less the millisecond its budget rounds down", took, lower, referencesClosureBound)
+	whole := fmt.Sprintf("%dms", referencesClosureBound.Milliseconds())
+	left := fmt.Sprintf("%dms", (referencesClosureBound - waitedOnRefs).Milliseconds())
+	budgets := closureBudgets(statements, since)
+	if len(budgets) < 2 || budgets[0] != whole || slices.ContainsFunc(budgets[1:], func(budget string) bool { return budget != left }) {
+		t.Errorf("the read gave its statements the budgets %v, want %s for the out statement and %s for every statement after it: one budget of %s, %s of it spent on refs",
+			budgets, whole, left, referencesClosureBound, waitedOnRefs)
 	}
-	requireReadEndedAtItsBudget(t, span, "references with events locked")
-	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("the read to give its connection back: the pool's acquired connections back to the %d it held with events locked", acquired), func() (int32, bool) {
+	testwait.Until(t, fmt.Sprintf("the pool to hold the %d acquired connections it held with events locked: the read gives its connection back", acquired), func() (int32, bool) {
 		conns := database.Pool.Stat().AcquiredConns()
 		return conns, conns == acquired
 	})
+}
+
+// blockedBackends is a read of how many backends of database's own database another backend
+// blocks (pg_blocking_pids), the reader's own left out.
+func blockedBackends(t *testing.T, database *store.Store) func() int {
+	return func() int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(context.Background(), `
+			select count(*) from pg_stat_activity
+			where pid <> pg_backend_pid() and cardinality(pg_blocking_pids(pid)) > 0
+			  and datname = current_database()`).Scan(&count); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		return count
+	}
+}
+
+// startReferencesRequest asks for issueKey's references, as alice, on a goroutine of its own, and
+// answers the response once the route has written it.
+func startReferencesRequest(handler http.Handler, issueKey string) <-chan *httptest.ResponseRecorder {
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/issues/"+issueKey+"/references", nil)
+	request.Header.Set("X-Dispatch-User", "alice")
+	go func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		answered <- response
+	}()
+	return answered
+}
+
+// awaitWalkBlocked waits until pg_stat_activity shows one backend blocked, the closure walk behind
+// lock, and fails the test if the route answers first.
+func awaitWalkBlocked(t *testing.T, blocked func() int, answered <-chan *httptest.ResponseRecorder, lock string) {
+	t.Helper()
+	testwait.Eventually(t, "pg_stat_activity to show the closure walk blocked by "+lock, func() bool {
+		select {
+		case early := <-answered:
+			t.Fatalf("the route answered (status=%d body=%s) before pg_stat_activity showed its walk blocked by %s",
+				early.Code, early.Body.String(), lock)
+		default:
+		}
+		return blocked() == 1
+	})
+}
+
+// closureBudgets is the statement_timeout each budget statement of a closure read sent since gave
+// the statement after it (setStatementBudget), in the order the server sent them.
+func closureBudgets(statements *statementCounter, since int) []string {
+	budget := refs.ClosureTag + "select set_config('statement_timeout', $1, true)"
+	statements.mu.Lock()
+	defer statements.mu.Unlock()
+	var budgets []string
+	for _, sent := range statements.sent[since:] {
+		if sent.sql == budget && len(sent.args) == 1 {
+			budgets = append(budgets, fmt.Sprint(sent.args[0]))
+		}
+	}
+	return budgets
 }
 
 // recordingTx is a transaction that records each statement sent through it before sending it.
@@ -1286,7 +1217,9 @@ func graphEdges(t *testing.T, handler http.Handler, query url.Values) model.Grap
 // narrow it and malformed input is 400.
 func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
+	// The server's clock is a fake the test never moves, so its since read waits out a held-back
+	// horizon rather than answering short at referencesSinceWait (awaitSinceRead).
+	handler, database, _ := newTestServer(t, testServerOptions{clock: clocktest.Held()})
 	createReferenceAPIProject(t, handler, "LEGION")
 	createReferenceAPIProject(t, handler, "ACME")
 	legion := createReferenceAPIIssue(t, handler, "LEGION")
@@ -1375,17 +1308,19 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 	if response := graphRequest(t, handler, url.Values{"to": {askRef}}); strings.Contains(response.Body.String(), "unknown_kinds") {
 		t.Fatalf("a read naming no kind answered %s; want no unknown_kinds", response.Body.String())
 	}
-	if since := graphEdges(t, handler, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID, 10)}}); len(since.Edges) != 0 {
-		t.Fatalf("since the introducing event kept %#v; want no edges", since.Edges)
-	}
-	// The read waits for an observation taken after it to be proven safe, so it answers the
-	// message committed before it. A read that answered inside referencesSinceWait had that
-	// proof, so its answer is final and a wrong one fails the test at once; awaitSinceRead reads
-	// again only a read held past that wait, which an event write of the server's database held
-	// open that long can cause, as a loaded machine can keep one.
-	since := awaitSinceRead(t, database, "since the event before the message, ?to= "+askRef+", wanting the message's backlink",
-		func() model.GraphReferences {
-			return graphEdges(t, handler, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID-1, 10)}})
+	// A since read waits for an observation taken after it to be proven safe; the server's clock
+	// never reaches referencesSinceWait, so an event write of the server's database held open, as
+	// a loaded machine can keep one, only delays the answer, and each such read runs on the shared
+	// wait's context (awaitSinceRead). Since the introducing event, the read owes no edge; since
+	// the event before the message, it answers the message committed before it.
+	awaitSinceRead(t, "since the introducing event, ?to= "+askRef+", wanting no edges", handler,
+		func(bounded http.Handler) model.GraphReferences {
+			return graphEdges(t, bounded, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID, 10)}})
+		},
+		func(read model.GraphReferences) bool { return len(read.Edges) == 0 })
+	since := awaitSinceRead(t, "since the event before the message, ?to= "+askRef+", wanting the message's backlink", handler,
+		func(bounded http.Handler) model.GraphReferences {
+			return graphEdges(t, bounded, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID-1, 10)}})
 		},
 		func(read model.GraphReferences) bool { return len(read.Edges) == 1 })
 	if since.Edges[0].SourceSeq == nil || *since.Edges[0].SourceSeq != messageEventID {
@@ -1501,64 +1436,79 @@ func TestReferencesKeepTheExcerptOfATextOpeningWithALongURL(t *testing.T) {
 	}
 }
 
-// awaitSinceRead reads again until holds accepts the answer, because a since read answers only
-// the edges at or below the event log's safe horizon (awaitHorizonRead). The what argument names
-// the read in a failure, and database is the one the server reads. It returns the answer holds
-// accepted.
+// awaitSinceRead reads once, and fails the test unless holds accepts the answer. A since read
+// answers only the edges at or below the event log's safe horizon, and an event write of the
+// server's database holds that horizon back for as long as it stays open - the test's own
+// fixtures, the server's own request writes - while a transaction in another database, or one
+// that writes no event, holds nothing (events.Horizon). Its caller's server runs on a
+// clocktest.Held fake the test never moves, so the read is never cut at referencesSinceWait: it
+// waits until the horizon passes every event committed before it, and what it lists is every edge
+// it owes, so holds failing on it - a missing edge as much as a duplicate or a wrongly stamped one
+// - is a product failure. The read is served under testwait.Context, so a horizon that never
+// passes ends it at the shared wait's deadline rather than at the binary's alarm: its request
+// ends, which fails the test naming the read. The what argument names the read in the failure. It
+// returns the answer.
 func awaitSinceRead(
 	t *testing.T,
-	database *store.Store,
 	what string,
-	read func() model.GraphReferences,
+	handler http.Handler,
+	read func(http.Handler) model.GraphReferences,
 	holds func(model.GraphReferences) bool,
 ) model.GraphReferences {
 	t.Helper()
-	return awaitHorizonRead(t, database, what, read, holds, func(answer model.GraphReferences) string {
-		return fmt.Sprintf("%#v", answer.Edges)
-	})
+	ctx := testwait.Context(t)
+	answer := read(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r.WithContext(ctx))
+		if ctx.Err() != nil {
+			t.Errorf("%s: the read still waited for the horizon at the shared wait's deadline (%v)", what, ctx.Err())
+		}
+	}))
+	if !holds(answer) {
+		t.Fatalf("%s answered %#v: the read waited for a horizon past every event before it, so that is every edge it owes",
+			what, answer.Edges)
+	}
+	return answer
 }
 
-// awaitHorizonRead reads again until holds accepts the answer, for a route that answers only what
-// stands at or below the event log's safe horizon (sinceHorizon): an event write of the server's
-// database holds that horizon back for as long as it stays open - the test's own fixtures, the
-// server's own request writes - and a transaction in another database, or one that writes no
-// event, holds nothing (events.Horizon).
-// Such a read waits out referencesSinceWait and then answers at the horizon it was left with,
-// which may be short of what committed before it, so it is read again until the answer is whole,
-// however long that is: the watch reads no warning, and only a hold of database past
-// horizontest.OwnHoldBound or the drain before the run's deadline ends it
-// (horizontest.NewWatchInProcess); database is the one the server reads. A read that answered
-// within referencesSinceWait was not held back: what it answered is what it owed, so holds failing
-// on it is a product failure and fails the test at once. what names the read and show its answer
-// in either failure.
+// awaitHorizonRead reads again until holds accepts the answer, for a route on a server of the real
+// clock that answers only what stands at or below the event log's safe horizon (sinceHorizon): an
+// event write of the server's database holds that horizon back for as long as it stays open - the
+// test's own fixtures, the server's own request writes - and a transaction in another database,
+// or one that writes no event, holds nothing (events.Horizon). Such a read waits out
+// referencesSinceWait and then answers at the horizon it was left with, which may be short of
+// what committed before it, so it is read again through the horizon's wait (horizontest.Watch),
+// however long the horizon is held back: that wait gives up only at the test binary's deadline,
+// where it names the horizon's account of itself. database is the one the server reads; what
+// names the read and show its last answer in a failure.
 func awaitHorizonRead[T any](t *testing.T, database *store.Store, what string, read func() T, holds func(T) bool, show func(T) string) T {
 	t.Helper()
-	watch := horizontest.NewWatchInProcess(t, database)
-	for {
-		started := time.Now()
-		answer := read()
-		took := time.Since(started)
-		if holds(answer) {
-			return answer
-		}
-		if took < referencesSinceWait {
-			t.Fatalf("%s answered %s in %s, inside %s: the horizon held nothing back, so that is all it owes",
-				what, show(answer), took, referencesSinceWait)
-		}
-		if failure := watch.Failure("the whole answer of " + what); failure != "" {
-			t.Fatalf("%s; the last read, taking %s, answered %s", failure, took, show(answer))
-		}
-	}
+	warnings, stop := horizontest.Listen(t, horizontest.DatabaseOf(database))
+	defer stop()
+	var answer T
+	horizontest.NewWatch(warnings, database.Pool.Config().ConnConfig.Database).Poll(t, "the whole answer of "+what,
+		func() string { return "the last read answered " + show(answer) },
+		func() bool {
+			answer = read()
+			return holds(answer)
+		})
+	return answer
 }
+
+// showEdges is a references answer's edges as a failure prints them (awaitHorizonRead).
+func showEdges(read model.GraphReferences) string { return fmt.Sprintf("%#v", read.Edges) }
 
 // A since read answers every mention committed before it, also on a server where nothing else
 // observes the event log: no event stream has started the relay and no Delivery page the hub.
 // Each observation is proven safe only by a later one, so a read that stopped at the horizon
 // proven so far would answer nothing here, the first after boot, and each later read would stop
-// at the previous read's observation, however old. awaitSinceRead settles which answer is final.
+// at the previous read's observation, however old. The server runs on a clocktest.Held fake the
+// test never moves, so the one read is never cut at referencesSinceWait: an open event write of
+// the server's database only delays its answer, and the answer must hold the mention
+// (awaitSinceRead). A read again would let a read that stops at the horizon proven so far pass
+// on its second try.
 func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
+	handler, _, _ := newTestServer(t, testServerOptions{clock: clocktest.Held()})
 	createReferenceAPIProject(t, handler, "CORE")
 	target := createReferenceAPIIssue(t, handler, "CORE")
 	citingResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "CORE", "title": "Rotate the database credentials"}, "alice")
@@ -1570,8 +1520,8 @@ func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *t
 	comment := createReferenceAPIComment(t, handler, citing.Key, "Blocked on "+targetRef)
 
 	query := url.Values{"to": {targetRef}, "since": {"0"}}
-	awaitSinceRead(t, database, "since 0 ?to= "+targetRef+", wanting the mention by comment "+comment.ID,
-		func() model.GraphReferences { return graphEdges(t, handler, query) },
+	awaitSinceRead(t, "since 0 ?to= "+targetRef+", wanting the mention by comment "+comment.ID, handler,
+		func(bounded http.Handler) model.GraphReferences { return graphEdges(t, bounded, query) },
 		func(read model.GraphReferences) bool {
 			return len(read.Edges) == 1 && read.Edges[0].Kind == "mentions" &&
 				blockOf(read.Edges[0].Node, "comment", comment.ID)
@@ -1664,9 +1614,11 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 	if err := open.Commit(ctx); err != nil {
 		t.Fatalf("commit the lower event: %v", err)
 	}
-	read := awaitSinceRead(t, database, "since "+strconv.FormatInt(low-1, 10)+" ?to= "+targetRef+", wanting both mentions once the lower event has committed",
+	// The server runs on the real clock, which the reads above need, so a read held past
+	// referencesSinceWait by a transaction elsewhere answers short and is read again.
+	read := awaitHorizonRead(t, database, "since "+strconv.FormatInt(low-1, 10)+" ?to= "+targetRef+", wanting both mentions once the lower event has committed",
 		func() model.GraphReferences { return graphEdges(t, handler, query) },
-		func(read model.GraphReferences) bool { return len(read.Edges) == 2 })
+		func(read model.GraphReferences) bool { return len(read.Edges) == 2 }, showEdges)
 	var seqs []int64
 	for _, edge := range read.Edges {
 		if edge.Kind != "mentions" || edge.SourceSeq == nil {

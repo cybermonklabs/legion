@@ -1744,6 +1744,7 @@ A process that finds it held tries again
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
 
 Outside these classes, the document compaction sweep (lease `document-compaction`) runs every hour from a tick at start whether or not NATS is configured, the display tree fill (lease `text-tree-fill`, `texttreefill.Run`) runs every hour from a tick at start and holds its lease for a whole pass, which is as long as it takes to store a tree for every stored text that has none at this build's display-parser version, the outbox's publish scan is woken, never periodic (`outbox.Run`), the settlement resumption still runs every minute, the block index reconciliation (lease `block-index`) and the reference forms drain (lease `refs-forms`, `docs.Service.RunRefsFormsReconciliation`) each run every 30 s (every 2 s while a batch is full) and the repair of closed and reopened issues' asks (lease `issue-ask-repair`, Database migrations below) every 10 minutes after its boot pass, each recording its passes in `duty_passes` with its period, and the per-feature listeners (the delivery live hub, the event stream relay and the events outbox) keep their own connections and keep-alive pings.
+`DISPATCH_TEST_COMPACTION_SWEEP_PERIOD` replaces the compaction sweep's hour for an end-to-end test, and a deployment never sets it.
 Each pass of the settlement resumption arms at most 50 owed documents, closed and open issues' alike: first the documents that no pass tried, then the documents that a pass tried, oldest try first.
 The pass records each try in the database (`doc_settlements_pending.tried_at`), so the process that takes the lease next reads the same record.
 
@@ -4743,8 +4744,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/artifacts/{id}/_test/room-counters` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
   What this process did with the document since the process started, and what its room holds now:
-  `{"room_failures": n, "lock_waiting_compactions": n, "room_closes": n, "settlement_resumptions": [RFC 3339 time, ...], "awareness_clients": n}` - its room failures, lock-waiting compactions, closes of a room of the document by the service (a replaced history, an issue's close or reopen, a failed room's eviction, shutdown;
-  not ygo's idle retirement), the time of each settlement-resumption pass that armed the document's owed settlement, and the awareness client entries its room of the document holds now (0 with no room here), which `maxAwarenessClientsPerRoom` bounds.
+  `{"room_failures": n, "lock_waiting_compactions": n, "room_closes": n, "notified_head": n, "swept_head": n, "listen_stands": n, "notified_issue_closes": n, "rechecked_issue_closes": n, "relayed_awareness": {"<client>": {"states": n, "removals": n, "expired": n}, ...}, "settlement_resumptions": [RFC 3339 time, ...], "awareness_clients": n}` - its room failures, lock-waiting compactions, closes of a room of the document by the service (a replaced history, an issue's close or reopen, a failed room's eviction, shutdown;
+  not ygo's idle retirement), the highest version its room of the document held every update through after a catch-up another process's notification asked for, or its retry (not a room's start, the retry of a catch-up nothing notified, or a catch-up asked again after a replaced history), and after the sweep each `LISTEN` that stands runs, the `LISTEN`s its listener has stood up (one at start, one more for each redial; the same for every document), the notifications that the document's issue closed or reopened that its issue-open lane applied (not the recheck after a `LISTEN`, nor the append gate's close of a room whose append it refused) and, apart from them, the closes of its room the recheck after a `LISTEN` made (not a recheck that found the room's record matching the issue), per awareness client the states and removals of that client its room took from other processes' notifications (not an entry it dropped as stale, nor a change the room made itself) and, apart from them, the room's removals, with no notification, of a client it took from another process (its expiry of that client, or a local peer's frame that removes it), the time of each settlement-resumption pass that armed the document's owed settlement, and the awareness client entries its room of the document holds now (0 with no room here), which `maxAwarenessClientsPerRoom` bounds.
   Not mounted otherwise.
 
 - `/api/v1/artifacts/{id}/_test/hold-persistence` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
@@ -5094,15 +5095,16 @@ Each item below names a path with its method and identity, then its purpose.
   The order is status, rank, creation time and key, so consecutive offsets cover the listing once while it does not change between reads;
   an issue that enters or leaves what the filters match, or whose status or rank changes, between two reads shifts rows across a page boundary, so one issue is served twice and another never.
   Only the unpaged array is an exact set in one read.
-  Filters are optional; `updated_since` is RFC3339 and inclusive, matching issue changes and later issue events.
-  `closed_since` and `closed_before` are RFC3339 bounds on the time an issue was closed, `closed_since` inclusive and `closed_before` exclusive, so `closed_since=2026-11-03T00:00:00Z&closed_before=2026-11-04T00:00:00Z` keeps an issue closed at midnight on the 3rd and not one closed at midnight on the 4th, and an open issue matches neither bound.
-  A malformed `updated_since`, `closed_since` or `closed_before` is `400 INVALID_UPDATED_SINCE`, `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, and a `closed_before` at or before `closed_since` is `400 INVALID_CLOSED_WINDOW`.
-  `priority` repeats (`priority=0&priority=1`), each value `0`–`3` or `none` for an issue with no priority; any other value is `400 INVALID_PRIORITY`.
-  `status` repeats (`status=todo&status=in_progress`) and keeps the issues standing in any status named; no `status`, or only blank ones, is every status.
-  A value is matched as written and never refused, so a status the lifecycle does not hold, or one in another case, alone answers the empty list, as a lone `status` always has, and beside another status adds nothing.
-  `route_status` (`live`, `no_holder` or `unknown`;
-  anything else is `400 INVALID_ROUTE_STATUS`) keeps the open issues whose route is in that state, whatever their priority;
-  `live` or `no_holder` is `503 ENVOY_REFILLING` with the listener's `Retry-After` while the listener refuses its list as refilling, and `503 ENVOY_UNAVAILABLE` when it does not answer.
+
+  - Filters are optional; `updated_since` is RFC3339 and inclusive, matching issue changes and later issue events.
+    `closed_since` and `closed_before` are RFC3339 bounds on the time an issue was closed, `closed_since` inclusive and `closed_before` exclusive, so `closed_since=2026-11-03T00:00:00Z&closed_before=2026-11-04T00:00:00Z` keeps an issue closed at midnight on the 3rd and not one closed at midnight on the 4th, and an open issue matches neither bound.
+    A malformed `updated_since`, `closed_since` or `closed_before` is `400 INVALID_UPDATED_SINCE`, `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, and a `closed_before` at or before `closed_since` is `400 INVALID_CLOSED_WINDOW`.
+    `priority` repeats (`priority=0&priority=1`), each value `0`–`3` or `none` for an issue with no priority; any other value is `400 INVALID_PRIORITY`.
+    `status` repeats (`status=todo&status=in_progress`) and keeps the issues standing in any status named; no `status`, or only blank ones, is every status.
+    A value is matched as written and never refused, so a status the lifecycle does not hold, or one in another case, alone answers the empty list, as a lone `status` always has, and beside another status adds nothing.
+    `route_status` (`live`, `no_holder` or `unknown`;
+    anything else is `400 INVALID_ROUTE_STATUS`) keeps the open issues whose route is in that state, whatever their priority;
+    `live` or `no_holder` is `503 ENVOY_REFILLING` with the listener's `Retry-After` while the listener refuses its list as refilling, and `503 ENVOY_UNAVAILABLE` when it does not answer.
 
   - `advances` repeats, each value a priority id (the issues that advance that priority, by their own relation or one an issue above them states, in any project), `none` (the issues that advance no live priority) or `any` (the issues that advance one, every issue `none` leaves out);
     several are a union, so `advances=none&advances=any` is every issue, and an id no live priority carries matches no issue rather than refusing.
@@ -6433,12 +6435,13 @@ Each item below names a status and code, then its meaning.
 ```sh
 cd packages/envoy
 export DISPATCH_TEST_DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch?sslmode=disable'
-go test -timeout 20m ./internal/dispatch/api
-go test -timeout 20m $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -v '/internal/dispatch/api$')
+go test -timeout 60m ./internal/dispatch/api
+go test -timeout 60m $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -v '/internal/dispatch/api$')
 go vet ./...
 ```
 
-`internal/dispatch/api` alone takes close to `go test`'s default ten-minute package deadline (about 600 s), so it runs first and on its own, with 20 minutes, as CI's `envoy-go` job runs it (`docs/testing.md`, "Go's package deadline").
+`internal/dispatch/api` runs first and on its own.
+`docs/testing.md` ("Go's package deadline") gives the two `go test` commands, each `-timeout` and its reading.
 
 `./scripts/dev-postgres.sh` prints the database URL to set (Local Postgres, above).
 One test: `go test -run TestName ./internal/dispatch/api`, which needs no deadline of its own.
@@ -6448,12 +6451,13 @@ A claim about two processes, or two builds, on one database needs evidence from 
 Each needs `DISPATCH_TEST_DATABASE_URL`.
 
 ```sh
-go test -tags memory -count=1 -timeout 60m ./cmd/dispatch        # resident memory of real servers
-go test -tags multiprocess -count=1 -timeout 30m ./cmd/dispatch  # two servers, one database
+go test -tags memory -count=1 -timeout 90m ./cmd/dispatch        # resident memory of real servers
+go test -tags multiprocess -count=1 -timeout 50m ./cmd/dispatch  # two servers, one database
 bash scripts/build-dispatch-build.sh --previous-release --out "$TMPDIR/dispatch-previous"
 bash scripts/build-dispatch-build.sh --commit edb69e0d7588ec037847182e74a04a343a0664c9 --out "$TMPDIR/dispatch-first-rollout"
 DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" DISPATCH_FIRST_ROLLOUT_BUILD="$TMPDIR/dispatch-first-rollout" \
   go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch   # this build beside earlier ones
 ```
 
+`docs/testing.md` ("Go's package deadline") gives each of these three `-timeout`s and its reading.
 "Two builds at once", above, says what the two-build test runs and why it needs the first-rollout build.

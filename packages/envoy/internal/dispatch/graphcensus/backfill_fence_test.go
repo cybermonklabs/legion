@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // preStoreDocument is one document as a build before the node and tuple store left it: its id,
@@ -97,16 +98,11 @@ func startBackfill(t *testing.T, database *store.Store) (uint32, <-chan backfill
 // test if the run failed or did not finish.
 func awaitBackfill(t *testing.T, answered <-chan backfillAnswer) BackfillReport {
 	t.Helper()
-	select {
-	case answer := <-answered:
-		if answer.err != nil {
-			t.Fatalf("the backfill failed: %v", answer.err)
-		}
-		return answer.report
-	case <-time.After(time.Minute):
-		t.Fatal("the backfill did not finish within a minute of the lock's release")
+	answer := testwait.Receive(t, "the backfill to finish once the lock it waited on was released", answered)
+	if answer.err != nil {
+		t.Fatalf("the backfill failed: %v", answer.err)
 	}
-	return BackfillReport{}
+	return answer.report
 }
 
 // blockKind is the block kind's line of a backfill report.

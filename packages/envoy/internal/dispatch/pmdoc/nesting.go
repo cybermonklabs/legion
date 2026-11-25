@@ -75,6 +75,8 @@ func (g nestingGuard) Open(parent ast.Node, reader gmtext.Reader, pc parser.Cont
 
 // opensPastBound reports whether opens blocks, opened one inside another under parent, would take
 // the innermost inside maxNesting blocks, counting each container from parent up to the document.
+// The bound keeps the walk to maxNesting, where a parse that let blocks nest without one would
+// walk each one's whole depth.
 func opensPastBound(parent ast.Node, opens int) bool {
 	nesting := opens
 	for node := parent; node.Kind() != ast.KindDocument; node = node.Parent() {
@@ -100,6 +102,22 @@ func typedNesting(parent ast.Node) int {
 // maxInlineNesting is how many inline marks a textblock's markdown may open inside one another.
 // Emphasis, strong, strikethrough, links, images and code spans each count one, as goldmark nests
 // them: a run of four `*` either side is two strong marks.
+//
+// The bound also refuses, at write, a body that would hold a reader's browser tab. The browser
+// editor's parse (micromark) resolves what each emphasis or strong pair encloses again each time
+// an enclosing pair closes, so its work on pairs nested one inside another grows with the square
+// of their depth. Two readings, taken on 2026-11-21 in INFRA-3149's pod
+// (cybermonklabs/legion#4445), hold the bound where it stands:
+//
+//   - At the bound, emphasis or strong nested 100 deep costs the browser's engines 422,392
+//     `attention` steps, about 15 ms; 800 deep costs 26,899,192 and 4,000 deep 672,095,992,
+//     about 55 s (cybermonklabs/legion#4437). A write refuses the 4,000-deep body in work linear
+//     in its characters (TestParseWrittenRefusesEmphasisNested4000DeepInBoundedWork).
+//   - The deepest emphasis or strong nesting of the proof editor's upgrade corpus is 2, and so is
+//     its deepest inline nesting of any kind: 1,532 bodies (every docs/**/*.md,
+//     packages/*/AGENTS.md, AGENTS.md and packages/proof-editor/**/*.md of the repository, and
+//     twelve made-up shapes), which the browser's three engines read in both soft-break modes as
+//     9,192 documents.
 const maxInlineNesting = 100
 
 // inlineNesting is the refusal of the first textblock in root whose inline markdown nests past

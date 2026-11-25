@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  A body with many footnote references parses in time linear in its length. Each reference was
+  compared with every footnote definition in the document, goldmark's own reading of a reference,
+  so a body of n references and n definitions took n² comparisons. A reference now finds its
+  definition in a map of the document's definitions by label, built once for the document, and
+  resolves to the same definition, with the same number, as before.

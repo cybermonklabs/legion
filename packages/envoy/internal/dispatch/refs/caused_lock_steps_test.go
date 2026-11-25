@@ -17,13 +17,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// causedLockWait bounds how long a step of the lock order test waits for Caused to finish once
-// nothing holds it; its waits for the pass's backend to queue behind a holder end on the queue
-// itself (storetest.WaitForQueuedBehind). It is far above what a pass over three blocks takes, so
-// a step that runs out of it is the order being wrong, not a slow machine.
-const causedLockWait = 20 * time.Second
 
 // The two versions every document of the lock order test is indexed at. The first holds three
 // paragraphs. The second keeps a's text, changes b's and drops c, so its pass writes the nodes of
@@ -144,13 +139,8 @@ func TestCausedTakesTheStoreLockOrder(t *testing.T) {
 			}
 		}
 		release()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("Caused after the holder let go: %v", err)
-			}
-		case <-time.After(causedLockWait):
-			t.Fatalf("Caused did not finish within %s after the holder let go", causedLockWait)
+		if err := testwait.Receive(t, "Caused to finish once the holder let go", done); err != nil {
+			t.Fatalf("Caused after the holder let go: %v", err)
 		}
 	})
 	storetest.RequireNoMarkedCause(t, database, "the passes Caused committed")
@@ -277,10 +267,9 @@ func (p *causedPass) causeInBackground(ctx context.Context) chan error {
 // cleanups that run before this one.
 func (p *causedPass) close() {
 	if p.finished != nil {
-		select {
-		case <-p.finished:
-		case <-time.After(causedLockWait):
-		}
+		// A cleanup has no t to fail, and the holders were let go before it: the shared wait's
+		// helper form ends the wait at its one bound if Caused never returns.
+		_, _ = testwait.ReceiveInHelper("refs' causedPass.close", "the Caused still running on the pass's connection to return", p.finished)
 	}
 	_ = p.tx.Rollback(context.Background())
 	p.conn.Release()
@@ -364,14 +353,11 @@ func insertCausedTuple(t *testing.T, holder pgx.Tx, tuple graphstore.Tuple) {
 func requireCausedUnblocked(t *testing.T, database *store.Store, holder pgx.Tx, pid uint32, done chan error) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(causedLockWait)
-	for {
+	var finished error
+	testwait.Until(t, "Caused to finish while another transaction holds every other node row", func() (string, bool) {
 		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("Caused while another transaction holds every other node row: %v", err)
-			}
-			return
+		case finished = <-done:
+			return "finished", true
 		default:
 		}
 		queued, err := storetest.QueuedBehind(ctx, holder, pid)
@@ -382,10 +368,10 @@ func requireCausedUnblocked(t *testing.T, database *store.Store, holder pgx.Tx, 
 			t.Fatalf("Caused queued behind the holder of the node rows its pass did not take, waiting on %q: it takes a node row after the project of the event that its pass did not take before its projection rows",
 				causedStatement(t, database, pid))
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Caused did not finish within %s while another transaction holds every other node row", causedLockWait)
-		}
-		time.Sleep(2 * time.Millisecond)
+		return "neither finished nor queued behind the holder; it waits on " + causedStatement(t, database, pid), false
+	})
+	if finished != nil {
+		t.Fatalf("Caused while another transaction holds every other node row: %v", finished)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Room sync runs each handler on a lane of its own, at the same time as the others (roomSyncLane).
@@ -54,7 +55,7 @@ func TestAnIssueCloseReachesTheRoomsWhileAnotherRoomSyncLaneHoldsAConnection(t *
 		<-release
 		_ = tx.Rollback(context.Background())
 	})
-	<-holding
+	testwait.Receive(t, "the product's sync lane to run the pushed body", holding)
 
 	writeIssueClosed(t, task.store, "DOC-1", true)
 	requireEnds(t, alice, "closing the issue while room sync's catch-up lane held a pooled connection left alice's browser connected")

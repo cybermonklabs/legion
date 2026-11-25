@@ -2,14 +2,19 @@ package docs
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Shutdown's drain waits for each room's appends to land before it settles the room, and a
@@ -19,40 +24,49 @@ import (
 // polls costs the database a statement every millisecond. (A timer's settlement waits for no
 // append: it stores the room's unstored updates itself, Ledger.flushThrough.)
 
-// A room's append held for half a second while Shutdown drains the room: the drain waits for it
+// A room's append held while Shutdown drains the room: the drain waits for it
 // (waitForDurableAppends) and settles the document once it lands. Its wait wakes when the append
-// lands, not every millisecond of the half second, and the drain's settlement starts promptly once
-// the append commits. The promptness is read between the append's commit (afterAppendCommit) and
-// the settlement's start (beforeSettleStart), in process: a bound on the version's write would
-// also time the settlement's own database work, which says nothing about how it is woken.
+// lands and on nothing else, and the drain's settlement starts on the wake the landing gives it.
+// The service's clock is a fake, held, so no timer of the service's - a poll, a pause before
+// settling - fires by itself; what the drain arms on it is read instead: once the drain is parked
+// in its wait (the room's appendWaiters), the clock holds nothing beyond what it held before
+// Shutdown but the drain's budget (ShutdownDrainBudget), so the wait arms no poll, and once
+// Shutdown has returned nothing beyond it at all, so no wait left a timer behind. The wakes are
+// read off the order of the events, in process: the append's commit (afterAppendCommit), each
+// wake of the drain's wait (settlementWoke) and the settlement's start (beforeSettleStart), each
+// numbered from one counter as it happens, with exactly one wake between the commit and the
+// start: the landing's. A wait the service took off its clock, on the wall clock, which neither
+// would show, is caught by `c-clock`'s listing at INFRA-3149's final head, which lists every
+// wall-clock wait of the product's source that its allow-list gives no reason for.
 func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
-	// Not parallel: it holds the settlement's start to within 50 ms of the append's commit, in
-	// process, and among the package's parallel tests under the race detector on 4 vCPU the start
-	// came 66 ms after (build-cluster run legion-race-docsfive6-1): the scheduler's delay, not the
-	// drain's. Alone, the bound still tells a woken wait from one that polls.
-	const held = 500 * time.Millisecond
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	persist := NewPgVersioned(database)
 	var counting atomic.Bool
-	var committed, started atomic.Int64
+	// order numbers each event of the drain this row reads, as it happens; committed, started
+	// and the two wake counts are read at the commit and at the start.
+	var order, committed, started, wakes, wakesAtCommit, wakesAtStart atomic.Int64
 	persist.afterAppendCommit = func(room string, _ persistence.Version) {
-		if room == artifactID && counting.Load() {
-			committed.CompareAndSwap(0, time.Now().UnixNano())
+		if room == artifactID && counting.Load() && committed.CompareAndSwap(0, order.Add(1)) {
+			wakesAtCommit.Store(wakes.Load())
 		}
 	}
 	appends := &heldStore{VersionedStore: persist, room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
+	serviceClock := clocktest.Held()
+	service := newShutdownTestServiceOn(t, database, appends, serviceClock)
+	// Registered after the service, so it runs before its shutdown: a row that fails while the
+	// room's append is held lets it go rather than leave that shutdown waiting on it.
 	testcleanup.Add(t, appends.let)
-	service := newShutdownTestService(t, database, appends)
-	var wakes atomic.Int64
 	service.settlementWoke = func(room string) {
 		if room == artifactID && counting.Load() {
+			order.Add(1)
 			wakes.Add(1)
 		}
 	}
 	service.beforeSettleStart = func(room string) {
-		if room == artifactID && counting.Load() && committed.Load() != 0 {
-			started.CompareAndSwap(0, time.Now().UnixNano())
+		if room == artifactID && counting.Load() && committed.Load() != 0 && started.CompareAndSwap(0, order.Add(1)) {
+			wakesAtStart.Store(wakes.Load())
 		}
 	}
 	seedServiceText(t, service, artifactID, "before")
@@ -66,38 +80,42 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 	counting.Store(true)
 	appends.armed.Store(true)
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	select {
-	case <-appends.entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room's append never reached the store")
-	}
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancelShutdown()
+	testwait.Receive(t, "the room's append to reach the store", appends.entered)
+	before := serviceClock.Armed()
 	shutdown := make(chan error, 1)
-	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
-	time.Sleep(held)
+	go func() { shutdown <- service.Shutdown(testwait.Context(t)) }()
+	testwait.Until(t, "Shutdown's drain budget armed on the service's clock", func() ([]time.Time, bool) {
+		armed := serviceClock.Armed()
+		return armed, len(armedBeyond(before, armed)) > 0
+	})
+	testwait.Eventually(t, "the drain parked in its wait for the room's held append", func() bool {
+		return appendWaiters(service, artifactID) == 1
+	})
+	if extra := armedBeyond(before, serviceClock.Armed()); len(extra) != 1 {
+		t.Errorf("with the drain parked in its wait the service's clock holds %v beyond what it held before Shutdown, want the drain's budget alone: a wait that polls arms a timer for each poll", extra)
+	}
 	appends.let()
-	select {
-	case err := <-shutdown:
-		if err != nil {
-			t.Fatalf("shutdown: %v", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("Shutdown never returned once the room's append was let go")
+	if err := testwait.Receive(t, "Shutdown to return once the room's append was let go", shutdown); err != nil {
+		t.Fatalf("shutdown: %v", err)
 	}
 	counting.Store(false)
+	if extra := armedBeyond(before, serviceClock.Armed()); len(extra) != 0 {
+		t.Errorf("once Shutdown returned the service's clock holds %v beyond what it held before Shutdown, want nothing: a wait of the drain left a timer armed", extra)
+	}
 
 	if got := wakes.Load(); got > 3 {
-		t.Errorf("the drain woke %d times while its room's append was held for %s, want at most 3", got, held)
+		t.Errorf("the drain woke %d times while its room's append was held, want at most 3", got)
 	}
 	switch {
 	case committed.Load() == 0:
 		t.Errorf("the held append's commit was never seen")
 	case started.Load() == 0:
 		t.Errorf("no settlement started after the held append committed")
+	case started.Load() < committed.Load():
+		t.Errorf("the drain's settlement started (event %d) before its room's append committed (event %d)", started.Load(), committed.Load())
 	default:
-		if after := time.Duration(started.Load() - committed.Load()); after > 50*time.Millisecond {
-			t.Errorf("the drain's settlement started %s after its room's append committed, want within 50ms", after.Round(time.Millisecond))
+		if between := wakesAtStart.Load() - wakesAtCommit.Load(); between != 1 {
+			t.Errorf("the drain woke %d times between its room's append committing and its settlement starting, want once: the landing's wake, on which it settles", between)
 		}
 	}
 	number, markdown, _ := latestDocumentVersion(t, observer, artifactID)
@@ -126,17 +144,24 @@ func TestShutdownsSettlementLockWaitIsOneStatement(t *testing.T) {
 	versioned, _, _ := latestDocumentVersion(t, observer, artifactID)
 	unlock := holdDocumentLock(t, observer, artifactID)
 	since := tracer.mark()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	started := time.Now()
-	if err := service.Shutdown(ctx); err != nil {
+	if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 		t.Errorf("Shutdown with the document's lock held elsewhere: %v", err)
 	}
-	took := time.Since(started)
 	unlock()
 
-	if locks := tracer.statements(artifactID, "advisory_xact_lock(hashtext(", since); locks != 1 {
-		t.Errorf("the shutdown's settlement sent %d lock statements for the document, want 1", locks)
+	// pg_advisory_xact_lock is the lock that waits; pg_try_advisory_xact_lock, which gives up at
+	// once, is not it, and the shutdown's settlement sends none.
+	if locks := tracer.statements(artifactID, "pg_advisory_xact_lock(hashtext(", since); locks != 1 {
+		t.Errorf("the shutdown's settlement sent %d waiting lock statements for the document, want 1", locks)
+	}
+	if tries := tracer.statements(artifactID, "pg_try_advisory_xact_lock(hashtext(", since); tries != 0 {
+		t.Errorf("the shutdown's settlement sent %d try-locks for the document, want none: a try-lock waits for nothing", tries)
+	}
+	// The wait's bound is Postgres's own: the lock statement goes out in the pipeline that first
+	// sets lock_timeout to 100 ms, so the database ends the wait there - not a try-lock that waits
+	// for nothing, and not a wait for the shutdown's whole budget.
+	if !tracer.lockWaitsUnder(artifactID, "100ms", since) {
+		t.Errorf("the shutdown's settlement took the document's lock outside a pipeline that sets lock_timeout to 100ms first")
 	}
 	if owed, err := settlementPending(context.Background(), observer.Pool, artifactID); err != nil || !owed {
 		t.Errorf("the document owes no settlement (%v) after a shutdown whose settlement could not lock it, want it left to resume", err)
@@ -144,7 +169,51 @@ func TestShutdownsSettlementLockWaitIsOneStatement(t *testing.T) {
 	if number, _, _ := latestDocumentVersion(t, observer, artifactID); number != versioned {
 		t.Errorf("the document's latest version is %d, want %d: the settlement left it", number, versioned)
 	}
-	if took < 100*time.Millisecond || took > 5*time.Second {
-		t.Errorf("Shutdown took %s, want the settlement to give up on the lock after about 100ms", took.Round(time.Millisecond))
+}
+
+// lockWaitsUnder reports whether a pipeline recorded since sets lock_timeout to timeout and then,
+// in that pipeline, takes room's transaction-level advisory lock with the statement that waits for
+// it (pg_advisory_xact_lock, not pg_try_advisory_xact_lock).
+func (t *statementTracer) lockWaitsUnder(room, timeout string, since int) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, trip := range t.trips[since:] {
+		set := false
+		for _, statement := range trip.statements {
+			if strings.Contains(statement.sql, "set_config('lock_timeout', '"+timeout+"'") {
+				set = true
+			}
+			if set && strings.Contains(statement.sql, "pg_advisory_xact_lock(hashtext(") && statement.names(room) {
+				return true
+			}
+		}
 	}
+	return false
+}
+
+// armedBeyond is the deadlines of armed that before does not hold, each as often as armed holds
+// it more times than before does: what a fake's timers gained since before was read, whatever
+// it lost meanwhile.
+func armedBeyond(before, armed []time.Time) []time.Time {
+	left := slices.Clone(before)
+	var gained []time.Time
+	for _, at := range armed {
+		if index := slices.IndexFunc(left, at.Equal); index >= 0 {
+			left = slices.Delete(left, index, index+1)
+			continue
+		}
+		gained = append(gained, at)
+	}
+	return gained
+}
+
+// appendWaiters is how many waits for room's appends its record counts (waitForRoomIdle,
+// askRoomAppends), read under the record's lock; none when the room has no record.
+func appendWaiters(service *Service, room string) int {
+	state := service.lockExistingState(room)
+	if state == nil {
+		return 0
+	}
+	defer service.unlockState(room, state)
+	return state.appendWaiters
 }

@@ -1233,7 +1233,9 @@ func TestARepeatOfAnUploadStillRunningWaitsForItsAnswerAfterTheIssueCloses(t *te
 // upload and is still running is KEY_IN_FLIGHT, unspooled, and one that committed and died before
 // its answer was kept is KEY_COMMITTED, once the layer has read the repeat's digest. Each case
 // lands an upload, closes the issue, and rewrites the key's row into the state it names; the stored
-// artifact is beside the point, since a repeat reads only the row.
+// artifact is beside the point, since a repeat reads only the row. The in-flight key's lease is
+// staged stagedAhead past the database's now(), so the repeat reads it live however long the case
+// takes to send it; a lease of now() lapses contracts.IdempotencyLease later.
 func TestAClosedIssueRefusesAnUploadOnlyWhereItsHandlerWouldRun(t *testing.T) {
 	unanswered := `status = null, headers = null, response = null`
 	for _, state := range []struct {
@@ -1243,7 +1245,10 @@ func TestAClosedIssueRefusesAnUploadOnlyWhereItsHandlerWouldRun(t *testing.T) {
 		code      string
 		unspooled bool
 	}{
-		{name: "in flight, its upload committed", set: unanswered + `, leased_at = now()`, code: contracts.IdempotencyKeyInFlight, unspooled: true},
+		{
+			name: "in flight, its upload committed", set: unanswered + `, leased_at = now() + make_interval(secs => $1)`,
+			args: []any{stagedAhead.Seconds()}, code: contracts.IdempotencyKeyInFlight, unspooled: true,
+		},
 		{name: "lapsed after committing its upload", set: unanswered + `, leased_at = null`, code: contracts.IdempotencyKeyCommitted},
 		{name: "abandoned with nothing committed", set: unanswered + `, leased_at = null, committed_at = null`, code: "ISSUE_CLOSED", unspooled: true},
 		{

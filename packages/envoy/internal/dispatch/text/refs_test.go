@@ -1,6 +1,7 @@
 package text
 
 import (
+	"cmp"
 	"encoding/json"
 	"os"
 	"reflect"
@@ -8,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestExtractRecognizesDispatchAndServerReferences(t *testing.T) {
@@ -658,27 +658,40 @@ func TestEveryReferenceIsBoundedByItsTargetID(t *testing.T) {
 
 // A body near the 1 MiB request cap that trails a reference with a run of closing parentheses,
 // alone or between the emphasis delimiters the trim also drops, or with a run of square brackets
-// after a dashboard URL, still cites that reference, in one pass over the run. The bound is
-// generous for a loaded machine; a trim that recounts the parentheses for every character it drops
-// takes tens of seconds on these bodies.
+// after a dashboard URL, still cites that reference, in one pass over the run: the trim reads the
+// body's bytes no more than three times over (trimWork), where a trim that recounts the
+// parentheses for every character it drops reads them once for each. It reads the reference it
+// trims more than once over too, its two parenthesis counts beside its walk back: a trim whose
+// counts went uncounted - strings.Count called in its loop for every byte it drops, which the upper
+// bound alone would pass - reads its walk back alone, about once over. The reference is the whole
+// body where the run continues it, and the dashboard URL alone where a square bracket ends it
+// (referenceEnd).
 func TestExtractTrimsALongClosingRunInLinearTime(t *testing.T) {
 	const server = "https://dispatch.example"
 	const size = 1 << 20
 	issue := []Ref{{Kind: "issue", IssueKey: "CORE-1", ID: "CORE-1"}}
 	for _, test := range []struct {
-		name string
-		body string
+		name      string
+		body      string
+		reference string
 	}{
-		{"parentheses", "dispatch://CORE-1" + strings.Repeat(")", size)},
-		{"parentheses and underscores", "dispatch://CORE-1" + strings.Repeat(")_", size/2)},
-		{"parentheses and asterisks after a dashboard URL", server + "/issues/CORE-1" + strings.Repeat(")*", size/2)},
-		{"square brackets after a dashboard URL", server + "/issues/CORE-1" + strings.Repeat("]", size)},
+		{"parentheses", "dispatch://CORE-1" + strings.Repeat(")", size), ""},
+		{"parentheses and underscores", "dispatch://CORE-1" + strings.Repeat(")_", size/2), ""},
+		{"parentheses and asterisks after a dashboard URL", server + "/issues/CORE-1" + strings.Repeat(")*", size/2), ""},
+		{"square brackets after a dashboard URL", server + "/issues/CORE-1" + strings.Repeat("]", size), server + "/issues/CORE-1"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			start := time.Now()
+			trimmed := cmp.Or(test.reference, test.body)
+			before := trimWork()
 			got := Extract(test.body, server)
-			if elapsed := time.Since(start); elapsed > 3*time.Second {
-				t.Errorf("Extract() took %s on a %d-byte body; want one pass", elapsed, len(test.body))
+			read := trimWork() - before
+			if read > 3*uint64(len(test.body)) {
+				t.Errorf("Extract() trimmed %d bytes of a %d-byte body; want one pass: two parenthesis counts and one walk back",
+					read, len(test.body))
+			}
+			if least := 3 * uint64(len(trimmed)) / 2; read < least {
+				t.Errorf("Extract() trimmed %d bytes of the %d-byte reference; want at least %d, its two parenthesis counts beside its walk back: a count the trim made is not counted",
+					read, len(trimmed), least)
 			}
 			if !reflect.DeepEqual(got, issue) {
 				t.Errorf("Extract() = %#v; want %#v", got, issue)

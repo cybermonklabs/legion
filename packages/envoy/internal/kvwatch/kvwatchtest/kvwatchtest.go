@@ -4,10 +4,11 @@
 // tests both drive a real role claim watcher this way, and which waits a test keeps follows which
 // waits the watcher arms, so the rule lives here once rather than in a copy per package that a
 // change to those waits must find twice. It is an ordinary package rather than a _test.go file
-// because Go cannot share test-only code across packages (see internal/cputest's identical
-// reasoning). kvwatch's own tests keep fakes of their own (armed in repair_test.go, pending in
-// probe_test.go) because those keep every wait the watcher arms, the short ones included, for the
-// test to fire, where Waits hands the short waits to time.AfterFunc.
+// because Go cannot share test-only code across packages. kvwatch's own tests keep fakes of their
+// own (armed in repair_test.go, pending in probe_test.go) because those keep every wait the
+// watcher arms, the short ones included, for the test to fire, where Waits hands the short waits
+// to time.AfterFunc. It also holds the one wait for a watcher's copy to follow its bucket
+// (AwaitFollowing), which internal/store's and internal/session's tests both make.
 package kvwatchtest
 
 import (

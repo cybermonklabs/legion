@@ -97,13 +97,16 @@ func (r *registeredInstance) get() string {
 //
 // renames is the rename pairs the boot read, which each pass names its repositories by
 // (cireconcile.Reconciler.Renames).
+//
+// githubOptions add to the App client's own (main's gitHubClientOptions: a test process's bound on
+// each call, and none in a deployment).
 func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase, reviewer, verdict string,
-	interval time.Duration, instance *registeredInstance, renames refs.Renames) (*cireconcile.Reconciler, error) {
+	interval time.Duration, instance *registeredInstance, renames refs.Renames, githubOptions ...githubapp.Option) (*cireconcile.Reconciler, error) {
 	if natsClient == nil {
 		return nil, nil
 	}
 	limits := ratelimit.New(database.Pool)
-	github, err := githubapp.New(app, apiBase, githubapp.WithLimits(limits))
+	github, err := githubapp.New(app, apiBase, append([]githubapp.Option{githubapp.WithLimits(limits)}, githubOptions...)...)
 	if err != nil || github == nil {
 		return nil, err
 	}

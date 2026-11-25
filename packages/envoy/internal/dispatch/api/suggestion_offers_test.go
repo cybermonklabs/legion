@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // offerRow is one write_suggestions row as the table holds it, every column a case reads.
@@ -145,7 +145,7 @@ func seedCrossProjectOffers(t *testing.T, asking, other string, count int) offer
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
 	}
-	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder, relatedBound: meaningVerdictBound(t)})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder, clock: clocktest.Held()})
 	_, _, host, hostArtifact := crossProjectAsker(t, handler, database, embedder, asking)
 	createSuggestionProject(t, handler, other)
 	owner := createSearchIssue(t, handler, other, "Backlog runbook", "What to do when the backlog grows.")
@@ -300,7 +300,9 @@ func TestSuggestionOfferIsSweptAndStaysIgnoredWithoutLaterActivity(t *testing.T)
 	t.Parallel()
 	fixture := seedCrossProjectOffers(t, "XSWEEP", "XSWEEPO", 1)
 	srv := directServer(fixture.deps)
-	from := time.Now().Add(-time.Minute)
+	// The report window is read off the clock that stamps the offer row, the database's: from
+	// before the ask that offers it to after the sweep.
+	from := databaseNow(t, fixture.database.Pool)
 
 	_, askID := askTheQuestion(t, fixture, "/api/v1/issues/"+fixture.host+"/asks")
 	recorded := readOfferRows(t, fixture.database, "source_ask_id = $1 and role = 'other_project'", askID)
@@ -316,7 +318,7 @@ func TestSuggestionOfferIsSweptAndStaysIgnoredWithoutLaterActivity(t *testing.T)
 		t.Fatalf("after the sweep the row is %v, want it swept, still ignored and with no detail", swept)
 	}
 
-	to := time.Now().Add(time.Minute)
+	to := databaseNow(t, fixture.database.Pool)
 	stamp := func(at time.Time) string { return at.UTC().Format(time.RFC3339Nano) }
 	report, body := getRelatedChecks(t, fixture.handler, url.Values{
 		"project": {"XSWEEP"}, "from": {stamp(from)}, "to": {stamp(to)},
@@ -340,14 +342,7 @@ func TestSuggestionOfferBecomesActedOnWhenTheSourceCitesTheOfferedAsk(t *testing
 	if len(recorded) != 1 {
 		t.Fatalf("recorded %v, want the one offered question", recorded)
 	}
-	// The citation must postdate the row, by the clock that stamps both: the database's.
-	testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("the database's clock to pass the offer row's created_at %s (its clock)", recorded[0].CreatedAt), func() (time.Time, bool) {
-		var now time.Time
-		if err := fixture.database.Pool.QueryRow(context.Background(), `select clock_timestamp()`).Scan(&now); err != nil {
-			t.Fatalf("read the database's clock: %v", err)
-		}
-		return now, now.After(recorded[0].CreatedAt)
-	})
+	awaitDatabaseClockPastSuggestions(t, fixture.database.Pool) // the citation must postdate the row
 
 	citation := "dispatch://" + fixture.owner + "/ask/" + fixture.offered[0]
 	postOutcomeMessage(t, fixture.handler, fixture.host, "alice", "XCITEO settled this already: "+citation)

@@ -1183,7 +1183,7 @@
     },
     "/api/v1/artifacts/{id}/_test/room-counters": {
       "get": {
-        "description": "Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, time its settlement resumptions of it, and read the awareness client entries its room holds now.",
+        "description": "Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, read the head its room held after the catch-ups another process's notification asked for and after the sweeps a LISTEN ran, count the LISTENs its listener stood up, the issue-open notifications it applied to the document and the closes the recheck after a LISTEN made, and the awareness changes other processes' notifications made to its room and its removals with no notification of the clients they relayed (an expiry, or a local peer's removal), per client, time its settlement resumptions of it, and read the awareness client entries its room holds now.",
         "operationId": "getApiV1ArtifactsByIdTestRoomCounters",
         "parameters": [
           {
@@ -28503,6 +28503,28 @@
         ],
         "type": "object"
       },
+      "RelayedAwarenessChanges": {
+        "properties": {
+          "expired": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "removals": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "states": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "states",
+          "removals",
+          "expired"
+        ],
+        "type": "object"
+      },
       "RenameArtifactInput": {
         "properties": {
           "name": {
@@ -28762,9 +28784,34 @@
           "awareness_clients": {
             "type": "integer"
           },
+          "listen_stands": {
+            "format": "int64",
+            "type": "integer"
+          },
           "lock_waiting_compactions": {
             "format": "int64",
             "type": "integer"
+          },
+          "notified_head": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "notified_issue_closes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "rechecked_issue_closes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "relayed_awareness": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RelayedAwarenessChanges"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "room_closes": {
             "format": "int64",
@@ -28783,12 +28830,22 @@
               "array",
               "null"
             ]
+          },
+          "swept_head": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "required": [
           "room_failures",
           "lock_waiting_compactions",
           "room_closes",
+          "notified_head",
+          "swept_head",
+          "listen_stands",
+          "notified_issue_closes",
+          "rechecked_issue_closes",
+          "relayed_awareness",
           "settlement_resumptions",
           "awareness_clients"
         ],

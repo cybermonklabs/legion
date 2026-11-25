@@ -25,6 +25,6 @@ func TestMain(m *testing.M) {
 		panic("set this package's default -parallel: " + err.Error())
 	}
 	os.Exit(cmdtest.Run(func() int {
-		return testMainHarness(func() int { return testnats.Main(m, testnats.Accounts(listenerTestAccounts)) })
+		return testMainHarness(func() int { return testnats.Main(m.Run, testnats.Accounts(listenerTestAccounts)) })
 	}))
 }

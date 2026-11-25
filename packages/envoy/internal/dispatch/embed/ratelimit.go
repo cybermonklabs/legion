@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"golang.org/x/time/rate"
 )
@@ -51,20 +52,42 @@ const (
 // get through even while background work is actively pacing itself near that ceiling.
 type RateLimitedEmbedder struct {
 	inner Embedder
+	// clock is what Embed reserves its call at and waits a reservation's delay out on: clock.Real,
+	// and a test's clocktest.Fake (WithLimiterClock), on which the delay is the fake's and its timer
+	// fires only where the test moves it.
+	clock clock.Clock
 
 	mu       sync.Mutex
 	interval time.Duration
 	limiter  *rate.Limiter
 }
 
+// LimiterOption configures a RateLimitedEmbedder.
+type LimiterOption func(*RateLimitedEmbedder)
+
+// WithLimiterClock sets the clock the limiter reserves its calls at and waits their delays out on;
+// nil is the real clock, which a RateLimitedEmbedder has unless this names another.
+func WithLimiterClock(c clock.Clock) LimiterOption {
+	return func(r *RateLimitedEmbedder) {
+		if c != nil {
+			r.clock = c
+		}
+	}
+}
+
 // NewRateLimitedEmbedder wraps inner for background callers; see RateLimitedEmbedder's own
 // doc comment for who should (embedqueue) and should not (search.go's live query path) hold one.
-func NewRateLimitedEmbedder(inner Embedder) *RateLimitedEmbedder {
-	return &RateLimitedEmbedder{
+func NewRateLimitedEmbedder(inner Embedder, options ...LimiterOption) *RateLimitedEmbedder {
+	r := &RateLimitedEmbedder{
 		inner:    inner,
+		clock:    clock.Real(),
 		interval: rateLimitFloor,
 		limiter:  rate.NewLimiter(rate.Every(rateLimitFloor), 1),
 	}
+	for _, option := range options {
+		option(r)
+	}
+	return r
 }
 
 // Embed paces itself to the limiter's current interval via golang.org/x/time/rate's own
@@ -73,23 +96,25 @@ func NewRateLimitedEmbedder(inner Embedder) *RateLimitedEmbedder {
 // adjusts that interval from the result: longer (multiplicative) on a throttled error, shorter
 // (additive, floored at rateLimitFloor) on anything else - an ordinary success or a non-throttled
 // failure both count as "the model service was not signalling capacity pressure this time." It
-// reserves with Reserve rather than calling the package's own ctx-aware Wait, because Wait fails
+// reserves with ReserveN rather than calling the package's own ctx-aware Wait, because Wait fails
 // fast with its own error the moment it can tell the reservation's delay would outlast ctx's
 // deadline, without ever waiting for ctx to actually end - and embedqueue's callers depend on
 // ctx.Err() being set by the time this call returns (handleGroupFailure's own ctx.Err() check,
 // which every embedRows loop iteration relies on), to tell a cancelled wait apart from every
-// other failure. Reserve, by contrast, hands back a delay to wait out ourselves, so the select
-// below only ever returns once ctx.Done() has genuinely fired.
+// other failure. A reservation, by contrast, hands back a delay to wait out ourselves, so the
+// select below only ever returns once ctx.Done() has genuinely fired. The reservation, its delay
+// and its cancel are all read at the limiter's clock's present, which is time.Now on the real
+// clock, as Reserve, Delay and Cancel read it.
 func (r *RateLimitedEmbedder) Embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
-	reservation := r.limiter.Reserve()
-	if delay := reservation.Delay(); delay > 0 {
-		timer := time.NewTimer(delay)
+	reservation := r.limiter.ReserveN(r.clock.Now(), 1)
+	if delay := reservation.DelayFrom(r.clock.Now()); delay > 0 {
+		timer := r.clock.NewTimer(delay)
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
-			reservation.Cancel()
+			reservation.CancelAt(r.clock.Now())
 			return nil, ctx.Err()
-		case <-timer.C:
+		case <-timer.C():
 		}
 	}
 	vectors, err := r.inner.Embed(ctx, texts, inputType)
@@ -126,7 +151,7 @@ func (r *RateLimitedEmbedder) adjust(err error) {
 		}
 	}
 	if r.interval != before {
-		r.limiter.SetLimit(rate.Every(r.interval))
+		r.limiter.SetLimitAt(r.clock.Now(), rate.Every(r.interval))
 	}
 }
 
@@ -144,5 +169,5 @@ func (r *RateLimitedEmbedder) setInterval(d time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.interval = d
-	r.limiter.SetLimit(rate.Every(d))
+	r.limiter.SetLimitAt(r.clock.Now(), rate.Every(d))
 }

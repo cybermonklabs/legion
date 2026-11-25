@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  A broadcast parses its body once, before its transaction takes an id, not once per recipient
+  inside it. Every copy stores the same body, so Dispatch splits its blocks before the broadcast's
+  write begins, and each copy's block index only binds that plan to the copy's id and time: a
+  write holds its transaction id only for its database statements. Each copy's index is the one
+  it was: the same blocks, mentions and state rows.

@@ -8,12 +8,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // todaysHeadsQuery is the query a pass sent every repository before it read commit statuses,
@@ -113,19 +113,25 @@ func statesOf(state *cistore.State) map[string]string {
 // settlementNaming is the next settlement of the head that names exactly these statuses,
 // passing over every settlement before it: a head read over REST has its check runs and suites
 // written before its statuses, so the summary loop may settle it on the first writes and again
-// on the second.
+// on the second. The wait has no bound of its own (testwait.Until); its failure names the
+// statuses the last settlement it read named.
 func (h *harness) settlementNaming(sub *nats.Subscription, why string, want []cistore.StatusRef) cistore.Summary {
 	h.t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		settled := h.settlement(sub, why)
-		if slices.Equal(settled.Statuses, want) {
-			return settled
+	type reading struct{ LastNamed []cistore.StatusRef }
+	var last cistore.Summary
+	testwait.Until(h.t, fmt.Sprintf("%s: a settlement naming the statuses %v", why, want), func() (reading, bool) {
+		waiting, _, err := sub.Pending()
+		if err != nil {
+			h.t.Fatalf("%s: read the settlements waiting: %v", why, err)
 		}
-		if time.Now().After(deadline) {
-			h.t.Fatalf("%s: the last settlement names statuses %v, want %v", why, settled.Statuses, want)
+		if waiting == 0 {
+			h.driveLoop(h.loopStep())
+			return reading{LastNamed: last.Statuses}, false
 		}
-	}
+		last = h.settlement(sub, why)
+		return reading{LastNamed: last.Statuses}, slices.Equal(last.Statuses, want)
+	})
+	return last
 }
 
 // requestsFor is every request since index from whose URL names the commit sha, oldest first,
@@ -354,7 +360,7 @@ func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
 		h.github.setTokenPermissions(tokenWithoutStatuses)
 		h.github.forgetRequests()
 		h.github.forgetQueries()
-		h.replica().Pass(h.ctx)
+		h.passOf(h.replica())
 
 		if queries := h.github.queriesAsked(); len(queries) != 1 || queries[0].text != todaysHeadsQuery {
 			t.Fatalf("the pass of before asked %d queries, want the query of before", len(queries))
@@ -383,7 +389,7 @@ func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
 		}
 		h.github.setTokenPermissions(tokenWithoutStatuses)
 		h.github.forgetRequests()
-		h.replica().Pass(h.ctx)
+		h.passOf(h.replica())
 		if today := h.github.byRoute(); !maps.Equal(refused, today) {
 			t.Fatalf("the pass whose status field GitHub refused sent %v, want what the pass of before sends: %v", refused, today)
 		}

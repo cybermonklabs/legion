@@ -45,14 +45,15 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 			if err != nil {
 				t.Fatalf("open a pool through lossy connections: %v", err)
 			}
-			t.Cleanup(pool.Close)
+			t.Cleanup(func() {
+				testwait.Returns(t, "every connection of the pool through lossy connections to come back, so the pool closes", pool.Close)
+			})
 			listener, _ := newMentionListener(t)
 			handler, _, _, served := newRegisteredTestServer(t, testServerOptions{
-				store: &store.Store{Pool: store.NewPool(pool)}, envoyURL: listener.URL,
-				envoyTimeout: 30 * time.Second, outboxPublishes: true,
+				store: &store.Store{Pool: store.NewPool(pool)}, envoyURL: listener.URL, outboxPublishes: true,
 			})
-			served.mentions.wait()
-			sender := newMentionSender(served.lifetime, time.Hour, served.sendCommentMention,
+			joinRegisteredMentions(t, served)
+			sender := newMentionSender(served.lifetime, stagedAhead, nil, served.sendCommentMention,
 				served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
 			timers := make(chan func(), 4)
 			sender.mu.Lock()
@@ -139,15 +140,16 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open a pool through lossy connections: %v", err)
 			}
-			t.Cleanup(pool.Close)
+			t.Cleanup(func() {
+				testwait.Returns(t, "every connection of the pool through lossy connections to come back, so the pool closes", pool.Close)
+			})
 			listener, state := newMentionListener(t)
 			handler, _, _, served := newRegisteredTestServer(t, testServerOptions{
-				store: &store.Store{Pool: store.NewPool(pool)}, envoyURL: listener.URL,
-				envoyTimeout: 30 * time.Second, outboxPublishes: true,
+				store: &store.Store{Pool: store.NewPool(pool)}, envoyURL: listener.URL, outboxPublishes: true,
 			})
-			served.mentions.wait()
+			joinRegisteredMentions(t, served)
 			var down atomic.Bool
-			sender := newMentionSender(served.lifetime, time.Hour, served.sendCommentMention,
+			sender := newMentionSender(served.lifetime, stagedAhead, nil, served.sendCommentMention,
 				func(ctx context.Context, queued []mentionClaim) ([]mentionClaim, error) {
 					if down.Load() {
 						return nil, errDatabaseUnreachable

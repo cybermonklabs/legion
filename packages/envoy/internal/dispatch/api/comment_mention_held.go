@@ -32,7 +32,7 @@ func warnHeld(send mentionSend, wait heldWait, now time.Time) {
 // ends. It names what the lane last waited behind, or, when the lane has no wait recorded, what
 // item itself last waited behind.
 func (m *mentionSender) reportLate(lane laneKey, item mentionSend) {
-	now := time.Now()
+	now := m.sendClock().Now()
 	if item.heldSince.IsZero() || item.warned || now.Sub(item.heldSince) < m.heldWarnAfter {
 		return
 	}
@@ -81,8 +81,11 @@ func (s *server) registerHeldGauges(registry *metrics.Registry) {
 	sender := s.mentions
 	registry.NewGaugeFunc("envoy_dispatch_mention_sends_held",
 		"Comment mention sends that wait behind an earlier event of their owner the outbox still owes a send their session may take",
-		func() int64 { count, _ := sender.heldSamples(time.Now()); return count })
+		func() int64 { count, _ := sender.heldSamples(sender.sendClock().Now()); return count })
 	registry.NewGaugeFunc("envoy_dispatch_mention_send_held_oldest_seconds",
 		"How long the oldest comment mention send has waited behind an earlier event of its owner, in whole seconds",
-		func() int64 { _, oldest := sender.heldSamples(time.Now()); return int64(oldest / time.Second) })
+		func() int64 {
+			_, oldest := sender.heldSamples(sender.sendClock().Now())
+			return int64(oldest / time.Second)
+		})
 }

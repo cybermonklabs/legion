@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A closed issue still takes a comment, so its document still takes that comment's anchor under
@@ -132,23 +134,18 @@ func TestAnAnchoredCommentOnAClosedIssueWithNoRoomFailsNoRoom(t *testing.T) {
 	if service.roomHeld(artifactID) {
 		t.Fatal("the cold comment write loaded a room of the document")
 	}
-	select {
-	case <-started:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the cold write armed no settlement, so this test no longer covers the settlement its publish arms")
-	}
+	testwait.Receive(t, "the cold write's settlement to start: one that never does means this test no longer covers the settlement its publish arms", started)
 	if owed, err := settlementPending(ctx, service.store.Pool, artifactID); err != nil || !owed {
 		t.Fatalf("the document owes a settlement after the comment = %t (%v), want the pending-settlement row its write left", owed, err)
 	}
 	letSettle()
-	waitFor(t, roomWait(t), "the closed issue's settlement to commit, taking the document's pending-settlement row", owesNothing)
-	// A refusal counted as a failure failed the room on its third try, three settle delays after
-	// the first; this watches ten, and the failure count below catches even the first taken as a
-	// fault.
-	deadline := time.Now().Add(10 * settle)
-	for time.Now().Before(deadline) && !failed.Load() {
-		time.Sleep(settle / 5)
-	}
+	waitFor(t, "the closed issue's settlement to commit, taking the document's pending-settlement row", owesNothing)
+	// A refusal counted as a failure failed the room on its third try, each refusal arming a retry
+	// (retrySettleLocked): once no settlement of the service is armed, running or settling, nothing
+	// is left to refuse again, so the room's failure count read below is final.
+	waitFor(t, "the closed issue's settlement to be neither armed, running nor retried", func() bool {
+		return settlementsIdle(service, artifactID)
+	})
 	state := service.lockState(artifactID)
 	failures := state.settleFailures
 	service.unlockState(artifactID, state)
@@ -475,10 +472,10 @@ func closedIssueRoomService(t *testing.T, database *store.Store, artifactID stri
 	service := New(Deps{
 		Store: database, Persistence: held, Events: events.NewBroker(),
 		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
-		Settle:   time.Hour,
+		Settle:   stagedAhead,
 	})
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -493,9 +490,18 @@ func holdOneRoomUpdate(t *testing.T, held *heldStore, write func()) {
 	t.Helper()
 	held.armed.Store(true)
 	write()
-	select {
-	case <-held.entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room's own append of the browser's update never reached the store")
-	}
+	testwait.Receive(t, "the room's own append of the browser's update to reach the store", held.entered)
+}
+
+// settlementsIdle reports whether service holds no settlement timer, armed or with its settlement
+// running (timers, which a timer leaves only once its settlement has returned, any retry it armed
+// registered first), and room's state counts no settlement running on it (settling).
+func settlementsIdle(service *Service, room string) bool {
+	service.timerMu.Lock()
+	timers := len(service.timers)
+	service.timerMu.Unlock()
+	state := service.lockState(room)
+	settling := state.settling
+	service.unlockState(room, state)
+	return timers == 0 && settling == 0
 }

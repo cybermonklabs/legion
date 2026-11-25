@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -18,9 +19,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
@@ -49,7 +52,7 @@ type fakeEmbedder struct {
 	// traffic still gets through
 	// (TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled). vectors/err/errFor are set up
 	// before a test's concurrent goroutines start and never mutated after, so they need no lock;
-	// callsMu guards calls, the one field tests mutate concurrently.
+	// callsMu guards calls and counted, the fields tests mutate concurrently.
 	errFor map[embed.InputType]error
 	// delay holds every call that long before it answers; a call whose context ends first answers
 	// the context's error then. It models a model service slower than its caller allows (the
@@ -67,11 +70,17 @@ type fakeEmbedder struct {
 
 	callsMu sync.Mutex
 	calls   int
+	// counted is how many of calls a counted request made (countedRead): a search's own query
+	// embedding, and nothing a write or embedqueue's drain calls (takeCounted).
+	counted int
 }
 
 func (f *fakeEmbedder) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
 	f.callsMu.Lock()
 	f.calls++
+	if ctx.Value(countedRead{}) != nil {
+		f.counted++
+	}
 	f.callsMu.Unlock()
 	if inputType == embed.InputDocument && f.holdDocuments.Load() {
 		f.holding.Add(1)
@@ -114,6 +123,15 @@ func (f *fakeEmbedder) Embed(ctx context.Context, texts []string, inputType embe
 // tests embed.
 func (f *fakeEmbedder) Identity() string     { return embed.BedrockModel }
 func (f *fakeEmbedder) Limits() embed.Limits { return new(embed.BedrockClient).Limits() }
+
+// takeCounted is how many calls counted requests made since the last take.
+func (f *fakeEmbedder) takeCounted() int {
+	f.callsMu.Lock()
+	defer f.callsMu.Unlock()
+	taken := f.counted
+	f.counted = 0
+	return taken
+}
 
 // angledVector returns a unit vector in the plane spanned by dimension 0 and axis, whose cosine
 // similarity with queryVector() (dimension 0's own unit vector) is exactly similarity - computed
@@ -334,34 +352,71 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 	return id
 }
 
-// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live
-// query embedding priority over background work: cmd/dispatch wires embedqueue's own Embedder
-// behind embed.RateLimitedEmbedder and never wraps the one api.Deps holds, so a live search
-// request's own query embedding is never paced or blocked by that limiter, however deep into
-// backoff it currently is. This drives that exact scenario with one shared fake embedder whose
-// errFor discriminates by InputType, matching how the two callers actually differ in production
-// (embedqueue always calls with InputDocument, search's embedQuery always calls with
-// InputQuery): a background goroutine keeps embedqueue's own ProcessBatch throttled and backing
-// off for the whole test, simulating a backlog saturating the model service's quota for bulk
-// document traffic, while concurrent live search requests keep succeeding non-degraded, because
-// their InputQuery calls go straight to the unwrapped fake embedder and are never subject to
-// that backoff at all. That a live search never waits behind the background work is shown by the
-// searches answering while the drain is held in its call to the model service, with everything
-// it holds there: its claim on the pending rows, its share of the token budget and its limiter's
-// slot. A search that waited behind that work would not answer until the drain was let go, which
-// happens only once every search has answered.
-func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
-	t.Parallel()
+// throttledSearchServer is a server whose embedder answers every live query while embedqueue's
+// own background drain keeps it throttled and backing off, for as long as the test runs:
+// cmd/dispatch wires embedqueue's own Embedder behind embed.RateLimitedEmbedder and never wraps
+// the one api.Deps holds, so a live search request's own query embedding is never paced or
+// blocked by that limiter, however deep into backoff it currently is. One shared fake embedder
+// whose errFor discriminates by InputType matches how the two callers actually differ in
+// production (embedqueue always calls with InputDocument, search's embedQuery always calls with
+// InputQuery): a background goroutine keeps embedqueue's own ProcessBatch throttled, simulating
+// a backlog saturating the model service's quota for bulk document traffic. The limiter waits on
+// a fake no one moves (embed.WithLimiterClock), so once the drain has made its first call every
+// call through the limiter waits for good: a live query paced by it would never answer. The
+// server's own clock is held too, so no bound of the search's (searchEmbedTimeout) or of a write's
+// related-item check (relatedAllowance, relatedMeaningAllowance) ends a query that waits. Each
+// issue create runs that check, whose meaning stage embeds the issue's text as a live query, so
+// a create paced by the limiter would never answer either: the creates run on goroutines of their
+// own and are waited for through the shared wait, which fails naming the create, and so is every
+// search, the one made before anything was throttled among them (throttledSearch.answer). Each
+// goroutine hands the create's refusal to the test's goroutine, which fails the row naming it.
+//
+// The server's pool is traced, and a counted search's own statements and its calls to the
+// embedder are counted (countedSearch); unthrottled is what one search made before anything was
+// throttled. The sign-in lookup, the drain and the seeding run on the untraced pool or on contexts
+// no search marks, so none of their work is counted.
+//
+// With holdFirstCall the drain's first call of the model service is held there, with everything
+// the drain holds in it: its claim on the pending rows, its share of the token budget and its
+// limiter's slot. The function answers once that call is held, and the server's release lets it
+// go; the limiter's pacing interval then lifts past its floor (limited, floor) as the throttled
+// call returns, and the drain waits on the limiter for good.
+func throttledSearchServer(t *testing.T, holdFirstCall bool) throttledSearch {
+	t.Helper()
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
 		"wibbleflorp":                   queryVector(),
 	}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
-	createInteractionIssue(t, handler, "PRIO", title, spec)
+	limited := embed.NewRateLimitedEmbedder(embedder, embed.WithLimiterClock(clocktest.New(time.Now())))
+	database := storetest.Open(t)
+	statements := &sentStatements{}
+	handler, _, _ := newTestServer(t, testServerOptions{
+		store: storetest.TracedStore(t, database, statements), identity: headerIdentity(database),
+		embedder: embedder, clock: clocktest.Held(),
+	})
+	server := throttledSearch{handler: handler, statements: statements, embedder: embedder}
+	create := func(project, title, spec string) {
+		t.Helper()
+		created := make(chan error, 1)
+		go func() {
+			_, err := createInteractionIssueOffTest(handler, project, title, spec)
+			created <- err
+		}()
+		if err := testwait.Receive(t, fmt.Sprintf("the create of issue %s to answer, whose related-item check embeds the issue's text as a live query no limiter may pace", project), created); err != nil {
+			t.Fatalf("the create of issue %s: %v", project, err)
+		}
+	}
+	create("PRIO", title, spec)
 	// Embeds while nothing is throttled yet: this is the content a later query below must still
 	// find - already embedded, before the saturating bulk traffic simulated next ever starts.
 	processAllPending(t, database, embedder)
+	unthrottled := server.answer(t, "the search before anything was throttled to answer, whose query embedding no limiter may pace", "q=wibbleflorp")
+	if unthrottled.response.Code != http.StatusOK || unthrottled.work.embeds != 1 {
+		t.Fatalf("the search before anything was throttled: status=%d, %s, want 200 and one call to the embedder, its query's\n%s",
+			unthrottled.response.Code, unthrottled.work, unthrottled.response.Body.String())
+	}
+	server.unthrottled = unthrottled.work
 
 	// Simulate the queue's background drain (the coverage pass and embedqueue's scan working
 	// through a backlog) now saturating the account: every further InputDocument call
@@ -370,15 +425,26 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 	// for the rest of the test - exactly a saturating background drain in progress.
 	throttleErr := embedtest.FakeThrottleError{Code: "ThrottlingException"}
 	embedder.errFor = map[embed.InputType]error{embed.InputDocument: throttleErr}
-	embedder.documentsHeld = make(chan struct{}, 1)
-	embedder.releaseDocuments = make(chan struct{})
-	createInteractionIssue(t, handler, "SAT", "Other bulk content that never finishes embedding", "Body.")
+	create("SAT", "Other bulk content that never finishes embedding", "Body.")
+	if holdFirstCall {
+		// The channels are made before any call can reach them, and the hold is set before the
+		// drain starts, whose first call it holds.
+		embedder.documentsHeld = make(chan struct{}, 1)
+		embedder.releaseDocuments = make(chan struct{})
+		server.release = sync.OnceFunc(func() { close(embedder.releaseDocuments) })
+		t.Cleanup(server.release)
+		server.limited, server.floor = limited, limited.Interval()
+		embedder.holdDocuments.Store(true)
+	}
+	calls := func() int {
+		embedder.callsMu.Lock()
+		defer embedder.callsMu.Unlock()
+		return embedder.calls
+	}
+	before := calls()
 
 	bgCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	backgroundEmbedder := embed.NewRateLimitedEmbedder(embedder)
-	floor := backgroundEmbedder.Interval()
-	backgroundDeps := embedqueue.Deps{Store: database, Embedder: backgroundEmbedder}
+	backgroundDeps := embedqueue.Deps{Store: database, Embedder: limited}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -388,52 +454,150 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 			}
 		}
 	}()
-	// The drain runs until the searches below are done, then stops.
-	defer func() { cancel(); <-done }()
-
-	// The background drain is backing off once a call of it came back throttled, which lengthens
-	// its pacing interval past the floor it starts at (RateLimitedEmbedder).
-	testwait.Until(t, "the background drain to back off from a throttled call (its pacing interval)", func() (time.Duration, bool) {
-		select {
-		case <-done:
-			t.Fatal("the background drain stopped before any call of it was throttled")
-		default:
-		}
-		interval := backgroundEmbedder.Interval()
-		return interval, interval > floor
+	// The drain runs until the searches are done, then stops, and the shared wait names it if it
+	// does not.
+	t.Cleanup(func() {
+		cancel()
+		testwait.Receive(t, "the background drain to stop once its context ended", done)
 	})
 
-	// The drain's next call of the model service is held there until every search has answered.
-	release := sync.OnceFunc(func() { close(embedder.releaseDocuments) })
-	defer release()
-	embedder.holdDocuments.Store(true)
-	testwait.Until(t, "the background drain's next call of the model service to be held (the calls held)", func() (int32, bool) {
-		select {
-		case <-embedder.documentsHeld:
-			return embedder.holding.Load(), true
-		case <-done:
-			t.Fatal("the background drain stopped before its next call of the model service was held")
-		default:
-		}
-		return embedder.holding.Load(), false
-	})
+	if holdFirstCall {
+		testwait.Until(t, "the background drain's first call of the model service to be held (the calls held)", func() (int32, bool) {
+			select {
+			case <-embedder.documentsHeld:
+				return embedder.holding.Load(), true
+			case <-done:
+				t.Fatal("the background drain stopped before its first call of the model service was held")
+			default:
+			}
+			return embedder.holding.Load(), false
+		})
+		return server
+	}
+	// The background goroutine has hit a throttle once the embedder has been called again: only
+	// it calls before the searches start, and only with InputDocument, which throttles.
+	testwait.Eventually(t, "the background drain to hit a throttle", func() bool { return calls() > before })
+	return server
+}
 
-	for i := range 5 {
-		answered := make(chan *httptest.ResponseRecorder, 1)
-		go func() { answered <- searchRequestOn(t, handler, "/api/v1/search", "q=wibbleflorp") }()
-		raw := testwait.Receive(t, fmt.Sprintf("live search request %d to answer while the background drain is held in its call of the model service", i), answered)
-		if embedder.holding.Load() == 0 {
-			t.Fatalf("search request %d answered once the background drain's call was no longer held, which shows nothing", i)
+// throttledSearch is throttledSearchServer's server: its handler, the statements of each counted
+// request on its pool, its embedder, and the work one search made before anything was throttled.
+// release, limited and floor are set when the drain's first call is held: release lets the call
+// go, and limited is the drain's embedder, whose pacing interval starts at floor.
+type throttledSearch struct {
+	handler     http.Handler
+	statements  *sentStatements
+	embedder    *fakeEmbedder
+	unthrottled searchWork
+	release     func()
+	limited     *embed.RateLimitedEmbedder
+	floor       time.Duration
+}
+
+// searchWork is what one counted search made: the SQL of each statement it ran, sorted, since the
+// search's arms may run side by side, and its calls to the embedder.
+type searchWork struct {
+	statements []string
+	embeds     int
+}
+
+func (w searchWork) String() string {
+	return fmt.Sprintf("%d calls to the embedder and %d statements %q", w.embeds, len(w.statements), w.statements)
+}
+
+// countedAnswer is one counted search's answer and the work it made.
+type countedAnswer struct {
+	response *httptest.ResponseRecorder
+	work     searchWork
+}
+
+// countedSearch searches for query as alice on a request the server counts (countedRead): every
+// statement the search runs, on a context derived from the request's, and every call it makes to
+// the embedder. It calls no method of t, so it runs on a goroutine of its own.
+func (s throttledSearch) countedSearch(query string) countedAnswer {
+	request := httptest.NewRequestWithContext(context.WithValue(context.Background(), countedRead{}, true),
+		http.MethodGet, "/api/v1/search?"+query, nil)
+	request.Header.Set("X-Dispatch-User", "alice")
+	response := httptest.NewRecorder()
+	s.handler.ServeHTTP(response, request)
+	return countedAnswer{response: response, work: searchWork{
+		statements: slices.Sorted(slices.Values(s.statements.take())), embeds: s.embedder.takeCounted(),
+	}}
+}
+
+// answer runs countedSearch through the shared wait (testwait.Returns), which fails naming what: the
+// server's limiter and its own clock wait for good, so a search either of them holds never answers.
+func (s throttledSearch) answer(t *testing.T, what, query string) (answer countedAnswer) {
+	t.Helper()
+	testwait.Returns(t, what, func() { answer = s.countedSearch(query) })
+	return answer
+}
+
+// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live query embedding priority
+// over background work (throttledSearchServer): concurrent live search requests keep succeeding
+// non-degraded, because their InputQuery calls go straight to the unwrapped fake embedder and are
+// never subject to that backoff at all. Each search must answer first while the drain is held in
+// its call of the model service, with everything it holds there, and then while the limiter's wait
+// stands for good. A search that waited behind the drain's held call would not answer until the
+// drain was let go, which happens only once every search of the first phase has answered, and one
+// paced by the limiter never answers: the wait for it fails naming it. And each makes the work a
+// search made before anything was throttled, no more: a search that waits on the drain's backoff
+// reads its state, or calls the embedder again, and that is work of its own.
+func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
+	t.Parallel()
+	server := throttledSearchServer(t, true)
+	search := func(i int, while string) {
+		t.Helper()
+		answer := server.answer(t, fmt.Sprintf("search request %d to answer %s", i, while), "q=wibbleflorp")
+		recorder := answer.response
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("search request %d: status=%d body=%s", i, recorder.Code, recorder.Body.String())
 		}
-		if raw.Code != http.StatusOK {
-			t.Fatalf("search request %d: status=%d body=%s", i, raw.Code, raw.Body.String())
-		}
-		response := decodeBody[model.SearchResponse](t, raw)
+		response := decodeBody[model.SearchResponse](t, recorder)
 		if response.Degraded != "" {
 			t.Errorf("search request %d: Degraded = %q, want empty - a live query must stay non-degraded while only background document traffic is throttled", i, response.Degraded)
 		}
 		if len(response.Results) != 1 {
 			t.Errorf("search request %d: Results = %+v, want the one meaning match (proves the query embedding actually ran, not just that nothing errored)", i, response.Results)
+		}
+		if answer.work.embeds != server.unthrottled.embeds || !slices.Equal(answer.work.statements, server.unthrottled.statements) {
+			t.Errorf("search request %d made %s while embedqueue was throttled, want the %s one search made before anything was: "+
+				"a live query does none of the drain's work and waits on none of it", i, answer.work, server.unthrottled)
+		}
+	}
+	for i := range 5 {
+		search(i, "while the background drain is held in its call of the model service")
+		if server.embedder.holding.Load() == 0 {
+			t.Fatalf("search request %d answered once the background drain's call was no longer held, which shows nothing", i)
+		}
+	}
+	server.release()
+	testwait.Until(t, "the background drain to back off from its throttled call (its pacing interval)", func() (time.Duration, bool) {
+		interval := server.limited.Interval()
+		return interval, interval > server.floor
+	})
+	for i := range 5 {
+		search(i, "while the background drain's limiter waits for good")
+	}
+}
+
+// TestSearchAnswersWithinASecondWhileEmbedqueueIsThrottled is the service level of the row
+// above, a live search answered well under a second while the background drain backs off, which
+// only the timing lane reads (benchtime.TimingEnv): a shared runner's clock is its load as much
+// as the search's work.
+func TestSearchAnswersWithinASecondWhileEmbedqueueIsThrottled(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	server := throttledSearchServer(t, false)
+	for i := range 5 {
+		started := time.Now()
+		answer := server.answer(t, fmt.Sprintf("search request %d to answer while the background drain's limiter waits for good", i), "q=wibbleflorp")
+		elapsed := time.Since(started)
+		if answer.response.Code != http.StatusOK {
+			t.Fatalf("search request %d: status=%d body=%s", i, answer.response.Code, answer.response.Body.String())
+		}
+		decodeBody[model.SearchResponse](t, answer.response)
+		if elapsed > time.Second {
+			t.Errorf("search request %d took %v while embedqueue was throttled/backing off, want well under 1s - it must never wait behind background work", i, elapsed)
 		}
 	}
 }
@@ -1090,6 +1254,17 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	embedWindowsAs(t, database, embedder, "document_block", short.ID, angledVector(0.5, 3))
 	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.5, 4))
 	processAllPending(t, database, embedder)
+	// The plan each arm runs is read from the table's statistics. The test analyzes the table
+	// once every vector is in, so the plan is the one these rows call for: an exact scan and sort
+	// of a table this small. Analyzed after the windows were written and before their vectors -
+	// as autovacuum, which a clone keeps on as the product's table does, may do on its own
+	// schedule - the table reads as holding none, and the planner takes every arm through
+	// embeddings_cosine instead, whose HNSW walk over the long document's hundred identical
+	// vectors can miss the short document's one window, or the comment's. Once this analyze has
+	// run no row changes again, so nothing is left for autovacuum to analyze before the search.
+	if _, err := database.Pool.Exec(context.Background(), "analyze embeddings"); err != nil {
+		t.Fatalf("analyze embeddings: %v", err)
+	}
 
 	requireNoKeywordHit(t, handler, "q=wibbleflorp")
 	response := searchResponse(t, handler, "q=wibbleflorp")
@@ -1099,6 +1274,66 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	searchHit(t, response, "document", long.ID)
 	searchHit(t, response, "document", short.ID)
 	searchHit(t, response, "comment", comment.ID)
+}
+
+// The meaning search's answer on the plan a large table's statistics call for: every arm through
+// embeddings_cosine, pgvector's HNSW index. The rows above meet the exact scan that a table this
+// small calls for, analyzed once its vectors are in; here the server's pool refuses sequential
+// scans and sorts (enable_seqscan and enable_sort off), so no arm can read its kind's rows through
+// embeddings_kind_project and sort them by distance, and each walks the HNSW index for its order
+// instead. The search still finds each item the query is nearest to: two documents and a comment,
+// each window carrying a vector of its own.
+// The index's own scan count (pg_stat_user_indexes) shows the search walked it. The miss
+// storetest's comment once recorded on that plan - the short document's one window among a
+// hundred identical vectors, in 13 of 33 forced searches - is not this fixture: here every
+// window's vector differs, and the row holds the search's answer on the index, not pgvector's on
+// duplicates.
+func TestMeaningSearchAnswersOnTheHNSWPlan(t *testing.T) {
+	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
+	database := storetest.Open(t)
+	forced := storetest.Reopened(t, database, func(config *pgxpool.Config) {
+		config.ConnConfig.RuntimeParams["enable_seqscan"] = "off"
+		config.ConnConfig.RuntimeParams["enable_sort"] = "off"
+	})
+	handler, _, deps := newTestServer(t, testServerOptions{embedder: embedder, store: forced})
+	issue := createInteractionIssue(t, handler, "HNSW", "On the index", "Body text.")
+	first := uploadSearchDocument(t, handler, issue.Key, "first.md", "A first note on the subject.\n")
+	second := uploadSearchDocument(t, handler, issue.Key, "second.md", "A second note on another side of it.\n")
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "One remark on the same subject."}, "alice")
+	windowOwedOwners(t, deps)
+	embedWindowsAs(t, forced, embedder, "document_block", first.ID, angledVector(0.9, 2))
+	embedWindowsAs(t, forced, embedder, "document_block", second.ID, angledVector(0.8, 3))
+	embedWindowsAs(t, forced, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.7, 4))
+	processAllPending(t, forced, embedder)
+
+	requireNoKeywordHit(t, handler, "q=wibbleflorp")
+	before := hnswScans(t, database)
+	response := searchResponse(t, handler, "q=wibbleflorp")
+	if response.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty", response.Degraded)
+	}
+	searchHit(t, response, "document", first.ID)
+	searchHit(t, response, "document", second.ID)
+	searchHit(t, response, "comment", comment.ID)
+	// A backend hands its scan counts to the shared statistics as it goes idle, and at most once a
+	// second, so the count is waited for.
+	after := testwait.Until(t, "the search's scans of embeddings_cosine in pg_stat_user_indexes", func() (int64, bool) {
+		scans := hnswScans(t, database)
+		return scans, scans > before
+	})
+	t.Logf("measured: pg_stat_user_indexes counted %d scan(s) of embeddings_cosine before the search and %d after it", before, after)
+}
+
+// hnswScans is how many scans of embeddings_cosine the database has counted.
+func hnswScans(t *testing.T, database *store.Store) int64 {
+	t.Helper()
+	var scans int64
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(sum(idx_scan), 0)::bigint from pg_stat_user_indexes where indexrelname = 'embeddings_cosine'
+	`).Scan(&scans); err != nil {
+		t.Fatalf("read embeddings_cosine's scans: %v", err)
+	}
+	return scans
 }
 
 // TestProjectScopedSearchFindsItsCommentPastOtherProjectsNearerComments is the trade
@@ -1624,59 +1859,67 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 // 15,002 ms measured at this change's head against 202 ms with a lock_timeout of 200 ms
 // (INFRA-988). A search whose answer is the same either way must not spend a quarter of a
 // minute learning that, so the savepoint bounds its own wait
-// (embeddingProjectKeysFilledLockWait).
-//
-// The page is asserted too, because a short answer that lost the project's rows would be no
-// better than a slow one. Which bound ended the read is the one the read's own failure names: a
-// read that gave up at its lock bound fails with lock_not_available (SQLSTATE 55P03), and one that
-// waited the statement bound out with query_canceled (57014), however loaded the server is.
+// (embeddingProjectKeysFilledLockWait). The read's own failure says which bound ended it: the
+// lock bound's is lock_not_available (SQLSTATE 55P03), where a read that waited out the statement
+// bound would fail as a cancelled statement (57014), so the row requires the 55P03 the warning
+// logs. The page is asserted too, because a short answer that lost the project's rows would be no
+// better than a slow one; how long the search took is the timing lane's row below.
 func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRow(t *testing.T) {
+	// Not parallel: it makes its log the default logger's (logtest.SetDefault), and every test of
+	// the process logs through the default logger.
 	const project = "LCKD"
-	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
-	ctx := context.Background()
-	// The lock is held for the search and released with this transaction, which is rolled back
-	// whatever the test does next: a lock left on that table would stall every later test of
-	// this database.
-	holder, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the transaction that holds the lock: %v", err)
-	}
-	defer func() { _ = holder.Rollback(context.Background()) }()
-	if _, err := holder.Exec(ctx, "lock table embeddings_project_key_backfill in access exclusive mode"); err != nil {
-		t.Fatalf("lock the fill's progress row: %v", err)
-	}
-
-	requireNoKeywordHit(t, handler, "q=wibbleflorp&project="+project)
-	records := &logtest.Recorder{}
-	logtest.SetDefault(t, records)
+	handler, issueKey, commentID := lockedProgressRowSearch(t, project)
+	logs := &storetest.LockedLog{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	response := searchResponse(t, handler, "q=wibbleflorp&project="+project)
-	var ended []string
-	for _, record := range records.Records() {
-		if !strings.HasPrefix(record.Message, "dispatch: a project-scoped meaning search could not read the embeddings project_key fill's progress") {
-			continue
-		}
-		record.Attrs(func(attr slog.Attr) bool {
-			if attr.Key != "error" {
-				return true
-			}
-			var failure *pgconn.PgError
-			if err, ok := attr.Value.Any().(error); ok && errors.As(err, &failure) {
-				ended = append(ended, failure.Code)
-			} else {
-				ended = append(ended, attr.Value.String())
-			}
-			return true
-		})
-	}
-	if len(ended) == 0 || slices.ContainsFunc(ended, func(code string) bool { return code != "55P03" }) {
-		t.Errorf("the scoped search's reads of the fill's progress row behind an ACCESS EXCLUSIVE lock ended with %q, want each to end at its own lock bound (embeddingProjectKeysFilledLockWait), lock_not_available (55P03): a read the statement bound ends (57014) waited out the 15 s the server allows a meaning statement",
-			ended)
-	}
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", response.Degraded)
 	}
 	searchHit(t, response, "issue", issueKey)
 	searchHit(t, response, "comment", commentID)
+	logged := logs.String()
+	if !strings.Contains(logged, "could not read the embeddings project_key fill's progress") || !strings.Contains(logged, "SQLSTATE 55P03") {
+		t.Fatalf("the progress read behind the lock logged %q; want its failure at the lock bound (SQLSTATE 55P03), not at the statement bound", logged)
+	}
+}
+
+// TestAProjectScopedSearchBehindALockedProgressRowAnswersInsideItsLockBound is the row above's
+// service level, which only the timing lane reads (benchtime.TimingEnv). The bound asserted is
+// far looser than the setting and far tighter than the one it replaces: a search that answers
+// inside it is one that gave up waiting, and a search that waits the statement bound out cannot
+// pass it.
+func TestAProjectScopedSearchBehindALockedProgressRowAnswersInsideItsLockBound(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	const project = "LCKT"
+	handler, _, _ := lockedProgressRowSearch(t, project)
+	started := time.Now()
+	searchResponse(t, handler, "q=wibbleflorp&project="+project)
+	if waited := time.Since(started); waited > 5*time.Second {
+		t.Errorf("the scoped search behind an ACCESS EXCLUSIVE lock on the fill's progress row took %s, want far less than the 15 s the server allows a meaning statement: the read waits out the statement bound instead of its own lock bound",
+			waited)
+	}
+}
+
+// lockedProgressRowSearch is a server whose fill's progress row an ACCESS EXCLUSIVE lock holds
+// until the test ends, with an issue and a comment of project its scoped search answers by
+// meaning alone.
+func lockedProgressRowSearch(t *testing.T, project string) (handler http.Handler, issueKey, commentID string) {
+	t.Helper()
+	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
+	ctx := context.Background()
+	// The lock is held for the search and released with this transaction, which is rolled back
+	// when the test ends: a lock left on that table would stall every later test of this
+	// database.
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the lock: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, "lock table embeddings_project_key_backfill in access exclusive mode"); err != nil {
+		t.Fatalf("lock the fill's progress row: %v", err)
+	}
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project="+project)
+	return handler, issueKey, commentID
 }
 
 // cacheTheProgressRead reads the fill's progress row once on database's connection, which leaves
@@ -1684,12 +1927,11 @@ func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRo
 // default). A deployment's connections hold such a plan after one search apiece; a database a
 // test has just opened holds none, and the failure
 // TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned covers is only raised
-// on a connection that does. The read's one bound is the test's own context, which ends only with
-// the test.
+// on a connection that does.
 func cacheTheProgressRead(t *testing.T, database *store.Store) {
 	t.Helper()
 	var done bool
-	if err := database.Pool.QueryRow(t.Context(), embeddingProjectKeysFilledQuery).Scan(&done); err != nil {
+	if err := database.Pool.QueryRow(testwait.Context(t), embeddingProjectKeysFilledQuery).Scan(&done); err != nil {
 		t.Fatalf("read the fill's progress to prepare its plan: %v", err)
 	}
 }

@@ -73,11 +73,13 @@ func unpinnedRoleMentionPastItsLease(ctx context.Context, t *testing.T) lapsedMe
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
+	// The scan has run to its end, so every copy it sent is handed on before settle's marker.
+	claimant.settle(t)
 	if got := claimant.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while its own mention of %s was live and unpinned, want nothing",
 			holder, got, target)
 	}
-	waitFor(t, 10*time.Second, "the author's copy", func() bool { return len(wrote.received()) > 0 })
+	wrote.settle(t)
 	copies := wrote.received()
 	if len(copies) != 1 || copies[0].DedupeKey != fmt.Sprintf("dispatch-%d", comment.ID) {
 		t.Fatalf("%s was sent %+v, want the author copy of event %d alone, under the event's own key: no attempt of this comment names that session",
@@ -184,9 +186,8 @@ func TestACopyKeptPastAnUnpinnedRoleMentionsLeaseIsKeyedByThatMention(t *testing
 			t.Fatalf("the copy held for %s reads settled=%v published=%v, want it published: its mention failed, so the outbox owes that session the comment",
 				staged.holder, row.settled, row.published)
 		}
-		waitFor(t, 10*time.Second, "the copy the mention's failure owes", func() bool {
-			return len(staged.claimant.received()) > 0
-		})
+		// The pass has run to its end, so every copy it sent is handed on before settle's marker.
+		staged.claimant.settle(t)
 		copies := staged.claimant.received()
 		want := contracts.AgentSendDedupeKey(
 			staged.holder, model.CommentMentionIdempotencyKey(staged.commentID, staged.target, "steer"))

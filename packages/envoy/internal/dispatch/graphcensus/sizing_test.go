@@ -33,12 +33,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestMain runs the package's tests through the Dispatch harness's Main inside cmdtest.Run, which
 // makes the directory the dispatch-seed binary store_drives_test.go builds is written into and
 // removes it once the tests end.
-func TestMain(m *testing.M) { os.Exit(cmdtest.Run(func() int { return storetest.Main(m) })) }
+func TestMain(m *testing.M) { os.Exit(cmdtest.Run(func() int { return storetest.Main(m.Run) })) }
 
 // sizingCensus runs the store census with its growth pass over database, as
 // `envoy-dispatch census --store --sizing` runs it, and returns everything it printed.
@@ -1023,7 +1024,8 @@ func publishAFallbackCopy(t *testing.T, database *store.Store) {
 
 // runTheOutbox runs the real outbox over database (outbox.New, Run), every role held by
 // censusRoleHolder and every send acknowledged at once, until settled answers true, and then
-// stops it and waits for it to stop, so nothing it writes lands after this returns.
+// stops it and waits for it to stop, so nothing it writes lands after this returns. settled's
+// answer is the one reading it has, so the wait for it prints none.
 func runTheOutbox(t *testing.T, database *store.Store, what, settled string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1037,26 +1039,15 @@ func runTheOutbox(t *testing.T, database *store.Store, what, settled string) {
 	}()
 	defer func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the outbox did not stop")
-		}
+		testwait.Receive(t, "the outbox to stop once its context ended", done)
 	}()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	testwait.Eventually(t, "the outbox to "+what, func() bool {
 		var ok bool
 		if err := database.Pool.QueryRow(context.Background(), settled).Scan(&ok); err != nil {
 			t.Fatalf("read whether the outbox did %s: %v", what, err)
 		}
-		if ok {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox did not %s within 30s", what)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return ok
+	})
 }
 
 // The sizing counts every tuple the writers append, term by term: rows a day is the sum over the

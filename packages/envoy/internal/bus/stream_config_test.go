@@ -343,7 +343,7 @@ func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart
 	// nats-server releases a push binding on the consumer's own goroutine, after the client's
 	// Close is answered, so only the consumer's own report tells this test that the durable may
 	// be bound again; Client.Subscribe does not retry a "consumer is already bound" refusal.
-	testwait.UntilPolling(t, 10*time.Millisecond, "the server to report the legacy durable consumer unbound after the legacy connection closed", func() (bool, bool) {
+	testwait.Until(t, "the server to report the legacy durable consumer unbound after the legacy connection closed", func() (bool, bool) {
 		consumer, err := client.JS().ConsumerInfo(Stream, "legacy-role-replay")
 		if err != nil {
 			t.Fatalf("read the legacy durable consumer: %v", err)

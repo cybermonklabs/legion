@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -92,6 +91,7 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 		},
 	})
 	seedCreatedAttempt(t, rig.database, commentID, target, "steer")
+	keepLive(t, rig.database, commentID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
@@ -103,7 +103,7 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 		t.Fatalf("the comment reached %v, want %s among them: no mention of it names the thread root's author, so its copy goes in the pass that reads the event; held back for the unnamed mention it would wait out that attempt's lease (model.DeliveryClaimLapse = %v), which is what every unrelated session paid before this head",
 			reached, authorSubject, model.DeliveryClaimLapse)
 	}
-	waitFor(t, 10*time.Second, "the thread author's copy", func() bool { return len(wrote.received()) > 0 })
+	wrote.settle(t)
 	copies := wrote.received()
 	if len(copies) != 1 {
 		t.Fatalf("%s was sent %+v in the pass that read event %d, want its author copy alone", author, copies, comment.ID)
@@ -124,6 +124,7 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 		t.Fatalf("the comment reached %v, want %s not among them: that session claims the issue, so its copy waits for an attempt that names no session yet and whose role this read can name no holder for",
 			reached, claimantSubject)
 	}
+	claims.settle(t)
 	if got := claims.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while the mention of %s was live and named no session, want nothing: the sender can pin that mention to the issue's claimant", claimant, got, target)
 	}
@@ -152,7 +153,7 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
+	wrote.settle(t)
 	// The outbox sends that session nothing further - its copy went, and the settled mention
 	// leaves it nothing to publish - so the comment stands at its host under two keys: this copy
 	// under the event's own, and the mention's steer under the mention's. That is the double.
@@ -200,6 +201,7 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 		},
 	})
 	seedCreatedAttempt(t, rig.database, commentID, target, "steer")
+	keepLive(t, rig.database, commentID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
@@ -211,7 +213,7 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 		t.Fatalf("the comment reached %v, want %s among them: no mention of it names the ask's follower, so its copy goes in the pass that reads the event; held back for the unnamed mention it would wait out that attempt's lease (model.DeliveryClaimLapse = %v), which is what every unrelated session paid before this head",
 			reached, followerSubject, model.DeliveryClaimLapse)
 	}
-	waitFor(t, 10*time.Second, "the ask follower's copy", func() bool { return len(follows.received()) > 0 })
+	follows.settle(t)
 	copies := follows.received()
 	if len(copies) != 1 {
 		t.Fatalf("%s was sent %+v in the pass that read event %d, want its follower copy alone", follower, copies, comment.ID)
@@ -232,6 +234,7 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 		t.Fatalf("the comment reached %v, want %s not among them: that session claims the issue, so its copy waits for an attempt that names no session yet and whose role this read can name no holder for",
 			reached, claimantSubject)
 	}
+	claims.settle(t)
 	if got := claims.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while the mention of %s was live and named no session, want nothing: the sender can pin that mention to the issue's claimant", claimant, got, target)
 	}
@@ -253,7 +256,7 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
+	follows.settle(t)
 	// The outbox sends that session nothing further, so the comment stands at its host under two
 	// keys: this copy under the event's own, and the mention's steer under the mention's.
 	copies = follows.received()
@@ -299,6 +302,7 @@ func TestAnUnnamedRoleMentionPinnedToAPrimaryDocumentAuthorShowsItTheCommentTwic
 		},
 	})
 	seedCreatedAttempt(t, rig.database, commentID, target, "steer")
+	keepLive(t, rig.database, commentID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
@@ -310,7 +314,7 @@ func TestAnUnnamedRoleMentionPinnedToAPrimaryDocumentAuthorShowsItTheCommentTwic
 		t.Fatalf("the comment reached %v, want %s among them: no mention of it names the session the issue's primary document credits, so its copy goes in the pass that reads the event; held back for the unnamed mention it would wait out that attempt's lease (model.DeliveryClaimLapse = %v), which is what every unrelated session paid before this head",
 			reached, writerSubject, model.DeliveryClaimLapse)
 	}
-	waitFor(t, 10*time.Second, "the primary document author's copy", func() bool { return len(wrote.received()) > 0 })
+	wrote.settle(t)
 	copies := wrote.received()
 	if len(copies) != 1 {
 		t.Fatalf("%s was sent %+v in the pass that read event %d, want its document author copy alone", writer, copies, comment.ID)
@@ -341,7 +345,7 @@ func TestAnUnnamedRoleMentionPinnedToAPrimaryDocumentAuthorShowsItTheCommentTwic
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
+	wrote.settle(t)
 	// The outbox sends that session nothing further, so the comment stands at its host under two
 	// keys: this copy under the event's own, and the mention's steer under the mention's.
 	copies = wrote.received()

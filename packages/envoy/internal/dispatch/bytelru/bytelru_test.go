@@ -10,8 +10,9 @@ import (
 
 // The count the cache keeps is the bytes the list actually holds, and it never passes the limit,
 // however many values of however many sizes are handed to it. The sizes below are the dashboard
-// assets' (routes/assets_test.go): a whole 8 MiB object, a byte, and several that fit a 64 MiB
-// cache unevenly, so eviction runs with the list in every shape.
+// assets' (routes/assets_cache_test.go,
+// TestAssetCacheKeepsAtMostItsLimitEvictingTheLeastRecentlyUsed): a whole 8 MiB object, a byte,
+// and several that fit a 64 MiB cache unevenly, so eviction runs with the list in every shape.
 func TestTheCacheCountsWhatItHoldsAndNeverPassesItsLimit(t *testing.T) {
 	const limit int64 = 64 << 20
 	cache := New[string, []byte](limit)

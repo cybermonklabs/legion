@@ -9,6 +9,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -20,7 +21,7 @@ import (
 // it moves the stored head without changing rendered Markdown or allowing the log to grow across
 // iterations. A hit leaves that head alone after one warm read.
 func BenchmarkColdDocumentRead(b *testing.B) {
-	for _, size := range []int{51 << 10, 524 << 10} {
+	for _, size := range []int{51 << 10, 200 << 10} {
 		for _, read := range []struct {
 			name string
 			read func(*Service, string) error
@@ -111,9 +112,9 @@ func newColdBenchmarkDocument(b *testing.B, size int) (*Service, *PgVersioned, s
 	if _, err := versioned.AppendUpdate(ctx, artifactID, crdt.EncodeStateAsUpdateV1(live, nil)); err != nil {
 		b.Fatal(err)
 	}
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: stagedAhead})
 	testcleanup.Add(b, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(b, context.Background(), service); err != nil {
 			b.Errorf("shutdown cold benchmark service: %v", err)
 		}
 	})

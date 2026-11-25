@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
@@ -33,6 +34,9 @@ type Installer struct {
 	// Retry is how soon a failed read, or a value the install refused, is read again; zero is
 	// RetryInterval.
 	Retry time.Duration
+	// Clock is what the retry timer runs on: clock.Real() when nil, as in the server, and a
+	// test's clocktest.Fake, which fires the retry only when the test moves it.
+	Clock clock.Clock
 	// OnSwitch runs after a read that moved the schema this process serves: the installed
 	// value changed, its version or any element of it. The server refreshes its row of the
 	// server process registry there and closes its document sockets
@@ -74,10 +78,10 @@ func InstallFromStore(ctx context.Context, db Beginner) error {
 func (i *Installer) Run(ctx context.Context) {
 	for {
 		var retry <-chan time.Time
-		var timer *time.Timer
+		var timer clock.Timer
 		if !i.reload(ctx) {
-			timer = time.NewTimer(i.retryInterval())
-			retry = timer.C
+			timer = i.clock().NewTimer(i.retryInterval())
+			retry = timer.C()
 		}
 		select {
 		case <-ctx.Done():
@@ -123,4 +127,11 @@ func (i *Installer) retryInterval() time.Duration {
 		return i.Retry
 	}
 	return RetryInterval
+}
+
+func (i *Installer) clock() clock.Clock {
+	if i.Clock != nil {
+		return i.Clock
+	}
+	return clock.Real()
 }

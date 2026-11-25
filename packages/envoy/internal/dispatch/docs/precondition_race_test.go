@@ -6,17 +6,18 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *testing.T) {
@@ -36,22 +37,19 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 			database := storetest.Open(t)
 			config := database.Pool.Config().Copy()
 			config.MaxConns = 8
-			database.Pool.Close()
+			testwait.Returns(t, "every connection of the test database's first pool to come back, so the pool closes", database.Pool.Close)
 			pool, err := pgxpool.NewWithConfig(context.Background(), config)
 			if err != nil {
 				t.Fatalf("open dedicated table-race pool: %v", err)
 			}
 			database.Pool = store.NewPool(pool)
-			testcleanup.Add(t, pool.Close)
-			artifactID := createDocument(t, database, "")
-			service := New(Deps{Store: database, Settle: time.Hour})
 			testcleanup.Add(t, func() {
-				// The shutdown drains the room's appends and runs what the rooms owe, which takes
-				// as long as the machine takes: roomWait is the smaller of what the test binary's
-				// deadline leaves and roomWaitCap's two minutes, far past any run measured.
-				shutdown, cancel := context.WithTimeout(context.Background(), roomWait(t))
-				defer cancel()
-				if err := service.Shutdown(shutdown); err != nil {
+				testwait.Returns(t, "every connection of the dedicated table-race pool to come back, so the pool closes", pool.Close)
+			})
+			artifactID := createDocument(t, database, "")
+			service := New(Deps{Store: database, Settle: stagedAhead})
+			testcleanup.Add(t, func() {
+				if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 					t.Errorf("shutdown service: %v", err)
 				}
 			})
@@ -139,18 +137,14 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 			go func() {
 				browserResult <- browserStyleWrite(service, artifactID, replaceRun("keep", "HUMAN WRITE"), browserMutated)
 			}()
-			select {
-			case <-browserMutated:
-			case <-time.After(2 * time.Second):
-				t.Fatal("browser writer did not mutate the live tree")
-			}
+			testwait.Receive(t, "the browser writer to mutate the live tree", browserMutated)
 			if err := gate.Commit(context.Background()); err != nil {
 				t.Fatalf("release asks gate: %v", err)
 			}
-			if err := awaitRaceResult(t, browserResult); err != nil {
+			if err := testwait.Receive(t, "the browser writer to finish", browserResult); err != nil {
 				t.Fatalf("browser writer: %v", err)
 			}
-			err = awaitRaceResult(t, result)
+			err = testwait.Receive(t, "the edit to finish", result)
 			if test.precondition {
 				var stale *ErrPreconditionFailed
 				if !errors.As(err, &stale) {
@@ -221,8 +215,7 @@ func documentTokenForTest(t *testing.T, service *Service, artifactID, markdown s
 
 func waitForAsksQueryLock(t *testing.T, database *store.Store) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.Eventually(t, "the edit to reach the table-anchor query's lock on asks", func() bool {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*)
@@ -231,23 +224,8 @@ func waitForAsksQueryLock(t *testing.T, database *store.Store) {
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect asks query lock: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("conditional edit did not reach the table-anchor query lock")
-}
-
-func awaitRaceResult(t *testing.T, result <-chan error) error {
-	t.Helper()
-	select {
-	case err := <-result:
-		return err
-	case <-time.After(10 * time.Second):
-		t.Fatal("conditional edit did not complete")
-		return nil
-	}
+		return waiting > 0
+	})
 }
 
 // The WebSocket server's update observer persists the browser-style writer.

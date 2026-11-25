@@ -101,11 +101,12 @@ func (p inlineRawHTMLParser) Parse(parent ast.Node, block text.Reader, pc parser
 	if record.holdsNoCloser(kind, segment.Start) {
 		return nil
 	}
+	walked := walkedLines{block}
 	var html ast.Node
 	if kind == htmlDeclaration {
-		html = parseDeclaration(block)
+		html = parseDeclaration(walked)
 	} else {
-		html = p.InlineParser.Parse(parent, block, pc)
+		html = p.InlineParser.Parse(parent, walked, pc)
 	}
 	if html == nil {
 		// Both walks, this parser's over a declaration and the wrapped parser's over the three
@@ -116,6 +117,22 @@ func (p inlineRawHTMLParser) Parse(parent ast.Node, block text.Reader, pc parser
 		record.noCloserFrom(kind, segment.Start)
 	}
 	return html
+}
+
+// walkedLines is the block reader an inline raw HTML walk reads its block's lines through,
+// counting, as steps of the parse (ParseWork), the bytes of each line the walk reads from where it
+// stands on it: a walk searches each line it reads for its closer, so those bytes are its cost,
+// whether the line is the opener's own or one past it, and the record of where a block holds no
+// closer keeps that count linear in the block. The search is bytes.Index or a regexp, in goldmark's
+// walks and this package's, which Go's coverage counters do not instrument, so a walk from every
+// opener over the rest of a one-line paragraph would count as a few statements an opener: this
+// count is what sees those bytes.
+type walkedLines struct{ text.Reader }
+
+func (r walkedLines) PeekLine() ([]byte, text.Segment) {
+	line, segment := r.Reader.PeekLine()
+	parseWork.Add(uint64(len(line)))
+	return line, segment
 }
 
 // parseDeclaration reads the declaration the block reader is at, which goldmark's parser reads

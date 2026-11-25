@@ -29,6 +29,15 @@ import (
 // sends a write.
 func keyedRequest(t *testing.T, handler http.Handler, method, target string, body any, login, key string) *httptest.ResponseRecorder {
 	t.Helper()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, newKeyedRequest(t, method, target, body, login, key))
+	return response
+}
+
+// newKeyedRequest is the write keyedRequest sends, built on the calling goroutine, so a caller
+// that serves it off the test goroutine (testwait.Returns) builds it on the test goroutine first.
+func newKeyedRequest(t *testing.T, method, target string, body any, login, key string) *http.Request {
+	t.Helper()
 	var data []byte
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -45,9 +54,7 @@ func keyedRequest(t *testing.T, handler http.Handler, method, target string, bod
 	if key != "" {
 		request.Header.Set(contracts.IdempotencyKeyHeader, key)
 	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
+	return request
 }
 
 // keyedRig is one write route behind the keyed layer, as register mounts every POST and PATCH
@@ -70,7 +77,13 @@ func newKeyedRig(t *testing.T, answer func(run int32, w http.ResponseWriter, r *
 // upload's larger body limit - can be driven too.
 func newKeyedRigAt(t *testing.T, pattern string, answer func(run int32, w http.ResponseWriter, r *http.Request)) *keyedRig {
 	t.Helper()
-	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	return newKeyedRigWith(t, testServerOptions{}, pattern, answer)
+}
+
+// newKeyedRigWith is newKeyedRigAt on a server built with options, such as a clock the test moves.
+func newKeyedRigWith(t *testing.T, options testServerOptions, pattern string, answer func(run int32, w http.ResponseWriter, r *http.Request)) *keyedRig {
+	t.Helper()
+	_, database, _, served := newRegisteredTestServer(t, options)
 	rig := &keyedRig{database: database, server: served}
 	mux := http.NewServeMux()
 	mux.HandleFunc(http.MethodPost+" "+pattern, trackTransactions(served.keyedWrites(
@@ -249,11 +262,13 @@ func TestARepeatWhileTheFirstRunsIsInFlight(t *testing.T) {
 }
 
 // Many attempts under one key at once: one runs, and every other is told it is in flight or, once
-// the one has answered, given its answer.
+// the one has answered, given its answer. The one that runs is held until every other has been
+// answered, so all of them arrive while it is in flight.
 func TestConcurrentAttemptsUnderOneKeyRunOnce(t *testing.T) {
 	t.Parallel()
+	running, release := heldUntilReleased(t)
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
-		time.Sleep(50 * time.Millisecond)
+		<-running
 		answerRun(run, w, r)
 	})
 	const attempts = 8
@@ -262,7 +277,9 @@ func TestConcurrentAttemptsUnderOneKeyRunOnce(t *testing.T) {
 	for range attempts {
 		wait.Go(func() { responses <- rig.send(t, "a", map[string]any{"n": 1}, "alice", "race") })
 	}
-	wait.Wait()
+	testwait.Eventually(t, "every attempt but the running one to be answered", func() bool { return len(responses) == attempts-1 })
+	release()
+	testwait.Returns(t, "every attempt under the one key to answer once the running one was released", wait.Wait)
 	close(responses)
 	fresh := 0
 	for response := range responses {
@@ -578,8 +595,15 @@ type rigWrite func(ctx context.Context, held func()) error
 // one insert and commit, under the context the handler is given.
 func newWritingRig(t *testing.T, answer func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite)) *keyedRig {
 	t.Helper()
+	return newWritingRigWith(t, testServerOptions{}, answer)
+}
+
+// newWritingRigWith is newWritingRig on a server built with options, such as a key lease staged
+// past the run (testServerOptions.idempotencyLease).
+func newWritingRigWith(t *testing.T, options testServerOptions, answer func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite)) *keyedRig {
+	t.Helper()
 	var database *store.Store
-	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
+	rig := newKeyedRigWith(t, options, keyedRigPattern, func(run int32, w http.ResponseWriter, r *http.Request) {
 		answer(run, w, r, func(ctx context.Context, held func()) error {
 			tx, err := database.Pool.Begin(ctx)
 			if err != nil {
@@ -766,7 +790,7 @@ func TestAHolderThatLostItsKeyCommitsNoWrite(t *testing.T) {
 		t.Fatalf("the repeat past the lease: status=%d body=%s, want run 2", takeover.Code, takeover.Body.String())
 	}
 	releaseOnce()
-	if err := <-slow; err != errRequestKeyTakenOver {
+	if err := testwait.Receive(t, "the slow holder's write to return once released", slow); err != errRequestKeyTakenOver {
 		t.Fatalf("the slow holder's commit = %v, want %v", err, errRequestKeyTakenOver)
 	}
 	if first := awaitResponse(t, answered); first.Code != http.StatusConflict {

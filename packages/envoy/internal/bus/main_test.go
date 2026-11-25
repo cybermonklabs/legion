@@ -34,5 +34,5 @@ func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(busTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	os.Exit(testnats.Main(m))
+	os.Exit(testnats.Main(m.Run))
 }

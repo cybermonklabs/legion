@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/reearth/ygo/awareness"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A reader leaving is relayed at the clock its awareness client stood at, whatever else the room
@@ -34,6 +36,7 @@ import (
 func TestAReaderLeavingIsRelayedAtItsClientsClockThoughAPurgeRacesTheEncode(t *testing.T) {
 	t.Parallel()
 	pair := newSeededProcessPair(t, "First.\n\nSecond.\n")
+	keepRelayedClientsOnTaskB(pair)
 	var purged atomic.Int64
 	pair.taskA.beforeAwarenessWatch = func(room string, aw *awareness.Awareness) {
 		aw.OnUpdate(func(event awareness.UpdateEvent) {
@@ -232,9 +235,9 @@ func TestAReaderBackBeforeItsRemovalIsRecordedKeepsItsState(t *testing.T) {
 // dropped.
 func TestAReaderBackWhileAnOlderStateOfHersIsAnsweredToAQueryKeepsItsState(t *testing.T) {
 	t.Parallel()
-	// The bound every wait below runs on, taken here: roomWait reads the binary's deadline
-	// through t, and the hooks run on the goroutines of the room's own changes.
-	wait := roomWait(t)
+	// The hooks run on the goroutines of the room's own changes, where a wait cannot fail the
+	// test: they wait under the shared wait's context, taken here, and report through t.Error.
+	waits := testwait.Context(t)
 	var answering, holding, settling atomic.Bool
 	read := make(chan struct{})     // the answer has read alice at the clock she stood at
 	record := make(chan struct{})   // the answer may record what it read
@@ -261,7 +264,7 @@ func TestAReaderBackWhileAnOlderStateOfHersIsAnsweredToAQueryKeepsItsState(t *te
 				close(record)
 				select {
 				case <-recorded:
-				case <-time.After(wait):
+				case <-waits.Done():
 					t.Error("the answer to another process's query never recorded what it read")
 				}
 			}
@@ -274,11 +277,7 @@ func TestAReaderBackWhileAnOlderStateOfHersIsAnsweredToAQueryKeepsItsState(t *te
 				// (query, received), answered from here while alice is still live at c.
 				pair.taskA.awarenessRelay.answer(pair.artifactID)
 			}()
-			select {
-			case <-read:
-			case <-time.After(wait):
-				t.Fatal("the answer to another process's query never read alice's state")
-			}
+			testwait.Receive(t, "the answer to another process's query to read alice's state", read)
 		},
 	})
 }
@@ -306,10 +305,11 @@ func TestAReaderBackWhileAnOlderStateOfHersIsAnsweredToAQueryKeepsItsState(t *te
 func anAnswerRecordedOverARemoval(t *testing.T, flushed bool) {
 	t.Helper()
 	pair := newSeededProcessPair(t, "First.\n\nSecond.\n")
+	keepRelayedClientsOnTaskB(pair)
 	cursor := cursorOf("alice", 1)
-	// The bound the hook's wait runs on, taken here: roomWait reads the binary's deadline
-	// through t, and the hook runs on the goroutine that answers.
-	wait := roomWait(t)
+	// The hook runs on the goroutine that answers, where a wait cannot fail the test: it waits
+	// under the shared wait's context, taken here, and reports through t.Error.
+	waits := testwait.Context(t)
 	var answering, holding atomic.Bool
 	read := make(chan struct{})     // the answer has read alice at the clock she stands at
 	record := make(chan struct{})   // her removal is recorded, so the answer may record its read
@@ -323,7 +323,7 @@ func anAnswerRecordedOverARemoval(t *testing.T, flushed bool) {
 		close(read)
 		select {
 		case <-record:
-		case <-time.After(wait):
+		case <-waits.Done():
 			t.Error("alice's removal was never recorded while the answer's read was held")
 		}
 	}
@@ -346,11 +346,7 @@ func anAnswerRecordedOverARemoval(t *testing.T, flushed bool) {
 		defer close(recorded)
 		pair.taskA.awarenessRelay.answer(pair.artifactID)
 	}()
-	select {
-	case <-read:
-	case <-time.After(wait):
-		t.Fatal("the answer to another process's query never read alice's state")
-	}
+	testwait.Receive(t, "the answer to another process's query to read alice's state", read)
 
 	// Alice leaves, at the clock she stands at: the room's own removal, which is recorded while
 	// the answer's read waits.
@@ -365,7 +361,7 @@ func anAnswerRecordedOverARemoval(t *testing.T, flushed bool) {
 			"alice leaving task A reaching bob on task B before the answer records the older state it read of her")
 	}
 	close(record)
-	<-recorded
+	testwait.Receive(t, "the relay's answer to return after its record", recorded)
 
 	if relayed, listed := relayedClientClock(pair.taskA, pair.artifactID, aliceClient); listed {
 		t.Errorf("task A's relay lists alice at clock %d among the clients it relays, though she left its room: its next answer to another process's query puts her cursor back",
@@ -423,18 +419,19 @@ func TestAReaderLeavingBeforeAnOlderStateOfHersIsAnsweredToAQueryIsNotRelisted(t
 // that same clock are applied, one on a goroutine of its own; and the record of one is held
 // until the other has run - her removal's when removalLast, her heartbeat's otherwise. Her
 // removal must stand either way: task A's relay must no longer list her, and bob must lose her
-// cursor well before it would expire.
+// cursor, which task B's rooms here never expire (keepRelayedClientsOnTaskB).
 func aHeartbeatRacingARemoval(t *testing.T, removalLast bool) {
 	t.Helper()
 	pair := newSeededProcessPair(t, "First.\n\nSecond.\n")
+	keepRelayedClientsOnTaskB(pair)
 	cursor := cursorOf("alice", 1)
 	state, err := json.Marshal(cursor)
 	if err != nil {
 		t.Fatalf("encode alice's state: %v", err)
 	}
-	// The bound the hooks' waits run on, taken here: roomWait reads the binary's deadline
-	// through t, and the hooks run on the goroutines of the room's own changes.
-	wait := roomWait(t)
+	// The hooks run on the goroutines of the room's own changes, where a wait cannot fail the
+	// test: they wait under the shared wait's context, taken here, and report through t.Error.
+	waits := testwait.Context(t)
 	var purged, removals atomic.Int64
 	var beating atomic.Bool
 	var heartbeatClock atomic.Uint64
@@ -462,7 +459,7 @@ func aHeartbeatRacingARemoval(t *testing.T, removalLast bool) {
 			close(decided)
 			select {
 			case <-recorded:
-			case <-time.After(wait):
+			case <-waits.Done():
 				t.Error("alice's heartbeat was never recorded, so her removal was never recorded late")
 			}
 		case beat != 0 && announcesAlice(entries, beat) && beating.CompareAndSwap(false, true):
@@ -476,7 +473,7 @@ func aHeartbeatRacingARemoval(t *testing.T, removalLast bool) {
 			}
 			select {
 			case <-waking:
-			case <-time.After(wait):
+			case <-waits.Done():
 				t.Error(missing)
 			}
 		}
@@ -503,11 +500,7 @@ func aHeartbeatRacingARemoval(t *testing.T, removalLast bool) {
 			t.Errorf("announce alice's heartbeat at clock %d: %v", clock+1, err)
 		}
 	}()
-	select {
-	case <-held:
-	case <-time.After(wait):
-		t.Fatal("alice's heartbeat never reached the relay's record")
-	}
+	testwait.Receive(t, "alice's heartbeat to reach the relay's record", held)
 
 	// Alice leaves, at the clock her heartbeat stands at: the room's own removal, applied on
 	// this goroutine, so its record - and, where her heartbeat's record is the one held, the
@@ -521,7 +514,7 @@ func aHeartbeatRacingARemoval(t *testing.T, removalLast bool) {
 	if !removalLast {
 		close(gone)
 	}
-	<-recorded
+	testwait.Receive(t, "the heartbeat's ApplyUpdate to return", recorded)
 	if purged.Load() == 0 {
 		t.Fatal("no purge ran ahead of the relay's observer on task A's room, so the race this test is about never happened")
 	}
@@ -533,18 +526,17 @@ func aHeartbeatRacingARemoval(t *testing.T, removalLast bool) {
 		t.Errorf("task A's relay lists alice at clock %d among the clients it relays, though she left its room: its next answer to another process's query puts her cursor back",
 			relayed)
 	}
-	// Her removal, sent, reaches bob within a coalesce window; one dropped or replaced in the
-	// batch reaches him never, and his room holds her cursor until it expires (awarenessExpiry,
-	// 30 s), which is the failure these tests are about - so the wait ends well short of that
-	// expiry, whatever roomWait allows.
+	// Her removal, sent, reaches bob; one dropped or replaced in the batch reaches him never, and
+	// his room would hold her cursor until it expired (awarenessExpiry, 30 s), which is the
+	// failure these tests are about - and which task B's rooms here never do
+	// (keepRelayedClientsOnTaskB), so bob losing her proves her removal crossed.
 	order := "her heartbeat recorded after her removal"
 	if removalLast {
 		order = "her removal recorded after her heartbeat"
 	}
-	prompt := min(wait, awarenessExpiry/3)
-	if err := bob.WaitForAwareness(prompt, lacksAwareness(aliceClient)); err != nil {
-		t.Fatalf("alice leaving task A over her own heartbeat, %s, did not remove her from bob's reader on task B within %v: %v",
-			order, prompt, err)
+	if err := bob.WaitForAwareness(t, lacksAwareness(aliceClient)); err != nil {
+		t.Fatalf("alice leaving task A over her own heartbeat, %s, did not remove her from bob's reader on task B: %v",
+			order, err)
 	}
 }
 
@@ -587,14 +579,15 @@ func TestAReadersHeartbeatRecordedOverItsOwnRemovalStillLeavesTheOtherProcess(t 
 func TestAReaderLeavingAfterAFlushSentALaterClockStillLeavesTheOtherProcess(t *testing.T) {
 	t.Parallel()
 	pair := newSeededProcessPair(t, "First.\n\nSecond.\n")
+	keepRelayedClientsOnTaskB(pair)
 	cursor := cursorOf("alice", 1)
 	state, err := json.Marshal(cursor)
 	if err != nil {
 		t.Fatalf("encode alice's state: %v", err)
 	}
-	// The bound the hooks' waits run on, taken here: roomWait reads the binary's deadline
-	// through t, and the hooks run on the goroutines of the room's own changes.
-	wait := roomWait(t)
+	// The hooks run on the goroutines of the room's own changes, where a wait cannot fail the
+	// test: they wait under the shared wait's context, taken here, and report through t.Error.
+	waits := testwait.Context(t)
 	var purged atomic.Int64
 	var arming, beating atomic.Bool
 	var firstBeat, secondBeat atomic.Uint64
@@ -622,14 +615,14 @@ func TestAReaderLeavingAfterAFlushSentALaterClockStillLeavesTheOtherProcess(t *t
 			close(beaten)
 			select {
 			case <-gone:
-			case <-time.After(wait):
+			case <-waits.Done():
 				t.Error("alice's removal was never recorded while her second heartbeat's record waited")
 			}
 		case first != 0 && announcesAlice(entries, first) && arming.CompareAndSwap(false, true):
 			close(armed)
 			select {
 			case <-sending:
-			case <-time.After(wait):
+			case <-waits.Done():
 				t.Error("alice's second heartbeat was never decided while her first's record waited")
 			}
 		}
@@ -655,11 +648,7 @@ func TestAReaderLeavingAfterAFlushSentALaterClockStillLeavesTheOtherProcess(t *t
 			t.Errorf("announce alice's heartbeat at clock %d: %v", clock+1, err)
 		}
 	}()
-	select {
-	case <-armed:
-	case <-time.After(wait):
-		t.Fatal("alice's first heartbeat never reached the relay's record")
-	}
+	testwait.Receive(t, "alice's first heartbeat to reach the relay's record", armed)
 
 	// Her second, decided while the first's record waits: the clock the flush below reads her
 	// at, and the one the relay's list would be left behind by.
@@ -670,11 +659,7 @@ func TestAReaderLeavingAfterAFlushSentALaterClockStillLeavesTheOtherProcess(t *t
 			t.Errorf("announce alice's heartbeat at clock %d: %v", clock+2, err)
 		}
 	}()
-	select {
-	case <-beaten:
-	case <-time.After(wait):
-		t.Fatal("alice's second heartbeat never reached the relay's record")
-	}
+	testwait.Receive(t, "alice's second heartbeat to reach the relay's record", beaten)
 
 	// The first beat's record, which arms the batch's send; the send a coalesce window later
 	// reads her at the clock of her second beat and task B takes her at it.
@@ -694,7 +679,7 @@ func TestAReaderLeavingAfterAFlushSentALaterClockStillLeavesTheOtherProcess(t *t
 		t.Fatal("no purge ran ahead of the relay's observer on task A's room, so the race this test is about never happened")
 	}
 	close(gone)
-	<-recorded
+	testwait.Receive(t, "the second heartbeat's ApplyUpdate to return", recorded)
 	if roomHoldsClient(pair.taskA, pair.artifactID, aliceClient) {
 		t.Fatal("task A's room still holds alice's client after her removal, so nothing here is tested")
 	}
@@ -703,14 +688,12 @@ func TestAReaderLeavingAfterAFlushSentALaterClockStillLeavesTheOtherProcess(t *t
 		t.Errorf("task A's relay lists alice at clock %d among the clients it relays, though she left its room: its next answer to another process's query puts her cursor back",
 			relayed)
 	}
-	// Her removal, at the clock the flush sent her at, reaches bob within a coalesce window;
-	// one below it he drops, and his room holds her cursor until it expires (awarenessExpiry,
-	// 30 s), which is the failure this test is about - so the wait ends well short of that
-	// expiry, whatever roomWait allows.
-	prompt := min(wait, awarenessExpiry/3)
-	if err := bob.WaitForAwareness(prompt, lacksAwareness(aliceClient)); err != nil {
-		t.Fatalf("alice leaving task A at the clock a flush had just sent her state at did not remove her from bob's reader on task B within %v: %v",
-			prompt, err)
+	// Her removal, at the clock the flush sent her at, reaches bob; one below it he drops, and his
+	// room would hold her cursor until it expired (awarenessExpiry, 30 s), which is the failure
+	// this test is about - and which task B's rooms here never do (keepRelayedClientsOnTaskB), so
+	// bob losing her proves her removal crossed.
+	if err := bob.WaitForAwareness(t, lacksAwareness(aliceClient)); err != nil {
+		t.Fatalf("alice leaving task A at the clock a flush had just sent her state at did not remove her from bob's reader on task B: %v", err)
 	}
 }
 
@@ -729,9 +712,9 @@ func TestAReaderLeavingAfterAFlushSentALaterClockStillLeavesTheOtherProcess(t *t
 // the read side of its lock alone (sync.RWMutex, awareness/awareness.go:135) returns from them
 // only while no writer is queued - Go's RWMutex holds a further read lock behind a waiting
 // writer - and never from the wait, since that queued writer is what a room's record would
-// deadlock against. Either hang leaves the write itself unfinished, which is the one deadline
-// here: the observer waits without one of its own, since a deadline of the observer's would
-// fire on the write's goroutine after the subtest it belongs to had already failed and ended.
+// deadlock against. Either hang leaves the write itself unfinished, which is what the subtest
+// waits for: the observer waits without a wait of its own, since one of the observer's would end
+// on the write's goroutine after the subtest it belongs to had already failed and ended.
 func TestARoomsAwarenessFiresItsObserversWithItsLockReleased(t *testing.T) {
 	t.Parallel()
 	const cursor = `{"user":{"name":"alice"}}`
@@ -774,10 +757,7 @@ func TestARoomsAwarenessFiresItsObserversWithItsLockReleased(t *testing.T) {
 			if write.seed != nil {
 				write.seed(aw)
 			}
-			// The bound the subtest's one deadline runs on, taken here: roomWait reads the
-			// binary's deadline through t, and the observer below runs on the write's
-			// goroutine.
-			wait := roomWait(t)
+			// The observer below runs on the write's goroutine.
 			var fired atomic.Int64
 			// The one write the observer below queues, which its own firing - on the goroutine
 			// that write runs on - must not queue again.
@@ -809,14 +789,8 @@ func TestARoomsAwarenessFiresItsObserversWithItsLockReleased(t *testing.T) {
 			})
 			done := make(chan error, 1)
 			go func() { done <- write.write(aw) }()
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("apply %s: %v", write.what, err)
-				}
-			case <-time.After(wait):
-				t.Fatalf("a room's awareness was still locked while its observer ran: reading it from inside the observer %s fires, or the write of another goroutine's queued there, did not finish within %v",
-					write.what, wait)
+			if err := testwait.Receive(t, fmt.Sprintf("the write of %s to finish: a room's awareness still locked while its observer runs never returns from the observer's reads, or from the write of another goroutine's queued there", write.what), done); err != nil {
+				t.Fatalf("apply %s: %v", write.what, err)
 			}
 			if fired.Load() == 0 {
 				t.Fatalf("%s fired no update observer, so nothing here is tested", write.what)
@@ -838,6 +812,15 @@ func relayedClientClock(service *Service, room string, client uint64) (uint64, b
 	return clock, listed
 }
 
+// keepRelayedClientsOnTaskB turns task B's awareness expiry off (Server.AwarenessExpiry 0, which
+// ygo reads as each room loads, so it is set before task B loads one): a room of task B then keeps
+// a client relayed to it until a removal of it arrives. A wait for bob to lose alice's cursor then
+// proves her removal crossed, where awarenessExpiry (30 s) would take her away whether it did or
+// not.
+func keepRelayedClientsOnTaskB(pair processPair) {
+	pair.taskB.srv.AwarenessExpiry = 0
+}
+
 // awarenessClockOf is the clock service's resident room of artifactID holds client's state at.
 func awarenessClockOf(t *testing.T, service *Service, artifactID string, client uint64) uint64 {
 	t.Helper()
@@ -853,7 +836,7 @@ func awarenessClockOf(t *testing.T, service *Service, artifactID string, client 
 }
 
 // relayedRemovalClock is the clock of the removal of client that reaches handled for artifactID,
-// the first one relayed within roomWait.
+// the first one relayed.
 func relayedRemovalClock(t *testing.T, handled <-chan awarenessMessage, artifactID string, client uint64) uint64 {
 	t.Helper()
 	return relayedEntryClock(t, handled, artifactID, client, fmt.Sprintf("removal of client %d", client),
@@ -861,7 +844,7 @@ func relayedRemovalClock(t *testing.T, handled <-chan awarenessMessage, artifact
 }
 
 // relayedStateClock is the clock of the first state of client at clock or later that reaches
-// handled for artifactID, within roomWait.
+// handled for artifactID.
 func relayedStateClock(t *testing.T, handled <-chan awarenessMessage, artifactID string, client, clock uint64) uint64 {
 	t.Helper()
 	return relayedEntryClock(t, handled, artifactID, client, fmt.Sprintf("state of client %d at clock %d or later", client, clock),
@@ -869,14 +852,18 @@ func relayedStateClock(t *testing.T, handled <-chan awarenessMessage, artifactID
 }
 
 // relayedEntryClock is the clock of the first entry of client that reaches handled for
-// artifactID and that takes accepts, within roomWait; what names the entry the test waited for.
+// artifactID and that takes accepts; what names the entry the test waits for.
 func relayedEntryClock(t *testing.T, handled <-chan awarenessMessage, artifactID string, client uint64, what string, takes func(awarenessEntry) bool) uint64 {
 	t.Helper()
-	wait := roomWait(t)
-	deadline := time.After(wait)
-	for {
-		select {
-		case message := <-handled:
+	var clock uint64
+	waitFor(t, "a "+what+" relayed for "+artifactID, func() bool {
+		for {
+			var message awarenessMessage
+			select {
+			case message = <-handled:
+			default:
+				return false
+			}
 			if message.Room != artifactID || message.Query {
 				continue
 			}
@@ -890,11 +877,11 @@ func relayedEntryClock(t *testing.T, handled <-chan awarenessMessage, artifactID
 			}
 			for _, entry := range entries {
 				if entry.client == client && takes(entry) {
-					return entry.clock
+					clock = entry.clock
+					return true
 				}
 			}
-		case <-deadline:
-			t.Fatalf("no %s was relayed for %s within %v", what, artifactID, wait)
 		}
-	}
+	})
+	return clock
 }

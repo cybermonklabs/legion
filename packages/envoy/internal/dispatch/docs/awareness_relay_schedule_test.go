@@ -58,6 +58,8 @@ import (
 
 	"github.com/reearth/ygo/awareness"
 	"github.com/reearth/ygo/encoding"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -205,6 +207,9 @@ func (p *relayProcess) coalesceAwareness(flush func()) { p.flushes = append(p.fl
 
 func (p *relayProcess) awarenessWindows() awarenessWindows { return p.windows }
 
+// countAwarenessChange counts nothing: a schedule runs no test hooks.
+func (p *relayProcess) countAwarenessChange(string, uint64, awarenessChange) {}
+
 // holds is what p's room holds of client now, and whether it holds a state of it at all.
 func (p *relayProcess) holds(client uint64) (awareness.ClientState, bool) {
 	state, held := p.aw.GetStates()[client]
@@ -319,12 +324,17 @@ type relaySchedule struct {
 	steps []string
 	// failures are what the schedule broke, which is nothing in a passing run.
 	failures []string
+	// deadline ends the wait for a thread to park or finish (step): the shared wait's give-up
+	// (testwait.Context), taken on the test's goroutine, since a schedule runs on a worker's.
+	deadline context.Context
+	// stuck is whether a thread neither parked nor finished by deadline, which ends the schedule.
+	stuck bool
 }
 
 // newRelaySchedule builds the schedule seed names: two to four readers over two processes, and
-// ten to forty operations.
-func newRelaySchedule(seed uint64) *relaySchedule {
-	s := &relaySchedule{seed: seed, rand: rand.New(rand.NewPCG(seed, 0x9e3779b97f4a7c15))}
+// ten to forty operations. Its steps wait for a thread until deadline ends.
+func newRelaySchedule(deadline context.Context, seed uint64) *relaySchedule {
+	s := &relaySchedule{seed: seed, rand: rand.New(rand.NewPCG(seed, 0x9e3779b97f4a7c15)), deadline: deadline}
 	for i := range s.procs {
 		process := &relayProcess{
 			name:    string(rune('A' + i)),
@@ -414,9 +424,9 @@ func (s *relaySchedule) echoed(client int) int {
 
 // play runs the schedule: at each step it either starts the next operation or carries one that is
 // parked a step further, picked at random, until every operation has run and no thread is left.
-// It then drains and checks what the two rooms hold.
+// It then drains and checks what the two rooms hold. A thread stuck in the relay ends it there.
 func (s *relaySchedule) play() {
-	for len(s.ops) > 0 || len(s.threads) > 0 {
+	for !s.stuck && (len(s.ops) > 0 || len(s.threads) > 0) {
 		pick := s.rand.IntN(len(s.threads) + min(len(s.ops), 1))
 		if pick == len(s.threads) {
 			op := s.ops[0]
@@ -426,7 +436,13 @@ func (s *relaySchedule) play() {
 		}
 		s.resume(s.threads[pick], "")
 	}
+	if s.stuck {
+		return
+	}
 	s.drain()
+	if s.stuck {
+		return
+	}
 	s.check()
 }
 
@@ -434,7 +450,7 @@ func (s *relaySchedule) play() {
 // window still armed, and every notification still waiting on a lane - and what each of those
 // starts in turn, until the two processes owe each other nothing.
 func (s *relaySchedule) drain() {
-	for round := 0; ; round++ {
+	for round := 0; !s.stuck; round++ {
 		if round > scheduleDrainRounds {
 			s.fail(fmt.Sprintf("the schedule never came to rest: %d threads, %d flushes and %d notifications after %d rounds of draining",
 				len(s.threads), len(s.procs[0].flushes)+len(s.procs[1].flushes), len(s.procs[0].inbox)+len(s.procs[1].inbox), round))
@@ -600,12 +616,20 @@ func (s *relaySchedule) resume(thread *relayThread, prefix string) {
 }
 
 // step hands thread the baton and waits for it to park or finish. Nothing else of the schedule
-// runs while it holds it, which is what makes a seed replay its schedule.
+// runs while it holds it, which is what makes a seed replay its schedule. A thread that does
+// neither by the shared wait's give-up is stuck in the relay: the schedule fails naming it and
+// stops, so the worker returns and the test's goroutine fails on its report.
 func (s *relaySchedule) step(thread *relayThread, note string) {
 	s.note(note)
 	s.running = thread
 	thread.resume <- struct{}{}
-	<-thread.stopped
+	select {
+	case <-thread.stopped:
+	case <-s.deadline.Done():
+		s.fail(fmt.Sprintf("%s neither parked nor finished before the shared wait gave up (testwait.Context): it is stuck in the relay", thread.what))
+		s.stuck = true
+		return
+	}
 	s.running = nil
 	if !thread.done {
 		return
@@ -850,9 +874,9 @@ func relayNotificationUpdate(message awarenessMessage) ([]awarenessEntry, error)
 }
 
 // playRelaySchedule runs the schedule seed builds and returns what it broke, or the empty string
-// when every invariant held.
-func playRelaySchedule(seed uint64) string {
-	schedule := newRelaySchedule(seed)
+// when every invariant held. Its steps wait for a thread until deadline ends.
+func playRelaySchedule(deadline context.Context, seed uint64) string {
+	schedule := newRelaySchedule(deadline, seed)
 	schedule.play()
 	if len(schedule.failures) == 0 {
 		return ""
@@ -866,8 +890,9 @@ func playRelaySchedule(seed uint64) string {
 // first, then as many randomized ones as scheduleCountEnv asks for.
 func TestEveryInterleavingOfARoomsAwarenessSettlesOnBothProcesses(t *testing.T) {
 	t.Parallel()
+	deadline := testwait.Context(t)
 	for _, seed := range relayScheduleRegressions {
-		if report := playRelaySchedule(seed); report != "" {
+		if report := playRelaySchedule(deadline, seed); report != "" {
 			t.Fatalf("a schedule that once broke an invariant breaks it again:\n%s", report)
 		}
 	}
@@ -884,7 +909,7 @@ func TestEveryInterleavingOfARoomsAwarenessSettlesOnBothProcesses(t *testing.T) 
 	for worker := range workers {
 		group.Go(func() {
 			for seed := uint64(worker) + 1; seed <= uint64(count); seed += uint64(workers) {
-				report := playRelaySchedule(seed)
+				report := playRelaySchedule(deadline, seed)
 				if report == "" {
 					continue
 				}

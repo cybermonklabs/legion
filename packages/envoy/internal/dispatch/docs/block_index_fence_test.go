@@ -22,11 +22,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// fenceWait is how long a step of this test waits for a writer it started on a connection of its
-// own to finish once the owed row it waited behind is released.
-const fenceWait = 30 * time.Second
 
 // highestTuple is the last sequence the tuple log holds: the mark a step's own appends are read
 // back after, and the one that says a step appended nothing.
@@ -794,7 +791,7 @@ func requireTheWriteIsFenced(t *testing.T, database *store.Store, service *Servi
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the newer pass's revision: %v", err)
 	}
-	answer := <-answered
+	answer := testwait.Receive(t, writer+" that waited on the owner to answer once the newer pass committed", answered)
 	if answer.err != nil {
 		t.Fatalf("%s that waited on the owner: %v", writer, answer.err)
 	}
@@ -943,7 +940,7 @@ func requireTheTickIsFenced(t *testing.T, database *store.Store, service *Servic
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the newer pass's mark: %v", err)
 	}
-	<-ticked
+	testwait.Receive(t, "the fenced tick to end once the newer pass committed", ticked)
 	// What the tick must not do is commit the work of a revision below the stored one: no tuple
 	// and no projection row. The stored revision itself is not read back here, because the same
 	// tick's grammar arm owes the document an index again (oweDocumentIndex) and sets it null.
@@ -1029,12 +1026,7 @@ func requireTheBackfillIsFenced(t *testing.T, database *store.Store) {
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the version write the backfill races: %v", err)
 	}
-	var answer backfillAnswer
-	select {
-	case answer = <-answered:
-	case <-time.After(fenceWait):
-		t.Fatalf("%s did not finish within %s of the owed row's release", writer, fenceWait)
-	}
+	answer := testwait.Receive(t, writer+" to finish once the owed row is released", answered)
 	if answer.err != nil {
 		t.Fatalf("%s: %v", writer, answer.err)
 	}

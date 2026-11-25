@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/reearth/ygo/crdt"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 )
 
 // Read converts the live Yjs tree the browser editor writes into a Node tree. The tree is the
@@ -77,7 +79,11 @@ func readTextInTransaction(text *crdt.YXmlText, copyAttrs bool) ([]*Node, error)
 	return textNodesOfDelta(delta, copyAttrs)
 }
 
+// readDocument is what every read of a whole fragment into a tree does: Read, ReadForRendering,
+// ReadUnshared and ReadInTransaction. It is the read docwork's observers are told of
+// (docwork.Read).
 func readDocument(frag *crdt.YXmlFragment, readText textReader, copyAttrs bool) (*Node, error) {
+	docwork.Enter(docwork.Read)
 	children, err := readChildren(frag, readText, 1, copyAttrs)
 	if err != nil {
 		return nil, err

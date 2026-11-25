@@ -4,12 +4,12 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The block-id backfill is a durable writer of the room like every other, so the rule this change
@@ -90,12 +90,7 @@ func TestStoredOrderBackfillDoesNotStoreTheRoomsCommittedEditTwice(t *testing.T)
 	}
 	editAsConnectedPeer(t, service, artifactID, 1, storedOrderBob,
 		appendBlockWithCraftedID(t, "A paragraph repeating the first block's id.\n", first))
-	var edit persistence.Version
-	select {
-	case edit = <-committed:
-	case <-time.After(roomWait(t)):
-		t.Fatal("bob's edit never committed, so the window it is held in never opened")
-	}
+	edit := testwait.Receive(t, "bob's edit to commit, which opens the window it is held in", committed)
 
 	var report BlockIDBackfill
 	backfilled := make(chan error, 1)
@@ -108,7 +103,7 @@ func TestStoredOrderBackfillDoesNotStoreTheRoomsCommittedEditTwice(t *testing.T)
 	// point. Taking it at the first append instead is what stored the edit twice.
 	waitForLockWait(t, context.Background(), service.store, "%pg_advisory_xact_lock%", backfilled)
 	releaseWorker()
-	if err := <-backfilled; err != nil {
+	if err := testwait.Receive(t, "backfillBlockIDs to return once the worker was released", backfilled); err != nil {
 		t.Fatalf("the backfill failed: %v", err)
 	}
 	if report.Stamped == 0 {

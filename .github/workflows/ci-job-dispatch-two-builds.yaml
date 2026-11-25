@@ -46,7 +46,14 @@ env:
 jobs:
   dispatch-two-builds:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The step's -timeout 30m is 3.1 times the package's slowest run over this job's 8 green
+    # merge-group runs up to 2026-11-15, which are all it has had since it landed, 575.933 s (run
+    # 43717090111). The limit is at least the job's sum over those runs: its other steps at their
+    # longest, 506 s (the previous build's 128 s, the first-rollout build's 57 s and the two browser
+    # steps' 98 s and 97 s among them, the first-rollout steps read over the 6 of those runs since
+    # they landed), 9 s of its clock over them, and the step's longest 613 s plus its 30 minutes:
+    # 2928 s, or 49 minutes.
+    timeout-minutes: 50
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -60,7 +67,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 45 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 50 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The Go half's database. The browser half runs on a Postgres of its own, which the harness
       # starts per step (e2e/harness-postgres.ts) from the same image digest the service runs, so
       # the service's pull is that step's too.

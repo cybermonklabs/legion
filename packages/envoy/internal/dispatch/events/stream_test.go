@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestStreamDropsASubscriberThatCannotKeepUp is the overflow contract every reader of a Stream
@@ -25,14 +26,15 @@ func TestStreamDropsASubscriberThatCannotKeepUp(t *testing.T) {
 	if count := stream.SubscriberCount(); count != 0 {
 		t.Fatalf("subscriber count after overflow = %d, want 0", count)
 	}
+	// A closed subscription gives the zero value, which is none of the published ones.
 	for sequence := 1; sequence <= buffer; sequence++ {
-		event, open := <-subscription
-		if !open || event.Seq != sequence {
-			t.Fatalf("event %d = %#v (open=%t), want the buffered events in order", sequence, event, open)
+		event := testwait.Receive(t, "the overflowed subscription's buffered events, in order", subscription)
+		if event.Seq != sequence {
+			t.Fatalf("event %d = %#v, want the buffered events in order (a zero event is a closed subscription)", sequence, event)
 		}
 	}
-	if _, open := <-subscription; open {
-		t.Fatal("overflowed subscriber remained open")
+	if event := testwait.Receive(t, "the overflowed subscription's close", subscription); event.Seq != 0 {
+		t.Fatalf("overflowed subscriber remained open: it received %#v after its buffered events", event)
 	}
 }
 
@@ -51,14 +53,15 @@ func TestStreamBuffersAsManyValuesAsItsSubscriberAsked(t *testing.T) {
 	if count := stream.SubscriberCount(); count != 1 {
 		t.Fatalf("subscriber count after a burst of 4 = %d, want the 4-slot subscriber alone", count)
 	}
-	if value, open := <-small; !open || value != 1 {
-		t.Fatalf("1-slot subscriber received %d (open=%t), want 1 before it was dropped", value, open)
+	// A closed subscription gives 0, which is none of the published values.
+	if value := testwait.Receive(t, "the 1-slot subscription's one buffered value", small); value != 1 {
+		t.Fatalf("1-slot subscriber received %d, want 1 before it was dropped (0 is a closed subscription)", value)
 	}
-	if _, open := <-small; open {
-		t.Fatal("1-slot subscriber remained open after the burst overflowed it")
+	if value := testwait.Receive(t, "the 1-slot subscription's close", small); value != 0 {
+		t.Fatalf("1-slot subscriber remained open after the burst overflowed it: it received %d", value)
 	}
 	for want := 1; want <= 4; want++ {
-		if value := <-large; value != want {
+		if value := testwait.Receive(t, "the 4-slot subscription's buffered values, in order", large); value != want {
 			t.Fatalf("4-slot subscriber received %d, want %d", value, want)
 		}
 	}
@@ -80,8 +83,8 @@ func TestStreamCloseAllEndsEverySubscription(t *testing.T) {
 	stream.CloseAll()
 
 	for name, subscription := range map[string]<-chan model.Event{"first": first, "second": second} {
-		if _, open := <-subscription; open {
-			t.Fatalf("%s subscription stayed open after CloseAll", name)
+		if event := testwait.Receive(t, "the "+name+" subscription's close by CloseAll", subscription); event.Seq != 0 {
+			t.Fatalf("%s subscription stayed open after CloseAll: it received %#v", name, event)
 		}
 	}
 	if count := stream.SubscriberCount(); count != 0 {

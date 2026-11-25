@@ -5,14 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A room's close gate leaves with the last close or repair that held it: the server keeps none
@@ -21,11 +24,11 @@ import (
 func TestCloseGatesDoNotOutliveTheirRooms(t *testing.T) {
 	t.Parallel()
 	service, first := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	generation := owedStamp(t, service, first)
 	service.settleRoom(first, generation) // a repair (applySuppressed)
-	if err := service.srv.CloseRoom(first, true); err != nil {
+	if err := closeRoomJoined(t, service, first, true); err != nil {
 		t.Fatalf("close the settled room: %v", err)
 	}
 	var evicted []string
@@ -62,7 +65,7 @@ func TestCloseGatesDoNotOutliveTheirRooms(t *testing.T) {
 func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	generation := owedStamp(t, service, artifactID)
 
 	closing := service.srv.acquireGate(artifactID)
@@ -81,12 +84,8 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 		defer close(settled)
 		service.settleRoom(artifactID, generation)
 	}()
-	select {
-	case <-settled:
-	case <-time.After(10 * time.Second):
-		release()
-		t.Fatal("the settlement waited for the close under way instead of refusing its repair")
-	}
+	// The gate stays held until the settlement returns; the cleanup lets it go if it never does.
+	testwait.Receive(t, "the settlement to refuse its repair rather than wait for the close under way", settled)
 	release()
 	if repairs := pmdoc.BlockIDRepairCount(liveTree(t, service, artifactID)); repairs == 0 {
 		t.Fatal("the refused repair stamped the room")
@@ -103,13 +102,13 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 func TestHoldOpenRefusesRoomThatNoLongerHoldsItsDocument(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	owedStamp(t, service, artifactID)
 	doc := service.srv.GetDoc(artifactID)
 	if doc == nil {
 		t.Fatal("document room is not resident")
 	}
-	if err := service.srv.CloseRoom(artifactID, true); err != nil {
+	if err := closeRoomJoined(t, service, artifactID, true); err != nil {
 		t.Fatalf("close document room: %v", err)
 	}
 	if release, open := service.srv.holdOpen(artifactID, doc); open {
@@ -145,7 +144,9 @@ func TestEvictWithACancelledContextLeavesTheRoomResident(t *testing.T) {
 func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 	t.Parallel()
 	server := websocket.NewServer()
-	server.RoomIdleTimeout = time.Hour
+	// Only to keep ygo's idle sweep away from the room the test holds open: that sweep reads the
+	// wall clock inside ygo (provider/websocket/idle_sweep.go), so no clock of the test's reaches it.
+	server.RoomIdleTimeout = stagedAhead
 	service := &Service{srv: newRoomServer(server)}
 	entered, release, applied := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	evicting, evict := make(chan struct{}), make(chan struct{})
@@ -159,11 +160,9 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 	testcleanup.Add(t, func() {
 		letGo()
 		recoverRoom()
-		<-applied
-		service.evictWG.Wait()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
+		testwait.Receive(t, "server.Apply to return once it was released", applied)
+		testwait.Returns(t, "the failed room's eviction goroutine to return", service.evictWG.Wait)
+		if err := server.Shutdown(testwait.Context(t)); err != nil {
 			t.Errorf("shutdown: %v", err)
 		}
 	})
@@ -176,29 +175,38 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 			t.Errorf("hold the room open: %v", err)
 		}
 	}()
-	<-entered
+	testwait.Receive(t, "server.Apply to run its body", entered)
 	service.failRoom("room", errors.New("failed room"))
-	<-evicting
+	testwait.Receive(t, "failRoom's eviction to reach its hook", evicting)
 	state := service.lockExistingState("room")
 	done := state.failedDone
 	service.unlockState("room", state)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	// The eviction's context ends on a fake clock, which the test moves past its deadline once
+	// the eviction has tried the room the Apply above is inside and been refused.
+	var attempts atomic.Int32
+	service.srv.beforeClose = func(room string) {
+		if room == "room" {
+			attempts.Add(1)
+		}
+	}
+	evictClock := clocktest.New(time.Now())
+	ctx, cancel := evictClock.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	if err := service.Evict(ctx, "room"); !errors.Is(err, context.DeadlineExceeded) {
+	evictReturned := make(chan error, 1)
+	go func() { evictReturned <- service.Evict(ctx, "room") }()
+	waitFor(t, "the eviction to try the room the Apply is inside", func() bool { return attempts.Load() >= 1 })
+	evictClock.Advance(10 * time.Millisecond)
+	if err := testwait.Receive(t, "the eviction to return once its context ended", evictReturned); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("cancelled eviction = %v, want %v", err, context.DeadlineExceeded)
 	}
 	if !service.roomFailed("room") || server.GetDoc("room") == nil {
 		t.Fatal("cancelled eviction must keep the resident room's failure until its own eviction closes it")
 	}
 	letGo()
-	<-applied
+	testwait.Receive(t, "server.Apply to return once it was released", applied)
 	recoverRoom()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the failed room's eviction did not finish")
-	}
+	testwait.Receive(t, "the failed room's eviction to finish", done)
 	if server.GetDoc("room") != nil || service.roomFailed("room") {
 		t.Fatal("the failed room's eviction must close the room and clear its failure")
 	}
@@ -241,4 +249,48 @@ func closeGates(service *Service) int {
 	service.srv.gatesMu.Lock()
 	defer service.srv.gatesMu.Unlock()
 	return len(service.srv.gates)
+}
+
+// closeRoomJoined closes room through service's roomServer.CloseRoom, as a test's own close of a
+// room does, and answers the close's error. CloseRoom waits on no context for the room's close
+// gate and then for ygo's close, which closes each peer and waits for its read loop to exit, waits
+// for the room's persistence worker to flush and drain, and runs the service's unload hook
+// (sjawhar/ygo v1.55.1-sami.2, provider/websocket/inject.go:629-740), so the call runs through
+// the shared wait: a close that never returns fails the test naming it rather than hanging the
+// binary to its timeout.
+func closeRoomJoined(t testing.TB, service *Service, room string, force bool) error {
+	t.Helper()
+	var err error
+	testwait.Returns(t, "the room's close to return", func() { err = service.srv.CloseRoom(room, force) })
+	return err
+}
+
+// closeRoomInHelper is closeRoomJoined for a close a test makes off the test goroutine, in a hook
+// the service runs on a goroutine of its own (afterSettleWarm), where nothing may end the test: it
+// waits through the shared wait's helper form, naming helper, and answers its give-up as the error,
+// for the caller to report through t.Error with the close's own error.
+func closeRoomInHelper(helper string, service *Service, room string, force bool) error {
+	closed := make(chan error, 1)
+	go func() { closed <- service.srv.CloseRoom(room, force) }()
+	err, gaveUp := testwait.ReceiveInHelper(helper, "the room's close to return", closed)
+	if gaveUp != nil {
+		return gaveUp
+	}
+	return err
+}
+
+// closeInstanceJoined runs closing, a test's call of one of the service's closes of a room
+// instance (closeRoomBehindHead, closeReservedRoom, closeRoomInstance), and answers what it
+// answered. Each ends in closeRoomInstance, whose ctx bounds only its Apply's admission: the close
+// inside it, ygo's CloseRoomWithin, joins the room's peers' read loops and its persistence worker on
+// no context (roomServer.closeInstance), so the call runs through the shared wait, and a close that
+// never returns fails the test naming it rather than hanging the binary to its timeout.
+func closeInstanceJoined(t testing.TB, closing func() (bool, error)) (bool, error) {
+	t.Helper()
+	var (
+		closed bool
+		err    error
+	)
+	testwait.Returns(t, "the room instance's close to return", func() { closed, err = closing() })
+	return closed, err
 }

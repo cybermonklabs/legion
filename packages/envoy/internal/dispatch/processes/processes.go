@@ -38,12 +38,16 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The registry's intervals. Variables rather than constants only so this package's tests can
-// shorten them; nothing else sets them.
+// The registry's intervals. They are variables because cmd/dispatch's
+// DISPATCH_TEST_PROCESS_HEARTBEAT hook sets them for a server process a process-level test runs
+// (main.go), which is a child process's own setting; no test of this package shortens them. The
+// waits of a registration run on the clock its caller hands it (RegisterOn, RunPruneOn), and
+// whether a row is live is the database's own clock, which a test ages a row against (Live).
 var (
 	// HeartbeatInterval is how often a registered process stamps its row's heartbeat_at.
 	HeartbeatInterval = 5 * time.Second
@@ -207,7 +211,9 @@ type Registration struct {
 	instance Instance
 	// pool is the registry's own one-connection pool, which Register opens and Deregister closes
 	// (Register says why it is not the shared pool).
-	pool    *pgxpool.Pool
+	pool *pgxpool.Pool
+	// clock is what the heartbeat and each heartbeat's own bound run on (RegisterOn).
+	clock   clock.Clock
 	stop    context.CancelFunc
 	stopped chan struct{}
 	// lost carries the heartbeat's refusal (Lost); it holds one value and is sent at most once.
@@ -247,6 +253,14 @@ type Registration struct {
 // connections (store.Pool.Use): a heartbeat timing out there every few seconds hands a connection
 // back each time, which reads as a database still answering, and the process would never exit.
 func Register(ctx context.Context, pool *store.Pool, instance Instance) (*Registration, error) {
+	return RegisterOn(ctx, clock.Real(), pool, instance)
+}
+
+// RegisterOn is Register with its wait for admission, its heartbeat and each heartbeat's own
+// bound on c: clock.Real from Register, and a test's clocktest.Fake, which brings a heartbeat
+// and the wait's end only when the test moves it. Whether a row is live is the database's own
+// clock either way (Live), which no clock of this process reaches.
+func RegisterOn(ctx context.Context, c clock.Clock, pool *store.Pool, instance Instance) (*Registration, error) {
 	if len(instance.SigningKeys) == 0 {
 		return nil, errors.New("register this server process: it names no signing key")
 	}
@@ -259,21 +273,21 @@ func Register(ctx context.Context, pool *store.Pool, instance Instance) (*Regist
 		return nil, fmt.Errorf("open the server process registry's pool: %w", err)
 	}
 	id := uuid.NewString()
-	if err := waitForAdmission(ctx, own, id, instance); err != nil {
+	if err := waitForAdmission(ctx, c, own, id, instance); err != nil {
 		own.Close()
 		return nil, err
 	}
 	beating, stop := context.WithCancel(context.Background())
-	registration := &Registration{ID: id, instance: instance, pool: own, stop: stop, stopped: make(chan struct{}), lost: make(chan error, 1)}
+	registration := &Registration{ID: id, instance: instance, pool: own, clock: c, stop: stop, stopped: make(chan struct{}), lost: make(chan error, 1)}
 	go registration.heartbeat(beating)
 	return registration, nil
 }
 
-// waitForAdmission is Register's wait: tryRegister every HeartbeatInterval until it admits the
-// process, or until LiveWindow and one HeartbeatInterval have passed since its first refusal, when
-// that last refusal is returned. A refusal naming another process than the one before is logged
-// again, so the log names every process the wait was on.
-func waitForAdmission(ctx context.Context, pool *pgxpool.Pool, id string, instance Instance) error {
+// waitForAdmission is Register's wait: tryRegister every HeartbeatInterval of c until it admits
+// the process, or until LiveWindow and one HeartbeatInterval have passed on c since its first
+// refusal, when that last refusal is returned. A refusal naming another process than the one
+// before is logged again, so the log names every process the wait was on.
+func waitForAdmission(ctx context.Context, c clock.Clock, pool *pgxpool.Pool, id string, instance Instance) error {
 	var giveUp time.Time
 	logged := ""
 	for {
@@ -285,20 +299,22 @@ func waitForAdmission(ctx context.Context, pool *pgxpool.Pool, id string, instan
 			return nil
 		}
 		if giveUp.IsZero() {
-			giveUp = time.Now().Add(LiveWindow + HeartbeatInterval)
+			giveUp = c.Now().Add(LiveWindow + HeartbeatInterval)
 		}
-		if !time.Now().Before(giveUp) {
+		if !c.Now().Before(giveUp) {
 			return refusal
 		}
 		if refusal.Error() != logged {
 			logged = refusal.Error()
 			slog.Warn("dispatch: a live server process refuses this one's signing keys; waiting for its heartbeat to lapse, as a process killed without deregistering lets it, before this one refuses to start",
-				"instance", id, "refusal", refusal, "gives_up_in", time.Until(giveUp).Round(time.Millisecond))
+				"instance", id, "refusal", refusal, "gives_up_in", giveUp.Sub(c.Now()).Round(time.Millisecond))
 		}
+		gap := c.NewTimer(HeartbeatInterval)
 		select {
 		case <-ctx.Done():
+			gap.Stop()
 			return fmt.Errorf("register this server process: %w", ctx.Err())
-		case <-time.After(HeartbeatInterval):
+		case <-gap.C():
 		}
 	}
 }
@@ -382,19 +398,24 @@ func describe(peer Process) string {
 	return fmt.Sprintf("%s, started %s", peer.Build(), peer.StartedAt.UTC().Format(time.RFC3339))
 }
 
-// heartbeat stamps the row's heartbeat_at every HeartbeatInterval until ctx ends. It runs for as
-// long as the process serves, through its HTTP drain, so a draining process counts as live until
-// its last request is answered and Deregister ends it. It ends early, once, when a beat refuses
-// to count this process as live again (beat); Lost delivers that refusal.
+// heartbeat stamps the row's heartbeat_at every HeartbeatInterval of the registration's clock
+// until ctx ends. It runs for as long as the process serves, through its HTTP drain, so a
+// draining process counts as live until its last request is answered and Deregister ends it. It
+// ends early, once, when a beat refuses to count this process as live again (beat); Lost
+// delivers that refusal.
+//
+// The gap is re-armed where the timer fired rather than where the beat it ran returned, as a
+// ticker's grid is, so a slow beat does not push every beat after it later.
 func (r *Registration) heartbeat(ctx context.Context) {
 	defer close(r.stopped)
-	ticker := time.NewTicker(HeartbeatInterval)
-	defer ticker.Stop()
+	gap := r.clock.NewTimer(HeartbeatInterval)
+	defer gap.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-gap.C():
+			gap.Reset(HeartbeatInterval)
 			if refusal := r.beat(ctx); refusal != nil {
 				r.lost <- refusal
 				return
@@ -415,7 +436,7 @@ func (r *Registration) Lost() <-chan error { return r.lost }
 // registry measured on the database's clock, and renew checks its keys again before it counts as
 // live once more.
 func (r *Registration) beat(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, heartbeatTimeout)
+	ctx, cancel := r.clock.WithTimeout(ctx, heartbeatTimeout)
 	defer cancel()
 	refusal, err := r.renew(ctx)
 	if err != nil {
@@ -549,7 +570,13 @@ func (r *Registration) Deregister(ctx context.Context) error {
 // then one each interval; the first tick a pass overran comes at once with the moment it was due,
 // and only the ones after it are dropped.
 func RunPrune(ctx context.Context, pool *store.Pool, leases duty.Leases) {
-	duty.RunLeased(ctx, leases, pruneLease, PruneInterval, duty.TickAfterInterval, func(ctx context.Context) {
+	RunPruneOn(ctx, clock.Real(), pool, leases)
+}
+
+// RunPruneOn is RunPrune with its ticks on c: clock.Real from RunPrune, and a test's
+// clocktest.Fake, which brings each pass only when the test moves it there (duty.RunLeasedOn).
+func RunPruneOn(ctx context.Context, c clock.Clock, pool *store.Pool, leases duty.Leases) {
+	duty.RunLeasedOn(ctx, c, leases, pruneLease, PruneInterval, duty.TickAfterInterval, func(ctx context.Context) {
 		pruned, err := prune(ctx, pool)
 		if err != nil {
 			slog.Warn("dispatch: prune the server process registry", "error", err)

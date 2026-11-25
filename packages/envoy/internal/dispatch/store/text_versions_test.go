@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // searchTextVersionsVersion creates the keyword table and its fill's cursor row's table.
@@ -26,7 +28,7 @@ func textVersionsLiteral(cut time.Time) string {
 // neither of the two tables carries one.
 func TestTheKeywordTableHasNoForeignKey(t *testing.T) {
 	ctx := context.Background()
-	store := openTestStore(t)
+	store := openEmptyTestStore(t)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -107,7 +109,7 @@ func TestNoMigrationWritesAKeywordVersion(t *testing.T) {
 // The relation's columns, their types and their order are what its readers build on.
 func TestTheKeywordRelationAnswersTheContractColumns(t *testing.T) {
 	ctx := context.Background()
-	store := openTestStore(t)
+	store := openEmptyTestStore(t)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -413,7 +415,9 @@ func TestTextVersionsAtRefusesACutPastTheReach(t *testing.T) {
 	}
 
 	store := migratedEmptyStore(t)
-	reach := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	// The reach is a moment of the database's clock, which stamps events and computes a reach
+	// (testdb.Now), so both moments the row judges are read there.
+	reach := testdb.Now(t, store.Pool).UTC().Add(-time.Hour).Truncate(time.Microsecond)
 	past := reach.Add(time.Microsecond)
 
 	// No cursor row: the fill has reached no time.
@@ -479,8 +483,8 @@ func TestTextVersionsAtRefusesACutPastTheReach(t *testing.T) {
 		t.Fatalf("TextVersionsAt one microsecond past the stored reach, with nothing left unwritten: %v", err)
 	}
 	computed, reached, err := store.TextVersionsReach(ctx)
-	if err != nil || !reached || !computed.After(past) || !computed.Before(time.Now()) {
-		t.Fatalf("TextVersionsReach with nothing left unwritten = %s, reached %v, %v; want a time after %s and before now",
+	if err != nil || !reached || !computed.After(past) || !computed.Before(testdb.Now(t, store.Pool)) {
+		t.Fatalf("TextVersionsReach with nothing left unwritten = %s, reached %v, %v; want a time after %s and before the database's now",
 			computed, reached, err, past)
 	}
 }

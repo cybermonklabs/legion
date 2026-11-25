@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -96,16 +95,7 @@ func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t 
 			map[string]any{"steps": []string{"spec"}, "actor": map[string]string{"kind": "session", "id": "legion-daemon:" + project}},
 			"agent-token")
 	}()
-	testwait.Until(t, "the publish's update of the project's gated steps to be held", func() (string, bool) {
-		select {
-		case <-held.reached:
-			return "held", true
-		case response := <-published:
-			t.Fatalf("the publish answered before its update was held: status=%d body=%s", response.Code, response.Body.String())
-		default:
-		}
-		return "not yet run", false
-	})
+	awaitEntered(t, "its update of the project's gated steps", held.reached, published)
 
 	created := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -117,7 +107,7 @@ func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t 
 			"actor":   sessionActor(),
 		})
 	}()
-	testwait.UntilPolling(t, 20*time.Millisecond, "the create to wait on a lock the publish's transaction holds (the sessions waiting on a lock)", func() (int, bool) {
+	testwait.Until(t, "the create to wait on a lock the publish's transaction holds (the sessions waiting on a lock)", func() (int, bool) {
 		waiting, err := storetest.CountLockWaits(context.Background(), database, "%")
 		if err != nil {
 			t.Fatal(err)

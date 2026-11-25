@@ -32,7 +32,7 @@ func newCmRun(v cmVariant, periods int, tracing bool) *cmRun {
 			return false
 		}
 	}
-	r.sender = newMentionSender(lifetime, 1000*time.Hour,
+	r.sender = newMentionSender(lifetime, 1000*time.Hour, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			reply := make(chan cmAnswer, 1)
 			if arrive(cmArrival{item: item, try: reply}) {
@@ -291,7 +291,7 @@ func (r *cmRun) runTry(try *cmTry) {
 	try.took = true
 	if by, waits := r.holder(c); waits {
 		item.claimed = row.claim
-		item.held(&mentionHeldForOrder{target: item.mention, claim: attemptClaim{attempt: 1, claimedAt: row.claim}, by: by})
+		item.held(&mentionHeldForOrder{target: item.mention, claim: attemptClaim{attempt: 1, claimedAt: row.claim}, by: by}, r.sender.sendClock().Now())
 		try.answer = cmAnswer{item: item, waits: true}
 		r.log("%s's try claims its attempt %s and waits behind event %d", cmComments[c], r.name(row.claim), by.EventID)
 		return
@@ -315,7 +315,7 @@ func (r *cmRun) sweepClaims(c int) {
 	}
 	item := r.item(c)
 	item.claimed = row.claim
-	item.held(&mentionHeldForOrder{target: item.mention, claim: attemptClaim{attempt: 1, claimedAt: row.claim}, by: by})
+	item.held(&mentionHeldForOrder{target: item.mention, claim: attemptClaim{attempt: 1, claimedAt: row.claim}, by: by}, r.sender.sendClock().Now())
 	r.sweeps[c] = &cmSweep{item: item}
 	r.log("the delivery sweep claims %s's owed attempt %s, which waits behind event %d", cmComments[c], r.name(row.claim),
 		by.EventID)

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -396,7 +398,12 @@ func TestIssueCollaboratorsAnswersWithoutTheRegistry(t *testing.T) {
 		},
 		"listener times out": func(t *testing.T) testServerOptions {
 			release := make(chan struct{})
+			clock := clocktest.New(time.Now())
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// The listener answers nothing, so what ends this call is the window its caller
+				// armed on the server's clock; the clock reaches that window only here, once the
+				// call has arrived.
+				clock.Advance(envoy.CallWindow)
 				select {
 				case <-release:
 				case <-r.Context().Done():
@@ -404,7 +411,7 @@ func TestIssueCollaboratorsAnswersWithoutTheRegistry(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 			t.Cleanup(func() { close(release) })
-			return testServerOptions{envoyURL: server.URL, envoyTimeout: 100 * time.Millisecond}
+			return testServerOptions{envoyURL: server.URL, clock: clock}
 		},
 		"no listener configured": func(t *testing.T) testServerOptions {
 			return testServerOptions{}

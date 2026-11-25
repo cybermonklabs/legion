@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // ───── messages and subscription settings ───────────────────────────────────
@@ -112,12 +113,12 @@ func requireBusSettings(t *testing.T, js natsgo.JetStreamContext, want busSettin
 // payload names its head is paged twice for it -- once to attribute the head row, once for the
 // completion's session trailers.
 //
-// The fake takes delay to answer that listing, which spreads the messages' handling over a stop,
-// and a listing whose process went away while it waited (the request's context ended) is counted
-// as abandoned. A handling counted is therefore not a handling finished: one a stop gave up
-// unfinished is counted at its fetch all the same, and NATS delivers that message again, which
-// is one of the repeats a hand-over's in-flight window bounds. Anything else is answered with an
-// empty list.
+// The fake takes delay to answer that listing, about what GitHub's REST API takes to page a pull
+// request's commits, which spreads the messages' handling over a stop, and a listing whose
+// process went away while it waited (the request's context ended) is counted as abandoned. A
+// handling counted is therefore not a handling finished: one a stop gave up unfinished is counted
+// at its fetch all the same, and NATS delivers that message again, which is one of the repeats a
+// hand-over's in-flight window bounds. Anything else is answered with an empty list.
 type pullRequestFake struct {
 	delay time.Duration
 
@@ -148,7 +149,7 @@ func (f *pullRequestFake) serve(t *testing.T, build string) string {
 	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		_, _ = fmt.Fprintf(w, `{"token":"ghs_twobuild","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		_, _ = fmt.Fprintf(w, `{"token":"ghs_twobuild","expires_at":%q}`, time.Now().Add(stagedPastTheRun).Format(time.RFC3339))
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
 		number, err := strconv.Atoi(r.PathValue("number"))
@@ -263,16 +264,14 @@ func boundLines(p *dispatchProcess, durable string) int {
 	return len(p.logLines(`msg="dispatch delivery: NATS consumer bound"`, "name="+durable))
 }
 
-// waitForBound waits for p to have logged that it bound durable more than before times.
-func waitForBound(t *testing.T, p *dispatchProcess, name, durable string, before int, within time.Duration) {
+// waitForBound waits for p, the build name names, to have logged that it bound durable more than
+// before times.
+func waitForBound(t *testing.T, p *dispatchProcess, name, durable string, before int) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for boundLines(p, durable) <= before {
-		if time.Now().After(deadline) {
-			t.Fatalf("the %s did not bind %s within %v:\n%s", name, durable, within, p.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	testwait.Until(t, fmt.Sprintf("the %s to bind %s past the %d binds it had logged", name, durable, before), func() (withOutput[int], bool) {
+		bound := boundLines(p, durable)
+		return readWith(bound, p.Output), bound > before
+	})
 }
 
 // standbyWindow is how long a restarted process of this tree is watched while a process of the
@@ -296,10 +295,10 @@ func consumerBinding(t *testing.T, js natsgo.JetStreamContext, durable string) s
 const pullRequestMessages = 50
 
 // handOver is one stop of the process holding the events durable and the take-over that follows
-// it: which build stopped and which took over, when the stopping process had exited, the stream
-// sequence each of that half's messages was stored at, the sequence the durable delivered from
-// once the take-over had bound it, the messages the stopping process logged handing back, and
-// the durable's in-flight window.
+// it: which build stopped and which took over, when the stop was sent and when the stopping
+// process had exited, the stream sequence each of that half's messages was stored at, the
+// sequence the durable delivered from once the take-over had bound it, the messages the stopping
+// process logged handing back, and the durable's in-flight window.
 //
 // Those two last are what bound the messages a hand-over may have handled twice, and between
 // them they are the whole of it, since a message is delivered a second time only where the
@@ -320,9 +319,15 @@ const pullRequestMessages = 50
 // A take-over that binds the durable as it stands, which is what a build before holds does
 // when it finds it unbound, delivers nothing again: start is then past every sequence, and a
 // hand-back is the only repeat that half allows.
+//
+// The two moments are on the test's clock, as the fake's handlings are. The stopping process
+// handles nothing after it exits (at), and the taking process handles nothing of the durable
+// before the stop was sent (stopped): the intake releases its hold at the signal (main.go's
+// waitIntakes), so the take-over, and a message it delivers again, can come before the stopping
+// process has exited.
 type handOver struct {
 	stopping, taking string
-	at               time.Time
+	stopped, at      time.Time
 	sequences        map[int]uint64
 	start            uint64
 	handedBack       map[int]bool
@@ -341,7 +346,9 @@ func (h handOver) replayed(number int) bool {
 // publishAcrossStop publishes a merged pull request for each of numbers while holder delivers from
 // the events durable, stops holder gracefully once ten of them are handled, and waits for standby to
 // take both delivery durables over and for every one of numbers to be handled. It returns that
-// hand-over: its time is after holder's process exited, so every handling holder did is before it.
+// hand-over: its stop's time is before the signal, so the taking build handles nothing of the
+// durable before it, and its time is after holder's process exited, so every handling holder did
+// is before that.
 //
 // Nothing reads a durable from holder's stop until standby has bound it. A take-over of this
 // tree's deletes the durable and creates it again (delivery.takeOverConfig), so between those two
@@ -367,27 +374,25 @@ func publishAcrossStop(t *testing.T, builds *twoBuilds, js natsgo.JetStreamConte
 	}
 	// The holder stops with the messages part handled: past the first ten, well before the last,
 	// at 300 ms a message.
-	deadline := time.Now().Add(60 * time.Second)
-	for handledOf() < 10 {
-		if time.Now().After(deadline) {
-			t.Fatalf("the %s handled %d of %d pull requests within 60s:\n%s", builds.buildName(holder), handledOf(), len(numbers), holder.Output.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.Until(t, fmt.Sprintf("the %s to handle ten of the %d pull requests", builds.buildName(holder), len(numbers)), func() (withOutput[int], bool) {
+		handled := handledOf()
+		return readWith(handled, holder.Output), handled >= 10
+	})
 	standbyBound := make(map[string]int, len(deliveryDurables))
 	for _, durable := range deliveryDurables {
 		standbyBound[durable] = boundLines(standby, durable)
 	}
 	before := deliverSubjectOf(t, js, bus.DispatchDeliveryDurable)
 	window := readBusSettings(t, js).Consumers[bus.DispatchDeliveryDurable].MaxAckPending
+	stopped := time.Now()
 	stop(t, holder)
 	over := handOver{
-		stopping: builds.buildName(holder), taking: builds.buildName(standby), at: time.Now(),
+		stopping: builds.buildName(holder), taking: builds.buildName(standby), stopped: stopped, at: time.Now(),
 		sequences: sequences, window: window,
 	}
 	t.Logf("stopped the %s with %d of %d pull requests handled", over.stopping, handledOf(), len(numbers))
 	for _, durable := range deliveryDurables {
-		waitForBound(t, standby, over.taking, durable, standbyBound[durable], 60*time.Second)
+		waitForBound(t, standby, over.taking, durable, standbyBound[durable])
 	}
 	// Read once the take-over has bound the durable: a take-over that created it again delivers
 	// from the sequence it created it at, and one that bound the durable as it stands -- which
@@ -396,14 +401,10 @@ func publishAcrossStop(t *testing.T, builds *twoBuilds, js natsgo.JetStreamConte
 	over.handedBack = handedBackNumbers(holder)
 	t.Logf("the %s took the durable over delivering from sequence %d; the %s had logged handing back %v",
 		over.taking, over.start, over.stopping, slices.Sorted(maps.Keys(over.handedBack)))
-	deadline = time.Now().Add(120 * time.Second)
-	for handledOf() < len(numbers) {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d of %d pull requests were handled within 120s of the %s's stop:\n%s",
-				handledOf(), len(numbers), over.stopping, standby.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	testwait.Until(t, fmt.Sprintf("every one of the %d pull requests to be handled after the %s's stop", len(numbers), over.stopping), func() (withOutput[int], bool) {
+		handled := handledOf()
+		return readWith(handled, standby.Output), handled == len(numbers)
+	})
 	return over
 }
 
@@ -513,11 +514,11 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	// build starts beside it as a standby, which is a rolling release's first moment.
 	builds.startCurrent(t, currentEnv)
 	for _, durable := range deliveryDurables {
-		waitForBound(t, builds.current(), builds.currentName(), durable, 0, 60*time.Second)
+		waitForBound(t, builds.current(), builds.currentName(), durable, 0)
 	}
 	builds.startPrevious(t, previousEnv)
 
-	js, err := testnats.Connect(t, builds.nats).JetStream()
+	js, err := testnats.Connect(t, builds.nats).JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
@@ -532,7 +533,7 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 			key, _ := createDocument(t, writer, project, "Created on the "+builds.buildName(writer), "spec")
 			writer.call(t, http.MethodPost, "/api/v1/issues/"+key+"/comments", `{"body":"A comment."}`, http.StatusCreated)
 		}
-		waitForEveryEventPublished(t, builds.database, 60*time.Second)
+		waitForEveryEventPublished(t, builds.database)
 		events := publishedEventIDs(t, builds)
 		streamed := map[string]bool{}
 		for _, item := range readStreamFrom(t, js, head) {
@@ -545,7 +546,9 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 		}
 	})
 
-	time.Sleep(settingsPolls)
+	testwait.Span(t, settingsPolls, "a standby of the build before compares the consumers' settings with its own on a poll of "+
+		"its own clock and logs no poll that changed nothing, it is a child process so synctest does not reach it, and "+
+		"no action of the test's comes after a poll it makes on its own")
 	requireBusSettings(t, js, baseline, "after two settings polls with both builds running")
 
 	if boundLines(builds.previous(), bus.DispatchDeliveryDurable) != 0 {
@@ -561,7 +564,9 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	// delivers under no hold, and the restarted build finds the durable bound elsewhere.
 	binding := consumerBinding(t, js, bus.DispatchDeliveryDurable)
 	builds.startCurrent(t, currentEnv)
-	time.Sleep(standbyWindow)
+	testwait.Span(t, standbyWindow, "the restarted process takes a durable only on a bind poll of its own clock and logs "+
+		"no poll that took nothing, it is a child process so synctest does not reach it, and no action of the test's "+
+		"comes after a poll it makes on its own")
 	if bound, now := boundLines(builds.current(), bus.DispatchDeliveryDurable), consumerBinding(t, js, bus.DispatchDeliveryDurable); bound > 0 || now != binding {
 		t.Errorf("the restarted %s took %s from the %s, which delivers from it under no hold: the durable was %s and is %s, and the restarted build logged %d binds:\n%s",
 			builds.currentName(), bus.DispatchDeliveryDurable, builds.previousName(), binding, now, bound, builds.current().Output.String())
@@ -579,7 +584,17 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	// counted at the pull request's fetch, which it made, and NATS delivers that message again,
 	// so the build that took the durable over handles it once more -- a repeat the hand-over's
 	// in-flight window bounds, with the messages whose acknowledgement landed above the floor.
-	time.Sleep(5 * time.Second)
+	// Every such delivery is settled once the durable has nothing pending and nothing awaiting
+	// acknowledgement, and its ack floor is at what it delivered: no handling is still to come.
+	testwait.Until(t, bus.DispatchDeliveryDurable+" to have nothing pending and nothing awaiting acknowledgement, its ack floor at what it delivered", func() (string, bool) {
+		info, err := js.ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		if err != nil {
+			t.Fatalf("read the durable %s: %v", bus.DispatchDeliveryDurable, err)
+		}
+		return fmt.Sprintf("%d pending and %d awaiting acknowledgement, its ack floor at stream %d against %d delivered",
+				info.NumPending, info.NumAckPending, info.AckFloor.Stream, info.Delivered.Stream),
+			info.NumPending == 0 && info.NumAckPending == 0 && info.AckFloor.Stream == info.Delivered.Stream
+	})
 	done, abandoned := fake.handled()
 	handOvers := []handOver{currentHandOver, previousHandOver}
 	var twice, again, unhandled []string
@@ -590,7 +605,7 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 		case len(handlings) == 1 && found:
 		case len(handlings) == 2 && found && over.replayed(number) &&
 			handlings[0].build == over.stopping && handlings[0].at.Before(over.at) &&
-			handlings[1].build == over.taking && handlings[1].at.After(over.at):
+			handlings[1].build == over.taking && handlings[1].at.After(over.stopped):
 			repeats[over.stopping]++
 			again = append(again, fmt.Sprintf("#%d %v", number, handlings))
 		default:

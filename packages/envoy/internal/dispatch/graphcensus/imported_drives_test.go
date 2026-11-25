@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // This file is the package's external test: its drives reach the API and the document service,
@@ -150,8 +152,9 @@ func newWritersRig(t *testing.T) *writersRig {
 		AgentTokens: tokens,
 		ServerURL:   writersServerURL,
 		EnvoyURL:    listener.URL,
-		// The held send waits on the test longer than the client's own window would let it.
-		EnvoyTimeout: time.Minute,
+		// The server's timers and the listener client's window run on a clock whose timers never
+		// fire, so the held send waits on the test for as long as the test holds it.
+		Clock: clocktest.Held(),
 		// A refused send settles failed once the take-over window has passed, which a test
 		// need not wait the production twelve seconds for.
 		ListenerTakeoverWindow: 100 * time.Millisecond,
@@ -222,24 +225,17 @@ func decoded[T any](t *testing.T, body []byte) T {
 // sessionActor is a body's actor for the session id.
 func sessionActor(id string) map[string]any { return map[string]any{"kind": "session", "id": id} }
 
-// awaitTrue waits until query, a select of one boolean over args, answers true, and fails the test
-// naming what once it has waited longer than any of the drives' work takes.
+// awaitTrue waits until query, a select of one boolean over args, answers true, through the
+// shared wait. The answer is the one reading the query has, so the wait prints none.
 func (r *writersRig) awaitTrue(t *testing.T, what, query string, args ...any) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	testwait.Eventually(t, what, func() bool {
 		var done bool
 		if err := r.database.Pool.QueryRow(context.Background(), query, args...).Scan(&done); err != nil {
 			t.Fatalf("read whether %s: %v", what, err)
 		}
-		if done {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s did not happen within 30s", what)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return done
+	})
 }
 
 // settledAttempts waits until no attempt of the comment is pending and one of them is in state.
@@ -333,11 +329,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				"body": "Does this ship, @" + heldSession + "?", "mentions": []map[string]any{{"target": "session:" + heldSession}},
 				"anchor": map[string]any{"artifact": r.notesSlug, "quote": "the upload indexes"},
 			}, "alice", http.StatusCreated)).ID
-			select {
-			case <-r.arrived:
-			case <-time.After(30 * time.Second):
-				t.Fatalf("the mention of %s sent nothing to the listener within 30s", heldSession)
-			}
+			testwait.Receive(t, "the mention of "+heldSession+" to reach the listener", r.arrived)
 		},
 		Counts: map[graphcensus.StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},

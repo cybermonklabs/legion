@@ -2,12 +2,14 @@ package architecture
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // architectureLeases is the pool an import pass takes its lease on, the one cmd/dispatch gives
@@ -31,6 +33,9 @@ func TestAnImportPassWhoseLeaseIsHeldElsewhereReadsNothing(t *testing.T) {
 	// this row is about, and records no pass of its own -- so what the passes below do is the
 	// lease's doing alone and not the import interval's.
 	taken, release := make(chan struct{}), make(chan struct{})
+	// Registered before any wait or check below, so a failure there still lets the holder go.
+	releaseHolder := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseHolder)
 	held := make(chan bool, 1)
 	go func() {
 		held <- duty.Exclusive(ctx, leases, architectureImportLease, time.Time{}, 0, func(context.Context) {
@@ -38,11 +43,7 @@ func TestAnImportPassWhoseLeaseIsHeldElsewhereReadsNothing(t *testing.T) {
 			<-release
 		})
 	}()
-	select {
-	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the other caller never took the architecture-import lease")
-	}
+	testwait.Receive(t, "the other caller to take the architecture-import lease", taken)
 
 	syncAllLeased(ctx, importer, leases, time.Now())
 	if trees, blobs := fake.reads(); trees != 0 || blobs != 0 {
@@ -51,8 +52,8 @@ func TestAnImportPassWhoseLeaseIsHeldElsewhereReadsNothing(t *testing.T) {
 	if rows := componentRows(t, database); len(rows) != 0 {
 		t.Fatalf("the pass imported %v under a lease held elsewhere; want nothing", rows)
 	}
-	close(release)
-	if !<-held {
+	releaseHolder()
+	if !testwait.Receive(t, "the other caller's pass to return", held) {
 		t.Fatal("the other caller never held the lease, so the pass was free to import")
 	}
 

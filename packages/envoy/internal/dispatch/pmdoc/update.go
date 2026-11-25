@@ -10,6 +10,8 @@ import (
 	"unsafe"
 
 	"github.com/reearth/ygo/crdt"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 )
 
 // Update writes want into frag with the same element and rich-text layout that
@@ -51,8 +53,11 @@ func UpdateDocument(txn *crdt.Transaction, frag *crdt.YXmlFragment, want ValidDo
 }
 
 // updateShape refuses a write with nothing to write into or no document to write, the check every
-// writer runs before the tree is validated.
+// writer runs before the tree is validated. Every write of a tree into a fragment - Update,
+// UpdateHolding, UpdateDocument - starts here, so it is the encode docwork's observers are told of
+// (docwork.Encode).
 func updateShape(txn *crdt.Transaction, frag *crdt.YXmlFragment, want *Node) error {
+	docwork.Enter(docwork.Encode)
 	if txn == nil || frag == nil || want == nil {
 		return fmt.Errorf("%w: Update requires transaction, fragment, and document", ErrSchema)
 	}
@@ -111,9 +116,13 @@ func (child normalizedChild) isText() bool {
 	return len(child.text) > 0
 }
 
+// updateChildren writes want into frag's children. Each fragment operation it makes counts the
+// items it reaches (UpdateWork): a list of the children every item, a Delete or an Insert the
+// items it walks over to its index and those it removes or adds.
 func updateChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, want []*Node) error {
 	pchildren := normalizePNodeContent(want)
 	ychildren := frag.Children()
+	updateWork.Add(uint64(len(ychildren)))
 	left, right := 0, 0
 	limit := len(ychildren)
 	if len(pchildren) < limit {
@@ -182,6 +191,7 @@ func updateChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, want []*Node
 				run++
 			}
 			frag.Delete(txn, left, run)
+			updateWork.Add(uint64(left + run))
 			if err := insertPChildren(txn, frag, left, pchildren[left:left+run]); err != nil {
 				return err
 			}
@@ -192,12 +202,14 @@ func updateChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, want []*Node
 	deleteCount := len(ychildren) - left - right
 	if len(ychildren) == 1 && len(pchildren) == 0 {
 		if text, ok := ychildren[0].(*crdt.YXmlText); ok {
+			updateWork.Add(uint64(text.Len()))
 			text.Delete(txn, 0, text.Len())
 			return nil
 		}
 	}
 	if deleteCount > 0 {
 		frag.Delete(txn, left, deleteCount)
+		updateWork.Add(uint64(left + deleteCount))
 	}
 	return insertPChildren(txn, frag, left, pchildren[left:len(pchildren)-right])
 }
@@ -299,11 +311,16 @@ var emptyChildren = crdt.NewYXmlElement("paragraph").Children()
 // how y-prosemirror writes a fragment's new children (updateYFragment's tail insert, and
 // createTypeFromElementNode's). A call still walks to index, so its cost grows with index as well
 // as with children.
+//
+// Its steps are counted in UpdateWork: the children its loop visits, counted once before the loop
+// in one add, and index once for ygo's walk to index, which ygo takes and does not count itself.
+// work.go says why UpdateWork is judged beside the counted work.
 func insertPChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, index int, children []normalizedChild) error {
 	if len(children) == 0 {
 		return nil
 	}
 	nodes := slices.Grow(slices.Clip(emptyChildren), len(children))
+	updateWork.Add(uint64(len(children)))
 	for _, child := range children {
 		if child.isText() {
 			text, err := createTypeFromTextNodes(txn, child.text)
@@ -320,6 +337,7 @@ func insertPChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, index int, 
 		nodes = append(nodes, element)
 	}
 	frag.Insert(txn, index, nodes...)
+	updateWork.Add(uint64(index))
 	return nil
 }
 
@@ -380,6 +398,7 @@ func equalYElementPNode(element *crdt.YXmlElement, node *Node) bool {
 		return false
 	}
 	ychildren := element.Children()
+	updateWork.Add(uint64(len(ychildren)))
 	child := 0
 	for index := 0; index < len(node.Children); child++ {
 		if child >= len(ychildren) {
@@ -480,6 +499,7 @@ func equalYMarks(attributes crdt.Attributes, marks []Mark) bool {
 
 func computeChildEqualityFactor(element *crdt.YXmlElement, node *Node) int {
 	children := element.Children()
+	updateWork.Add(uint64(len(children)))
 	normalized := normalizePNodeContent(node.Children)
 	limit := len(children)
 	if len(normalized) < limit {
@@ -534,9 +554,11 @@ func updateYText(txn *crdt.Transaction, text *crdt.YXmlText, want []*Node) error
 	index, remove, insert := simpleDiff(current.String(), desired.String())
 	if remove > 0 {
 		text.Delete(txn, index, remove)
+		updateWork.Add(uint64(index + remove))
 	}
 	if insert != "" {
 		text.Insert(txn, index, insert, nil)
+		updateWork.Add(uint64(index + len(insert)))
 	}
 
 	actual, err := yTextDeltaInTransaction(text)

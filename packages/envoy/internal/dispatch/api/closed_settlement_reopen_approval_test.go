@@ -8,8 +8,11 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
-	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -28,7 +31,7 @@ import (
 // "Waiting on you (3)" counts this request).
 func TestAReopenedIssuesApprovalRequestStillWaitsOnThePersonOnceItsDocumentsSettle(t *testing.T) {
 	t.Parallel()
-	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
+	f := newCloseAsksFixtureSettlingAfter(t, stagedAhead)
 	ctx := context.Background()
 	before := readBlockAsk(t, f.handler, f.approvalAsk)
 	if before.State != "open" || before.WaitingOn != "human" {
@@ -183,9 +186,9 @@ func TestAReopenedApprovalRequestNamesTheVersionAClosedSettlementWrote(t *testin
 
 	seq := latestIssueSeq(t, database, issue.Key)
 	reopenAndSettle(t, f, issue.Key)
-	restored := testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the restored request to name version %d, the one the closed issue's settlement wrote (the request)", closed), func() (carriedAsk, bool) {
-		read := readCarriedAsk(t, handler, request.ID)
-		return read, read.Approval.Version == closed
+	restored := testwait.Until(t, fmt.Sprintf("the restored request to name version %d, the one the closed issue's settlement wrote", closed), func() (carriedAsk, bool) {
+		restored := readCarriedAsk(t, handler, request.ID)
+		return restored, restored.Approval.Version == closed
 	})
 	if ask := readBlockAsk(t, handler, request.ID); ask.State != "open" || ask.WaitingOn != "agent" || restored.Approval.RequestedVersion != named {
 		t.Fatalf("restored request = %s waiting on %q requested at version %d, want open waiting on its agent, requested at %d, since version %d changed the text",
@@ -370,6 +373,134 @@ func TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsTex
 	}
 }
 
+// TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsText with the order its
+// two settlements of the undo can run in under load forced. alice's undo arms the room's own
+// settlement; the resumption the test then runs (ResumeOwedSettlementsForTest) picks the spec's
+// pending row while that settlement has queued its version, past its last check of the room's
+// generation and before its write phase deletes the row, and arms a settlement of its own behind
+// it. The first commits, keeping alice as the closed issue's edit source
+// (doc_closed_edit_sources); the second then finds no pending row, settles nothing owed and credits
+// SettlementActor. It must leave alice kept: the reopen moves the request in the name of the editor
+// kept, and a second settlement that deleted her made that move the settlement's, not alice's.
+// The room's observer arms that settlement as the room takes the undo, before the room's
+// persistence appends it, which writes the pending row; a settlement that takes the document's
+// lock first stores the undo itself and deletes the row it writes, which the resumption then never
+// sees. So the first settlement is held as it starts (BeforeSettleStartForTest) until the store
+// holds the undo, then held in its version's queue (AfterSettleVersionWriteForTest) while the
+// resumption picks the row, and the second is held at its owner lock (AfterSettleLockForTest)
+// while the row reads what the first left kept; the reopen takes that lock after the second, so
+// it reads what the second left.
+func TestAReopenNamesThePersonWhenTheResumptionSettlesTheClosedUndoAgainBehindTheRoom(t *testing.T) {
+	handler, database, documentService := newClosedSettlementHandler(t)
+	// Set before anything settles, since a settlement reads its hooks unlocked. Each holds one
+	// settlement of the spec, once armed; spec is written before any is armed.
+	var spec string
+	var holdStart, holdVersion, holdLock atomic.Bool
+	firstStarted, versionQueued, secondLocked := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	releaseStart, releaseFirst, releaseSecond := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseStartOnce, releaseFirstOnce, releaseSecondOnce sync.Once
+	letFirstStart := func() { releaseStartOnce.Do(func() { close(releaseStart) }) }
+	letFirstGo := func() { releaseFirstOnce.Do(func() { close(releaseFirst) }) }
+	letSecondGo := func() { releaseSecondOnce.Do(func() { close(releaseSecond) }) }
+	t.Cleanup(letFirstStart)
+	t.Cleanup(letFirstGo)
+	t.Cleanup(letSecondGo)
+	documentService.BeforeSettleStartForTest(func(room string) {
+		if holdStart.Load() && room == spec && holdStart.CompareAndSwap(true, false) {
+			close(firstStarted)
+			<-releaseStart
+		}
+	})
+	documentService.AfterSettleVersionWriteForTest(func(room string) error {
+		if holdVersion.Load() && room == spec && holdVersion.CompareAndSwap(true, false) {
+			close(versionQueued)
+			<-releaseFirst
+		}
+		return nil
+	})
+	documentService.AfterSettleLockForTest(func(room string) {
+		if holdLock.Load() && room == spec && holdLock.CompareAndSwap(true, false) {
+			close(secondLocked)
+			<-releaseSecond
+		}
+	})
+	issue := createInteractionIssue(t, handler, "TEST", "A requested text written back while closed", "Context\n")
+	f := closedEditFixture{handler: handler, database: database, documents: documentService, spec: issue.PrimaryArtifactID}
+	spec = f.spec
+	awaitSettled(t, database, f.spec)
+	request := requestApproval(t, handler, f.spec)
+	named := request.Approval.Version
+
+	f.peer = connectBrowserPeer(t, documentService, f.spec)
+	closeIssueThroughPatch(t, handler, database, issue.Key)
+	awaitSettled(t, database, f.spec)
+	if edited := settleClosedEdit(t, f, replaceFirstParagraph("Context", "Context, edited in the margin")); edited != named+1 {
+		t.Fatalf("the closed issue's settlement of the edit left the spec at version %d, want %d", edited, named+1)
+	}
+
+	// The undo, which the room's own settlement versions: held as it starts until the store holds
+	// the undo and its pending row, and then once its version is queued.
+	holdStart.Store(true)
+	holdVersion.Store(true)
+	stored := storedUpdateCount(t, database, f.spec)
+	f.peer.edit(t, replaceFirstParagraph("Context, edited in the margin", "Context"))
+	f.peer.barrier(t)
+	testwait.Receive(t, "the room's settlement of the undo to start", firstStarted)
+	awaitStoredUpdates(t, database, f.spec, stored+1)
+	letFirstStart()
+	testwait.Receive(t, "the room's settlement of the undo to queue its version", versionQueued)
+	if err := documentService.ResumeOwedSettlementsForTest(context.Background(), 0); err != nil {
+		t.Fatalf("resume the closed issue's owed settlements: %v", err)
+	}
+	var picked bool
+	if err := database.Pool.QueryRow(context.Background(),
+		`select tried_at is not null from doc_settlements_pending where artifact_id = $1`, f.spec).Scan(&picked); err != nil || !picked {
+		t.Fatalf("the resumption picked the spec's pending row = %t (%v), want it picked while the room's settlement holds its version unwritten", picked, err)
+	}
+	holdLock.Store(true)
+	letFirstGo()
+	awaitSettled(t, database, f.spec)
+	testwait.Receive(t, "the resumption's settlement of the spec to take the owner lock the first released", secondLocked)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if kept := keptClosedEditSource(t, database, f.spec); kept == nil || !kept.SameAs(alice) {
+		t.Fatalf("the room's settlement of the undo kept %+v as the spec's closed edit source, want alice: this row is for the settlement after it", kept)
+	}
+	letSecondGo()
+
+	seq := latestIssueSeq(t, database, issue.Key)
+	reopenAndSettle(t, f, issue.Key)
+	if restored := readCarriedAsk(t, handler, request.ID); restored.Approval.Version != named+2 {
+		t.Fatalf("restored request at version %d, want %d, the undo's", restored.Approval.Version, named+2)
+	}
+	var edits []loggedEvent
+	for _, event := range issueEventsAfter(t, database, issue.Key, seq) {
+		if event.kind == "ask.edited" {
+			edits = append(edits, event)
+		}
+	}
+	if len(edits) != 1 || !edits[0].quiet || edits[0].notify || !edits[0].actor.SameAs(alice) {
+		t.Fatalf("the reopen's ask.edited events = %+v, want one quiet move in the name of %+v that notifies nobody", edits, alice)
+	}
+}
+
+// keptClosedEditSource is the editor doc_closed_edit_sources keeps for document, nil for none.
+func keptClosedEditSource(t *testing.T, database *store.Store, document string) *model.Actor {
+	t.Helper()
+	var raw []byte
+	err := database.Pool.QueryRow(context.Background(), `select last_actor from doc_closed_edit_sources where artifact_id = $1`, document).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read the closed edit source of %s: %v", document, err)
+	}
+	var kept model.Actor
+	if err := json.Unmarshal(raw, &kept); err != nil {
+		t.Fatalf("decode the closed edit source of %s: %v", document, err)
+	}
+	return &kept
+}
+
 // Only a settlement's version keeps an approval request waiting on the person when it stores byte
 // for byte the text the request names (docs.MoveApprovalAsk's bySettlement). A version a route
 // writes moves the request to its agent whatever text it stores, as every move did before the
@@ -381,7 +512,8 @@ func TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsTex
 // decision the close withdraws and writes resolved, the settlement on the closed issue saves that,
 // the reopen restores the decision and writes it open, and the settlement it leaves owed writes the
 // named version's text again, which leaves the request waiting on the person, now naming and
-// requesting that version. The settle delay is an hour, so the test runs each settlement itself.
+// requesting that version. The settle delay is a day (stagedAhead), so the test runs each
+// settlement itself.
 func TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -433,7 +565,7 @@ func TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson(t *testing.T
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			handler, database, documents := settlingCarryDocuments(t, time.Hour)
+			handler, database, documents := settlingCarryDocuments(t, stagedAhead)
 			issue := createInteractionIssue(t, handler, "TEST", "A version of the requested text: "+test.name, test.spec)
 			c := reopenCarryCase{handler: handler, database: database, documents: documents, issue: issue.Key, spec: issue.PrimaryArtifactID}
 			c.settle(t, "the spec")
@@ -599,11 +731,11 @@ const reopenDecisionSpec = "Context\n\n" +
 // by alice at L+1, carried from her approval of L (docs.reopenedApproval). Before a closed issue's
 // document settled, no version came of the close, alice's review pinned the version from before
 // it, and the settlement after the reopen, which rendered that version's text again, wrote none,
-// so her approval stood. The settle delay is an hour, so the test runs each settlement itself
-// (SettleIssueDocuments), and nothing settles between the reopen and alice's review.
+// so her approval stood. The settle delay is a day (stagedAhead), so the test runs each settlement
+// itself (SettleIssueDocuments), and nothing settles between the reopen and alice's review.
 func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing.T) {
 	t.Parallel()
-	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
+	handler, database, documentService := settlingCarryDocuments(t, stagedAhead)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "An approval between the reopen and its settlement", reopenDecisionSpec)
 	spec := issue.PrimaryArtifactID
@@ -647,7 +779,7 @@ func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing
 }
 
 // reopenCarryCase is one issue of TestAReopenCarriesAnApprovalOnlyOverTheAsksTheCloseWithdrew,
-// served with a settle delay of an hour, so the test runs each settlement itself.
+// served with a settle delay of a day (stagedAhead), so the test runs each settlement itself.
 type reopenCarryCase struct {
 	handler   http.Handler
 	database  *store.Store
@@ -696,8 +828,8 @@ func (c reopenCarryCase) requireRetracted(t *testing.T, blockID, when string) {
 // opens one, and the block of an ask a settlement retracted before the close, which her browser
 // brings back inside the margin, stays retracted until that settlement restores it. Neither
 // question was open when the issue closed, so A+1 asks something no approval of alice's covered.
-// The settle delay is an hour, so the test runs each settlement itself (SettleIssueDocuments), and
-// nothing settles between the reopen and alice's review.
+// The settle delay is a day (stagedAhead), so the test runs each settlement itself
+// (SettleIssueDocuments), and nothing settles between the reopen and alice's review.
 func TestAReopenCarriesAnApprovalOnlyOverTheAsksTheCloseWithdrew(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -783,7 +915,7 @@ func TestAReopenCarriesAnApprovalOnlyOverTheAsksTheCloseWithdrew(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			handler, database, documents := closedSettlementHandlerSettlingAfter(t, time.Hour)
+			handler, database, documents := closedSettlementHandlerSettlingAfter(t, stagedAhead)
 			issue := createInteractionIssue(t, handler, "TEST", "A reopen carry: "+test.name, test.spec)
 			c := reopenCarryCase{handler: handler, database: database, documents: documents, issue: issue.Key, spec: issue.PrimaryArtifactID}
 			c.settle(t, "the spec")

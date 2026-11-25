@@ -2,11 +2,11 @@ package docs
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"runtime/debug"
 	"sort"
@@ -26,6 +26,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -72,15 +73,26 @@ const (
 	peerWriteQueueBytes = 128 << 20
 )
 
+// DefaultSettle is the settle delay of a service whose Deps.Settle names none (zero or less): how
+// long a room's settlement waits after its last flushed edit (Deps.Settle).
+const DefaultSettle = 2 * time.Second
+
 // Deps configures the live document service. MaxLiveRooms and MaxDocConnections are its room and
 // connection caps (cmd/dispatch's DISPATCH_MAX_LIVE_ROOMS and DISPATCH_MAX_DOC_CONNECTIONS); zero
 // is the default, 1,000 each.
 type Deps struct {
-	Store             *store.Store
-	Persistence       VersionedStore
-	Events            *events.Broker
-	Identity          identity.Identity
-	ServerURL         string
+	Store       *store.Store
+	Persistence VersionedStore
+	Events      *events.Broker
+	Identity    identity.Identity
+	ServerURL   string
+	// Settle is the settle delay: the delay scheduleSettle arms a room's settlement with, after a
+	// flushed edit, for a failed settlement's retry (retrySettle) and for its other callers. Each
+	// arming replaces the timer armed before it, so a burst of edits settles once, Settle after the
+	// last. The unrecorded-mark sweep (sweepUnrecordedMarks) and settleAfter arm that timer with
+	// delays of their own: the time left to a mark's TTL, and the delay settleAfter's caller hands
+	// it (SettleNow's 0). Zero or less means DefaultSettle, 2 s. The timer runs on Clock, so with a
+	// fake Clock a settlement runs only once the test moves the fake past its delay.
 	Settle            time.Duration
 	MarkWait          time.Duration
 	UnrecordedMarkTTL time.Duration
@@ -92,6 +104,39 @@ type Deps struct {
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version
 	// before its edit notice goes (recordEditNotice, RunEditNotices); zero means 30 s.
 	EditNoticeQuiet time.Duration
+	// ShutdownDrainDeadline is the end a test gives the drain Shutdown spends on document work, in
+	// place of ShutdownDrainBudget (9 s) after it began; the zero value is production's. Only a
+	// test process sets another (cmd/dispatch: DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE, under the
+	// test hooks): its give-up, for an end-to-end row whose settlement at shutdown waits on a step
+	// of the row's own.
+	ShutdownDrainDeadline clock.Deadline
+	// PeerWriteDeadline is the end a test gives ygo's deadline on each write to a document socket
+	// (Server.PeerWriteTimeout), in place of the fork's ten seconds from the write's start; the
+	// zero value is production's, and a deployment leaves it zero. ygo counts the deadline from
+	// each write, so a moment becomes the span from New to it (socketWriteTimeout), which ends
+	// every later write's deadline no sooner than that moment. A test hands its give-up, so a page
+	// a loaded machine is slow to read for keeps its socket until the test would give up on it.
+	PeerWriteDeadline clock.Deadline
+	// CloseFrameDeadline is the end a test gives ygo's deadline on the close frame sent to a socket
+	// whose request context was cancelled with a cause (Server.CloseFrameTimeout), the
+	// admission-revoked close among them (schemaAdmission.cancel), in place of the fork's one
+	// second; the zero value is production's, and a deployment leaves it zero. It becomes a span
+	// as PeerWriteDeadline does. A test hands its give-up, so a close that waits behind a message
+	// a loaded machine is slow to send, or that the machine is slow to write, still goes out,
+	// where the second would end the socket with no close frame.
+	CloseFrameDeadline clock.Deadline
+	// Clock is the clock a room query's wait and its flush answer's timeout run on (roomQueries),
+	// a published write's loss check (publishedLossTimeout, recordPublishedLoss), VerifyMark's
+	// wait for a mark (MarkWait), the compaction queue's waits (compactionQueue), the
+	// edit notice sweep's gaps and due times (RunEditNotices), the settlement resumption's ticks
+	// (RunSettlementResumption), Shutdown's drain budget (ShutdownDrainBudget) and each room's
+	// settlement timer (scheduleSettleAfterLocked); nil means the real clock. A test hands a
+	// clocktest fake and moves it past the wait; with a fake, every settlement waits until the test
+	// moves the fake past its delay. It is also, when set, the clock the reference excerpt
+	// reconciliation reads the moment it stamps and judges a document's retry at (excerptMoment):
+	// nil, as production leaves it, hands those statements no moment, so the database's own now()
+	// does both; a Clock that is set, clock.Real() included, puts them on that clock.
+	Clock clock.Clock
 	// BuildCommit is the commit this process's binary was built from (cmd/dispatch's buildCommit),
 	// the empty string for an unstamped build. The block-index tick keys its build's event cursor
 	// on it, and compares it with the commit of every live server process to report whether
@@ -99,16 +144,9 @@ type Deps struct {
 	BuildCommit string
 	// RoomIdleTimeout is how long an idle room stays resident before ygo's idle sweeper evicts it
 	// (Server.RoomIdleTimeout); zero means roomIdleTimeout, a minute. The sweeper runs on the real
-	// clock, which nothing a test hands the service reaches, so a test whose verdict needs a room
-	// to leave residency only through a close it asked for hands a window that never ends.
+	// clock, which Clock does not reach, so a test whose verdict needs a room to leave residency
+	// only through a close it asked for hands a window that never ends.
 	RoomIdleTimeout time.Duration
-	// CloseMargin is how long after an issue's close the append gate of the store New builds still
-	// stores a browser update a room observed (observedBeforeClose); zero, which every deployment
-	// leaves it, is closeMargin. It reaches the store New builds alone, not a Persistence the
-	// caller hands. Only a test sets it: one that stands for a process whose room takes a browser's
-	// update after a close it never hears of gives a margin past any run, so whether the update is
-	// stored is not decided by how long a loaded machine takes between the close and the update.
-	CloseMargin time.Duration
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -169,6 +207,19 @@ type Service struct {
 	unrecordedMarkTTL time.Duration
 	// editNoticeQuiet is Deps.EditNoticeQuiet, with its default applied.
 	editNoticeQuiet time.Duration
+	// shutdownDrain is Deps.ShutdownDrainDeadline.
+	shutdownDrain clock.Deadline
+	// clock is Deps.Clock, the real clock when that is nil: what a room query's wait, its flush
+	// answer's timeout and an answer's send bound run on (roomQueries), a published write's loss
+	// check (publishedLossTimeout), VerifyMark's wait for a mark (markWait), the compaction queue's
+	// waits (compactionQueue), the edit notice sweep's gaps and due times (RunEditNotices) and each
+	// room's settlement timer (scheduleSettleAfterLocked), so on a fake every settlement waits until
+	// the test moves the fake past its delay.
+	clock clock.Clock
+	// excerptClock is Deps.Clock as the caller set it, nil in production: the clock the reference
+	// excerpt reconciliation reads the moment it hands its statements off (excerptMoment), where
+	// nil hands them none and the database's now() alone stamps and judges its retries.
+	excerptClock clock.Clock
 	// buildCommit is Deps.BuildCommit.
 	buildCommit string
 	// markingRule is the block index's marking rule this build applies, refs.BlockIndexMarkingRule
@@ -213,6 +264,11 @@ type Service struct {
 	// afterSettleLock runs after settleRoom has taken the document's advisory lock and before
 	// it touches the room. Nil outside tests; tests use it to fail the room in that window.
 	afterSettleLock func(room string)
+	// afterSettleTransaction runs once a settlement's transaction has ended, committed or rolled
+	// back, and before settleRoomWithin returns, while the settlement still counts as under way
+	// (roomState.settling). Nil outside tests; tests use it to hold a settlement past its commit,
+	// where it holds no lock any more, and see what waits for it to return.
+	afterSettleTransaction func(room string)
 	// beforeAwarenessWatch is given a room's awareness before the relay registers its own
 	// observer on it (awarenessRelay.watchRoomAwareness). Nil outside tests; tests use it to put
 	// an observer of their own ahead of the relay's, since ygo fires a room's update observers in
@@ -474,8 +530,8 @@ type Service struct {
 	roomGenerations atomic.Uint64
 	timerMu         sync.Mutex
 	// timers reserve their ID before creating an immediate timer, whose callback
-	// can run before time.AfterFunc returns the *time.Timer to its caller.
-	timers     map[uint64]*time.Timer
+	// can run before the clock's AfterFunc returns the Timer to its caller.
+	timers     map[uint64]clock.Timer
 	suppressMu sync.Mutex
 	suppressed map[string][]*suppressSlot
 	// serviceOrigins holds the transaction origins of the service's own in-flight Server.Apply
@@ -881,12 +937,25 @@ func (s *Service) purgeSuppressedPersistence(room string) {
 // cost in production is one nil check per service.
 var newServiceHook func(*Service)
 
+// shutdownStartedHook is nil outside this package's own tests, where the leak check installs it
+// beside newServiceHook. Shutdown calls it first, before anything else it does: the service's own
+// report that a shutdown of it began, which tells the leak check a service a test shut down from
+// one no test ever did. The cost in production is one nil check per shutdown.
+var shutdownStartedHook func(*Service)
+
+// shutdownServiceHook is nil outside this package's own tests, where the leak check installs it
+// beside newServiceHook. Shutdown calls it last, once everything else it does has returned: the
+// service's own report that its shutdown finished, which tells the leak check a service whose
+// shutdown finished from one whose shutdown is still running. The cost in production is one nil
+// check per shutdown.
+var shutdownServiceHook func(*Service)
+
 // New constructs the ygo server used by Dispatch's document API and websocket
 // endpoint.
 func New(deps Deps) *Service {
 	settle := deps.Settle
 	if settle <= 0 {
-		settle = 2 * time.Second
+		settle = DefaultSettle
 	}
 	markWait := deps.MarkWait
 	if markWait <= 0 {
@@ -900,6 +969,7 @@ func New(deps Deps) *Service {
 	if editNoticeQuiet <= 0 {
 		editNoticeQuiet = defaultEditNoticeQuiet
 	}
+	shutdownDrain := deps.ShutdownDrainDeadline
 	if deps.Events == nil {
 		deps.Events = events.NewBroker()
 	}
@@ -917,11 +987,14 @@ func New(deps Deps) *Service {
 	slog.Info("dispatch: document rooms' limits", "read_budget_bytes", readBudget,
 		"max_live_rooms", roomCap, "max_doc_connections", connectionCap)
 	processID := uuid.NewString()
+	serviceClock := deps.Clock
+	if serviceClock == nil {
+		serviceClock = clock.Real()
+	}
 	persist := deps.Persistence
 	if persist == nil {
 		pg := NewPgVersioned(deps.Store)
 		pg.processID = processID
-		pg.closeMargin = cmp.Or(deps.CloseMargin, closeMargin)
 		persist = pg
 	}
 	service := &Service{
@@ -934,9 +1007,12 @@ func New(deps Deps) *Service {
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,
-		timers:            make(map[uint64]*time.Timer),
+		timers:            make(map[uint64]clock.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
+		clock:             serviceClock,
+		excerptClock:      deps.Clock,
 		editNoticeQuiet:   editNoticeQuiet,
+		shutdownDrain:     shutdownDrain,
 		buildCommit:       deps.BuildCommit,
 		markingRule:       refs.BlockIndexMarkingRule,
 		reads:             newDocumentReads(readBudget),
@@ -959,7 +1035,7 @@ func New(deps Deps) *Service {
 	if deps.TestHooks {
 		service.hooks = newTestHooks()
 	}
-	service.compactions = startCompactionQueue(service.compactionStep)
+	service.compactions = startCompactionQueue(serviceClock, service.compactionStep)
 	// The store tells the queue of every append it commits and every load it reads; a store that
 	// wraps a PgVersioned - a test's, to fail or hold one of its calls - tells it through the one
 	// it wraps.
@@ -982,6 +1058,11 @@ func New(deps Deps) *Service {
 	// queue: the room has already applied the update (reearth/ygo#268, in the pinned fork).
 	srv.MaxPendingItems = service.maxPendingItems
 	srv.PeerWriteQueueBytes = peerWriteQueueBytes
+	// ygo's deadlines on each write to a socket and on the close frame a cancelled socket is sent:
+	// the fork's own ten seconds and one second, unless a test hands an end of its own
+	// (Deps.PeerWriteDeadline, Deps.CloseFrameDeadline).
+	srv.PeerWriteTimeout = socketWriteTimeout(deps.PeerWriteDeadline)
+	srv.CloseFrameTimeout = socketWriteTimeout(deps.CloseFrameDeadline)
 	// A room whose last peer leaves, or that only Server.Apply touches, stays resident until it has
 	// been idle for roomIdleTimeout: ygo stamps a room idle when its last peer leaves, and when an
 	// Apply on a room no peer is in returns (reearth/ygo#269). Idle eviction refuses a room any
@@ -1047,6 +1128,20 @@ func New(deps Deps) *Service {
 	}
 
 	return service
+}
+
+// socketWriteTimeout is the span ygo arms on a write to a document socket under end, a Deps
+// deadline in place of one of ygo's own (Deps.PeerWriteDeadline, Deps.CloseFrameDeadline): zero,
+// which ygo reads as its own default, for the zero value; for a moment, the span from now to it on
+// the real clock, which ygo's socket deadlines run on, so every write after New ends no sooner
+// than that moment; and for no end the longest span a duration holds, since ygo reads zero or
+// less as its default and has no value for none.
+func socketWriteTimeout(end clock.Deadline) time.Duration {
+	span, bounded := end.Within(clock.Real(), 0)
+	if !bounded {
+		return math.MaxInt64
+	}
+	return span
 }
 
 // RoomFigures is what the document rooms of one Service hold and what their work costs, as the
@@ -1176,7 +1271,9 @@ func poolFigures(stat *pgxpool.Stat) PoolFigures {
 // ones already queued - has room to finish: the live durableAppends counter waits for every append
 // a room's writer records, whenever Shutdown's scan found the room, not just the ones it already
 // held. A settlement it cuts short, and the close of its room's editors that follows it, get what
-// is left of the caller's deadline, so a caller's deadline has to exceed it.
+// is left of the caller's deadline, so a caller's deadline has to exceed it. It runs on the
+// service's clock (Deps.Clock), so a test drives it with a fake; Deps.ShutdownDrainDeadline ends it
+// at a test process's give-up instead, which no fake reaches.
 const ShutdownDrainBudget = 9 * time.Second
 
 // Shutdown stops queued settlements and runs one worker per loaded room inside the drain budget:
@@ -1208,6 +1305,15 @@ const ShutdownDrainBudget = 9 * time.Second
 // ctx, and is cancelled once ctx ends; either way Shutdown returns only after the queue's worker
 // has, so nothing of it outlives the store's pools, which its caller closes next.
 func (s *Service) Shutdown(ctx context.Context) error {
+	if shutdownStartedHook != nil {
+		shutdownStartedHook(s)
+	}
+	// Registered first, so it runs after every other deferred step of the shutdown.
+	defer func() {
+		if shutdownServiceHook != nil {
+			shutdownServiceHook(s)
+		}
+	}()
 	// Last, whichever way Shutdown returns: closing a room may yet have something to send. The
 	// awareness relay sends what it still holds - the removals the rooms' closes made, and what
 	// ygo's shutdown drained from the rooms' relay lanes - through the sender, so it closes first.
@@ -1239,7 +1345,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 	s.stopAllSettleTimers()
-	drainCtx, cancelDrain := context.WithTimeout(ctx, ShutdownDrainBudget)
+	drainCtx, cancelDrain := s.shutdownDrain.WithTimeout(s.clock, ctx, ShutdownDrainBudget)
 	defer cancelDrain()
 	rooms := make([]string, 0, len(loaded))
 	for _, room := range loaded {
@@ -1484,12 +1590,14 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	// P next clears its stopped timers or the timer's time comes, and when an idle P next runs
 	// depends on the scheduler and the machine's load. Held strongly - the state reaches the
 	// service through its settle field - the callback of a timer Shutdown stopped kept the service
-	// and its rooms reachable that long, an hour under a test's settle delay, which the package's
-	// leak check reports (service_leak_test.go). While the timer is armed both resolve: the
-	// service's owner holds the service, and the service keeps an armed room's state
-	// (unusedLocked).
+	// and its rooms reachable that long, a day under the settle delay a test stages (stagedAhead),
+	// which the package's leak check reports (service_leak_test.go). While the timer is armed both
+	// resolve: the service's owner holds the service, and the service keeps an armed room's state
+	// (unusedLocked). The timer runs on the service's clock (Deps.Clock), the real clock in
+	// production, so a test whose service runs on a fake fires the settlement by moving the fake
+	// past delay, and reads the deadline it was armed for (Armed).
 	owner, record := weak.Make(s), weak.Make(state)
-	timer := time.AfterFunc(delay, func() {
+	timer := s.clock.AfterFunc(delay, func() {
 		s := owner.Value()
 		if s == nil {
 			return
@@ -1520,7 +1628,7 @@ func (s *Service) registerSettleTimer(timerID uint64) {
 	s.timerMu.Unlock()
 }
 
-func (s *Service) attachSettleTimer(timerID uint64, timer *time.Timer) {
+func (s *Service) attachSettleTimer(timerID uint64, timer clock.Timer) {
 	s.timerMu.Lock()
 	if _, found := s.timers[timerID]; found {
 		s.timers[timerID] = timer
@@ -1535,7 +1643,7 @@ func (s *Service) unregisterSettleTimer(timerID uint64) {
 }
 
 // stopSettleTimer stops an armed settlement timer and releases the settleWG count it held.
-func (s *Service) stopSettleTimer(timer *time.Timer) bool {
+func (s *Service) stopSettleTimer(timer clock.Timer) bool {
 	if !s.takeSettleTimer(timer) {
 		return false
 	}
@@ -1558,7 +1666,7 @@ func (s *Service) takeOverSettlementLocked(state *roomState) bool {
 // takeSettleTimer stops an armed settlement timer and hands its caller the settleWG count the timer
 // held, for a settlement the caller runs in the timer's place, so Shutdown joins it as it would the
 // timer's own. The caller releases the count once that settlement has returned.
-func (s *Service) takeSettleTimer(timer *time.Timer) bool {
+func (s *Service) takeSettleTimer(timer clock.Timer) bool {
 	if timer == nil {
 		return false
 	}
@@ -1579,7 +1687,7 @@ func (s *Service) takeSettleTimer(timer *time.Timer) bool {
 
 func (s *Service) stopAllSettleTimers() {
 	s.timerMu.Lock()
-	timers := make([]*time.Timer, 0, len(s.timers))
+	timers := make([]clock.Timer, 0, len(s.timers))
 	for _, timer := range s.timers {
 		if timer != nil {
 			timers = append(timers, timer)
@@ -1595,7 +1703,7 @@ func (s *Service) stopAllSettleTimers() {
 // with its callback not yet returned (the callback leaves the register as it returns), and not
 // stopped. A state that never armed one has none: the register's nil entries are other rooms'
 // timers between their registration and attachSettleTimer.
-func (s *Service) isSettleTimerArmed(timer *time.Timer) bool {
+func (s *Service) isSettleTimerArmed(timer clock.Timer) bool {
 	if timer == nil {
 		return false
 	}
@@ -2621,6 +2729,7 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 	}
 	for _, state := range states {
 		s.setRoomIssueOpen(ctx, state.room, state.open, true)
+		s.hooks.countNotifiedIssueClose(state.room)
 	}
 }
 
@@ -3023,8 +3132,9 @@ func (s *Service) closeRoomOnReplacedHistory(room string, instance *roomInstance
 // a closed issue's: it goes by the issue row its transaction locks, not by this flag
 // (settleRoomWithin, issueClosed). A recheck reads only rooms that hold a record and closes only
 // those whose record holds the other state, so a LISTEN that stands again closes no room the
-// issue's state already matches. Its ctx is the room-sync lane's or a close's own, holding no
-// transaction, so the rooms are recorded and closed one at a time.
+// issue's state already matches; the test hooks count each close a recheck makes
+// (RoomCounters.RecheckedIssueCloses). Its ctx is the room-sync lane's or a close's own, holding
+// no transaction, so the rooms are recorded and closed one at a time.
 func (s *Service) setRoomIssueOpen(ctx context.Context, room string, open, notified bool) {
 	// The row is read before the record's lock is taken, and not under it: no user of that lock
 	// may wait on a database round trip, and a reading taken after the record's would leave a
@@ -3084,6 +3194,9 @@ func (s *Service) setRoomIssueOpen(ctx context.Context, room string, open, notif
 		s.persistClosedLastActor(ctx, room, snapshot)
 	}
 	s.closeRoomForIssue(ctx, room)
+	if !notified {
+		s.hooks.countRecheckedIssueClose(room)
+	}
 }
 
 // closeSnapshot is what a close for a closed issue reads before it writes the record's latest

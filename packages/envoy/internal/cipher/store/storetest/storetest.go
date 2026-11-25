@@ -110,14 +110,20 @@ func URL(t testing.TB, params ...string) string {
 	return dsn
 }
 
-// Open is store.Open on a fresh URL(t, params...), closed when t ends.
+// Open is store.Open on a fresh URL(t, params...), closed when t ends through the shared wait
+// (testwait.Returns): store.Store.Close returns only once every connection in use has come back,
+// and a row that failed, or the defect it caught, can leave the code under test holding one for
+// good, parked on a fake clock no one moves or a gate no one opens. The wait then fails naming the
+// store, where Close alone would hang the test binary to its timeout.
 func Open(t testing.TB, params ...string) *store.Store {
 	t.Helper()
 	st, err := store.Open(context.Background(), URL(t, params...))
 	if err != nil {
 		t.Fatalf("open test store: %v", err)
 	}
-	t.Cleanup(st.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the test store's pools to come back, so the store closes", st.Close)
+	})
 	return st
 }
 

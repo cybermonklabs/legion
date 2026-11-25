@@ -1,11 +1,13 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -115,7 +117,7 @@ type mentionSend struct {
 // (h.unread), behind no event, which leaves what the send last waited behind as it was and stamps
 // no wait. Either way its next try reads the rule alone for that session (sendCommentMention),
 // so a send whose read keeps failing makes the whole delivery no more than one the rule holds.
-func (m *mentionSend) held(h *mentionHeldForOrder) {
+func (m *mentionSend) held(h *mentionHeldForOrder, now time.Time) {
 	m.unread = h.unread
 	if h.target.SessionID != nil {
 		m.heldFor = *h.target.SessionID
@@ -125,7 +127,7 @@ func (m *mentionSend) held(h *mentionHeldForOrder) {
 	}
 	m.heldBy = h.by
 	if m.heldSince.IsZero() {
-		m.heldSince = time.Now()
+		m.heldSince = now
 	}
 }
 
@@ -244,14 +246,24 @@ type mentionSender struct {
 	// capacity is maxQueuedMentionSends; only a test lowers it.
 	capacity int
 	// claimRefresh is how often keepClaims writes the claims of the queued sends again:
-	// mentionClaimRefresh, which only a test shortens.
+	// mentionClaimRefresh, which only a test shortens. Its ticks run on the clock newMentionSender
+	// is given for them, not on clock below.
 	claimRefresh time.Duration
 	// heldWarnAfter is how long a send waits behind an earlier event before park logs its one WARN:
 	// model.MentionCopyHeldWarnAfter, which only a test shortens.
 	heldWarnAfter time.Duration
 	// after starts the timer that ends a park (unpark), once no goroutine serves the parked lane
-	// (serve): time.AfterFunc, which only a test replaces.
+	// (serve): an AfterFunc on clock, which only a test replaces.
 	after func(time.Duration, func())
+	// clock is what the parks' timers run on (after) and every moment a held send is stamped and
+	// judged with is read from (park, reportLate, heldSamples, and the server's stamps of a send
+	// handed back held, sendCommentMention), through sendClock: nil, which every sender
+	// newMentionSender builds starts with, is clock.Real(). It is the sender's own and not the
+	// server's (Deps.Clock), so a server whose listener windows a test holds still
+	// (clocktest.Held) still parks and retries on the wall clock. A test that moves through the
+	// parks or past heldWarnAfter itself sets a clocktest fake here before its first send is
+	// queued, under mu, as it sets after and heldWarnAfter.
+	clock clock.Clock
 
 	// mu guards everything below it. Every process's sender locks a plain *sync.Mutex
 	// (newMentionSender); only the claim model gives it a lock of its own, which makes each of the
@@ -284,15 +296,21 @@ type mentionSender struct {
 
 // startMentionSender builds the server's mention sender (register), which sends on the server's
 // lifetime and drains for at most mentionDrainTimeout once it ends. An attempt no sender reaches
-// is the delivery sweep's (resumeOwedDeliveries).
+// is the delivery sweep's (resumeOwedDeliveries). Its claim refreshes run on the real clock.
 func (s *server) startMentionSender() *mentionSender {
-	return newMentionSender(s.lifetime, mentionClaimRefresh,
+	return newMentionSender(s.lifetime, mentionClaimRefresh, nil,
 		s.sendCommentMention, s.refreshMentionClaims, s.rereadMentionClaims, s.releaseMentionClaims)
 }
 
+// newMentionSender builds a mention sender whose keepClaims writes its claims again every
+// claimRefresh on refreshes: nil, as startMentionSender passes, is clock.Real(). The refreshes
+// have a clock of their own, apart from the server's (Deps.Clock) and the sender's parks (clock),
+// so a test that holds or moves either still counts every timer it armed there, and a test of the
+// refresh loop passes a fake it moves to each refresh (withMentionClaimRefresh).
 func newMentionSender(
 	lifetime context.Context,
 	claimRefresh time.Duration,
+	refreshes clock.Clock,
 	send func(context.Context, mentionSend) (mentionSend, bool),
 	refresh func(context.Context, []mentionClaim) ([]mentionClaim, error),
 	reread func(context.Context, []mentionClaim) ([]mentionClaim, error),
@@ -303,13 +321,23 @@ func newMentionSender(
 	m := &mentionSender{
 		lifetime: lifetime, ctx: ctx, cancel: cancel, send: send, refresh: refresh, reread: reread, release: release,
 		capacity: maxQueuedMentionSends, claimRefresh: claimRefresh, heldWarnAfter: model.MentionCopyHeldWarnAfter,
-		after: func(delay time.Duration, f func()) { time.AfterFunc(delay, f) }, mu: new(sync.Mutex),
+		mu:    new(sync.Mutex),
 		lanes: map[laneKey][]mentionSend{}, waits: map[laneKey]heldWait{},
 		held: map[mentionKey]mentionClaimState{}, stopped: make(chan struct{}),
 	}
+	m.after = func(delay time.Duration, f func()) { m.sendClock().AfterFunc(delay, f) }
 	m.done.Add(1)
-	go m.keepClaims()
+	go m.keepClaims(cmp.Or[clock.Clock](refreshes, clock.Real()))
 	return m
+}
+
+// sendClock is the clock the sender times its parks and reads its moments on: its clock, and
+// clock.Real() while that is nil, as production's is.
+func (m *mentionSender) sendClock() clock.Clock {
+	if m.clock == nil {
+		return clock.Real()
+	}
+	return m.clock
 }
 
 // stoppedLocked reports whether the sender starts nothing more: the lifetime ended, or wait ran.
@@ -371,7 +399,7 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 			// behind an event.
 			lane = held
 			if _, waiting := m.waits[held]; waiting && item.heldSince.IsZero() {
-				item.heldSince = time.Now()
+				item.heldSince = m.sendClock().Now()
 			}
 		}
 	}
@@ -544,7 +572,7 @@ func heldLane(lane laneKey, owner string) laneKey {
 // held lane, so it is counted and warned of only from then.
 func (m *mentionSender) park(lane laneKey, item mentionSend, claimed, waited bool) (held laneKey, delay time.Duration) {
 	item.parks++
-	now := time.Now()
+	now := m.sendClock().Now()
 	if waited && item.heldSince.IsZero() {
 		item.heldSince = now
 	}
@@ -700,7 +728,7 @@ func (s *server) sendCommentMention(ctx context.Context, item mentionSend) (ment
 	)
 	if held != nil {
 		item.claimed = held.claim.claimedAt
-		item.held(held)
+		item.held(held, s.mentions.sendClock().Now())
 		return item, true
 	}
 	if err != nil {

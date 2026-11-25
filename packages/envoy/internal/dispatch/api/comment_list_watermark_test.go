@@ -6,12 +6,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A comment list is answered under a validator read before its body is built: the watermark three
@@ -221,7 +221,7 @@ func TestAWarmCommentListReadRunsOnlyItsValidatorsStatement(t *testing.T) {
 		identity: headerIdentity(database),
 		// A settlement of the issue's spec is database work of its own on the same pool; a delay
 		// no test run reaches keeps it out of the count.
-		settle: time.Hour,
+		settle: stagedAhead,
 	})
 	key := issueWithComments(t, handler, "WARMW", 5)
 	target := commentListOf(key)
@@ -322,8 +322,10 @@ func TestADocumentsCommentListAnswersItsOwnNotModified(t *testing.T) {
 // A comment write held open blocks no other write on the same issue. This is what the triggers
 // are deferred for: an immediate trigger would take the issue's counter row where the write
 // happens and hold it until that transaction ended, so one long-running comment transaction would
-// serialise every comment write of its issue for its whole life. The second writer sets a lock
-// timeout, so an immediate trigger fails this test in seconds instead of hanging the suite.
+// serialise every comment write of its issue for its whole life. Each step of the second writer
+// is watched from the held transaction's connection (storetest.WaitForQueuedBehind), so an
+// immediate trigger fails this test as soon as the step queues behind the held write, on no
+// timeout of the test's, instead of hanging the suite.
 func TestACommentWriteHeldOpenBlocksNoOtherWriteOnTheSameIssue(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -346,17 +348,26 @@ func TestACommentWriteHeldOpenBlocksNoOtherWriteOnTheSameIssue(t *testing.T) {
 		t.Fatalf("open the second writer's transaction: %v", err)
 	}
 	defer func() { _ = other.Rollback(ctx) }()
-	if _, err := other.Exec(ctx, `set local lock_timeout = '5s'`); err != nil {
-		t.Fatalf("set the second writer's lock timeout: %v", err)
+	pid := other.Conn().PgConn().PID()
+	withoutWaiting := func(step string, run func() error) {
+		t.Helper()
+		ran := make(chan error, 1)
+		go func() { ran <- run() }()
+		err, answered := storetest.WaitForQueuedBehind(t, holder, pid, ran)
+		if !answered {
+			t.Fatalf("the second write's %s on %s queued behind the held one", step, issue.Key)
+		}
+		if err != nil {
+			t.Fatalf("the second write's %s on %s: %v", step, issue.Key, err)
+		}
 	}
-	if _, err := other.Exec(ctx, `
-		insert into comments (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', 'The write that must not wait.')
-	`, issue.Key); err != nil {
-		t.Fatalf("the second write on %s waited on the held one: %v", issue.Key, err)
-	}
-	if err := other.Commit(ctx); err != nil {
-		t.Fatalf("the second write on %s could not commit while the first was held open: %v", issue.Key, err)
-	}
+	withoutWaiting("insert", func() error {
+		_, err := other.Exec(ctx, `
+			insert into comments (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', 'The write that must not wait.')
+		`, issue.Key)
+		return err
+	})
+	withoutWaiting("commit", func() error { return other.Commit(ctx) })
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the held write: %v", err)
 	}
@@ -456,7 +467,7 @@ func TestOverlappingCommitsEachAddToTheWatermark(t *testing.T) {
 			failures[writer] = tx.Commit(ctx)
 		}()
 	}
-	wait.Wait()
+	testwait.Returns(t, "every writer's commit to return (a writer that waits on another's bump never does)", wait.Wait)
 	for writer, err := range failures {
 		if err != nil {
 			t.Fatalf("writer %d's commit: %v", writer, err)

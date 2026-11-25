@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The two migrations of block_refs' index of targets: blockRefsSourceIndex builds
@@ -80,14 +81,14 @@ func TestTheBlockRefsTargetIndexDropWaitsOutAReaderPastTheRunnersAttempts(t *tes
 		commitSent = time.Now()
 		commitErr = read.Commit(context.Background())
 	}()
-	t.Cleanup(func() { <-done })
+	t.Cleanup(func() { testwait.Receive(t, "the held reader's commit to return", done) })
 
 	err = store.Migrate(context.Background())
 	returned := time.Now()
 	if err != nil {
 		t.Fatalf("store.Migrate with a reader of block_refs held for %s: %v", blockRefsReaderHold, err)
 	}
-	<-done
+	testwait.Receive(t, "the held reader's commit to return once Migrate returned", done)
 	if commitErr != nil {
 		t.Fatalf("commit the reader: %v", commitErr)
 	}

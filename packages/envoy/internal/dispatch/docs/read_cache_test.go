@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -15,6 +16,9 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -271,8 +275,8 @@ func TestALoadedDocumentIsTheLoadedStateDecoded(t *testing.T) {
 func TestAnUndecodableHistoryLoadsAsDocumentUnloadable(t *testing.T) {
 	// Not parallel: under the race detector this test grows the binary by about 4.4 GB
 	// (envoy-go-race-docs job 137302424274, whose memory sampler ran it alone), and beside
-	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB. It also
-	// lets the cold read's fold run past coldReadTimeout (letTheColdFoldFinish).
+	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB. Its cold
+	// read's fold runs past coldReadTimeout, on a clock no one moves (coldFoldService).
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	versioned := NewPgVersioned(database)
@@ -280,28 +284,32 @@ func TestAnUndecodableHistoryLoadsAsDocumentUnloadable(t *testing.T) {
 	if _, err := versioned.LoadDocument(context.Background(), artifactID); !errors.Is(err, ErrDocumentUnloadable) {
 		t.Fatalf("load an over-cap history: %v, want ErrDocumentUnloadable", err)
 	}
-	service := newSchemaRepairService(database)
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
-	letTheColdFoldFinish(t)
+	service := coldFoldService(database)
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("read an over-cap history: %v, want ErrDocumentUnloadable and not ErrServiceUnavailable", err)
 	}
 }
 
-// letTheColdFoldFinish lets a cold read's fold of the stored history run until the test binary's
-// deadline, less a margin to fail in, rather than coldReadTimeout's minute, until t ends. The fold
-// of oversizedHistory replays eleven rows of 100,000 items each and merges them before ygo's item
-// cap refuses the result (documentThrough, mergedThrough): CPU work that took 20 s under the race
-// detector alone and more than the minute on a runner whose cores other work was taking
+// coldFoldService is newSchemaRepairService on a held clock (clocktest.Held), for a test whose cold
+// read's fold of the stored history must run to its end rather than to coldReadTimeout's minute:
+// that bound runs on the service's clock, and a held clock fires no timer until the test moves it,
+// which these tests never do, so the fold runs to its end however long the machine takes. The
+// fold of oversizedHistory replays eleven rows of 100,000 items each and merges them before ygo's
+// item cap refuses the result (documentThrough, mergedThrough): CPU work that took 20 s under the
+// race detector alone and more than the minute on a runner whose cores other work was taking
 // (envoy-go-race-docs at 12 busy loops), where the read then answered a timeout instead of the
 // refusal it is asked for. A test that reads such a history waits on that fold's end, which is its
-// subject, and not on how fast the machine is. It writes a package variable, so its caller does
-// not run in parallel.
-func letTheColdFoldFinish(t *testing.T) {
-	t.Helper()
-	old := coldReadTimeout
-	coldReadTimeout = testwait.Remaining(t, 30*time.Second)
-	testcleanup.Add(t, func() { coldReadTimeout = old })
+// subject, and not on how fast the machine is. The service's settlement timers run on the same
+// clock and never fire; its shutdown settles what is owed itself (Service.Shutdown).
+func coldFoldService(database *store.Store) *Service {
+	return New(Deps{
+		Store:     database,
+		Events:    events.NewBroker(),
+		ServerURL: "https://dispatch.example",
+		Settle:    20 * time.Millisecond,
+		Clock:     clocktest.Held(),
+	})
 }
 
 type loadCountingStore struct {
@@ -365,16 +373,24 @@ func (s *timeoutLoadStore) LoadDocument(ctx context.Context, room string) (Loade
 
 func newReadCacheService(t *testing.T, database *store.Store, persistence VersionedStore) *Service {
 	t.Helper()
+	return newReadCacheServiceOn(t, database, persistence, nil)
+}
+
+// newReadCacheServiceOn is newReadCacheService on serviceClock (Deps.Clock), the real clock when
+// nil.
+func newReadCacheServiceOn(t *testing.T, database *store.Store, persistence VersionedStore, serviceClock clock.Clock) *Service {
+	t.Helper()
 	service := New(Deps{
 		Store:       database,
 		Persistence: persistence,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 		ServerURL:   "https://dispatch.example",
-		Settle:      time.Hour,
+		Settle:      stagedAhead,
+		Clock:       serviceClock,
 	})
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 			t.Errorf("shutdown read-cache service: %v", err)
 		}
 	})
@@ -528,14 +544,16 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 			results <- err
 		}()
 	}
-	// Give the followers a chance to enter DoChan while the first fold is still blocked.
-	time.Sleep(20 * time.Millisecond)
+	// The leader is cancelled once both followers wait on its fold (DoChan) beside it.
+	waitFor(t, "both followers to wait on the leader's fold", func() bool {
+		return coldReadsWaitingOnAFold() == 3
+	})
 	cancel()
 	if err := testwait.Receive(t, "the cancelled leader to leave the shared fold", leader); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled leader = %v, want context.Canceled", err)
 	}
 	close(persistence.release)
-	followers.Wait()
+	testwait.Returns(t, "both followers' reads to return once the shared fold was released", followers.Wait)
 	close(results)
 	for err := range results {
 		if err != nil {
@@ -548,6 +566,29 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 	if got := persistence.loads.Load(); got != 1 {
 		t.Fatalf("cold folds called LoadDocument %d times, want 1", got)
 	}
+}
+
+// coldReadsWaitingOnAFold is how many goroutines wait in coldRead's select for a fold's result
+// (DoChan): the goroutine stacks marked select whose first frame outside the runtime is coldRead.
+func coldReadsWaitingOnAFold() int {
+	buffer := make([]byte, 1<<24)
+	waiting := 0
+	for _, stack := range strings.Split(string(buffer[:runtime.Stack(buffer, true)]), "\n\n") {
+		header, frames, _ := strings.Cut(stack, "\n")
+		if !strings.Contains(header, "[select") {
+			continue
+		}
+		for _, line := range strings.Split(frames, "\n") {
+			if strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "runtime.") {
+				continue
+			}
+			if strings.Contains(line, "docs.(*Service).coldRead(") {
+				waiting++
+			}
+			break
+		}
+	}
+	return waiting
 }
 
 func TestPanickingColdLoadFailsTheRoomAndRecovers(t *testing.T) {
@@ -566,28 +607,38 @@ func TestPanickingColdLoadFailsTheRoomAndRecovers(t *testing.T) {
 	waitForDocumentText(t, service, artifactID, "before\n")
 }
 
+// A cold fold whose load outlasts coldReadTimeout fails the read as ErrServiceUnavailable, not as
+// the caller's own deadline. The bound runs on the service's clock, a fake here, which the test
+// moves past it once the fold has armed it and is waiting in the load.
 func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
 	database := storetest.Open(t)
 	persistence := &timeoutLoadStore{VersionedStore: NewPgVersioned(database), started: make(chan struct{}, 1)}
 	artifactID := createDocument(t, database, "before")
-	service := newReadCacheService(t, database, persistence)
+	foldClock := clocktest.New(time.Now())
+	service := newReadCacheServiceOn(t, database, persistence, foldClock)
 	seedServiceText(t, service, artifactID, "before\n")
-	oldTimeout := coldReadTimeout
-	coldReadTimeout = 20 * time.Millisecond
-	testcleanup.Add(t, func() { coldReadTimeout = oldTimeout })
 
 	ctx := context.Background()
-	_, err := service.Text(ctx, artifactID)
+	read := make(chan error, 1)
+	go func() {
+		_, err := service.Text(ctx, artifactID)
+		read <- err
+	}()
+	testwait.Receive(t, "the cold fold to reach LoadDocument", persistence.started)
+	foldClock.AwaitArmedAt(t, "the cold fold's coldReadTimeout bound on the service's clock", foldClock.Now().Add(coldReadTimeout))
+	// The load waits for the fold's context, which ends only at that bound: the read is waiting.
+	select {
+	case err := <-read:
+		t.Fatalf("the cold read returned (%v) before its fold's bound ended", err)
+	default:
+	}
+	foldClock.Advance(coldReadTimeout)
+	err := testwait.Receive(t, "the cold read to return once its fold's bound ended", read)
 	if !errors.Is(err, ErrServiceUnavailable) || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("timed-out cold load = %v, want ErrServiceUnavailable and not context.DeadlineExceeded", err)
 	}
 	if ctx.Err() != nil {
 		t.Fatalf("the live caller context ended with %v", ctx.Err())
-	}
-	select {
-	case <-persistence.started:
-	default:
-		t.Fatal("the timed cold fold never reached LoadDocument")
 	}
 }
 

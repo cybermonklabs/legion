@@ -3,14 +3,18 @@ package duty_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // heldSessionLock takes a connection of leases and the session-level advisory lock key on it.
@@ -38,8 +42,7 @@ func requireLockFree(t *testing.T, pool *store.Pool, key int64) {
 		t.Fatalf("acquire a connection of the shared pool: %v", err)
 	}
 	defer other.Release()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Eventually(t, fmt.Sprintf("lock %d to be free for another session once FreeSessionLock returned", key), func() bool {
 		var taken bool
 		if err := other.QueryRow(ctx, `select pg_try_advisory_lock($1)`, key).Scan(&taken); err != nil {
 			t.Fatalf("try lock %d from another session: %v", key, err)
@@ -48,31 +51,19 @@ func requireLockFree(t *testing.T, pool *store.Pool, key int64) {
 			if _, err := other.Exec(ctx, `select pg_advisory_unlock($1)`, key); err != nil {
 				t.Fatalf("give back lock %d: %v", key, err)
 			}
-			return
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("lock %d is still held by another session 5s after FreeSessionLock returned", key)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return taken
+	})
 }
 
-// requireConnections waits up to 5s for the pool to hold total connections, idle of them idle: a
+// requireConnections waits for the pool to hold total connections, idle of them idle: a
 // connection released closed is destroyed by the pool on a goroutine of its own.
 func requireConnections(t *testing.T, leases *pgxpool.Pool, total, idle int32, why string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("the pool after FreeSessionLock to hold %d connections, %d idle: %s", total, idle, why), func() (string, bool) {
 		stat := leases.Stat()
-		if stat.TotalConns() == total && stat.IdleConns() == idle {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("pool after FreeSessionLock: total %d, idle %d; want total %d, idle %d: %s",
-				stat.TotalConns(), stat.IdleConns(), total, idle, why)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return fmt.Sprintf("total %d, idle %d", stat.TotalConns(), stat.IdleConns()), stat.TotalConns() == total && stat.IdleConns() == idle
+	})
 }
 
 // An unlock Postgres confirms gives the lock back and the connection back to its pool.
@@ -81,7 +72,7 @@ func TestFreeSessionLockReturnsTheConnectionOnceItsUnlockAnsweredTrue(t *testing
 	leases := leasesOf(t, database)
 	conn := heldSessionLock(t, leases, 7001)
 
-	if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1)`, int64(7001)); err != nil {
+	if err := duty.FreeSessionLock(clock.Real(), conn, `select pg_advisory_unlock($1)`, int64(7001)); err != nil {
 		t.Fatalf("FreeSessionLock of a held lock: %v", err)
 	}
 	requireConnections(t, leases, 1, 1, "a confirmed unlock returns the connection")
@@ -95,7 +86,7 @@ func TestFreeSessionLockClosesTheConnectionWhenItsUnlockAnsweredFalse(t *testing
 	leases := leasesOf(t, database)
 	conn := heldSessionLock(t, leases, 7002)
 
-	err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1)`, int64(7099))
+	err := duty.FreeSessionLock(clock.Real(), conn, `select pg_advisory_unlock($1)`, int64(7099))
 	if !errors.Is(err, duty.ErrLockNotHeld) {
 		t.Fatalf("FreeSessionLock of a lock the session never took answered %v, want errLockNotHeld", err)
 	}
@@ -104,20 +95,27 @@ func TestFreeSessionLockClosesTheConnectionWhenItsUnlockAnsweredFalse(t *testing
 }
 
 // An unlock that does not answer within leaseCallTimeout fails at the bound, and the connection is
-// closed: a half-open connection would otherwise hold the caller until TCP gave it up.
+// closed: a half-open connection would otherwise hold the caller until TCP gave it up. The bound
+// runs on a fake clock the row moves: the unlock arms it leaseCallTimeout from the call, and the
+// fake reaching it ends the unlock, which Postgres alone would hold for a minute.
 func TestFreeSessionLockBoundsAnUnlockThatDoesNotAnswer(t *testing.T) {
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	conn := heldSessionLock(t, leases, 7003)
 
-	started := time.Now()
-	err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1) from pg_sleep(60)`, int64(7003))
-	elapsed := time.Since(started)
+	calls := clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
+	bound := calls.Now().Add(duty.LeaseCallTimeout)
+	answered := make(chan error, 1)
+	go func() {
+		answered <- duty.FreeSessionLock(calls, conn, `select pg_advisory_unlock($1) from pg_sleep(60)`, int64(7003))
+	}()
+	if armed := calls.AwaitArmed(t, "the unlock's bound", 1); !armed[0].Equal(bound) {
+		t.Fatalf("the unlock armed its bound for %v, want %v: leaseCallTimeout from the call", armed[0], bound)
+	}
+	calls.Advance(duty.LeaseCallTimeout)
+	err := testwait.Receive(t, "FreeSessionLock to answer once the fake clock reached its bound", answered)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("FreeSessionLock of an unlock that never answers answered %v, want its deadline", err)
-	}
-	if elapsed < duty.LeaseCallTimeout || elapsed > duty.LeaseCallTimeout+10*time.Second {
-		t.Fatalf("FreeSessionLock returned after %v, want about its %v bound", elapsed, duty.LeaseCallTimeout)
 	}
 	requireConnections(t, leases, 0, 0, "a connection whose unlock reached its bound is closed")
 	requireLockFree(t, database.Pool, 7003)
@@ -134,7 +132,7 @@ func TestFreeSessionLockAnswersErrSessionClosedForAConnectionAlreadyClosed(t *te
 		t.Fatalf("close the lock's connection: %v", err)
 	}
 
-	if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1)`, int64(7004)); !errors.Is(err, duty.ErrSessionClosed) {
+	if err := duty.FreeSessionLock(clock.Real(), conn, `select pg_advisory_unlock($1)`, int64(7004)); !errors.Is(err, duty.ErrSessionClosed) {
 		t.Fatalf("FreeSessionLock of a closed connection answered %v, want ErrSessionClosed", err)
 	}
 	requireConnections(t, leases, 0, 0, "a closed connection is destroyed, not returned")

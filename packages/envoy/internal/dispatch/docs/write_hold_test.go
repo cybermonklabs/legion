@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A transaction renders its document once. The edit's own rendering is what the version
@@ -25,7 +25,7 @@ import (
 func TestSnapshotReusesTheTransactionsRenderedDocument(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 
 	ctx := context.Background()
@@ -71,7 +71,7 @@ func TestSnapshotReusesTheTransactionsRenderedDocument(t *testing.T) {
 func TestContentTheRoomGainsAfterAWritesReadIsVersionedAfterTheWrite(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 
 	ctx := context.Background()
@@ -122,7 +122,9 @@ func (c *anchorQueryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d
 
 func (c *anchorQueryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// countedService is newTestService on a pool whose anchor reads are counted.
+// countedService is newTestService on a pool whose anchor reads are counted, built through the
+// package's test constructor (newTestServiceWith). The store's pool is closed whole once the
+// service has shut down, the separate pools the service opened on it included (store.Pool.Close).
 func countedService(t *testing.T) (*Service, string, *anchorQueryCounter) {
 	t.Helper()
 	database := storetest.Open(t)
@@ -134,16 +136,14 @@ func countedService(t *testing.T) (*Service, string, *anchorQueryCounter) {
 	if err != nil {
 		t.Fatalf("open counted pool: %v", err)
 	}
-	testcleanup.Add(t, counted.Close)
-	service := New(Deps{
-		Store:  &store.Store{Pool: store.NewPool(counted)},
-		Events: events.NewBroker(),
-		Settle: time.Hour,
-	})
+	pool := store.NewPool(counted)
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
+		testwait.Returns(t, "every connection of the counted pool to come back, so the pool closes", pool.Close)
+	})
+	service := newTestServiceWith(t, Deps{
+		Store:  &store.Store{Pool: pool},
+		Events: events.NewBroker(),
+		Settle: stagedAhead,
 	})
 	return service, artifactID, counter
 }
@@ -363,7 +363,7 @@ func boldBlock(t *testing.T, text string) func(*pmdoc.Node) *pmdoc.Node {
 func TestFormattingTheRoomGainsAfterAWritesReadIsVersionedAfterTheWrite(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before\n\nplain paragraph")
 
 	ctx := context.Background()

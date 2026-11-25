@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -323,7 +324,7 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 // (Horizon.Safe), and a mention above it waits for a later read. A
 // request that ends first answers Await's error.
 func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
-	wait, cancel := context.WithTimeout(ctx, referencesSinceWait)
+	wait, cancel := s.clock().WithTimeout(ctx, referencesSinceWait)
 	safe, err := s.horizon().Await(wait)
 	cancel()
 	if err == nil || ctx.Err() != nil {
@@ -777,12 +778,15 @@ const referencesClosureBound = 2 * time.Second
 // bound, and at that deadline pgx closes the connection while the server's statement runs on (its
 // default BuildContextWatcherHandler, as outbox/lease.go records). The context, a second past the
 // bound, stays as the last guard, for a wait no statement_timeout covers, such as the begin's. The
-// rollback runs on a context of its own, as the near-copy gate's does (duplicates.go): the read's
-// context has expired exactly when the rollback matters, and pgx answers a rollback on an expired
-// context by destroying the connection instead of returning it to the pool.
+// read's start, what is left of the bound, and the context's bound are all read on the server's
+// clock (s.clock()), so a test whose server runs on a fake it holds names each statement's budget
+// exactly and knows that only a statement_timeout can end the walk. The rollback runs on a
+// context of its own, as the near-copy gate's does (duplicates.go): the read's context has expired
+// exactly when the rollback matters, and pgx answers a rollback on an expired context by
+// destroying the connection instead of returning it to the pool.
 func (s *server) boundedClosure(ctx context.Context, who model.Actor, issueKey string) (refs.References, error) {
-	started := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, referencesClosureBound+time.Second)
+	started := s.clock().Now()
+	ctx, cancel := s.clock().WithTimeout(ctx, referencesClosureBound+time.Second)
 	defer cancel()
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -793,16 +797,17 @@ func (s *server) boundedClosure(ctx context.Context, who model.Actor, issueKey s
 		defer cancelRollback()
 		_ = tx.Rollback(rollback)
 	}()
-	return refs.Closure(ctx, closureBudget{tx: tx, started: started}, who, issueKey, s.deps.ServerURL)
+	return refs.Closure(ctx, closureBudget{tx: tx, clock: s.clock(), started: started}, who, issueKey, s.deps.ServerURL)
 }
 
 // closureBudget is boundedClosure's transaction tx as refs.Closure reads it (refs.Queryer). Before
 // each statement it passes on, it gives that statement what is left of referencesClosureBound
-// since started, the start of the read (setStatementBudget), so a statement that waits, on a lock
-// or for the CPU, takes its wait out of the time of every statement after it. It answers the
-// budget's refusal in place of a statement it does not send.
+// since started, the start of the read on clock (setStatementBudget), so a statement that waits,
+// on a lock or for the CPU, takes its wait out of the time of every statement after it. It
+// answers the budget's refusal in place of a statement it does not send.
 type closureBudget struct {
 	tx      pgx.Tx
+	clock   clock.Clock
 	started time.Time
 }
 
@@ -821,9 +826,9 @@ func (b closureBudget) QueryRow(ctx context.Context, sql string, args ...any) pg
 }
 
 // spend gives the next statement of the read what is left of referencesClosureBound since
-// started (setStatementBudget).
+// started, read on the budget's clock (setStatementBudget).
 func (b closureBudget) spend(ctx context.Context) error {
-	return setStatementBudget(ctx, b.tx, referencesClosureBound-time.Since(b.started))
+	return setStatementBudget(ctx, b.tx, referencesClosureBound-b.clock.Now().Sub(b.started))
 }
 
 // refusedRow is the row closureBudget answers for a statement it did not send: its Scan answers

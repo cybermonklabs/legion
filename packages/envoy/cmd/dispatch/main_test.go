@@ -20,19 +20,24 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -52,6 +57,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -1106,7 +1112,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		if err != nil {
 			t.Fatalf("connect NATS: %v", err)
 		}
-		t.Cleanup(client.Close)
+		t.Cleanup(func() { bustest.Close(t, client) })
 		pool, err := database.Pool.Outbox()
 		if err != nil {
 			t.Fatalf("open the outbox's pool: %v", err)
@@ -1117,7 +1123,10 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
 		go func() { publisher.Run(ctx); close(done) }()
-		stop := func() { cancel(); <-done }
+		stop := func() {
+			cancel()
+			testwait.Receive(t, "the outbox publisher's Run to return once its context ended", done)
+		}
 		t.Cleanup(stop)
 		return &process{outbox: publisher, handler: dispatchHandler(http.NewServeMux(), metrics.New(), database, client, publisher, nil, "", nil, issuers{}, nil), stop: stop}
 	}
@@ -1140,15 +1149,12 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	}
 
 	first := start(database)
-	deadline := time.Now().Add(10 * time.Second)
-	for !probe(first) {
-		if time.Now().After(deadline) {
-			t.Fatal("healthz never reported the only outbox publishing")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, "healthz to report the only process publishing", func() bool { return probe(first) })
 	second := start(storetest.SecondProcess(t, database))
-	time.Sleep(time.Second)
+	testwait.Span(t, time.Second, "the standby must not report itself publishing while the first holds the hold: "+
+		"a process that has not taken the hold writes nothing of its own to read, both run in this test process "+
+		"behind real HTTP so synctest does not reach them, and the later action this row takes - stopping the "+
+		"holder - is what hands the hold over")
 	if probe(second) || !probe(first) {
 		t.Fatalf("outbox_publisher: first %t, second %t, want only the first, which holds the publisher hold", probe(first), probe(second))
 	}
@@ -1157,13 +1163,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	if probe(first) {
 		t.Fatal("healthz reported a stopped outbox publishing")
 	}
-	deadline = time.Now().Add(10 * time.Second)
-	for !probe(second) {
-		if time.Now().After(deadline) {
-			t.Fatal("healthz never reported the standby publishing once the holder stopped")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, "healthz to report the standby publishing once the holder stopped", func() bool { return probe(second) })
 }
 
 // /healthz says this build judges a write's Idempotency-Key (INFRA-258), which the deploy check
@@ -1174,7 +1174,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
 	t.Parallel()
 	closed := storetest.Open(t)
-	closed.Pool.Close()
+	testwait.Returns(t, "every connection of the closed database's pool to come back, so the pool closes", closed.Pool.Close)
 	for name, probe := range map[string]struct {
 		database *store.Store
 		status   int
@@ -1222,22 +1222,32 @@ func highestMigrationFile(t *testing.T) int {
 // legitimately empties that pool - writers queued on one issue's row lock hold theirs until
 // they commit - and a probe that queues behind them is read as a dead process: the ALB fails
 // it at five seconds, ECS replaces the task, and every in-flight request of every other client
-// is cancelled. The probe therefore takes its connection from a pool of its own, and the short
-// client timeout here is what tells a queued probe from an answered one. The shared pool here
-// holds four connections: the property holds at any size, and holding all of production's
-// sixty-four while the other packages' tests share the server would push a default Postgres
-// past its hundred.
+// is cancelled. The probe therefore takes its connection from a pool of its own. Here the
+// shared pool's connections are held until the test ends, and the probe's bound
+// (store.healthProbeTimeout) is armed on a fake the row never moves (healthzHandlerOn), so the
+// bound never decides the answer: a probe that takes its connection from its own pool answers 200
+// however loaded the machine is, and one that asks the shared pool for a connection queues
+// behind the held ones, which the shared pool's own record of the acquires it was asked for
+// (sharedAcquires) shows by name while the row waits for the answer. The shared pool here holds
+// four connections: the property holds at any size, and holding all of production's sixty-four
+// while the other packages' tests share the server would push a default Postgres past its
+// hundred.
 func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	config := storetest.Open(t).Pool.Config().Copy()
 	config.MaxConns = 4
+	acquires := &sharedAcquires{QueryTracer: config.ConnConfig.Tracer}
+	config.ConnConfig.Tracer = acquires
 	shared, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		t.Fatalf("open a four-connection shared pool: %v", err)
 	}
+	acquires.pool.Store(shared)
 	database := &store.Store{Pool: store.NewPool(shared)}
-	t.Cleanup(database.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the four-connection shared pool to come back, so the pool closes", database.Pool.Close)
+	})
 	for held := int32(0); held < database.Pool.Config().MaxConns; held++ {
 		connection, err := database.Pool.Acquire(ctx)
 		if err != nil {
@@ -1245,23 +1255,85 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 		}
 		defer connection.Release()
 	}
+	held := acquires.started.Load()
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil))
+	server := httptest.NewServer(healthzHandlerOn(clocktest.New(time.Date(2026, time.November, 21, 9, 0, 0, 0, time.UTC)), database, nil, nil, nil, "", nil, issuers{}, nil))
 	defer server.Close()
-	client := &http.Client{Timeout: 3 * time.Second}
-	started := time.Now()
-	response, err := client.Get(server.URL + "/healthz")
+	// The probe's own context ends before the server closes (defers run last first), so a probe
+	// queued on the held pool is let go and the close does not wait on it.
+	probe, cancelProbe := context.WithCancel(testwait.Context(t))
+	defer cancelProbe()
+	request, err := http.NewRequestWithContext(probe, http.MethodGet, server.URL+"/healthz", nil)
 	if err != nil {
-		t.Fatalf("health probe with every pooled connection held: %v (after %s)", err, time.Since(started))
+		t.Fatalf("build the health probe: %v", err)
 	}
-	defer response.Body.Close()
+	type probeAnswer struct {
+		response *http.Response
+		err      error
+	}
+	answered := make(chan probeAnswer, 1)
+	go func() {
+		response, err := http.DefaultClient.Do(request)
+		answered <- probeAnswer{response, err}
+	}()
+	// A try that finds no answer reads that the shared pool was asked for nothing, which a give-up
+	// names; one that finds the pool asked fails the row at once.
+	var answer probeAnswer
+	testwait.Until(t, "the health probe's answer with every pooled connection held", func() (string, bool) {
+		if asked := acquires.started.Load() - held; asked != 0 {
+			t.Fatalf("the health probe asked the shared pool for %d connections while each of its connections was held: it queues behind writers, not on a pool of its own", asked)
+		}
+		select {
+		case answer = <-answered:
+			return "answered", true
+		default:
+			return fmt.Sprintf("no answer yet, and the shared pool was asked for no connection beyond the %d held", held), false
+		}
+	})
+	if answer.err != nil {
+		t.Fatalf("health probe with every pooled connection held: %v", answer.err)
+	}
+	defer answer.response.Body.Close()
 	var health map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+	if err := json.NewDecoder(answer.response.Body).Decode(&health); err != nil {
 		t.Fatalf("decode health response: %v", err)
 	}
-	if response.StatusCode != http.StatusOK || health["ok"] != true || health["db"] != true {
-		t.Fatalf("health probe = %d %#v, want 200 with ok and db true", response.StatusCode, health)
+	if answer.response.StatusCode != http.StatusOK || health["ok"] != true || health["db"] != true {
+		t.Fatalf("health probe = %d %#v, want 200 with ok and db true", answer.response.StatusCode, health)
 	}
+}
+
+// sharedAcquires counts the acquires one pgxpool.Pool is asked for (pgxpool.AcquireTracer), each
+// as it starts, so a test sees a caller queue on that pool however long the caller then waits. A
+// pool built from the same configuration carries the same tracer, and its acquires are not
+// counted. It passes each query on to the tracer the configuration held before, if any.
+type sharedAcquires struct {
+	pgx.QueryTracer
+	pool    atomic.Pointer[pgxpool.Pool]
+	started atomic.Int64
+}
+
+func (a *sharedAcquires) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if a.QueryTracer == nil {
+		return ctx
+	}
+	return a.QueryTracer.TraceQueryStart(ctx, conn, data)
+}
+
+func (a *sharedAcquires) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	if a.QueryTracer != nil {
+		a.QueryTracer.TraceQueryEnd(ctx, conn, data)
+	}
+}
+
+func (a *sharedAcquires) TraceAcquireStart(ctx context.Context, pool *pgxpool.Pool, _ pgxpool.TraceAcquireStartData) context.Context {
+	if pool == a.pool.Load() {
+		a.started.Add(1)
+	}
+	return ctx
+}
+
+func (a *sharedAcquires) TraceAcquireEnd(context.Context, *pgxpool.Pool, pgxpool.TraceAcquireEndData) {
 }
 
 // /healthz answers inside the load balancer's timeout when Postgres stops answering at all:
@@ -1280,8 +1352,6 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 // makes this the cold case; the warm one, which production actually runs, is the unbounded
 // one and is measured against the real binary rather than here.
 func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break (the client's 5 s timeout
-	// around a 2 s unanswered probe).
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
 	if err != nil {
@@ -1296,55 +1366,74 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		blackholed.Store(false)
-		database.Pool.Close()
+		testwait.Returns(t, "every connection of the store through the proxy to come back, so the pool closes", database.Pool.Close)
 	})
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil))
+	// The probe's bound is armed on a fake clock (healthzHandlerOn), so the row reads the bound the
+	// probe armed and ends the probe only by moving the fake to it.
+	began := time.Date(2026, time.November, 17, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(began)
+	server := httptest.NewServer(healthzHandlerOn(fake, database, nil, nil, nil, "", nil, issuers{}, nil))
 	defer server.Close()
+	// The handler holds the database probe on the bound it arms on fake, which only a move of fake
+	// ends. The deferred server.Close waits for the handler, and deferred calls run last first, so
+	// this one ends the probe before that Close, by moving fake past every bound armed on it: a row
+	// that fails before its own move below fails by name rather than wait in that Close to the
+	// shared wait's end.
+	defer fake.SetWhen(func(_ time.Time, armed []time.Time) (time.Time, bool) {
+		if len(armed) == 0 {
+			return time.Time{}, false
+		}
+		return armed[len(armed)-1], true
+	})
 	// The shared pool's own round trip is the control: the link works right up to the outage.
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
 		t.Fatalf("query through the proxy before the outage: %v", err)
 	}
 
-	// The load balancer's own timeout: a poll it has not heard back from in five seconds is a
-	// failure, and three consecutive failures replace the task.
-	client := &http.Client{Timeout: 5 * time.Second}
-
+	// The load balancer's own timeout is five seconds: a poll it has not heard back from in that
+	// long is a failure, and three consecutive failures replace the task. The probe on a database
+	// that answers nothing arms its bound as it starts and answers once that bound passes.
 	blackholed.Store(true)
-	started := time.Now()
-	response, err := client.Get(server.URL + "/healthz")
-	if err != nil {
-		t.Fatalf("health probe with Postgres unreachable: %v (after %s)", err, time.Since(started))
+	answered := healthzAsync(t, server.URL)
+	armed := fake.AwaitArmed(t, "the database probe's bound", 1)
+	if bound := armed[0].Sub(began); bound >= 5*time.Second {
+		t.Fatalf("the database probe armed its bound %v after the poll came, at or past the load balancer's five seconds", bound)
 	}
-	defer response.Body.Close()
-	var health map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
-		t.Fatalf("decode health response: %v", err)
-	}
-	if response.StatusCode != http.StatusServiceUnavailable || health["db"] != false || health["schema_version"] != nil {
+	fake.Set(armed[0])
+	health := testwait.Receive(t, "the health probe to answer once its bound passed", answered).decode(t)
+	if health.status != http.StatusServiceUnavailable || health.body["db"] != false || health.body["schema_version"] != nil {
 		t.Fatalf("health probe with Postgres unreachable = %d %#v, want 503 with db false and no schema version",
-			response.StatusCode, health)
+			health.status, health.body)
 	}
 }
 
-// unansweringBucket is a file store whose bucket never answers its probe: Healthy waits out the
-// two seconds files.S3 bounds its HeadBucket by, as a hung HeadBucket does.
-type unansweringBucket struct{ *filestest.Memory }
+// heldBucket is a file store whose bucket answers its probe only once the test releases it, and
+// says when the probe has reached it, so a test can hold the bucket's probe in flight while it
+// reads what the rest of the probe does. Its probe fails, as a hung HeadBucket's bound does.
+type heldBucket struct {
+	*filestest.Memory
+	reached chan struct{}
+	release chan struct{}
+}
 
-func (unansweringBucket) Healthy(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	<-ctx.Done()
-	return ctx.Err()
+func (b heldBucket) Healthy(ctx context.Context) error {
+	close(b.reached)
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+	}
+	return errors.New("the bucket did not answer")
 }
 
 // /healthz still answers inside the tightest prober's three seconds when Postgres and the
 // file store's bucket both stop answering. Each probe is bounded at two seconds on its own, so
 // run one after the other they took four, and the compose healthcheck and the deploy script
-// read that silence as a dead process; run side by side they take two.
+// read that silence as a dead process; run side by side they take two. The row proves them side
+// by side: the database probe arms its bound on the fake while the bucket's probe is held in
+// flight, and a handler that ran them one after the other never has both in flight at once. The
+// bound it arms is then the whole answer's wait, and it must end inside tightestProber.
 func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break (the client's 3 s timeout
-	// around a 2 s probe and a 2 s bucket).
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
 	if err != nil {
@@ -1358,28 +1447,99 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 	}
 	t.Cleanup(func() {
 		blackholed.Store(false)
-		database.Pool.Close()
+		testwait.Returns(t, "every connection of the store through the proxy to come back, so the pool closes", database.Pool.Close)
 	})
-	bucket := unansweringBucket{filestest.NewMemory()}
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, issuers{}, nil))
+	bucket := heldBucket{Memory: filestest.NewMemory(), reached: make(chan struct{}), release: make(chan struct{})}
+	began := time.Date(2026, time.November, 17, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(began)
+	server := httptest.NewServer(healthzHandlerOn(fake, database, nil, nil, bucket, "", nil, issuers{}, nil))
 	defer server.Close()
+	// The handler holds two probes while the row reads them: the bucket's, on its release, and the
+	// database's, on the bound it arms on fake, which only a move of fake ends. The deferred
+	// server.Close waits for the handler, and deferred calls run last first, so this one ends both
+	// before that Close - the bucket's by its release, the database's by moving fake past every
+	// bound armed on it: a row that fails before the release below fails by name rather than wait
+	// in that Close to the shared wait's end.
+	letBucketGo := sync.OnceFunc(func() { close(bucket.release) })
+	defer func() {
+		letBucketGo()
+		fake.SetWhen(func(_ time.Time, armed []time.Time) (time.Time, bool) {
+			if len(armed) == 0 {
+				return time.Time{}, false
+			}
+			return armed[len(armed)-1], true
+		})
+	}()
 
-	client := &http.Client{Timeout: 3 * time.Second}
 	blackholed.Store(true)
-	started := time.Now()
-	response, err := client.Get(server.URL + "/healthz")
-	if err != nil {
-		t.Fatalf("health probe with Postgres and the bucket unreachable: %v (after %s)", err, time.Since(started))
+	answered := healthzAsync(t, server.URL)
+	testwait.Receive(t, "the bucket's probe to start", bucket.reached)
+	armed := fake.AwaitArmed(t, "the database probe's bound, armed while the bucket's probe is held in flight", 1)
+	if bound := armed[0].Sub(began); bound >= tightestProber {
+		t.Fatalf("the database probe armed its bound %v after the poll came, while the bucket's probe was in flight beside it: at or past the tightest prober's %v", bound, tightestProber)
 	}
-	defer response.Body.Close()
-	var health map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+	letBucketGo()
+	fake.Set(armed[0])
+	health := testwait.Receive(t, "the health probe to answer once both probes ended", answered).decode(t)
+	if health.status != http.StatusServiceUnavailable || health.body["db"] != false || health.body["files"] != false {
+		t.Fatalf("health probe with Postgres and the bucket unreachable = %d %#v, want 503 with db and files false",
+			health.status, health.body)
+	}
+}
+
+// tightestProber is the shortest wait a prober of /healthz gives an answer: the compose
+// healthcheck's `timeout: 3s` (deploy/compose/dispatch.compose.yml) and the deploy script's
+// `curl --max-time 3` (deploy/scripts/autodeploy.sh). A probe that answers later reads to both as
+// a dead process.
+const tightestProber = 3 * time.Second
+
+// healthzReply is one GET of /healthz as healthzAsync received it.
+type healthzReply struct {
+	response *http.Response
+	err      error
+}
+
+// healthzRead is a /healthz answer's status and decoded body.
+type healthzRead struct {
+	status int
+	body   map[string]any
+}
+
+// decode fails t unless the GET was answered with a JSON body, and reads it.
+func (a healthzReply) decode(t *testing.T) healthzRead {
+	t.Helper()
+	if a.err != nil {
+		t.Fatalf("health probe: %v", a.err)
+	}
+	defer a.response.Body.Close()
+	read := healthzRead{status: a.response.StatusCode}
+	if err := json.NewDecoder(a.response.Body).Decode(&read.body); err != nil {
 		t.Fatalf("decode health response: %v", err)
 	}
-	if response.StatusCode != http.StatusServiceUnavailable || health["db"] != false || health["files"] != false {
-		t.Fatalf("health probe with Postgres and the bucket unreachable = %d %#v, want 503 with db and files false",
-			response.StatusCode, health)
+	return read
+}
+
+// healthzAsync sends one GET of /healthz at serverURL (healthzWithin) on a goroutine of its own,
+// so the test can move the probe's clock while it waits, and delivers the answer on the channel.
+func healthzAsync(t *testing.T, serverURL string) <-chan healthzReply {
+	t.Helper()
+	answered := make(chan healthzReply, 1)
+	go func() {
+		response, err := healthzWithin(t, serverURL)
+		answered <- healthzReply{response: response, err: err}
+	}()
+	return answered
+}
+
+// healthzWithin is one GET of /healthz at serverURL under the shared wait's context, which ends
+// only near the test binary's deadline: a probe that never answers fails there.
+func healthzWithin(t *testing.T, serverURL string) (*http.Response, error) {
+	t.Helper()
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, serverURL+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("build the health probe: %v", err)
 	}
+	return http.DefaultClient.Do(request)
 }
 
 // blackholePostgres puts a proxy in front of upstream and returns its address. While blackholed
@@ -1509,7 +1669,7 @@ func TestMain(m *testing.M) {
 			panic("set this package's default -parallel: " + err.Error())
 		}
 	}
-	os.Exit(cmdtest.Run(func() int { return storetest.Main(m) }))
+	os.Exit(cmdtest.Run(func() int { return storetest.Main(m.Run) }))
 }
 
 func TestWriteBlockIDBackfillReportLabelsSkippedDocuments(t *testing.T) {
@@ -1623,7 +1783,7 @@ func TestCensusSubcommandPrintsACensusErrorWithOnePrefix(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	var out, errOut bytes.Buffer
-	if code := census(context.Background(), nil, database.Pool.Config().ConnString()+"&search_path=nosuch", &out, &errOut); code != 2 {
+	if code := census(context.Background(), nil, testdb.WithParameter(t, database.Pool.Config().ConnString(), "search_path", "nosuch"), &out, &errOut); code != 2 {
 		t.Fatalf("exit %d, want 2; stderr %q", code, errOut.String())
 	}
 	const want = "census: the connection's search_path names no schema that exists, so current_schema() is null: the census would find neither schema_migrations nor any table, and the runner can create neither; name an existing schema in the search_path\n"
@@ -2290,47 +2450,74 @@ const (
 // none. So for the whole wait, and after the exit, the fill has no hold, no row and no cursor,
 // although 200 events wait for their rows.
 func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
+	aProcessTheRegistryRefusesWritesNoKeywordVersion(t, benchtime.EveryRun)
+}
+
+// TestAProcessTheRegistryRefusesWritesNoKeywordVersionOnTheClock is the row above in benchtime's
+// timing lane, where the refused process's exit is held to main's figure (refusedExitWithin).
+func TestAProcessTheRegistryRefusesWritesNoKeywordVersionOnTheClock(t *testing.T) {
 	// Not parallel: it holds a step to a wall-clock bound load could break (the boot's wait of
 	// LiveWindow + HeartbeatInterval + 30 s past the refusing row).
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), aProcessTheRegistryRefusesWritesNoKeywordVersion)
+}
+
+// refusedExitWithin is how long after its first refusal, read on this test's clock, the refused
+// process may still run: the registry's wait for admission, a live window and a heartbeat
+// (processes.Register), and main's 30 s past it for the process's start and exit.
+var refusedExitWithin = processes.LiveWindow + processes.HeartbeatInterval + 30*time.Second
+
+// aProcessTheRegistryRefusesWritesNoKeywordVersion is the scene of the two rows above; lane says
+// whether the exit's reading of the clock is held to refusedExitWithin (benchtime.Lane). The row
+// every run makes holds the exit to coming at all, through the shared wait, and to coming after
+// the whole wait, on the process's own log; it logs how long the exit took.
+func aProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T, lane benchtime.Lane) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	writeKeywordFillComments(t, database, 200)
-	// The heartbeat of the peer is an hour ahead of the database's clock, so the peer stays live
-	// (processes.Live) for the whole test with no heartbeat of its own. The peer has the owner
-	// lock protocol of this build, as a peer of this build registers it (processes.admit), so the
-	// process does not find an earlier build in the fleet.
+	// The heartbeat of the peer is stagedPastTheRun, a day, ahead of the database's clock, so the
+	// peer stays live (processes.Live) for the whole test with no heartbeat of its own. The peer
+	// has the owner lock protocol of this build, as a peer of this build registers it
+	// (processes.admit), so the process does not find an earlier build in the fleet.
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into server_processes (instance, commit, signing_keys, heartbeat_at, owner_lock_protocol)
-		values (gen_random_uuid(), 'peer0commit', '{a-fingerprint-this-process-does-not-hold}', now() + interval '1 hour', $1)`,
-		store.OwnerLockProtocol); err != nil {
+		values (gen_random_uuid(), 'peer0commit', '{a-fingerprint-this-process-does-not-hold}', now() + make_interval(secs => $2), $1)`,
+		store.OwnerLockProtocol, stagedPastTheRun.Seconds()); err != nil {
 		t.Fatalf("add a live peer that does not share the keys of the process: %v", err)
 	}
 
 	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{SigningKey: "a-key-the-peer-does-not-share"})
-	process.waitForLog(t, 30*time.Second, "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse")
+	process.waitForLog(t, "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse")
 	refused := time.Now()
-	// The test reads the database every 250 ms until the process exits, so it sees each moment of
-	// the wait in which a fill could take the hold and write.
-	stillRunning := refused.Add(processes.LiveWindow + processes.HeartbeatInterval + 30*time.Second)
-	for waiting := true; waiting; {
+	// The test reads the database at each ask of the shared wait until the process exits, so it
+	// sees the wait's moments in which a fill could take the hold and write.
+	var exitedAfter time.Duration
+	testwait.Until(t, "the refused process to exit", func() (fmt.Stringer, bool) {
 		requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v into the wait for admission", time.Since(refused).Round(time.Millisecond)))
 		select {
 		case <-process.Exited:
-			waiting = false
-		case <-time.After(250 * time.Millisecond):
-			if time.Now().After(stillRunning) {
-				t.Fatalf("the refused process still runs %v after its first refusal:\n%s", time.Since(refused).Round(time.Millisecond), process.Output.String())
-			}
+			exitedAfter = time.Since(refused)
+			return nil, true
+		default:
+			return process.Output, false
 		}
+	})
+	t.Logf("the refused process exited %v after its first refusal", exitedAfter.Round(time.Millisecond))
+	if lane == benchtime.OnTheClock && exitedAfter > refusedExitWithin {
+		t.Errorf("the refused process exited %v after its first refusal, want within %v:\n%s",
+			exitedAfter.Round(time.Millisecond), refusedExitWithin, process.Output.String())
 	}
-	if waited := time.Since(refused); waited < processes.LiveWindow {
-		t.Fatalf("the refused process exited %v after its first refusal; the test needs the whole wait of %v:\n%s",
-			waited.Round(time.Millisecond), processes.LiveWindow+processes.HeartbeatInterval, process.Output.String())
-	}
-
 	if code := process.Cmd.ProcessState.ExitCode(); code != 1 ||
 		!process.logged(`msg="dispatch: register this server process"`, "signing key set does not match a live server process") {
 		t.Fatalf("the refused process exited %d; want 1, with the refusal of the registry logged:\n%s", code, process.Output.String())
+	}
+	// The test needs the whole wait: the process's own log records its first refusal and the
+	// refusal it exits with, each line stamped by the process's clock, so the span between them is
+	// the child's record of how long it waited, which this machine's load does not shorten.
+	firstRefusal := processLogTime(t, process, "a live server process refuses this one's signing keys")
+	exitRefusal := processLogTime(t, process, `msg="dispatch: register this server process"`, "signing key set does not match a live server process")
+	if waited := exitRefusal.Sub(firstRefusal); waited < processes.LiveWindow {
+		t.Fatalf("the refused process logged its exit %v after its first refusal; the test needs the whole wait of %v:\n%s",
+			waited.Round(time.Millisecond), processes.LiveWindow+processes.HeartbeatInterval, process.Output.String())
 	}
 	requireNoKeywordFillWrite(t, database, "after the refused process exited")
 	for _, line := range []string{keywordFillTookLine, keywordFillStandbyLine} {
@@ -2349,6 +2536,24 @@ func requireNoKeywordFillWrite(t *testing.T, database *store.Store, when string)
 	if writes := readKeywordFillWrites(t, database); writes != (keywordFillWrites{}) {
 		t.Fatalf("%s, the keyword fill has %d holds, %d rows and %d cursor rows; want none of each", when, writes.holds, writes.rows, writes.cursors)
 	}
+}
+
+// processLogTime is the time= stamp of the first line of p's log that holds every one of parts:
+// the moment p's own clock gave the line. It fails the test when no line holds them or the stamp
+// does not read.
+func processLogTime(t *testing.T, p *dispatchProcess, parts ...string) time.Time {
+	t.Helper()
+	lines := p.logLines(parts...)
+	if len(lines) == 0 {
+		t.Fatalf("the process logged no line holding %q:\n%s", parts, p.Output.String())
+	}
+	_, stamp, found := strings.Cut(lines[0], "time=")
+	stamp, _, _ = strings.Cut(stamp, " ")
+	at, err := time.Parse(time.RFC3339Nano, stamp)
+	if !found || err != nil {
+		t.Fatalf("the line %q carries no time= stamp that reads: %v", lines[0], err)
+	}
+	return at
 }
 
 // keywordFillWrites counts what the keyword fill takes and writes: the duty_holds rows of its hold
@@ -2422,11 +2627,11 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 		process.waitHealthy(t)
 		awaitRegistryAdmission(t, database, process)
 		writeKeywordFillComments(t, database, 50)
-		admitted := time.Now()
-		for time.Since(admitted) < keywordFillDeferredWatch {
-			requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v after the process was admitted", time.Since(admitted).Round(time.Millisecond)))
-			time.Sleep(250 * time.Millisecond)
-		}
+		// A fill that started anyway takes the hold the moment its process serves and writes the
+		// waiting events' rows, and what it writes stays, so the read at the end of the watch finds
+		// it. The watch is a span: the absence of a start leaves no state, the process is a child
+		// out of synctest's reach, and no later action shows a start that did not happen.
+		testwait.Span(t, keywordFillDeferredWatch, "a fill that never started leaves no state; the process is a child out of synctest's reach; and no later action shows a start that did not happen")
 		requireNoKeywordFillWrite(t, database, "at the end of the watch")
 		if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 {
 			t.Fatalf("the process logged the deferral %d times; want once:\n%s", len(lines), process.Output.String())
@@ -2446,9 +2651,9 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 		before := writeKeywordFillComments(t, database, 50)
 		process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "on"}})
 		process.waitHealthy(t)
-		process.waitForLog(t, 30*time.Second, keywordFillTookLine)
+		process.waitForLog(t, keywordFillTookLine)
 		after := writeKeywordFillComments(t, database, 50)
-		textversionstest.AwaitRowsUntil(t, database, append(before, after...), nil)
+		textversionstest.AwaitRows(t, database, append(before, after...), nil)
 		if writes := readKeywordFillWrites(t, database); writes.holds == 0 || writes.rows == 0 || writes.cursors == 0 {
 			t.Fatalf("the fill wrote every event's row, and the read counts %d holds, %d rows and %d cursor rows; want each above 0", writes.holds, writes.rows, writes.cursors)
 		}
@@ -2531,8 +2736,9 @@ func TestATableTheKeywordFillDeferralCannotReadDoesNotStopTheBoot(t *testing.T) 
 // then serves: it answers its health check and the registry of live server processes admits it,
 // and still no backend waits for the lock.
 func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break
-	// (requireTheServerEndsTheRead's 10 s over a 5 s lock timeout).
+	// Not parallel: it holds a step to a wall-clock bound load could break (the client's 10 s
+	// deadline, searchFillTableReadTimeout, over a 5 s lock timeout, which requireTheServerEndsTheRead
+	// requires the server's to beat).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	holder, err := database.Pool.Begin(ctx)
@@ -2548,7 +2754,7 @@ func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testin
 	if got := deferralFields(searchFillTableRows(ctx, database.Pool)); got != fields {
 		t.Errorf("under the lock, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
 	}
-	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "55P03")
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "55P03", "lock timeout")
 	requireNoKeywordFillCursorLockWait(t, database, "after the reads returned")
 
 	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
@@ -2569,8 +2775,9 @@ func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testin
 // process booted with DISPATCH_SEARCH_FILL=off on that database logs the same fields once, then
 // serves: it answers its health check and the registry of live server processes admits it.
 func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break
-	// (requireTheServerEndsTheRead's 10 s over a 6 s statement timeout).
+	// Not parallel: it holds a step to a wall-clock bound load could break (the client's 10 s
+	// deadline, searchFillTableReadTimeout, over a 6 s statement timeout, which
+	// requireTheServerEndsTheRead requires the server's to beat).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for _, statement := range []string{
@@ -2585,7 +2792,7 @@ func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) 
 	if got := deferralFields(searchFillTableRows(ctx, database.Pool)); got != fields {
 		t.Errorf("with a read that runs on, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
 	}
-	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "57014")
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "57014", "statement timeout")
 
 	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
 	process.waitHealthy(t)
@@ -2596,21 +2803,104 @@ func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) 
 	}
 }
 
-// requireTheServerEndsTheRead reads table alone, as searchFillTableRows reads each table, and fails
-// the test unless Postgres itself ended the read: an error of the SQLSTATE code, before
-// searchFillTableReadTimeout, the client's own deadline, could end it. It judges the server's end
-// of the read by its error, not by a time that a slow box or a slow dial would stretch.
-func requireTheServerEndsTheRead(t *testing.T, database *store.Store, table, code string) {
+// requireTheServerEndsTheRead reads table alone, as searchFillTableRows reads each table, on a
+// store of the database's own that traces the read (readBounds), and fails the test unless
+// Postgres itself ends the read before the client's own deadline (searchFillTableReadTimeout)
+// could. Two facts hold that. The setting of that timeout (lock_timeout, statement_timeout) the
+// read runs under, read in the read's own session as the read begins, is set and shorter than the
+// client's deadline, so the server's bound comes first. And the read ends with an error of the
+// SQLSTATE code whose message cancels the statement due to that timeout (lock timeout, statement
+// timeout): the client's deadline ending the read first is a cancel Postgres reports as due to
+// user request, or the context's own error, and fails it. How soon the server ends the read on
+// the machine's clock is a service level the timing lane holds
+// (TestAKeywordFillTableReadEndsBeforeTheClientsDeadlineOnTheClock).
+func requireTheServerEndsTheRead(t *testing.T, database *store.Store, table, code, timeout string) {
 	t.Helper()
-	started := time.Now()
-	_, err := searchFillTableHoldsRow(context.Background(), database.Pool, table)
-	took := time.Since(started)
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != code {
-		t.Errorf("the read of %s ended after %v with %v; want Postgres's own error %s", table, took.Round(time.Millisecond), err, code)
+	bounds := &readBounds{read: "select exists(select 1 from public." + table + ")", setting: strings.ReplaceAll(timeout, " ", "_")}
+	_, err := searchFillTableHoldsRow(context.Background(), storetest.TracedStore(t, database, bounds).Pool, table)
+	switch {
+	case !bounds.seen:
+		t.Errorf("the read of %s never sent %q; want the read searchFillTableHoldsRow sends", table, bounds.read)
+	case bounds.err != nil:
+		t.Errorf("read %s in the session of the read of %s: %v", bounds.setting, table, bounds.err)
+	case bounds.bound <= 0 || bounds.bound >= searchFillTableReadTimeout:
+		t.Errorf("the read of %s ran under %s = %q; want a bound above 0 and shorter than the client's deadline, %v, so that the server ends the read first",
+			table, bounds.setting, bounds.value, searchFillTableReadTimeout)
 	}
-	if took >= searchFillTableReadTimeout {
-		t.Errorf("the read of %s took %v; want less than the client's deadline, %v", table, took.Round(time.Millisecond), searchFillTableReadTimeout)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != code || !strings.Contains(pgErr.Message, "due to "+timeout) {
+		t.Errorf("the read of %s ended with %v; want Postgres's own error %s, canceling the statement due to %s", table, err, code, timeout)
+	}
+}
+
+// readBounds is a query tracer (storetest.TracedStore) that, as the statement read begins, reads
+// the setting it names in that statement's own session, on its connection and inside its
+// transaction: current_setting's text in value, and as a duration in bound. seen says the read
+// began, and err is the error of the setting's read. The tracer runs on the goroutine that sends
+// the statement.
+type readBounds struct {
+	read, setting string
+	seen          bool
+	value         string
+	bound         time.Duration
+	err           error
+}
+
+func (b *readBounds) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if b.seen || data.SQL != b.read {
+		return ctx
+	}
+	b.seen = true
+	var seconds float64
+	b.err = conn.QueryRow(ctx, `select current_setting($1), extract(epoch from current_setting($1)::interval)::float8`, b.setting).Scan(&b.value, &seconds)
+	b.bound = time.Duration(seconds * float64(time.Second))
+	return ctx
+}
+
+func (b *readBounds) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// TestAKeywordFillTableReadEndsBeforeTheClientsDeadlineOnTheClock is the timing-lane twin of the
+// locked and the slow keyword-fill table rows (benchtime.Timing): a read Postgres ends on its own
+// lock timeout, and one it ends on its statement timeout, each end before
+// searchFillTableReadTimeout, the client's own deadline, on the machine's clock. Those rows hold
+// that Postgres ended each read on its own timeout; this one holds how soon.
+func TestAKeywordFillTableReadEndsBeforeTheClientsDeadlineOnTheClock(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	ctx := context.Background()
+	for _, row := range []struct {
+		name, code, timeout string
+		prepare             func(t *testing.T, database *store.Store)
+	}{
+		{"a locked cursor table", "55P03", "lock timeout", func(t *testing.T, database *store.Store) {
+			holder, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("open the transaction that holds the lock: %v", err)
+			}
+			t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+			if _, err := holder.Exec(ctx, `lock table public.search_text_versions_fill in access exclusive mode`); err != nil {
+				t.Fatalf("lock search_text_versions_fill: %v", err)
+			}
+		}},
+		{"a cursor table read that runs on", "57014", "statement timeout", func(t *testing.T, database *store.Store) {
+			for _, statement := range []string{
+				`drop table public.search_text_versions_fill`,
+				`create view public.search_text_versions_fill as select 1 as id from pg_sleep(30)`,
+			} {
+				if _, err := database.Pool.Exec(ctx, statement); err != nil {
+					t.Fatalf("%s: %v", statement, err)
+				}
+			}
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			row.prepare(t, database)
+			started := time.Now()
+			requireTheServerEndsTheRead(t, database, "search_text_versions_fill", row.code, row.timeout)
+			if took := time.Since(started); took >= searchFillTableReadTimeout {
+				t.Errorf("the read of search_text_versions_fill took %v; want less than the client's deadline, %v", took.Round(time.Millisecond), searchFillTableReadTimeout)
+			}
+		})
 	}
 }
 
@@ -2641,18 +2931,16 @@ func deferralFields(fields []any) string {
 	return strings.Join(pairs, " ")
 }
 
-// awaitRegistryAdmission waits up to 30 s for the registry of live server processes to hold a row,
-// which on a database no other process serves is the process's own: once it is admitted, the
-// process serves, and a keyword fill it started takes its hold.
+// awaitRegistryAdmission waits, through the shared wait, for the registry of live server processes
+// to hold a row, which on a database no other process serves is the process's own: once it is
+// admitted, the process serves, and a keyword fill it started takes its hold.
 func awaitRegistryAdmission(t *testing.T, database *store.Store, process *dispatchProcess) {
 	t.Helper()
-	if !testwait.Holds(30*time.Second, 50*time.Millisecond, func() bool {
+	testwait.Until(t, "the registry of live server processes to admit the process", func() (fmt.Stringer, bool) {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from server_processes`).Scan(&rows); err != nil {
 			t.Fatalf("read the registry of live server processes: %v", err)
 		}
-		return rows > 0
-	}) {
-		t.Fatalf("the registry of live server processes admitted no process within 30 s:\n%s", process.Output.String())
-	}
+		return process.Output, rows > 0
+	})
 }

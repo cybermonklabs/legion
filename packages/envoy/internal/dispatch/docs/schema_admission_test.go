@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -29,35 +28,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// rowDeadline is the deadline every wait of these rows takes: the test binary's, less
-// roomWaitMargin for the failed row's cleanups (settlement_credit_test.go). A binary run with no
-// deadline (-timeout 0) gives the zero time, which puts no deadline on a socket's reads.
-func rowDeadline(t *testing.T) time.Time {
-	t.Helper()
-	deadline, bounded := t.Deadline()
-	if !bounded {
-		return time.Time{}
-	}
-	return deadline.Add(-roomWaitMargin)
-}
-
-// rowWait is rowDeadline for a wait that takes a duration: the time left until it, or no bound
-// when the binary has none.
-func rowWait(t *testing.T) time.Duration {
-	t.Helper()
-	deadline := rowDeadline(t)
-	if deadline.IsZero() {
-		return math.MaxInt64
-	}
-	return time.Until(deadline)
-}
 
 // fleetProcess writes the server_processes row of another server process straight into the
 // registry: one that reads schema version, creates up to creatable and registers owner lock
-// protocol ownerLockProtocol, whose last heartbeat is age before the database's now(). A version
-// of 0 is the row of a build that predates the fleet columns.
+// protocol ownerLockProtocol, whose last heartbeat is age before the database's now(); a negative
+// age puts it that far ahead. A live process's row takes -stagedAhead, so the process counts as
+// live (processes.Live) at every read the row makes, however long the machine takes before it, and
+// no verdict leans on processes.LiveWindow not passing. A version of 0 is the row of a build that
+// predates the fleet columns.
 //
 // The owner lock protocol is the row's build's, as it registers it: store.OwnerLockProtocol for
 // this build and every build after it (processes.admit), and 0, the column's default, for a build
@@ -106,7 +86,7 @@ func TestTheNextBuildsFleetProcessWaitsForNoOwnerLock(t *testing.T) {
 		t.Fatal("the owner lock's transaction holds no owner lock gate, so this cannot tell a row that waits for it from one that does not")
 	}
 	version := pmdoc.SchemaVersion()
-	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, -stagedAhead)
 }
 
 // page is the query a page presents on its document socket: schema_version, and schema_creatable
@@ -169,11 +149,11 @@ func sendToken(t *testing.T, connection *gws.Conn, artifactID, token string) {
 	}
 }
 
-// readUntil reads the room's messages, until rowDeadline, until it sends one of kind
-// (Hocuspocus's message type), and returns the rest of that message.
+// readUntil reads the room's messages until it sends one of kind (Hocuspocus's message type), and
+// returns the rest of that message. Its reads wait until the shared wait gives up (readDeadline).
 func readUntil(t *testing.T, connection *gws.Conn, kind uint64) *encoding.Decoder {
 	t.Helper()
-	_ = connection.SetReadDeadline(rowDeadline(t))
+	_ = connection.SetReadDeadline(readDeadline(t))
 	defer func() { _ = connection.SetReadDeadline(time.Time{}) }()
 	for {
 		_, message, err := connection.ReadMessage()
@@ -277,7 +257,7 @@ func newAdmissionServer(t *testing.T, future bool) (*Service, string, *httptest.
 	artifactID := createDocument(t, database, "# First")
 	seeding := New(testServiceDeps(database))
 	seedServiceText(t, seeding, artifactID, markdown)
-	if err := seeding.Shutdown(context.Background()); err != nil {
+	if err := docstest.Shutdown(t, context.Background(), seeding); err != nil {
 		t.Fatalf("shutdown the seeding document service: %v", err)
 	}
 	restoreUncreatable, err := pmdoc.UseStagedBlockForTest("future", false)
@@ -326,10 +306,10 @@ func TestSchemaAdmissionFollowsTheLiveFleet(t *testing.T) {
 	// The build after this one registers this build's owner lock protocol; the first version's
 	// build, and one that predates the fleet columns, came before that protocol and register none
 	// (fleetProcess).
-	nextBuild := process{version: newer, creatable: current, ownerLockProtocol: store.OwnerLockProtocol}
+	nextBuild := process{version: newer, creatable: current, ownerLockProtocol: store.OwnerLockProtocol, age: -stagedAhead}
 	lapsedNextBuild := process{version: newer, creatable: current, ownerLockProtocol: store.OwnerLockProtocol, age: time.Hour}
-	firstVersion := process{version: 1, creatable: 1}
-	predatesFleetColumns := process{}
+	firstVersion := process{version: 1, creatable: 1, age: -stagedAhead}
+	predatesFleetColumns := process{age: -stagedAhead}
 	for _, c := range []struct {
 		name     string
 		future   bool
@@ -413,7 +393,9 @@ func TestATokenIsAnsweredFromTheAdmissionItsSocketCarries(t *testing.T) {
 // is read-only; a current page's socket stays open and writable. This process reads version and
 // creates up to creatable (newAdmissionServer), so the older page is one version below it, and
 // the process that joins is of the build after this one: it reads one version above version and
-// creates up to version.
+// creates up to version. The page reads the close's code through requireRevokedClose, so the row
+// depends on ygo's deadline on that close frame (Server.CloseFrameTimeout), which the test
+// service sets to the test's give-up.
 func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
 	service, artifactID, server := newAdmissionServer(t, false)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
@@ -427,7 +409,7 @@ func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
 		t.Fatal("a current page was authenticated read-only")
 	}
 
-	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, -stagedAhead)
 	if err := service.recheckSchemaAdmissions(context.Background()); err != nil {
 		t.Fatalf("re-check the sockets' admission: %v", err)
 	}
@@ -445,11 +427,13 @@ func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
 // that page's socket with the admission-revoked code, and its reconnect is read-only. A current
 // page's socket stays open and writable. This process reads version and creates up to creatable
 // (newAdmissionServer), and the newer page is of the build after this one, beside a live process
-// of that build: both read one version above version and create up to version.
+// of that build: both read one version above version and create up to version. The page reads
+// the close's code through requireRevokedClose, so the row depends on ygo's deadline on that close
+// frame (Server.CloseFrameTimeout), which the test service sets to the test's give-up.
 func TestAdmissionRecheckClosesANewerPageOnceNoLiveProcessCreatesWhatItCreates(t *testing.T) {
 	service, artifactID, server := newAdmissionServer(t, false)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
-	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, -stagedAhead)
 	newerPage := page(version+1, version)
 	newer := mustDialPage(t, server.URL, artifactID, newerPage)
 	if !tokenWritable(t, newer, artifactID, newerPage.Get("schema_version")) {
@@ -478,11 +462,15 @@ func TestAdmissionRecheckClosesANewerPageOnceNoLiveProcessCreatesWhatItCreates(t
 }
 
 // requireRevokedClose reads connection until it ends, and fails the test unless the server closed
-// it with the admission-revoked code. It reads until rowDeadline: what it judges is the code, not
-// how soon the close came.
+// it with the admission-revoked code; the read waits for that end until the shared wait gives up
+// (readDeadline). ygo writes that close within its deadline on a close frame
+// (Server.CloseFrameTimeout), a second from the moment its context watcher reads the clock in
+// production, past which it drops the frame and the page reads 1006. The test service sets that
+// deadline to the test's give-up (newTestServiceOn, Deps.CloseFrameDeadline), so a loaded machine
+// slow to write the frame delays the close and fails nothing.
 func requireRevokedClose(t *testing.T, connection *gws.Conn, what string) {
 	t.Helper()
-	_ = connection.SetReadDeadline(rowDeadline(t))
+	_ = connection.SetReadDeadline(readDeadline(t))
 	for {
 		_, _, err := connection.ReadMessage()
 		if err == nil {
@@ -564,12 +552,20 @@ func dialSlowPage(t *testing.T, serverURL, artifactID string, query url.Values) 
 }
 
 // A revoke ends the socket with a close frame of ygo's own, which gorilla's WriteControl puts on
-// the connection between two of ygo's messages: it waits up to a second for a message already
-// going out and never cuts into one. Here the document's sync message is far past 64 KB and the
-// page reads nothing until the re-check has revoked its socket, so that message is part way out
-// when the revoke arrives. The page then reads every message whole and the close with the
+// the connection between two of ygo's messages: it waits for a message already going out and
+// never cuts into one. Here the document's sync message is far past 64 KB and the page reads
+// nothing until the re-check has revoked its socket, so that message's bytes are part way to the
+// page when the revoke arrives (most of them in the kernel's buffers, the server's write already
+// returned). The page then reads every message whole and the close with the
 // admission-revoked code after them - never a protocol error from a frame cut in half, and never
 // the bare 1006 of a connection closed without a frame.
+//
+// The row depends on both of ygo's deadlines on a socket, each of which ends that socket with no
+// close frame: the close's wait for the message in flight, a second in production
+// (Server.CloseFrameTimeout), and that message's write, ten seconds from its start in production
+// (Server.PeerWriteTimeout). The test service sets both to the test's give-up (newTestServiceOn,
+// Deps.CloseFrameDeadline and Deps.PeerWriteDeadline), so a loaded machine that slows the
+// server's write of that message or of the close delays the close and fails nothing.
 func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	// The process stages one element it reads and cannot create, so it reads version, creates up
 	// to creatable, less than it reads, and a page one version older is still writable
@@ -582,9 +578,9 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, bigDocumentMarkdown())
-	// The server accepts through a listener that records what it writes to each connection, so the
-	// revoke below waits for the fact it needs (waitForTheMessageInFlight), not for a fixed time.
-	// It leaves each connection the kernel's own send buffer, as this row's server had before.
+	// The server accepts through a listener that records what it writes to each socket, with the
+	// kernel's own send buffer, so the slow page's sync message is still going out when the revoke
+	// comes.
 	server := httptest.NewUnstartedServer(http.HandlerFunc(service.ServeHTTP))
 	accepted := &recordingListener{Listener: server.Listener, kernelSendBuffer: true}
 	server.Listener = accepted
@@ -592,25 +588,34 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	testcleanup.Add(t, server.Close)
 
 	// A page one version older represents everything this fleet creates, so its socket is
-	// admitted writable; it reads nothing, so the sync message stays part way out.
+	// admitted writable; it reads nothing, so the sync message stays part way out. The revoke
+	// comes once the server has begun writing that message, past 64 KB.
 	reader := dialSlowPage(t, server.URL, artifactID, page(version-1, creatable))
 	serverConn := accepted.find(reader.LocalAddr().String())
 	if serverConn == nil {
 		t.Fatalf("no accepted connection has the slow page's local address %s, so nothing records what the server writes to it", reader.LocalAddr())
 	}
-	waitForTheMessageInFlight(t, serverConn)
+	testwait.Eventually(t, "the server to begin writing the slow page a message past 64 KB", func() bool {
+		writes, _, _ := serverConn.record()
+		for _, write := range writes {
+			if len(write.asked) > 64*1024 {
+				return true
+			}
+		}
+		return false
+	})
 
 	// A process of the build after this one, which creates up to version, what this page cannot
 	// represent, joins, and the re-check revokes it.
-	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, -stagedAhead)
 	if err := service.recheckSchemaAdmissions(context.Background()); err != nil {
 		t.Fatalf("re-check the sockets' admission: %v", err)
 	}
 
 	biggest := 0
-	// The page reads until the revoke's close, however long a loaded runner takes to deliver the
-	// messages queued before it: until rowDeadline, the one hang guard.
-	_ = reader.SetReadDeadline(rowDeadline(t))
+	if deadline, bounded := testwait.GiveUpAt(t); bounded {
+		_ = reader.SetReadDeadline(deadline)
+	}
 	for {
 		_, message, err := reader.ReadMessage()
 		if err != nil {
@@ -628,11 +633,14 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	}
 }
 
-// ygoCloseFrameTimeout is how long ygo waits for a revoked socket's close frame to go out before
-// it closes the connection without it (sjawhar/ygo provider/websocket/server.go,
-// closeFrameTimeout, the deadline on ServeHTTP's WriteControl). The slow page below reads
-// nothing, so that wait runs out in full and the close follows it.
-const ygoCloseFrameTimeout = time.Second
+// The revoke's close is told from ygo's own ends of the same socket by its cause, not by when it
+// came: ygo writes a close frame only for a request context cancelled with a cause, as the
+// revoke cancels it (sjawhar/ygo provider/websocket/server.go, the WriteControl under
+// Server.CloseFrameTimeout), and the admission's cause is the admission-revoked code and reason.
+// Its deadline on a write (Server.PeerWriteTimeout) and its handshake deadline end a socket with
+// no close frame at all. The server's send buffer here holds the document with as much again free
+// (slowPageMessageSize), so the close frame goes out whole behind the document and the stream
+// ends on it.
 
 // postRevokeMarker is the word the edit made straight after the revoke writes into every
 // paragraph, so that edit is told apart from the seeded text in both places it matters: the bytes
@@ -654,16 +662,16 @@ const postRevokeMarker = "afterrevoke"
 //   - the re-check returns that page's admission and no other;
 //   - the server's side of that socket ends on the revoke's own close: a write of the
 //     admission-revoked close frame begins after the revoke (ygo's context watcher sends it on
-//     errSchemaRevoked), whether or not the page's buffers take its bytes, and its ServeHTTP
-//     returns; a socket that ends with no such write ended for another reason;
+//     errSchemaRevoked) and before the server closes the socket (requireTheRevokesCloseFrame),
+//     and its ServeHTTP returns; a socket that ends with no such write ended for another reason;
 //   - no document byte reaches that socket after the revoke: one more edit goes into the room
 //     straight after it, and no write that began after the revoke carries a byte that is not the
 //     admission-revoked close frame, nor does any write carry a byte once the socket is closed. A
 //     write that began before the revoke and returned after it is the message already in flight,
 //     which the close waits for;
-//   - the bytes the server wrote to that socket are whole websocket frames throughout, and end
-//     either on that close frame or at a cut the page reads as 1006 - never a frame cut in half
-//     and resumed, never another close code, and never a byte after a close;
+//   - the bytes the server wrote to that socket are whole websocket frames throughout, and end on
+//     that close frame, which only the revoke writes - never a frame cut in half and resumed,
+//     never another close code, and never a byte after a close;
 //   - that stream holds a document message past 64 KB, so this is a page that really was owed
 //     more than its buffers could take;
 //   - the page's reconnect syncs the server's whole document, the edit made after the revoke
@@ -677,6 +685,13 @@ const postRevokeMarker = "afterrevoke"
 // hundred kilobytes still needs many seconds to reach the FIN, and timing that would measure the
 // runner's TCP pacing and nothing of the revoke. TCP delivers the server's bytes in order and
 // then that FIN, so the stream checked here is exactly what the page reads.
+//
+// The row depends on ygo's deadline on the close frame (Server.CloseFrameTimeout): the handshake
+// is all on the wire before the revoke (waitForTheDocumentOnTheWire), so the close waits behind
+// no message of it, but on production's second a machine slow between the moment ygo's context
+// watcher reads the clock and gorilla's write of the frame drops the frame, and the stream ends at
+// the cut. The test service sets that deadline to the test's give-up (newTestServiceOn,
+// Deps.CloseFrameDeadline), so such a machine delays the close and fails nothing.
 func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	// The document is cut to the send buffer this host's kernel grants, read back before anything
 	// is seeded: the server's one write of it has to return with every byte queued, since a write
@@ -716,24 +731,30 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	// to it. ygo queues that document to a new peer at once (its sync step 2), and the
 	// revoke is taken once that document is on the wire and unread, not after a fixed wait: a run
 	// that revoked before it would be revoking a socket the page was owed nothing on.
-	dialed := time.Now()
+	// The slow page connects and reads nothing.
 	reader := dialSlowPage(t, server.URL, artifactID, slowQuery)
 	serverConn := accepted.find(reader.LocalAddr().String())
 	if serverConn == nil {
 		t.Fatalf("no accepted connection has the slow page's local address %s, so nothing records what the server writes to it", reader.LocalAddr())
 	}
-	onTheWire := waitForTheDocumentOnTheWire(t, serverConn, dialed)
+	waitForTheDocumentOnTheWire(t, serverConn)
 	// A process of the build after this one joins: it creates up to version, which the slow page
 	// cannot represent, and reads one version above it.
-	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, -stagedAhead)
 	fleet, err := readSchemaFleet(context.Background(), service.store.Pool)
 	if err != nil {
 		t.Fatalf("read the live fleet: %v", err)
 	}
 	// The re-check's own revoke (recheckSchemaAdmissions), taken here so the admissions it closed
 	// are read: this fleet still admits the writer's page, so the slow page's is the only socket
-	// it closes, and the end below is that revoke's and no other's.
-	revokedAt := time.Now()
+	// it closes, and the end below is that revoke's and no other's. The revoke's moment is a place
+	// in the slow page's own record, on no clock: the writes the server had begun to it by then,
+	// which every later write follows (serverSocket.Write).
+	begun, _, closedBefore := serverConn.record()
+	if closedBefore {
+		t.Fatal("the server closed its side of the revoked page's socket before the revoke")
+	}
+	revokedAfter := len(begun)
 	revoked := service.schemaAdmissions.revokeUnless(fleet)
 	if len(revoked) != 1 {
 		t.Fatalf("the re-check revoked %d sockets, want the slow page's alone", len(revoked))
@@ -742,6 +763,8 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 		t.Fatalf("the re-check revoked room %q presenting %+v, want room %q presenting %+v, the slow page's",
 			got.key.room, got.page, artifactID, slowPage)
 	}
+	// What the revoke ends is told by the close it writes (requireTheRevokesCloseFrame and
+	// readServerStream below), so how long the run took to get here decides nothing.
 
 	// One more edit, straight after the revoke. The room broadcasts each update to every socket it
 	// still serves, so a revoke that has not ended this one sends this edit down it too.
@@ -749,15 +772,14 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 		strings.ReplaceAll(markdown, "document ", postRevokeMarker+" "))
 
 	// The revoke's own work, and all of it: the server has closed that socket and its ServeHTTP
-	// has returned, and the end is the revoke's own close (requireTheRevokesCloseFrame), however
-	// long the runner took to get there.
+	// has returned, and the end is the revoke's own close (requireTheRevokesCloseFrame).
 	requireRevokedSocketEnded(t, &service.schemaAdmissions, revoked[0])
-	writes, closedAt := serverConn.record()
-	if closedAt.IsZero() {
+	writes, closedAfter, closed := serverConn.record()
+	if !closed {
 		t.Fatal("the server never closed its side of the revoked page's socket, though its ServeHTTP returned")
 	}
-	requireTheRevokesCloseFrame(t, writes, revokedAt, closedAt)
-	requireNothingWrittenAfterTheRevoke(t, writes, revokedAt, closedAt)
+	requireTheRevokesCloseFrame(t, writes, revokedAfter, closedAfter)
+	requireNothingWrittenAfterTheRevoke(t, writes, revokedAfter, closedAfter)
 
 	// What the page reads, read off the bytes the server wrote to it: TCP delivers exactly these,
 	// in this order, and then the connection's end.
@@ -768,8 +790,13 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	if read.biggestMessage <= 64*1024 {
 		t.Fatalf("the biggest document message the server wrote to the revoked page is %d bytes; this test needs a page owed more than its buffers can take", read.biggestMessage)
 	}
-	t.Logf("the server had the document on the wire %v after the dial; the revoked page's socket ends %s, after a document message of %d bytes in a send buffer of %d",
-		onTheWire, read.end, read.biggestMessage, grant)
+	// The close's cause: the admission-revoked frame, which only the revoke writes, so the end is
+	// the revoke's and neither of ygo's own deadlines'.
+	if read.end != endsOnTheRevokedClose {
+		t.Fatalf("the revoked page's socket ends %s, want %s: ygo's own deadlines end a socket with no close frame, so this end is not the revoke's", read.end, endsOnTheRevokedClose)
+	}
+	t.Logf("the revoked page's socket ends %s, after a document message of %d bytes in a send buffer of %d",
+		read.end, read.biggestMessage, grant)
 
 	want, err := service.Text(context.Background(), artifactID)
 	if err != nil {
@@ -782,99 +809,79 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	// revoked it admits it no other way. What it syncs must be the whole document.
 	address := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID + "?" + slowQuery.Encode()
 	reconnected := docstest.Dial(t, address, http.Header{"X-Dispatch-User": []string{"alice"}}, artifactID, crdt.New())
-	if err := reconnected.WaitForText(peerMarkdown, want, rowWait(t)); err != nil {
+	if err := reconnected.WaitForText(t, peerMarkdown, want); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// waitForTheMessageInFlight waits, until rowDeadline, for the server to have begun writing past
-// 64 KB to socket: the writes begun so far ask to send more than that, so the document's sync
-// message, the one message of a handshake that size, is on its way to a page that reads nothing.
-func waitForTheMessageInFlight(t *testing.T, socket *serverSocket) {
+// waitForTheDocumentOnTheWire waits until ygo's handshake to a slow page is out: the document is
+// in a message past 64 KB on the wire, whole, with the awareness frame ygo queues behind it
+// written too, and the page has read none of it. Revoking before this point would revoke a socket
+// the page was owed nothing on; revoking before the handshake's last frame is out would leave the
+// server a frame still to write that is not the close.
+func waitForTheDocumentOnTheWire(t *testing.T, socket *serverSocket) {
 	t.Helper()
-	deadline := rowDeadline(t)
-	for {
-		writes, _ := socket.record()
-		asked := 0
-		for _, write := range writes {
-			asked += len(write.asked)
-		}
-		if asked > 64*1024 {
-			return
-		}
-		if !deadline.IsZero() && time.Now().After(deadline) {
-			t.Fatalf("by the row's deadline the server had begun %d writes to the slow page, asking %d bytes in all, not past 64 KB", len(writes), asked)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
-// waitForTheDocumentOnTheWire waits, until rowDeadline, until ygo's handshake to a slow page is
-// out: the document is in a message past 64 KB on the wire, whole, with the awareness frame ygo
-// queues behind it written too, and the page has read none of it. It returns how long after the
-// dial that took. Revoking before this point would revoke a socket the page was owed nothing on;
-// revoking before the handshake's last frame is out would leave the server a frame still to write
-// that is not the close.
-func waitForTheDocumentOnTheWire(t *testing.T, socket *serverSocket, dialed time.Time) time.Duration {
-	t.Helper()
-	deadline := rowDeadline(t)
-	for {
-		writes, _ := socket.record()
+	testwait.Until(t, "the server to finish writing the slow page the document", func() (string, bool) {
+		writes, _, _ := socket.record()
 		read, err := readServerStream(streamOf(writes))
 		if err == nil && read.biggestMessage > 64*1024 && read.framesAfter > 0 {
-			return time.Since(dialed)
+			return "", true
 		}
-		if !deadline.IsZero() && time.Now().After(deadline) {
-			t.Fatalf("by the row's deadline the server had not finished writing the slow page the document: %d writes, the last of them returned=%t, the biggest message %d bytes with %d whole frames after it, reading the stream gave %v",
-				len(writes), len(writes) > 0 && writes[len(writes)-1].returned, read.biggestMessage, read.framesAfter, err)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d writes, the last of them returned=%t, the biggest message %d bytes with %d whole frames after it, reading the stream gave %v",
+			len(writes), len(writes) > 0 && writes[len(writes)-1].returned, read.biggestMessage, read.framesAfter, err), false
+	})
 }
 
 // requireTheRevokesCloseFrame fails unless the socket's end is the revoke's own close
 // (revokesCloseBeganBeforeTheEnd).
-func requireTheRevokesCloseFrame(t *testing.T, writes []socketWrite, revokedAt, closedAt time.Time) {
+func requireTheRevokesCloseFrame(t *testing.T, writes []socketWrite, revokedAfter, closedAfter int) {
 	t.Helper()
-	if !revokesCloseBeganBeforeTheEnd(writes, revokedAt, closedAt) {
+	if !revokesCloseBeganBeforeTheEnd(writes, revokedAfter, closedAfter) {
 		t.Fatalf("the revoked page's socket ended with no write of the admission-revoked close frame begun after the revoke and before the server closed the socket, among the server's %d writes to it: it ended for another reason than the revoke", len(writes))
 	}
 }
 
 // revokesCloseBeganBeforeTheEnd is whether writes hold a write of the admission-revoked close
-// frame that began after revokedAt and before closedAt, when the server closed the socket: the
-// revoke's own close, which ygo's context watcher writes on errSchemaRevoked whether or not the
-// page's buffers then take its bytes, attempted while the socket was still open. A socket whose
-// end carries no such write ended for another reason - ygo's own deadline on a write, or the
-// page going away - which the slow-page row must not take for the revoke's end; and a close
-// frame attempted once the socket had already ended cannot explain that end.
-func revokesCloseBeganBeforeTheEnd(writes []socketWrite, revokedAt, closedAt time.Time) bool {
-	for _, write := range writes {
+// frame that began after the revoke, which came once revokedAfter of them had begun, and before
+// the server closed the socket, once closedAfter had: the revoke's own close, which ygo's context
+// watcher writes on errSchemaRevoked whether or not the page's buffers then take its bytes,
+// attempted while the socket was still open. A socket whose end carries no such write ended for
+// another reason - ygo's own deadline on a write, or the page going away - which the slow-page row
+// must not take for the revoke's end; and a close frame attempted once the socket had already
+// ended cannot explain that end. When a write began is its place in the record (serverSocket).
+func revokesCloseBeganBeforeTheEnd(writes []socketWrite, revokedAfter, closedAfter int) bool {
+	for i, write := range writes {
 		code, isClose := closeFrameCode(write.asked)
-		if isClose && code == contracts.DocumentAdmissionRevokedCloseCode &&
-			write.startedAt.After(revokedAt) && write.startedAt.Before(closedAt) {
+		if isClose && code == contracts.DocumentAdmissionRevokedCloseCode && i >= revokedAfter && i < closedAfter {
 			return true
 		}
 	}
 	return false
 }
 
-// The slow-page row's attribution of a socket's end to the revoke, on traces of the server's
+// The slow-page row's attribution of a socket's end to the revoke, on records of the server's
 // writes: only an admission-revoked close frame attempted after the revoke and while the socket
-// was still open explains its end. The times are a trace's own instants, a millisecond apart.
+// was still open explains its end. Each moment is a place in the record: the revoke and the close
+// each come once some number of writes had begun, and the write attempt(i) makes is the record's
+// write i, behind i writes of a document frame, which is no close.
 func TestOnlyARevokedCloseAttemptedBeforeTheEndIsTheRevokesEnd(t *testing.T) {
 	t.Parallel()
-	at := func(ms int) time.Time { return time.Unix(0, 0).Add(time.Duration(ms) * time.Millisecond) }
 	revokedClose := serverFrame(opcodeClose, binary.BigEndian.AppendUint16(nil, uint16(contracts.DocumentAdmissionRevokedCloseCode)))
 	otherClose := serverFrame(opcodeClose, binary.BigEndian.AppendUint16(nil, 1001))
-	attempt := func(ms int, frame []byte) []socketWrite {
-		return []socketWrite{{startedAt: at(ms), asked: frame, returned: true}}
+	document := serverFrame(opcodeBinary, []byte("document"))
+	attempt := func(at int, frame []byte) []socketWrite {
+		writes := make([]socketWrite, at+1)
+		for i := range at {
+			writes[i] = socketWrite{asked: document, bytes: document, returned: true}
+		}
+		writes[at] = socketWrite{asked: frame, returned: true}
+		return writes
 	}
 	for _, c := range []struct {
-		name                string
-		writes              []socketWrite
-		revokedAt, closedAt int
-		want                bool
+		name                      string
+		writes                    []socketWrite
+		revokedAfter, closedAfter int
+		want                      bool
 	}{
 		{"the revoked close attempted after the revoke, before the end", attempt(2, revokedClose), 1, 3, true},
 		{"the revoked close attempted after an end that came before the revoke", attempt(3, revokedClose), 2, 1, false},
@@ -883,58 +890,51 @@ func TestOnlyARevokedCloseAttemptedBeforeTheEndIsTheRevokesEnd(t *testing.T) {
 		{"another close code attempted between the revoke and the end", attempt(2, otherClose), 1, 3, false},
 		{"no write at all", nil, 1, 3, false},
 	} {
-		if got := revokesCloseBeganBeforeTheEnd(c.writes, at(c.revokedAt), at(c.closedAt)); got != c.want {
+		if got := revokesCloseBeganBeforeTheEnd(c.writes, c.revokedAfter, c.closedAfter); got != c.want {
 			t.Errorf("%s: read as the revoke's end = %t, want %t", c.name, got, c.want)
 		}
 	}
 }
 
-// requireRevokedSocketEnded waits, until rowDeadline, for the server's side of admission's socket
-// to end. The socket has ended once its ServeHTTP has returned, which is when websocket.go
-// removes the admission, so this reads the admissions under their own lock, as every other reader
-// of them does. Why it ended is the caller's to judge (requireTheRevokesCloseFrame).
+// requireRevokedSocketEnded waits for the server's side of admission's socket to end. The socket
+// has ended once its ServeHTTP has returned, which is when websocket.go removes the admission,
+// so this reads the admissions under their own lock, as every other reader of them does. Why it
+// ended is the caller's to judge (requireTheRevokesCloseFrame).
 func requireRevokedSocketEnded(t *testing.T, admissions *schemaAdmissions, admission *schemaAdmission) {
 	t.Helper()
-	deadline := rowDeadline(t)
-	for {
+	testwait.Eventually(t, "the revoked page's socket to end on the server", func() bool {
 		admissions.mu.Lock()
 		_, open := admissions.sockets[admission]
 		admissions.mu.Unlock()
-		if !open {
-			return
-		}
-		if !deadline.IsZero() && time.Now().After(deadline) {
-			t.Fatalf("the revoked page's socket was still open on the server at the row's deadline: the revoke cancels that socket's request context, on which ygo waits at most %v for the close frame to go out, closes the connection and returns from ServeHTTP",
-				ygoCloseFrameTimeout)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return !open
+	})
 }
 
 // requireNothingWrittenAfterTheRevoke fails unless every write to a revoked socket that began
-// after revokedAt carried nothing but, at most, one admission-revoked close frame, and no write at
-// all carried a byte once the server had closed the socket at closedAt. A write that began before
-// the revoke and returned after it is the message the close waits for, and is left alone. A write
-// with no bytes recorded was still running when the record was taken, which cannot happen here:
-// the caller reads the record once ServeHTTP has returned and the connection is closed.
-func requireNothingWrittenAfterTheRevoke(t *testing.T, writes []socketWrite, revokedAt, closedAt time.Time) {
+// after the first revokedAfter of them carried nothing but, at most, one admission-revoked close
+// frame, and no write at all carried a byte once the server had closed the socket, when it had
+// begun closedAfter. A write that began before the revoke and returned after it is the message the
+// close waits for, and is left alone. A write with no bytes recorded was still running when the
+// record was taken, which cannot happen here: the caller reads the record once ServeHTTP has
+// returned and the connection is closed.
+func requireNothingWrittenAfterTheRevoke(t *testing.T, writes []socketWrite, revokedAfter, closedAfter int) {
 	t.Helper()
 	closes := 0
 	for i, write := range writes {
 		if len(write.bytes) == 0 {
 			continue
 		}
-		if write.startedAt.After(closedAt) {
-			t.Fatalf("write %d of %d to the revoked page's socket carried %d bytes, having begun %v after the server closed that socket",
-				i+1, len(writes), len(write.bytes), write.startedAt.Sub(closedAt))
+		if i >= closedAfter {
+			t.Fatalf("write %d of %d to the revoked page's socket carried %d bytes, having begun after the server closed that socket, once it had begun %d",
+				i+1, len(writes), len(write.bytes), closedAfter)
 		}
-		if !write.startedAt.After(revokedAt) {
+		if i < revokedAfter {
 			continue
 		}
 		code, isClose := closeFrameCode(write.bytes)
 		if !isClose || code != contracts.DocumentAdmissionRevokedCloseCode {
-			t.Fatalf("write %d of %d to the revoked page's socket began %v after the revoke and carried %d bytes that are not the admission-revoked close frame (first bytes %x): the revoke must end that socket before the room's next update reaches it",
-				i+1, len(writes), write.startedAt.Sub(revokedAt), len(write.bytes), write.bytes[:min(len(write.bytes), 16)])
+			t.Fatalf("write %d of %d to the revoked page's socket began after the revoke, which came once %d had begun, and carried %d bytes that are not the admission-revoked close frame (first bytes %x): the revoke must end that socket before the room's next update reaches it",
+				i+1, len(writes), revokedAfter, len(write.bytes), write.bytes[:min(len(write.bytes), 16)])
 		}
 		if closes++; closes > 1 {
 			t.Fatalf("the server wrote %d close frames to the revoked page's socket after the revoke, want at most one", closes)
@@ -1138,9 +1138,9 @@ func slowPageMessageSize(t *testing.T, grant int) int {
 
 // recordingListener hands every accepted connection out as a serverSocket, so a test can find
 // the one belonging to a page it dialled and read exactly what the server wrote to it. gorilla's
-// Hijack hands ygo that same connection. It asks each connection for serverSendBufferRequest's
-// send buffer unless kernelSendBuffer is set, which leaves the kernel's own buffer, autotuned, as
-// a listener that records nothing would.
+// Hijack hands ygo that same connection. Each connection asks for the send buffer
+// serverSendBufferRequest asks for (setSendBuffer), unless kernelSendBuffer is set, which leaves
+// the kernel's own.
 type recordingListener struct {
 	net.Listener
 	kernelSendBuffer bool
@@ -1179,31 +1179,32 @@ func (l *recordingListener) find(remote string) *serverSocket {
 	return nil
 }
 
-// socketWrite is one Write to a server socket: when it began, the bytes it asked to send, whether
-// it has returned, and the bytes the connection accepted of it - the n it returned - which are the
-// bytes that went on the wire.
+// socketWrite is one Write to a server socket: the bytes it asked to send, whether it has returned,
+// and the bytes the connection accepted of it - the n it returned - which are the bytes that went
+// on the wire. When it began is its place in the socket's record.
 type socketWrite struct {
-	startedAt time.Time
-	asked     []byte
-	returned  bool
-	bytes     []byte
+	asked    []byte
+	returned bool
+	bytes    []byte
 }
 
-// serverSocket is the server's end of one accepted connection, recording every write and when
-// the server first closed it. The writes are recorded in the order they began, which is the order
-// their bytes went out in: ygo writes to a peer from one goroutine of its own, and gorilla
-// serialises that writer against the WriteControl a revoke's close frame goes out on.
+// serverSocket is the server's end of one accepted connection, recording every write and how
+// many had begun when the server first closed it. The writes are recorded in the order they
+// began, which is the order their bytes went out in: ygo writes to a peer from one goroutine of
+// its own, and gorilla serialises that writer against the WriteControl a revoke's close frame goes
+// out on.
 type serverSocket struct {
 	net.Conn
-	mu       sync.Mutex
-	writes   []socketWrite
-	closedAt time.Time
+	mu          sync.Mutex
+	writes      []socketWrite
+	closed      bool
+	closedAfter int
 }
 
 func (s *serverSocket) Write(payload []byte) (int, error) {
 	s.mu.Lock()
 	at := len(s.writes)
-	s.writes = append(s.writes, socketWrite{startedAt: time.Now(), asked: append([]byte(nil), payload...)})
+	s.writes = append(s.writes, socketWrite{asked: append([]byte(nil), payload...)})
 	s.mu.Unlock()
 	n, err := s.Conn.Write(payload)
 	s.mu.Lock()
@@ -1214,21 +1215,20 @@ func (s *serverSocket) Write(payload []byte) (int, error) {
 }
 
 func (s *serverSocket) Close() error {
-	now := time.Now()
 	s.mu.Lock()
-	if s.closedAt.IsZero() {
-		s.closedAt = now
+	if !s.closed {
+		s.closed, s.closedAfter = true, len(s.writes)
 	}
 	s.mu.Unlock()
 	return s.Conn.Close()
 }
 
-// record is every write this connection has taken so far and the instant the server first closed
-// it, zero while it is still open.
-func (s *serverSocket) record() ([]socketWrite, time.Time) {
+// record is every write this connection has taken so far, and, once the server has first closed
+// it (closed), how many writes had begun then.
+func (s *serverSocket) record() (writes []socketWrite, closedAfter int, closed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]socketWrite(nil), s.writes...), s.closedAt
+	return append([]socketWrite(nil), s.writes...), s.closedAfter, s.closed
 }
 
 // streamOf is the byte stream a socket's writes put on the wire: the bytes each write was

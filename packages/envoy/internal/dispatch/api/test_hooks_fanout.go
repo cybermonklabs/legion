@@ -1,7 +1,6 @@
 package api
 
 import (
-	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -19,6 +18,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -38,7 +38,8 @@ import (
 // hook and its arguments on testHooksChannel; every process, the caller included, runs the hook's
 // local action when it hears it and acknowledges on testHookAcksChannel under its lock key; the
 // caller answers once every process it is waiting for has acknowledged, with the first error any
-// of them reported, or 504 TEST_HOOK_TIMEOUT after testHookTimeout naming those that did not.
+// of them reported, or 504 TEST_HOOK_TIMEOUT after testHookTimeout (or Deps.TestHookDeadline)
+// naming those that did not.
 const (
 	testHooksChannel    = "dispatch_test_hooks"
 	testHookAcksChannel = "dispatch_test_hook_acks"
@@ -57,9 +58,8 @@ const (
 	// testHookTimeout bounds a call: the wait for this process's own listener, and then for every
 	// other process's acknowledgement. A hook's own work - closing streams, or quiesce's flush of
 	// each live document - takes milliseconds in a test; ten seconds is a process that is not
-	// going to answer. It is the timeout every deployment with the hooks on and the browser
-	// harness run: Deps.TestHookTimeout replaces it only when set, and neither
-	// routes.BuildAppContext nor cmd/dispatch sets it; only this package's tests do.
+	// going to answer. A call's wait for the acknowledgements runs on the server's clock, which a
+	// test drives to the timeout. Deps.TestHookDeadline replaces it (testHookFanout.bounded).
 	testHookTimeout = 10 * time.Second
 	// testHookPoll is how often a waiting call reads the held locks again, which is how it stops
 	// waiting for a process that died after the call was sent.
@@ -124,6 +124,20 @@ type testHookFanout struct {
 	partial map[string]*testHookParts
 	// waiting is every call this process sent and has not answered, by call id.
 	waiting map[string]*testHookWait
+}
+
+// bounded is ctx under the bound of one call, one hook's local action or one acknowledgement's
+// send, armed on c: testHookTimeout, or the end a test process gave it (Deps.TestHookDeadline).
+func (f *testHookFanout) bounded(c clock.Bounded, ctx context.Context) (context.Context, context.CancelFunc) {
+	return f.server.deps.TestHookDeadline.WithTimeout(c, ctx, testHookTimeout)
+}
+
+// bound names that bound as a failure says it: testHookTimeout, or the test's deadline.
+func (f *testHookFanout) bound() string {
+	if deadline := f.server.deps.TestHookDeadline; !deadline.IsZero() {
+		return "the test's deadline " + deadline.String()
+	}
+	return testHookTimeout.String()
 }
 
 type testHookParts struct {
@@ -252,7 +266,7 @@ func (f *testHookFanout) heard(payload string) {
 	if err := json.Unmarshal([]byte(strings.Join(partial.pieces, "")), &call); err != nil {
 		ack.Status, ack.Body = testHookFailure(http.StatusInternalServerError, "TEST_HOOK_FAILED", "process "+strconv.Itoa(int(key))+" could not read the call: "+err.Error())
 	} else {
-		ctx, cancel := context.WithTimeout(f.lifetime, testHookTimeout)
+		ctx, cancel := f.bounded(clock.Real(), f.lifetime)
 		ack.Status, ack.Body = f.server.runTestHook(ctx, call)
 		cancel()
 	}
@@ -271,7 +285,7 @@ func (f *testHookFanout) acknowledge(ack testHookAck) {
 		slog.Warn("dispatch: encode a test-hook acknowledgement", "call", ack.ID, "error", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(f.lifetime, testHookTimeout)
+	ctx, cancel := f.bounded(clock.Real(), f.lifetime)
 	defer cancel()
 	if _, err := f.server.deps.Store.Pool.Exec(ctx, `select pg_notify($1, $2)`, testHookAcksChannel, string(payload)); err != nil {
 		slog.Warn("dispatch: send a test-hook acknowledgement", "call", ack.ID, "error", err)
@@ -308,8 +322,7 @@ func (f *testHookFanout) call(ctx context.Context, call testHookCall) (int, []by
 	}
 	id := rand.Text()
 	parts := splitTestHookCall(id, string(encoded))
-	timeout := f.timeout()
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := f.bounded(f.server.clock(), ctx)
 	defer cancel()
 
 	wait := &testHookWait{acks: map[int32]testHookAck{}, arrived: make(chan struct{}, 1)}
@@ -339,10 +352,13 @@ func (f *testHookFanout) call(ctx context.Context, call testHookCall) (int, []by
 
 	timedOut := func(missing []int32) (int, []byte) {
 		return testHookFailure(http.StatusGatewayTimeout, "TEST_HOOK_TIMEOUT",
-			fmt.Sprintf("no acknowledgement within %v from the test-hook process(es) holding lock key %s (each key is the backend pid of that process's listening connection)",
-				timeout, joinKeys(missing)))
+			fmt.Sprintf("no acknowledgement within %s from the test-hook process(es) holding lock key %s (each key is the backend pid of that process's listening connection)",
+				f.bound(), joinKeys(missing)))
 	}
-	poll := time.NewTicker(testHookPoll)
+	// The poll of the held locks runs on the server's clock, as the call's timeout does, so a test
+	// that drives a fake decides when each poll runs and sees the next armed once it has returned
+	// (clock.Ticker).
+	poll := clock.NewTicker(f.server.clock(), testHookPoll, false)
 	defer poll.Stop()
 	for {
 		f.mu.Lock()
@@ -366,7 +382,8 @@ func (f *testHookFanout) call(ctx context.Context, call testHookCall) (int, []by
 		}
 		select {
 		case <-wait.arrived:
-		case <-poll.C:
+		case <-poll.C():
+			poll.Took()
 			held, err := f.heldKeys(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
@@ -375,16 +392,11 @@ func (f *testHookFanout) call(ctx context.Context, call testHookCall) (int, []by
 				return f.unanswered(ctx, err, "the processes holding a test-hook lock could not be read")
 			}
 			awaited = slices.DeleteFunc(awaited, func(key int32) bool { return !slices.Contains(held, key) })
+			poll.Next()
 		case <-ctx.Done():
 			return timedOut(missing)
 		}
 	}
-}
-
-// timeout is how long a call waits: testHookTimeout, or the server's Deps.TestHookTimeout when
-// set.
-func (f *testHookFanout) timeout() time.Duration {
-	return cmp.Or(f.server.deps.TestHookTimeout, testHookTimeout)
 }
 
 // awaitOwnLock waits until this process's own lock is among the held ones, and answers them.
@@ -440,7 +452,7 @@ func (f *testHookFanout) unanswered(ctx context.Context, err error, what string)
 		own := f.key
 		f.mu.Unlock()
 		return testHookFailure(http.StatusGatewayTimeout, "TEST_HOOK_TIMEOUT",
-			fmt.Sprintf("%s within %v (lock key %d)", what, f.timeout(), own))
+			fmt.Sprintf("%s within %s (lock key %d)", what, f.bound(), own))
 	}
 	return testHookFailure(http.StatusServiceUnavailable, "TEST_HOOK_UNAVAILABLE", what+": "+err.Error())
 }

@@ -62,27 +62,27 @@
     {
       "id": "nested-49-items-then-blank-lines",
       "side": "go",
-      "why": "Go's Shape \"49 items nested by indentation then blank lines\" writes one item per line, 49 lines growing from 4 to 100 characters, and no spec of packages/dispatch/e2e has ever written that body. Go's other 49-block shape, markers-49-then-blank-lines, writes the same 98 blocks on one line: the two are stored alike but are different bytes and cost the parser different things, so Go keeps both. What gates this one is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
+      "why": "Go's Shape \"49 items nested by indentation then blank lines\" writes one item per line, 49 lines growing from 4 to 100 characters, and no spec of packages/dispatch/e2e has ever written that body. Go's other 49-block shape, markers-49-then-blank-lines, writes the same 98 blocks on one line: the two are stored alike but are different bytes and cost the parser different things, so Go keeps both. What gates this one is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinParseStepsPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
     },
     {
       "id": "lazy-list-item",
       "side": "go",
-      "why": "Go's Shape \"a list item then lines carrying no marker\" was spelled in packages/dispatch/e2e/heavy-bodies.ts too, as that module's lazyListItem, for the document writes the deleted heavy-document-writes.e2e.ts made through the API (INFRA-1404). No browser row draws the body - heavy-bodies.e2e.ts's lazy row is lazyQuote - so the browser suite no longer spells it. What gates it is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
+      "why": "Go's Shape \"a list item then lines carrying no marker\" was spelled in packages/dispatch/e2e/heavy-bodies.ts too, as that module's lazyListItem, for the document writes the deleted heavy-document-writes.e2e.ts made through the API (INFRA-1404). No browser row draws the body - heavy-bodies.e2e.ts's lazy row is lazyQuote - so the browser suite no longer spells it. What gates it is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinParseStepsPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
     },
     {
       "id": "markers-49-then-blank-lines",
       "side": "go",
-      "why": "Go's Shape \"49 list markers on one line then blank lines\" was heavy-bodies.ts's nested49ThenBlankLines, which only the deleted heavy-document-writes.e2e.ts drew (INFRA-1404). heavy-bodies.e2e.ts's own 49-marker row builds its body inline, 49 markers padded to one character under the parse worker's threshold rather than to the 32,000-character body cap, so that is a different body and not this one respelled. What gates this one is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
+      "why": "Go's Shape \"49 list markers on one line then blank lines\" was heavy-bodies.ts's nested49ThenBlankLines, which only the deleted heavy-document-writes.e2e.ts drew (INFRA-1404). heavy-bodies.e2e.ts's own 49-marker row builds its body inline, 49 markers padded to one character under the parse worker's threshold rather than to the 32,000-character body cap, so that is a different body and not this one respelled. What gates this one is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinParseStepsPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
     },
     {
       "id": "footnote-references-then-definitions",
       "side": "go",
-      "why": "Go's Shape \"1,523 footnote references, equal, equal up to case and equal to none in turn, and 1,523 definitions\" froze no browser tab: it is held for the server's parse, which resolved each footnote reference by walking the definitions until pmdoc resolved them from maps of its own (INFRA-3904), so no browser row draws it. What gates it is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
+      "why": "Go's Shape \"1,523 footnote references, equal, equal up to case and equal to none in turn, and 1,523 definitions\" froze no browser tab: it is held for the server's parse, which resolved each footnote reference by walking the definitions until pmdoc resolved them from maps of its own (INFRA-3904), so no browser row draws it. What gates it is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinParseStepsPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
     },
     {
       "id": "bangs-before-carets",
       "side": "go",
-      "why": "Go's Shape \"10,663 bangs each before a letter and a caret, beside a footnote definition\" froze no browser tab: it is held for the server's parse, which read the byte after each such bang's letter as a footnote reference's caret and looked for the label's closer to the end of the line for every one, until pmdoc's reference parser asked that the byte after the bang open the label (INFRA-3904), so no browser row draws it. What gates it is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
+      "why": "Go's Shape \"10,663 bangs each before a letter and a caret, beside a footnote definition\" froze no browser tab: it is held for the server's parse, which read the byte after each such bang's letter as a footnote reference's caret and looked for the label's closer to the end of the line for every one, until pmdoc's reference parser asked that the byte after the bang open the label (INFRA-3904), so no browser row draws it. What gates it is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinParseStepsPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
     },
     {
       "id": "nested-100-items-then-text-lines",

@@ -332,14 +332,31 @@ func duplicateGateText(title, spec string) string {
 	return title + "\n" + spec
 }
 
+// errNearCopyGateBoundEnded is the cause the gate's context ends with when the gate's own bound
+// fires. A gate context ended with any other cause stopped because the create that ran it went
+// away; neither answers the filer a check, and the log names which of the two it was.
+var errNearCopyGateBoundEnded = errors.New("the near-copy gate's bound ended")
+
+// gateBounds is the context the gate's read runs under and the bound it ends at: ctx bounded by
+// duplicateGateBound on the server's clock (clock.Clock's WithTimeoutCause), ending with
+// context.DeadlineExceeded and errNearCopyGateBoundEnded as its cause, as relatedBounds bounds the
+// related-item check. A case whose outcome is that no check was made gives the gate a bound
+// already spent, which ends the context before this returns, on either clock, so no read starts
+// under it whatever the machine does.
+func (s *server) gateBounds(ctx context.Context) (context.Context, context.CancelFunc, time.Duration) {
+	bound := s.duplicateGateBound()
+	bounded, cancel := s.clock().WithTimeoutCause(ctx, bound, errNearCopyGateBoundEnded)
+	return bounded, cancel, bound
+}
+
 // duplicateGate scores the project's open issues, other than the new issue's ancestors, against
 // its title and spec. Both paths of a create run it, so the record of what a forced create went
 // past is the refusal an unforced one would have met.
 //
-// It runs in a read transaction of its own, bounded by duplicateGateBound on the context and by
-// statement_timeout inside it, because the create waits on it. One bound for both paths: with
-// two, a read that ends between the two deadlines would refuse an unforced create while recording
-// for a forced one that the check did not answer.
+// It runs in a read transaction of its own, bounded by duplicateGateBound on the server's clock
+// (gateBounds) and by statement_timeout inside it, because the create waits on it. One bound for
+// both paths: with two, a read that ends between the two deadlines would refuse an unforced create
+// while recording for a forced one that the check did not answer.
 //
 // A read that does not answer refuses nothing: the create goes in and the filer is told, in the
 // words nearCopyNotMadeNote gives its reason, that no near-copy check was made. The bound and a
@@ -348,21 +365,22 @@ func duplicateGateText(title, spec string) string {
 func (s *server) duplicateGate(
 	ctx context.Context, project, title, spec string, ancestors []string,
 ) duplicateGateResult {
-	bound := s.duplicateGateBound()
-	// The clock starts before the bound does, so a read the bound ends records at least the bound.
-	start := time.Now()
-	gateCtx, cancel := context.WithTimeout(ctx, bound)
+	// The read's time is read on the server's clock, which the bound runs on (gateBounds), and it
+	// starts before the bound does, so a read the bound ends records at least the bound.
+	start := s.clock().Now()
+	gateCtx, cancel, bound := s.gateBounds(ctx)
 	defer cancel()
 	candidates, err := s.readDuplicateCandidates(gateCtx, project, title, spec, ancestors, bound, duplicateNudgeScore)
-	readMS, stage := milliseconds(time.Since(start)), nearCopyReadStage(err)
+	readMS, stage := milliseconds(s.clock().Now().Sub(start)), nearCopyReadStage(err)
 	switch {
 	case err == nil:
 		return duplicateGateResult{Candidates: candidates, ReadMS: readMS, ReadStage: stage}
 	case nearCopyBoundHit(err) || errors.Is(err, context.Canceled):
 		// The read ran out of its bound, or the create's own request went away under it, which
-		// answers nobody anything.
+		// answers nobody anything. The cause says which, since the bound ends the gate's context
+		// with its own (gateBounds).
 		slog.Warn("dispatch: the near-copy check did not answer within its bound",
-			"project", project, "bound", bound, "read_ms", *readMS, "read_stage", stage, "error", err)
+			"project", project, "bound", bound, "cause", context.Cause(gateCtx), "read_ms", *readMS, "read_stage", stage, "error", err)
 		return duplicateGateResult{NotMade: nearCopyNotMadeBound, ReadMS: readMS, ReadStage: stage}
 	}
 	slog.Error("dispatch: the near-copy check failed",
@@ -512,10 +530,11 @@ func nearCopyScoreTerms(picked relatedTerms, keyLexemes map[string]bool) ([]stri
 	return lexemes, weights
 }
 
-// nearCopyBoundHit says whether the gate's read ended at its bound. The bound is on the context
-// and on statement_timeout inside the read transaction, so Postgres cancels the statement
-// (SQLSTATE 57014) or the context expires first; either way no check was made, and the read
-// itself is at no fault.
+// nearCopyBoundHit says whether the gate's read ended at a deadline rather than at a fault of its
+// own: Postgres cancelling the statement its statement_timeout ran out (SQLSTATE 57014), or a
+// deadline the create's own request carried. The gate's own bound ends its context with
+// context.DeadlineExceeded as the error and errNearCopyGateBoundEnded as the cause (gateBounds),
+// which duplicateGate logs beside this. Either way no check was made, and the read is at no fault.
 func nearCopyBoundHit(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true

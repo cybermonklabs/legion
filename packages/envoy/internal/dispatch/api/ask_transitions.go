@@ -376,7 +376,7 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 			}
 			// ctx is joined to the transaction's ledger (closeAsk), so the resolution's update
 			// is queued there, after the block's writes.
-			return docs.WriteAskResolution(ctx, tx, ask, kind, reason, actor)
+			return docs.WriteAskResolution(ctx, tx, ask, kind, reason, actor, s.stampedNow())
 		},
 	})
 	if err != nil {
@@ -467,7 +467,7 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 			if err := s.writeClosedBlockState(ctx, ask, actor); err != nil {
 				return model.Ask{}, err
 			}
-			return docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionDeclined, note, actor)
+			return docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionDeclined, note, actor, s.stampedNow())
 		},
 	})
 	if err != nil {

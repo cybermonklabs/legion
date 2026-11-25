@@ -21,6 +21,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -54,11 +55,21 @@ type answersFixture struct {
 
 func newAnswersFixture(t *testing.T) *answersFixture {
 	t.Helper()
+	return newAnswersFixtureOn(t, nil)
+}
+
+// newAnswersFixtureOn is newAnswersFixture on a server whose clock is clock (nil is the real one).
+func newAnswersFixtureOn(t *testing.T, clock *clocktest.Fake) *answersFixture {
+	t.Helper()
 	listener, _ := newBroadcastListener(t, `[
 		{"session_id":"`+answersSession+`","title":"Answers","capabilities":["aside","btw","steer"],"last_seen":200},
 		{"session_id":"`+answersOther+`","title":"Other","capabilities":["aside","btw","steer"],"last_seen":100}
 	]`)
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	options := testServerOptions{envoyURL: listener.URL}
+	if clock != nil {
+		options.clock = clock
+	}
+	handler, database, deps := newTestServer(t, options)
 	const title = "Session answers"
 	issue := createInteractionIssue(t, handler, "ANS", title, "The issue's spec.")
 	return &answersFixture{handler: handler, database: database, deps: deps, issue: issue.Key, title: title}
@@ -205,24 +216,16 @@ func (f *answersFixture) publishOutbox(t *testing.T) {
 
 // publishOutboxThrough is publishOutbox handing every envelope to publisher, for a test that reads
 // what each topic was handed (recordingOutboxPublisher). Its wait for the outbox to publish has one
-// bound, the test binary's deadline (testwait.UntilPolling).
+// bound, the test binary's deadline (testwait.Until).
 func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Publisher) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		outbox.New(outbox.Deps{
-			Store: f.database, Publisher: publisher, Broker: events.NewBroker(),
-			Listen:     f.database.Pool.Listener,
-			RoleClaims: unclaimedRoles{}, Sessions: unclaimedRoles{},
-		}).Run(ctx)
-	}()
-	defer func() {
-		cancel()
-		<-stopped
-	}()
-	testwait.UntilPolling(t, 10*time.Millisecond, "the outbox to publish every event that can carry a person's words to a session (those still unpublished)", func() (int, bool) {
+	stop := runOutbox(t, outbox.Deps{
+		Store: f.database, Publisher: publisher, Broker: events.NewBroker(),
+		Listen:     f.database.Pool.Listener,
+		RoleClaims: unclaimedRoles{}, Sessions: unclaimedRoles{},
+	})
+	defer stop()
+	testwait.Until(t, "the outbox to publish every event", func() (int, bool) {
 		var unpublished int
 		if err := f.database.Pool.QueryRow(context.Background(), `
 			select count(*) from events
@@ -322,21 +325,20 @@ var answersAliceProven = model.Actor{Kind: "user", ID: "alice", Proven: true}
 
 func TestSessionAnswersListsAPersonsAnswerToTheSessionsAsk(t *testing.T) {
 	t.Parallel()
-	f := newAnswersFixture(t)
+	// The server reads its now from a fake standing where the test put it, so the window's start
+	// is exactly 72 hours before it.
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	f := newAnswersFixtureOn(t, clocktest.New(now))
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	answered := f.answer(t, askID, []string{"Postgres"}, "Postgres, for the pool.", nil)
 	f.publishOutbox(t)
 
-	before := time.Now().UTC()
 	listed := f.list(t, answersSession, "")
-	after := time.Now().UTC()
 	if listed.SessionID != answersSession || listed.Total != 1 || len(listed.Items) != 1 {
 		t.Fatalf("answers = %+v, want one item for %s", listed, answersSession)
 	}
-	// The server read its clock once, between before and after, and the window starts 72 hours
-	// before that reading, however long the read took.
-	if read := listed.Since.Add(72 * time.Hour); read.Before(before) || read.After(after) {
-		t.Fatalf("since = %s, want 72 hours before the read, which came between %s and %s", listed.Since, before, after)
+	if want := now.Add(-72 * time.Hour); !listed.Since.Equal(want) {
+		t.Fatalf("since = %s, want 72 hours before the read (%s)", listed.Since, want)
 	}
 	item := listed.Items[0]
 	if item.Kind != model.SessionAnswerKindAnswer || item.Relation != model.SessionAnswerRelationAnsweredYourAsk || item.ID != askID {
@@ -841,13 +843,14 @@ func TestSessionAnswersRefusesASinceOlderThanSevenDays(t *testing.T) {
 	t.Parallel()
 	f := newAnswersFixture(t)
 	first := f.write(t, http.MethodPost, "/api/v1/agents/"+answersSession+"/messages", map[string]any{"body": "First.", "delivery": "btw"}, "alice")
-	between := time.Now().UTC()
+	// Between the two messages on the clock that stamps them (clock_timestamp()).
+	between := databaseNow(t, f.database.Pool).UTC()
 	second := f.write(t, http.MethodPost, "/api/v1/agents/"+answersSession+"/messages", map[string]any{"body": "Second.", "delivery": "btw"}, "alice")
 
 	now := time.Now().UTC()
 	for _, since := range []string{
 		now.Add(-7*24*time.Hour - time.Minute).Format(time.RFC3339), // older than 7 days
-		now.Add(time.Hour).Format(time.RFC3339),                     // in the future
+		now.Add(stagedAhead).Format(time.RFC3339),                   // in the future
 		"yesterday",
 	} {
 		response := dispatchRequest(t, f.handler, http.MethodGet, "/api/v1/agents/"+answersSession+"/answers?since="+since, nil, "alice")

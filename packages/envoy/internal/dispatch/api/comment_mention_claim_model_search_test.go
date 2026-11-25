@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The sender claim model's search (TestTheMentionSenderClaimModel; comment_mention_claim_model_test.go
@@ -278,11 +279,16 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 				}
 			})
 		}
-		for i := range frontier {
-			work <- i
-		}
-		close(work)
-		workers.Wait()
+		// The hand-out goes through the shared wait with the join: a replay that wedges its worker
+		// (a sender that waits on what no step of the run releases) holds the hand-out too once
+		// every worker is held, and the wait then fails naming the depth.
+		testwait.Returns(t, fmt.Sprintf("the %d runs of depth %d of %s's search to be replayed", len(frontier), depth, v.name), func() {
+			for i := range frontier {
+				work <- i
+			}
+			close(work)
+			workers.Wait()
+		})
 		var next [][]cmStep
 		for i, visit := range visits {
 			if visit.fault != "" {

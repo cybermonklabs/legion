@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -283,9 +282,9 @@ func TestResultRetractionIsTakenOnAClosedIssueAndForAnAfterMergeCheck(t *testing
 // three statements either way. Holding the lock until both retractions wait on it does.
 func TestTwoRetractionsOfOneResultSentAtOnceAnswerOneRetractionAndOneConflict(t *testing.T) {
 	t.Parallel()
-	// An hour's settle keeps the upload's settlement, which takes the same owner lock, out of the
-	// queue this test counts.
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	// A day's settle (stagedAhead) keeps the upload's settlement, which takes the same owner lock,
+	// out of the queue this test counts.
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "RETR", "Raced", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 	result := recordResultAsSession(t, handler, issue.Key, "ses-recorder", resultBody("k1", "pass", headCommit, nil))

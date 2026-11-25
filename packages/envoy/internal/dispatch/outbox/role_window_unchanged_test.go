@@ -35,29 +35,15 @@ func (r *roleRig) countingDepsJudgedBy(windows roles.Windows) (Deps, *metrics.Re
 // probeRelaySubject asks once, over conn, whether anything subscribes sessionID's relay subject
 // (bus.DeliverSubject), as a connection probe asks it: a core request carrying
 // bus.ConnectionProbeHeader and no body. A subscriber's answer is nil, and nats.ErrNoResponders
-// says nothing subscribes the subject.
-func probeRelaySubject(conn *natsgo.Conn, sessionID string) error {
+// says nothing subscribes the subject. The request waits for its answer under the test's own
+// context (testnats.Context), with no bound of its own: it is sent only where the row knows its
+// answer comes, while the subscriber holds the subject, or once the server lists no subscription
+// on it (testnats.AwaitNoSubscription), so the server answers it no responders itself.
+func probeRelaySubject(t *testing.T, conn *natsgo.Conn, sessionID string) error {
 	msg := natsgo.NewMsg(bus.DeliverSubject(sessionID))
 	msg.Header.Set(bus.ConnectionProbeHeader, "1")
-	_, err := conn.RequestMsg(msg, time.Second)
+	_, err := conn.RequestMsgWithContext(testnats.Context(t), msg)
 	return err
-}
-
-// awaitNoRelayResponder waits until a probe of sessionID's relay subject meets no responder: a
-// closed connection leaves its subscriptions for the moment the server reads the close.
-func awaitNoRelayResponder(t *testing.T, conn *natsgo.Conn, sessionID string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		err := probeRelaySubject(conn, sessionID)
-		if errors.Is(err, natsgo.ErrNoResponders) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("something still subscribes %s's relay subject: the last probe answered %v", sessionID, err)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
 }
 
 // Dispatch's outbox judges a role route's holder by the age of its last registration alone, as
@@ -88,15 +74,20 @@ func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("subscribe the holder's relay subject: %v", err)
 	}
-	if err := relay.Flush(); err != nil {
+	if err := relay.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the holder's relay subscription: %v", err)
 	}
 	rig.claim(t, role, holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Delivery: session.DeliveryConsumer})
-	if err := probeRelaySubject(rig.conn, holder); err != nil {
+	if err := probeRelaySubject(t, rig.conn, holder); err != nil {
 		t.Fatalf("a probe of %s's relay subject while its subscriber holds it answered %v, want the subscriber's answer", holder, err)
 	}
+	// The subscriber's connection closes; once the server has dropped its subscription, a probe of
+	// the relay subject meets no responder, as a connection probe of the stopped holder would.
 	relay.Close()
-	awaitNoRelayResponder(t, rig.conn, holder)
+	testnats.AwaitNoSubscription(t, rig.conn, bus.DeliverSubject(holder))
+	if err := probeRelaySubject(t, rig.conn, holder); !errors.Is(err, natsgo.ErrNoResponders) {
+		t.Fatalf("a probe of %s's relay subject once the server held no subscription on it answered %v, want %v", holder, err, natsgo.ErrNoResponders)
+	}
 	record, err := rig.sessions.Refresh(context.Background(), holder)
 	if err != nil {
 		t.Fatalf("read the holder's record: %v", err)
@@ -104,13 +95,18 @@ func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
 	if record.Delivery != session.DeliveryConsumer {
 		t.Fatalf("the holder's record states delivery %q, want %q: the record a relay probe is asked about", record.Delivery, session.DeliveryConsumer)
 	}
-	if age := time.Since(time.UnixMilli(record.UpdatedAt)); age >= session.LiveWindow {
-		t.Fatalf("the holder's last registration is %s old, want less than %s", age, session.LiveWindow)
+	// The holder is judged at judgedAt, a second past the registration the registry stamped, a
+	// moment the row takes from that stamp alone, so neither the row's own pace nor the machine's
+	// moves the registration's age; the row past the window judges it at the same moment moved
+	// past the window.
+	if record.UpdatedAt == 0 {
+		t.Fatalf("the holder's record carries no registration stamp (UpdatedAt 0), want the moment the registry wrote it: the age both rows judge is read from it")
 	}
+	judgedAt := time.UnixMilli(record.UpdatedAt).Add(time.Second)
 	rig.silent(t, roleTopic)
 
 	t.Run("the outbox forwards an event routed to the role to the holder's own subject and publishes it", func(t *testing.T) {
-		deps, registry := rig.countingDepsJudgedBy(roles.Windows{})
+		deps, registry := rig.countingDepsJudgedBy(roles.Windows{Now: func() time.Time { return judgedAt }})
 		event := rig.routedEvent(t, "T-1", role, alice)
 
 		holding(t, deps).scan(context.Background(), unfenced{})
@@ -127,9 +123,7 @@ func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
 		if copies := storedCopies(t, rig.client, holderSubject); copies != 1 {
 			t.Fatalf("the stream holds %d messages on %s, want the one forward", copies, holderSubject)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		stored, err := rig.client.LastStoredMessage(ctx, holderSubject)
+		stored, err := rig.client.LastStoredMessage(testnats.Context(t), holderSubject)
 		if err != nil {
 			t.Fatalf("read the forward on %s: %v", holderSubject, err)
 		}
@@ -147,7 +141,7 @@ func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
 	})
 
 	t.Run("past the live window the outbox holds the event pending for the holder as unresponsive", func(t *testing.T) {
-		past := roles.Windows{Now: func() time.Time { return time.Now().Add(session.LiveWindow + 30*time.Second) }}
+		past := roles.Windows{Now: func() time.Time { return judgedAt.Add(session.LiveWindow + 30*time.Second) }}
 		if age := past.Now().Sub(time.UnixMilli(record.UpdatedAt)); age <= session.LiveWindow || age >= session.GoneHorizon {
 			t.Fatalf("the holder's last registration is %s old at the moved clock, want more than %s and less than %s", age, session.LiveWindow, session.GoneHorizon)
 		}

@@ -34,6 +34,8 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Point names an instrumented point of the hooked server: one of the hold points below, or a
@@ -294,11 +296,10 @@ var installed atomic.Bool
 // Hooks is the hook a test installed: every event the hooked servers of this process report
 // while it is installed, and the holds the test armed.
 type Hooks struct {
-	t       testing.TB
-	mu      sync.Mutex
-	events  []Event
-	holds   []*Hold
-	changed chan struct{}
+	t      testing.TB
+	mu     sync.Mutex
+	events []Event
+	holds  []*Hold
 	// stopping maps the ID of each server run between ServerShutdown and ServerDown to that
 	// server's store directory, and down holds the IDs of the runs whose ServerDown was reported.
 	// Keyed by run, two servers that report one store, such as two with none, each keep their
@@ -316,7 +317,7 @@ func Hook(t testing.TB) *Hooks {
 	if !installed.CompareAndSwap(false, true) {
 		t.Fatal("another test's forced-order hook is installed: tests that hook the server cannot run in parallel")
 	}
-	h := &Hooks{t: t, changed: make(chan struct{}), stopping: map[string]string{}, down: map[string]bool{}}
+	h := &Hooks{t: t, stopping: map[string]string{}, down: map[string]bool{}}
 	hook := h.report
 	natsserver.MeasureHook.Store(&hook)
 	t.Cleanup(func() {
@@ -383,8 +384,6 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 			break
 		}
 	}
-	close(h.changed)
-	h.changed = make(chan struct{})
 	h.mu.Unlock()
 	for _, hold := range released {
 		hold.Release()
@@ -425,26 +424,32 @@ func (h *Hooks) Events(point Point, match ...Match) []Event {
 	return found
 }
 
-// Await returns the first event at point that every match accepts, waiting for one until the
-// test's deadline (testDeadline, computed once, when Await begins), and fails t naming the point
-// and the matches when none is reported by then, however many other events come meanwhile.
+// Await returns the first event at point that every match accepts, waiting for one through the
+// shared wait (testwait.Until), and fails t naming the point and the matches when none is reported
+// by the time that wait gives up; its last reading counts the events reported and names the last
+// one at point, which a match refused.
 func (h *Hooks) Await(t testing.TB, point Point, match ...Match) Event {
 	t.Helper()
-	bound := boundOf(t)
-	for {
+	var found Event
+	testwait.Until(t, "the hooked server to report an event at "+describe(point, match), func() (string, bool) {
 		h.mu.Lock()
-		changed := h.changed
-		for _, e := range h.events {
-			if accepts(e, point, match) {
-				h.mu.Unlock()
-				return e
+		defer h.mu.Unlock()
+		var last *Event
+		for i := range h.events {
+			if accepts(h.events[i], point, match) {
+				found = h.events[i]
+				return found.String(), true
+			}
+			if h.events[i].Point == point {
+				last = &h.events[i]
 			}
 		}
-		h.mu.Unlock()
-		if bound.over() || !awaitSignal(bound, changed) {
-			t.Fatalf("the hooked server reported no event at %s by %s, short of the test's deadline", describe(point, match), bound)
+		if last == nil {
+			return fmt.Sprintf("%d events reported, none at %s", len(h.events), point), false
 		}
-	}
+		return fmt.Sprintf("%d events reported, the last at %s refused by a match: %s", len(h.events), point, last), false
+	})
+	return found
 }
 
 // Hold arms a hold at point: the first goroutine to reach it with an event every match accepts
@@ -487,15 +492,13 @@ func SetOnReached(hold *Hold, f func()) { hold.onReached.Store(&f) }
 
 func (hold *Hold) String() string { return describe(hold.point, hold.match) }
 
-// Reached waits for the hold to be reached, until the test's deadline (testDeadline), and returns
+// Reached waits for the hold to be reached through the shared wait (testwait.Receive), and returns
 // the event that reached it. That event's goroutine is parked at the hold until Release, unless the
 // hold had been released before it was reached, when the event went on. It fails t, naming the
-// point and the matches, when none did.
+// point and the matches, when none did by the time that wait gives up.
 func (hold *Hold) Reached(t testing.TB) Event {
 	t.Helper()
-	if bound := boundOf(t); !awaitSignal(bound, hold.reached) {
-		t.Fatalf("the hold at %s was not reached by %s, short of the test's deadline", hold, bound)
-	}
+	testwait.Receive(t, "the hold at "+hold.String()+" to be reached", hold.reached)
 	return hold.event
 }
 

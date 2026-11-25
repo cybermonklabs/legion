@@ -5,9 +5,9 @@
 // events (WrittenIssue.Event, WrittenIssue.InsertVersion) and their append through the broker
 // (AppendEvents, and in a transaction of their own CommitEvents), an issue's run of events of
 // every type a keyword rule reads (WriteIssue), the rows the fill wrote for given events (RowsOf,
-// RequireRowsOf, RequireOnlyRowsOf, AwaitRowsUntil), the fill's cursor (Cursor) and the fill run
-// as a serving process runs it (StartFill). A later rules version or a change of the schema
-// changes them here, once, for the tests of textversions, of the API and of the dispatch command.
+// RequireRowsOf, RequireOnlyRowsOf, AwaitRows), the fill's cursor (Cursor) and the fill run as a
+// serving process runs it (StartFill). A later rules version or a change of the schema changes
+// them here, once, for the tests of textversions, of the API and of the dispatch command.
 //
 // It is an ordinary package rather than a _test.go file because Go cannot share test-only code
 // across packages; only tests import it. It does not import textversions, whose own tests import

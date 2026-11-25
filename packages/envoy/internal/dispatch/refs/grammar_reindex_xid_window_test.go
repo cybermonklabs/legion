@@ -25,7 +25,11 @@ import (
 // transaction id through the COMMIT - from the statements' own results and a poller of
 // pg_stat_activity. A window of two statements, the write batch and the COMMIT, is the whole of
 // the pass's write phase and nothing else. Against the pass that indexed the blocks at once and
-// then read and planned the references, the window holds those reads too.
+// then read and planned the references, the window holds those reads too. The traced pool also
+// reports document work inside the window by name (docwork): the pass parses and extracts in its
+// planning, before the write, and a parse or extraction moved inside the window would fail the
+// row. The pass calls no collaborator outside Postgres - it is handed the store alone - so there
+// is none to wrap in collabtest's decorators.
 func TestTheGrammarReindexTakesItsTransactionIdOnlyAtItsWritePhase(t *testing.T) {
 	tracer := storetest.NewXidTracer()
 	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}

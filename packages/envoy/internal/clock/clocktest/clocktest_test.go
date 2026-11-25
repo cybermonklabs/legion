@@ -1,10 +1,14 @@
 package clocktest_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +19,15 @@ import (
 )
 
 var epoch = time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+// childEnv tells the re-executed test binary to run the child its parent names
+// (TestAMoveWhoseFunctionNeverReturnsChild, TestAStartedMoveThatGivesUpChild), each of which skips
+// in an ordinary run.
+const childEnv = "CLOCKTEST_CHILD"
+
+// childTimeout is the -timeout a parent gives its child: the child's move, or its join, gives up
+// 5 s into the run, 30 s before its deadline.
+const childTimeout = "35s"
 
 // Advance fires every timer due by the moment it moves to, earliest first and the timers due
 // together in the order they were armed, each reading its own deadline as the fake's time; a
@@ -88,6 +101,99 @@ func TestAMoveWaitsForTheFunctionItFired(t *testing.T) {
 	}
 }
 
+// A move waits for each AfterFunc's function through the wait the tests share: under a short
+// -timeout a function that never returns ends the move 30 s before the deadline and before Go's
+// alarm, with a panic whose text, written to stderr at once as well, names the timer's deadline
+// and the move's target (TestAMoveWhoseFunctionNeverReturnsChild).
+func TestAMoveGivesUpNamingAFunctionThatNeverReturns(t *testing.T) {
+	// The child is waited for through Returns, and runs on testwait.Context, which ends it where
+	// that wait gives up, so this row cannot outlast its own binary's deadline.
+	child := exec.CommandContext(testwait.Context(t), os.Args[0], "-test.run=^TestAMoveWhoseFunctionNeverReturnsChild$", "-test.timeout="+childTimeout, "-test.v")
+	child.Env = append(os.Environ(), childEnv+"=1")
+	var stdout, stderr bytes.Buffer
+	child.Stdout, child.Stderr = &stdout, &stderr
+	var ran error
+	testwait.Returns(t, "the child under -timeout "+childTimeout+" to exit", func() { ran = child.Run() })
+	if ran == nil {
+		t.Fatalf("the child was meant to fail; it passed:\n%s\nstderr:\n%s", &stdout, &stderr)
+	}
+	if strings.Contains(stdout.String(), "panic: test timed out") || strings.Contains(stderr.String(), "panic: test timed out") {
+		t.Fatalf("the child's move ran into the binary's deadline rather than giving up before it:\n%s\nstderr:\n%s", &stdout, &stderr)
+	}
+	line := "testwait: clocktest: gave up waiting for the function of the AfterFunc due at 2026-09-22T12:00:01Z, which a move to 2026-09-22T12:00:05Z fired, to return 30s before the test binary's deadline"
+	if !slices.Contains(strings.Split(stderr.String(), "\n"), line) {
+		t.Errorf("the child wrote no stderr line %q; its stderr:\n%s", line, &stderr)
+	}
+	if !strings.Contains(stderr.String(), "panic: "+line) {
+		t.Errorf("the child's move did not panic with %q; its output:\n%s\nstderr:\n%s", line, &stdout, &stderr)
+	}
+}
+
+// A move StartMove started runs off the test goroutine, so a timer's function that waits for the
+// test to act lets the test act while the move waits: StartMove returns while the function waits,
+// and join returns once the function has returned and the move with it, with what the function did
+// done and the fake at the move's target. A second join returns at once, as a cleanup's join after
+// the row's own does. The negative controls: a StartMove that made the move on the caller's
+// goroutine does not return while the function waits, and the wait for it fails; a join that
+// returned before the move had finds the function's work undone; a join that took a value the move
+// sent once waits for a second that never comes, and its second call fails.
+func TestAStartedMoveIsJoinedOnceItsTimersFunctionReturns(t *testing.T) {
+	c := clocktest.New(epoch)
+	entered, release := make(chan struct{}), make(chan struct{})
+	ran := false
+	c.AfterFunc(time.Second, func() {
+		close(entered)
+		<-release
+		ran = true
+	})
+	var join func(testing.TB)
+	testwait.Returns(t, "StartMove to return while the move it started waits for the timer's function", func() {
+		join = c.StartMove("the move past the timer due at 1s", epoch.Add(5*time.Second))
+	})
+	testwait.Receive(t, "the timer's function, which the started move fired, to start", entered)
+	close(release)
+	join(t)
+	if !ran {
+		t.Error("join returned before the timer's function had")
+	}
+	if now := c.Now(); !now.Equal(epoch.Add(5 * time.Second)) {
+		t.Errorf("once join returned the fake reads %s, want the move's target %s", now, epoch.Add(5*time.Second))
+	}
+	join(t)
+}
+
+// A started move whose timer's function never returns fails the test that joins it, by name, on
+// the test goroutine, and the test binary goes on: join's wait is the move's one bound, and its
+// give-up names the move and the function the move waits for, by its timer's deadline and the
+// move's target (TestAStartedMoveThatGivesUpChild, under -timeout 35s, whose join gives up 5 s in).
+// The negative controls: a started move that waits for its function through the shared wait, as a
+// move on the test goroutine does, panics at that wait's give-up and ends the child; a join whose
+// reading does not name the function the move waits for fails the line the row reads.
+func TestAStartedMoveThatGivesUpFailsTheTestByName(t *testing.T) {
+	// As in TestAMoveGivesUpNamingAFunctionThatNeverReturns, the child is waited for through
+	// Returns and runs on testwait.Context, so this row cannot outlast its own binary's deadline.
+	child := exec.CommandContext(testwait.Context(t), os.Args[0], "-test.run=^TestAStartedMoveThatGivesUpChild$", "-test.timeout="+childTimeout, "-test.v")
+	child.Env = append(os.Environ(), childEnv+"=1")
+	var stdout, stderr bytes.Buffer
+	child.Stdout, child.Stderr = &stdout, &stderr
+	var ran error
+	testwait.Returns(t, "the child under -timeout "+childTimeout+" to exit", func() { ran = child.Run() })
+	if ran == nil {
+		t.Fatalf("the child was meant to fail; it passed:\n%s\nstderr:\n%s", &stdout, &stderr)
+	}
+	if strings.Contains(stdout.String(), "panic:") || strings.Contains(stderr.String(), "panic:") {
+		t.Fatalf("the child panicked rather than failing its test by name:\n%s\nstderr:\n%s", &stdout, &stderr)
+	}
+	for _, want := range []string{
+		"testwait: TestAStartedMoveThatGivesUpChild: gave up waiting for the move past the timer due at 1s to return 30s before the test binary's deadline; last read: the move waits for the function of the AfterFunc due at 2026-09-22T12:00:01Z, which a move to 2026-09-22T12:00:05Z fired, to return",
+		"--- FAIL: TestAStartedMoveThatGivesUpChild (",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("the child's output does not say %q:\n%s\nstderr:\n%s", want, &stdout, &stderr)
+		}
+	}
+}
+
 // A timer armed for a moment the fake has reached fires as it is armed, as the real clock's does,
 // and is never pending: an AfterFunc's function starts on a goroutine the arming call does not wait
 // for, a channel timer's value is there at once, a Sleep returns at once and a deadline context is
@@ -118,7 +224,7 @@ func TestATimerDueAtItsArmFiresAsItIsArmed(t *testing.T) {
 	if got := testwait.Receive(t, "the send of the timer reset to an overdue moment", channel.C()); !got.Equal(epoch) {
 		t.Errorf("the timer reset to a second ago sent %s, want the moment it was armed, %s, as Go's sends", got, epoch)
 	}
-	if err := c.Sleep(context.Background(), 0); err != nil {
+	if err := c.Sleep(testwait.Context(t), 0); err != nil {
 		t.Errorf("a Sleep of no wait returned %v, want nil at once", err)
 	}
 	ctx, cancel := c.WithTimeout(context.Background(), 0)
@@ -134,9 +240,9 @@ func TestATimerDueAtItsArmFiresAsItIsArmed(t *testing.T) {
 	}
 }
 
-// Armed is every pending deadline in order once the code has armed it: a Sleep in progress and a
-// deadline context among them.
-func TestArmedReturnsThePendingDeadlines(t *testing.T) {
+// AwaitArmed returns once the code has armed what the test waits for, with every pending
+// deadline in order: a Sleep in progress and a deadline context among them.
+func TestAwaitArmedReturnsThePendingDeadlines(t *testing.T) {
 	c := clocktest.New(epoch)
 	slept := make(chan error, 1)
 	go func() {
@@ -146,13 +252,10 @@ func TestArmedReturnsThePendingDeadlines(t *testing.T) {
 	_, cancel := c.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	armed := testwait.Until(t, "the sleep, the timer and the deadline armed on the fake (the deadlines armed)", func() ([]time.Time, bool) {
-		armed := c.Armed()
-		return armed, len(armed) >= 3
-	})
+	armed := c.AwaitArmed(t, "the sleep, the timer and the deadline", 3)
 	want := []time.Time{epoch.Add(time.Minute), epoch.Add(2 * time.Minute), epoch.Add(3 * time.Minute)}
 	if !slices.Equal(armed, want) {
-		t.Fatalf("Armed = %v, want %v", armed, want)
+		t.Fatalf("AwaitArmed = %v, want %v", armed, want)
 	}
 	c.Advance(time.Minute)
 	if err := testwait.Receive(t, "the sleep's end", slept); err != nil {
@@ -161,6 +264,43 @@ func TestArmedReturnsThePendingDeadlines(t *testing.T) {
 	cancel()
 	if armed := c.Armed(); !slices.Equal(armed, want[1:2]) {
 		t.Errorf("armed after the sleep and the cancel: %v, want %v", armed, want[1:2])
+	}
+}
+
+// AwaitArmedAt returns once a timer due at the one deadline it names is pending, whatever else is
+// pending beside it: here a timer due earlier, and the one it waits for, armed on a goroutine of
+// its own. It returns the deadlines pending at that reading, both of them, earliest first.
+func TestAwaitArmedAtWaitsForItsOneDeadline(t *testing.T) {
+	c := clocktest.New(epoch)
+	c.AfterFunc(time.Minute, func() {})
+	go c.AfterFunc(2*time.Minute, func() {})
+
+	held := c.AwaitArmedAt(t, "the timer armed on a goroutine of its own", epoch.Add(2*time.Minute))
+	want := []time.Time{epoch.Add(time.Minute), epoch.Add(2 * time.Minute)}
+	if !slices.Equal(held, want) {
+		t.Fatalf("AwaitArmedAt returned %v, want %v", held, want)
+	}
+	if armed := c.Armed(); !slices.Equal(armed, want) {
+		t.Fatalf("armed once AwaitArmedAt returned: %v, want %v", armed, want)
+	}
+}
+
+// AwaitArmedCountAt returns only once as many timers as it names are pending at its one deadline,
+// whatever else is pending beside them: here a timer due elsewhere, and two due at the deadline, the
+// second armed on a goroutine of its own. It returns the deadlines pending at that reading, all
+// three, earliest first; a wait that returned at the first timer due there, or once two timers of
+// any deadline were pending, would return the deadline once.
+func TestAwaitArmedCountAtWaitsForEveryTimerAtItsDeadline(t *testing.T) {
+	c := clocktest.New(epoch)
+	at := epoch.Add(2 * time.Minute)
+	c.AfterFunc(time.Minute, func() {})
+	c.AfterFunc(2*time.Minute, func() {})
+	go c.AfterFunc(2*time.Minute, func() {})
+
+	held := c.AwaitArmedCountAt(t, "the two timers at the deadline", at, 2)
+	want := []time.Time{epoch.Add(time.Minute), at, at}
+	if !slices.Equal(held, want) {
+		t.Fatalf("AwaitArmedCountAt returned %v, want %v", held, want)
 	}
 }
 
@@ -219,10 +359,7 @@ func TestASleepEndsWithItsContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	slept := make(chan error, 1)
 	go func() { slept <- c.Sleep(ctx, time.Hour) }()
-	testwait.Until(t, "the sleep armed on the fake (the deadlines armed)", func() ([]time.Time, bool) {
-		armed := c.Armed()
-		return armed, len(armed) == 1
-	})
+	c.AwaitArmed(t, "the sleep", 1)
 	cancel()
 	if err := testwait.Receive(t, "the sleep's end", slept); !errors.Is(err, context.Canceled) {
 		t.Fatalf("the sleep ended with %v, want its context's cancellation", err)
@@ -407,6 +544,50 @@ func TestStopAndReset(t *testing.T) {
 	}
 }
 
+// StepWall moves what Now reads, forward and back, and fires no timer: the timers stay on the
+// fake's own moment, as Go's run on the monotonic clock whatever the wall clock does, and fire
+// when a move of that moment reaches them. What a channel timer sends carries the steps, as Go's
+// sends the moment it fell due read on the wall clock as it sends (time.sendTime): both the timer
+// a move fires and one armed for a moment the fake has already reached, which fires as it is armed.
+func TestStepWallMovesNowAndFiresNoTimer(t *testing.T) {
+	c := clocktest.New(epoch)
+	channel := c.NewTimer(time.Minute)
+	ran := false
+	c.AfterFunc(time.Minute, func() { ran = true })
+	pending := []time.Time{epoch.Add(time.Minute), epoch.Add(time.Minute)}
+
+	for _, step := range []struct {
+		by   time.Duration
+		want time.Time
+	}{{time.Hour, epoch.Add(time.Hour)}, {-2 * time.Hour, epoch.Add(-time.Hour)}} {
+		c.StepWall(step.by)
+		if now := c.Now(); !now.Equal(step.want) {
+			t.Errorf("after a step of %v the fake reads %s, want %s", step.by, now, step.want)
+		}
+		if armed := c.Armed(); !slices.Equal(armed, pending) {
+			t.Errorf("after a step of %v armed: %v, want the timers where they were, %v", step.by, armed, pending)
+		}
+		if got := len(channel.C()); got != 0 || ran {
+			t.Errorf("a step of %v fired a timer: the channel holds %d values, the AfterFunc ran %t", step.by, got, ran)
+		}
+	}
+
+	c.Advance(time.Minute)
+	stepped := epoch.Add(-time.Hour + time.Minute)
+	if got := testwait.Receive(t, "the channel timer's send once the fake's own moment reached it", channel.C()); !got.Equal(stepped) {
+		t.Errorf("the channel timer sent %s, want its deadline plus the steps, %s", got, stepped)
+	}
+	if got := testwait.Receive(t, "the send of a channel timer armed for the moment the fake has reached", c.NewTimer(0).C()); !got.Equal(stepped) {
+		t.Errorf("a channel timer armed for the fake's present sent %s, want that moment plus the steps, %s", got, stepped)
+	}
+	if !ran {
+		t.Error("the AfterFunc did not run once the fake's own moment reached it")
+	}
+	if now := c.Now(); !now.Equal(stepped) {
+		t.Errorf("after the move the fake reads %s, want its moment plus the steps, %s", now, stepped)
+	}
+}
+
 // contextEnding is how a context ended: its Err and its Cause, printed by name.
 type contextEnding struct{ err, cause error }
 
@@ -476,4 +657,34 @@ func TestWithTimeoutCauseEndsAsTheContextPackagesDoes(t *testing.T) {
 	if got := ended(fakeNoCause); got != want {
 		t.Errorf("the fake's context of no cause at its deadline ended %+v, want %+v, as the real clock's does", got, want)
 	}
+}
+
+// TestAMoveWhoseFunctionNeverReturnsChild is the child of
+// TestAMoveGivesUpNamingAFunctionThatNeverReturns, run under -timeout 35s: its move fires a
+// function that never returns, and gives up 5 s in. It runs only when the parent re-executes this
+// binary.
+func TestAMoveWhoseFunctionNeverReturnsChild(t *testing.T) {
+	if os.Getenv(childEnv) == "" {
+		t.Skip(childEnv + " is not set: this test is the child of TestAMoveGivesUpNamingAFunctionThatNeverReturns")
+	}
+	c := clocktest.New(epoch)
+	never := make(chan struct{})
+	c.AfterFunc(time.Second, func() { <-never })
+	c.Advance(5 * time.Second)
+	t.Fatal("the move returned, though the function it fired never does")
+}
+
+// TestAStartedMoveThatGivesUpChild is the child of TestAStartedMoveThatGivesUpFailsTheTestByName,
+// run under -timeout 35s: it starts a move (StartMove) that fires a function that never returns,
+// and joins it; the join gives up 5 s in. Its verdict is the join's alone. It runs only when the
+// parent re-executes this binary.
+func TestAStartedMoveThatGivesUpChild(t *testing.T) {
+	if os.Getenv(childEnv) == "" {
+		t.Skip(childEnv + " is not set: this test is the child of TestAStartedMoveThatGivesUpFailsTheTestByName")
+	}
+	c := clocktest.New(epoch)
+	never := make(chan struct{})
+	c.AfterFunc(time.Second, func() { <-never })
+	join := c.StartMove("the move past the timer due at 1s", epoch.Add(5*time.Second))
+	join(t)
 }

@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // projectedTables are the tables migration 20261109022248 made projections of the node and
@@ -1863,11 +1864,11 @@ func requireAReparentCarriesItsTuplesTransaction(t *testing.T, ctx context.Conte
 		t.Fatalf("move the paragraph out of the quote: status=%d body=%s", moved.Code, moved.Body.String())
 	}
 	// The edit's version settles after the edit answers. The tuple its block index appends is
-	// read once it has committed, and the row after it, so both are the reparent's.
-	var asserted []string
-	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		var err error
-		asserted, err = readStrings(ctx, run.database.Pool, `
+	// read once it has committed, and the row after it, so both are the reparent's. The wait is
+	// the shared wait's (testwait.Until), whose one bound is the test's give-up, and its failure
+	// prints the tuples it read last.
+	asserted := testwait.Until(t, "the store to hold a part_of tuple from "+moving.address+" to its document (the tuples' transactions)", func() ([]string, bool) {
+		tuples, err := readStrings(ctx, run.database.Pool, `
 			select xmin::text from graph_tuples
 			where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = 'artifact' and asserted
 			order by seq
@@ -1875,13 +1876,8 @@ func requireAReparentCarriesItsTuplesTransaction(t *testing.T, ctx context.Conte
 		if err != nil {
 			t.Fatalf("read the moved block's part_of tuple to its document: %v", err)
 		}
-		if len(asserted) != 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("15s after the move the store holds no part_of tuple from %s to its document", moving.address)
-		}
-	}
+		return tuples, len(tuples) != 0
+	})
 	if len(asserted) != 1 {
 		t.Fatalf("the store holds %d part_of tuples from %s to its document, want the one its reparent appended", len(asserted), moving.address)
 	}
@@ -1949,7 +1945,10 @@ func requireOnlyTheMovedKindsReachedTheStore(t *testing.T, ctx context.Context, 
 
 // requireTwoWritersOverOneNodeCommitInTurn runs two writes over one comment's node at once. The
 // second waits at that node's row until the first commits, both commit, and the census over
-// the projections and the store reads no difference after them.
+// the projections and the store reads no difference after them. That the second waits is read
+// from the database's own state, its backend queued behind the first's transaction
+// (storetest.WaitForQueuedBehind), not from a span it did not finish within; each wait is the
+// shared wait's, whose one bound is the test's give-up.
 func requireTwoWritersOverOneNodeCommitInTurn(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
 	before, err := projectionCensus(ctx, run.database)
@@ -1975,35 +1974,30 @@ func requireTwoWritersOverOneNodeCommitInTurn(t *testing.T, ctx context.Context,
 	if err := graphstore.Write(ctx, first, node(graphstore.StateLive), nil); err != nil {
 		t.Fatalf("the first write: %v", err)
 	}
-	second := make(chan error, 1)
+	// The second write's transaction is begun here, so the run knows its backend; from the moment
+	// the goroutine starts, the goroutine alone uses it.
+	second, err := run.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the second write: %v", err)
+	}
+	secondBackend := second.Conn().PgConn().PID()
+	written := make(chan error, 1)
 	go func() {
-		tx, err := run.database.Pool.Begin(ctx)
-		if err != nil {
-			second <- err
+		if err := graphstore.Write(ctx, second, node(graphstore.StateLive), nil); err != nil {
+			_ = second.Rollback(ctx)
+			written <- err
 			return
 		}
-		if err := graphstore.Write(ctx, tx, node(graphstore.StateLive), nil); err != nil {
-			_ = tx.Rollback(ctx)
-			second <- err
-			return
-		}
-		second <- tx.Commit(ctx)
+		written <- second.Commit(ctx)
 	}()
-	select {
-	case err := <-second:
-		t.Fatalf("the second write over the node finished while the first held it: %v", err)
-	case <-time.After(250 * time.Millisecond):
+	if err, early := storetest.WaitForQueuedBehind(t, first, secondBackend, written); early {
+		t.Fatalf("the second write over the node finished while the first held it, without queueing behind it: %v", err)
 	}
 	if err := first.Commit(ctx); err != nil {
 		t.Fatalf("commit the first write: %v", err)
 	}
-	select {
-	case err := <-second:
-		if err != nil {
-			t.Fatalf("the second write: %v", err)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("the second write never finished after the first committed")
+	if err := testwait.Receive(t, "the second write to commit once the first committed", written); err != nil {
+		t.Fatalf("the second write: %v", err)
 	}
 	after, err := projectionCensus(ctx, run.database)
 	if err != nil {

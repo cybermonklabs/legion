@@ -315,15 +315,16 @@ func (socket *liveSocket) closeUnserved() {
 
 // write sends the page each queued frame, the hub's queue ahead of the stream, and every heartbeat
 // a ping beside a heartbeat frame (a browser shows the page no ping), until the reader ends,
-// something closes the socket, or the socket reaches its age. No stream frame goes out ahead of a
-// hub frame queued before it: a sub the read loop replaces has every frame the hub sends it queued
-// before the replacement starts (Unsubscribe takes the hub's lock, which the hub sends under), so
-// the replacement's frames follow the replaced view's last answer.
-func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, heartbeat, age time.Duration, readerDone <-chan struct{}) {
-	ticker := time.NewTicker(heartbeat)
+// something closes the socket, or the socket reaches its age, which aged receives. No stream frame
+// goes out ahead of a hub frame queued before it: a sub the read loop replaces has every frame the
+// hub sends it queued before the replacement starts (Unsubscribe takes the hub's lock, which the
+// hub sends under), so the replacement's frames follow the replaced view's last answer.
+func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, heartbeat time.Duration, pings clock.Clock, aged <-chan time.Time, readerDone <-chan struct{}) {
+	// The heartbeat ticks on a clock.Ticker on pings (Deps.LiveSocketPingClock), clock.Real() where
+	// that is nil, which arms each next heartbeat once the one before it is written: its ping and
+	// its heartbeat frame.
+	ticker := clock.NewTicker(cmp.Or[clock.Clock](pings, clock.Real()), heartbeat, false)
 	defer ticker.Stop()
-	aged := time.NewTimer(age)
-	defer aged.Stop()
 	// taken is a stream frame the pick took while a hub frame waited; its from is nil while it
 	// holds none. It goes out once the hub's queue is empty.
 	var taken liveStreamFrame
@@ -362,7 +363,7 @@ func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, h
 		case <-socket.shut:
 			socket.close(socket.shutCode, socket.shutReason)
 			return
-		case <-aged.C:
+		case <-aged:
 			socket.close(contracts.LiveSocketMaxAgeClose, liveSocketMaxAgeReason)
 			return
 		case <-lifetime:
@@ -375,12 +376,17 @@ func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, h
 				socket.close(gws.ClosePolicyViolation, "")
 			}
 			return
-		case <-ticker.C:
+		case <-ticker.C():
+			ticker.Took()
 			if err := socket.conn.WriteControl(gws.PingMessage, nil, time.Now().Add(liveSocketWriteWait)); err != nil {
 				socket.endReads(0)
 				return
 			}
-			frame = liveHeartbeat
+			if !socket.writeFrame(liveHeartbeat) {
+				return
+			}
+			ticker.Next()
+			continue
 		case frame = <-socket.queue:
 		case queued := <-stream:
 			// The look above found the hub's queue empty, but a hub frame can arrive before the pick,
@@ -434,7 +440,9 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return // the upgrader has answered the request
 	}
-	age := s.liveSocketAge()
+	// The socket's age runs on the server's clock from the upgrade.
+	aged := s.clock().NewTimer(s.liveSocketAge())
+	defer aged.Stop()
 	socket := newLiveSocket(r.Context(), conn, actor.Credential, s.deps.LiveSocketClock)
 	socket.beforePick = s.liveWriterBeforePick
 	if !s.liveSockets.add(socket) {
@@ -459,7 +467,7 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer close(writerDone)
 		defer socket.ended()
-		socket.write(r.Context(), s.lifetime.Done(), s.deps.StreamHeartbeat, age, readerDone)
+		socket.write(r.Context(), s.lifetime.Done(), s.deps.StreamHeartbeat, s.deps.LiveSocketPingClock, aged.C(), readerDone)
 	}()
 
 	var readErr error

@@ -1,10 +1,10 @@
 // Package bustest holds the deployed stream the start tests of envoy-listener and envoy-dispatch
 // both begin from, the check each makes of what a start left of it, the drift table each start
-// corrects, the fill loop the full-stream tests begin from, and the narrowing of a hub move's
-// quiesce with its restore (narrow.go). The bus's own tests cannot import it (it imports the bus)
-// and keep their own copies: the fixture deployedClusterStream, the drift table in
-// internal/bus/stream_replicas_test.go, the fill loops in that file and in
-// internal/bus/publish_not_stored_test.go, and narrowedAsTheQuiesce in
+// corrects, the fill loop the full-stream tests begin from, the narrowing of a hub move's quiesce
+// with its restore (narrow.go) and the close of a client through the shared wait. The bus's own
+// tests cannot import it (it imports the bus) and keep their own copies: the fixture
+// deployedClusterStream, the drift table in internal/bus/stream_replicas_test.go, the fill loops in
+// that file and in internal/bus/publish_not_stored_test.go, and narrowedAsTheQuiesce in
 // internal/bus/adhoc_topic_test.go. Every test outside package bus takes them from here.
 package bustest
 
@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -127,7 +128,7 @@ func RequireFirstStartAtOneCopyAndNoSecondWrite(t testing.TB, url string, stream
 	}
 	conn := testnats.Connect(t, url)
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -180,4 +181,13 @@ func FillStream(t testing.TB, client *bus.Client, most int) {
 		}
 		return
 	}
+}
+
+// Close closes client, as a test's cleanup does once the test is over. bus.Client.Close stops the
+// client, closes its connection and returns once its stream keeper has ended (awaitKeeper), which
+// it waits for on no context, so the call runs through the shared wait: a keeper that never ends
+// fails the test naming the close rather than hanging the binary to its timeout.
+func Close(t testing.TB, client *bus.Client) {
+	t.Helper()
+	testwait.Returns(t, "the NATS client to close and its stream keeper to end", client.Close)
 }

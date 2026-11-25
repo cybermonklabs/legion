@@ -506,9 +506,10 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 //
 // A tracer on the whole pool the server and the broker-token verifier share records every
 // statement on any context (poolStatements), and each read-only request is sent in a window: it
-// opens before the request and closes no sooner than 2 s after the answer and once the pool has
-// run no write for 500 ms, and a window still open at 20 s fails the row. The window must hold no
-// write a read may not make (readMayWrite), wherever it ran; it must hold the request's own
+// opens before the request and closes no sooner than 2 s after the answer, once the server's
+// detached work has ended and the pool has run no write for 500 ms (driveWindowAfterAnswer says
+// why neither span decides a verdict), and its wait has no bound of its own. The window must hold
+// no write a read may not make (readMayWrite), wherever it ran; it must hold the request's own
 // credential check, the insert that spends the broker token's proof or the lookup of the personal
 // token; and it must hold the statement the row's drive names, unless the drive says why the
 // handler reads from memory. Each read-only answer must equal its writer's, status and body, but
@@ -529,10 +530,10 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 // about 4.5 s a row, and so runs in a Job and in CI rather than in a shared pod. The calibration
 // and the pre-check run either way.
 func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing.T) {
-	// Not parallel: it holds every window and every personal pair to a wall-clock bound
-	// (driveWindowLimit, agentTokenUse's minute) for minutes, and run among this package's parallel
-	// tests on CI's runner it took 592 s, while TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince
-	// missed its 3 s beside it (envoy-go-race-api job 137929719893).
+	// Not parallel: it holds every personal pair to a wall-clock bound (agentTokenUse's minute)
+	// for minutes, and run among this package's parallel tests on CI's runner it took 592 s, while
+	// TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince missed its 3 s beside it
+	// (envoy-go-race-api job 137929719893).
 	rows, drives := drivenRows(t, readWritesNothing)
 	world := newDriveWorld(t)
 	world.calibrate(t)
@@ -553,12 +554,17 @@ func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing
 
 // calibrate is the calibration row: GET /api/v1/limits under the deployment's shared token, whose
 // request writes nothing, in a window that must hold no write. A write in it is a duty of the rig
-// writing while nothing asked it to, which would land in any row's window.
+// writing while nothing asked it to, which would land in any row's window. The seed's issue
+// creates start a refresh of the drive project's term statistics on the server's lifetime, which
+// no count of detached work reaches, so the calibration first waits for that refresh's commit
+// and for no backend to hold a transaction id (awaitNoTransactionIDHolder): a refresh a loaded
+// machine ran late would otherwise write inside the window.
 func (w *driveWorld) calibrate(t *testing.T) {
 	t.Helper()
-	w.tracer.quiet(t, "before the calibration row")
+	awaitNoTransactionIDHolder(t, w.raw, driveProject)
+	w.quiet(t, "before the calibration row")
 	var response *httptest.ResponseRecorder
-	statements := w.tracer.window(t, "the calibration row", func() {
+	statements := w.window(t, "the calibration row", func() {
 		request := drivenRequest(httptest.NewRequest(http.MethodGet, "/api/v1/limits", nil))
 		request.Header.Set("Authorization", "Bearer agent-token")
 		response = w.rig.serve(request)
@@ -577,11 +583,13 @@ func (w *driveWorld) calibrate(t *testing.T) {
 func (w *driveWorld) precheck(t *testing.T) {
 	t.Helper()
 	readOnly := w.brokerSend("the machine login's narrowed token", w.readOnly)
-	send := func(what, target string) []drivenStatement {
+	// send drives target in a window; done, when given, is a write the read starts and does not
+	// wait on, which the window waits for too (windowUntil).
+	send := func(what, target string, done func([]drivenStatement) bool) []drivenStatement {
 		t.Helper()
-		w.tracer.quiet(t, "before "+what)
+		w.quiet(t, "before "+what)
 		var response *httptest.ResponseRecorder
-		statements := w.tracer.window(t, what, func() { response = w.rig.serve(readOnly.request(t, w.fill(t, target))) })
+		statements := w.windowUntil(t, what, func() { response = w.rig.serve(readOnly.request(t, w.fill(t, target))) }, done)
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s: GET %s answered %d %s", what, target, response.Code, response.Body.String())
 		}
@@ -600,22 +608,41 @@ func (w *driveWorld) precheck(t *testing.T) {
 		return all, unmarked
 	}
 
-	trees := send("the pre-check's read of a version no other test has shown", "/api/v1/artifacts/$prose/versions/1")
-	if stored, _ := count(trees, statementOf(`^\s*insert\s+into\s+text_trees\b`)); stored != 1 {
+	// The read's tree store is detached work, which every window waits out; the window also waits
+	// for its insert by name, so the count below reads the insert itself, however late a loaded
+	// machine runs it.
+	insertTree := statementOf(`^\s*insert\s+into\s+text_trees\b`)
+	trees := send("the pre-check's read of a version no other test has shown", "/api/v1/artifacts/$prose/versions/1", func(statements []drivenStatement) bool {
+		stored, _ := count(statements, insertTree)
+		return stored > 0
+	})
+	if stored, _ := count(trees, insertTree); stored != 1 {
 		t.Fatalf("the pre-check's read of a version no other test has shown made %d inserts into text_trees, want one: %v", stored, writesIn(trees))
 	}
 
+	// The roster's upsert runs on the server's lifetime (fetchRouteRoster), and the term
+	// statistics' refresh does too and is not waited on by the read (ensureSearchTermStats), so
+	// neither is detached work a count reaches: each window waits for its write by name.
 	w.staleRoster(t)
-	roster := send("the pre-check's read of a stale roster", "/api/v1/agents")
-	upserts, unmarked := count(roster, statementOf(`^\s*insert\s+into\s+route_roster\b.*\bon\s+conflict\b`))
+	upsertRoster := statementOf(`^\s*insert\s+into\s+route_roster\b.*\bon\s+conflict\b`)
+	roster := send("the pre-check's read of a stale roster", "/api/v1/agents", func(statements []drivenStatement) bool {
+		upserts, _ := count(statements, upsertRoster)
+		return upserts > 0
+	})
+	upserts, unmarked := count(roster, upsertRoster)
 	if upserts != 1 || unmarked != 1 {
 		t.Fatalf("the pre-check's read of a stale roster made %d upserts of route_roster, %d of them on the server's own context, want one there: %v",
 			upserts, unmarked, writesIn(roster))
 	}
 
+	writeTotals := statementOf(`\b(insert\s+into|update)\s+search_term_totals\b`)
 	related := send("the pre-check's related read of a project with no term statistics",
-		"/api/v1/projects/$precheckProject/related?title=Drive+every+row&text=The+issue+page+lists+every+open+ask")
-	totals, unmarked := count(related, statementOf(`\b(insert\s+into|update)\s+search_term_totals\b`))
+		"/api/v1/projects/$precheckProject/related?title=Drive+every+row&text=The+issue+page+lists+every+open+ask",
+		func(statements []drivenStatement) bool {
+			totals, _ := count(statements, writeTotals)
+			return totals > 0
+		})
+	totals, unmarked := count(related, writeTotals)
 	if totals == 0 || unmarked != totals {
 		t.Fatalf("the pre-check's related read made %d writes of search_term_totals, %d of them on the server's own context, want the refresh's, all there: %v",
 			totals, unmarked, writesIn(related))
@@ -640,12 +667,12 @@ func (w *driveWorld) driveRead(t *testing.T, name string, drive rowDrive, tally 
 	for _, pair := range w.pairs() {
 		readOnly, writer := pair[0], pair[1]
 		what := readOnly.who + " on " + target
-		w.tracer.quiet(t, "before "+what)
+		w.quiet(t, "before "+what)
 		if readOnly.personal {
 			w.startPersonalPair(t)
 		}
 		var answer *httptest.ResponseRecorder
-		statements := w.tracer.window(t, what, func() { answer = w.rig.serve(readOnly.request(t, target)) })
+		statements := w.window(t, what, func() { answer = w.rig.serve(readOnly.request(t, target)) })
 		tally.windows++
 		tally.statements += len(statements)
 		for _, write := range requireReadsWrites(t, what, statements) {
@@ -667,7 +694,7 @@ func (w *driveWorld) driveRead(t *testing.T, name string, drive rowDrive, tally 
 				what, drive.statement, len(statements), statementList(statements))
 		}
 		answered := w.rig.serve(writer.request(t, target))
-		w.tracer.quiet(t, "after "+writer.who+" on "+target)
+		w.quiet(t, "after "+writer.who+" on "+target)
 		if answer.Code != status {
 			t.Errorf("%s: answered %d %s, want %d", what, answer.Code, cutBody(answer.Body.String()), status)
 		}
@@ -724,9 +751,9 @@ func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 			if before := stored(t, drive); before != 0 {
 				t.Fatalf("before the drive the store holds %d of what %s writes, want none", before, name)
 			}
-			world.tracer.quiet(t, "before "+target)
+			world.quiet(t, "before "+target)
 			var answer *httptest.ResponseRecorder
-			statements := world.tracer.window(t, target, func() { answer = world.rig.serve(writer.request(t, target)) })
+			statements := world.window(t, target, func() { answer = world.rig.serve(writer.request(t, target)) })
 			if answer.Code != http.StatusOK {
 				t.Fatalf("GET %s answered %d %s", target, answer.Code, cutBody(answer.Body.String()))
 			}

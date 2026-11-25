@@ -7,9 +7,9 @@
  * load: a busy machine still slows this process's own CPU time through shared caches and clock
  * frequency, so a growth check samples each side more than once.
  *
- * This module is a port of the Go package `packages/envoy/internal/cputest` (`Process`,
- * `resolution` and `Measure`) and of `cpuTimeOf`, `fastestOf`, `growthVerdict` and `growsLinearly`
- * in `packages/envoy/internal/dispatch/pmdoc/linear_test.go`. Read those for the longer account.
+ * This module began as a port of the Go package `packages/envoy/internal/cputest` and of pmdoc's
+ * CPU-time growth checks. The Envoy module holds neither any more: its rows count the work a parse
+ * does rather than time it. This module keeps all of the account it needs here.
  *
  * `process.cpuUsage()` counts the whole process, so a row that times a call by it runs no other
  * measured work beside that call: the rows using this module parse one document at a time.

@@ -5,6 +5,7 @@ package helper
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -477,17 +478,7 @@ func TestExitRevokesAndUnregisterRevokes(t *testing.T) {
 	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
 	_ = child.Process.Kill()
 	_ = child.Wait()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		r.fake.mu.Lock()
-		n := len(r.fake.deletes)
-		r.fake.mu.Unlock()
-		if n == 1 {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	_, deletes, _ := r.fake.snapshot()
+	deletes := awaitRevokes(t, r, 1)
 	if len(deletes) != 1 || deletes[0] != reg.EnrollmentID {
 		t.Fatalf("the exit must revoke the enrollment: %v", deletes)
 	}
@@ -503,11 +494,7 @@ func TestExitRevokesAndUnregisterRevokes(t *testing.T) {
 	}
 	// unregister answers before its revoke ends (retire fires the revoke off), so the DELETE is
 	// waited for rather than read at once.
-	testwait.Holds(5*time.Second, testwait.Poll, func() bool {
-		_, deletes, _ := r.fake.snapshot()
-		return len(deletes) == 2
-	})
-	_, deletes, _ = r.fake.snapshot()
+	deletes = awaitRevokes(t, r, 2)
 	if len(deletes) != 2 || deletes[1] != reg2.EnrollmentID {
 		t.Fatalf("unregister must revoke: %+v %v", un, deletes)
 	}
@@ -516,6 +503,20 @@ func TestExitRevokesAndUnregisterRevokes(t *testing.T) {
 	if !list.OK || len(list.Sessions) != 0 {
 		t.Fatalf("sessions after both ended: %+v", list)
 	}
+}
+
+// awaitRevokes waits until the fake broker has been sent n revokes (DELETEs) and returns them,
+// through the shared wait (testwait.Until), which has no bound of its own: the helper sends a
+// revoke on a goroutine of its own, after the exit or the call that caused it. A wait that gives up
+// prints the revokes sent by then.
+func awaitRevokes(t *testing.T, r *rig, n int) []string {
+	t.Helper()
+	var deletes []string
+	testwait.Until(t, fmt.Sprintf("the fake broker to be sent %d revokes", n), func() (string, bool) {
+		_, deletes, _ = r.fake.snapshot()
+		return fmt.Sprintf("revokes sent so far: %q", deletes), len(deletes) >= n
+	})
+	return deletes
 }
 
 func TestEnrollRetriesUntilTheBrokerAnswers(t *testing.T) {
@@ -928,7 +929,8 @@ func TestRecoverDropsDeadRecords(t *testing.T) {
 // session's first renew at its renew gate until the test has seen the enrollment's stored lease
 // pass, and only then lets it through, so the renew is refused because the lease has passed
 // however slow the host is. The first enrollment's short lease is the fake's nextLease, so the
-// fresh enrollment gets the fake's 900 s default and cannot lapse again under the assertions.
+// fresh enrollment gets the fake's default (fakeLease, an hour) and cannot lapse again under the
+// assertions.
 func TestRenewRefusedRevokesTheLapsedEnrollmentBeforeReenrolling(t *testing.T) {
 	t.Parallel()
 	r := startRig(t, "")

@@ -199,7 +199,7 @@ func lockProjectIssueDependencies(ctx context.Context, tx pgx.Tx, project string
 // each target's), so even with two builds serving only a ring through a project this write does
 // not name could close. And the test gates use them: a caller that holds a project's dependency
 // lock fences that project's dependency writes
-// (TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks, issue_dependencies_test.go).
+// (TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks, issue_dependency_locks_test.go).
 //
 // The key is its own name rather than lockProjectIssueDependencies' namespace with a literal
 // second key, so a project whose key happens to hash to that literal cannot collide with it.
@@ -366,7 +366,7 @@ func lockIssueOwners(ctx context.Context, tx pgx.Tx, key string, others ...strin
 
 // parentContended is the code of a PATCH whose issue's parent a concurrent reparent moved at
 // every lock attempt. The Legion daemon retries a status write it refuses
-// (packages/daemon/internal/dispatch/types.go:113, ParentContended) rather than dropping it, so
+// (packages/daemon/internal/dispatch/types.go's ParentContended) rather than dropping it, so
 // the two spellings change together: no mechanism shares a value between the two Go modules.
 const parentContended = "PARENT_CONTENDED"
 

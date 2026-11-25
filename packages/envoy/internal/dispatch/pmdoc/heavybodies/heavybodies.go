@@ -41,8 +41,8 @@ const BlockCap = contracts.DispatchBlockUnits
 // MaxNesting is how many blocks a markdown document may open inside one another, the bound the
 // refusals below quote. It is pmdoc's own maxNesting (internal/dispatch/pmdoc/nesting.go), copied
 // because this package may not import pmdoc; pmdoc's
-// TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter holds the two
-// to each other.
+// TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinParseStepsPerCharacter holds the two to each
+// other.
 const MaxNesting = 100
 
 // Shape is one heavy body, at whatever length a caller asks of it.
@@ -118,9 +118,10 @@ func Shapes() []Shape {
 	// markers49 is the same 98 blocks written on one line.
 	markers49 := strings.Repeat("- ", 49) + "x\n"
 	// The typed fence spends eleven characters on its own opening, and its label opens a run of
-	// 15,000 brackets that the rest of the line closes all but eleven of.
+	// brackets, half of the line with the fence's own characters (15,000 at full size), that the
+	// rest of the line closes all but eleven of. The run grows with the size, so a shape counted at
+	// an eighth of it is the same line at an eighth of its length.
 	const typedFence = ":::callout["
-	const bracketOpeners = 15_000
 	// A footnote pair is a reference on the body's first line and a definition below, both under a
 	// label of five characters, so each pair costs footnotePair characters wherever it is. Each
 	// definition's label is `a` and four digits; the references take, in turn, its label, the label
@@ -198,7 +199,8 @@ func Shapes() []Shape {
 			ID:   "callout-bracket-run",
 			Name: "a typed fence whose label opens a run of brackets",
 			Body: func(size int) string {
-				return typedFence + strings.Repeat("[", bracketOpeners) + strings.Repeat("]", size-bracketOpeners)
+				openers := (size + len(typedFence)) / 2
+				return typedFence + strings.Repeat("[", openers) + strings.Repeat("]", size-openers)
 			},
 			Grown: 30_000 - len(typedFence),
 			// The label swallows the line, so what stands there is a fence naming no typed block.
@@ -238,24 +240,35 @@ type NestedDirective struct {
 	ID string
 	// Name says what the body is and names its subtest.
 	Name string
-	// Markdown is the body itself, whole: unlike a Shape it does not grow.
+	// Markdown is the body itself, whole: Body at Openers.
 	Markdown string
+	// Body is the body with openers openers, the rest of it in proportion, so pmdoc's count of the
+	// work of its refusal reads it at two lengths.
+	Body func(openers int) string
+	// Openers is how many openers Markdown holds.
+	Openers int
 }
 
 // NestedDirectives are the two deeply nested bare-directive bodies a document write refuses. The
 // browser suite spells both (e2e/heavy-bodies.ts, drawn by e2e/nested-directive.e2e.ts), so both
 // stand in testdata/shared-bodies.json.
 func NestedDirectives() []NestedDirective {
-	return []NestedDirective{
+	directives := []NestedDirective{
 		{
-			ID:       "directive-openers-then-long-line",
-			Name:     "2,000 unclosed openers then a long line",
-			Markdown: strings.Repeat(":::a\n", 2000) + strings.Repeat("x", 21000),
+			ID:      "directive-openers-then-long-line",
+			Name:    "2,000 unclosed openers then a long line",
+			Body:    func(openers int) string { return strings.Repeat(":::a\n", openers) + strings.Repeat("x", openers*21/2) },
+			Openers: 2000,
 		},
 		{
-			ID:       "directive-openers-then-closers",
-			Name:     "1,000 openers then 1,000 closing lines",
-			Markdown: strings.Repeat(":::a\n", 1000) + strings.Repeat(":::\n", 1000),
+			ID:      "directive-openers-then-closers",
+			Name:    "1,000 openers then 1,000 closing lines",
+			Body:    func(openers int) string { return strings.Repeat(":::a\n", openers) + strings.Repeat(":::\n", openers) },
+			Openers: 1000,
 		},
 	}
+	for index := range directives {
+		directives[index].Markdown = directives[index].Body(directives[index].Openers)
+	}
+	return directives
 }

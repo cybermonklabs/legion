@@ -72,6 +72,17 @@ var ownTransactionFunctions = []string{
 	"main.repairIssueAsks",
 }
 
+// afterFuncPackages are the packages whose AfterFunc runs the function it is passed on a goroutine
+// of its own, never at the call (see TestCopyLockComesBeforeEveryPendingRowAndEvent): the standard
+// library's time, this module's clock (the Clock interface, and the real clock, whose AfterFunc is
+// time.AfterFunc) and clocktest (the fake, which starts the function on a goroutine of its own when
+// a move reaches its moment, or as it is armed for a moment already reached).
+var afterFuncPackages = []string{
+	"time",
+	"github.com/sjawhar/envoy/internal/clock",
+	"github.com/sjawhar/envoy/internal/clock/clocktest",
+}
+
 // TestCopyLockComesBeforeEveryPendingRowAndEvent enforces the order the copy lock's deadlock
 // freedom rests on (docs.lockProjectCopies): no transaction takes a project's copy lock after it
 // has written a doc_settlements_pending row or appended an event. A holder of the copy lock goes
@@ -93,8 +104,9 @@ var ownTransactionFunctions = []string{
 // module's types that implements an interface method it calls (s.deps.Docs.SettleCopiesOf reaches
 // docs.Service's), and, for a call through a variable or a struct field (transition.Apply,
 // options.WriteBlock), every function this module stores in that variable or field. A function
-// passed as an argument runs at the call, except to time.AfterFunc or a Go method, which run it on
-// a goroutine of its own and so in a transaction of its own; go statements are skipped for the
+// passed as an argument runs at the call, except to the AfterFunc of a package afterFuncPackages
+// lists (time.AfterFunc, clock.Clock's and clocktest.Fake's) or a Go method, which run it on a
+// goroutine of its own and so in a transaction of its own; go statements are skipped for the
 // same reason, and deferred calls count toward what a function takes but not toward its order. A
 // branch that ends in a return or a panic carries nothing past its if.
 //
@@ -672,7 +684,8 @@ func (g *lockGraph) callees(call *ast.CallExpr) []*lockFunction {
 	async := false
 	if named != nil {
 		callees = append(callees, g.funcTargets(named)...)
-		async = named.Name() == "Go" || (named.Pkg() != nil && named.Pkg().Path() == "time" && named.Name() == "AfterFunc")
+		async = named.Name() == "Go" ||
+			(named.Name() == "AfterFunc" && named.Pkg() != nil && slices.Contains(afterFuncPackages, named.Pkg().Path()))
 	}
 	if !async {
 		for _, argument := range call.Args {

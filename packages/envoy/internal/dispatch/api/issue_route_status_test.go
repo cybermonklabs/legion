@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -424,7 +425,25 @@ func stateRosterServer(t *testing.T, rows []map[string]any) *server {
 		_ = json.NewEncoder(w).Encode(answer)
 	}))
 	t.Cleanup(listener.Close)
-	return &server{deps: Deps{Envoy: envoy.New(listener.URL)}, lifetime: context.Background()}
+	// One fake that stands still, for the roster read's bound (routeRosterTimeout) and the
+	// listener client's window (envoy.CallWindow) alike: the listener's answer decides the roster
+	// however late it comes, and no real window does.
+	fake := clocktest.New(rosterTestStart)
+	return &server{
+		deps:     Deps{Envoy: envoy.New(listener.URL, envoy.WithClock(fake)), Clock: fake},
+		lifetime: context.Background(),
+	}
+}
+
+// listedRoster is served's roster read (listRouteRoster), made on a goroutine of its own and
+// waited for through the shared wait. stateRosterServer's clock stands still, so no bound of the
+// read ends it however late the listener answers, and a listener that never answers fails the row
+// by name at the wait's give-up.
+func listedRoster(t *testing.T, served *server) routeRoster {
+	t.Helper()
+	listed := make(chan routeRoster, 1)
+	go func() { listed <- served.listRouteRoster(t.Context()) }()
+	return testwait.Receive(t, "the listener's answer to the roster read", listed)
 }
 
 // A session past its live window still holds its role and still receives: what is sent to it is
@@ -438,7 +457,7 @@ func TestRouteReachNamesAnUnresponsiveHolderRatherThanDroppingIt(t *testing.T) {
 		{"session_id": "ses-live", "state": "live", "last_seen": 1700000000000, "roles": []string{"legion-merger"}},
 		{"session_id": "ses-stalled", "state": "unresponsive", "last_seen": 1699999000000, "roles": []string{"legion-planner"}},
 	})
-	roster := served.listRouteRoster(context.Background())
+	roster := listedRoster(t, served)
 	if !roster.answered {
 		t.Fatalf("the roster did not answer: %v", roster.err)
 	}
@@ -488,7 +507,7 @@ func TestClaimLivenessDatesWhenAnUnresponsiveHoldersClaimComesFree(t *testing.T)
 		{"session_id": "ses-live", "state": "live", "last_seen": lastSeen},
 		{"session_id": "ses-stalled", "state": "unresponsive", "last_seen": lastSeen},
 	})
-	roster := served.listRouteRoster(context.Background())
+	roster := listedRoster(t, served)
 	now := time.UnixMilli(lastSeen).Add(7 * time.Minute).UTC()
 	claim := func(kind, id string) *model.IssueClaim {
 		return &model.IssueClaim{Actor: model.Actor{Kind: kind, ID: id}, At: now}
@@ -613,8 +632,8 @@ func TestARouteStatusFilterAnswersAFailedRosterReadAsTheDatabases(t *testing.T) 
 
 // secondRouteStatusServer is a second server process beside served: the same database and the
 // same listener, but a pool of its own (storetest.SecondProcess), a roster cache of its own with
-// served's TTLs and fetch bound, and its own single-flight fetch, so the two share only what
-// Postgres holds, as two envoy-dispatch processes do.
+// served's TTLs, and its own single-flight fetch, so the two share only what Postgres holds, as
+// two envoy-dispatch processes do.
 func secondRouteStatusServer(t *testing.T, served *server) (http.Handler, *server) {
 	t.Helper()
 	deps := served.deps
@@ -623,20 +642,19 @@ func secondRouteStatusServer(t *testing.T, served *server) (http.Handler, *serve
 	other := register(mux, served.lifetime, deps)
 	t.Cleanup(func() { waitBackgroundOf(t, other) })
 	other.rosters.ttl, other.rosters.silenceTTL = served.rosters.ttl, served.rosters.silenceTTL
-	other.rosters.timeout = served.rosters.timeout
 	return mux, other
 }
 
 // Two server processes judge a route against one listener answer: the one the first stored
 // serves the second for its TTL, so a route the first reads live is never read as reaching nobody
 // on the second because the second asked the listener a moment later, and the second makes no
-// call of its own. Both TTLs are a minute, so a slow machine's reads stay inside them.
+// call of its own. The answered TTL is stagedAhead, so a slow machine's reads stay inside it.
 func TestTwoServersJudgeARouteAgainstTheOneStoredListenerAnswer(t *testing.T) {
 	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
 	handler, _, served := cachedRouteStatusServer(t, roster)
-	served.rosters.ttl = time.Minute
+	served.rosters.ttl = stagedAhead
 	other, _ := secondRouteStatusServer(t, served)
 	key := routedIssueKey(t, handler, "role:sre")
 	before := roster.lookups.Load()
@@ -658,13 +676,13 @@ func TestTwoServersJudgeARouteAgainstTheOneStoredListenerAnswer(t *testing.T) {
 
 // A listener failure one server meets is every server's: the stored silence has the second read
 // unknown too, without a call of its own, even though the listener answers again by then. The
-// silence is a minute, so a slow machine's reads stay inside it.
+// silence is stagedAhead, so a slow machine's reads stay inside it.
 func TestAListenerFailureOneServerMetReadsUnknownOnTheOther(t *testing.T) {
 	t.Parallel()
 	roster := &fakeRoster{}
 	roster.down.Store(true)
 	handler, _, served := cachedRouteStatusServer(t, roster)
-	served.rosters.ttl, served.rosters.silenceTTL = time.Minute, time.Minute
+	served.rosters.ttl, served.rosters.silenceTTL = stagedAhead, stagedAhead
 	other, _ := secondRouteStatusServer(t, served)
 	key := routedIssueKey(t, handler, "role:sre")
 	before := roster.lookups.Load()
@@ -691,15 +709,15 @@ func TestAListenerFailureOneServerMetReadsUnknownOnTheOther(t *testing.T) {
 // status among them - show a refilling state while the listener refills, and never an agent's
 // absence or an unreachable listener. The second server reads the answer the first stored, so it
 // must show that same refilling state: route status unknown for the refilling reason, and the
-// Agents read the ENVOY_REFILLING answer with the listener's own Retry-After. Both TTLs are a
-// minute, so a slow machine's reads stay inside them.
+// Agents read the ENVOY_REFILLING answer with the listener's own Retry-After. Both TTLs are
+// stagedAhead, so a slow machine's reads stay inside them.
 func TestARefillOneServerMetIsARefillOnTheOther(t *testing.T) {
 	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
 	roster.refilling.Store(true)
 	handler, _, served := cachedRouteStatusServer(t, roster)
-	served.rosters.ttl, served.rosters.silenceTTL = time.Minute, time.Minute
+	served.rosters.ttl, served.rosters.silenceTTL = stagedAhead, stagedAhead
 	other, _ := secondRouteStatusServer(t, served)
 	key := routedIssueKey(t, handler, "role:sre")
 
@@ -733,8 +751,11 @@ func TestAnOlderListenerAnswerNeverReplacesANewerOne(t *testing.T) {
 	// Release before the close, which waits for every request in flight to finish.
 	t.Cleanup(listener.Close)
 	t.Cleanup(release)
-	_, _, _, first := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Minute})
-	first.rosters.ttl, first.rosters.timeout = time.Minute, time.Minute
+	// The server's clock stands still, so no window of the listener client's ends the first
+	// fetch while the test holds it; the answered TTL is lengthened to stagedAhead, so the reads
+	// below stay inside the stored answer however slow the machine.
+	_, _, _, first := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clocktest.New(rosterTestStart)})
+	first.rosters.ttl = stagedAhead
 	_, second := secondRouteStatusServer(t, first)
 
 	older := make(chan routeRoster, 1)

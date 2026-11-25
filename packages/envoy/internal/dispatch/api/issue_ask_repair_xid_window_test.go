@@ -44,7 +44,10 @@ func TestXidWindowIssueAskRepairWithdrawal(t *testing.T) {
 
 // TestXidWindowIssueAskRepairRestoration measures the repair of an issue whose close withdrew a
 // decision block's ask and a plain ask and which a release older than the restoration reopened:
-// the repair restores both in its reopener's name and writes the block open into the spec.
+// the repair restores both in its reopener's name and writes the block open into the spec. The
+// settlement the close left armed runs before the reopen (SettleIssueDocuments): a reopen's close
+// of the room does not end an armed settlement (docs' settlement.take), which would load the room
+// again after the reopen closed it.
 func TestXidWindowIssueAskRepairRestoration(t *testing.T) {
 	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	tracer := storetest.NewXidTracer()
@@ -60,16 +63,12 @@ func TestXidWindowIssueAskRepairRestoration(t *testing.T) {
 	if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	// The close's writes leave the spec's settlement armed, and a settlement armed before a reopen
-	// outlives the reopen's close of the room and loads the room again (docs' settlement.take), so
-	// it runs here, before the reopen whose close awaitIssueRoomsClosed waits for.
-	// That re-warm is the product's design (settlement.take's own comment), not a defect.
 	if err := f.documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
 		t.Fatalf("settle the closed issue's documents: %v", err)
 	}
 	reopenWithoutRestoring(t, f, issue.Key, "in_progress", repairActor("session-reopener"))
-	// The close's settlement has run, and the older release's reopen is SQL alone, which arms no
-	// settlement (awaitQuietDatabase), so the measurement waits for the quiet alone.
+	// The close's settlement has run above, and the older release's reopen is SQL alone, which arms
+	// no settlement (awaitQuietDatabase), so the measurement waits for the quiet alone.
 	awaitQuietDatabase(t, f.database, false)
 
 	report := measureIssueAskRepair(t, f, tracer, func(repair IssueAskRepair) bool { return repair.Restored == len(asks) })

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,12 +14,21 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// Each session a comment mentions replies to its own delivery the moment the comment has
+// answered, because the comment's creation pinned each attempt to the session its target
+// resolved to. Only a lookup that answers inside mentionLookupTimeout on the server's clock pins
+// one (resolveMentionTarget); an attempt left unpinned names nobody's delivery until the
+// mention's sender resolves it after the commit, and a reply before that is refused. So both
+// cases run on a fake clock nothing moves, on which the bound never runs out and every lookup
+// answers as the stand-in answers it: on the real clock a loaded machine let the 250 ms pass
+// first, and s2's reply was refused REPLY_FORBIDDEN while its attempt was still unpinned.
 func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
 	t.Parallel()
 	t.Run("different sessions", func(t *testing.T) {
@@ -39,12 +49,13 @@ func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
 			}
 		}))
 		defer listener.Close()
-		handler, _ := newTargetedMessageHandler(t, listener.URL)
+		handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clocktest.New(time.Now()))
 		issue := createInteractionIssue(t, handler, "TEST", "Mention reply targets", "before")
 		comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 			"body":     "Both reviewers need to answer.",
 			"mentions": []map[string]any{{"target": "session:s1"}, {"target": "session:s2"}},
 		}))
+		requirePinnedAtCreation(t, comment, map[string]string{"session:s1": "s1", "session:s2": "s2"})
 		for _, target := range []string{"session:s1", "session:s2"} {
 			sessionID := target[len("session:"):]
 			response := bearerRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/reply", map[string]any{
@@ -74,12 +85,13 @@ func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
 			}
 		}))
 		defer listener.Close()
-		handler, _ := newTargetedMessageHandler(t, listener.URL)
+		handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clocktest.New(time.Now()))
 		issue := createInteractionIssue(t, handler, "TEST", "Same-session mention reply targets", "before")
 		comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 			"body":     "One session received two mention targets.",
 			"mentions": []map[string]any{{"target": "role:reviewer"}, {"target": "session:s1"}},
 		}))
+		requirePinnedAtCreation(t, comment, map[string]string{"role:reviewer": "s1", "session:s1": "s1"})
 		for _, target := range []string{"role:reviewer", "session:s1"} {
 			response := bearerRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/reply", map[string]any{
 				"actor": map[string]any{"kind": "session", "id": "s1"}, "target": target, "attempt": 1,
@@ -90,6 +102,21 @@ func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
 			}
 		}
 	})
+}
+
+// requirePinnedAtCreation fails unless the comment answered with one attempt for each of its
+// mentions, each pinned to the session its target resolves to (sessions, by target): the pin is
+// what lets that session's reply to its own delivery through before the mention's sender runs.
+func requirePinnedAtCreation(t *testing.T, comment mentionedCommentRead, sessions map[string]string) {
+	t.Helper()
+	pinned := make(map[string]string, len(comment.Deliveries))
+	for _, delivery := range comment.Deliveries {
+		pinned[delivery.Target] = deref(delivery.SessionID)
+	}
+	if len(comment.Deliveries) != len(sessions) || !maps.Equal(pinned, sessions) {
+		t.Fatalf("the comment answered attempts pinned to %v (%d attempts), want one per mention pinned to %v",
+			pinned, len(comment.Deliveries), sessions)
+	}
 }
 
 func TestInitialMentionDeliveryDoesNotAppendAfterReplyConsumesPending(t *testing.T) {
@@ -105,7 +132,9 @@ func TestInitialMentionDeliveryDoesNotAppendAfterReplyConsumesPending(t *testing
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode initial mention send: %v", err)
+				t.Errorf("decode initial mention send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			sent = append(sent, request)
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
@@ -636,16 +665,32 @@ func commentDeliveryReceipts(t *testing.T, database *store.Store, commentID, tar
 
 // awaitCommentDeliveryReceipts waits until the attempt carries a comment.delivery receipt - the
 // mention sender appends it in its settle transaction, after the comment's create has answered -
-// and returns the receipts as commentDeliveryReceipts renders them. Its one bound is the test
-// binary's deadline (testwait.Until).
+// and returns the receipts as commentDeliveryReceipts renders them. A try that finds none reads
+// the attempt's row as commentAttemptRow renders it, or that there is none.
 func awaitCommentDeliveryReceipts(t *testing.T, database *store.Store, commentID, target string, attempt int) string {
 	t.Helper()
-	what := fmt.Sprintf("a comment.delivery receipt on attempt %d of %s for %s", attempt, commentID, target)
-	return testwait.Until(t, what, func() (string, bool) {
-		receipts := commentDeliveryReceipts(t, database, commentID, target, attempt)
-		return receipts, receipts != ""
-	})
+	var receipts string
+	testwait.Until(t, fmt.Sprintf("attempt %d of %s for %s to carry a comment.delivery receipt", attempt, commentID, target),
+		func() (string, bool) {
+			if receipts = commentDeliveryReceipts(t, database, commentID, target, attempt); receipts != "" {
+				return receipts, true
+			}
+			var row string
+			if err := database.Pool.QueryRow(context.Background(), `
+				select coalesce((select `+commentAttemptRendered+`
+					from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3), 'no row')
+			`, commentID, target, attempt).Scan(&row); err != nil {
+				t.Fatalf("read attempt row: %v", err)
+			}
+			return "no receipt; the attempt's row: " + row, false
+		})
+	return receipts
 }
+
+// commentAttemptRendered is the expression that renders an attempt's comment_deliveries row the
+// way a receipt for it reads: state/error/reply_id/session_id.
+const commentAttemptRendered = `state || '/' || coalesce(error, '') || '/' || coalesce(reply_id::text, '') || '/' ||
+	coalesce(session_id, '')`
 
 // commentAttemptRow renders one attempt of one of a comment's mention targets the way a receipt
 // for it reads, so the two can be compared directly.
@@ -653,8 +698,7 @@ func commentAttemptRow(t *testing.T, database *store.Store, commentID, target st
 	t.Helper()
 	var row string
 	if err := database.Pool.QueryRow(context.Background(), `
-		select state || '/' || coalesce(error, '') || '/' || coalesce(reply_id::text, '') || '/' ||
-			coalesce(session_id, '')
+		select `+commentAttemptRendered+`
 		from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3
 	`, commentID, target, attempt).Scan(&row); err != nil {
 		t.Fatalf("read attempt row: %v", err)

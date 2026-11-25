@@ -6,7 +6,6 @@ import (
 	"slices"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 
@@ -202,7 +201,7 @@ func TestAShadowIsFreedWhenItsRoomFails(t *testing.T) {
 		t.Fatal("the failed room still holds its shadow")
 	}
 	release()
-	waitFor(t, 10*time.Second, "the failed room's eviction to settle its record", func() bool {
+	waitFor(t, "the failed room's eviction to settle its record", func() bool {
 		return service.roomFailure(artifactID) == nil
 	})
 	if residentShadow(service, artifactID) != nil {

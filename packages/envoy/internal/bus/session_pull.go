@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // SessionAcker answers one pulled message (SessionMessage).
@@ -96,6 +98,9 @@ type SessionPull struct {
 	remaining int
 	// heartbeat is the pull requests' idle heartbeat (sessionPullHeartbeat).
 	heartbeat time.Duration
+	// clock is what heard is read on and the stall timed by (take): SessionConsumers.pullClock, or
+	// the real clock where that is nil.
+	clock clock.Clock
 	// wake holds a token once receive has queued a message for Next.
 	wake chan struct{}
 	// detachOnce runs the drain of the inbox subscription once and detachErr holds what it ended
@@ -109,7 +114,8 @@ type SessionPull struct {
 	mu sync.Mutex
 	// queue holds what the server sent on the inbox, heartbeats aside, until Next reads it.
 	queue []*nats.Msg
-	// heard is when the server last sent anything on the inbox, or the pull last sent a request.
+	// heard is when the server last sent anything on the inbox, or the pull last sent a request,
+	// on clock.
 	heard time.Time
 	// droppedLoggedAt is when receive last wrote its line for a message it dropped, and
 	// droppedHeld how many it has dropped since without one (sessionPullDroppedLogEvery).
@@ -139,10 +145,14 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 		return nil, err
 	}
 	conn := s.client.Connection()
+	pullClock := s.pullClock
+	if pullClock == nil {
+		pullClock = clock.Real()
+	}
 	p := &SessionPull{
 		conn: conn, sessionID: sessionID, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(),
 		ack: "$JS.ACK." + Stream + "." + name + ".", request: request, logger: s.logger, heartbeat: s.pullHeartbeat,
-		wake: make(chan struct{}, 1),
+		clock: pullClock, wake: make(chan struct{}, 1),
 	}
 	if p.sub, err = conn.Subscribe(p.inbox, p.receive); err != nil {
 		return nil, err
@@ -179,7 +189,7 @@ func (p *SessionPull) receive(msg *nats.Msg) {
 		return
 	}
 	p.mu.Lock()
-	p.heard = time.Now()
+	p.heard = p.clock.Now()
 	if status != pullStatusHeartbeat {
 		p.queue = append(p.queue, msg)
 	}
@@ -236,7 +246,7 @@ func pullStatus(msg *nats.Msg) (status, description string) {
 // pull sends a pull request for sessionPullBatch messages.
 func (p *SessionPull) pull() error {
 	p.mu.Lock()
-	p.heard = time.Now()
+	p.heard = p.clock.Now()
 	p.mu.Unlock()
 	if err := p.conn.PublishRequest(p.next, p.inbox, p.request); err != nil {
 		return err
@@ -275,7 +285,7 @@ func (p *SessionPull) Next(ctx context.Context) (SessionMessage, error) {
 }
 
 // take returns the first message the server sent that Next has not read, waiting until one comes,
-// ctx ends, or the server has sent nothing for twice sessionPullHeartbeat.
+// ctx ends, or the server has sent nothing for twice sessionPullHeartbeat on the pull's clock.
 func (p *SessionPull) take(ctx context.Context) (*nats.Msg, error) {
 	for {
 		p.mu.Lock()
@@ -286,15 +296,15 @@ func (p *SessionPull) take(ctx context.Context) (*nats.Msg, error) {
 			p.mu.Unlock()
 			return msg, nil
 		}
-		stalled := time.Until(p.heard.Add(2 * p.heartbeat))
+		stalled := p.heard.Add(2 * p.heartbeat).Sub(p.clock.Now())
 		p.mu.Unlock()
 		if stalled <= 0 {
 			return nil, ErrSessionPullStalled
 		}
-		timer := time.NewTimer(stalled)
+		timer := p.clock.NewTimer(stalled)
 		select {
 		case <-p.wake:
-		case <-timer.C:
+		case <-timer.C():
 		case <-ctx.Done():
 			timer.Stop()
 			return nil, ctx.Err()

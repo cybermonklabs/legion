@@ -122,7 +122,13 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 			`{"oid":"abc","checkSuites":{"pageInfo":{"hasNextPage":false},"nodes":[{"databaseId":1,"checkRuns":` +
 			`{"pageInfo":{"hasNextPage":false},"nodes":[{"databaseId":2,"name":` + name + `}]}}]}}}]}}]}}}}`
 	}
-	reset := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
+	// The reset is whole seconds, and the reading judges it against the moment it is read at, which
+	// the row fixes a quarter of a second past a whole second (GraphQLRateLimitAt): a reset case's
+	// wait is the reset less that moment, to the nanosecond.
+	now := time.Date(2026, 11, 14, 12, 0, 0, 250_000_000, time.UTC)
+	resetAt := time.Unix(now.Add(90*time.Second).Unix(), 0)
+	reset := strconv.FormatInt(resetAt.Unix(), 10)
+	fromReset := resetAt.Sub(now)
 	cases := []struct {
 		name      string
 		status    int
@@ -130,7 +136,9 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 		body      string
 		limited   bool
 		secondary bool
-		wait      time.Duration
+		// wait is the limit's wait: GitHub's own, or for a case read from the reset (fromReset)
+		// the reset less the moment the row reads it at.
+		wait time.Duration
 	}{{
 		name:   "a check run named for the limit is a repository's data",
 		status: http.StatusOK,
@@ -156,14 +164,14 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 		header:  http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset}},
 		body:    `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`,
 		limited: true,
-		wait:    90 * time.Second,
+		wait:    fromReset,
 	}, {
 		name:    "the request that spent the last point",
 		status:  http.StatusOK,
 		header:  http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset}},
 		body:    dataNamed(`"ci-ok"`),
 		limited: true,
-		wait:    90 * time.Second,
+		wait:    fromReset,
 	}, {
 		name:      "a retry-after at 200",
 		status:    http.StatusOK,
@@ -178,7 +186,7 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 		header:  http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset}},
 		body:    `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`,
 		limited: true,
-		wait:    90 * time.Second,
+		wait:    fromReset,
 	}, {
 		name:      "a 403 with the secondary wording alone",
 		status:    http.StatusForbidden,
@@ -225,9 +233,14 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 			if header == nil {
 				header = http.Header{}
 			}
-			limited, secondary := githubapp.GraphQLRateLimit(want.status, header, []byte(want.body))
+			limited, secondary := githubapp.GraphQLRateLimitAt(want.status, header, []byte(want.body), now)
 			if (limited != nil) != want.limited {
 				t.Fatalf("the answer read as limited = %v (%v), want %v", limited != nil, limited, want.limited)
+			}
+			// GraphQLRateLimit is the same reading at time.Now, so it reads the answer as the
+			// reading at the row's moment does, whatever wait it asks for.
+			if wrapped, wrappedSecondary := githubapp.GraphQLRateLimit(want.status, header, []byte(want.body)); (wrapped != nil) != (limited != nil) || wrappedSecondary != secondary {
+				t.Errorf("GraphQLRateLimit read the answer as limited = %v and secondary = %v, want %v and %v, as the reading at the row's moment does", wrapped != nil, wrappedSecondary, limited != nil, secondary)
 			}
 			if limited == nil {
 				return
@@ -235,9 +248,8 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 			if secondary != want.secondary {
 				t.Errorf("the limit read as secondary = %v, want %v: the scope it is recorded under is which of the two it is", secondary, want.secondary)
 			}
-			// The reset cases are read from a timestamp, which is a second old by now.
-			if limited.Wait > want.wait || limited.Wait < want.wait-2*time.Second {
-				t.Errorf("the limit asks for %s, want GitHub's own %s", limited.Wait, want.wait)
+			if limited.Wait != want.wait {
+				t.Errorf("the limit asks for %s, want %s: GitHub's own, or the reset %s less the moment %s it is read at", limited.Wait, want.wait, resetAt, now)
 			}
 		})
 	}
@@ -274,46 +286,48 @@ func TestTheTextOfA2xxAnswerLeavesItsBodyOut(t *testing.T) {
 	}
 }
 
-// TestRateLimitBoundsTheWaitGitHubNames: RateLimit's wait, which rateLimitWait reads, keeps the
-// one rule every reader of a server's wait in this module keeps (internal/serverwait). A
-// Retry-After of 9999999999 seconds and an X-RateLimit-Reset of math.MaxInt64 with no requests
-// left are past what a Duration holds, and a Retry-After of two hours is past GitHub's own longest
-// wait; each reads as one hour. Converted as they came, the first two read as zero or a negative
-// wait, which every caller takes for no wait at all, and an unbounded third would hold every
-// App-JWT call for two hours. A negative Retry-After and a reset already past read as no wait,
-// and an ordinary value of each header reads as itself. The test counts the rows it drove and
-// fails under the number the table must hold.
+// TestRateLimitBoundsTheWaitGitHubNames: RateLimit's wait, which rateLimitWait reads (read here at
+// a moment the row fixes, RateLimitAt), keeps the one rule every reader of a server's wait in this
+// module keeps (internal/serverwait). A Retry-After of 9999999999 seconds and an X-RateLimit-Reset
+// of math.MaxInt64 with no requests left are past what a Duration holds, and a Retry-After of two
+// hours is past GitHub's own longest wait; each reads as one hour. Converted as they came, the
+// first two read as zero or a negative wait, which every caller takes for no wait at all, and an
+// unbounded third would hold every App-JWT call for two hours. A negative Retry-After and a reset
+// already past read as no wait, and an ordinary value of each header reads as itself. The test
+// counts the rows it drove and fails under the number the table must hold.
 func TestRateLimitBoundsTheWaitGitHubNames(t *testing.T) {
 	const rowsToDrive = 7
-	now := time.Now()
+	// The reset is whole seconds, and rateLimitWait reads it against the moment it is read at, which
+	// the row fixes a quarter of a second past a whole second (RateLimitAt): the row with a reset
+	// ahead (resetAt) waits the reset less that moment, to the nanosecond.
+	now := time.Date(2026, 11, 14, 12, 0, 0, 250_000_000, time.UTC)
 	exhausted := func(reset string) http.Header {
 		return http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset}}
 	}
+	resetAt := time.Unix(now.Add(90*time.Second).Unix(), 0)
 	rows := []struct {
-		name     string
-		header   http.Header
-		min, max time.Duration
+		name   string
+		header http.Header
+		want   time.Duration
 	}{
-		{"a Retry-After of 9999999999 seconds", http.Header{"Retry-After": {"9999999999"}}, time.Hour, time.Hour},
-		{"an X-RateLimit-Reset of math.MaxInt64 with no requests left", exhausted(strconv.FormatInt(math.MaxInt64, 10)), time.Hour, time.Hour},
-		{"a Retry-After of two hours", http.Header{"Retry-After": {"7200"}}, time.Hour, time.Hour},
-		{"a negative Retry-After", http.Header{"Retry-After": {"-30"}}, 0, 0},
-		{"an X-RateLimit-Reset an hour past with no requests left", exhausted(strconv.FormatInt(now.Add(-time.Hour).Unix(), 10)), 0, 0},
-		{"a Retry-After of 30 seconds", http.Header{"Retry-After": {"30"}}, 30 * time.Second, 30 * time.Second},
-		// The reset is whole seconds, and rateLimitWait reads it against its own clock a moment
-		// later, so the wait is up to two seconds short of the 90 it names.
-		{"an X-RateLimit-Reset 90 seconds out with no requests left", exhausted(strconv.FormatInt(now.Add(90*time.Second).Unix(), 10)), 88 * time.Second, 90 * time.Second},
+		{"a Retry-After of 9999999999 seconds", http.Header{"Retry-After": {"9999999999"}}, time.Hour},
+		{"an X-RateLimit-Reset of math.MaxInt64 with no requests left", exhausted(strconv.FormatInt(math.MaxInt64, 10)), time.Hour},
+		{"a Retry-After of two hours", http.Header{"Retry-After": {"7200"}}, time.Hour},
+		{"a negative Retry-After", http.Header{"Retry-After": {"-30"}}, 0},
+		{"an X-RateLimit-Reset an hour past with no requests left", exhausted(strconv.FormatInt(now.Add(-time.Hour).Unix(), 10)), 0},
+		{"a Retry-After of 30 seconds", http.Header{"Retry-After": {"30"}}, 30 * time.Second},
+		{"an X-RateLimit-Reset 90 seconds out with no requests left", exhausted(strconv.FormatInt(resetAt.Unix(), 10)), resetAt.Sub(now)},
 	}
 	driven := 0
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			driven++
-			limited := githubapp.RateLimit(http.StatusTooManyRequests, row.header, nil)
+			limited := githubapp.RateLimitAt(http.StatusTooManyRequests, row.header, nil, now)
 			if limited == nil {
 				t.Fatal("a 429 read as no rate limit")
 			}
-			if limited.Wait < row.min || limited.Wait > row.max {
-				t.Errorf("the limit asks for %s, want %s to %s", limited.Wait, row.min, row.max)
+			if limited.Wait != row.want {
+				t.Errorf("the limit asks for %s, want %s", limited.Wait, row.want)
 			}
 		})
 	}

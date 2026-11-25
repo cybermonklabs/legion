@@ -346,32 +346,40 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 				_, err := arrivalConn.Exec(ctx, arrival.insert)
 				arrived <- err
 			}()
-			// The arrival either goes through, which it must not, or waits on the PATCH's backend.
-			type arrivalSeen struct {
-				through bool
-				err     error
+			type arrivalReading struct {
+				Arrived bool
+				Err     error
+				Waited  bool
 			}
-			seen := testwait.UntilPolling(t, 5*time.Millisecond, arrival.name+" to go through or wait for the PATCH",
-				func() (arrivalSeen, bool) {
-					select {
-					case err := <-arrived:
-						return arrivalSeen{through: true, err: err}, true
-					default:
-					}
-					var blocked bool
-					if err := fixture.database.Pool.QueryRow(ctx, `select $2::integer = any(pg_blocking_pids($1))`, arrivalPID, pid).Scan(&blocked); err != nil {
-						t.Fatal(err)
-					}
-					return arrivalSeen{}, blocked
-				})
-			if seen.err != nil {
-				t.Fatalf("%s: %v", arrival.name, seen.err)
-			}
-			if seen.through {
+			// A try that finds the arrival neither through nor waiting for the PATCH reads the
+			// backends that block it.
+			var got arrivalReading
+			testwait.Until(t, arrival.name+" to go through or to wait for the PATCH", func() (string, bool) {
+				select {
+				case err := <-arrived:
+					got = arrivalReading{Arrived: true, Err: err}
+					return fmt.Sprintf("went through: %v", err), true
+				default:
+				}
+				var blocking []int64
+				var waiting bool
+				if err := fixture.database.Pool.QueryRow(ctx, `select blocking, $2::integer = any(blocking) from pg_blocking_pids($1) as blocking`, arrivalPID, pid).Scan(&blocking, &waiting); err != nil {
+					t.Fatal(err)
+				}
+				reading := fmt.Sprintf("backend %d is blocked by backends %v; the PATCH's is %d", arrivalPID, blocking, pid)
+				if waiting {
+					got = arrivalReading{Waited: true}
+				}
+				return reading, waiting
+			})
+			waited := got.Waited
+			if got.Arrived {
+				if got.Err != nil {
+					t.Fatalf("%s: %v", arrival.name, got.Err)
+				}
 				t.Errorf("%s went through in %s while this build's PATCH, which read no earlier build in the fleet, was between its owner lock and its write; want it to wait for that PATCH (the owner lock gate)",
 					arrival.name, time.Since(began).Round(time.Millisecond))
 			}
-			waited := !seen.through
 			earlierWrite := func() {
 				tx, err := fixture.database.Pool.Begin(ctx)
 				if err != nil {
@@ -389,18 +397,23 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 				}
 			}
 			if waited {
-				// The arrival is still waiting on the PATCH as the PATCH is let go: it has not
-				// ended, and the PATCH's backend still blocks it.
+				// The arrival is queued behind the PATCH's backend (pg_blocking_pids, read just
+				// above), and that backend waits on this test's pause, so the arrival cannot end
+				// before the pause is let go: that state, not a span, is what this reads, here and
+				// again as the pause is let go, when the arrival must still be queued behind the
+				// PATCH. Its gate function catches no error (store's gateWaitsEndOnlyByTheLock), so
+				// the wait ends only once the gate is granted or with an error the Receive fails on.
 				select {
 				case err := <-arrived:
 					t.Fatalf("%s ended (%v) while the PATCH it waited for was still under way", arrival.name, err)
 				default:
 				}
-				if err := fixture.database.Pool.QueryRow(ctx, `select $2::integer = any(pg_blocking_pids($1))`, arrivalPID, pid).Scan(&waited); err != nil {
+				var still bool
+				if err := fixture.database.Pool.QueryRow(ctx, `select $2::integer = any(pg_blocking_pids($1))`, arrivalPID, pid).Scan(&still); err != nil {
 					t.Fatal(err)
 				}
-				if !waited {
-					t.Fatalf("%s stopped waiting on the PATCH while the PATCH was still under way", arrival.name)
+				if !still {
+					t.Fatalf("%s no longer waits for the PATCH as its pause is let go: it gave its wait up", arrival.name)
 				}
 				if err := pause.Rollback(ctx); err != nil {
 					t.Fatal(err)
@@ -446,11 +459,11 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 
 // awaitTheGateFree waits until document owes no settlement and no backend holds or waits for the
 // owner lock gate: an earlier build's arrival made then waits on the gate for nothing the test did
-// not start itself. Its one bound is the test binary's deadline (testwait.UntilPolling), which
-// names what was still owed or held if it comes first.
+// not start itself. Its one bound is the test binary's deadline (testwait.Until), and its give-up
+// names what was still owed or held.
 func awaitTheGateFree(t *testing.T, database *store.Store, document string) {
 	t.Helper()
-	testwait.UntilPolling(t, 10*time.Millisecond, "the seeded document to owe no settlement and the owner lock gate to be free",
+	testwait.Until(t, "the seeded document to owe no settlement and the owner lock gate to be free",
 		func() (string, bool) {
 			var owed, held bool
 			if err := database.Pool.QueryRow(context.Background(), `

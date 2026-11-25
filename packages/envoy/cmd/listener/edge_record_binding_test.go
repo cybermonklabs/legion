@@ -150,7 +150,9 @@ func TestAnEdgeReadsNoScopeFromAForgedSessionRecord(t *testing.T) {
 		// The copy's expectation of a key with no message makes the server refuse it on S_pub's key,
 		// which holds S_pub's own record: a direct-get copy of a record this build wrote can never
 		// overwrite a different session's live record. S_pub is unchanged. If this ever stores, the
-		// edge's reading of a forged record would be reopened, and this row fails.
+		// edge's reading of a forged record would be reopened, and this row fails. Two seconds, main's
+		// span, is how long the refusal is watched for: ServerCopyRefused says why no state of the
+		// server and no later action reaches it.
 		testnats.ServerCopyRefused(t, conn, bus.SessionBucket, pub, bus.SessionBucket, priv)
 		entry, err := rig.deps.sessions.Refresh(context.Background(), pub)
 		if err != nil || entry.MachineID == "" || !slices.Contains(entry.Projects, "PUB") {

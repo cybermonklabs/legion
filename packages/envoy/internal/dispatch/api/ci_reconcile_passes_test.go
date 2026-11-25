@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // GET /api/v1/ci-reconcile/passes. What a pass records and how a row with no end time is read
@@ -56,9 +57,10 @@ func endedCIPass(t *testing.T, database *store.Store, instance string, startedAg
 }
 
 // seedServerProcess writes the registry row processes.Register writes, with a heartbeat of the
-// given age, and answers the instance id. It names this build's owner lock protocol, as Register
-// does: a row at the column's default, 0, is an earlier build's arrival, whose insert waits for
-// the owner lock gate (fleetProcess in internal/dispatch/docs says why).
+// given age, and answers the instance id; a negative age puts the heartbeat that far ahead. It
+// names this build's owner lock protocol, as Register does: a row at the column's default, 0, is
+// an earlier build's arrival, whose insert waits for the owner lock gate (fleetProcess in
+// internal/dispatch/docs says why).
 func seedServerProcess(t *testing.T, database *store.Store, heartbeatAge time.Duration) string {
 	t.Helper()
 	var instance string
@@ -172,23 +174,21 @@ func holdCIReconcileLease(t *testing.T, database *store.Store) {
 			<-let
 		})
 	}()
-	t.Cleanup(func() { close(let); <-done })
-	<-held
+	t.Cleanup(func() { close(let); testwait.Receive(t, "the leased body to return once let go", done) })
+	testwait.Receive(t, "duty.Exclusive to take the lease and run the body", held)
 }
 
 // A pass still running reads as running through the route: its row has no end time, its process
 // is live, the `ci-reconcile` lease is held, and it is the newest row. The lease here is held by
-// a session of the test's own, standing for the loop that is running the pass. The live window is
-// pastTheRun, longer than any run of this package's test binary, so the heartbeat written at the
-// start still counts as live when the route reads it however long the steps between take; the
-// production fifteen seconds would read a slow run's process as gone.
+// a session of the test's own, standing for the loop that is running the pass.
 func TestCIReconcilePassesShowsARunningPass(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
-	was := processes.LiveWindow
-	processes.LiveWindow = pastTheRun
-	t.Cleanup(func() { processes.LiveWindow = was })
-	instance := seedServerProcess(t, database, 0)
+	// The process's heartbeat is a day ahead of the database's clock, staged state for the
+	// product's clock and longer than any -timeout CI gives the package (70 minutes in api's race
+	// lane), so it reads live (processes.LiveWindow) however long the machine takes before the
+	// read, which is not what this row is about.
+	instance := seedServerProcess(t, database, -24*time.Hour)
 	running := openCIPass(t, database, instance, time.Minute)
 	holdCIReconcileLease(t, database)
 

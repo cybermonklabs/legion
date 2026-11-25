@@ -12,7 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestMain runs the package's tests, or, run by seedInChild with seedChildEnv set, is that test's
@@ -32,7 +33,7 @@ func TestMain(m *testing.M) {
 	if report := os.Getenv(seedChildEnv); report != "" {
 		os.Exit(seedAsChild(os.Getenv(seedChildDatabaseEnv), report))
 	}
-	os.Exit(storetest.Main(m))
+	os.Exit(storetest.Main(m.Run))
 }
 
 // seedChildEnv and seedChildDatabaseEnv make this test binary a seed rather than a test run: the
@@ -75,32 +76,47 @@ func seedAsChild(databaseURL, report string) int {
 // plan every run at testScale writes. A seed sets the block id generator for its whole process
 // (pmdoc.SetBlockIDGenerator, seedRun.do), so two seeds in one process would draw each other's
 // ids; in processes of their own, they run at once, and so do the seeds of the package's parallel
-// tests.
+// tests. Each child runs on the shared wait's context (testwait.Context) and is waited for through
+// the shared wait (testwait.Until), which has no bound of its own: a seed that never returns fails
+// the test where its waits give up, naming the seeds that had not returned, and the context's end
+// there kills their processes.
 func seedInChildren(t *testing.T, databases ...*store.Store) []*seedRun {
 	t.Helper()
 	runs := make([]*seedRun, len(databases))
 	failures := make([]error, len(databases))
-	var seeds sync.WaitGroup
+	took := make([]time.Duration, len(databases))
+	returned := make([]atomic.Bool, len(databases))
+	ctx := testwait.Context(t)
 	for index, database := range databases {
 		report := filepath.Join(t.TempDir(), "subjects.json")
-		seeds.Go(func() {
-			runs[index], failures[index] = seedInChild(t, database, report)
-		})
+		go func() {
+			runs[index], took[index], failures[index] = seedInChild(ctx, database, report)
+			returned[index].Store(true)
+		}()
 	}
-	seeds.Wait()
+	testwait.Until(t, fmt.Sprintf("each of %d seeds' child processes to return", len(databases)), func() (string, bool) {
+		var waiting []string
+		for index, database := range databases {
+			if !returned[index].Load() {
+				waiting = append(waiting, fmt.Sprintf("seed %d of %d (database %s)", index+1, len(databases), database.Pool.Config().ConnConfig.Database))
+			}
+		}
+		return "not returned: " + strings.Join(waiting, ", "), len(waiting) == 0
+	})
 	for index, failure := range failures {
 		if failure != nil {
 			t.Fatalf("seed %d of %d: %v", index+1, len(databases), failure)
 		}
+		t.Logf("seeded at scale %v in %s", testScale, took[index].Round(time.Millisecond))
 	}
 	return runs
 }
 
-// seedInChild runs one seed of database in a process of its own and reads back the subjects it
-// wrote to report. It answers an error rather than failing t, because seedInChildren calls it
-// from a goroutine of its own.
-func seedInChild(t *testing.T, database *store.Store, report string) (*seedRun, error) {
-	command := exec.CommandContext(t.Context(), os.Args[0])
+// seedInChild runs one seed of database in a process of its own, which ctx's end kills, and reads
+// back the subjects it wrote to report, with how long the child ran. It answers an error rather
+// than failing a test, because seedInChildren calls it from a goroutine of its own.
+func seedInChild(ctx context.Context, database *store.Store, report string) (*seedRun, time.Duration, error) {
+	command := exec.CommandContext(ctx, os.Args[0])
 	command.Env = append(os.Environ(),
 		seedChildEnv+"="+report, seedChildDatabaseEnv+"="+database.Pool.Config().ConnString())
 	var output bytes.Buffer
@@ -108,18 +124,18 @@ func seedInChild(t *testing.T, database *store.Store, report string) (*seedRun, 
 	command.Stderr = &output
 	started := time.Now()
 	if err := command.Run(); err != nil {
-		return nil, fmt.Errorf("seed at scale %v in a child process: %w\n%s", testScale, err, output.String())
+		return nil, 0, fmt.Errorf("seed at scale %v in a child process: %w\n%s", testScale, err, output.String())
 	}
-	t.Logf("seeded at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
+	took := time.Since(started)
 	encoded, err := os.ReadFile(report)
 	if err != nil {
-		return nil, fmt.Errorf("read the subjects the seed wrote: %w\n%s", err, output.String())
+		return nil, took, fmt.Errorf("read the subjects the seed wrote: %w\n%s", err, output.String())
 	}
 	run := &seedRun{plan: newPlan(newSizes(testScale))}
 	if err := json.Unmarshal(encoded, &run.subject); err != nil {
-		return nil, fmt.Errorf("decode the subjects the seed wrote: %w", err)
+		return nil, took, fmt.Errorf("decode the subjects the seed wrote: %w", err)
 	}
-	return run, nil
+	return run, took, nil
 }
 
 // testScale is the scale the suite seeds at: about 200 issues, which is small enough that two

@@ -56,12 +56,10 @@ const fallbackClaim = time.Minute
 // holder's own settled mention's key where it has one (decideFallbackCopy, roleFallbackKey) - so
 // the double the wait exists to stop stays stopped. Two leases rather than one leaves the ordinary
 // resend, which the delivery sweep makes within a lease of the attempt's own, inside the wait:
-// what reaches the bound is a lane nobody is draining.
+// what reaches the bound is a lane nobody is draining. It is what Deps.unnamedForwardWait answers
+// unless a test set Deps.forwardBound, and the reading that says whether such an attempt is past
+// it takes that answer in seconds (mentionDeliveryQuery).
 const unnamedForwardBound = 2 * model.DeliveryClaimLapse
-
-// unnamedForwardBoundInterval is unnamedForwardBound as a Postgres interval literal in whole
-// seconds, for the reading that says whether such an attempt is past it (mentionDeliveryQuery).
-var unnamedForwardBoundInterval = fmt.Sprintf("interval '%d seconds'", int64(unnamedForwardBound/time.Second))
 
 // mentionAbandonedError is the error the outbox records on a mention attempt it settles failed
 // because its send was abandoned (mentionComment.settleAbandoned).
@@ -1694,7 +1692,7 @@ func (s fallbackSend) send(ctx context.Context, deps Deps, sender bus.Sender, ha
 func decideFallbackCopy(
 	ctx context.Context, deps Deps, held fallbackCopy, event fallbackEvent,
 ) (fallbackDecision, fallbackSend, error) {
-	deliveries, err := mentionDeliveriesOf(ctx, deps.Store.Pool, held.commentID)
+	deliveries, err := mentionDeliveriesOf(ctx, deps.Store.Pool, held.commentID, deps.unnamedForwardWait())
 	if err != nil {
 		return 0, fallbackSend{}, err
 	}

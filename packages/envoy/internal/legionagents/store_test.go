@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(testnats.Main(m.Run)) }
 
 // clock is a test's clock, which a test moves to tell a first write's recorded_at from a rewrite's.
 type clock struct {

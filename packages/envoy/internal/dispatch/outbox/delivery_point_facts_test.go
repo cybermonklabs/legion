@@ -3,7 +3,6 @@ package outbox
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -58,7 +57,7 @@ func TestDeliveredToIsAPointFactTheFenceDoesNotDrop(t *testing.T) {
 
 	// The claim store names the session recordingPublisher takes a role forward to, so a
 	// forward is acknowledged unless the publisher fails it.
-	claim := roleClaimStub{holder: roleHolder, lastSeen: time.Now().UnixMilli()}
+	claim := liveClaim(roleHolder)
 	publisher := &recordingPublisher{failSummary: payloadSummary(earlier, "")}
 	outbox := holding(t, Deps{Store: database, Publisher: publisher, Broker: broker,
 		RoleClaims: claim, Sessions: claim})

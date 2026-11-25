@@ -11,13 +11,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
-// expiringTokens makes fake mint installation tokens that live 250 ms, under githubapp's own
+// expiringTokens makes fake mint installation tokens that live a minute, inside githubapp's own
 // five-minute renewal margin, so the client mints one each time it is asked for a token, and
-// counts every request that carries a token past its expiry, which it answers as GitHub does:
-// 401 Bad credentials. A handler that returns true has answered.
+// counts every request that carries a token a handler expired (fakeGitHub.expire), which it
+// answers as GitHub does: 401 Bad credentials. A handler that returns true has answered.
 func expiringTokens(t *testing.T, fake *fakeGitHub) (refuse func(http.ResponseWriter, *http.Request) bool, expired *atomic.Int64) {
 	t.Helper()
-	fake.tokenLifetime = 250 * time.Millisecond
+	fake.tokenLifetime = time.Minute
 	expired = &atomic.Int64{}
 	return func(w http.ResponseWriter, r *http.Request) bool {
 		if !fake.tokenExpired(r) {
@@ -33,7 +33,7 @@ func expiringTokens(t *testing.T, fake *fakeGitHub) (refuse func(http.ResponseWr
 // TestListWorkflowRunsAsksForATokenPerPage: a walk whose pages outlast the installation token its
 // first page used goes on with a new one and never sends an expired token. A reconcile walk over a
 // busy repository runs past a token's hour, and GitHub answers the next page 401 Bad credentials.
-// The first page here is answered after its token has expired.
+// The token of the first page expires as that page is answered.
 func TestListWorkflowRunsAsksForATokenPerPage(t *testing.T) {
 	fake := newFakeGitHub(t)
 	refuse, expired := expiringTokens(t, fake)
@@ -43,7 +43,7 @@ func TestListWorkflowRunsAsksForATokenPerPage(t *testing.T) {
 		}
 		switch r.URL.Query().Get("page") {
 		case "1":
-			time.Sleep(400 * time.Millisecond)
+			fake.expire(r)
 			mustEncode(t, w, map[string]any{"total_count": 15, "workflow_runs": repeatRunItems(10, 1)})
 		default:
 			mustEncode(t, w, map[string]any{"total_count": 15, "workflow_runs": repeatRunItems(5, 11)})
@@ -70,7 +70,7 @@ func TestListWorkflowRunJobsAsksForATokenPerPage(t *testing.T) {
 		}
 		switch r.URL.Query().Get("page") {
 		case "1":
-			time.Sleep(400 * time.Millisecond)
+			fake.expire(r)
 			mustEncode(t, w, map[string]any{"total_count": runJobsPageSize + 5, "jobs": repeatJobItems(runJobsPageSize)})
 		default:
 			mustEncode(t, w, map[string]any{"total_count": runJobsPageSize + 5, "jobs": repeatJobItems(5)})
@@ -190,7 +190,7 @@ func TestListWorkflowRunsPaginatesAcrossPages(t *testing.T) {
 		case "2":
 			mustEncode(t, w, map[string]any{"total_count": 120, "workflow_runs": repeatRunItems(20, 101)})
 		default:
-			t.Fatalf("unexpected page %q", page)
+			refuseRequest(t, w, "unexpected page %q", page)
 		}
 	})
 	client := fake.newTestClient()
@@ -235,7 +235,8 @@ func TestListWorkflowRunsHalvesOnOverflowWithoutGapOrOverlap(t *testing.T) {
 		created := r.URL.Query().Get("created")
 		parts := strings.SplitN(created, "..", 2)
 		if len(parts) != 2 {
-			t.Fatalf("created %q is not a..b", created)
+			refuseRequest(t, w, "created %q is not a..b", created)
+			return
 		}
 		windows = append(windows, window{parts[0], parts[1]})
 
@@ -385,7 +386,7 @@ func TestListWorkflowRunJobsPaginatesAcrossPages(t *testing.T) {
 		case "2":
 			mustEncode(t, w, map[string]any{"total_count": 110, "jobs": repeatJobItems(10)})
 		default:
-			t.Fatalf("unexpected page %q", page)
+			refuseRequest(t, w, "unexpected page %q", page)
 		}
 	})
 	client := fake.newTestClient()

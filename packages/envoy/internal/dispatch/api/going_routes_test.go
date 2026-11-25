@@ -12,9 +12,12 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/going"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -68,17 +71,27 @@ func (f *fakeAnswerer) read() ([]string, []going.Hit, map[string]string) {
 }
 
 // goingRoutesRig is the server the route tests drive: the mux, the record behind it (read
-// directly, as the run's own writes reach it) and the store both run on.
+// directly, as the run's own writes reach it), the store both run on, and the server's clock.
 type goingRoutesRig struct {
 	handler  http.Handler
 	server   *server
 	database *store.Store
+	clock    *clocktest.Fake
 }
 
+// newGoingRoutesRig is the server on answerer, whose clock (Deps.Clock) is a fake that stands at
+// the database's now() read before any run is recorded. A run's window and its stream's deadline
+// are armed on that clock (startGoingRun, streamGoingAnswer), and every run's ends_at is
+// contracts.GoingRunWindow or more past the moment the fake stands at, so no run's answer, write
+// or stream is cut off by its window however long the row takes, until a row moves the fake
+// itself. Whether a run is past its ends_at is the database's own reading (goingRunStateOf), which
+// no clock of the server's reaches.
 func newGoingRoutesRig(t *testing.T, answerer Answerer) goingRoutesRig {
 	t.Helper()
-	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{answerer: answerer})
-	return goingRoutesRig{handler: handler, server: directServer(deps), database: database}
+	database := storetest.Open(t)
+	clock := clocktest.New(testdb.Now(t, database.Pool))
+	handler, _, deps, _ := newRegisteredTestServer(t, testServerOptions{answerer: answerer, store: database, clock: clock})
+	return goingRoutesRig{handler: handler, server: directServer(deps), database: database, clock: clock}
 }
 
 // ask asks one question as login, answering the route's response.
@@ -130,18 +143,15 @@ func (rig goingRoutesRig) streamUnder(t *testing.T, id, token string) *httptest.
 
 // awaitTerminal waits for the run to have stored its ending and answers every frame it holds,
 // rendered "<sequence> <name> <data>" as going_test.go renders them. Its one bound is the test
-// binary's deadline less testwait's margin; a run that never ends fails naming how many frames it
-// held.
+// binary's deadline less testwait's margin; a run that never ends fails naming the frames it held.
 func (rig goingRoutesRig) awaitTerminal(t *testing.T, id string) []string {
 	t.Helper()
-	var stored []goingEvent
-	testwait.UntilPolling(t, 20*time.Millisecond, "the run to store its ending (the frames it holds)", func() (int, bool) {
-		var err error
-		stored, _, err = rig.server.readGoingStream(context.Background(), id, 0)
+	stored := testwait.Until(t, "the run "+id+" to store its ending", func() ([]goingEvent, bool) {
+		stored, _, err := rig.server.readGoingStream(context.Background(), id, 0)
 		if err != nil {
 			t.Fatalf("read the run's frames: %v", err)
 		}
-		return len(stored), len(stored) > 0 && stored[len(stored)-1].Event.Terminal()
+		return stored, len(stored) > 0 && stored[len(stored)-1].Event.Terminal()
 	})
 	rendered := make([]string, 0, len(stored))
 	for _, frame := range stored {
@@ -243,6 +253,40 @@ func TestGoingRequestRecordsTheQuestionAndItsFramesReachTheRecord(t *testing.T) 
 	}
 	if body := bodies[found.Key()]; !strings.Contains(body, "pelicans arrive in spring") {
 		t.Errorf("the hit's body is %q, want the issue's own text", body)
+	}
+}
+
+// deadlineAnswerer is a run that answers nothing until its context ends, and then stores the one
+// frame that says its answer failed: its ending says when the run's own window ended it.
+type deadlineAnswerer struct{}
+
+func (deadlineAnswerer) Run(ctx context.Context, _ going.Request, emit func(going.Event) error) error {
+	<-ctx.Done()
+	return emit(going.Fault(contracts.GoingErrorAnswerFailed))
+}
+
+// The run the POST detaches is bounded by the window its record gave it on the server's clock
+// (Deps.Clock), as the stream that reads it is (startGoingRun): its answer runs until that clock
+// reaches the run's ends_at, and its writes until goingStreamGrace past it. Every row here runs on
+// a fake that stands before any run's ends_at (newGoingRoutesRig), so no run of theirs is cut off
+// by its window however long the machine takes. This row finds both deadlines armed on that fake
+// at the record's own moments, moves it to the run's ends_at, and the answer, which waits for its
+// context alone, stores its ending then, under the writes' later deadline. A run bound to the
+// wall clock arms nothing on the fake, and the row's wait for the first deadline fails naming it.
+func TestAGoingRunsWindowRunsOnTheServersClock(t *testing.T) {
+	t.Parallel()
+	rig := newGoingRoutesRig(t, deadlineAnswerer{})
+	response := rig.ask(t, "alice", map[string]any{"words": "how long may this run take?"})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("ask: status=%d body=%s", response.Code, response.Body.String())
+	}
+	run := decodeBody[askedRun](t, response)
+	rig.clock.AwaitArmedAt(t, "the run's writes' deadline, goingStreamGrace past its ends_at", run.EndsAt.Add(goingStreamGrace))
+	rig.clock.AwaitArmedAt(t, "the run's answer's deadline, its ends_at", run.EndsAt)
+	rig.clock.Set(run.EndsAt)
+	want := fmt.Sprintf(`1 %s {"code":"%s"}`, contracts.GoingEventError, contracts.GoingErrorAnswerFailed)
+	if frames := rig.awaitTerminal(t, run.ID); len(frames) != 1 || frames[0] != want {
+		t.Fatalf("the record holds %v, want the one ending %s the answer stored once its window ended", frames, want)
 	}
 }
 
@@ -407,7 +451,9 @@ func (s *goingStreamSink) text() string {
 // lock asks for that order rather than waiting for it to happen: the ending is written and held
 // uncommitted, so every frames read answers nothing, and committed only once the state read is
 // waiting on going_requests, so the state it answers holds an ending no frames read could have
-// seen.
+// seen. The run's ends_at is staged stagedAhead past the database's now() before the stream opens,
+// so no poll reads it past its deadline however long the row takes: a reader that did would end
+// the run itself, with the deadline's error, as streamGoingAnswer ends one whose pod is gone.
 func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
@@ -415,6 +461,10 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "who is answering this?")
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
+	}
+	if _, err := rig.database.Pool.Exec(ctx, `update going_requests set ends_at = now() + make_interval(secs => $2) where id = $1::uuid`,
+		run.ID, stagedAhead.Seconds()); err != nil {
+		t.Fatalf("stage the run's ends_at ahead of the database's clock: %v", err)
 	}
 	for _, frame := range []going.Event{going.Text("Nobody "), going.Text("has.")} {
 		if _, err := rig.server.appendGoingEvent(ctx, run.ID, frame); err != nil {
@@ -448,7 +498,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 	`, run.ID, contracts.GoingEventEnd); err != nil {
 		t.Fatalf("store the ending: %v", err)
 	}
-	waitUntil(t, "the stream's state read waiting on going_requests", func() bool {
+	testwait.Eventually(t, "the stream's state read waiting on going_requests", func() bool {
 		var waiting int
 		if err := rig.database.Pool.QueryRow(ctx, `
 			select count(*) from pg_locks where relation = 'going_requests'::regclass and not granted
@@ -458,7 +508,6 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		}
 		return waiting > 0
 	})
-
 	if err := ending.Commit(ctx); err != nil {
 		t.Fatalf("commit the ending: %v", err)
 	}

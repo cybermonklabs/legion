@@ -101,22 +101,17 @@ func (c *heldConsumer) state(t *testing.T, file string) *natsserver.ConsumerStat
 	return state
 }
 
-// awaitFloor waits for C's file to hold the ack floor floor. The wait ends on that state, bounded
-// only by the test binary's deadline (testwait.UntilPolling): the server's flusher writes the file
+// awaitFloor waits for C's file to hold the ack floor floor. The wait ends on that state, through
+// the shared wait with no bound of its own (testwait.Until): the server's flusher writes the file
 // after the ack lands, which a loaded machine delays without anything being wrong, so a fixed span
-// (reachWithin, before) failed the row when the write came late. It reads the file every
-// floorPoll.
+// (reachWithin, before) failed the row when the write came late.
 func (c *heldConsumer) awaitFloor(t *testing.T, file string, floor uint64) {
 	t.Helper()
-	testwait.UntilPolling(t, floorPoll, fmt.Sprintf("C's %s to reach ack floor %d", file, floor), func() (string, bool) {
+	testwait.Until(t, fmt.Sprintf("C's %s to reach ack floor %d", file, floor), func() (string, bool) {
 		state := c.state(t, file)
 		return fmt.Sprintf("%+v", state), state != nil && state.AckFloor.Stream == floor
 	})
 }
-
-// floorPoll is how often awaitFloor reads C's file: the 20 ms its fixed-span loop read it at
-// before.
-const floorPoll = 20 * time.Millisecond
 
 // staysBelow watches C's file for held, and fails when it reaches the ack floor floor.
 func (c *heldConsumer) staysBelow(t *testing.T, file string, floor uint64) {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Two envoy-dispatch processes run on hosts whose clocks need not agree, so every time a write
@@ -84,7 +85,9 @@ func databaseClockAhead(t *testing.T, database *store.Store, ahead time.Duration
 		t.Fatalf("open a pool reading the clock ahead: %v", err)
 	}
 	pool := store.NewPool(opened)
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the pool reading the clock ahead to come back, so the pool closes", pool.Close)
+	})
 	// Without this check a search_path the server ignored would leave the test judging against
 	// the true clock and passing for the wrong reason.
 	var skew int64

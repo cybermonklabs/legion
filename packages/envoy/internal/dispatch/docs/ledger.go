@@ -1091,10 +1091,11 @@ func (l *Ledger) commit(ctx context.Context) error {
 	// fork, so here is the last point the fork is the write's own, where its rendering is checked
 	// (checkRendering): once the commit drops the document's advisory lock, the room's worker
 	// stores the browser updates that lock held back and measures each on the shadow
-	// (roomShadow.measure), before the publish or after it.
+	// (roomShadow.measure), before the publish or after it. A write that has finished released its
+	// fork, so it has none to check.
 	for _, artifactID := range l.order {
 		write := l.live[artifactID]
-		if l.service.checkRendering != nil {
+		if l.service.checkRendering != nil && !write.finished {
 			l.service.checkRendering("commit", write)
 		}
 		if shadow := write.newShadow(); shadow != nil {

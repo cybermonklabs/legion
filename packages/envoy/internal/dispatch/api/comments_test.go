@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -38,7 +39,9 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			var input map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-				t.Fatalf("decode listener delivery: %v", err)
+				t.Errorf("decode listener delivery: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			sent = append(sent, input)
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
@@ -47,7 +50,10 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A clock whose timers never fire: the comment's lookup of s1 is answered as the listener
+	// answers it and is never left unanswered by its bound (mentionLookupTimeout), so the comment
+	// answers its mention resolved, which this row reads.
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Comment mentions", "before")
 
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -717,9 +723,11 @@ func TestACommentStoredUnderAnotherCaseIsEditableByItsAuthor(t *testing.T) {
 
 func TestResolveRecordsWhoAndWhen(t *testing.T) {
 	t.Parallel()
-	handler := newTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Resolution metadata", "before")
-	started := time.Now().UTC().Add(-time.Minute)
+	// resolved_at is the resolving transaction's now() (ledger.Now), so it is bracketed by two
+	// readings of the database's clock: one before the first resolve, one after each.
+	started := databaseNow(t, database.Pool)
 
 	assertResolution := func(name string, comment model.Comment, actor model.Actor) {
 		t.Helper()
@@ -727,8 +735,8 @@ func TestResolveRecordsWhoAndWhen(t *testing.T) {
 			t.Fatalf("%s result = %#v, want resolved by %#v with a timestamp", name, comment, actor)
 		}
 		resolvedAt, err := time.Parse(time.RFC3339Nano, *comment.ResolvedAt)
-		if err != nil || resolvedAt.Before(started) || resolvedAt.After(time.Now().UTC().Add(time.Second)) {
-			t.Fatalf("%s resolved_at = %q (%v), want timestamp within the last minute", name, *comment.ResolvedAt, err)
+		if err != nil || resolvedAt.Before(started) || resolvedAt.After(databaseNow(t, database.Pool)) {
+			t.Fatalf("%s resolved_at = %q (%v), want the resolve's moment on the database's clock, after %s", name, *comment.ResolvedAt, err, started)
 		}
 	}
 

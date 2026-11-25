@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -265,7 +267,7 @@ func TestColdReadCacheEvictionPlateaus(t *testing.T) {
 	reader := memory.start(t)
 	memory.env = nil
 	var listening []string
-	testwait.Holds(30*time.Second, 20*time.Millisecond, func() bool {
+	testwait.Eventually(t, "the reader's line naming its profiler's address, or its exit", func() bool {
 		listening = pprofListening.FindStringSubmatch(reader.output.String())
 		select {
 		case <-reader.exited:
@@ -345,7 +347,10 @@ func TestTwoUploadsAtOnceStayWithinTheMemoryBound(t *testing.T) {
 				for index := range uploads {
 					group.Go(func() { uploads[index], failures[index] = server.tryUpload("json", memory.issue, pair.markdown) })
 				}
-				group.Wait()
+				// Each upload carries trySend's 20-minute client timeout, which can outlast the
+				// test binary's deadline, so the join goes through the shared wait, which is
+				// their bound.
+				testwait.Returns(t, "the two uploads at once to return", group.Wait)
 				if err := errors.Join(failures[:]...); err != nil {
 					t.Fatal(err)
 				}
@@ -649,16 +654,46 @@ func TestAskEditsAndAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testin
 // hard break before it), so a question of 12,999 such lines makes 64,995 of the 65,536 elements
 // one write may make, and an option description beside it - 6,000 characters of `)_`, or 3,000
 // lines - passes that, and is refused with 413 CAP_EXCEEDED naming the text's weight, within the
-// bound and in seconds. The whole wording is 31,999 characters, inside the 32,000 an ask's
-// question and options may hold together (INFRA-370), which refuses a longer description - the
-// 920 KB one this test took before - before any of this.
+// bound. The whole wording is 31,999 characters, inside the 32,000 an ask's question and options
+// may hold together (INFRA-370), which refuses a longer description - the 920 KB one this test took
+// before - before any of this. That each refusal takes seconds is a service level, which
+// TestAnAsksTextIsRefusedWithinTenSeconds holds in benchtime's timing lane.
 func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 	t.Parallel()
+	refuseOversizedAskOptions(t)
+}
+
+// TestAnAsksTextIsRefusedWithinTenSeconds is the time TestAnAsksTextIsWeighedBeforeItIsRendered's
+// refusals promise: each within 10 s. The refusal runs in a child process, which no clock of the
+// test's reaches, so the reading is of the machine's clock and the row runs only in benchtime's
+// timing lane; that each refusal is a 413 within the memory bound is the suite row's.
+func TestAnAsksTextIsRefusedWithinTenSeconds(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	for _, refused := range refuseOversizedAskOptions(t) {
+		if refused.took > 10*time.Second {
+			t.Errorf("refusing an option description of %s took %s, want at most 10s", refused.name, refused.took)
+		}
+	}
+}
+
+// askRefusal is one oversized option description refuseOversizedAskOptions sent, and how long its
+// refusal took on the machine's clock.
+type askRefusal struct {
+	name string
+	took time.Duration
+}
+
+// refuseOversizedAskOptions sends an ask a question of 12,999 escaped lines with each oversized
+// option description, fails the test unless each is refused with 413 CAP_EXCEEDED naming the
+// text's weight within the memory bound, and answers how long each refusal took.
+func refuseOversizedAskOptions(t *testing.T) []askRefusal {
+	t.Helper()
 	memory := newMemoryHarness(t)
 	server := memory.start(t)
 	issue := server.createIssue(t, "Ask text", "Before.\n\n:::ask{#ask-0 urgency=\"med\" multiple=\"false\" state=\"open\"}\nQuestion 0?\n:::\n")
 	askID := server.blockAsks(t, issue.Key, 1)[0]
 	question := strings.Repeat("_\n", 12_999)
+	var refusals []askRefusal
 	for _, description := range []struct{ name, text string }{
 		{"6,000 characters of )_", strings.Repeat(")_", 3_000)},
 		{"3,000 lines", strings.Repeat("a\n", 3_000)},
@@ -675,18 +710,17 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 		peak := server.peakAboveIdle(t, func() {
 			answer = server.send(t, http.MethodPatch, "/api/v1/asks/"+askID, "application/json", bytes.NewReader(body), http.Header{"X-Dispatch-User": {"alice"}})
 		})
-		elapsed := time.Since(started)
-		t.Logf("an option description of %s: %d in %s, %d MiB above idle: %.200s", description.name, answer.status, elapsed, peak>>20, answer.body)
+		took := time.Since(started)
+		t.Logf("an option description of %s: %d in %s, %d MiB above idle: %.200s", description.name, answer.status, took, peak>>20, answer.body)
 		if answer.status != http.StatusRequestEntityTooLarge || !strings.Contains(string(answer.body), "this write's text weighs at least") {
 			t.Errorf("an option description of %s answered %d %.300s, want 413 CAP_EXCEEDED naming the text's weight", description.name, answer.status, answer.body)
 		}
 		if peak > requestMemoryBound {
 			t.Errorf("refusing an option description of %s held %d MiB above idle, want at most %d MiB", description.name, peak>>20, requestMemoryBound>>20)
 		}
-		if elapsed > 10*time.Second {
-			t.Errorf("refusing an option description of %s took %s, want at most 10s", description.name, elapsed)
-		}
+		refusals = append(refusals, askRefusal{name: description.name, took: took})
 	}
+	return refusals
 }
 
 // An answer is stored on its ask as well as in its block, and settlement writes it back into a block

@@ -2,20 +2,18 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // logBuffer is a log sink the server's goroutines may write while the test reads it.
@@ -143,27 +141,20 @@ func TestARefusedRequestIsLoggedWithNoCaller(t *testing.T) {
 
 // A socket that outlives its request resolves its caller again on every heartbeat, and that
 // resolution names no one on the line: a shared-token bearer's re-resolution would otherwise
-// replace the session the socket was admitted as with a nameless shared token. The socket stays
-// open until ten of those resolutions have returned, so the line is written after them.
+// replace the session the socket was admitted as with a nameless shared token. The heartbeats are
+// on the server's clock, a fake the handler moves through ten of them (driveHeartbeats), each
+// armed only once the check before it has returned.
 func TestASocketsHeartbeatLeavesTheSessionItWasAdmittedAs(t *testing.T) {
-	_, _, deps := newTestServer(t, testServerOptions{streamHeartbeat: 10 * time.Millisecond})
+	const heartbeat = 10 * time.Millisecond
+	fake := clocktest.New(time.Now())
+	opened := fake.Now()
+	_, _, deps := newTestServer(t, testServerOptions{streamHeartbeat: heartbeat, clock: fake})
 	logged := captureLog(t)
 	served := directServer(deps)
-	var resolved atomic.Int32
-	stillResolves := func(r *http.Request) error {
-		defer resolved.Add(1)
-		return served.callerStillResolves(r)
-	}
-	socket := accesslog.Handler("/ws/live", served.whileCallerResolves(stillResolves, func(w http.ResponseWriter, r *http.Request) {
+	socket := accesslog.Handler("/ws/live", served.whileCallerResolves(served.callerStillResolves, func(w http.ResponseWriter, r *http.Request) {
 		accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
 		accesslog.Note(r.Context(), accesslog.KindSession, "session-0123456789abcdef")
-		testwait.Until(t, "ten heartbeats to resolve the socket's caller again (the resolutions returned)", func() (int32, bool) {
-			if r.Context().Err() != nil {
-				t.Fatalf("the socket closed after %d heartbeat resolutions: %v", resolved.Load(), context.Cause(r.Context()))
-			}
-			n := resolved.Load()
-			return n, n >= 10
-		})
+		driveHeartbeats(t, fake, opened.Add(heartbeat), 10, heartbeat, 1)
 	}))
 	request := httptest.NewRequest(http.MethodGet, "/ws/live", nil)
 	request.Header.Set("Authorization", "Bearer agent-token")

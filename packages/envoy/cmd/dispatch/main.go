@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
@@ -44,6 +45,7 @@ import (
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
@@ -155,6 +157,11 @@ type bootConfig struct {
 	// zero for the server's own twelve seconds; only DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW, under
 	// the test hooks, sets it.
 	ListenerTakeoverWindow time.Duration
+	// ListenerCallDeadline is the end every listener call's window has in place of
+	// dispatchenvoy.CallWindow after the call began; its zero value, production's, keeps
+	// CallWindow. Only DISPATCH_TEST_LISTENER_CALL_DEADLINE, under the test hooks, sets it: to the
+	// moment the test that runs this process gives up, or no end under -timeout 0.
+	ListenerCallDeadline clock.Deadline
 	// HorizonStallAfter is how long a pending event-horizon observation waits before the process
 	// logs its stall warning, and HorizonWarnEvery how often every event-horizon warning repeats
 	// - that stall warning, the failed-observation warning and the failed-persist warning - both
@@ -185,16 +192,68 @@ type bootConfig struct {
 	// DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL, under the test hooks, sets it, since no
 	// process-level test can wait a minute for a pass.
 	MaintenanceSweepInterval time.Duration
+	// CompactionSweepPeriod is the period of the document compaction sweep - how often it ticks
+	// and the aligned span one pass serves across the processes - zero for
+	// docs.CompactionSweepPeriod's hour; only DISPATCH_TEST_COMPACTION_SWEEP_PERIOD, under the test
+	// hooks, sets it, so an end-to-end test can put both processes' first ticks in one period
+	// however long their starts take.
+	CompactionSweepPeriod time.Duration
 	// ProcessHeartbeat is how often this process stamps its row in the registry of live server
 	// processes, zero for processes.HeartbeatInterval's five seconds; only
 	// DISPATCH_TEST_PROCESS_HEARTBEAT, under the test hooks, sets it, and processes.LiveWindow
 	// keeps its ratio of three beats to it, since no process-level test can wait a live window
 	// and a heartbeat for a refusal to stand.
 	ProcessHeartbeat time.Duration
+	// HTTPDrainDeadline, DocumentShutdownDeadline and ShutdownProbeDeadline are the ends a test
+	// process gives three bounds a stop arms (stopBounds), each a clock.Deadline: the stop's wait
+	// for the requests in flight before the document service starts, in place of
+	// httpDrainBeforeDocuments; the document service's drain budget and the timeout around it, in
+	// place of docs.ShutdownDrainBudget and documentShutdownTimeout (documentDeps hands the service
+	// docs.Deps.ShutdownDrainDeadline); and each health probe's bound while the stop decides whether
+	// the database still answers, in place of store's healthProbeTimeout. The zero value of each is
+	// production's. Only DISPATCH_TEST_HTTP_DRAIN_DEADLINE, DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE
+	// and DISPATCH_TEST_SHUTDOWN_PROBE_DEADLINE, under the test hooks, set them: the test's give-up.
+	HTTPDrainDeadline        clock.Deadline
+	DocumentShutdownDeadline clock.Deadline
+	ShutdownProbeDeadline    clock.Deadline
+	// DashboardPublishDeadline is the end a test process gives the boot's publish of its dashboard
+	// build and the prune after it, in place of dashboardPublishTimeout's minute; the zero value is
+	// production's. Only DISPATCH_TEST_DASHBOARD_PUBLISH_DEADLINE, under the test hooks, sets it.
+	DashboardPublishDeadline clock.Deadline
+	// ReadHeaderDeadline is the end a test process gives the HTTP server's wait for a request's
+	// headers, in place of readHeaderTimeout's ten seconds after it accepts the connection
+	// (httpServerFor); the zero value is production's. Only DISPATCH_TEST_READ_HEADER_DEADLINE,
+	// under the test hooks, sets it.
+	ReadHeaderDeadline clock.Deadline
+	// GitHubRequestDeadline is the end a test process gives each call of every GitHub App client
+	// it builds (the API's, which the intakes and the architecture import share, the CI
+	// reconcile's and the webhook redelivery sweep's), in place of githubapp.RequestTimeout after
+	// the call began; the zero value is production's. Only DISPATCH_TEST_GITHUB_REQUEST_DEADLINE,
+	// under the test hooks, sets it.
+	GitHubRequestDeadline clock.Deadline
+	// TestHookDeadline is the end a test process gives a test-hook call's waits
+	// (api.Deps.TestHookDeadline), in place of the server's ten seconds; the zero value is
+	// production's. Only DISPATCH_TEST_HOOK_DEADLINE sets it.
+	TestHookDeadline clock.Deadline
+	// IntakeHoldTTL replaces how long a GitHub intake's durable hold lasts after each renewal, zero
+	// for production's fifteen seconds: staged state, a duration, which must exceed
+	// delivery.IntakeHoldTTLFloor. IntakeHoldCallDeadline and IntakeMessageDeadline are the ends a
+	// test process gives each try's read and take of the hold and each read of the durable, in
+	// place of five seconds, and one message's handling, in place of a minute; the zero value of
+	// each is production's. Only DISPATCH_TEST_INTAKE_HOLD_TTL,
+	// DISPATCH_TEST_INTAKE_HOLD_CALL_DEADLINE and DISPATCH_TEST_INTAKE_MESSAGE_DEADLINE, under the
+	// test hooks, set them (delivery.IntakeBounds, intakeBoundsOf).
+	IntakeHoldTTL          time.Duration
+	IntakeHoldCallDeadline clock.Deadline
+	IntakeMessageDeadline  clock.Deadline
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
 	// the test hooks, sets it.
 	ListenerRosterUncached bool
+	// DebugMessages are the DEBUG log messages this process writes beside everything it writes at
+	// INFO and above (debugMessagesHandler), nil for none; only DISPATCH_TEST_DEBUG_MESSAGES, under
+	// the test hooks, names any, for an end-to-end test that waits on a loop's pass lines.
+	DebugMessages map[string]bool
 	// EmbedderOff builds no embedder, whatever DISPATCH_EMBEDDER and the AWS SDK's own variables
 	// would have built: meaning search answers keyword-only and the embedding queue does nothing.
 	// Only DISPATCH_TEST_EMBEDDER_OFF=1, under the test hooks, sets it.
@@ -207,6 +266,11 @@ type bootConfig struct {
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
 	// the test hooks, sets it.
 	ArchitectureImportAtStart bool
+	// HealthzPublisherReads makes each read /healthz makes of whether this process publishes the
+	// outbox log what it read and the two moments of this process's clock it was read between
+	// (stampedPublisher); only DISPATCH_TEST_HEALTHZ_PUBLISHER_READS=1, under the test hooks, sets
+	// it, for an end-to-end test that judges those reads against the outbox's own lines.
+	HealthzPublisherReads bool
 	// OIDCIssuer and OIDCAudience configure verification of projected
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
@@ -301,6 +365,9 @@ func main() {
 	if err != nil {
 		slog.Error("dispatch: resolve boot config", "error", err)
 		os.Exit(1)
+	}
+	if len(boot.DebugMessages) > 0 {
+		slog.SetDefault(slog.New(debugMessagesHandler{Handler: slog.Default().Handler(), messages: boot.DebugMessages}))
 	}
 	// Dispatch's Google Cloud identity at the listener needs a metadata server, decided once here:
 	// a machine with none refuses to start, naming the setting, and a metadata server that does
@@ -502,7 +569,7 @@ func main() {
 	// exits before it is ready, and a rolling update keeps the processes it would have replaced.
 	// The build is what the process registers below as the build it serves, and its entry chunk
 	// what GET /api/v1/dashboard/builds answers as this process's.
-	dashboardBuild, err := publishDashboard(store.WithTransactionTracking(ctx), database.Pool, webDistDir, dashboardPublishTimeout)
+	dashboardBuild, err := publishDashboard(store.WithTransactionTracking(ctx), database.Pool, webDistDir, boot.DashboardPublishDeadline)
 	if err != nil {
 		slog.Error("dispatch: publish dashboard assets", "error", err)
 		os.Exit(1)
@@ -533,7 +600,7 @@ func main() {
 		slog.Error("dispatch: load signing key", "error", err)
 		os.Exit(1)
 	}
-	retirePlainRefreshTokens(ctx, people, plainRefreshTokenRetireTimeout)
+	retirePlainRefreshTokens(ctx, people, clock.Real(), plainRefreshTokenRetireTimeout)
 	sessions := store.NewPgSessionStore(database.Pool)
 
 	if boot.IdentityHeader != "" {
@@ -1052,7 +1119,11 @@ func main() {
 	// Documents the compaction queues let go - every room a restart, a Shutdown or a Quiesce
 	// dropped from one - fold within an hour of coming due, whether or not NATS is configured
 	// (INFRA-593).
-	go documentService.RunCompactionSweep(ctx, documentCompactionLeases)
+	compactionSweepPeriod := docs.CompactionSweepPeriod
+	if boot.CompactionSweepPeriod > 0 {
+		compactionSweepPeriod = boot.CompactionSweepPeriod
+	}
+	go documentService.RunCompactionSweep(ctx, compactionSweepPeriod, documentCompactionLeases)
 	// Every stored text written before INFRA-635 stored display trees, and every stored text at
 	// all after a deploy raises pmdoc.DisplayTreeVersion, gets its tree without waiting for a
 	// reader to open it; the same pass drops the trees of every version before the two newest,
@@ -1097,7 +1168,7 @@ func main() {
 		go gitHubReadCopy.Run(ctx, attempts.All, gitHubReadsWake, slog.Default())
 	}
 
-	sweeper, err := webhookSweeper(natsClient, database, appCfg, boot.GitHubAPIBase, boot.NATSReplicas)
+	sweeper, err := webhookSweeper(natsClient, database, appCfg, boot.GitHubAPIBase, boot.NATSReplicas, gitHubClientOptions(boot.GitHubRequestDeadline)...)
 	if err != nil {
 		slog.Error("dispatch: open webhook redelivery", "error", err)
 		os.Exit(1)
@@ -1129,7 +1200,7 @@ func main() {
 	// ciInstance is filled in once this process is registered, below, and each pass records its
 	// counts in ci_reconcile_passes under the id it then holds.
 	ciInstance := &registeredInstance{}
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, boot.VerdictAppID, ciReconcileInterval, ciInstance, renames)
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, boot.VerdictAppID, ciReconcileInterval, ciInstance, renames, gitHubClientOptions(boot.GitHubRequestDeadline)...)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
@@ -1207,7 +1278,7 @@ func main() {
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
-		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, appCtx.Architecture(), attributor)
+		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, appCtx.Architecture(), attributor, intakeBoundsOf(boot))
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
@@ -1316,8 +1387,16 @@ func main() {
 			githubreads.CIReconcile:        reconciler != nil,
 		}}
 	}
-	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
-	server := newHTTPServer(handler, time.Now)
+	// healthzPublisher is what /healthz reads of the outbox: the publisher itself, or, in a test
+	// process under DISPATCH_TEST_HEALTHZ_PUBLISHER_READS=1, the same publisher with each read
+	// logged on this process's clock (stampedPublisher). A nil outboxPublisher, with NATS
+	// disabled, answers false either way.
+	var healthzPublisher publisherState = outboxPublisher
+	if boot.HealthzPublisherReads {
+		healthzPublisher = stampedPublisher{outbox: outboxPublisher, clock: clock.Real(), log: slog.Default()}
+	}
+	handler := dispatchHandler(routesHandler, met, database, natsClient, healthzPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
+	server := httpServerFor(boot, handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
 	// the process with 1: a supervisor must not read a port clash as a clean stop.
@@ -1382,7 +1461,7 @@ func main() {
 		appCtx.Architecture().Close()
 		waitFill()
 	}
-	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
+	if err := serveUntilStopped(ctx, cancel, stopBoundsOf(boot), server, listener, documentService, database.Pool, waitBackground, waitIntakes,
 		deregisterAfterDrain(registration), registration.Lost(), outboxStopped); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
@@ -1602,11 +1681,38 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_REDELIVERY_INTERVAL", &boot.RedeliveryInterval},
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
+		{"DISPATCH_TEST_COMPACTION_SWEEP_PERIOD", &boot.CompactionSweepPeriod},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
+		{"DISPATCH_TEST_INTAKE_HOLD_TTL", &boot.IntakeHoldTTL},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	for _, setting := range []struct {
+		name   string
+		target *clock.Deadline
+	}{
+		{"DISPATCH_TEST_HTTP_DRAIN_DEADLINE", &boot.HTTPDrainDeadline},
+		{"DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE", &boot.DocumentShutdownDeadline},
+		{"DISPATCH_TEST_SHUTDOWN_PROBE_DEADLINE", &boot.ShutdownProbeDeadline},
+		{"DISPATCH_TEST_DASHBOARD_PUBLISH_DEADLINE", &boot.DashboardPublishDeadline},
+		{"DISPATCH_TEST_READ_HEADER_DEADLINE", &boot.ReadHeaderDeadline},
+		{"DISPATCH_TEST_GITHUB_REQUEST_DEADLINE", &boot.GitHubRequestDeadline},
+		{"DISPATCH_TEST_HOOK_DEADLINE", &boot.TestHookDeadline},
+		{"DISPATCH_TEST_INTAKE_HOLD_CALL_DEADLINE", &boot.IntakeHoldCallDeadline},
+		{"DISPATCH_TEST_INTAKE_MESSAGE_DEADLINE", &boot.IntakeMessageDeadline},
+		{"DISPATCH_TEST_LISTENER_CALL_DEADLINE", &boot.ListenerCallDeadline},
+	} {
+		if err := testHookDeadline(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
+			return bootConfig{}, err
+		}
+	}
+	// The hold is still renewed every few seconds and reports itself lost a margin before it lapses
+	// (delivery.IntakeBounds.HoldTTL), so a TTL no longer than both would fail every take.
+	if boot.IntakeHoldTTL != 0 && boot.IntakeHoldTTL <= delivery.IntakeHoldTTLFloor {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_INTAKE_HOLD_TTL=%q (expected a Go duration longer than %v, the intake hold's renewal interval and margin)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_INTAKE_HOLD_TTL")), delivery.IntakeHoldTTLFloor)
 	}
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
@@ -1622,10 +1728,14 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
+		{"DISPATCH_TEST_HEALTHZ_PUBLISHER_READS", &boot.HealthzPublisherReads},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	if boot.DebugMessages, err = testHookMessages(env, "DISPATCH_TEST_DEBUG_MESSAGES", boot.TestHooksEnabled); err != nil {
+		return bootConfig{}, err
 	}
 	switch rule := env.get("DISPATCH_PARENT_STATUS_RULE"); rule {
 	case "", "off":
@@ -1934,24 +2044,69 @@ func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
 	built.MaxLiveRooms = boot.MaxLiveRooms
 	built.MaxDocConnections = boot.MaxDocConnections
 	built.TestHooks = boot.TestHooksEnabled
+	built.ShutdownDrainDeadline = boot.DocumentShutdownDeadline
 	return built
+}
+
+// stopBoundsOf is the ends a test process gives the stop's bounds (HTTPDrainDeadline,
+// DocumentShutdownDeadline and ShutdownProbeDeadline), as serveUntilStopped takes them; each is
+// the zero value, production's, in a deployment. The document service takes its drain's end from
+// the same field (documentDeps).
+func stopBoundsOf(boot bootConfig) stopBounds {
+	return stopBounds{httpDrain: boot.HTTPDrainDeadline, documentDrain: boot.DocumentShutdownDeadline, probe: boot.ShutdownProbeDeadline}
+}
+
+// intakeBoundsOf is the GitHub intakes' bounds a test process sets (IntakeHoldTTL,
+// IntakeHoldCallDeadline and IntakeMessageDeadline), as delivery.StartIntakes takes them; each is
+// zero, production's, in a deployment.
+func intakeBoundsOf(boot bootConfig) delivery.IntakeBounds {
+	return delivery.IntakeBounds{HoldTTL: boot.IntakeHoldTTL, HoldCallDeadline: boot.IntakeHoldCallDeadline, MessageDeadline: boot.IntakeMessageDeadline}
+}
+
+// gitHubClientOptions are the options a GitHub App client main or redeliver-webhooks builds takes
+// beside its own (the CI reconcile's and the webhook redelivery sweep's; the API's takes the same
+// end through appContextOptions): requestDeadline, the end a test run gives each call
+// (bootConfig.GitHubRequestDeadline, DISPATCH_TEST_GITHUB_REQUEST_DEADLINE), and none for the zero
+// value, a deployment's, which keeps githubapp.RequestTimeout.
+func gitHubClientOptions(requestDeadline clock.Deadline) []githubapp.Option {
+	if requestDeadline.IsZero() {
+		return nil
+	}
+	return []githubapp.Option{githubapp.WithRequestDeadline(requestDeadline)}
+}
+
+// httpServerFor is the server main runs (newHTTPServer), with the end a test process gives the
+// wait for a request's headers (ReadHeaderDeadline) in readHeaderTimeout's place. net/http counts
+// that wait from each connection's accept, so a moment becomes the span from now to it, which
+// ends every later connection's wait no sooner than that moment; no end is a negative timeout,
+// net/http's none.
+func httpServerFor(boot bootConfig, handler http.Handler, now func() time.Time) *http.Server {
+	server := newHTTPServer(handler, now)
+	if span, bounded := boot.ReadHeaderDeadline.Within(clock.Real(), readHeaderTimeout); bounded {
+		server.ReadHeaderTimeout = span
+	} else {
+		server.ReadHeaderTimeout = -1
+	}
+	return server
 }
 
 // dashboardPublishTimeout bounds the boot's publish of its dashboard build and the prune after it.
 // A first publish writes the whole build, 45 files and 5.4 MB for the dashboard of 2026-10-27; a
-// restart on a stored build writes nothing.
+// restart on a stored build writes nothing. A test process sets its own
+// (DISPATCH_TEST_DASHBOARD_PUBLISH_DEADLINE, bootConfig.DashboardPublishDeadline).
 const dashboardPublishTimeout = 60 * time.Second
 
 // publishDashboard stores the dashboard build at webDistDir in the database
 // (dashboard.Publish, stamped with buildCommit) and then prunes the builds no process needs any
-// more (dashboard.Prune), both within timeout, and returns what it published: the build's id
+// more (dashboard.Prune), both within dashboardPublishTimeout or until the end a test process gave
+// them (bound, a clock.Deadline), and returns what it published: the build's id
 // (routes.DashboardBuild's) and entry chunk among it. A dist with no index.html (the Go test
 // rigs serve an empty directory) publishes nothing, logs that it did not, and returns the zero
 // Published, whose empty build and entry say this process serves no dashboard. A failed publish
 // is the error returned, and refuses the boot; a failed prune is logged and the start goes on,
 // since it leaves only builds the next boot's prune deletes.
-func publishDashboard(ctx context.Context, pool *store.Pool, webDistDir string, timeout time.Duration) (dashboard.Published, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+func publishDashboard(ctx context.Context, pool *store.Pool, webDistDir string, bound clock.Deadline) (dashboard.Published, error) {
+	ctx, cancel := bound.WithTimeout(clock.Real(), ctx, dashboardPublishTimeout)
 	defer cancel()
 	published, err := dashboard.Publish(ctx, pool, webDistDir, buildCommit)
 	switch {
@@ -1998,7 +2153,7 @@ const repoRenamesReadTimeout = 30 * time.Second
 // or runs out of time is logged and the start goes on, since each document's next settlement
 // restores its own asks.
 func restoreDecidedWordings(ctx context.Context, documents *docs.Service, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: restore decided asks' wordings", "dispatch: restored decided asks' wordings",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: restore decided asks' wordings", "dispatch: restored decided asks' wordings",
 		func(ctx context.Context) ([]any, error) {
 			restored, copies, err := documents.RestoreDecidedWordings(ctx)
 			if err != nil {
@@ -2012,7 +2167,7 @@ const reviewContentHashFillTimeout = 30 * time.Second
 
 // fillReviewContentHashes pins reviews from before the hash columns were added.
 func fillReviewContentHashes(ctx context.Context, pool *store.Pool, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: fill reviews' content hashes", "dispatch: filled reviews' content hashes",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: fill reviews' content hashes", "dispatch: filled reviews' content hashes",
 		func(ctx context.Context) ([]any, error) {
 			result, err := docs.FillReviewContentHashes(ctx, pool)
 			return []any{"filled", result.Filled, "unhashable", result.Unhashable}, err
@@ -2035,7 +2190,7 @@ const repoRenamePassTimeout = 30 * time.Second
 // next boot tries again.
 func renameRepositories(ctx context.Context, pool *store.Pool, pairs []store.RepoRename, readErr error, timeout time.Duration) {
 	const summary = "dispatch: rewrote renamed repositories' old names"
-	bootTask(ctx, timeout, summary, summary, func(ctx context.Context) ([]any, error) {
+	bootTask(ctx, clock.Real(), timeout, summary, summary, func(ctx context.Context) ([]any, error) {
 		pass := store.RewriteRenamedRepositories(ctx, pool, pairs)
 		if readErr != nil {
 			pass.Failures++
@@ -2059,7 +2214,7 @@ const issueAskRepairBootTimeout = 30 * time.Second
 // runs out of time is logged and the start goes on, since api.RunIssueAskRepair repairs the rest
 // every api.IssueAskRepairInterval.
 func repairIssueAsks(ctx context.Context, deps api.Deps, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: repair the asks of closed and reopened issues", "dispatch: repaired the asks of closed and reopened issues",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: repair the asks of closed and reopened issues", "dispatch: repaired the asks of closed and reopened issues",
 		func(ctx context.Context) ([]any, error) {
 			markedSince := time.Now().Add(-api.IssueAskRepairInterval)
 			repair, err := api.RepairIssueAsks(ctx, deps, &markedSince)
@@ -2067,11 +2222,11 @@ func repairIssueAsks(ctx context.Context, deps api.Deps, timeout time.Duration) 
 		})
 }
 
-// bootTask runs task, a repair the boot makes before it serves, bounded by timeout, and logs what
-// it reports: the counts task returns under done at INFO, or, when task fails or runs out of time,
-// those counts and the error under failed at ERROR. Either way the start goes on.
-func bootTask(ctx context.Context, timeout time.Duration, failed, done string, task func(context.Context) ([]any, error)) {
-	taskCtx, cancel := context.WithTimeout(ctx, timeout)
+// bootTask runs task, a repair the boot makes before it serves, bounded by timeout on clk, and logs
+// what it reports: the counts task returns under done at INFO, or, when task fails or runs out of
+// time, those counts and the error under failed at ERROR. Either way the start goes on.
+func bootTask(ctx context.Context, clk bootClock, timeout time.Duration, failed, done string, task func(context.Context) ([]any, error)) {
+	taskCtx, cancel := clk.WithTimeout(ctx, timeout)
 	defer cancel()
 	counts, err := task(taskCtx)
 	if err != nil {
@@ -2079,6 +2234,12 @@ func bootTask(ctx context.Context, timeout time.Duration, failed, done string, t
 		return
 	}
 	slog.Info(done, counts...)
+}
+
+// bootClock is the clock a boot task's bound runs on, a narrowing of clock.Clock: clock.Real in
+// main, and a clocktest.Fake in the test that moves a bound.
+type bootClock interface {
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
 
 // appContextOptions is what main hands routes.BuildAppContext: built, what main made from the
@@ -2101,6 +2262,9 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.TestHooksEnabled = boot.TestHooksEnabled
 	built.RouteRosterTTL = boot.RouteRosterTTL
 	built.ListenerTakeoverWindow = boot.ListenerTakeoverWindow
+	built.TestHookDeadline = boot.TestHookDeadline
+	built.GitHubRequestDeadline = boot.GitHubRequestDeadline
+	built.ListenerCallDeadline = boot.ListenerCallDeadline
 	built.HorizonStallAfter = boot.HorizonStallAfter
 	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
@@ -2272,7 +2436,7 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
+func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher publisherState, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
@@ -2530,14 +2694,22 @@ func proofOrigins(serverURL string, added []string) []string {
 //
 // `outbox_publisher` says whether this process publishes the events outbox now: true while it
 // holds the outbox's publisher hold and the hold's deadline has not passed, false when it stands
-// by, lost the hold, or runs with NATS disabled (publisher nil). One process of a deployment
-// publishes at a time, so a healthy process may well report false, and it never decides `ok`.
+// by, lost the hold, or runs with NATS disabled (publisher nil, or an *outbox.Outbox that is nil).
+// One process of a deployment publishes at a time, so a healthy process may well report false,
+// and it never decides `ok`.
 //
 // `idempotency_keys` is true on every build that judges a write's Idempotency-Key (INFRA-258,
 // api/request_keys.go): the deploy check reads it (scripts/e2e/lib/dispatch-keyed-comment.ts), since
 // an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
-func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
+func healthzHandler(database *store.Store, natsClient *bus.Client, publisher publisherState, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
+	return healthzHandlerOn(clock.Real(), database, natsClient, publisher, fileStore, commit, announcer, issuers, reads)
+}
+
+// healthzHandlerOn is healthzHandler with the database probe's bound armed on c: clock.Real from
+// healthzHandler, and a test's clocktest.Fake, which ends a probe the database never answers only
+// where the test moves it.
+func healthzHandlerOn(c clock.Clock, database *store.Store, natsClient *bus.Client, publisher publisherState, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -2565,7 +2737,7 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			// pool, a deadline on a stalled link, an authentication failure and a refused
 			// dial are four incidents with four next steps, and the body distinguishes
 			// none of them. One line per failed poll, for as long as the outage lasts.
-			version, err := database.Pool.Healthy(req.Context())
+			version, err := database.Pool.HealthyOn(req.Context(), c)
 			if err != nil {
 				slog.Warn("dispatch: health probe failed", "error", err)
 				databaseOK = false
@@ -2611,9 +2783,16 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			GitHub: reads.member(), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
-			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
+			OutboxPublisher: publisher != nil && publisher.Publishing(), IdempotencyKeys: true,
 		})
 	}
+}
+
+// publisherState is what /healthz asks of the outbox: whether this process publishes it now. It
+// is the process's *outbox.Outbox, whose Publishing answers false when it is nil (NATS disabled),
+// or stampedPublisher in a test process under DISPATCH_TEST_HEALTHZ_PUBLISHER_READS=1.
+type publisherState interface {
+	Publishing() bool
 }
 
 // testHookDuration reads the test-only duration setting name into target, leaving target as it
@@ -2632,6 +2811,25 @@ func testHookDuration(env settingValues, name string, testHooksEnabled bool, tar
 		return fmt.Errorf("%s=%q (expected a positive Go duration)", name, raw)
 	}
 	*target = value
+	return nil
+}
+
+// testHookDeadline reads the test-only deadline name into target, leaving target as it is when the
+// setting is unset. It is refused without DISPATCH_TEST_HOOKS=1, and so is any value that is not
+// an RFC 3339 moment or none: clock.ParseDeadline, the one parser of a test's deadline.
+func testHookDeadline(env settingValues, name string, testHooksEnabled bool, target *clock.Deadline) error {
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	deadline, err := clock.ParseDeadline(raw)
+	if err != nil {
+		return fmt.Errorf("%s=%q (expected an RFC 3339 moment or none)", name, raw)
+	}
+	*target = deadline
 	return nil
 }
 

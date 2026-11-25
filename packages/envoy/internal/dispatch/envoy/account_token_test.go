@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -36,16 +37,25 @@ func accountToken(t *testing.T, subject string, exp time.Time) string {
 }
 
 // writeAccountToken writes token into path as the kubelet writes a projected token: the whole
-// file replaced at once, a trailing newline after it.
+// file replaced at once, a trailing newline after it (replaceAccountToken).
 func writeAccountToken(t *testing.T, path, token string) {
 	t.Helper()
+	if err := replaceAccountToken(path, token); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// replaceAccountToken is writeAccountToken's write, for a caller off the test's goroutine (a
+// stand-in's hook), which reports a failure with Errorf rather than end a goroutine it does not own.
+func replaceAccountToken(path, token string) error {
 	next := path + ".next"
 	if err := os.WriteFile(next, []byte(token+"\n"), 0o600); err != nil {
-		t.Fatalf("write the account token: %v", err)
+		return fmt.Errorf("write the account token: %w", err)
 	}
 	if err := os.Rename(next, path); err != nil {
-		t.Fatalf("replace the account token: %v", err)
+		return fmt.Errorf("replace the account token: %w", err)
 	}
+	return nil
 }
 
 // authorizations is a listener stand-in that records the Authorization of every send it is made
@@ -287,8 +297,11 @@ func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnAFreshToken(t *tes
 		stand.mu.Lock()
 		stand.takes["Bearer "+rotated] = true
 		stand.before = func(n int) {
+			// The hook runs on the stand's server goroutine.
 			if n == 1 {
-				writeAccountToken(t, path, rotated)
+				if err := replaceAccountToken(path, rotated); err != nil {
+					t.Error(err)
+				}
 			}
 		}
 		stand.mu.Unlock()

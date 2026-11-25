@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -186,11 +187,11 @@ func listOpenAsks(t *testing.T, handler http.Handler, sessionID string, since st
 
 func TestListOpenAsksForSession(t *testing.T) {
 	t.Parallel()
-	handler, _ := newTestHandlerWithStore(t)
+	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Open-ask owner", "A spec")
 	document := createProjectDocument(t, handler, "TEST", "Runbook", "# Runbook\n")
 	const ownerSession = "session-open-asks"
-	baseline := time.Now().UTC().Format(time.RFC3339Nano)
+	baseline := databaseNow(t, database.Pool).UTC().Format(time.RFC3339Nano)
 
 	createAsk := func(target, question, sessionID string) model.Ask {
 		t.Helper()
@@ -532,7 +533,7 @@ func TestIssueDetailAttachesTheBlockArtifactToEveryBlockAsk(t *testing.T) {
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Three decisions", strings.Join([]string{

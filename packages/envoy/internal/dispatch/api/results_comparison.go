@@ -36,12 +36,15 @@ import (
 // so the two make the same GitHub calls and give the same answer.
 
 // resultsNow is the moment a results read takes each of its moments from: server.resultsClock's,
-// or time.Now's where that is nil, as it is on every server the deployment builds.
+// or the server's own stamped moment (stampedNow) where that is nil, as it is on every server the
+// deployment builds. So a test that judges the moments a commit's pull-request read claims and
+// settles it with (readThroughHead) on stampClock reads them off that fake, as a test that moves
+// every moment of the read sets resultsClock.
 func (s *server) resultsNow() time.Time {
 	if s.resultsClock != nil {
 		return s.resultsClock()
 	}
-	return time.Now()
+	return s.stampedNow()
 }
 
 // comparisonReader answers one read of one issue's results: for each check the bases its

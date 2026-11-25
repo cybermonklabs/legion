@@ -9,8 +9,8 @@
 // records the attempt when its pass ends (Finish), and each process keeps a copy of the record
 // (Copy) that the probe reads, so the probe sends nothing to the database.
 //
-// It imports the standard library and internal/dispatch/text alone, so the GitHub client can
-// import it, and it reads nothing from the environment.
+// It imports the standard library, internal/dispatch/text and internal/clock alone, so the GitHub
+// client can import it, and it reads nothing from the environment.
 package githubreads
 
 import (
@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -340,6 +341,12 @@ type Recorder func(ctx context.Context, read Read, succeeded bool, cause string)
 // can end on its own deadline and its outcome is still worth recording. A failed write is logged
 // at ERROR on logger, or slog.Default() when it is nil, and changes nothing else of the pass.
 func Finish(caller context.Context, read Read, attempt *Attempt, record Recorder, logger *slog.Logger) {
+	finishOn(clock.Real(), caller, read, attempt, record, logger)
+}
+
+// finishOn is Finish with the write's bound on c: clock.Real from Finish, and a fake in this
+// package's rows, which read the bound armed on it.
+func finishOn(c clock.Clock, caller context.Context, read Read, attempt *Attempt, record Recorder, logger *slog.Logger) {
 	if record == nil || caller.Err() != nil {
 		return
 	}
@@ -347,7 +354,7 @@ func Finish(caller context.Context, read Read, attempt *Attempt, record Recorder
 	if !sent && !failed {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(caller), recordTimeout)
+	ctx, cancel := c.WithTimeout(context.WithoutCancel(caller), recordTimeout)
 	defer cancel()
 	if err := record(ctx, read, !failed, cause); err != nil {
 		if logger == nil {
@@ -372,6 +379,9 @@ type Recorded struct {
 // zero value holds nothing until Run's first load succeeds.
 type Copy struct {
 	rows atomic.Pointer[map[Read]Recorded]
+	// clock is what each load's bound runs on: nil is the real clock, as in production, and a
+	// fake in this package's rows, which read the bound armed on it.
+	clock clock.Clock
 }
 
 // Run loads the record at start and again after each wake, until ctx ends. wake is the
@@ -396,7 +406,11 @@ func (c *Copy) Run(ctx context.Context, load func(context.Context) ([]Recorded, 
 // load reads the record once and keeps it. A load the ending of ctx cut short is not logged: it
 // is the process stopping, not the database failing.
 func (c *Copy) load(ctx context.Context, load func(context.Context) ([]Recorded, error), logger *slog.Logger) {
-	bounded, cancel := context.WithTimeout(ctx, loadTimeout)
+	timeouts := c.clock
+	if timeouts == nil {
+		timeouts = clock.Real()
+	}
+	bounded, cancel := timeouts.WithTimeout(ctx, loadTimeout)
 	defer cancel()
 	recorded, err := load(bounded)
 	if err != nil {

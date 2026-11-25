@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 
@@ -51,7 +50,9 @@ func TestAForcedCloseKeepsTheBrowserThatJoinedWhileItRan(t *testing.T) {
 				errors.New("the document's stored history was replaced under its room"))
 		}},
 		{"the catch-up's close of a replaced history", true, func(t *testing.T, service *Service, artifactID string, live *crdt.Doc) {
-			closed, err := service.closeRoomBehindHead(context.Background(), artifactID, live)
+			closed, err := closeInstanceJoined(t, func() (bool, error) {
+				return service.closeRoomBehindHead(context.Background(), artifactID, live)
+			})
 			if err != nil {
 				t.Fatalf("close the room the catch-up found on a replaced history: %v", err)
 			}
@@ -73,14 +74,14 @@ func TestAForcedCloseKeepsTheBrowserThatJoinedWhileItRan(t *testing.T) {
 			service.failRoom(artifactID, errors.New("the room failed"))
 			// The eviction runs on its own goroutine; the record it hands over carries the
 			// failure, so the service holding none is the hand-over.
-			waitFor(t, 10*time.Second, "the failed room's eviction to settle its record", func() bool {
+			waitFor(t, "the failed room's eviction to settle its record", func() bool {
 				return service.roomFailure(artifactID) == nil
 			})
 		}},
 	} {
 		t.Run(closer.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "before")
 			if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 				t.Fatalf("load the document's room: %v", err)
@@ -92,6 +93,9 @@ func TestAForcedCloseKeepsTheBrowserThatJoinedWhileItRan(t *testing.T) {
 			}
 
 			var joined atomic.Bool
+			// The close runs the hook on its own goroutine - the shared wait's, for the catch-up's
+			// close (closeInstanceJoined), and a failed room's eviction's - so the hook reports
+			// through t.Errorf and fails nothing itself.
 			service.afterRoomClosed = func(room string) {
 				if room != artifactID || !joined.CompareAndSwap(false, true) {
 					return
@@ -104,7 +108,9 @@ func TestAForcedCloseKeepsTheBrowserThatJoinedWhileItRan(t *testing.T) {
 					t.Errorf("load the room that replaces the closed one: %v", err)
 					return
 				}
-				editAsPeer(t, service, artifactID, replaceRun("before", "before, typed by bob"))
+				if _, err := editAsPeerOf(service, artifactID, replaceRun("before", "before, typed by bob")); err != nil {
+					t.Errorf("type as bob in the room that replaces the closed one: %v", err)
+				}
 			}
 			closer.force(t, service, artifactID, live)
 			if !joined.Load() {
@@ -167,7 +173,7 @@ func TestAForcedCloseKeepsWhatTheRoomThatReplacedItLoaded(t *testing.T) {
 				return
 			}
 			connectPeer(t, server.URL, artifactID, "bob")
-			waitFor(t, 10*time.Second, "the browser's room to load onto the record the close is settling", func() bool {
+			waitFor(t, "the browser's room to load onto the record the close is settling", func() bool {
 				return service.srv.GetDoc(artifactID) != nil
 			})
 		}
@@ -182,7 +188,7 @@ func TestAForcedCloseKeepsWhatTheRoomThatReplacedItLoaded(t *testing.T) {
 
 	t.Run("the closed issue its load read", func(t *testing.T) {
 		service, artifactID := newTestService(t)
-		service.settle = time.Hour
+		service.settle = stagedAhead
 		seedServiceText(t, service, artifactID, "before")
 		if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 			t.Fatalf("load the document's room: %v", err)
@@ -213,7 +219,7 @@ func TestAForcedCloseKeepsWhatTheRoomThatReplacedItLoaded(t *testing.T) {
 		// Nothing settles during the test, so the settlement the replacement room's load arms is
 		// the one the record carries at the end: armed on the live record, it runs at the time it
 		// was armed for rather than a settle delay after a timer finds its record gone.
-		service.settle = time.Hour
+		service.settle = stagedAhead
 		seedServiceText(t, service, artifactID, ask)
 		if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 			t.Fatalf("load the document's room: %v", err)
@@ -257,7 +263,7 @@ func TestARoomLoadedOntoAKeptRecordTakesTheStoredEditSource(t *testing.T) {
 	t.Parallel()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the document's room: %v", err)
@@ -310,7 +316,7 @@ func TestQuiesceDropsAnEditSourceRecordedWhileItClosesTheRooms(t *testing.T) {
 	t.Parallel()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the document's room: %v", err)
@@ -404,7 +410,9 @@ func TestAForcedCloseKeepsTheFailuresOfTheRoomThatReplacedIt(t *testing.T) {
 		force func(t *testing.T, service *Service, artifactID string, live *crdt.Doc)
 	}{
 		{"the catch-up's close of a replaced history", func(t *testing.T, service *Service, artifactID string, live *crdt.Doc) {
-			if _, err := service.closeRoomBehindHead(context.Background(), artifactID, live); err != nil {
+			if _, err := closeInstanceJoined(t, func() (bool, error) {
+				return service.closeRoomBehindHead(context.Background(), artifactID, live)
+			}); err != nil {
 				t.Fatalf("close the room the catch-up found on a replaced history: %v", err)
 			}
 		}},
@@ -416,7 +424,7 @@ func TestAForcedCloseKeepsTheFailuresOfTheRoomThatReplacedIt(t *testing.T) {
 	} {
 		t.Run(closer.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "before")
 			if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 				t.Fatalf("load the document's room: %v", err)
@@ -454,7 +462,7 @@ func TestAForcedCloseKeepsTheFailuresOfTheRoomThatReplacedIt(t *testing.T) {
 func TestAnIssueCloseEndsItsRoomsSettlementFailures(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the document's room: %v", err)
@@ -492,7 +500,7 @@ func TestAnIssueCloseEndsItsRoomsSettlementFailures(t *testing.T) {
 func TestAFailedRoomsUnstoredUpdatesGoToTheRecordThatReplacesIt(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the document's room: %v", err)
@@ -545,7 +553,7 @@ func TestAFailedRoomsUnstoredUpdatesGoToTheRecordThatReplacesIt(t *testing.T) {
 func TestAFailedRoomsUpdatesEndOrMoveWithTheRecordThatReplacesIt(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the document's room: %v", err)

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // embeddingsPendingSinceVersion adds embeddings.pending_since and dead_model, and teaches
@@ -40,7 +41,7 @@ func TestMigrationAddsPendingSince(t *testing.T) {
 	`, waitingSince); err != nil {
 		t.Fatalf("seed a dead row: %v", err)
 	}
-	migrated := time.Now()
+	migrated := testdb.Now(t, store.Pool)
 	if err := store.migrate(ctx, migrationsThrough(t, embeddingsPendingSinceVersion)); err != nil {
 		t.Fatalf("migrate to %d: %v", embeddingsPendingSinceVersion, err)
 	}
@@ -48,18 +49,18 @@ func TestMigrationAddsPendingSince(t *testing.T) {
 	if pendingSince, deadModel := readPendingSince(t, store, "issue", "OLD-1"); !pendingSince.Equal(waitingSince) || deadModel != nil {
 		t.Errorf("pending row: pending_since %v dead_model %v, want its created_at %v and no dead_model", pendingSince, deadModel, waitingSince)
 	}
-	if pendingSince, deadModel := readPendingSince(t, store, "issue", "OLD-2"); pendingSince.Before(migrated.Add(-time.Second)) || deadModel != nil {
+	if pendingSince, deadModel := readPendingSince(t, store, "issue", "OLD-2"); pendingSince.Before(migrated) || deadModel != nil {
 		t.Errorf("embedded row: pending_since %v dead_model %v, want the migration's time (after %v) and no dead_model", pendingSince, deadModel, migrated)
 	}
 	if _, deadModel := readPendingSince(t, store, "issue", "OLD-3"); deadModel == nil || *deadModel != embed.BedrockModel {
 		t.Errorf("dead row: dead_model %v, want %s", deadModel, embed.BedrockModel)
 	}
 
-	inserted := time.Now()
+	inserted := testdb.Now(t, store.Pool)
 	if _, err := store.Pool.Exec(ctx, `insert into embeddings (kind, id, text_snapshot, content_hash) values ('comment', 'NEW-1', 'New', 'h3')`); err != nil {
 		t.Fatalf("insert naming neither new column: %v", err)
 	}
-	if pendingSince, deadModel := readPendingSince(t, store, "comment", "NEW-1"); pendingSince.Before(inserted.Add(-time.Second)) || deadModel != nil {
+	if pendingSince, deadModel := readPendingSince(t, store, "comment", "NEW-1"); pendingSince.Before(inserted) || deadModel != nil {
 		t.Errorf("new row: pending_since %v dead_model %v, want the insert's time and no dead_model", pendingSince, deadModel)
 	}
 
@@ -78,7 +79,7 @@ func TestMigrationAddsPendingSince(t *testing.T) {
 	if pendingSince, deadModel := readPendingSince(t, store, "ask", "ASK-1"); !pendingSince.Equal(dyingSince) || deadModel == nil || *deadModel != "us.cohere.embed-v4:0" {
 		t.Errorf("after the same text: pending_since %v dead_model %v, want both unchanged (%v, us.cohere.embed-v4:0)", pendingSince, deadModel, dyingSince)
 	}
-	changed := time.Now()
+	changed := testdb.Now(t, store.Pool)
 	if _, err := store.Pool.Exec(ctx, `select embeddings_enqueue('ask', 'ASK-1', 'Question? Answer')`); err != nil {
 		t.Fatalf("enqueue a changed text: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestMigrationAddsPendingSince(t *testing.T) {
 	if err := store.Pool.QueryRow(ctx, `select dead from embeddings where kind = 'ask' and id = 'ASK-1'`).Scan(&dead); err != nil {
 		t.Fatalf("read dead: %v", err)
 	}
-	if pendingSince, deadModel := readPendingSince(t, store, "ask", "ASK-1"); pendingSince.Before(changed.Add(-time.Second)) || deadModel != nil || dead {
+	if pendingSince, deadModel := readPendingSince(t, store, "ask", "ASK-1"); pendingSince.Before(changed) || deadModel != nil || dead {
 		t.Errorf("after a changed text: pending_since %v dead_model %v dead %t, want now, none, alive", pendingSince, deadModel, dead)
 	}
 }

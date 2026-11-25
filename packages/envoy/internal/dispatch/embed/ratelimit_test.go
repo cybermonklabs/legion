@@ -3,19 +3,24 @@ package embed
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // countingEmbedder answers errs in order (one per call, the last repeats once exhausted) and
-// records how many times Embed was called and when each call happened, so a test can assert on
-// both the limiter's pacing and its AIMD adjustment without a real model-service call.
+// records how many times Embed was called and when each call happened, on now (time.Now when nil),
+// so a test can assert on both the limiter's pacing and its AIMD adjustment without a real
+// model-service call.
 type countingEmbedder struct {
 	errs  []error
 	calls []time.Time
+	now   func() time.Time
 }
 
 func (c *countingEmbedder) Identity() string { return "counting" }
@@ -24,7 +29,11 @@ func (c *countingEmbedder) Limits() Limits {
 }
 
 func (c *countingEmbedder) Embed(_ context.Context, texts []string, _ InputType) ([][]float32, error) {
-	c.calls = append(c.calls, time.Now())
+	now := time.Now
+	if c.now != nil {
+		now = c.now
+	}
+	c.calls = append(c.calls, now())
 	var err error
 	if i := len(c.calls) - 1; i < len(c.errs) {
 		err = c.errs[i]
@@ -35,14 +44,33 @@ func (c *countingEmbedder) Embed(_ context.Context, texts []string, _ InputType)
 	return make([][]float32, len(texts)), nil
 }
 
+// Successive calls through the limiter are paced at least the floor apart on its clock: the first
+// takes the burst at once, and each after it waits out the delay its reservation was given, armed
+// on the limiter's fake, and reaches the inner embedder only once the row moves the fake to it and
+// not one tick before.
 func TestRateLimitedEmbedderPacesSuccessiveCallsAtLeastTheFloorApart(t *testing.T) {
-	inner := &countingEmbedder{}
-	limiter := NewRateLimitedEmbedder(inner)
-	limiter.setInterval(20 * time.Millisecond) // scaled down from rateLimitFloor for a fast test
+	fake := clocktest.New(time.Now())
+	inner := &countingEmbedder{now: fake.Now}
+	limiter := NewRateLimitedEmbedder(inner, WithLimiterClock(fake))
 
 	ctx := context.Background()
-	for range 3 {
-		if _, err := limiter.Embed(ctx, []string{"x"}, InputDocument); err != nil {
+	if _, err := limiter.Embed(ctx, []string{"x"}, InputDocument); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	for call := 2; call <= 3; call++ {
+		returned := make(chan error, 1)
+		go func() {
+			_, err := limiter.Embed(ctx, []string{"x"}, InputDocument)
+			returned <- err
+		}()
+		armed := fake.AwaitArmed(t, fmt.Sprintf("the delay call %d waits out", call), 1)
+		fake.Set(armed[0].Add(-time.Nanosecond))
+		if len(fake.Armed()) != 1 || len(inner.calls) != call-1 {
+			t.Fatalf("one tick short of its delay call %d holds timers %v and the inner embedder has %d calls, want the delay still armed and %d calls",
+				call, fake.Armed(), len(inner.calls), call-1)
+		}
+		fake.Set(armed[0])
+		if err := testwait.Receive(t, fmt.Sprintf("call %d to return once its delay passed", call), returned); err != nil {
 			t.Fatalf("Embed: %v", err)
 		}
 	}
@@ -50,9 +78,8 @@ func TestRateLimitedEmbedderPacesSuccessiveCallsAtLeastTheFloorApart(t *testing.
 		t.Fatalf("calls = %d, want 3", len(inner.calls))
 	}
 	for i := 1; i < len(inner.calls); i++ {
-		gap := inner.calls[i].Sub(inner.calls[i-1])
-		if gap < 20*time.Millisecond {
-			t.Errorf("gap between call %d and %d = %v, want at least 20ms", i-1, i, gap)
+		if gap := inner.calls[i].Sub(inner.calls[i-1]); gap < rateLimitFloor {
+			t.Errorf("gap between call %d and %d = %v on the limiter's clock, want at least the floor, %v", i-1, i, gap, rateLimitFloor)
 		}
 	}
 }
@@ -126,19 +153,22 @@ func TestRateLimitedEmbedderNeverBacksOffPastTheCeiling(t *testing.T) {
 func TestRateLimitedEmbedderNeverGatesAnUnwrappedSiblingCall(t *testing.T) {
 	inner := &countingEmbedder{}
 	limiter := NewRateLimitedEmbedder(inner)
+	fake := clocktest.New(time.Now())
+	limiter.clock = fake
 	limiter.setInterval(time.Hour) // as deep into backoff as this limiter can ever go, exaggerated
 
 	ctx := context.Background()
-	started := time.Now()
 	// The "live search" stand-in: the same inner embedder, called directly, bypassing the limiter
 	// entirely - exactly how cmd/dispatch wires api.Deps.Embedder versus embedqueue.Deps.Embedder.
 	if _, err := inner.Embed(ctx, []string{"x"}, InputQuery); err != nil {
 		t.Fatalf("unwrapped Embed: %v", err)
 	}
-	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
-		t.Errorf("unwrapped call took %v, want near-instant - it must never wait on limiter.interval", elapsed)
+	// The limiter's own clock is the one Embed waits its interval out on, and it is a fake the
+	// test never moves: a call that went through the limiter would have armed the hour above on
+	// it and still be waiting.
+	if armed := fake.Armed(); len(armed) != 0 {
+		t.Errorf("the unwrapped call armed %v on the limiter's clock, want nothing - it must never wait on limiter.interval", armed)
 	}
-	_ = limiter // the limiter exists only to prove it is irrelevant to the call above
 }
 
 // TestRateLimitedEmbedderForwardsIdentityAndLimits proves pacing never hides which embedder
@@ -156,18 +186,23 @@ func TestRateLimitedEmbedderForwardsIdentityAndLimits(t *testing.T) {
 func TestRateLimitedEmbedderStopsWaitingWhenContextEnds(t *testing.T) {
 	inner := &countingEmbedder{}
 	limiter := NewRateLimitedEmbedder(inner)
+	fake := clocktest.New(time.Now())
+	limiter.clock = fake
 	limiter.setInterval(time.Hour)
 	_ = limiter.limiter.Wait(context.Background()) // consume the burst token, as if a previous call had just happened, so the next wait is forced to the full interval
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	started := time.Now()
-	_, err := limiter.Embed(ctx, []string{"x"}, InputDocument)
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Errorf("Embed with a cancelled context took %v, want it to return promptly", elapsed)
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Embed error = %v, want context.DeadlineExceeded", err)
+	ctx, cancel := context.WithCancel(context.Background())
+	returned := make(chan error, 1)
+	go func() {
+		_, err := limiter.Embed(ctx, []string{"x"}, InputDocument)
+		returned <- err
+	}()
+	// Embed is pacing: the hour it reserved is armed on the fake, which only this test moves, so
+	// the cancel below is the one thing that can end the wait.
+	fake.AwaitArmed(t, "the interval Embed waits out", 1)
+	cancel()
+	if err := testwait.Receive(t, "Embed to return once its context ended", returned); !errors.Is(err, context.Canceled) {
+		t.Errorf("Embed error = %v, want context.Canceled", err)
 	}
 	if len(inner.calls) != 0 {
 		t.Error("the inner Embedder was called despite the context ending during pacing")

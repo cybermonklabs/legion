@@ -11,6 +11,8 @@ import (
 	"github.com/yuin/goldmark/parser"
 	gmtext "github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 )
 
 // segmentsText is the text segments cover in source. Goldmark's own Segments.Value appends a
@@ -72,8 +74,10 @@ func (reader markdownReader) read(source []byte, unclosedFrontmatter bool, budge
 // no line closes (frontmatterAttempt), the write's budget, and the count of what the parse makes on
 // it, nil for a budget that counts no elements - with that count. Every read of a document's
 // markdown starts here, the read-only reader of a body the parse refuses included
-// (FindDecisionCard), so each of them hands goldmark the same context and reads the same tree.
+// (FindDecisionCard), so each of them hands goldmark the same context and reads the same tree, and
+// each is the parse docwork's observers are told of (docwork.Parse).
 func readContext(unclosedFrontmatter bool, budget *WriteBudget, server int, display bool) (parser.Context, *parseCount) {
+	docwork.Enter(docwork.Parse)
 	pc := parser.NewContext()
 	if unclosedFrontmatter {
 		pc.Set(unclosedFrontmatterKey, true)

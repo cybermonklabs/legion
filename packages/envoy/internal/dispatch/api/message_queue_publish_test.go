@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -162,6 +165,65 @@ func TestATargetedMessageToASessionNoStoreHoldsIsQueuedByDispatch(t *testing.T) 
 	if receipts := messageDeliveryReceiptRows(t, database, message.ID); len(receipts) != 1 ||
 		receipts[0].State != "queued" {
 		t.Fatalf("the delivery receipts = %#v, want one carrying queued", receipts)
+	}
+}
+
+// A session the listener never knows is queued only once the take-over window from the send's
+// first try has run out, never sooner and never a window later: the registry's 404 "no live
+// session" is what a listener being replaced answers too, so the sender tries again after each
+// backoff, doubling from takeoverFirstBackoff to takeoverMaxBackoff, while a try still starts inside
+// listenerTakeoverWindow of the first (envoy_resolve.go). The server runs the window every
+// deployment runs, on a fake the row moves to each backoff the sender arms: each wait seen armed
+// for its exact moment shows the try before it failed and the sender went on waiting, with no
+// answer and nothing published meanwhile. After the last try the window allows, the message
+// answers 201 with its one attempt queued and one envelope published.
+func TestAMessageToASessionNoStoreHoldsIsQueuedOneTakeOverWindowAfterItsFirstTry(t *testing.T) {
+	listener := stoppedAndLive(t)
+	fake := clocktest.New(time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC))
+	first := fake.Now()
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.url, clock: fake})
+
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- postAgentMessage(t, handler, "ghost", map[string]any{"body": "Anyone there?", "delivery": "steer"}, "alice")
+	}()
+	waiting := func(at time.Time) {
+		t.Helper()
+		testwait.Until(t, "the sender's wait before its next try, armed for "+at.Format(time.RFC3339Nano), func() ([]time.Time, bool) {
+			select {
+			case response := <-answered:
+				t.Fatalf("the message answered %d %s %v after its first try, inside the take-over window of %v",
+					response.Code, response.Body.String(), at.Sub(first), listenerTakeoverWindow)
+			default:
+			}
+			if published := publishedBy(t, deps); len(published) != 0 {
+				t.Fatalf("Dispatch published %d envelopes %v after the first try, inside the take-over window", len(published), at.Sub(first))
+			}
+			armed := fake.Armed()
+			return armed, slices.ContainsFunc(armed, at.Equal)
+		})
+	}
+	at, backoff, tries := first, takeoverFirstBackoff, 1
+	for at.Sub(first)+backoff <= listenerTakeoverWindow {
+		at = at.Add(backoff)
+		waiting(at)
+		fake.Set(at)
+		backoff = min(2*backoff, takeoverMaxBackoff)
+		tries++
+	}
+	response := testwait.Receive(t, fmt.Sprintf("the message's answer after its %d tries in the take-over window", tries), answered)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("direct message to an unknown session: status=%d body=%s", response.Code, response.Body.String())
+	}
+	message := decodeBody[model.Message](t, response)
+	if len(message.Deliveries) != 1 || message.Deliveries[0].State != "queued" || message.Deliveries[0].Attempt != 1 {
+		t.Fatalf("the answer's deliveries = %#v, want attempt 1 queued", message.Deliveries)
+	}
+	if published := publishedBy(t, deps); len(published) != 1 {
+		t.Fatalf("Dispatch published %d envelopes once the take-over window ran out, want exactly one", len(published))
+	}
+	if attempts := messageAttempts(t, database, message.ID); len(attempts) != 1 || attempts[0].State != "queued" {
+		t.Fatalf("the stored attempts = %#v, want one queued attempt", attempts)
 	}
 }
 
@@ -408,8 +470,12 @@ func TestATargetedMessageDeletedDuringItsLastTryIsNotQueued(t *testing.T) {
 		}
 	}))
 	t.Cleanup(listener.Close)
-	// A window shorter than the first backoff leaves one try, so the send held here is the last.
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, takeoverWindow: time.Nanosecond})
+	// A window already spent leaves one try, so the send held here is the last: the server's
+	// take-over window (Deps.ListenerTakeoverWindow, which a real-clock test server sets to
+	// testTakeoverWindow) is given spent as the server is built (testServerOptions.takeoverWindow),
+	// as a row whose outcome is that no near-copy check was made spends the gate's bound
+	// (spentGateBound).
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, takeoverWindow: -time.Nanosecond})
 	answerSend := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(answerSend)
 	issue := createInteractionIssue(t, handler, "TEST", "A message deleted during its last try", "before")
@@ -425,7 +491,7 @@ func TestATargetedMessageDeletedDuringItsLastTryIsNotQueued(t *testing.T) {
 	deleteIssueMessage(t, handler, messageID, "alice")
 	answerSend()
 
-	if answer := <-created; answer.Code != http.StatusCreated {
+	if answer := testwait.Receive(t, "the message's answer once its held send was answered", created); answer.Code != http.StatusCreated {
 		t.Fatalf("the message: status=%d body=%s", answer.Code, answer.Body.String())
 	}
 	if published := publishedBy(t, deps); len(published) != 0 {

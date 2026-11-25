@@ -81,6 +81,11 @@ type Config struct {
 	// test says and the test's verdict waits on no ticker; nil, as every serving process leaves it,
 	// is the ticker.
 	retry <-chan time.Time
+	// holdTTL, when set, is the TTL the fill takes and renews its hold with in place of
+	// holdOptions.TTL; zero, as every serving process leaves it, is holdOptions.TTL. A test of this
+	// package sets one past its run, so a holder whose renewals a loaded machine stalls keeps its
+	// hold, and lapses a dead holder's row itself (TestOneFillHoldsTheLeaseAndAnotherTakesItOver).
+	holdTTL time.Duration
 	// Logger is where the fill logs; nil is slog.Default.
 	Logger *slog.Logger
 }
@@ -214,11 +219,16 @@ func (r *runner) standBy(ctx context.Context) *duty.Hold {
 	}
 }
 
-// tryHold takes the hold when no other holder holds it live, within one renewal interval.
+// tryHold takes the hold when no other holder holds it live, within one renewal interval, on
+// holdOptions with cfg.holdTTL's TTL where a test set one.
 func (r *runner) tryHold(ctx context.Context) (*duty.Hold, error) {
 	bounded, cancel := context.WithTimeout(ctx, holdOptions.Renew)
 	defer cancel()
-	return duty.TryHold(bounded, r.cfg.Leases, fillHoldName, r.fill.holder, holdOptions)
+	opts := holdOptions
+	if r.cfg.holdTTL > 0 {
+		opts.TTL = r.cfg.holdTTL
+	}
+	return duty.TryHold(bounded, r.cfg.Leases, fillHoldName, r.fill.holder, opts)
 }
 
 // fillUnder runs the fill's passes under hold until ctx ends or the hold is lost: a pass at once,

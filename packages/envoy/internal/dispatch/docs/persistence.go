@@ -15,6 +15,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -28,6 +29,11 @@ const misreadWarning = "dispatch: a document's stored updates do not fold into a
 // PgVersioned persists a room's Yjs V1 updates in Dispatch's Postgres store.
 type PgVersioned struct {
 	store *store.Store
+	// clock is what the bounds of the statements on a room's own session-lock connection run on
+	// (duty.LeaseCall): a room append's rollback and the unlock after it (freeRoomLock). New's and
+	// NewPgVersioned's store use the real clock; a test sets a clocktest fake to see a bound armed
+	// and to end it.
+	clock clock.Clock
 	// locksMu guards locks: each room's in-process lock (lockRoom), kept while a caller holds it
 	// or waits for it and dropped with the last, so it holds only the rooms being written.
 	locksMu sync.Mutex
@@ -87,11 +93,6 @@ type PgVersioned struct {
 	// NewPgVersioned sets it to maxUpdateItems, whose comment states the rule; a test lowers it
 	// (shrinkPendingItems) to make a log that does not fold out of a few dozen items.
 	maxPendingItems int
-	// closeMargin is how long after an issue's close this store's append gate still takes a
-	// browser update the room observed as one made while the issue was open (observedBeforeClose).
-	// NewPgVersioned sets it to the package's closeMargin; New sets Deps.CloseMargin where a test
-	// gave one.
-	closeMargin time.Duration
 	// noteStored is the note of the Service that took this store last (New), which each append
 	// gives the version it committed and each load the head it read (noteStoredUpdates), so the
 	// Service's compaction queue checks the room. Nil for a store no Service took.
@@ -122,9 +123,9 @@ type roomLock struct {
 func NewPgVersioned(database *store.Store) *PgVersioned {
 	return &PgVersioned{
 		store:           database,
+		clock:           clock.Real(),
 		foldSlots:       make(chan struct{}, bufferedFolds),
 		maxPendingItems: maxUpdateItems,
-		closeMargin:     closeMargin,
 	}
 }
 
@@ -395,8 +396,18 @@ func ceilingOf(ceiling int64, recovering bool) *int64 {
 // settlement holds the document's advisory lock from before it reads the update cursor until it
 // commits, so no update it has not read can be appended meanwhile. The same statement keeps kept
 // as the document's closed edit source (doc_closed_edit_sources), or deletes the one kept where
-// kept is nil. It goes through write, so it runs in the settlement's write phase, in its place
-// among the settlement's other writes.
+// kept is nil, and does either only when it deleted a pending row: the kept editor is the row's
+// latest edit source carried past the row, so only the settlement that settles that row decides
+// it. A settlement that finds the row already gone settles nothing owed, and leaves the kept
+// editor as the settlement that deleted the row left it. That is a second settlement of the same
+// updates, armed while the first was committing: the resumption picks the row and arms one of its
+// own once the first has made its last check of the room's generation and before its write phase
+// takes the row (resumeOwedSettlements). It credits SettlementActor, having no row to read an
+// edit source from, so without the gate on the deleted row it would delete, on a closed issue, the
+// editor the first one kept, and the reopen would name the settlement rather than the editor whose
+// text the closed issue's versions hold. The statement goes through write, so it runs in the
+// settlement's write phase, in its place among the settlement's other writes: after any update the
+// settlement itself appends, which writes the row it deletes here (updateOwedStatement).
 func clearSettlementPending(ctx context.Context, tx pgx.Tx, room string, kept *model.Actor) error {
 	encoded, err := encodeActor(kept)
 	if err != nil {
@@ -406,17 +417,19 @@ func clearSettlementPending(ctx context.Context, tx pgx.Tx, room string, kept *m
 }
 
 // clearSettlementPendingStatement is clearSettlementPending's one statement: it deletes the pending
-// row of the document $1 and either keeps $2 as the document's closed edit source or, where $2 is
-// null, deletes the one kept.
+// row of the document $1 and, when there was one, either keeps $2 as the document's closed edit
+// source or, where $2 is null, deletes the one kept.
 const clearSettlementPendingStatement = `
 	with pending as (
 		delete from doc_settlements_pending where artifact_id = $1::uuid
+		returning artifact_id
 	), kept as (
 		insert into doc_closed_edit_sources (artifact_id, last_actor)
-		select $1::uuid, $2::jsonb where $2::jsonb is not null
+		select pending.artifact_id, $2::jsonb from pending where $2::jsonb is not null
 		on conflict (artifact_id) do update set last_actor = excluded.last_actor
 	)
-	delete from doc_closed_edit_sources where artifact_id = $1::uuid and $2::jsonb is null`
+	delete from doc_closed_edit_sources
+	where artifact_id = $1::uuid and $2::jsonb is null and exists (select 1 from pending)`
 
 // clearSettlementPendingRow is clearSettlementPending for a closed issue's settlement that saved
 // nothing (settlement.savedNothing): it deletes the document's pending row alone and leaves the
@@ -913,7 +926,7 @@ func (p *PgVersioned) lockRoom(ctx context.Context, room string, wait bool, sour
 	// fn may send nothing on this connection (passRoomLock), so nothing else bounds the wait on a
 	// half-open connection, and this room's writers queue on lock until it ends: freeRoomLock
 	// bounds it and reads its answer.
-	defer freeRoomLock(conn, room)
+	defer p.freeRoomLock(conn, room)
 	return fn(conn)
 }
 
@@ -926,8 +939,8 @@ func (p *PgVersioned) lockRoom(ctx context.Context, room string, wait bool, sour
 // unlock it twice over. A connection a cancelled statement already closed cannot run an unlock:
 // Postgres drops its locks when the session ends, which is why ErrSessionClosed says nothing here
 // - that statement's caller has its error.
-func freeRoomLock(conn *pgxpool.Conn, room string) {
-	if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock(hashtext($1))`, room); err != nil && !errors.Is(err, duty.ErrSessionClosed) {
+func (p *PgVersioned) freeRoomLock(conn *pgxpool.Conn, room string) {
+	if err := duty.FreeSessionLock(p.clock, conn, `select pg_advisory_unlock(hashtext($1))`, room); err != nil && !errors.Is(err, duty.ErrSessionClosed) {
 		slog.Error("dispatch: free the document room lock", "room", room, "error", err)
 	}
 }

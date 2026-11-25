@@ -15,10 +15,12 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A room of a document can report its unload after a later room of the same document has loaded,
@@ -99,6 +101,8 @@ func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUp(t *testing.T) {
 	// The write's own settlement runs once the write has ended, so nothing holds the room's
 	// record by the time the test retires the room.
 	r.service.settle = 20 * time.Millisecond
+	// The room the write forked from, read as its publish begins (beforePublish), before the
+	// publish releases the fork.
 	forkedFrom := make(chan *crdt.Doc, 1)
 	r.service.beforePublish = func(write *liveWrite) {
 		if write.artifactID == r.room {
@@ -121,7 +125,7 @@ func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUp(t *testing.T) {
 	}
 	letSettle()
 	r.awaitSocketEnd("the second room's browser")
-	waitFor(t, roomWait(t), "the write and every settlement of the document to end", func() bool {
+	waitFor(t, "the write and every settlement of the document to end", func() bool {
 		owed, err := settlementPending(context.Background(), r.service.store.Pool, r.room)
 		if err != nil || owed || settlementUnderway(r.service, r.room) {
 			return false
@@ -207,6 +211,8 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 			<-letWrite
 		}
 	}
+	// The write as its publish begins (beforePublish): whether it forked cold, and the room
+	// resident then, which its publish goes into.
 	type publish struct {
 		cold bool
 		held *crdt.Doc
@@ -228,11 +234,7 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 	}
 
 	r.closeUnderHeldDeparture()()
-	select {
-	case <-loading:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the late departure's settlement never loaded a room, so nothing here is tested")
-	}
+	testwait.Receive(t, "the late departure's settlement to load a room", loading)
 	if loads := r.loads.Load(); loads != 3 {
 		t.Fatalf("the late departure's settlement's load is the document's load %d, want the third; nothing here is tested", loads)
 	}
@@ -241,39 +243,33 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 		_, err := joinedReplaceText(r.service, r.room, "A write that takes the settlement's room up while it loads.\n", model.Actor{Kind: "user", ID: "alice"})
 		wrote <- err
 	}()
-	select {
-	case <-forked:
-	case err := <-wrote:
-		t.Fatalf("the write returned before its fork read was held: %v; nothing here is tested", err)
-	case <-time.After(roomWait(t)):
-		t.Fatal("the write never read its fork while the settlement's room loaded, so nothing here is tested")
-	}
+	testwait.Eventually(t, "the write to read its fork while the settlement's room loads", func() bool {
+		select {
+		case <-forked:
+			return true
+		case err := <-wrote:
+			t.Fatalf("the write returned before its fork read was held: %v; nothing here is tested", err)
+		default:
+		}
+		return false
+	})
 	var published publish
 	if writeFirst {
 		releaseWrite()
-		select {
-		case published = <-publishes:
-		case <-time.After(roomWait(t)):
-			t.Fatal("the write never reached its publish while the settlement's room loaded, so nothing here is tested")
-		}
+		published = testwait.Receive(t, "the write to reach its publish while the settlement's room loads", publishes)
 		if published.held != nil {
 			t.Fatalf("the write reached its publish with room %p resident, want the settlement's room still loading; nothing here is tested", published.held)
 		}
 		releaseLoad()
 	} else {
 		releaseLoad()
-		waitFor(t, roomWait(t), "the settlement's room to finish loading", func() bool {
+		waitFor(t, "the settlement's room to finish loading", func() bool {
 			return r.service.srv.GetDoc(r.room) != nil
 		})
 		releaseWrite()
 	}
-	select {
-	case err := <-wrote:
-		if err != nil {
-			t.Fatalf("write while the late settlement's room loads: %v", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("the write that took the slot while the room loaded never returned")
+	if err := testwait.Receive(t, "the write that took the slot while the room loaded to return", wrote); err != nil {
+		t.Fatalf("write while the late settlement's room loads: %v", err)
 	}
 	if !writeFirst {
 		select {
@@ -293,7 +289,7 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 	}
 
 	r.awaitSocketEnd("the second room's browser")
-	waitFor(t, roomWait(t), "the write and every settlement of the document to end, and nothing else to hold the room's record", func() bool {
+	waitFor(t, "the write and every settlement of the document to end, and nothing else to hold the room's record", func() bool {
 		owed, err := settlementPending(context.Background(), r.service.store.Pool, r.room)
 		if err != nil || owed {
 			return false
@@ -387,6 +383,9 @@ func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
+	// The hooks run on the service's own goroutines, where a wait cannot fail the test: they wait
+	// under the shared wait's context, taken here, and report through t.Error.
+	waits := testwait.Context(t)
 
 	var entered atomic.Int32
 	secondIn, firstReserved := make(chan struct{}), make(chan struct{})
@@ -408,7 +407,7 @@ func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 			}()
 			select {
 			case <-secondIn:
-			case <-time.After(roomWait(t)):
+			case <-waits.Done():
 				t.Error("the second retirement never entered the room, so nothing here is tested")
 			}
 		case 2:
@@ -416,7 +415,7 @@ func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 			close(secondIn)
 			select {
 			case <-firstReserved:
-			case <-time.After(roomWait(t)):
+			case <-waits.Done():
 				t.Error("the first retirement never reserved the room's record")
 			}
 		}
@@ -440,16 +439,12 @@ func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 		select {
 		case <-secondWaits:
 		case <-secondDone:
-		case <-time.After(roomWait(t)):
+		case <-waits.Done():
 			t.Error("the second retirement neither met the first's reservation nor returned")
 		}
 	}
 	r.departLate()
-	select {
-	case <-secondDone:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the second retirement never returned")
-	}
+	testwait.Receive(t, "the second retirement to return", secondDone)
 	if got := entered.Load(); got != 2 {
 		t.Fatalf("%d retirements entered the room, want the two this test runs at once; nothing here is tested", got)
 	}
@@ -463,12 +458,17 @@ func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 // from what is there then, so its write is published into the very room it forked from, or forks
 // from the store where no room is. A writer is inside no Apply on the room while it holds the
 // writer slot, so ygo's own checks before its close cannot see it. The check is the room the write
-// forked from against the room the name holds at the publish, not that some room is resident: a
-// room another load put back under the name is no room the write forked from.
+// forked from against the room the name holds at the publish (beforePublish), not that some room
+// is resident: a room another load put back under the name is no room the write forked from. A close
+// that came later, while the writer still held its slot, is the one the check at the close's
+// return (afterRetireLeft) reads.
 func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t *testing.T) {
 	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
+	// The hooks run on the service's own goroutines, where a wait cannot fail the test: they wait
+	// under the shared wait's context, taken here, and report through t.Error.
+	waits := testwait.Context(t)
 
 	// The retirement holds once it has reserved the record (afterRetireReserved), and the writer
 	// opens then. The hold ends once the writer has forked from the room, which it does with the
@@ -512,7 +512,7 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 		select {
 		case <-forked:
 		case <-waiting:
-		case <-time.After(roomWait(t)):
+		case <-waits.Done():
 			t.Error("the writer neither forked from the retiring room nor waited for its retirement")
 		}
 	}
@@ -541,13 +541,8 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 	if !left.Load() {
 		t.Fatal("the retirement that reserved the room's record ended its reservation before it left the room (afterRetireLeft never ran): a writer can take up the room before ygo's close of it returns")
 	}
-	select {
-	case err := <-wrote:
-		if err != nil {
-			t.Fatalf("the write that opened as the room retired: %v", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("the write that opened as the room retired never returned")
+	if err := testwait.Receive(t, "the write that opened as the room retired to return", wrote); err != nil {
+		t.Fatalf("the write that opened as the room retired: %v", err)
 	}
 	select {
 	case got := <-publishes:
@@ -571,6 +566,10 @@ func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAw
 	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
+	// The hooks run on the service's own goroutines, where a wait cannot fail the test: they wait
+	// under the shared wait's context, taken here, and report through t.Error. The settlement
+	// started from one runs under that context too (settleDeadline).
+	waits := testwait.Context(t)
 
 	// The retirement holds once it has reserved the record (afterRetireReserved): the document
 	// is made to owe a settlement, and one starts then. The hold ends once that settlement has
@@ -603,11 +602,11 @@ func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAw
 			return
 		}
 		started.Store(true)
-		go func() { settled <- r.service.settleOwedNow(context.Background(), r.room, time.Now().Add(roomWait(t))) }()
+		go func() { settled <- r.service.settleOwedNow(waits, r.room, settleDeadline(t)) }()
 		select {
 		case <-locked:
 		case <-waiting:
-		case <-time.After(roomWait(t)):
+		case <-waits.Done():
 			t.Error("the settlement neither took the retiring room nor waited for its retirement")
 		}
 	}
@@ -630,12 +629,7 @@ func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAw
 	if !left.Load() {
 		t.Fatal("the retirement that reserved the room's record ended its reservation before it left the room (afterRetireLeft never ran): a settlement can take up the room before ygo's close of it returns")
 	}
-	var settleErr error
-	select {
-	case settleErr = <-settled:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the settlement that started as the room retired never ended")
-	}
+	settleErr := testwait.Receive(t, "the settlement that started as the room retired to end", settled)
 	room := settledOn.Load()
 	if room == nil {
 		t.Fatalf("the settlement that started as the room retired took no room (it ended: %v), so nothing here is tested", settleErr)
@@ -664,6 +658,9 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds
 	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
+	// The hook runs on the retry's own goroutine, where a wait cannot fail the test: it waits under
+	// the shared wait's context, taken here, and reports through t.Error.
+	waits := testwait.Context(t)
 
 	// The retry is armed a settle delay after the late settlement stops short.
 	r.service.settle = 20 * time.Millisecond
@@ -681,7 +678,7 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds
 		}
 		select {
 		case <-socketEnded:
-		case <-time.After(roomWait(t)):
+		case <-waits.Done():
 			t.Error("the departing browser's socket never ended while the retry waited for it")
 		}
 		return nil
@@ -707,7 +704,8 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds
 // synchronous settlement (settleOwedNow) that runs before the retry's timer fires takes that retry
 // over: the room the late settlement loaded is retired as the synchronous settlement ends. The
 // departing browser's socket end retires nothing while the retry's timer is armed, and the
-// fixture's settle delay of an hour keeps it armed until the synchronous settlement takes it.
+// fixture's settle delay of a day (stagedAhead) keeps it armed until the synchronous settlement
+// takes it.
 func TestARoomALateSettlementLoadedIsRetiredAsTheSynchronousSettlementThatTakesItsRetryOverEnds(t *testing.T) {
 	t.Parallel()
 	r := unloadAcrossAReload(t)
@@ -736,7 +734,8 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheSynchronousSettlementThatTakesI
 		t.Fatal("no room of the document is resident once the departing browser's socket has ended, want the one the late settlement loaded: its armed retry holds the room's record")
 	}
 
-	if err := r.service.settleOwedNow(context.Background(), r.room, time.Now().Add(roomWait(t))); err != nil {
+	waits := testwait.Context(t)
+	if err := r.service.settleOwedNow(waits, r.room, settleDeadline(t)); err != nil {
 		t.Fatalf("the synchronous settlement that takes the retry over: %v", err)
 	}
 	if got := versionWrites.Load(); got != 2 {
@@ -752,6 +751,18 @@ func signal(c chan struct{}) {
 	case c <- struct{}{}:
 	default:
 	}
+}
+
+// settleDeadline is the deadline a test hands settleOwedNow, which bounds its wait for the room's
+// durable appends: the moment the shared wait gives up in t (testwait.GiveUpAt), so appends that
+// never land fail the settlement by name where every wait here gives up. Under -timeout 0 the
+// shared wait has no end, and neither has that wait: settleOwedNow takes a moment rather than a
+// context, so it is handed one a century on.
+func settleDeadline(t testing.TB) time.Time {
+	if deadline, bounded := testwait.GiveUpAt(t); bounded {
+		return deadline
+	}
+	return time.Now().AddDate(100, 0, 0)
 }
 
 // Two rooms of one document that have both left ygo's map can report their unloads in either
@@ -778,11 +789,7 @@ func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
 		<-proceed
 	}
 	r.letFirstUnload()
-	select {
-	case <-waiting:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the first room never began its unload, so nothing here is tested")
-	}
+	testwait.Receive(t, "the first room to begin its unload (nothing here is tested until it does)", waiting)
 
 	// The second room unloads in full while the first unload waits. The first close holds the
 	// service's close gate for the room (roomServer.CloseRoom) until its unload returns, so the
@@ -814,10 +821,11 @@ func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
 // (retireSettlementRoom). So the count is final once the socket has ended. hold, when set, holds
 // the next departure before it runs, so a test can run it after the room's close (holdDeparture).
 //
-// The fixture's service keeps a room idle for lateUnloadRoomIdleTimeout rather than ygo's minute,
-// so ygo's idle sweep retires none of the rooms a test closes itself, however slowly the machine
-// runs, and its Shutdown is bounded by lateUnloadShutdownWait, so a test whose hook never returns
-// fails in its cleanup rather than at the binary's deadline.
+// The fixture's service keeps a room idle for stagedAhead rather than ygo's minute, so ygo's idle
+// sweep (roomIdleTimeout in production) retires none of the rooms a test closes itself, however
+// slowly the machine runs or long a settlement on a room takes, and its Shutdown ends where the
+// shared wait gives up (testwait.Context), so a test whose hook never returns fails in its cleanup
+// by name rather than at the binary's alarm.
 type reloadedRoom struct {
 	t              *testing.T
 	service        *Service
@@ -839,18 +847,6 @@ type departureHold struct {
 	held, release chan struct{}
 }
 
-const (
-	// lateUnloadRoomIdleTimeout is how long the fixture's rooms stay resident once idle. Far
-	// above any test's run, so ygo's idle sweep (roomIdleTimeout in production) retires no room
-	// before the test's own close of it, however long a settlement on it takes.
-	lateUnloadRoomIdleTimeout = time.Hour
-	// lateUnloadShutdownWait bounds the fixture's Shutdown: the drain budget Shutdown spends inside
-	// its caller's deadline (ShutdownDrainBudget), and ten seconds for what follows it, and less
-	// than roomWaitMargin, which roomWait leaves of the binary's deadline for a failed test's
-	// cleanups.
-	lateUnloadShutdownWait = ShutdownDrainBudget + 10*time.Second
-)
-
 // unloadAcrossAReload loads a document's room, closes it, holds ygo's call of the room's unload,
 // and loads and writes to the room again while that unload is held.
 func unloadAcrossAReload(t *testing.T) *reloadedRoom {
@@ -861,13 +857,13 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Settle:    stagedAhead,
 	})
-	service.srv.RoomIdleTimeout = lateUnloadRoomIdleTimeout
+	service.srv.RoomIdleTimeout = stagedAhead
+	// Taken before the cleanup below is registered, so the context is cancelled after it runs.
+	stop := testwait.Context(t)
 	testcleanup.Add(t, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), lateUnloadShutdownWait)
-		defer cancel()
-		if err := service.Shutdown(ctx); err != nil {
+		if err := docstest.Shutdown(t, stop, service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -923,11 +919,7 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 		}
 	}
 	go func() { r.closed <- service.srv.CloseRoom(r.room, true) }()
-	select {
-	case <-entering:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the first room never reached its unload, so nothing here is tested")
-	}
+	testwait.Receive(t, "the first room to reach its unload (nothing here is tested until it does)", entering)
 
 	// The room loads afresh while the first room's unload is held, so the service counts both
 	// loads, and a write the second room takes counts against it alone.
@@ -955,11 +947,7 @@ func (r *reloadedRoom) holdDeparture() (held <-chan struct{}, letGo func()) {
 // awaitHeld waits for who's departure to reach its hold (holdDeparture).
 func (r *reloadedRoom) awaitHeld(held <-chan struct{}, who string) {
 	r.t.Helper()
-	select {
-	case <-held:
-	case <-time.After(roomWait(r.t)):
-		r.t.Fatalf("%s never began to leave the room, so nothing here is tested", who)
-	}
+	testwait.Receive(r.t, who+" to begin to leave the room (nothing here is tested until it does)", held)
 }
 
 // releaseFirstRoom lets the first room's held unload go (unloadAcrossAReload), and waits for that
@@ -980,7 +968,7 @@ func (r *reloadedRoom) closeUnderHeldDeparture() func() {
 	held, letDeparture := r.holdDeparture()
 	_ = r.socket.Close()
 	r.awaitHeld(held, "the second room's browser")
-	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
+	if err := closeRoomJoined(r.t, r.service, r.room, true); err != nil {
 		r.t.Fatalf("close the second room: %v", err)
 	}
 	r.awaitUnload("the second room")
@@ -1017,11 +1005,7 @@ func (r *reloadedRoom) holdLateSettlementInItsRoom() (settlementRoom *crdt.Doc, 
 	}
 	letDeparture := r.closeUnderHeldDeparture()
 	letDeparture()
-	select {
-	case <-warmed:
-	case <-time.After(roomWait(r.t)):
-		r.t.Fatal("the late departure's settlement never reached its room, so nothing here is tested")
-	}
+	testwait.Receive(r.t, "the late departure's settlement to reach its room (nothing here is tested until it does)", warmed)
 	settlementRoom = r.service.srv.GetDoc(r.room)
 	if loads := r.loads.Load(); settlementRoom == nil || loads != 3 {
 		r.t.Fatalf("the late departure's settlement holds room %p after %d loads of the document, want a room it loaded itself, the third; nothing here is tested", settlementRoom, loads)
@@ -1070,11 +1054,7 @@ func (r *reloadedRoom) awaitSettlementLoadHeld(letDeparture func()) (letReady fu
 		return err
 	}
 	letDeparture()
-	select {
-	case <-reached:
-	case <-time.After(roomWait(r.t)):
-		r.t.Fatal("the late departure's settlement never loaded a room, so nothing here is tested")
-	}
+	testwait.Receive(r.t, "the late departure's settlement to load a room (nothing here is tested until it does)", reached)
 	state := r.service.lockExistingState(r.room)
 	marked := state != nil && state.warmed != nil
 	if state != nil {
@@ -1089,11 +1069,7 @@ func (r *reloadedRoom) awaitSettlementLoadHeld(letDeparture func()) (letReady fu
 // awaitUnload waits for the next unload of the room to have run.
 func (r *reloadedRoom) awaitUnload(what string) {
 	r.t.Helper()
-	select {
-	case <-r.unloaded:
-	case <-time.After(roomWait(r.t)):
-		r.t.Fatalf("%s never reported its unload", what)
-	}
+	testwait.Receive(r.t, what+" to report its unload", r.unloaded)
 }
 
 // awaitSocketEnd waits for the next end of a document socket of the room: who's browser has left,
@@ -1101,26 +1077,16 @@ func (r *reloadedRoom) awaitUnload(what string) {
 // (reloadedRoom).
 func (r *reloadedRoom) awaitSocketEnd(who string) {
 	r.t.Helper()
-	select {
-	case <-r.ended:
-	case <-time.After(roomWait(r.t)):
-		r.t.Fatalf("%s's socket never ended", who)
-	}
+	testwait.Receive(r.t, who+"'s socket to end", r.ended)
 }
 
-// awaitFirstClose waits for the first room's close to return, as long as roomWait allows: what the
-// test binary's deadline leaves after roomWaitMargin (t.Deadline), at most roomWaitCap. A close
+// awaitFirstClose waits for the first room's close to return, through the shared wait, so a close
 // that never returns fails the test here by name, and leaves the rest of the deadline to the
-// fixture's bounded Shutdown and to the package's later tests.
+// fixture's Shutdown and to the package's later tests.
 func (r *reloadedRoom) awaitFirstClose() {
 	r.t.Helper()
-	select {
-	case err := <-r.closed:
-		if err != nil {
-			r.t.Fatalf("close the first room: %v", err)
-		}
-	case <-time.After(roomWait(r.t)):
-		r.t.Fatal("the first room's close never returned")
+	if err := testwait.Receive(r.t, "the first room's close to return", r.closed); err != nil {
+		r.t.Fatalf("close the first room: %v", err)
 	}
 }
 

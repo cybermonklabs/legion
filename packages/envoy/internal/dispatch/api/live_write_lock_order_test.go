@@ -8,12 +8,12 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -83,8 +83,8 @@ func TestProjectDocumentUploadAndAConcurrentWriteBothFinish(t *testing.T) {
 			f.waitForWriteToEngage(t)
 			f.persistence.release()
 
-			upload := awaitWithin(t, uploads, cancel, "project document upload")
-			write := awaitWithin(t, writes, cancel, test.name)
+			upload := testwait.Receive(t, "the project document upload to finish", uploads)
+			write := testwait.Receive(t, test.name+" to finish", writes)
 			if upload.Code != http.StatusCreated {
 				t.Fatalf("upload: status=%d body=%s", upload.Code, upload.Body.String())
 			}
@@ -113,11 +113,11 @@ func newUploadRaceFixture(t *testing.T) *uploadRaceFixture {
 			Store:       database,
 			Persistence: f.persistence,
 			Identity:    headerIdentity(database),
-			Settle:      time.Hour,
+			Settle:      stagedAhead,
 		})
 		// Runs before the service shuts down: a failed assertion must not leave the upload
 		// held inside its transaction.
-		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 		t.Cleanup(f.persistence.release)
 		f.docs = &engagingDocs{API: service, engaged: make(chan struct{})}
 		return f.docs
@@ -151,10 +151,10 @@ func (f *uploadRaceFixture) request(ctx context.Context, method, target string, 
 }
 
 // waitForWriteToEngage returns once the second request has entered its document operation or
-// waits on a database lock. Its one bound is the test binary's deadline (testwait.UntilPolling).
+// waits on a database lock. Its one bound is the test binary's deadline (testwait.Until).
 func (f *uploadRaceFixture) waitForWriteToEngage(t *testing.T) {
 	t.Helper()
-	testwait.UntilPolling(t, 5*time.Millisecond, "the second write to enter its document operation or wait on a database lock (the backends waiting on a lock)", func() (int, bool) {
+	testwait.Until(t, "the second write to enter its document operation or wait on a database lock (the backends waiting on a lock)", func() (int, bool) {
 		select {
 		case <-f.docs.engaged:
 			return 0, true
@@ -169,16 +169,6 @@ func (f *uploadRaceFixture) waitForWriteToEngage(t *testing.T) {
 		}
 		return waiting, waiting > 0
 	})
-}
-
-// awaitWithin waits for a request that must not hang. Its one bound is the test binary's deadline
-// (testwait.Receive): a deadlocked pair fails the test by name there. cancel, which cancels every
-// request the test started, is registered as a cleanup after the fixture's, so it runs before them
-// and a deadlocked pair is cut loose before the fixture shuts its services down.
-func awaitWithin(t *testing.T, responses <-chan *httptest.ResponseRecorder, cancel context.CancelFunc, name string) *httptest.ResponseRecorder {
-	t.Helper()
-	t.Cleanup(cancel)
-	return testwait.Receive(t, name+" to answer", responses)
 }
 
 // heldAppendStore holds the next transactional append it sees, once asked to, until release.

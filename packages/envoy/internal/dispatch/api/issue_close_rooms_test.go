@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -19,6 +18,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -76,7 +76,7 @@ func runDocumentRoomSyncDialing(
 	}()
 	t.Cleanup(func() {
 		cancel()
-		running.Wait()
+		testwait.Returns(t, "the document room sync and its listener hub to return once cancelled", running.Wait)
 	})
 	return connected
 }
@@ -93,9 +93,9 @@ func TestClosingAnIssueClosesItsRoomsFromItsCommit(t *testing.T) {
 		documentService = docs.New(docs.Deps{
 			Store:    database,
 			Identity: headerIdentity(database),
-			Settle:   time.Hour,
+			Settle:   stagedAhead,
 		})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	runDocumentRoomSync(t, database, documentService)
@@ -151,7 +151,7 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: 20 * time.Millisecond})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		wrapper.API = documentService
 		return wrapper
 	})
@@ -162,8 +162,8 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 
 	// The browser's room is on another process, which hears the close from its commit.
 	second := storetest.SecondProcess(t, database)
-	other := docs.New(docs.Deps{Store: second, Identity: headerIdentity(second), Settle: time.Hour})
-	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
+	other := docs.New(docs.Deps{Store: second, Identity: headerIdentity(second), Settle: stagedAhead})
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), other) })
 	runDocumentRoomSync(t, second, other)
 	peer := connectBrowserPeer(t, other, issue.PrimaryArtifactID)
 	wrapper.insert = func() {
@@ -179,25 +179,12 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 	}
 
 	testwait.Receive(t, "the close to end the browser's room on the other process", peer.connection().Ended)
-	testwait.UntilPolling(t, 20*time.Millisecond, "the keystroke typed while the close's write held the document's lock to be stored (the store's text)", func() (string, bool) {
+	testwait.Until(t, "the keystroke typed while the close's write held the document's lock to be stored (the store's text)", func() (string, bool) {
 		stored := storedDocumentText(t, database, issue.PrimaryArtifactID)
 		return stored, strings.Contains(stored, "typed during the close")
 	})
 	peer.reconnect(t)
-	// docstest's Authenticate waits under a bound of its own, so it is handed one no run reaches,
-	// and the room's answer is waited for here instead, whose one bound is the test binary's
-	// deadline (testwait.Receive).
-	type authenticated struct {
-		scope string
-		err   error
-	}
-	answered := make(chan authenticated, 1)
-	go func() {
-		scope, err := peer.connection().Authenticate(strconv.Itoa(pmdoc.SchemaVersion()), math.MaxInt64)
-		answered <- authenticated{scope, err}
-	}()
-	reply := testwait.Receive(t, "the room's answer to the reconnected browser's auth token", answered)
-	scope, err := reply.scope, reply.err
+	scope, err := peer.connection().Authenticate(t, strconv.Itoa(pmdoc.SchemaVersion()))
 	if err != nil {
 		t.Fatalf("authenticate the reconnected browser: %v", err)
 	}
@@ -207,10 +194,10 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 }
 
 // waitForDocumentLockWaiter returns once a session of database waits on a document's advisory lock
-// (a room's append, lockRoom). Its one bound is the test binary's deadline (testwait.UntilPolling).
+// (a room's append, lockRoom). Its one bound is the test binary's deadline (testwait.Until).
 func waitForDocumentLockWaiter(t *testing.T, database *store.Store) {
 	t.Helper()
-	testwait.UntilPolling(t, 10*time.Millisecond, "an append to wait on the document's lock (the sessions waiting)", func() (int, bool) {
+	testwait.Until(t, "an append to wait on the document's lock (the sessions waiting)", func() (int, bool) {
 		waiting, err := storetest.CountLockWaits(context.Background(), database, "%pg_advisory%lock(hashtext($1))%")
 		if err != nil {
 			t.Fatal(err)

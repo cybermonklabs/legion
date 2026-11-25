@@ -45,9 +45,10 @@ type combineOutcome struct {
 // changed the record rather than once per observation: it still strictly increases whenever the
 // snapshot changes.
 //
-// A caller waits within ctx and recordWait, whichever ends first: in the queue (leave), and for the
+// A caller waits within ctx and RecordWait, whichever ends first: in the queue (leave), and for the
 // KV calls of the batch it writes (write), so every caller in a batch shares the bound of the
-// caller writing it.
+// caller writing it. That wait is armed on the store's clock (Store.clock), so a test hands a
+// clocktest.Fake and moves it past RecordWait rather than waiting the wait out.
 //
 // changed answers whether this caller's own mutation changed the record, which writeBatch's own
 // answers below are. A caller whose write failed, and one whose write was refused for bounds
@@ -59,7 +60,7 @@ type combineOutcome struct {
 // status is the context of the commit status mutate records, and empty for a check run or a check
 // suite (pendingMutation).
 func (s *Store) update(ctx context.Context, owner, repo, number, sha, status string, mutate func(*State) bool) (changed bool, err error) {
-	ctx, cancel := context.WithTimeout(ctx, recordWait)
+	ctx, cancel := s.clock.WithTimeout(ctx, RecordWait)
 	defer cancel()
 	key := Key(owner, repo, number, sha)
 	own := &pendingMutation{mutate: mutate, status: status, done: make(chan combineOutcome, 1)}

@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -36,7 +35,7 @@ type dependencyEdge struct{ issue, target string }
 // still refused a target outside it.
 func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	alpha := createListedIssues(t, handler, "ALPHA", 8)
 	beta := createListedIssues(t, handler, "BETA", 8)
 	gamma := createListedIssues(t, handler, "GAMMA", 2)
@@ -372,7 +371,7 @@ type foreignChildOpenAnswer struct {
 // issue's own project, which the parent's own daemon judges, are taken as before.
 func TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	core := createListedIssues(t, handler, "CORE", 4)
 	side := createListedIssues(t, handler, "SIDE", 1)
 	parent, child := core[0], side[0]
@@ -471,7 +470,7 @@ func TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject(t *testing.T) {
 // check of an acceptance write, so it is refused beside any other status or none.
 func TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus(t *testing.T) {
 	t.Parallel()
-	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, _, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	core := createListedIssues(t, handler, "CORE", 1)
 	for _, body := range []map[string]any{
 		{"status": "in_progress", "refuse_open_foreign_children": true},
@@ -489,7 +488,7 @@ func TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus(t *testing.T) {
 // A status write without the field takes no dependency lock, as before.
 func TestAnAcceptanceWriteTakesTheDependencyLock(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	core := createListedIssues(t, handler, "CORE", 2)
 	gate, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -561,7 +560,8 @@ func patchIssueParent(t *testing.T, handler http.Handler, key, parent string) *h
 // own project, and every refusal that stood inside one project stands across two: a ring of
 // parent links, and a chain past the depth cap, whichever projects its links alternate between.
 func TestParentCrossesAProjectAndStillRefusesACycle(t *testing.T) {
-	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	t.Parallel()
+	handler, _, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	alpha := createListedIssues(t, handler, "ALPHA", 3)
 	beta := createListedIssues(t, handler, "BETA", 3)
 
@@ -644,7 +644,8 @@ func TestParentCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 // one taken and the other refused as a cycle, never with both committed, never with a deadlock.
 // The race is replayed crossProjectRaceRounds times, each round on the pair cleared of parents.
 func TestRacingReparentsAcrossProjectsCommitNoRing(t *testing.T) {
-	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	t.Parallel()
+	handler, _, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	alpha := createListedIssues(t, handler, "ALPHA", 1)[0]
 	beta := createListedIssues(t, handler, "BETA", 1)[0]
 	parentOf := func(key string) string {
@@ -698,7 +699,8 @@ func TestRacingReparentsAcrossProjectsCommitNoRing(t *testing.T) {
 // both. With ALPHA's lock held, a BETA create under ALPHA's issue and a BETA reparent under it
 // wait; once it is released, both land with that parent.
 func TestAParentWriteTakesTheParentsProjectLock(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	alpha := createListedIssues(t, handler, "ALPHA", 1)[0]
 	beta := createListedIssues(t, handler, "BETA", 1)[0]
 	gate, err := database.Pool.Begin(context.Background())
@@ -745,7 +747,8 @@ func TestAParentWriteTakesTheParentsProjectLock(t *testing.T) {
 // credential is refused a check of another project's issue too, which the results route reaches
 // through a parent of another project, on the record and on the retraction.
 func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
-	rig := newBrokerTokenRigOn(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t), settle: time.Hour})
+	t.Parallel()
+	rig := newBrokerTokenRigOn(t, testServerOptions{settle: stagedAhead})
 	caller := newBrokerCaller(t)
 	for _, project := range []string{"ALPHA", "BETA"} {
 		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
@@ -826,8 +829,8 @@ func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 	// A move under another project's issue that also closes the issue is refused before the
 	// close settles the issue's documents (settleIssueBeforeClose), so the refusal indexes no ask
 	// and writes no version of the spec, and the issue stays open. The issue is new, its spec holds
-	// a decision block, and the rig settles a document only after an hour, so the spec still owes
-	// the settlement that would open the block's ask and write a version.
+	// a decision block, and the rig settles a document only after a day (stagedAhead), so the spec
+	// still owes the settlement that would open the block's ask and write a version.
 	closer := createdIssue(t, "create the issue a scoped caller closes", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "BETA", "title": "An issue a scoped caller closes", "spec": closeDecision, "force": true,
 	}))
@@ -940,14 +943,9 @@ func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 // ALPHA's issue under BETA's issue is a root of its own for every one of the four. A child and a
 // grandchild of the issue's own project still inherit each, which is the control.
 func TestInheritedValuesStopAtTheProjectEdge(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
-	for _, project := range []string{"ALPHA", "BETA"} {
-		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-			"key": project, "name": project,
-		}, "alice"); response.Code != http.StatusCreated {
-			t.Fatalf("create project %s: status=%d body=%s", project, response.Code, response.Body.String())
-		}
-	}
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
+	createTestProject(t, handler, "ALPHA", "BETA")
 	for project, repo := range map[string]string{"ALPHA": "acme/alpha-default", "BETA": "acme/beta"} {
 		setDefaultRepository(t, handler, project, repo)
 	}

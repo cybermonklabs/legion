@@ -15,6 +15,8 @@ import (
 	"context"
 	"math/rand/v2"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // jitterN draws a duration in [0, n), and zero for an n of zero or less. Every jittered wait in this
@@ -103,35 +105,40 @@ const (
 // served the tick's period, which is always interval. first says whether the first tick is at
 // start or one interval after.
 //
-// The ticks are a ticker's, time.NewTicker(interval): TickAfterInterval starts at the ticker's
-// first tick, and TickAtStart makes one tick at the moment the loop starts before it. A tick's due
-// time, the moment it hands Exclusive, is the value the ticker delivered, the clock read at that
-// tick and not a moment worked out from a reading taken at start, so a step of the wall clock
-// while the loop runs moves the due times after it with it. The ticker's ticks are one interval
-// apart while each pass takes less than the interval, so a lone loop's due times fall in
-// consecutive periods on this process's clock (periodBoundary) and no period is lost. A tick armed
-// only once the pass before it returned would be due one interval plus that pass's time after it,
-// and as those delays add up its due times would drift across the period boundaries and jump over
-// a period no pass serves. A pass that overruns the interval gets what a ticker gives a slow
-// receiver (Go's runtime, time.go): the first tick it overran comes at once, with the moment it
-// was due, and only the ticks after it are dropped, so due times stay whole intervals apart and
-// overrun ticks are not run late one after another.
+// The ticks are a clock.Ticker's, whose doc gives the grid, the moment each tick hands, and what
+// a pass that overruns the interval gets. TickAtStart makes one tick at the moment the loop
+// starts, with that moment, and TickAfterInterval makes the first one interval after it; the
+// ticks after either fall on the grid one interval apart from the start. Each tick hands
+// Exclusive the moment it fired, and Exclusive puts the tick in the period that moment falls in
+// on the wall clock (periodBoundary), so two processes agree on a tick's period however late
+// either one takes it, and after a step of the wall clock too. A step does not move the grid on
+// clock.Real: a step forward leaves the periods it jumped over with no tick, and the next tick
+// after a step back falls in a period already served and is refused. The grid does not drift: a
+// timer armed one interval after the pass before it returned would be due one interval plus that
+// pass's time after it, and as those delays add up its due times would cross the period
+// boundaries and jump over a period no pass serves, where the grid's ticks stay whole intervals
+// apart, so a lone loop's ticks fall in consecutive periods and no period is lost. Each next tick
+// is armed once the tick's Exclusive call has returned, so a test that sees it armed on a
+// clocktest.Fake knows that call has given the lease back.
 //
 // ctx ending returns at once from a wait, and from a tick once its pass returns.
 func RunLeased(ctx context.Context, leases Leases, name string, interval time.Duration, first FirstTick, pass func(context.Context)) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	if first == TickAtStart {
-		// Read after the ticker started, so the ticker's first tick is no more than one interval
-		// after this one: in the next period, or in this one and refused, but never one beyond.
-		Exclusive(ctx, leases, name, time.Now(), interval, pass)
-	}
+	RunLeasedOn(ctx, clock.Real(), leases, name, interval, first, pass)
+}
+
+// RunLeasedOn is RunLeased with its ticks on c: clock.Real from RunLeased, and a test's
+// clocktest.Fake, which brings each tick only when the test moves it there.
+func RunLeasedOn(ctx context.Context, c clock.Clock, leases Leases, name string, interval time.Duration, first FirstTick, pass func(context.Context)) {
+	ticks := clock.NewTicker(c, interval, first == TickAtStart)
+	defer ticks.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case due := <-ticker.C:
-			Exclusive(ctx, leases, name, due, interval, pass)
+		case fired := <-ticks.C():
+			ticks.Took()
+			Exclusive(ctx, leases, name, fired, interval, pass)
+			ticks.Next()
 		}
 	}
 }
@@ -155,8 +162,15 @@ func RunLeased(ctx context.Context, leases Leases, name string, interval time.Du
 //
 // ctx ending returns at once from a wait, and from a tick once its pass returns.
 func RunLeasedAfterEachPass(ctx context.Context, leases Leases, name string, interval time.Duration, pass func(context.Context, time.Duration) time.Duration) {
+	RunLeasedAfterEachPassOn(ctx, clock.Real(), leases, name, interval, pass)
+}
+
+// RunLeasedAfterEachPassOn is RunLeasedAfterEachPass with its ticks on c: clock.Real from
+// RunLeasedAfterEachPass, and a test's clocktest.Fake, which brings each tick only when the test
+// moves it there.
+func RunLeasedAfterEachPassOn(ctx context.Context, c clock.Clock, leases Leases, name string, interval time.Duration, pass func(context.Context, time.Duration) time.Duration) {
 	period := interval
-	due := time.Now()
+	due := c.Now()
 	for {
 		wait := interval
 		Exclusive(ctx, leases, name, due, period, func(ctx context.Context) {
@@ -166,7 +180,7 @@ func RunLeasedAfterEachPass(ctx context.Context, leases Leases, name string, int
 		select {
 		case <-ctx.Done():
 			return
-		case due = <-time.After(wait):
+		case due = <-c.After(wait):
 		}
 	}
 }

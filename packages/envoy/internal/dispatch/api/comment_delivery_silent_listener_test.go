@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -32,9 +34,13 @@ func TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener, state := newMentionListener(t)
-			// Never released: every lookup of s1 waits until its caller gives up.
+			// Never released: every lookup of s1 waits until its caller gives up. What ends
+			// each of them is the window the listener client gives the call, on this clock,
+			// which the wait for the attempt moves to the end of each window.
 			_ = state.holdLookups("/v1/registry/s1")
-			handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Second})
+			clock := clocktest.New(time.Now())
+			state.calls.on(clock)
+			handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clock})
 			issue := createInteractionIssue(t, handler, "TEST", "A silent listener", "before")
 			if tc.route != "" {
 				if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
@@ -50,9 +56,22 @@ func TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment(t *testing.T) {
 				})
 				input["reply_to"] = decodeMentionedComment(t, root).ID
 			}
-			created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, input))
+			bound := clock.Now().Add(mentionLookupTimeout)
+			posted := make(chan *httptest.ResponseRecorder, 1)
+			go func() { posted <- postMentionedComment(t, handler, issue.Key, input) }()
+			// The comment looks s1 up before its transaction, bounded by mentionLookupTimeout on
+			// the server's clock and armed before the lookup's request leaves. The clock moves to
+			// that bound once the stand-in holds the lookup: moved sooner, it would end a lookup
+			// the listener never saw, which is no silent listener's doing.
+			testwait.Until(t, "the stand-in to hold s1's lookup (the calls it holds)", func() (int, bool) {
+				_, holding := state.calls.counts()
+				return holding, holding == 1
+			})
+			clock.AwaitArmedAt(t, "s1's lookup's bound", bound)
+			clock.Set(bound)
+			created := decodeMentionedComment(t, testwait.Receive(t, "the comment to answer once its lookup's bound ran out", posted))
 
-			settled := settledCommentDeliveries(t, database, created.ID)
+			settled := settledCommentDeliveriesOn(t, database, created.ID, clock, &state.calls)
 			if len(settled) != 1 || settled[0].State != "failed" {
 				t.Fatalf("the mention to a listener that never answers = %#v, want its one attempt failed", settled)
 			}
@@ -68,31 +87,23 @@ func TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment(t *testing.T) {
 }
 
 // publishedToSession runs the outbox until every event of issueKey is published, a wait whose one
-// bound is the test binary's deadline (testwait.UntilPolling), then reports whether any event about
+// bound is the test binary's deadline (testwait.Until), then reports whether any event about
 // commentID (its comment.created, a comment.delivery, any other) was published to the session's own
 // topic.
 func publishedToSession(t *testing.T, deps Deps, issueKey, commentID, sessionID string) bool {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		outbox.New(outbox.Deps{
-			Store: deps.Store, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
-			Listen: deps.Store.Pool.Listener,
-		}).Run(ctx)
-	}()
-	defer func() {
-		cancel()
-		<-stopped
-	}()
-	testwait.UntilPolling(t, 10*time.Millisecond, fmt.Sprintf("the outbox to publish every event of %s (the events unpublished)", issueKey), func() (int, bool) {
+	stop := runOutbox(t, outbox.Deps{
+		Store: deps.Store, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
+		Listen: deps.Store.Pool.Listener,
+	})
+	defer stop()
+	testwait.Until(t, "the outbox to publish every event of "+issueKey, func() (string, bool) {
 		var unpublished int
 		if err := deps.Store.Pool.QueryRow(context.Background(),
 			`select count(*) from events where issue_key = $1 and published_at is null`, issueKey).Scan(&unpublished); err != nil {
 			t.Fatalf("count unpublished events of %s: %v", issueKey, err)
 		}
-		return unpublished, unpublished == 0
+		return fmt.Sprintf("%d events unpublished", unpublished), unpublished == 0
 	})
 	rows, err := deps.Store.Pool.Query(context.Background(), `
 		select published_destinations from events
@@ -252,8 +263,12 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 	t.Parallel()
 	listener, state := newMentionListener(t)
 	stopping, stop := context.WithCancel(t.Context())
+	// The lookups of s1 the resend makes are never answered: each one ends at its window on
+	// this clock, which the wait for the attempt moves to the end of each window.
+	clock := clocktest.New(time.Now())
+	state.calls.on(clock)
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{
-		envoyURL: listener.URL, envoyTimeout: time.Second, lifetime: stopping,
+		envoyURL: listener.URL, lifetime: stopping, clock: clock,
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "A claimed send that never landed", "before")
 	if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
@@ -276,33 +291,27 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 	_ = state.holdLookups("/v1/registry/s1")
 
 	// The outbox runs from here on; it gets the comment before the next process's first pass.
-	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		outbox.New(outbox.Deps{
-			Store: deps.Store, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
-			Listen: deps.Store.Pool.Listener,
-		}).Run(ctx)
-	}()
-	defer func() {
-		cancel()
-		<-stopped
-	}()
-	testwait.UntilPolling(t, 20*time.Millisecond, "the outbox to publish the comment's comment.created", func() (bool, bool) {
+	stopOutbox := runOutbox(t, outbox.Deps{
+		Store: deps.Store, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
+		Listen: deps.Store.Pool.Listener,
+	})
+	defer stopOutbox()
+	testwait.Eventually(t, "the outbox to publish the comment.created of "+claimed.ID, func() bool {
 		var published bool
 		if err := database.Pool.QueryRow(context.Background(), `
 			select published_at is not null from events where type = 'comment.created' and payload->>'id' = $1
 		`, claimed.ID).Scan(&published); err != nil {
 			t.Fatalf("read comment.created: %v", err)
 		}
-		return published, published
+		return published
 	})
 
-	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
-		t.Fatalf("resume the owed deliveries: %v", err)
-	}
+	// The resend's lookups of s1 are held unanswered, so the sweep runs on its own goroutine and
+	// the wait below moves the clock to the end of each call's window until the attempt settles.
+	swept := make(chan error, 1)
+	go func() { swept <- served.resumeOwedDeliveries(context.Background()) }()
 	waitForCommentDeliveries(t, database, claimed.ID, "no attempt pending", func(attempts []model.CommentDelivery) bool {
+		stepListenerWaits(clock, &state.calls)
 		for _, attempt := range attempts {
 			if attempt.State == "pending" {
 				return false
@@ -310,9 +319,12 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 		}
 		return true
 	})
+	if err := testwait.Receive(t, "the delivery sweep to finish", swept); err != nil {
+		t.Fatalf("resume the owed deliveries: %v", err)
+	}
 
 	copies := 0
-	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the outbox to publish every event of %s and settle every held copy", issue.Key), func() (string, bool) {
+	testwait.Until(t, "the outbox to publish every event of "+issue.Key+" and settle every held copy", func() (string, bool) {
 		var unpublished, unsettled int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select (select count(*) from events where issue_key = $1 and published_at is null),

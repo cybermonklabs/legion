@@ -356,7 +356,7 @@ func (s *server) resolveThroughTakeover(
 	takeover := s.newTakeoverRetry()
 	var resolved ResolvedMention
 	resolve := func() string {
-		resolved = s.resolveMentionTarget(ctx, target, delivery, s.commentLookupBound(target))
+		resolved = s.resolveMentionTarget(ctx, target, delivery, mentionLookupTimeout)
 		return resolved.ResolveError
 	}
 	if !wait {
@@ -366,16 +366,6 @@ func (s *server) resolveThroughTakeover(
 	// A try that holds nothing has nothing to renew, so retry answers no error.
 	_ = takeover.retry(ctx, resolve, nil)
 	return resolved, takeover
-}
-
-// commentLookupBound is the bound on one try of a comment's listener lookup of target, read as
-// that try starts: mentionLookupTimeout on every server the deployment builds, which sets no
-// mentionLookupBound, and whatever a test set for that target otherwise.
-func (s *server) commentLookupBound(target string) time.Duration {
-	if s.mentionLookupBound != nil {
-		return s.mentionLookupBound(target)
-	}
-	return mentionLookupTimeout
 }
 
 // again reports whether the sender tries once more after a try that recorded failure, having
@@ -405,11 +395,11 @@ func (r *takeoverRetry) again(ctx context.Context, failure string) bool {
 // (model.DeliveryClaimFreeSQL, selected beside the row it locks): nobody claimed it, or whoever
 // did never came back within model.DeliveryClaimLapse. A sender renews its claim before every
 // try (takeoverRetry), and a try is bounded by the listener client's own window (five seconds on
-// the server's clock, DepsInput.EnvoyTimeout in a test) and the short transaction that records
-// its outcome, so a claim older than the lease was left by a process that died before its settle.
-// Postgres judges it, against the claimed_at Postgres itself wrote: a Dispatch task whose clock ran
-// ahead of the database would otherwise read every live claim as lapsed, and one that ran behind
-// could never resume a stranded attempt.
+// the server's clock) and the short transaction that records its outcome, so a claim older than
+// the lease was left by a process that died before its settle. Postgres
+// judges it, against the claimed_at Postgres itself wrote: a Dispatch task whose clock ran ahead
+// of the database would otherwise read every live claim as lapsed, and one that ran behind could
+// never resume a stranded attempt.
 //
 // A retry beside a live claim takes an attempt of its own rather than two senders driving one. A
 // retry beside a lapsed claim resumes that attempt under its original number, and so its

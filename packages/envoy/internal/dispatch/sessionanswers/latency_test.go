@@ -4,6 +4,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Every read that ended runs no longer: reads that begin and end on many goroutines at once,
@@ -34,9 +36,9 @@ func TestEveryAnswersReadThatEndedRunsNoLonger(t *testing.T) {
 			}
 		}
 	}()
-	wg.Wait()
+	testwait.Returns(t, "every reader's Begins and Ends to return", wg.Wait)
 	close(stop)
-	<-asked
+	testwait.Receive(t, "the goroutine asking Slow to stop once told", asked)
 	ended := time.Now()
 	if len(latency.running) != 0 {
 		t.Fatalf("%d reads that each ended left %d running", readers*reads, len(latency.running))

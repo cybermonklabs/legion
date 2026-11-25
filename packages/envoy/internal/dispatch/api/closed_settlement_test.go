@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -46,21 +47,23 @@ func closedSettlementHandlerSettlingAfter(t *testing.T, settle time.Duration) (h
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: settle})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	return handler, database, documentService
 }
 
 // closeIssueThroughPatch closes issue through PATCH /api/v1/issues/{key} as alice, which withdraws
-// its open asks and sweeps its documents' ask blocks before it answers, and then moves the close a
-// minute ahead in the database: the issue reads closed, and the store's close margin admits a
-// browser's update its room takes from now on however long the test runs (observedBeforeClose).
+// its open asks and sweeps its documents' ask blocks before it answers, and then moves the close
+// stagedAhead ahead in the database: the issue reads closed, and the store's close margin admits a
+// browser's update its room takes from now on however long the test runs (observedBeforeClose). A
+// close a minute ahead admits only the updates taken within that minute and the margin.
 func closeIssueThroughPatch(t *testing.T, handler http.Handler, database *store.Store, issue string) {
 	t.Helper()
 	closeArtifactIssue(t, handler, issue)
-	if _, err := database.Pool.Exec(context.Background(), `update issues set closed_at = now() + interval '1 minute' where key = $1`, issue); err != nil {
-		t.Fatalf("move the close of %s a minute ahead: %v", issue, err)
+	if _, err := database.Pool.Exec(context.Background(), `update issues set closed_at = now() + make_interval(secs => $2) where key = $1`,
+		issue, stagedAhead.Seconds()); err != nil {
+		t.Fatalf("move the close of %s ahead of the database's clock: %v", issue, err)
 	}
 }
 
@@ -121,10 +124,10 @@ func documentOwesSettlement(t *testing.T, database *store.Store, document string
 
 // awaitSettledVersionHolding waits until document owes no settlement and its latest version holds
 // part, and answers that version's markdown. Its one bound is the test binary's deadline
-// (testwait.UntilPolling), and its failure prints the latest version it read.
+// (testwait.Until), and its failure prints the latest version it read.
 func awaitSettledVersionHolding(t *testing.T, handler http.Handler, database *store.Store, document, part string) string {
 	t.Helper()
-	return testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("document %s to settle a version holding %q (its latest version)", document, part), func() (string, bool) {
+	return testwait.Until(t, fmt.Sprintf("document %s to settle a version holding %q", document, part), func() (string, bool) {
 		_, version := documentTexts(t, handler, document)
 		return version, strings.Contains(version, part) && !documentOwesSettlement(t, database, document)
 	})
@@ -258,12 +261,33 @@ func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.
 	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
-	opened := testwait.UntilPolling(t, 20*time.Millisecond, "the reopened issue's settlement to open the block's ask (the ask last read)", func() (model.Ask, bool) {
-		var ask model.Ask
-		if id := findBlockAsk(t, handler, issue.Key, spec, "closed-decision"); id != "" {
-			ask = readBlockAsk(t, handler, id)
+	// A try that finds no ask for the block reads the blocks the issue's asks name, each with the
+	// document it is in; one that finds it reads its state.
+	var opened model.Ask
+	testwait.Until(t, "the reopened issue's settlement to open the block's ask", func() (string, bool) {
+		listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/asks?state=all", nil, "alice")
+		if listed.Code != http.StatusOK {
+			t.Fatalf("list asks: status=%d body=%s", listed.Code, listed.Body.String())
 		}
-		return ask, ask.State == "open"
+		var blocks []string
+		for _, listedAsk := range decodeBody[[]model.Ask](t, listed) {
+			switch {
+			case listedAsk.BlockID == nil:
+				blocks = append(blocks, "<none>")
+			case listedAsk.BlockArtifact == nil:
+				blocks = append(blocks, *listedAsk.BlockID+" in <no document>")
+			case *listedAsk.BlockID == "closed-decision" && listedAsk.BlockArtifact.ID == spec:
+				ask := readBlockAsk(t, handler, listedAsk.ID)
+				if ask.State != "open" {
+					return fmt.Sprintf("the block's ask %s is %s", ask.ID, ask.State), false
+				}
+				opened = ask
+				return "the block's ask " + ask.ID + " is open", true
+			default:
+				blocks = append(blocks, *listedAsk.BlockID+" in "+listedAsk.BlockArtifact.ID)
+			}
+		}
+		return fmt.Sprintf("the issue holds %d asks, none for the block; they name blocks %v", len(blocks), blocks), false
 	})
 	if !opened.Author.SameAs(author) {
 		t.Fatalf("the block's ask is credited to %+v, want %+v, its recorded author", opened.Author, author)

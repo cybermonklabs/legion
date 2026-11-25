@@ -32,7 +32,13 @@ env:
 jobs:
   dispatch-memory:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 75
+    # The step's -timeout 70m is twice and more the package's slowest run over this job's 20 newest
+    # green merge-group runs up to 2026-11-18T08:56Z (runs 44183076765 to 44267329843), 2077.561 s
+    # (run 44228254232), which the 60 minutes it had before held only 1.7 times. The limit is at
+    # least the job's sum over those runs: its other steps at their longest, 76 s, 7 s of its clock
+    # over them, and the step's longest 2149 s (run 44228254232) plus its 70 minutes: 6432 s, or
+    # 108 minutes.
+    timeout-minutes: 110
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -46,7 +52,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 75 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 110 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,7 +74,7 @@ jobs:
       - name: Memory tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
-          go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
+          go test -tags memory -count=1 -timeout 70m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

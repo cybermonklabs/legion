@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A held send whose whole delivery cannot read the copy rule waits as a send behind an earlier
@@ -33,10 +34,10 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 	failer := &ruleReadFailer{}
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true, tracer: failer,
+		envoyURL: listener.URL, outboxPublishes: true, tracer: failer,
 	})
-	served.mentions.wait()
-	sender := newMentionSender(served.lifetime, time.Hour, served.sendCommentMention,
+	joinRegisteredMentions(t, served)
+	sender := newMentionSender(served.lifetime, stagedAhead, nil, served.sendCommentMention,
 		served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
 	timers := make(chan func(), 4)
 	sender.mu.Lock()
@@ -48,20 +49,16 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 	// behind them, its timer left to the test, and the second queues behind it on the held lane.
 	issue := createInteractionIssue(t, handler, "TEST", "A failed read of the copy rule", "before")
 	first := postMentionOfS1(t, handler, issue.Key, "the first")
-	unpark := <-timers
+	unpark := testwait.Receive(t, "the first send's park", timers)
 	second := postMentionOfS1(t, handler, issue.Key, "the second")
 	held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
-	waitUntil(t, "both sends on the issue's held lane", func() bool {
-		sender.mu.Lock()
-		defer sender.mu.Unlock()
-		return len(sender.lanes[held]) == 2
-	})
+	awaitBothSendsHeld(t, sender, held)
 
 	publishIssueEvents(t, database, issue.Key)
 	failer.stage.Store(ruleReadArmed)
 	unpark()
 	var parked func()
-	waitUntil(t, "the first send parked again, or a send reaching s1", func() bool {
+	testwait.Eventually(t, "the first send parked again, or a send reaching s1", func() bool {
 		select {
 		case parked = <-timers:
 			return true
@@ -138,10 +135,10 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			failer := &ruleReadsFail{}
 			listener, state := newMentionListener(t)
 			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-				envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true, tracer: failer,
+				envoyURL: listener.URL, outboxPublishes: true, tracer: failer,
 			})
-			served.mentions.wait()
-			sender := newMentionSender(served.lifetime, time.Hour, served.sendCommentMention,
+			joinRegisteredMentions(t, served)
+			sender := newMentionSender(served.lifetime, stagedAhead, nil, served.sendCommentMention,
 				served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
 			timers := make(chan func(), 4)
 			sender.mu.Lock()
@@ -157,7 +154,7 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			}
 			gauged := func(when string) {
 				t.Helper()
-				if count, _ := sender.heldSamples(time.Now()); count != heldCopies {
+				if count, _ := sender.heldSamples(sender.sendClock().Now()); count != heldCopies {
 					t.Fatalf("%s the held gauge reads %d, want %d", when, count, heldCopies)
 				}
 			}
@@ -166,14 +163,10 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			issue := createInteractionIssue(t, handler, "TEST", "Reads of the copy rule that keep failing", "before")
 			failer.failing.Store(row.firstReadFails)
 			first := postMentionOfS1(t, handler, issue.Key, "the first")
-			unpark := <-timers
+			unpark := testwait.Receive(t, "the first send's park", timers)
 			second := postMentionOfS1(t, handler, issue.Key, "the second")
 			held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
-			waitUntil(t, "both sends on the issue's held lane", func() bool {
-				sender.mu.Lock()
-				defer sender.mu.Unlock()
-				return len(sender.lanes[held]) == 2
-			})
+			awaitBothSendsHeld(t, sender, held)
 			gauged("once the first send parked,")
 			publishIssueEvents(t, database, issue.Key)
 			failer.failing.Store(true)
@@ -183,7 +176,7 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			for try := 1; try <= 4; try++ {
 				failer.take()
 				unpark()
-				waitUntil(t, fmt.Sprintf("try %d: the first send parked again, or a send reaching s1", try), func() bool {
+				testwait.Eventually(t, fmt.Sprintf("try %d: the first send parked again, or a send reaching s1", try), func() bool {
 					select {
 					case unpark = <-timers:
 						return true
@@ -214,7 +207,7 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			settledCommentDeliveries(t, database, second)
 			// A send's WARN as it goes (reportLate) comes after its attempt settles: the lanes are
 			// done with once no goroutine serves one.
-			waitUntil(t, "no goroutine serving a lane", func() bool {
+			testwait.Eventually(t, "no goroutine serving a lane", func() bool {
 				sender.mu.Lock()
 				defer sender.mu.Unlock()
 				return sender.serving == 0
@@ -310,4 +303,15 @@ func (f *ruleReadsFail) take() (reads, statements, writes int) {
 	reads, statements, writes = f.reads, f.statements, f.writes
 	f.reads, f.statements, f.writes = 0, 0, 0
 	return reads, statements, writes
+}
+
+// awaitBothSendsHeld waits through the shared wait until held, the issue's held lane on sender,
+// holds both of the row's sends: the first parked and the second queued behind it.
+func awaitBothSendsHeld(t *testing.T, sender *mentionSender, held laneKey) {
+	t.Helper()
+	testwait.Eventually(t, "both sends on the issue's held lane", func() bool {
+		sender.mu.Lock()
+		defer sender.mu.Unlock()
+		return len(sender.lanes[held]) == 2
+	})
 }

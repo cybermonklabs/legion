@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -29,14 +30,20 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -49,6 +56,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
@@ -219,7 +227,9 @@ func routerFor(t *testing.T, boot bootConfig, built routes.AppContextOptions) ht
 		t.Fatalf("build the router: %v", err)
 	}
 	handler, background := routes.New(appCtx)
-	t.Cleanup(background.Wait)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the router's background work (api.Background.Wait: detached work, sockets, hub, relay, mention sender) to end once the test's lifetime ended", background.Wait)
+	})
 	return handler
 }
 
@@ -247,7 +257,7 @@ func appContextFor(t testing.TB, boot bootConfig, built routes.AppContextOptions
 		}
 		documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, ServerURL: options.ServerURL})
 		t.Cleanup(func() {
-			if err := documents.Shutdown(context.Background()); err != nil {
+			if err := docstest.Shutdown(t, context.Background(), documents); err != nil {
 				t.Errorf("shut the document service down: %v", err)
 			}
 		})
@@ -442,10 +452,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		t.Helper()
 		return loadEnvoyConfig(envGetter(values), config.LoadOptions{CWD: t.TempDir(), HomeDir: envoyJSONHome(t)})
 	}
-	natsConnect := func(values map[string]string, url string) error {
+	natsConnect := func(t *testing.T, values map[string]string, url string) error {
 		client, err := bus.Connect([]string{url}, bus.WithEnvironment(envGetter(values).lookup))
 		if err == nil {
-			client.Close()
+			bustest.Close(t, client)
 		}
 		return err
 	}
@@ -851,11 +861,11 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		},
 		"ENVOY_ALLOW_REMOTE_NATS": func(t *testing.T) {
 			const remote = "nats://nats.example:4222"
-			if err := natsConnect(nil, remote); !errors.Is(err, bus.ErrRemoteNATS) {
+			if err := natsConnect(t, nil, remote); !errors.Is(err, bus.ErrRemoteNATS) {
 				t.Errorf("unset: connect %s = %v, want a refusal", remote, err)
 			}
 			// Allowed, the connect goes on to the credential, which here fails before any dial.
-			if err := natsConnect(map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "NATS_NKEY_SEED": "not a seed"}, remote); err == nil || errors.Is(err, bus.ErrRemoteNATS) || !strings.Contains(err.Error(), "NATS_NKEY_SEED") {
+			if err := natsConnect(t, map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "NATS_NKEY_SEED": "not a seed"}, remote); err == nil || errors.Is(err, bus.ErrRemoteNATS) || !strings.Contains(err.Error(), "NATS_NKEY_SEED") {
 				t.Errorf("ENVOY_ALLOW_REMOTE_NATS=1: connect %s = %v, want it past the refusal", remote, err)
 			}
 			if _, err := resolveBootConfig(devSignInEnvironment(map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1"})); err == nil || !strings.Contains(err.Error(), "ENVOY_ALLOW_REMOTE_NATS") {
@@ -864,14 +874,14 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		},
 		"ENVOY_NATS_SOCKS5_PROXY": func(t *testing.T) {
 			// With the reach opted in, the refusal is the address check's: a URL is not host:port.
-			if err := natsConnect(map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "ENVOY_NATS_SOCKS5_PROXY": "socks5://127.0.0.1:1055"}, localNATS); err == nil || errors.Is(err, bus.ErrRemoteNATS) || !strings.Contains(err.Error(), "ENVOY_NATS_SOCKS5_PROXY") || !strings.Contains(err.Error(), "is a URL") {
+			if err := natsConnect(t, map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "ENVOY_NATS_SOCKS5_PROXY": "socks5://127.0.0.1:1055"}, localNATS); err == nil || errors.Is(err, bus.ErrRemoteNATS) || !strings.Contains(err.Error(), "ENVOY_NATS_SOCKS5_PROXY") || !strings.Contains(err.Error(), "is a URL") {
 				t.Errorf("ENVOY_NATS_SOCKS5_PROXY=socks5://127.0.0.1:1055: err = %v, want the address refused as a URL, naming the setting", err)
 			}
 			// The connect dials the proxy and hands it localNATS's address. This proxy refuses
 			// every request (connection refused), so the connect makes the bus's ten attempts a
 			// second apart, about ten seconds, and fails.
 			proxy := testsocks5.StartRefusing(t, 0x05)
-			if err := natsConnect(map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "ENVOY_NATS_SOCKS5_PROXY": proxy.Addr}, localNATS); err == nil {
+			if err := natsConnect(t, map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "ENVOY_NATS_SOCKS5_PROXY": proxy.Addr}, localNATS); err == nil {
 				t.Errorf("ENVOY_NATS_SOCKS5_PROXY=%s: a connect through a proxy that refuses it succeeded", proxy.Addr)
 			}
 			got := proxy.Requests()
@@ -905,13 +915,13 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			three := map[string]string{"ENVOY_NATS_REPLICAS": "3"}
 			refused := connectDispatchStream(t, []string{url}, three)
 			refusal := refused.awaitHookFailure(t)
-			refused.client.Close()
+			bustest.Close(t, refused.client)
 			if !strings.Contains(refusal.Error, "ENVOY_NATS_REPLICAS=3: ") {
 				t.Errorf("the stream at ENVOY_NATS_REPLICAS=3 on one server: logged %q, want the server's refusal naming the setting", refusal.Error)
 			}
 			conn := testnats.Connect(t, url)
 			t.Cleanup(conn.Close)
-			js, err := conn.JetStream()
+			js, err := conn.JetStream(testnats.MaxWait(t))
 			if err != nil {
 				t.Fatalf("open JetStream: %v", err)
 			}
@@ -968,29 +978,29 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 		},
 		"NATS_NKEY_SEED": func(t *testing.T) {
-			if err := natsConnect(map[string]string{"NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED does not hold a valid nkey seed") {
+			if err := natsConnect(t, map[string]string{"NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED does not hold a valid nkey seed") {
 				t.Errorf("NATS_NKEY_SEED: err = %v, want the seed refused", err)
 			}
 			file := writeFile(t, "seed", "  not a seed either\n")
-			if err := natsConnect(map[string]string{"NATS_NKEY_SEED_FILE": file, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED_FILE ("+file+")") {
+			if err := natsConnect(t, map[string]string{"NATS_NKEY_SEED_FILE": file, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED_FILE ("+file+")") {
 				t.Errorf("both set: err = %v, want the file to win", err)
 			}
-			if err := natsConnect(map[string]string{"NATS_NKEY_SEED_FILE": ""}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED_FILE is set but empty") {
+			if err := natsConnect(t, map[string]string{"NATS_NKEY_SEED_FILE": ""}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED_FILE is set but empty") {
 				t.Errorf("NATS_NKEY_SEED_FILE set but empty: err = %v, want it refused", err)
 			}
 		},
 		"NATS_SERVICE_TOKEN_FILE": func(t *testing.T) {
 			missing := filepath.Join(t.TempDir(), "missing")
-			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names "+missing) {
+			if err := natsConnect(t, map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names "+missing) {
 				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused", err)
 			}
 			token := writeFile(t, "token", "a.b.c\n")
-			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": token, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE and NATS_NKEY_SEED are both set") {
+			if err := natsConnect(t, map[string]string{"NATS_SERVICE_TOKEN_FILE": token, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE and NATS_NKEY_SEED are both set") {
 				t.Errorf("beside a seed: err = %v, want both named", err)
 			}
 		},
 		"NATS_SERVICE_GOOGLE_AUDIENCE": func(t *testing.T) {
-			if err := natsConnect(map[string]string{"NATS_SERVICE_GOOGLE_AUDIENCE": " "}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_GOOGLE_AUDIENCE is set but empty") {
+			if err := natsConnect(t, map[string]string{"NATS_SERVICE_GOOGLE_AUDIENCE": " "}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_GOOGLE_AUDIENCE is set but empty") {
 				t.Errorf("NATS_SERVICE_GOOGLE_AUDIENCE: err = %v, want the empty audience refused", err)
 			}
 		},
@@ -1129,7 +1139,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if got := listenerBearers(t, map[string]string{"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": " envoy-listener "}, "Bearer "+minted); strings.Join(got, ",") != "Bearer "+minted {
 				t.Errorf("ENVOY_ACCOUNT_GOOGLE_AUDIENCE: the listener received Authorization %q, want the minted token alone", got)
 			}
-			if got := <-audiences; got != "envoy-listener" {
+			if got := testwait.Receive(t, "the metadata server's record of the audience it was asked for", audiences); got != "envoy-listener" {
 				t.Errorf("the metadata server was asked for audience %q, want envoy-listener", got)
 			}
 			refusedWith(t, map[string]string{"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": "envoy-listener", "ENVOY_ACCOUNT_TOKEN_FILE": "/run/token"}, "ENVOY_ACCOUNT_GOOGLE_AUDIENCE")
@@ -2016,6 +2026,31 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_LISTENER_CALL_DEADLINE": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.ListenerCallDeadline.String() != "" {
+				t.Errorf("DISPATCH_TEST_LISTENER_CALL_DEADLINE unset: ListenerCallDeadline = %q, want the zero value (each call's own CallWindow)", boot.ListenerCallDeadline)
+			}
+			for _, deadline := range []clock.Deadline{
+				clock.DeadlineAt(time.Date(2026, time.November, 24, 12, 0, 0, 123456789, time.UTC), true),
+				clock.DeadlineAt(time.Time{}, false),
+			} {
+				boot := resolveWith(t, map[string]string{
+					"DISPATCH_TEST_HOOKS":                  "1",
+					"DISPATCH_TEST_LISTENER_CALL_DEADLINE": deadline.String(),
+				})
+				if boot.ListenerCallDeadline.String() != deadline.String() {
+					t.Errorf("DISPATCH_TEST_LISTENER_CALL_DEADLINE=%q: ListenerCallDeadline = %q, want %q", deadline, boot.ListenerCallDeadline, deadline)
+				}
+				if options := appContextOptions(boot, routes.AppContextOptions{}); options.ListenerCallDeadline.String() != deadline.String() {
+					t.Errorf("DISPATCH_TEST_LISTENER_CALL_DEADLINE=%q: the router is handed ListenerCallDeadline = %q, want %q", deadline, options.ListenerCallDeadline, deadline)
+				}
+			}
+			for _, invalid := range []string{"not-a-moment", "5s", "2026-11-24"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_LISTENER_CALL_DEADLINE": invalid},
+					fmt.Sprintf("DISPATCH_TEST_LISTENER_CALL_DEADLINE=%q (expected an RFC 3339 moment or none)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_LISTENER_CALL_DEADLINE": "none"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_HORIZON_STALL_AFTER": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.HorizonStallAfter != 0 {
 				t.Errorf("DISPATCH_TEST_HORIZON_STALL_AFTER unset: HorizonStallAfter = %v, want 0 (the horizon's own horizonStallAfter, five seconds)", boot.HorizonStallAfter)
@@ -2094,6 +2129,37 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_HEALTHZ_PUBLISHER_READS": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.HealthzPublisherReads {
+				t.Error("DISPATCH_TEST_HEALTHZ_PUBLISHER_READS unset: HealthzPublisherReads true")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HEALTHZ_PUBLISHER_READS": "1"}); !boot.HealthzPublisherReads {
+				t.Error("DISPATCH_TEST_HEALTHZ_PUBLISHER_READS=1: HealthzPublisherReads false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HEALTHZ_PUBLISHER_READS": "true"}); boot.HealthzPublisherReads {
+				t.Error("DISPATCH_TEST_HEALTHZ_PUBLISHER_READS=true: HealthzPublisherReads true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HEALTHZ_PUBLISHER_READS": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+			// Its reader: /healthz answers what the stamped read returned, and the read's line names
+			// that answer and the two moments of the clock it was read between. A process with NATS
+			// disabled has no outbox, so its read answers false.
+			var written bytes.Buffer
+			at := time.Date(2026, time.November, 21, 9, 0, 0, 123456789, time.UTC)
+			publisher := stampedPublisher{clock: clocktest.New(at), log: slog.New(slog.NewTextHandler(&written, nil))}
+			response := httptest.NewRecorder()
+			healthzHandlerOn(clocktest.New(at), nil, nil, publisher, nil, "", nil, issuers{}, nil).
+				ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			var health struct {
+				OutboxPublisher *bool `json:"outbox_publisher"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil || health.OutboxPublisher == nil || *health.OutboxPublisher {
+				t.Errorf("/healthz on a stamped publisher of no outbox answered %s (%v), want outbox_publisher false", response.Body.String(), err)
+			}
+			stamp := at.Format(time.RFC3339Nano)
+			if want := fmt.Sprintf("msg=%q publishing=false read_from=%s read_by=%s", publisherReadLine, stamp, stamp); !strings.Contains(written.String(), want) {
+				t.Errorf("the stamped read logged %q, want a line holding %q", written.String(), want)
+			}
+		},
 		"DISPATCH_TEST_CI_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CIReconcileInterval != 0 {
 				t.Errorf("DISPATCH_TEST_CI_RECONCILE_INTERVAL unset: CIReconcileInterval = %v, want 0 (cireconcile.Interval's five minutes)", boot.CIReconcileInterval)
@@ -2166,6 +2232,24 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_COMPACTION_SWEEP_PERIOD": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.CompactionSweepPeriod != 0 {
+				t.Errorf("DISPATCH_TEST_COMPACTION_SWEEP_PERIOD unset: CompactionSweepPeriod = %v, want 0 (docs.CompactionSweepPeriod's hour)", boot.CompactionSweepPeriod)
+			}
+			const long = 1_000_000 * time.Hour
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                   "1",
+				"DISPATCH_TEST_COMPACTION_SWEEP_PERIOD": long.String(),
+			})
+			if boot.CompactionSweepPeriod != long {
+				t.Errorf("DISPATCH_TEST_COMPACTION_SWEEP_PERIOD: CompactionSweepPeriod = %v, want %v", boot.CompactionSweepPeriod, long)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COMPACTION_SWEEP_PERIOD": invalid},
+					fmt.Sprintf("DISPATCH_TEST_COMPACTION_SWEEP_PERIOD=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_COMPACTION_SWEEP_PERIOD": "1h"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_PROCESS_HEARTBEAT": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.ProcessHeartbeat != 0 {
 				t.Errorf("DISPATCH_TEST_PROCESS_HEARTBEAT unset: ProcessHeartbeat = %v, want 0 (processes.HeartbeatInterval's five seconds)", boot.ProcessHeartbeat)
@@ -2192,8 +2276,9 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("DISPATCH_TEST_ROSTER_UNCACHED=true: ListenerRosterUncached true, want only 1 to set it")
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_ROSTER_UNCACHED": "1"}, "DISPATCH_TEST_HOOKS=1 required")
-			// Its reader: two agents lists within the copy's five seconds ask the listener twice
-			// with the copy off, once with it on.
+			// Its reader: two agents lists inside one stored answer's life ask the listener twice
+			// with the copy off, once with it on. The answer's life is an hour here
+			// (DISPATCH_TEST_ROUTE_ROSTER_TTL), so how long the two lists take decides nothing.
 			t.Run("router", func(t *testing.T) {
 				for value, want := range map[string]int32{"1": 2, "": 1} {
 					var calls atomic.Int32
@@ -2203,9 +2288,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					}))
 					t.Cleanup(listener.Close)
 					router := routerFor(t, resolveWith(t, map[string]string{
-						"DISPATCH_TEST_HOOKS":           "1",
-						"DISPATCH_TEST_ROSTER_UNCACHED": value,
-						"ENVOY_URL":                     listener.URL,
+						"DISPATCH_TEST_HOOKS":            "1",
+						"DISPATCH_TEST_ROSTER_UNCACHED":  value,
+						"ENVOY_URL":                      listener.URL,
+						"DISPATCH_TEST_ROUTE_ROSTER_TTL": stagedPastTheRun.String(),
 					}), routes.AppContextOptions{Store: storetest.Open(t), Lifetime: t.Context()})
 					for range 2 {
 						response := httptest.NewRecorder()
@@ -2219,6 +2305,35 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					}
 				}
 			})
+		},
+		"DISPATCH_TEST_DEBUG_MESSAGES": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.DebugMessages != nil {
+				t.Errorf("DISPATCH_TEST_DEBUG_MESSAGES unset: DebugMessages = %v, want none", boot.DebugMessages)
+			}
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":          "1",
+				"DISPATCH_TEST_DEBUG_MESSAGES": " named line | another named line |",
+			})
+			if want := map[string]bool{"named line": true, "another named line": true}; !maps.Equal(boot.DebugMessages, want) {
+				t.Errorf("DISPATCH_TEST_DEBUG_MESSAGES: DebugMessages = %v, want %v", boot.DebugMessages, want)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_DEBUG_MESSAGES": "named line"}, "DISPATCH_TEST_HOOKS=1 required")
+			// Its reader: the handler main installs writes the named DEBUG lines and everything at
+			// INFO and above, and no other DEBUG line.
+			var written bytes.Buffer
+			logger := slog.New(debugMessagesHandler{Handler: slog.NewTextHandler(&written, nil), messages: boot.DebugMessages})
+			logger.Debug("named line", "pass", 1)
+			logger.Debug("an unnamed line")
+			logger.With("instance", "i1").Debug("another named line")
+			logger.Info("an info line")
+			for _, want := range []string{`level=DEBUG msg="named line" pass=1`, `level=DEBUG msg="another named line" instance=i1`, `level=INFO msg="an info line"`} {
+				if !strings.Contains(written.String(), want) {
+					t.Errorf("the handler wrote %q, want a line holding %q", written.String(), want)
+				}
+			}
+			if strings.Contains(written.String(), "an unnamed line") {
+				t.Errorf("the handler wrote %q, want no DEBUG line it was not named", written.String())
+			}
 		},
 		"DISPATCH_NEW_ISSUE_LABEL": func(t *testing.T) {
 			// The label an issue the bar files from a person's typed words carries, trimmed as
@@ -2315,6 +2430,136 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_EMBEDDER_OFF": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_HTTP_DRAIN_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_HTTP_DRAIN_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.HTTPDrainDeadline })
+			// Its reader: the stop serveUntilStopped runs, whose wait for the requests in flight it ends.
+			if got := stopBoundsOf(boot).httpDrain; got.String() != testDeadline.String() {
+				t.Errorf("DISPATCH_TEST_HTTP_DRAIN_DEADLINE: the stop's drain ends at %q, want %q", got, testDeadline)
+			}
+		},
+		"DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.DocumentShutdownDeadline })
+			// Its readers: the document service main builds, whose drain it ends, and the stop, whose
+			// timeout around the service's Shutdown it ends.
+			if got := documentDeps(boot, docs.Deps{}).ShutdownDrainDeadline; got.String() != testDeadline.String() {
+				t.Errorf("DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE: docs.Deps.ShutdownDrainDeadline = %q, want %q", got, testDeadline)
+			}
+			if got := stopBoundsOf(boot).documentDrain; got.String() != testDeadline.String() {
+				t.Errorf("DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE: the stop's document timeout ends at %q, want %q", got, testDeadline)
+			}
+		},
+		"DISPATCH_TEST_SHUTDOWN_PROBE_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_SHUTDOWN_PROBE_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.ShutdownProbeDeadline })
+			// Its reader: the stop's health probes (silence.bound).
+			if got := stopBoundsOf(boot).probe; got.String() != testDeadline.String() {
+				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_DEADLINE: the stop's probes end at %q, want %q", got, testDeadline)
+			}
+		},
+		"DISPATCH_TEST_DASHBOARD_PUBLISH_DEADLINE": func(t *testing.T) {
+			testHookDeadlineReachesBoot(t, "DISPATCH_TEST_DASHBOARD_PUBLISH_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.DashboardPublishDeadline })
+		},
+		"DISPATCH_TEST_READ_HEADER_DEADLINE": func(t *testing.T) {
+			testHookDeadlineReachesBoot(t, "DISPATCH_TEST_READ_HEADER_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.ReadHeaderDeadline })
+			// Its reader: the server main runs. Unset, production's ten seconds; a moment, the span to it
+			// from the server's making; none, net/http's no timeout.
+			if server := httpServerFor(resolveWith(t, map[string]string{}), http.NotFoundHandler(), time.Now); server.ReadHeaderTimeout != readHeaderTimeout {
+				t.Errorf("DISPATCH_TEST_READ_HEADER_DEADLINE unset: ReadHeaderTimeout = %v, want readHeaderTimeout (%v)", server.ReadHeaderTimeout, readHeaderTimeout)
+			}
+			// httpServerFor reads its span off the wall clock at one moment inside the call, so the
+			// span lies between the spans to the deadline read just before and just after it, however
+			// long the machine takes over the call. The moment carries no monotonic reading
+			// (Round(0)), as the setting's parsed moment carries none, so all three spans are the
+			// wall clock's.
+			later := time.Now().Add(time.Hour).Round(0)
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_READ_HEADER_DEADLINE": clock.DeadlineAt(later, true).String()})
+			before := time.Until(later)
+			server := httpServerFor(boot, http.NotFoundHandler(), time.Now)
+			after := time.Until(later)
+			if server.ReadHeaderTimeout < after || server.ReadHeaderTimeout > before {
+				t.Errorf("DISPATCH_TEST_READ_HEADER_DEADLINE an hour away: ReadHeaderTimeout = %v, want the span to it, between %v (read after the call) and %v (read before it)",
+					server.ReadHeaderTimeout, after, before)
+			}
+			if server := httpServerFor(resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_READ_HEADER_DEADLINE": "none"}), http.NotFoundHandler(), time.Now); server.ReadHeaderTimeout >= 0 {
+				t.Errorf("DISPATCH_TEST_READ_HEADER_DEADLINE=none: ReadHeaderTimeout = %v, want a negative one, net/http's none", server.ReadHeaderTimeout)
+			}
+		},
+		"DISPATCH_TEST_GITHUB_REQUEST_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_GITHUB_REQUEST_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.GitHubRequestDeadline })
+			// Its readers: every App client main builds, each read off the client itself - the API's
+			// (which the intakes and the architecture import share), the CI reconcile's and the
+			// webhook redelivery sweep's - with none where the setting is unset. Neither pass runs
+			// anything, so an empty store is every database they need.
+			_, pemText := githubapptest.Key(t)
+			app := &auth.AppConfig{ClientID: "Iv1.request-deadline", PEM: pemText}
+			_, url := testnats.Start(t)
+			client := startDispatchStream(t, []string{url}, nil)
+			for _, row := range []struct {
+				boot bootConfig
+				want string
+			}{{resolveWith(t, map[string]string{}), ""}, {boot, testDeadline.String()}} {
+				appCtx, err := appContextFor(t, row.boot, routes.AppContextOptions{App: app, Lifetime: t.Context()})
+				if err != nil {
+					t.Fatalf("build the app context: %v", err)
+				}
+				reconciler, err := ciReconciler(client, &store.Store{}, app, "", "", "", cireconcile.Interval, &registeredInstance{}, refs.Renames{}, gitHubClientOptions(row.boot.GitHubRequestDeadline)...)
+				if err != nil || reconciler == nil {
+					t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
+				}
+				sweeper, err := webhookSweeper(client, &store.Store{}, app, "", 1, gitHubClientOptions(row.boot.GitHubRequestDeadline)...)
+				if err != nil || sweeper == nil {
+					t.Fatalf("build the webhook sweeper: %+v, %v", sweeper, err)
+				}
+				swept, _ := sweeper.GitHub.(*githubapp.Client)
+				for name, got := range map[string]clock.Deadline{
+					"the API's":              appCtx.GitHub().RequestDeadline(),
+					"the CI reconcile's":     reconciler.GitHub.RequestDeadline(),
+					"the redelivery sweep's": swept.RequestDeadline(),
+				} {
+					if got.String() != row.want {
+						t.Errorf("GitHubRequestDeadline %q: %s App client ends each call at %q, want %q", row.boot.GitHubRequestDeadline, name, got, row.want)
+					}
+				}
+			}
+			// redeliver-webhooks reads it as the server does, refusing it without the hooks before it
+			// opens anything.
+			var stdout, stderr bytes.Buffer
+			if code := runSubcommand(context.Background(), []string{"redeliver-webhooks", "--since", "1h"}, envGetter(map[string]string{
+				"DATABASE_URL":                          "postgres://127.0.0.1:1/unused",
+				"DISPATCH_TEST_GITHUB_REQUEST_DEADLINE": "none",
+			}), &stdout, &stderr); code != 1 || !strings.Contains(stdout.String(), "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_GITHUB_REQUEST_DEADLINE") {
+				t.Errorf("redeliver-webhooks with DISPATCH_TEST_GITHUB_REQUEST_DEADLINE and no hooks: exit %d, stdout %q, want 1 and the refusal", code, stdout.String())
+			}
+		},
+		"DISPATCH_TEST_HOOK_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_HOOK_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.TestHookDeadline })
+			if got := appContextOptions(boot, routes.AppContextOptions{}).TestHookDeadline; got.String() != testDeadline.String() {
+				t.Errorf("DISPATCH_TEST_HOOK_DEADLINE: the router is handed TestHookDeadline = %q, want %q", got, testDeadline)
+			}
+		},
+		"DISPATCH_TEST_INTAKE_HOLD_TTL": func(t *testing.T) {
+			const long = time.Hour
+			boot := testHookDurationReachesBoot(t, "DISPATCH_TEST_INTAKE_HOLD_TTL", long, func(boot bootConfig) time.Duration { return boot.IntakeHoldTTL })
+			if bounds := intakeBoundsOf(boot); bounds.HoldTTL != long || !bounds.HoldCallDeadline.IsZero() || !bounds.MessageDeadline.IsZero() || !bounds.StopDeadline.IsZero() {
+				t.Errorf("DISPATCH_TEST_INTAKE_HOLD_TTL=%v: the intakes are handed %+v, want HoldTTL alone", long, bounds)
+			}
+			// A TTL no longer than the hold's renewal and margin would fail every take.
+			for _, short := range []string{delivery.IntakeHoldTTLFloor.String(), "1s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_INTAKE_HOLD_TTL": short},
+					fmt.Sprintf("DISPATCH_TEST_INTAKE_HOLD_TTL=%q (expected a Go duration longer than %v", short, delivery.IntakeHoldTTLFloor))
+			}
+		},
+		"DISPATCH_TEST_INTAKE_HOLD_CALL_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_INTAKE_HOLD_CALL_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.IntakeHoldCallDeadline })
+			if bounds := intakeBoundsOf(boot); bounds.HoldCallDeadline.String() != testDeadline.String() || bounds.HoldTTL != 0 || !bounds.MessageDeadline.IsZero() {
+				t.Errorf("DISPATCH_TEST_INTAKE_HOLD_CALL_DEADLINE: the intakes are handed %+v, want HoldCallDeadline %q alone", bounds, testDeadline)
+			}
+		},
+		"DISPATCH_TEST_INTAKE_MESSAGE_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_INTAKE_MESSAGE_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.IntakeMessageDeadline })
+			if bounds := intakeBoundsOf(boot); bounds.MessageDeadline.String() != testDeadline.String() || bounds.HoldTTL != 0 || !bounds.HoldCallDeadline.IsZero() {
+				t.Errorf("DISPATCH_TEST_INTAKE_MESSAGE_DEADLINE: the intakes are handed %+v, want MessageDeadline %q alone", bounds, testDeadline)
+			}
+		},
 	}
 	for _, row := range settings {
 		test, ok := cases[row.Name]
@@ -2330,19 +2575,70 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 	}
 }
 
+// testDeadline is the moment the deadline settings' cases set, as a test's give-up is written.
+var testDeadline = clock.DeadlineAt(time.Date(2026, time.November, 24, 12, 0, 0, 123456789, time.UTC), true)
+
+// testHookDeadlineReachesBoot is the part every test-only deadline setting's case shares: unset,
+// field reads the zero value, production's; set with DISPATCH_TEST_HOOKS=1 to testDeadline or to
+// none, field reads it; a value that is not an RFC 3339 moment or none refuses startup naming the
+// setting (clock.ParseDeadline), and so does any value without the hooks. It answers the boot
+// testDeadline resolved to, for the case to hand to the setting's reader.
+func testHookDeadlineReachesBoot(t *testing.T, name string, field func(bootConfig) clock.Deadline) bootConfig {
+	t.Helper()
+	if got := field(resolveWith(t, map[string]string{})); !got.IsZero() {
+		t.Errorf("%s unset: the boot reads %q, want the zero value (production's)", name, got)
+	}
+	if got := field(resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "none"})); got.String() != "none" {
+		t.Errorf("%s=none: the boot reads %q, want none", name, got)
+	}
+	boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: testDeadline.String()})
+	if got := field(boot); got.String() != testDeadline.String() {
+		t.Errorf("%s=%q: the boot reads %q", name, testDeadline, got)
+	}
+	for _, invalid := range []string{"not-a-moment", "5s", "2026-11-24"} {
+		refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+			fmt.Sprintf("%s=%q (expected an RFC 3339 moment or none)", name, invalid))
+	}
+	refusedWith(t, map[string]string{name: "none"}, "DISPATCH_TEST_HOOKS=1 required")
+	return boot
+}
+
+// testHookDurationReachesBoot is the part every test-only duration setting's case shares: unset,
+// field reads zero, production's; set to value with DISPATCH_TEST_HOOKS=1, field reads value; a
+// value that is not a positive Go duration refuses startup naming the setting, and so does any
+// value without the hooks. It answers the boot the set value resolved to, for the case to hand to
+// the setting's reader.
+func testHookDurationReachesBoot(t *testing.T, name string, value time.Duration, field func(bootConfig) time.Duration) bootConfig {
+	t.Helper()
+	if got := field(resolveWith(t, map[string]string{})); got != 0 {
+		t.Errorf("%s unset: the boot reads %v, want 0 (production's)", name, got)
+	}
+	boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: value.String()})
+	if got := field(boot); got != value {
+		t.Errorf("%s=%v: the boot reads %v, want %v", name, value, got, value)
+	}
+	for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+		refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+			fmt.Sprintf("%s=%q (expected a positive Go duration)", name, invalid))
+	}
+	refusedWith(t, map[string]string{name: value.String()}, "DISPATCH_TEST_HOOKS=1 required")
+	return boot
+}
+
 // Every setting the document service takes from boot reaches the service main builds
-// (newDocumentService, through documentDeps): boot's seven values, each one distinct, are each
+// (newDocumentService, through documentDeps): boot's eight values, each one distinct, are each
 // found on the dependencies the service is built from.
 func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 	t.Parallel()
 	boot := bootConfig{
-		SettleDelay:       11 * time.Second,
-		MarkWait:          12 * time.Second,
-		UnrecordedMarkTTL: 13 * time.Second,
-		EditNoticeQuiet:   14 * time.Second,
-		MaxLiveRooms:      15,
-		MaxDocConnections: 16,
-		TestHooksEnabled:  true,
+		SettleDelay:              11 * time.Second,
+		MarkWait:                 12 * time.Second,
+		UnrecordedMarkTTL:        13 * time.Second,
+		EditNoticeQuiet:          14 * time.Second,
+		MaxLiveRooms:             15,
+		MaxDocConnections:        16,
+		TestHooksEnabled:         true,
+		DocumentShutdownDeadline: testDeadline,
 	}
 	got := documentDeps(boot, docs.Deps{})
 	for _, field := range []struct {
@@ -2356,6 +2652,7 @@ func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 		{"MaxLiveRooms", got.MaxLiveRooms, boot.MaxLiveRooms},
 		{"MaxDocConnections", got.MaxDocConnections, boot.MaxDocConnections},
 		{"TestHooks", got.TestHooks, boot.TestHooksEnabled},
+		{"ShutdownDrainDeadline", got.ShutdownDrainDeadline, boot.DocumentShutdownDeadline},
 	} {
 		if field.got != field.want {
 			t.Errorf("docs.Deps.%s = %v, want boot's %v: documentDeps drops the setting", field.name, field.got, field.want)
@@ -2373,7 +2670,7 @@ func documentCapReachesTheService(t *testing.T, name string, capOf func(rooms, c
 		boot := resolveWith(t, map[string]string{name: value})
 		documents := newDocumentService(boot, docs.Deps{})
 		t.Cleanup(func() {
-			if err := documents.Shutdown(context.Background()); err != nil {
+			if err := docstest.Shutdown(t, context.Background(), documents); err != nil {
 				t.Errorf("shut the document service down: %v", err)
 			}
 		})

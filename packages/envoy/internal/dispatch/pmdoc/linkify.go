@@ -201,7 +201,8 @@ func readLiteralAddress(parent ast.Node, block text.Reader, pc parser.Context, s
 	} else {
 		previous = previousCharacter(parent, block, segment.Start)
 	}
-	for at := segment.Start; at < stop; {
+	at := segment.Start
+	for at < stop {
 		c := source[at]
 		if at != asked && (util.IsPunct(c) || util.IsSpace(c)) {
 			return nil
@@ -384,7 +385,8 @@ func literalURL(text []byte, domains *literalDomains) (length int, www bool) {
 	if !ok {
 		return 0, false
 	}
-	return literalPath(text, end, &trail), www
+	length = literalPath(text, end, &trail)
+	return length, www
 }
 
 // literalDomains is the record of the last domain read on a line (tokenizeDomain), for every later

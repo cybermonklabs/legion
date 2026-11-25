@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
@@ -23,7 +24,7 @@ func (h *deliveryHub) work(g *hubGeneration) {
 		return
 	case <-g.ready:
 	}
-	var timer hubTimer
+	var timer clock.Timer
 	defer func() {
 		if timer != nil {
 			timer.Stop()
@@ -32,7 +33,7 @@ func (h *deliveryHub) work(g *hubGeneration) {
 	for {
 		for h.runDue(g) {
 		}
-		now := h.clock.Now()
+		now := h.now()
 		h.mu.Lock()
 		h.judgeLocked(g, now)
 		next, ok := h.nextWakeLocked(g, now)
@@ -42,7 +43,7 @@ func (h *deliveryHub) work(g *hubGeneration) {
 			timer = nil
 		}
 		if ok {
-			timer = h.clock.At(next, func() { signal(g.wakeWork) })
+			timer = h.clock.AfterFunc(next.Sub(h.now()), func() { signal(g.wakeWork) })
 		}
 		select {
 		case <-g.ctx.Done():
@@ -54,7 +55,7 @@ func (h *deliveryHub) work(g *hubGeneration) {
 
 // runDue recomputes, or narrows, the view that is due earliest, and is false when none is due.
 func (h *deliveryHub) runDue(g *hubGeneration) bool {
-	now := h.clock.Now()
+	now := h.now()
 	h.mu.Lock()
 	var due *deliveryView
 	var dueAt time.Time
@@ -150,14 +151,14 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 	started := time.Now()
 	h.mu.Lock()
 	view.computing = true
-	spec, epoch := view.spec, g.epoch
+	spec, epoch, heard := view.spec, g.epoch, g.heard
 	h.mu.Unlock()
 	h.note(deliveryHubNote{what: "recompute begin", view: spec.key, cause: cause})
 
 	read, err := h.read(g, view, spec, epoch)
 	h.note(deliveryHubNote{what: "recompute read", view: spec.key, cause: cause, through: read.seq})
 
-	now := h.clock.Now()
+	now := h.now()
 	classes := spec.classes()
 	code, message, refused := classes.reads.refusal(err)
 	h.mu.Lock()
@@ -201,13 +202,21 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 			break
 		}
 		if !g.known {
-			// The first verdict is set silently, from the first settings read.
+			// The first verdict is the read's, which the body just sent carries, so it is set
+			// silently. A freshness row heard since the recompute began (heard) is kept in place
+			// of the read's, which may be older: the notifications, in commit order, and the read
+			// after each LISTEN reach the newest row without it (readFreshness). The kept row is
+			// judged against the read's, so the subs the body answered are sent its verdict.
+			kept := g.fresh
 			g.fresh = deliveryFreshnessHeard{
 				lastEventAt: read.settings.LastEventAt, lastReconcileAt: read.settings.LastReconcileAt,
 				lastError: read.settings.LastError, unfetchable: read.unfetchable,
 			}
-			g.sent = g.verdictLocked(now)
-			g.known = true
+			g.sent, g.known = g.verdictLocked(now), true
+			if g.heard != heard {
+				g.fresh.lastEventAt, g.fresh.lastReconcileAt, g.fresh.lastError = kept.lastEventAt, kept.lastReconcileAt, kept.lastError
+				h.judgeLocked(g, now)
+			}
 		} else {
 			g.fresh.unfetchable = read.unfetchable
 			h.judgeLocked(g, now)
@@ -252,7 +261,7 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 			return read, err
 		}
 	}
-	now := h.clock.Now()
+	now := h.now()
 	body, err := spec.classes().read(h, ctx, spec, now, &read)
 	if err != nil {
 		return read, err
@@ -329,7 +338,7 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 	}
 	from, to := spec.from, spec.to
 	if spec.preset > 0 {
-		from, to = now.Add(-spec.days()), now
+		from, to = presetWindow(now, spec.days())
 	}
 	if read.pop, err = h.server.readDeliveryPopulation(ctx, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
 		return nil, err
@@ -375,7 +384,7 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 	h.mu.Unlock()
 	h.note(deliveryHubNote{what: "recompute begin", view: spec.key, cause: deliveryCauseExpiry})
 
-	now := h.clock.Now()
+	now := h.now()
 	var body any
 	var from, at, expiry time.Time
 	var prs, runs int
@@ -387,9 +396,10 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 		from = measures.WindowStart(at)
 		prs, runs = len(narrowed.leadTimes.prs), len(narrowed.checks.Runs)+len(narrowed.deploys.Runs)
 	} else {
-		from = now.Add(-spec.days())
+		var to time.Time
+		from, to = presetWindow(now, spec.days())
 		narrowed := pop.narrowedTo(settings, from)
-		body = deliveryLiveCompute(spec.kind, settings, narrowed, from, now, now)
+		body = deliveryLiveCompute(spec.kind, settings, narrowed, from, to, now)
 		expiry = nextExpiry(narrowed, spec.days(), now)
 		prs, runs = len(narrowed.prs), len(narrowed.applyRuns)+len(narrowed.windowRuns)
 	}

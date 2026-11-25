@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,9 +15,11 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // deliverySweepInterval is how often the maintenance loop runs the delivery sweep
@@ -65,11 +68,7 @@ func TestSIGTERMSettlesTheMentionSendInFlightAndLeavesTheQueuedOnePending(t *tes
 	process.waitHealthy(t)
 	key, _ := process.createIssue(t)
 	inFlight := process.mention(t, key, "In flight at SIGTERM.", "session:s1")
-	select {
-	case <-arrived:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the mention's send never reached the listener:\n%s", process.Output.String())
-	}
+	testwait.Receive(t, "the mention's send to reach the listener", arrived)
 	queued := process.mention(t, key, "Queued behind it.", "session:s1")
 
 	process.Terminate(t)
@@ -210,16 +209,11 @@ func newHandoverListener(t *testing.T) *handoverListener {
 	return l
 }
 
-// awaitSends waits up to 10 s for n sends to arrive, and fails the test with process's output when
-// they do not.
+// awaitSends waits for n sends to arrive.
 func (l *handoverListener) awaitSends(t *testing.T, process *dispatchProcess, n int) {
 	t.Helper()
-	for range n {
-		select {
-		case <-l.arrived:
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the mention's sends never all reached the listener:\n%s", process.Output.String())
-		}
+	for i := range n {
+		testwait.Receive(t, fmt.Sprintf("the mention's send %d of %d reaching the listener", i+1, n), l.arrived)
 	}
 }
 
@@ -258,27 +252,19 @@ func (l *handoverListener) lastSend() time.Time {
 	return l.last
 }
 
-// waitForSent waits until all want attempts of comments are sent, polling the database, and fails
-// the test with process's output once deadline passes first.
-func waitForSent(
-	t *testing.T, database *store.Store, process *dispatchProcess, comments []string, want int, deadline time.Time,
-) {
+// waitForSent waits until all want attempts of comments are sent, polling the database, and
+// fails with process's output when they never are.
+func waitForSent(t *testing.T, database *store.Store, process *dispatchProcess, comments []string, want int) {
 	t.Helper()
-	for {
+	testwait.Until(t, fmt.Sprintf("%d attempts of the comments to be sent", want), func() (withOutput[int], bool) {
 		var settled int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from comment_deliveries where comment_id = any($1) and state = 'sent'
 		`, comments).Scan(&settled); err != nil {
 			t.Fatalf("read the attempts: %v", err)
 		}
-		if settled == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d of the %d attempts were sent by the deadline:\n%s", settled, want, process.Output.String())
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		return readWith(settled, process.Output), settled == want
+	})
 }
 
 // A process killed with mention sends in flight - SIGKILL, an out-of-memory kill, a lost node -
@@ -295,6 +281,20 @@ func waitForSent(
 // (dispatchSlots.parallelHoldingItsProcesses), so the minute passes while the serial tests run; the bound is read
 // off when the listener took the last resend, which a pause does not move.
 func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses(t *testing.T) {
+	sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses(t, benchtime.EveryRun)
+}
+
+// TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapsesOnTheClock is
+// the row above in benchtime's timing lane, where the last resend is held to a claim lapse and a
+// sweep interval of the kill.
+func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapsesOnTheClock(t *testing.T) {
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses)
+}
+
+// sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses is the scene of
+// the two rows above; lane says whether its reading of the clock is held to its figure
+// (benchtime.Lane).
+func sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses(t *testing.T, lane benchtime.Lane) {
 	listener := newHandoverListener(t)
 	database := storetest.Open(t)
 	options := dispatchOptions{SigningKey: "sigkill-mention-sends-key", Env: map[string]string{"ENVOY_URL": listener.url}}
@@ -315,11 +315,14 @@ func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaim
 	next.waitHealthy(t)
 	dispatchSlots.parallelHoldingItsProcesses(t)
 
-	waitForSent(t, database, next, []string{inFlight, queued}, 4,
-		killedAt.Add(model.DeliveryClaimLapse+deliverySweepInterval+sweepMargin))
+	waitForSent(t, database, next, []string{inFlight, queued}, 4)
 	lastResend := listener.lastSend().Sub(killedAt)
 	t.Logf("the last resend reached the listener %v after the kill", lastResend)
-	if bound := model.DeliveryClaimLapse + deliverySweepInterval + sweepMargin; lastResend > bound {
+	// How soon the sweep resends is a service level the claim's lapse and the sweep interval
+	// promise, read on this machine's clock against timers inside the next process, so only the
+	// row's twin in the timing lane holds it to a figure (benchtime.OnTheClock); that every
+	// recipient is handed each comment exactly once is held on every run below.
+	if bound := model.DeliveryClaimLapse + deliverySweepInterval + sweepMargin; lane == benchtime.OnTheClock && lastResend > bound {
 		t.Errorf("the last resend reached the listener %v after the kill, want within %v", lastResend, bound)
 	}
 
@@ -353,6 +356,19 @@ func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaim
 // the claim lease and the sweep interval pass while the serial tests run; the bound is read off
 // when the listener took the last send, which a pause does not move.
 func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testing.T) {
+	aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t, benchtime.EveryRun)
+}
+
+// TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnceOnTheClock is the row above in
+// benchtime's timing lane, where the last send is held to a claim lapse and a sweep interval of
+// the old process's exit.
+func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnceOnTheClock(t *testing.T) {
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce)
+}
+
+// aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce is the scene of the two rows
+// above; lane says whether its reading of the clock is held to its figure (benchtime.Lane).
+func aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testing.T, lane benchtime.Lane) {
 	dispatchSlots.reserve(t, 2)
 	listener := newHandoverListener(t)
 	database := storetest.Open(t)
@@ -390,27 +406,22 @@ func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testin
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
-	var drained string
-	select {
-	case got := <-answered:
-		if got.err != nil {
-			t.Fatalf("the comment accepted during the HTTP drain: %v:\n%s", got.err, old.Output.String())
-		}
-		drained = got.id
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the comment waiting on the lock had no answer 10s after the lock was released:\n%s", old.Output.String())
+	got := testwait.Receive(t, "the comment waiting on the lock to be answered once the lock was released", answered)
+	if got.err != nil {
+		t.Fatalf("the comment accepted during the HTTP drain: %v:\n%s", got.err, old.Output.String())
 	}
+	drained := got.id
 	old.WaitForOutput(t, "comment mention not sent: the mention sender has stopped")
 	listener.letAnswer()
 	old.WaitExit(t, "SIGTERM")
 	exited := time.Now()
 	dispatchSlots.parallelHoldingItsProcesses(t)
 
-	waitForSent(t, database, successor, []string{inFlight, queued, drained}, 3,
-		exited.Add(model.DeliveryClaimLapse+deliverySweepInterval+sweepMargin))
+	waitForSent(t, database, successor, []string{inFlight, queued, drained}, 3)
 	lastSend := listener.lastSend().Sub(exited)
 	t.Logf("the last send reached the listener %v after the old process exited", lastSend)
-	if bound := model.DeliveryClaimLapse + deliverySweepInterval + sweepMargin; lastSend > bound {
+	// The same service level as above, and held to its figure by the same lane.
+	if bound := model.DeliveryClaimLapse + deliverySweepInterval + sweepMargin; lane == benchtime.OnTheClock && lastSend > bound {
 		t.Errorf("the last send reached the listener %v after the old process exited, want within %v", lastSend, bound)
 	}
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -194,26 +195,28 @@ const declineWordsFromTheVerification = "The person chose not to answer this que
 // reads resolved in its document.
 func TestADeclinedAskReadsDeclinedAndWritesNoAnswer(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, _, srv := newRegisteredTestServer(t, testServerOptions{})
+	// The server stamps a resolution with its own moment (stampedNow), on a fake here that the
+	// test moves to a moment of its own just before the decline.
+	stamps := clocktest.New(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
+	srv.stampClock = stamps
 	issue := createInteractionIssue(t, handler, "DEC", "What a decline records", "A spec")
 	note := "The team decides this one, not me."
 
 	withNote := openAskAs(t, handler, issue.Key, "session-asking", "Which transport, declined with a note?")
-	// WriteAskResolution stamps the resolution with the writing process's own clock, which is
-	// this test's clock too.
-	before := time.Now().UTC()
+	stamps.Advance(time.Minute)
+	declinedAt := stamps.Now()
 	if declined := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+withNote+"/decline",
 		declineBody(&note), "alice"); declined.Code != http.StatusOK {
 		t.Fatalf("decline with a note: status=%d body=%s", declined.Code, declined.Body.String())
 	}
-	after := time.Now().UTC()
 	resolution := storedAskResolution(t, database, withNote)
 	if resolution.Kind != "declined" {
 		t.Fatalf("the resolution's kind = %q, want declined", resolution.Kind)
 	}
 	requirePersonActor(t, "the resolution's", resolution.Actor, "alice")
-	if resolution.At.Before(before) || resolution.At.After(after) {
-		t.Fatalf("the resolution's at = %s, want it between %s and %s", resolution.At, before, after)
+	if !resolution.At.Equal(declinedAt) {
+		t.Fatalf("the resolution's at = %s, want %s, the moment of the decline", resolution.At, declinedAt)
 	}
 	if resolution.DispatchWords != declineWordsFromTheVerification {
 		t.Fatalf("the resolution's dispatch_words = %q, want %q", resolution.DispatchWords, declineWordsFromTheVerification)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -56,7 +55,8 @@ func TestAForwardCarriesTheKeyOfALiveUnnamedMentionBesideASettledOne(t *testing.
 	})
 	// The first mention's sender resolved its role to no session and failed the attempt, which
 	// settles it: no send of it is owed, and it names no session for any copy to be keyed by.
-	// The second is a send a sender claimed just now, and it can be pinned to this very holder.
+	// The second is a send a sender has claimed and is sending, and it can be pinned to this very
+	// holder.
 	seedDelivery(t, rig.database, commentID, settledTarget, "", "failed")
 	seedDelivery(t, rig.database, commentID, liveTarget, "", "pending")
 
@@ -64,7 +64,8 @@ func TestAForwardCarriesTheKeyOfALiveUnnamedMentionBesideASettledOne(t *testing.
 
 	want := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, liveTarget, "steer"))
 	prefixed := contracts.RoleForwardDedupePrefix + fmt.Sprintf("dispatch-%d", comment.ID)
-	waitFor(t, 10*time.Second, "the forward the live mention's key covers", func() bool { return len(recv.received()) > 0 })
+	// The scan has run to its end, so every copy it sent is handed on before settle's marker.
+	recv.settle(t)
 	forwards := recv.received()
 	if len(forwards) != 1 || forwards[0].DedupeKey != want {
 		t.Fatalf("%s was sent %+v in the pass that read the comment, want one copy under %q, the key the mention of %s carries wherever its sender pins it: the settled mention of %s is no unpinned attempt of this comment, so that one key stands for the one mention still owed. A copy under %q is a key that host never claimed, and the mention a sender pins here would land beside it",
@@ -125,7 +126,8 @@ func TestAForwardCarriesTheKeyOfALapsedUnnamedMentionBesideASettledOne(t *testin
 
 	want := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, lapsedTarget, "steer"))
 	prefixed := contracts.RoleForwardDedupePrefix + fmt.Sprintf("dispatch-%d", comment.ID)
-	waitFor(t, 10*time.Second, "the forward the lapsed mention's key covers", func() bool { return len(recv.received()) > 0 })
+	// The scan has run to its end, so every copy it sent is handed on before settle's marker.
+	recv.settle(t)
 	forwards := recv.received()
 	if len(forwards) != 1 || forwards[0].DedupeKey != want {
 		t.Fatalf("%s was sent %+v in the pass that read the comment, want one copy under %q, the key the mention of %s carries wherever the resend pins it: the settled mention of %s is no unpinned attempt of this comment, so that one key stands for the resend still owed. A copy under %q is a key that host never claimed, and the resend a sweep pins here would land beside it",
@@ -182,7 +184,8 @@ func TestAForwardGoesUnkeyedOnceTheOneUnnamedMentionHasSettled(t *testing.T) {
 
 	want := contracts.RoleForwardDedupePrefix + fmt.Sprintf("dispatch-%d", comment.ID)
 	mentionKey := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
-	waitFor(t, 10*time.Second, "the forward the settled mention holds back no longer", func() bool { return len(recv.received()) > 0 })
+	// The scan has run to its end, so every copy it sent is handed on before settle's marker.
+	recv.settle(t)
 	forwards := recv.received()
 	if len(forwards) != 1 || forwards[0].DedupeKey != want {
 		t.Fatalf("%s was sent %+v in the pass that read the comment, want one copy under %q: the comment's one unnamed mention has settled, so nothing is owed for the forward to wait on and no send of this comment will ever carry %q, which a copy keyed by that mention would claim at this host",

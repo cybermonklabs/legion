@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The identities of TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn: the role the
@@ -429,7 +430,8 @@ func (r *identityRig) currentIn(t *testing.T, kind, id, tuple string) []graphsto
 // publish runs the real outbox until every event of the issue is published, with the claim store
 // it reads a role's holder from naming the proved session: the record of what each batch
 // delivered is the writer of the role's held_by tuple, the session's part_of it, and every
-// delivered_to tuple.
+// delivered_to tuple. The wait for the last publish is the shared wait's (testwait.Until), whose
+// one bound is the test's give-up, and its failure prints the count of events it read last.
 func (r *identityRig) publish(t *testing.T, issue string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -447,22 +449,15 @@ func (r *identityRig) publish(t *testing.T, issue string) {
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, "the outbox to publish every event of "+issue+" (the events left unpublished)", func() (int, bool) {
 		var unpublished int
 		if err := r.database.Pool.QueryRow(context.Background(), `
 			select count(*) from events where issue_key = $1 and published_at is null
 		`, issue).Scan(&unpublished); err != nil {
 			t.Fatalf("count the unpublished events of %s: %v", issue, err)
 		}
-		if unpublished == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d events of %s unpublished", unpublished, issue)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return unpublished, unpublished == 0
+	})
 }
 
 // provedSessionHoldsTheRole is the roles claim store and session lookup the outbox resolves a

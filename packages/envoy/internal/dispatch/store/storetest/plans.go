@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Plan is the one way a pool Planned opens lets Postgres scan a table.
@@ -25,9 +26,10 @@ const (
 var Plans = []Plan{SequentialScan, IndexScan}
 
 // Planned opens a pool on pool's database whose every connection scans tables with plan alone,
-// closed after t ends, with every pool it opens apart (a listener's). A table a test fills holds
-// too few rows for Postgres to choose either plan as it does for a production read, so a test that
-// reads under each is how it shows a read answers in one order whichever plan serves it.
+// closed after t ends through the shared wait (openClone says why), with every pool it opens apart
+// (a listener's). A table a test fills holds too few rows for Postgres to choose either plan as it
+// does for a production read, so a test that reads under each is how it shows a read answers in
+// one order whichever plan serves it.
 func Planned(t testing.TB, pool *store.Pool, plan Plan) *store.Pool {
 	t.Helper()
 	var settings map[string]string
@@ -48,6 +50,8 @@ func Planned(t testing.TB, pool *store.Pool, plan Plan) *store.Pool {
 		t.Fatalf("open a pool reading with a %s: %v", plan, err)
 	}
 	planned := store.NewPool(opened)
-	testcleanup.Add(t, planned.Close)
+	testcleanup.Add(t, func() {
+		testwait.Returns(t, "every connection of the pool reading with a "+string(plan)+" to come back, so the pool closes", planned.Close)
+	})
 	return planned
 }

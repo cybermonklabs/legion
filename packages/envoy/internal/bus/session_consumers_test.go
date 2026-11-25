@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/shapetest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -212,7 +214,7 @@ func sessionConsumersOnStream(t *testing.T) (*Client, *SessionConsumers) {
 	if err != nil {
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
-	t.Cleanup(owner.Close)
+	t.Cleanup(func() { closeClient(t, owner) })
 	consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect session consumers: %v", err)
@@ -252,13 +254,13 @@ func pullSession(t *testing.T, consumers *SessionConsumers, sessionID string) *S
 	return pull
 }
 
-// next returns the next message pull holds. The wait has no span of its own, since the hand-over
-// can come late on a loaded machine with nothing wrong: it ends at the test binary's deadline.
+// next returns the next message pull holds, waiting for it until the shared wait gives up
+// (testwait.Context).
 func next(t *testing.T, pull *SessionPull) SessionMessage {
 	t.Helper()
 	msg, err := pull.Next(testwait.Context(t))
 	if err != nil {
-		t.Fatalf("next message: %v", err)
+		t.Fatalf("the next message of consumer %s: %v", pull.name, err)
 	}
 	return msg
 }
@@ -304,13 +306,37 @@ func requireAckWait(t *testing.T, consumers *SessionConsumers, sessionID string,
 	}
 }
 
-// requireNoMessage requires pull to hold no message for window.
+// requireNoMessage requires pull to hand over nothing for window (requireQuiet). A delivery still
+// to come there would be made on nats-server's own schedule, which no state the server reports
+// shows, and a message stored later is no marker for it: it orders only what the stream held
+// before it, not a redelivery or a second delivery of a message the pull already took.
 func requireNoMessage(t *testing.T, pull *SessionPull, window time.Duration) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), window)
+	requireQuiet(t, pull, window, "the consumer delivers on nats-server's own schedule, which no state the server reports shows, and a message stored later orders only what the stream held before it, not a redelivery or a second delivery of a message the pull already took")
+}
+
+// nextAnswer is what one Next of a pull answered.
+type nextAnswer struct {
+	msg SessionMessage
+	err error
+}
+
+// requireQuiet requires pull's Next to answer nothing for window, neither a message nor an error,
+// and to end once its context is cancelled after it: the span testwait.Quiet holds, for an absence
+// that why says no state the server reports and no later message reaches.
+func requireQuiet(t *testing.T, pull *SessionPull, window time.Duration, why string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if msg, err := pull.Next(ctx); err == nil {
-		t.Fatalf("got message %d on %s (delivery %d), want none", msg.StreamSeq, msg.Subject, msg.Delivered)
+	answered := make(chan nextAnswer, 1)
+	go func() {
+		msg, err := pull.Next(ctx)
+		answered <- nextAnswer{msg, err}
+	}()
+	testwait.Quiet(t, "the Next of consumer "+pull.name, answered, window, why)
+	cancel()
+	if got := testwait.Receive(t, "the quiet Next of consumer "+pull.name+" to end once its context was cancelled", answered); !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("the Next of consumer %s answered %+v as its quiet span ended, want nothing until its context was cancelled", pull.name, got)
 	}
 }
 
@@ -466,6 +492,7 @@ func TestRestartAtFloorRedeliversTheUnackedInStreamOrder(t *testing.T) {
 	if _, err := consumers.Ensure(ctx, session, filters, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
+	stored := time.Now()
 	var seqs []uint64
 	for _, subject := range []string{agent, "notifications.github.o.r.push", agent, "notifications.slack.c.message", agent} {
 		seqs = append(seqs, publishStored(t, owner, subject, subject))
@@ -477,6 +504,7 @@ func TestRestartAtFloorRedeliversTheUnackedInStreamOrder(t *testing.T) {
 	for range delivered {
 		first = append(first, next(t, pull))
 	}
+	handed := time.Now()
 	for i, msg := range first {
 		if msg.StreamSeq != delivered[i] || msg.Delivered != 1 {
 			t.Fatalf("delivery %d = seq %d delivery %d, want seq %d delivery 1", i, msg.StreamSeq, msg.Delivered, delivered[i])
@@ -484,8 +512,8 @@ func TestRestartAtFloorRedeliversTheUnackedInStreamOrder(t *testing.T) {
 		if msg.Subject != string(msg.Data) {
 			t.Fatalf("delivery %d names subject %q, stored on %q", i, msg.Subject, msg.Data)
 		}
-		if time.Since(msg.StoredAt) > time.Minute || msg.StoredAt.After(time.Now()) {
-			t.Fatalf("delivery %d stored at %s", i, msg.StoredAt)
+		if msg.StoredAt.Before(stored) || msg.StoredAt.After(handed) {
+			t.Fatalf("delivery %d stored at %s, want between %s, before the publishes, and %s, after the deliveries", i, msg.StoredAt, stored, handed)
 		}
 	}
 	// The first and third are acked; the second and fourth are not.
@@ -678,12 +706,9 @@ func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
 		t.Fatalf("got seq %d delivery %d, want %d delivery 1", msg.StreamSeq, msg.Delivered, unanswered)
 	}
 	pull.Stop()
-	// Nothing the server reports moves when the ack wait of a message no pull is reading passes
-	// (the message goes onto the redelivery queue, which the info does not show), so there is no
-	// state to poll for: the row waits out three ack waits and reads the consumer then.
 	afterAckWaits := func(when string) *jetstream.ConsumerInfo {
 		t.Helper()
-		time.Sleep(3 * consumers.ackWait)
+		testwait.Span(t, 3*consumers.ackWait, "nothing the server reports moves when the ack wait of a message no pull is reading passes: the message goes onto the redelivery queue, which the info does not show, so there is no state to poll for and the row waits out three ack waits")
 		info, err := consumers.Info(ctx, session)
 		if err != nil {
 			t.Fatalf("info: %v", err)
@@ -747,23 +772,17 @@ func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
 	}
 }
 
-// waitUntil polls ready every waitUntilPoll until it reports true, and fails the test naming want,
-// which is what the caller waited for, and the reading ready last took. The wait ends on that
-// state, bounded only by the test binary's deadline (testwait.UntilPolling): each caller waits on
-// a state that follows a publish the server answers nothing to -- an ack, a nak, a delivery -- or
-// a timer of the server's own, so the state arrives a moment after the call that caused it rather
-// than with it, and a loaded machine stretches that moment without anything being wrong. A fixed
-// span (5 s, before) failed rows whose state arrived late.
+// waitUntil waits through the shared wait until ready reports true, naming want, which is what the
+// caller waits for, and the reading ready last took. Each caller waits on a state that follows a
+// publish the server answers nothing to -- an ack, a nak, a delivery -- or a timer of the server's
+// own, so the state arrives a moment after the call that caused it rather than with it.
 func waitUntil(t *testing.T, want string, ready func() (bool, string)) {
 	t.Helper()
-	testwait.UntilPolling(t, waitUntilPoll, want, func() (string, bool) {
+	testwait.Until(t, want, func() (string, bool) {
 		done, got := ready()
 		return got, done
 	})
 }
-
-// waitUntilPoll is how often waitUntil asks: the 20 ms its fixed-span loop asked at before.
-const waitUntilPoll = 20 * time.Millisecond
 
 // waitForAckFloor waits for the server to have taken the acks that bring sessionID's ack floor to
 // floor.
@@ -790,6 +809,70 @@ func waitForStoredState(t *testing.T, owner *Client, sessionID string) {
 		t.Fatalf("%s names no session consumer", sessionID)
 	}
 	testnats.AwaitConsumerStored(t, owner.Connection(), Stream, name)
+}
+
+// cutStream cuts the stream's store as testnats.Server.CutStream does, keep deciding how much of
+// its first message block is left, and waits until the stream's owner and the session consumers'
+// client have each reconnected to the server the cut restarted. A client that reads as connected
+// right after the cut may not yet have seen the server go: the restart is its next connection
+// event, and a publish made before that fails while the client reconnects. So each client is waited
+// for until it is connected on a connection life that began after the cut (cutLifeOf): a
+// connection the client dialled in place of the one before, or the one before reconnected again.
+func cutStream(t *testing.T, srv *testnats.Server, owner *Client, consumers *SessionConsumers, keep func(size int64) int64) (before, after int64) {
+	t.Helper()
+	ownerWas, consumersWas := cutLifeOf(owner), cutLifeOf(consumers.client)
+	before, after = srv.CutStream(t, Stream, keep)
+	testwait.Until(t, "the stream's owner and the session consumers to reconnect after the cut", func() (string, bool) {
+		ownerNow, consumersNow := cutLifeOf(owner), cutLifeOf(consumers.client)
+		return fmt.Sprintf("the owner %s (before the cut: %s); the session consumers' client %s (before the cut: %s)",
+				ownerNow, ownerWas, consumersNow, consumersWas),
+			ownerNow.after(ownerWas) && consumersNow.after(consumersWas)
+	})
+	return before, after
+}
+
+// cutLife is which connection a client holds, whether that connection is up, and how many times
+// nats.go has reconnected it.
+type cutLife struct {
+	conn       *nats.Conn
+	connected  bool
+	reconnects uint64
+}
+
+// cutLifeOf reads client's connection life now.
+func cutLifeOf(client *Client) cutLife {
+	conn := client.Connection()
+	if conn == nil {
+		return cutLife{}
+	}
+	return cutLife{conn: conn, connected: conn.Status() == nats.CONNECTED, reconnects: conn.Stats().Reconnects}
+}
+
+// after reports whether l is a connected life that began after was: on another connection, or on
+// the same one reconnected since.
+func (l cutLife) after(was cutLife) bool {
+	return l.connected && l.conn != nil && (l.conn != was.conn || l.reconnects > was.reconnects)
+}
+
+func (l cutLife) String() string {
+	if l.conn == nil {
+		return "holds no connection"
+	}
+	return fmt.Sprintf("holds connection %p, connected %t, reconnected %d times", l.conn, l.connected, l.reconnects)
+}
+
+// streamStateAfterCut is the stream's state as the server a row's cut restarted reports it once
+// it answers the read: the restarted server rebuilds the stream from what its store holds before it
+// answers, so the read is asked again through the shared wait while it fails.
+func streamStateAfterCut(t *testing.T, consumers *SessionConsumers) sessionStreamState {
+	t.Helper()
+	var state sessionStreamState
+	testwait.Until(t, "a read of the stream after the restart", func() (string, bool) {
+		var err error
+		state, err = consumers.streamState(context.Background())
+		return fmt.Sprintf("the read answered %v", err), err == nil
+	})
+	return state
 }
 
 // A restart whose floor lies below the stream's first sequence, the messages after the floor gone
@@ -880,6 +963,11 @@ func TestRestartsAtOnceReportEachGap(t *testing.T) {
 // A pull sends its next pull request once the server has delivered the last one's whole batch or
 // it expired, and an idle heartbeat keeps a pull that waits longer than two heartbeats alive, so it
 // delivers every message in stream order however many requests that takes.
+//
+// A pull's stall runs on its clock (pullClock), not the machine's: the first pull's is a fake
+// nothing moves, so no stall can end it however long the machine takes over 1,100 messages, and
+// the second's is a fake the row moves one heartbeat at a time, each move only once the pull has
+// heard the server at that clock's present.
 func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
@@ -889,6 +977,7 @@ func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 		t.Fatalf("ensure: %v", err)
 	}
 	consumers.pullExpires, consumers.pullHeartbeat = time.Second, 400*time.Millisecond
+	consumers.pullClock = clocktest.New(time.Now())
 	var want []uint64
 	for i := range sessionPullBatch + 76 {
 		want = append(want, publishStored(t, owner, agent, strconv.Itoa(i)))
@@ -906,20 +995,66 @@ func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 		t.Fatalf("a pull across two batches delivered %d messages out of order or not each once", len(got))
 	}
 	// The request in flight expires while nothing waits; the next request takes the next message.
-	time.Sleep(2500 * time.Millisecond)
+	// The server answers the expiry on the pull's inbox (408), which the pull holds until Next
+	// reads it, so the row waits for that answer before it stores the next message.
+	testwait.Until(t, "the server to answer the pull request in flight expired", func() (string, bool) {
+		pull.mu.Lock()
+		defer pull.mu.Unlock()
+		for _, msg := range pull.queue {
+			if status, _ := pullStatus(msg); status == pullStatusExpired {
+				return "the pull holds the server's 408", true
+			}
+		}
+		return fmt.Sprintf("the pull holds %d answers, none of them a 408", len(pull.queue)), false
+	})
 	later := publishStored(t, owner, agent, "after an expiry")
 	if msg := next(t, pull); msg.StreamSeq != later {
 		t.Fatalf("after an expiry got %d, want %d", msg.StreamSeq, later)
 	}
 	pull.Stop()
 
-	// A request that outlives two heartbeats is kept alive by them.
+	// A request that outlives two heartbeats is kept alive by them: four heartbeats' worth, twice
+	// the stall, passes on the pull's clock, one heartbeat per move, and each move comes only once
+	// the pull has heard the server at the clock's present, which only a heartbeat marks after the
+	// first move. A pull that marked no heartbeat heard would leave the wait before the second move
+	// to give up naming when it last heard the server. After the last move, one more heartbeat heard
+	// leaves a stall time to answer before the Next is ended, and the Next must have answered
+	// nothing: neither a message, since none is stored, nor the stall.
 	consumers.pullExpires, consumers.pullHeartbeat = 5*time.Second, 500*time.Millisecond
+	beats := clocktest.New(time.Now())
+	consumers.pullClock = beats
 	quiet := pullSession(t, consumers, session)
-	idle, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	if msg, err := quiet.Next(idle); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("an idle pull's Next = %+v, %v; want it to wait out its context", msg, err)
+	heardAtPresent := func(what string) {
+		t.Helper()
+		testwait.Until(t, what, func() (string, bool) {
+			quiet.mu.Lock()
+			heard := quiet.heard
+			quiet.mu.Unlock()
+			now := beats.Now()
+			return fmt.Sprintf("the pull heard the server at %s, its clock stands at %s",
+				heard.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)), !heard.Before(now)
+		})
+	}
+	idle, stop := context.WithCancel(context.Background())
+	defer stop()
+	answered := make(chan nextAnswer, 1)
+	go func() {
+		msg, err := quiet.Next(idle)
+		answered <- nextAnswer{msg, err}
+	}()
+	for beat := range 4 {
+		heardAtPresent(fmt.Sprintf("the pull to hear the server at its clock's present before move %d", beat+1))
+		beats.Advance(consumers.pullHeartbeat)
+	}
+	heardAtPresent("the pull to hear the server at its clock's present after the last move")
+	select {
+	case got := <-answered:
+		t.Fatalf("the Next of consumer %s answered %+v across four heartbeats on its clock, want nothing", quiet.name, got)
+	default:
+	}
+	stop()
+	if got := testwait.Receive(t, "the idle Next of consumer "+quiet.name+" to end once its context was cancelled", answered); !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("the Next of consumer %s answered %+v as it was cancelled, want nothing until then", quiet.name, got)
 	}
 	last := publishStored(t, owner, agent, "after the heartbeats")
 	if msg := next(t, quiet); msg.StreamSeq != last {
@@ -1008,36 +1143,106 @@ func TestEnsureAddsAFilterAtTheConsumersPosition(t *testing.T) {
 }
 
 // InProgress restarts a message's ack wait: a message kept in progress past several ack waits is
-// not delivered again, and once InProgress stops it is, a wait later. The consumer must carry the
-// shortened ack wait the row sets (requireAckWait): on the default SessionConsumerAckWait, the
-// redelivery after InProgress stops would come a minute later, which the read below, bounded only
-// by the test's deadline, would take as this one.
+// not delivered again, and once InProgress stops it is, a wait later.
+//
+// The ack wait runs on nats-server's own clock, which no test moves, so each delivery again is
+// judged against moments this row bounds on its own clock. A restart of the wait comes no earlier
+// than the InProgress that asked for it was sent, and no later than the server's answer to the ack
+// of a marker message sent after it on the same connection (AckSync): the server takes a
+// consumer's acks one after another, in the order the connection sent them
+// (consumer.processInboundAcks in nats-server v2.15.1). A delivery again seen less than an ack
+// wait after the earliest moment of the last restart is one the server cannot lawfully make, and
+// fails the row. An attempt in which the machine held the test so long that a restart's latest
+// moment came an ack wait or more after the earliest moment of the one before, when the server
+// may lawfully have delivered the message again, decides nothing, and is made again on a session
+// of its own (keepInProgress).
+//
+// The consumer must carry the shortened ack wait the row sets (requireAckWait): on the default
+// SessionConsumerAckWait, the redelivery after InProgress stops would come a minute later, which
+// the read below, bounded only by the test's deadline, would take as this one.
 func TestInProgressExtendsTheAckWait(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	consumers.ackWait = 2 * time.Second
-	ctx := context.Background()
-	const session = "ses_progress"
+	for attempt := 1; ; attempt++ {
+		undecided := keepInProgress(t, owner, consumers, fmt.Sprintf("ses_progress_%d", attempt))
+		if undecided == "" {
+			return
+		}
+		t.Logf("attempt %d decided nothing: %s; trying again on a session of its own", attempt, undecided)
+	}
+}
+
+// keepInProgress is one attempt of TestInProgressExtendsTheAckWait on session's consumer: it takes
+// a message, keeps it in progress for six rounds of a quarter of the ack wait each, which outlast
+// the ack wait, and then requires it delivered again once InProgress has stopped. It answers why
+// the attempt decided nothing, or "" once it decided.
+func keepInProgress(t *testing.T, owner *Client, consumers *SessionConsumers, session string) string {
+	t.Helper()
 	agent := contracts.LegacyAgentSubject(session)
-	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+	if _, err := consumers.Ensure(context.Background(), session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	requireAckWait(t, consumers, session, consumers.ackWait)
+	// restarted is the earliest the server can have last started the message's ack wait: before
+	// the message was stored, and then the moment each InProgress the server took was sent.
+	restarted := time.Now()
 	seq := publishStored(t, owner, agent, "held")
 	pull := pullSession(t, consumers, session)
+	defer pull.Stop()
 	msg := next(t, pull)
 	if msg.StreamSeq != seq || msg.Delivered != 1 {
 		t.Fatalf("got seq %d delivery %d, want %d delivery 1", msg.StreamSeq, msg.Delivered, seq)
 	}
+	// judgeAgain judges a delivery again of the message, which the row saw no later than seen.
+	judgeAgain := func(got SessionMessage, seen time.Time) string {
+		if got.StreamSeq != seq {
+			t.Fatalf("consumer %s delivered sequence %d, want the marker or %d again", pull.name, got.StreamSeq, seq)
+		}
+		since := seen.Sub(restarted)
+		if since < consumers.ackWait {
+			t.Fatalf("sequence %d was delivered again (delivery %d) %s after its ack wait was last restarted at the earliest, inside the %s ack wait: InProgress did not restart the wait",
+				seq, got.Delivered, since, consumers.ackWait)
+		}
+		return fmt.Sprintf("sequence %d was delivered again (delivery %d) %s after its ack wait was last restarted at the earliest, which the %s ack wait allows",
+			seq, got.Delivered, since, consumers.ackWait)
+	}
 	for range 6 {
+		sent := time.Now()
 		if err := msg.InProgress(); err != nil {
 			t.Fatalf("in progress: %v", err)
 		}
-		requireNoMessage(t, pull, 500*time.Millisecond)
+		marker := publishStored(t, owner, agent, "marker")
+		got := next(t, pull)
+		if got.StreamSeq != marker {
+			return judgeAgain(got, time.Now())
+		}
+		if err := got.SessionAcker.(sessionAck).msg.AckSync(nats.Context(testwait.Context(t))); err != nil {
+			t.Fatalf("ack the marker at %d: %v", marker, err)
+		}
+		if took := time.Since(restarted); took >= consumers.ackWait {
+			return fmt.Sprintf("the server took an InProgress %s after its ack wait was last restarted at the earliest, the %s ack wait or more", took, consumers.ackWait)
+		}
+		restarted = sent
+		ctx, cancel := context.WithCancel(context.Background())
+		answered := make(chan nextAnswer, 1)
+		go func() {
+			got, err := pull.Next(ctx)
+			answered <- nextAnswer{got, err}
+		}()
+		testwait.Span(t, consumers.ackWait/4, "a delivery again comes once the message's ack wait passes on nats-server's own clock, which InProgress restarts; no state the server reports shows that wait, and a later message would be handed over ahead of a delivery again whatever InProgress did, so the row holds a span of a quarter of the ack wait after each InProgress")
+		cancel()
+		quiet := testwait.Receive(t, "the Next of consumer "+pull.name+" to end once its context was cancelled", answered)
+		switch {
+		case quiet.err == nil:
+			return judgeAgain(quiet.msg, time.Now())
+		case !errors.Is(quiet.err, context.Canceled):
+			t.Fatalf("the Next of consumer %s answered %v across a quarter of the ack wait, want nothing until its context was cancelled", pull.name, quiet.err)
+		}
 	}
-	again := next(t, pull)
-	if again.StreamSeq != seq || again.Delivered != 2 {
-		t.Fatalf("after InProgress stopped got seq %d delivery %d, want %d delivery 2", again.StreamSeq, again.Delivered, seq)
+	if last := next(t, pull); last.StreamSeq != seq || last.Delivered != 2 {
+		t.Fatalf("after InProgress stopped got seq %d delivery %d, want %d delivery 2", last.StreamSeq, last.Delivered, seq)
 	}
+	return ""
 }
 
 // A NAK with a delay has the message delivered again once the delay has passed, by the nak and not
@@ -1317,27 +1522,30 @@ func TestEnsureWithoutTheCreateGrantIsErrConsumerNotGranted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
-	t.Cleanup(owner.Close)
+	t.Cleanup(func() { closeClient(t, owner) })
 	consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect session consumers: %v", err)
 	}
 	t.Cleanup(consumers.Close)
 
-	started := time.Now()
-	_, err = consumers.Ensure(context.Background(), "ses_ungranted", []string{contracts.LegacyAgentSubject("ses_ungranted")}, 0)
+	// The refusal is the answer the moment the server sends it. Each call's context has a day to
+	// its deadline, so a call that waited out a request timeout for an answer the refused request
+	// never gets would still be waiting when the shared wait gives up, which fails the row naming
+	// the call.
+	day, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
+	defer cancel()
+	testwait.Returns(t, "Ensure without the create grant to return the server's refusal", func() {
+		_, err = consumers.Ensure(day, "ses_ungranted", []string{contracts.LegacyAgentSubject("ses_ungranted")}, 0)
+	})
 	if !errors.Is(err, ErrConsumerNotGranted) || !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("Ensure without the create grant = %v, want ErrConsumerNotGranted", err)
 	}
-	if elapsed := time.Since(started); elapsed > 3*time.Second {
-		t.Fatalf("Ensure took %s to report the refusal", elapsed)
-	}
-	started = time.Now()
-	if _, err := consumers.ListSessionConsumers(context.Background()); !errors.Is(err, ErrConsumerNotGranted) {
+	testwait.Returns(t, "ListSessionConsumers without the list grant to return the server's refusal", func() {
+		_, err = consumers.ListSessionConsumers(day)
+	})
+	if !errors.Is(err, ErrConsumerNotGranted) {
 		t.Fatalf("ListSessionConsumers without the list grant = %v, want ErrConsumerNotGranted", err)
-	}
-	if elapsed := time.Since(started); elapsed > 3*time.Second {
-		t.Fatalf("ListSessionConsumers took %s to report the refusal", elapsed)
 	}
 }
 
@@ -1478,6 +1686,11 @@ func TestDeleteAfterAFaultedRestartLeavesNoPendingStart(t *testing.T) {
 // seconds rather than the hour a deployment runs with (SessionConsumerInactiveThreshold), so the
 // row waits the server out.
 //
+// The configuration is read back before the removal, which the server may make once the consumer
+// has been idle for the threshold, however long the machine takes between the create and the
+// read: a create whose consumer is gone at its read is made again for a session of its own, until
+// a read finds the consumer its create made.
+//
 // What this shows nothing about is a clustered hub: nats-server arms this timer in setLeader and
 // returns from deleteNotActive while the consumer is not the leader, so every leader election
 // restarts the clock, and a consumer on a replicated stream outlives its threshold many times
@@ -1487,14 +1700,27 @@ func TestTheServerRemovesAConsumerIdlePastTheInactiveThreshold(t *testing.T) {
 	_, consumers := sessionConsumersOnStream(t)
 	consumers.inactiveThreshold = 2 * time.Second
 	ctx := context.Background()
-	const session = "ses_idle"
-	if _, err := consumers.Ensure(ctx, session, []string{contracts.LegacyAgentSubject(session)}, 0); err != nil {
-		t.Fatalf("ensure: %v", err)
-	}
-	info, err := consumers.Info(ctx, session)
-	if err != nil {
-		t.Fatalf("info: %v", err)
-	}
+	var (
+		attempts int
+		session  string
+		info     *jetstream.ConsumerInfo
+	)
+	testwait.Until(t, "a consumer created with a 2s inactive threshold to be read back before the server removes it", func() (string, bool) {
+		attempts++
+		session = fmt.Sprintf("ses_idle_%d", attempts)
+		if _, err := consumers.Ensure(ctx, session, []string{contracts.LegacyAgentSubject(session)}, 0); err != nil {
+			t.Fatalf("ensure: %v", err)
+		}
+		read, err := consumers.Info(ctx, session)
+		if errors.Is(err, ErrSessionConsumerNotFound) {
+			return fmt.Sprintf("the consumer of %s was gone at its read, the server's removal before it", session), false
+		}
+		if err != nil {
+			t.Fatalf("info: %v", err)
+		}
+		info = read
+		return "the consumer of " + session + " read back", true
+	})
 	if info.Config.InactiveThreshold != 2*time.Second {
 		t.Fatalf("inactive threshold = %s, want the 2s this row created the consumer with", info.Config.InactiveThreshold)
 	}
@@ -1832,7 +2058,7 @@ func TestAConsumerCarriesTheInactiveThresholdItsHandleWasOpenedWith(t *testing.T
 	if err != nil {
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
-	t.Cleanup(owner.Close)
+	t.Cleanup(func() { closeClient(t, owner) })
 	const given = 2 * time.Hour
 	for _, tc := range []struct {
 		name      string

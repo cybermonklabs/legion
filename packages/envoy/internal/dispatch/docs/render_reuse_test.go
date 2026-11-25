@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 	"weak"
 
 	"github.com/reearth/ygo/crdt"
@@ -24,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests here hold the reuse of renderings (renderedReplica.changedBy, warmFork's forkMarkdown,
@@ -694,13 +694,7 @@ func (sh *renderShadow) check(t *testing.T) {
 		if replica == nil {
 			t.Fatal("the room has no replica")
 		}
-		deadline := time.Now().Add(5 * time.Second)
-		for replica.hold() == nil {
-			if time.Now().After(deadline) {
-				t.Fatal("the replica never stood at the room's latest commit")
-			}
-			time.Sleep(time.Millisecond)
-		}
+		heldReplica(t, replica)
 		if !sameRendering(replicaMarkdown(replica), room.markdown) {
 			t.Errorf("the replica renders %s and the shadow %s", describeRendering(replicaMarkdown(replica)), describeRendering(room.markdown))
 		}
@@ -739,13 +733,21 @@ func sortedIDs(ids map[string]struct{}) []string {
 	return slices.Sorted(maps.Keys(ids))
 }
 
-// newRenderReuseService is a service whose settlement waits an hour and whose rooms stay resident
-// for the test's run (holdRoomsResident), with renders watched from before the document is seeded
-// with renderReuseDocument. No room holds the document yet.
+// newRenderReuseService is a service whose settlement waits a day (stagedAhead) and whose rooms
+// stay resident for the test's run (holdRoomsResident), with renders watched from before the
+// document is seeded with renderReuseDocument. No room holds the document yet.
+//
+// These tests read the room they wrote (renderShadow.check) and hold its updates across an open
+// transaction, and under load a test's steps outlasted ygo's idle minute. The room was gone at the
+// check ("no room is resident to check"), or, retired while a transaction was open and a browser
+// update was held at its observer (holdPeerEdit), its persistence worker had stopped, so ygo
+// stored that update on the update's own goroutine (Server.persistStranded) and waited on the
+// document's lock, which the transaction waiting for that update held: the test hung until the
+// binary's deadline.
 func newRenderReuseService(t *testing.T) (*Service, string, *renderShadow) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	holdRoomsResident(t, service)
 	sh := watchRenders(t, service, artifactID)
 	seedServiceText(t, service, artifactID, renderReuseDocument())
@@ -1222,6 +1224,9 @@ func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 	t.Parallel()
 	service, artifactID, sh := newRenderReuseService(t)
 	entered, release := make(chan struct{}), make(chan struct{})
+	// A failure below still lets the held load go, so it never stays parked past the test.
+	letLoad := sync.OnceFunc(func() { close(release) })
+	testcleanup.Add(t, letLoad)
 	var once sync.Once
 	load := service.srv.OnLoadDocument
 	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
@@ -1235,11 +1240,7 @@ func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 	}
 	loaded := make(chan error, 1)
 	go func() { loaded <- service.warmLiveDocument(context.Background(), artifactID) }()
-	select {
-	case <-entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room's load never reached the window it is held in")
-	}
+	testwait.Receive(t, "the room's load to reach the window it is held in", entered)
 	m := sh.measure()
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
@@ -1259,8 +1260,8 @@ func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 	if err := ledger.commit(ctx); err != nil {
 		t.Fatalf("commit the write: %v", err)
 	}
-	close(release)
-	if err := <-loaded; err != nil {
+	letLoad()
+	if err := testwait.Receive(t, "the held room load to return once it was released", loaded); err != nil {
 		t.Fatalf("load the room: %v", err)
 	}
 	instance := service.instanceOf(service.srv.GetDoc(artifactID))
@@ -1376,6 +1377,10 @@ func TestRenderReuseARoomBehindTheHeadRendersThePublish(t *testing.T) {
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
 	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
+	// As newRenderReuseService says: ygo's idle sweep is kept away from the rooms, set before any
+	// room loads. Under load task A's room was gone at the check ("no room is resident to check").
+	taskA.srv.RoomIdleTimeout = stagedAhead
+	taskB.srv.RoomIdleTimeout = stagedAhead
 	sh := watchRenders(t, taskA, artifactID)
 	seedServiceText(t, taskA, artifactID, renderReuseDocument())
 	if err := taskA.warmLiveDocument(context.Background(), artifactID); err != nil {
@@ -1577,16 +1582,12 @@ func forceRecover(replica *renderedReplica) {
 // replica's lock held for the caller to release (renderedReplica.hold).
 func heldReplica(t *testing.T, replica *renderedReplica) *crdt.Doc {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if doc := replica.hold(); doc != nil {
-			return doc
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the replica never stood at the room's latest commit")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	var doc *crdt.Doc
+	testwait.Eventually(t, "the replica to stand at the room's latest commit", func() bool {
+		doc = replica.hold()
+		return doc != nil
+	})
+	return doc
 }
 
 // heldReplicaMarkdown is the markdown of the rendering the replica keeps once it holds every
@@ -1695,7 +1696,10 @@ func insertBlocksAfter(t *testing.T, prefix, markdown string) func(*pmdoc.Node) 
 func TestRenderReuseABrowserTypingScript(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
+	// The browser applies its updates to the room's document directly, so its rooms are held
+	// resident: the script can outlast ygo's idle minute on a loaded machine (it ran 98 s under
+	// -race beside eight busy loops).
 	holdRoomsResident(t, service)
 	sh := watchRenders(t, service, artifactID)
 	document := typingDocument()
@@ -1801,7 +1805,7 @@ func TestRenderReuseABrowserTypingScript(t *testing.T) {
 func TestRenderReuseAnUnreadableAskBlockKeepsTheRoomsAskAuthors(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	holdRoomsResident(t, service)
 	seedServiceText(t, service, artifactID, "The typed paragraph opens the document.\n\nThe last paragraph closes it.\n")
 	browser := newRoomPeer(t, service, artifactID, 1, reuseBob, nil)
@@ -1821,12 +1825,16 @@ func TestRenderReuseAnUnreadableAskBlockKeepsTheRoomsAskAuthors(t *testing.T) {
 	// noteChangedTypes recorded for this transaction (renderedReplica.observe), so the keystroke
 	// below is still measured as touching its own block alone.
 	replica := service.replicaOf(service.srv.GetDoc(artifactID))
+	// The replica's lock is held over a read that can fail the row; a row that fails there lets
+	// it go in its cleanup, before the service's Shutdown, which takes it.
+	unlockReplica := sync.OnceFunc(replica.mu.Unlock)
 	replica.mu.Lock()
+	testcleanup.Add(t, unlockReplica)
 	ask := topLevelAskElement(t, replica.fragment)
 	replica.doc.Transact(func(txn *crdt.Transaction) {
 		docstest.WriteDeepChain(txn, &ask.YXmlFragment, pmdoc.MaxTreeDepth+1, "deeper than the schema nests")
 	})
-	replica.mu.Unlock()
+	unlockReplica()
 
 	before := readRenderPaths(service)
 	text := browser.text("The last paragraph")

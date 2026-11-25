@@ -20,6 +20,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -32,16 +33,14 @@ import (
 // deliveryTestParallelism is how many of this package's tests run at once when the command line
 // names no -parallel. Every test calls t.Parallel except those that change or read back something
 // the whole process shares, which stay serial and run before the rest: a package variable a test
-// shortens (githubPageRetryWait, decodeEnvelope), the default logger (captureLogs), which a test
-// reads when it needs a line of something that does not write to the intake's logger -- the bus
-// client, duty -- or requires that no component wrote some line, t.Setenv, the process's
-// goroutines, a select on a short time.After or a quiet window close to what it waits for, a
-// measurement of the machine's speed, or a read of Postgres's whole-server views. An intake's own
-// timers, hooks and logger are its tuning (tuningFor, captureIntakeLogs), which no other test's
-// intake reads.
-// Each parallel test has a database of its own (storetest.Open's clone) and a JetStream account of
-// its own (testnats.URL), and waits on NATS and Postgres far more than on a core. go test's default
-// of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's database
+// sets (decodeEnvelope), the default logger (captureLogs), which a test reads when it needs a line
+// of something that does not write to the intake's logger -- the bus client, duty -- or requires
+// that no component wrote some line, t.Setenv, the process's goroutines, a select on a short
+// time.After, or a read of Postgres's whole-server views. An intake's own timers, hooks and logger
+// are its tuning (tuningFor, captureIntakeLogs), which no other test's intake reads. Each parallel
+// test has a database of its own (storetest.Open's clone) and a JetStream account of its own
+// (testnats.URL), and waits on NATS and Postgres far more than on a core. go test's default of
+// GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's database
 // and pools at once would open more connections than the test server allows.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
@@ -102,19 +101,26 @@ func copyTuning(from *intakeTuning) *intakeTuning {
 	return to
 }
 
-// TestMain sets the package's default -parallel, and removes the NATS server the package's tests
-// share (testnats.Main) and the databases their pools are cloned on (storetest.Run).
+// TestMain sets the package's default -parallel, drops the databases the package's tests clone
+// (storetest.Main) and removes the NATS server they share (testnats.Main).
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(deliveryTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	os.Exit(storetest.Run(func() int { return testnats.Main(m) }))
+	os.Exit(storetest.Main(func() int { return testnats.Main(m.Run) }))
 }
 
-// deliveryTestPool returns the pool of a database of the test's own, with the test's context:
-// storetest.Open's clone of the template this test process migrated once, dropped after the test,
-// which skips the test (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A clone holds no
-// row another test or an earlier run wrote, so nothing is truncated or repaired first.
+// deliveryPools is each running test's database, so every deliveryTestPool of one test answers
+// the same one.
+var deliveryPools = struct {
+	sync.Mutex
+	byTest map[*testing.T]*store.Pool
+}{byTest: map[*testing.T]*store.Pool{}}
+
+// deliveryTestPool returns the pool of a migrated database of the test's own (storetest.Open),
+// with the test's context; a test that needs it skips (not fails) when DISPATCH_TEST_DATABASE_URL
+// is unset, matching every other Postgres-backed test in this module's convention. A second call
+// in one test returns the same database, and a subtest gets one of its own.
 //
 // The database is never the one DISPATCH_TEST_DATABASE_URL names. Migrating that one runs each
 // CREATE INDEX CONCURRENTLY there, and a concurrent build waits for every session of its own
@@ -124,15 +130,20 @@ func TestMain(m *testing.M) {
 // build past its lock bound and fail whichever test migrated first (dispatch://INFRA-3904).
 func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
-	return storetest.Open(t).Pool, t.Context()
+	deliveryPools.Lock()
+	defer deliveryPools.Unlock()
+	pool, ok := deliveryPools.byTest[t]
+	if !ok {
+		pool = storetest.Open(t).Pool
+		deliveryPools.byTest[t] = pool
+		t.Cleanup(func() {
+			deliveryPools.Lock()
+			defer deliveryPools.Unlock()
+			delete(deliveryPools.byTest, t)
+		})
+	}
+	return pool, t.Context()
 }
-
-// branchCommitsMigration is the migration that creates branch_commits, the one table a test of
-// this package drops to make a write of it fail the way a write fails (withoutBranchCommits).
-// Putting the table back replays it, rather than keeping a second copy of its `create table`
-// here and in step with it by hand: Migrate skips every version schema_migrations already
-// records, so forgetting the version makes the table exactly as the migration does.
-const branchCommitsMigration = 20261107234701
 
 // deliveryTestLeases is the lease pool an intake takes its durable's hold and consumer lease on
 // (intakeHoldName, consumerLease), taken from the test's own pool. Each lease is held on a
@@ -218,7 +229,8 @@ func seedDeliveryProject(t *testing.T, ctx context.Context, pool *store.Pool) {
 // publishPullRequestEnvelope publishes one notifications.github.<owner>.<repo>.pr.<number>
 // envelope (the shape intake.go's handlePullRequestEnvelope reads), waits for the publish to be
 // acknowledged by JetStream, and answers the stream sequence the stream stored it at. The publish
-// has the 5 s bound Client.Publish gives one.
+// takes the context a test's call to nats.go takes (testnats.Context), so it waits for its
+// acknowledgement under the test binary's deadline and no bound of its own.
 func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, repo string, number int, fields map[string]string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(fields)
@@ -234,9 +246,7 @@ func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, rep
 		TraceID:       "test-trace",
 		IssuedAt:      time.Now().Unix(),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	stored, err := natsClient.PublishAckWithin(ctx, envelope)
+	stored, err := natsClient.PublishAckWithin(testnats.Context(t), envelope)
 	if err != nil {
 		t.Fatalf("publish envelope: %v", err)
 	}
@@ -267,7 +277,7 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 	}
 	last := stream.State.LastSeq
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.AckFloor.Stream >= last && info.NumAckPending == 0
 	}, func() string {
@@ -275,18 +285,24 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 	})
 }
 
-// captureLogs sends every slog record from here on to a buffer, as JSON, until the test ends, and
-// answers the records written so far: the default logger's, and the logger of every intake the
-// test builds (tuningFor) and every intake StartIntakes builds, which log to the default. Intake
-// logs from NATS's delivery goroutine, so the buffer is locked. Call it before startIntake, so the
-// default logger is restored only once intake stops. It is for a test that reads a line of
-// something that does not take the intake's logger -- the bus client, duty -- or that requires no
-// component at all to have written some line; such a test is serial. A test that reads its
-// intakes' lines alone calls captureIntakeLogs.
+// captureLogs sends every slog record from Info up from here on to a buffer, as JSON, until the
+// test ends, and answers the records written so far: the default logger's, and the logger of every
+// intake the test builds (tuningFor) and every intake StartIntakes builds, which log to the
+// default. Intake logs from NATS's delivery goroutine, so the buffer is locked. Call it before
+// runIntake, so the default logger is restored only once intake stops. It is for a test that reads
+// a line of something that does not take the intake's logger -- the bus client, duty -- or that
+// requires no component at all to have written some line; such a test is serial. A test that
+// reads its intakes' lines alone calls captureIntakeLogs.
 func captureLogs(t *testing.T) func() []map[string]any {
 	t.Helper()
+	return captureLogsFrom(t, slog.LevelInfo)
+}
+
+// captureLogsFrom is captureLogs from level up, for a row that reads a Debug line.
+func captureLogsFrom(t *testing.T, level slog.Level) func() []map[string]any {
+	t.Helper()
 	var buffer lockedBuffer
-	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, nil))
+	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, &slog.HandlerOptions{Level: level}))
 	tuningFor(t).log = slog.Default()
 	return func() []map[string]any { return loggedRecords(&buffer) }
 }
@@ -330,22 +346,36 @@ func pathBaseForTest(workflowPath string) string {
 	return workflowPath
 }
 
-// shrinkIntakeFlowControl shrinks the messageTimeout of the intakes this test builds after it
-// (tuningFor), so a test exercises their real flow control in test time. maxAckPending is
-// deliberately left alone: it is the bound under test.
-func shrinkIntakeFlowControl(t *testing.T) {
-	t.Helper()
-	tuningFor(t).messageTimeout = 5 * time.Second
-}
-
 // capHeadWriteDeliveriesAt lowers the headWriteMaxDeliveries of the intakes this test builds after
-// it to deliveries, the way shrinkIntakeFlowControl shrinks their message timeout: the shipped cap
-// of thirty, at headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a
-// test of the cap measures is that there is one at all, which two deliveries show as well as
-// thirty.
+// it (tuningFor) to deliveries: the shipped cap of thirty, at headWriteRedeliverAfter apiece, is
+// nearly five minutes of wall clock, and what a test of the cap measures is that there is one at
+// all, which two deliveries show as well as thirty. It caps a count, not an interval, so it stays a
+// value a test sets rather than a span a fake clock passes.
 func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
 	t.Helper()
 	tuningFor(t).headWriteMaxDeliveries = deliveries
+}
+
+// messageTimeoutPastTheRun is the message timeout (intakeTuning.messageTimeout) ackWaitPastTheRun
+// gives an intake: six hours.
+const messageTimeoutPastTheRun = 6 * time.Hour
+
+// ackWaitPastTheRun gives in's tuning the message timeout messageTimeoutPastTheRun before its Run,
+// and returns in. The tuning's ack wait derives from it (intakeTuning.ackWait), so the durable the
+// intake creates (deliveryConsumerConfig, a take-over's takeOverConfig) waits a day for an
+// acknowledgement, and the intake's handler deadline (Intake.deliver) is six hours out. A row
+// whose message must reach a process by a hand-back or a take-over's recreate at the ack floor
+// gives it to every intake it runs, since each take-over creates the durable with the taker's own
+// config: the server's own redelivery once the ack wait expires then never comes inside the run,
+// so a wait the row leaves unbounded fails on a broken hand-back rather than passing on that
+// redelivery. Every intake its test builds shares that tuning (tuningFor), so it writes only a
+// tuning that does not hold the timeout yet: a row that gives it to a second intake while its
+// first runs reads, and does not write, what the first's Run reads.
+func ackWaitPastTheRun(in *Intake) *Intake {
+	if in.tuning.messageTimeout != messageTimeoutPastTheRun {
+		in.tuning.messageTimeout = messageTimeoutPastTheRun
+	}
+	return in
 }
 
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and
@@ -398,22 +428,6 @@ func publishWorkflowEnvelope(t *testing.T, natsClient *bus.Client, owner, repo, 
 	return duplicate
 }
 
-// startIntake runs intake until the test ends, and waits for Run to return before the test's own
-// cleanups go on, so no Run outlives the test that started it.
-func startIntake(t *testing.T, intake *Intake) {
-	t.Helper()
-	runCtx, cancel := context.WithCancel(t.Context())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		intake.Run(runCtx)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
-}
-
 // intakeTestClient connects one NATS client for an intake test and closes it with the test.
 func intakeTestClient(t *testing.T) *bus.Client {
 	t.Helper()
@@ -421,28 +435,46 @@ func intakeTestClient(t *testing.T) *bus.Client {
 	if err != nil {
 		t.Fatalf("connect NATS: %v", err)
 	}
-	t.Cleanup(natsClient.Close)
+	t.Cleanup(func() { bustest.Close(t, natsClient) })
 	return natsClient
 }
 
+// stopDeliveringJoined runs intake's StopDelivering on ctx, as a test's own stop of an intake does.
+// The stop waits for every handler of the intake to return (keyedRunner.wait in
+// intakeDelivery.stop), which only ctx's end gives up (abandon), so on a context that does not end
+// before the stop must return - context.Background(), or t.Context() in the row's body - the call
+// runs through the shared wait: a handler that never returns fails the test naming the stop rather
+// than hanging the binary to its timeout.
+func stopDeliveringJoined(t testing.TB, ctx context.Context, intake *Intake) {
+	t.Helper()
+	testwait.Returns(t, "the intake's stop to return once its handlers have", func() { intake.StopDelivering(ctx) })
+}
+
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
-// test that means to publish into a bound consumer does not race the bind. Its one bound is what
-// the test binary's deadline leaves less rowDeadlineMargin (untilTheBinaryDeadline): a bind that is
-// merely slow on a loaded machine still passes, and one that never comes fails the row with time
-// left for its cleanups.
+// test that means to publish into a bound consumer does not race the bind: awaitDurableBoundAt
+// for an intake with production's in-flight bound (intakeMaxAckPending).
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
+	awaitDurableBoundAt(t, natsClient, intakeMaxAckPending)
+}
+
+// awaitDurableBoundAt waits for the durable to be push-bound with maxAckPending in-flight slots,
+// the bound of the intake that created it (intakeTuning.maxAckPending). Its one bound is the shared
+// wait's (waitFor): a bind that is merely slow on a loaded machine still passes, and one that
+// never comes fails the row naming the durable's last state.
+func awaitDurableBoundAt(t *testing.T, natsClient *bus.Client, maxAckPending int) {
+	t.Helper()
 	var state string
-	waitFor(t, untilTheBinaryDeadline(t), func() bool {
+	waitFor(t, func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil {
 			state = err.Error()
 			return false
 		}
 		state = fmt.Sprintf("push_bound=%t max_ack_pending=%d", info.PushBound, info.Config.MaxAckPending)
-		return info.PushBound && info.Config.MaxAckPending == tuningFor(t).maxAckPending
+		return info.PushBound && info.Config.MaxAckPending == maxAckPending
 	}, func() string {
-		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", tuningFor(t).maxAckPending, state)
+		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", maxAckPending, state)
 	})
 }
 
@@ -450,26 +482,32 @@ func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 // stream's message count and the consumer's whole state when it does not -- the numbers that say
 // whether a shortfall is a consumer that stopped being given messages or messages that never
 // reached the stream.
-func awaitRuns(t *testing.T, ctx context.Context, pool *store.Pool, natsClient *bus.Client, want int, within time.Duration) {
+func awaitRuns(t *testing.T, ctx context.Context, pool *store.Pool, natsClient *bus.Client, want int) {
 	t.Helper()
 	stored := 0
-	waitFor(t, within, func() bool {
+	waitFor(t, func() bool {
 		stored = countRuns(t, ctx, pool)
 		return stored >= want
 	}, func() string {
-		return fmt.Sprintf("delivery_runs rows = %d, want %d after %s\n%s", stored, want, within, intakeStateReport(t, natsClient))
+		return fmt.Sprintf("delivery_runs rows = %d, want %d\n%s", stored, want, intakeStateReport(t, natsClient))
 	})
 }
 
-// waitFor polls done until it reports true, and fails the test once within has passed with the
-// message failure builds at that moment -- so the message carries the state the wait gave up on,
-// not the state it started from.
-func waitFor(t *testing.T, within time.Duration, done func() bool, failure func() string) {
+// waitFor waits through the shared wait until done reports true. Should the wait give up, its
+// last reading is the text failure builds at that moment -- so the message carries the state the
+// wait gave up on, not the state it started from.
+func waitFor(t *testing.T, done func() bool, failure func() string) {
 	t.Helper()
-	if !testwait.Holds(within, 50*time.Millisecond, done) {
-		t.Fatal(failure())
-	}
+	testwait.Until(t, "the condition whose failure the last reading names", func() (failureText, bool) {
+		return failure, done()
+	})
 }
+
+// failureText is a wait's failure text, built only when the wait prints it (fmt calls String),
+// since some (intakeStateReport) ask NATS for what they say.
+type failureText func() string
+
+func (f failureText) String() string { return f() }
 
 // intakeStateReport is the stream's message count per subject and the consumer's delivery state,
 // one line each.

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // readPostHistory is one history read as an authenticated person makes it.
@@ -452,7 +453,7 @@ func TestADeleteWhoseSendMovesWhileItIsWrittenAnswersDeleteContended(t *testing.
 				t.Fatalf("commit the sender's write: %v", err)
 			}
 
-			refused := <-deleted
+			refused := testwait.Receive(t, "the delete's answer once the sender's write committed", deleted)
 			if code, text := refusalOf(t, refused); refused.Code != http.StatusConflict || code != deleteContended ||
 				text != "a send of this post moved while the delete was being written; nothing was written, and the same delete can be sent again" {
 				t.Fatalf("a delete whose send moved under it: status=%d body=%s, want 409 DELETE_CONTENDED",

@@ -3,34 +3,21 @@ package oidc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// testClock is a clock a test moves by hand, for the spacing between failed discovery attempts.
-type testClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func newTestClock() *testClock {
-	return &testClock{now: time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
-}
-
-func (c *testClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *testClock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
+// newTestClock is the clock a test moves by hand, for the spacing between failed discovery
+// attempts and the background loop's waits.
+func newTestClock() *clocktest.Fake {
+	return clocktest.New(time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC))
 }
 
 // A code flow and a lazy verifier read nothing when they are made: a process builds both at boot,
@@ -57,7 +44,7 @@ func TestCodeFlowFailsUnavailableUntilDiscoveredAndWorksAfter(t *testing.T) {
 	issuer.FailDiscovery(http.StatusServiceUnavailable)
 	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
 	clock := newTestClock()
-	flow.discovery.now = clock.Now
+	flow.discovery.clock = clock
 
 	ctx := context.Background()
 	calls := map[string]func() error{
@@ -88,7 +75,7 @@ func TestCodeFlowFailsUnavailableUntilDiscoveredAndWorksAfter(t *testing.T) {
 	}
 
 	issuer.FailDiscovery(0)
-	clock.advance(discoveryRetrySpacing)
+	clock.Advance(discoveryRetrySpacing)
 	session := exchange(t, issuer, flow, personClaims("dispatch-members"))
 	if !flow.Discovered() {
 		t.Fatal("a flow that has signed someone in does not read as discovered")
@@ -112,7 +99,7 @@ func TestDiscoverSpacesFailedAttemptsFiveSecondsApart(t *testing.T) {
 	issuer.FailDiscovery(http.StatusServiceUnavailable)
 	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
 	clock := newTestClock()
-	flow.discovery.now = clock.Now
+	flow.discovery.clock = clock
 	ctx := context.Background()
 
 	for _, step := range []struct {
@@ -126,7 +113,7 @@ func TestDiscoverSpacesFailedAttemptsFiveSecondsApart(t *testing.T) {
 		{discoveryRetrySpacing / 2, 2},
 		{discoveryRetrySpacing / 2, 3},
 	} {
-		clock.advance(step.advance)
+		clock.Advance(step.advance)
 		if err := flow.Discover(ctx); !errors.Is(err, ErrIssuerUnavailable) {
 			t.Fatalf("Discover against a failing issuer: err = %v, want ErrIssuerUnavailable", err)
 		}
@@ -135,11 +122,11 @@ func TestDiscoverSpacesFailedAttemptsFiveSecondsApart(t *testing.T) {
 		}
 	}
 	issuer.FailDiscovery(0)
-	clock.advance(discoveryRetrySpacing)
+	clock.Advance(discoveryRetrySpacing)
 	if err := flow.Discover(ctx); err != nil {
 		t.Fatalf("Discover once the issuer answers: %v", err)
 	}
-	clock.advance(time.Hour)
+	clock.Advance(time.Hour)
 	if err := flow.Discover(ctx); err != nil || issuer.DiscoveryRequests() != 4 {
 		t.Fatalf("Discover after it succeeded: err = %v, %d reads, want nil and no read past the fourth", err, issuer.DiscoveryRequests())
 	}
@@ -196,7 +183,7 @@ func TestLazyVerifierVerifiesOnceItsIssuerIsDiscovered(t *testing.T) {
 	issuer.FailDiscovery(http.StatusServiceUnavailable)
 	verifier := NewLazyVerifier(issuer.URL(), testAudience)
 	clock := newTestClock()
-	verifier.discovery.now = clock.Now
+	verifier.discovery.clock = clock
 	token := issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience))
 
 	if _, err := verifier.Verify(context.Background(), token); !errors.Is(err, ErrIssuerUnavailable) {
@@ -206,7 +193,7 @@ func TestLazyVerifierVerifiesOnceItsIssuerIsDiscovered(t *testing.T) {
 		t.Fatal("a verifier whose discovery failed reads as discovered")
 	}
 	issuer.FailDiscovery(0)
-	clock.advance(discoveryRetrySpacing)
+	clock.Advance(discoveryRetrySpacing)
 	claims, err := verifier.Verify(context.Background(), token)
 	if err != nil || claims.Subject != testSubject {
 		t.Fatalf("Verify once the issuer answers: %+v, %v; want %s", claims, err, testSubject)
@@ -216,6 +203,66 @@ func TestLazyVerifierVerifiesOnceItsIssuerIsDiscovered(t *testing.T) {
 	}
 	if _, err := verifier.Verify(context.Background(), issuer.Mint(t, signing, issuer.Claims(testSubject, "another-audience"))); !errors.Is(err, ErrAudience) {
 		t.Fatalf("Verify of a token for another audience: err = %v, want ErrAudience", err)
+	}
+}
+
+// The background discovery (Run) attempts at once and, while attempts fail, again after a wait of
+// discoveryRetryFirst that doubles after each failure up to discoveryRetryMax, each wait armed on
+// its clock; an attempt its wait brings inside discoveryRetrySpacing of the last failed read
+// answers that failure and reads nothing. Once the issuer answers, the next attempt that reads
+// discovers it and the loop returns. Each wait is read off the fake the loop arms it on
+// (AwaitArmed), so a loop that waits longer than its schedule, or stops retrying, fails here.
+func TestTheBackgroundDiscoveryRetriesOnItsScheduleUntilTheIssuerAnswers(t *testing.T) {
+	issuer := oidctest.New(t)
+	issuer.PublishKey(t, "signing-key")
+	issuer.FailDiscovery(http.StatusServiceUnavailable)
+	verifier := NewLazyVerifier(issuer.URL(), testAudience)
+	clock := newTestClock()
+	verifier.discovery.clock = clock
+	ctx, cancel := context.WithCancel(context.Background())
+	ran := make(chan struct{})
+	go func() {
+		defer close(ran)
+		verifier.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		testwait.Receive(t, "the background discovery to return once its context ended", ran)
+	})
+
+	// Each step's wait is armed once the attempt before it has finished, the read included, so
+	// the reads are counted when it is.
+	reads, lastRead, wait := 1, clock.Now(), discoveryRetryFirst
+	for step := 1; ; step++ {
+		armed := clock.AwaitArmed(t, fmt.Sprintf("the background discovery's wait %d", step), 1)
+		if got := issuer.DiscoveryRequests(); got != reads {
+			t.Fatalf("before wait %d: %d discovery reads, want %d", step, got, reads)
+		}
+		if len(armed) != 1 || !armed[0].Equal(clock.Now().Add(wait)) {
+			t.Fatalf("wait %d: the loop armed %v at %s, want one wait of %v", step, armed, clock.Now().Format(time.TimeOnly), wait)
+		}
+		if wait == discoveryRetryMax {
+			break
+		}
+		clock.Set(armed[0])
+		if clock.Now().Sub(lastRead) >= discoveryRetrySpacing {
+			reads, lastRead = reads+1, clock.Now()
+		}
+		wait = min(2*wait, discoveryRetryMax)
+	}
+	// The wait stays at discoveryRetryMax: one more failed read at it, then the issuer answers.
+	clock.Set(clock.Now().Add(discoveryRetryMax))
+	reads++
+	if armed := clock.AwaitArmed(t, "the background discovery's wait after its longest", 1); len(armed) != 1 ||
+		!armed[0].Equal(clock.Now().Add(discoveryRetryMax)) || issuer.DiscoveryRequests() != reads {
+		t.Fatalf("after a wait of %v: armed %v with %d reads, want one more wait of %v and %d reads",
+			discoveryRetryMax, armed, issuer.DiscoveryRequests(), discoveryRetryMax, reads)
+	}
+	issuer.FailDiscovery(0)
+	clock.Set(clock.Now().Add(discoveryRetryMax))
+	testwait.Receive(t, "the background discovery to return once the issuer answered", ran)
+	if !verifier.Discovered() || issuer.DiscoveryRequests() != reads+1 {
+		t.Fatalf("once the issuer answered: discovered %t with %d reads, want true and %d", verifier.Discovered(), issuer.DiscoveryRequests(), reads+1)
 	}
 }
 
@@ -259,7 +306,7 @@ func TestALazyVerifierVerifiesAGoogleIdentityOnceItsIssuerIsDiscovered(t *testin
 	issuer.FailDiscovery(http.StatusServiceUnavailable)
 	verifier := NewLazyVerifier(issuer.URL(), testAudience)
 	clock := newTestClock()
-	verifier.discovery.now = clock.Now
+	verifier.discovery.clock = clock
 	claims := issuer.Claims(testSubject, testAudience)
 	claims["email"], claims["email_verified"] = "example-sink@example-project.iam.gserviceaccount.com", true
 	token := issuer.Mint(t, signing, claims)
@@ -268,7 +315,7 @@ func TestALazyVerifierVerifiesAGoogleIdentityOnceItsIssuerIsDiscovered(t *testin
 		t.Fatalf("VerifyGoogleIdentity before discovery: err = %v, want ErrIssuerUnavailable", err)
 	}
 	issuer.FailDiscovery(0)
-	clock.advance(discoveryRetrySpacing)
+	clock.Advance(discoveryRetrySpacing)
 	got, err := verifier.VerifyGoogleIdentity(context.Background(), token)
 	if err != nil || got.Email != claims["email"] || !got.EmailVerified {
 		t.Fatalf("VerifyGoogleIdentity once the issuer answers: %+v, %v; want the address, verified", got, err)

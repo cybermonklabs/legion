@@ -40,12 +40,14 @@ const settlementResumptionLease = "settlement-resumption"
 // RunSettlementResumption arms the settlement of the documents owing one past settlementResumeAge,
 // at most settlementResumeBatch of them in a pass, at start and every SettlementResumeInterval,
 // until ctx ends (resumeOwedSettlements). Each pass runs under settlementResumptionLease for the
-// period SettlementResumeInterval (duty.RunLeased), so one of the envoy-dispatch processes serving
+// period SettlementResumeInterval (duty.RunLeasedOn), so one of the envoy-dispatch processes serving
 // the database runs it per period, in that process, and the next pass may run in another. A
 // document nobody opens therefore settles too, whether or not its issue is closed: its ask blocks
-// reach the open asks, or are saved resolved on a closed issue, without anyone loading it.
+// reach the open asks, or are saved resolved on a closed issue, without anyone loading it. Its
+// ticks, and the period each falls in, are the service's clock's (Deps.Clock): the real clock in
+// production, and a test's fake, which brings each tick only when the test moves it there.
 func (s *Service) RunSettlementResumption(ctx context.Context, leases duty.Leases) {
-	duty.RunLeased(ctx, leases, settlementResumptionLease, SettlementResumeInterval, duty.TickAtStart, func(ctx context.Context) {
+	duty.RunLeasedOn(ctx, s.clock, leases, settlementResumptionLease, SettlementResumeInterval, duty.TickAtStart, func(ctx context.Context) {
 		if err := s.resumeOwedSettlements(ctx, settlementResumeAge); err != nil && ctx.Err() == nil {
 			slog.Error("dispatch: resume owed document settlements", "error", err)
 		}
@@ -114,7 +116,7 @@ func (s *Service) resumeOwedSettlements(ctx context.Context, age time.Duration) 
 		s.scheduleSettle(room)
 	}
 	if len(rooms) > 0 {
-		s.hooks.countSettlementResumption(rooms, time.Now())
+		s.hooks.countSettlementResumption(rooms, s.clock.Now())
 		slog.Info("dispatch: resumed owed document settlements", "documents", len(rooms))
 	}
 	return nil

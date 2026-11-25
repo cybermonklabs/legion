@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -158,7 +157,7 @@ func TestTheBinaryWithSignInOffServesNoApprovalPageAndRefusesWhatAPersonWouldApp
 	})
 
 	t.Run("the request the sign-in-on run left pending is denied by the sweep", func(t *testing.T) {
-		reply := testwait.UntilPolling(t, 100*time.Millisecond, "the sweep of the sign-in-off broker to end the request the first run left pending", func() (ciphertest.RequestReply, bool) {
+		reply := testwait.Until(t, "the sweep of the sign-in-off broker to end the request the first run left pending", func() (ciphertest.RequestReply, bool) {
 			reply := pods.State(pod, left.RequestID)
 			return reply, reply.State != "pending"
 		})

@@ -31,6 +31,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -251,29 +252,29 @@ func shotRead(t *testing.T, handler http.Handler, served *server, statements *sh
 	request.Header.Set(displayTreesHeader, "1")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	served.detached.wait()
+	testwait.Returns(t, "the work the read of "+target+" detached to end", served.detached.wait)
 	return response, statements.take()
 }
 
 // nothingOwed waits until the document service owes no document a settlement, as the visual seed
-// waits before any row draws, and fails naming what it still owes.
+// waits before any row draws, through the shared wait (testwait.Until), whose give-up names the
+// documents it still owes a settlement.
 func nothingOwed(t *testing.T, database *store.Store) {
 	t.Helper()
-	var owed []string
-	read := func() bool {
+	testwait.Until(t, "the document service to owe no document a settlement", func() (string, bool) {
 		rows, err := database.Pool.Query(context.Background(), `select artifact_id::text from doc_settlements_pending order by 1`)
 		if err != nil {
 			t.Fatalf("read the settlements owed: %v", err)
 		}
-		owed, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
 		if err != nil {
 			t.Fatalf("read the settlements owed: %v", err)
 		}
-		return len(owed) == 0
-	}
-	if !testwait.Holds(10*time.Second, 20*time.Millisecond, read) {
-		t.Fatalf("the document service still owes %s a settlement after 10s", strings.Join(owed, ", "))
-	}
+		if len(owed) == 0 {
+			return "it owes none", true
+		}
+		return "it owes a settlement to " + strings.Join(owed, ", "), false
+	})
 }
 
 // shotPerson is the person the shot pages are drawn for, signed in with a session cookie.
@@ -517,7 +518,7 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 		if err := read(context.Background()); err != nil {
 			t.Errorf("the sign-in read %s: %v", route, err)
 		}
-		served.detached.wait()
+		testwait.Returns(t, "the work the sign-in read "+route+" detached to end", served.detached.wait)
 		ran := statements.stop()
 		// Both halves of the read are seen: the cookie's resolution reads the person's session
 		// generation, and the feed's head marks the event log (events.Horizon.Mark), so a write by
@@ -588,7 +589,7 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 		statements.watch()
 		client.send(t, LiveSubscribe{Type: "subscribe", Sub: kind, View: view})
 		liveAnswer(t, client, kind)
-		served.detached.wait()
+		testwait.Returns(t, "the work the live view "+kind+" detached to end", served.detached.wait)
 		ran := statements.stop()
 		violations, seen := shotWriteViolations(shotLiveChannel, "the live view "+kind, ran)
 		for _, violation := range violations {
@@ -609,7 +610,7 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 	// pool, by a document service of the test's own: the test server's names no identity for its
 	// sockets.
 	documents := docs.New(docs.Deps{Store: traced, Identity: cookies, Settle: 20 * time.Millisecond})
-	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 	sockets := &servedSockets{finished: make(map[string]chan struct{})}
 	roomServer := httptest.NewServer(sockets.serve(documents.ServeHTTP))
 	t.Cleanup(roomServer.Close)
@@ -620,7 +621,7 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 	}
 	page.connect(t)
 	page.closeAndWait(t)
-	served.detached.wait()
+	testwait.Returns(t, "the work the room's close detached to end", served.detached.wait)
 	nothingOwed(t, database)
 	watched := statements.stop()
 	if len(watched) == 0 {
@@ -637,7 +638,7 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 	page.connect(t)
 	page.appendParagraph(t, "A keystroke the visual guard would have stopped.")
 	page.closeAndWait(t)
-	served.detached.wait()
+	testwait.Returns(t, "the work the room's close after a keystroke detached to end", served.detached.wait)
 	nothingOwed(t, database)
 	edited := statements.stop()
 	if !slices.ContainsFunc(violationsOnly(shotWriteViolations(shotRoomChannel, "the spec's room", edited)), func(violation string) bool {

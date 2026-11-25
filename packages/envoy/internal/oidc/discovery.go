@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // ErrIssuerUnavailable means the issuer could not be asked: its discovery document has not been
@@ -45,8 +47,10 @@ const (
 type discovery[T any] struct {
 	issuer string
 	read   func(ctx context.Context) (T, error)
-	// now is the clock the spacing between failed attempts and the log's rate are measured by.
-	now    func() time.Time
+	// clock is the clock the spacing between failed attempts, the log's rate and the background
+	// loop's wait between attempts are measured on: nil is the real clock (clock.Real), which is
+	// every process's, and a test sets a fake (clocktest).
+	clock  clock.Clock
 	flight singleflight.Group
 
 	mu         sync.Mutex
@@ -58,7 +62,15 @@ type discovery[T any] struct {
 }
 
 func newDiscovery[T any](issuer string, read func(ctx context.Context) (T, error)) *discovery[T] {
-	return &discovery[T]{issuer: issuer, read: read, now: time.Now}
+	return &discovery[T]{issuer: issuer, read: read}
+}
+
+// clockOf is d's clock: the real one when none was set.
+func (d *discovery[T]) clockOf() clock.Clock {
+	if d.clock == nil {
+		return clock.Real()
+	}
+	return d.clock
 }
 
 // done reports whether an attempt has succeeded.
@@ -89,7 +101,7 @@ func (d *discovery[T]) discover(ctx context.Context) (T, error) {
 		d.mu.Lock()
 		defer d.mu.Unlock()
 		if err != nil {
-			d.failedAt = d.now()
+			d.failedAt = d.clockOf().Now()
 			d.failure = fmt.Errorf("%w: %w", ErrIssuerUnavailable, err)
 			return zero, d.failure
 		}
@@ -115,7 +127,7 @@ func (d *discovery[T]) settled() (value T, err error, settled bool) {
 	if d.discovered {
 		return d.value, nil, true
 	}
-	if d.failure != nil && d.now().Sub(d.failedAt) < discoveryRetrySpacing {
+	if d.failure != nil && d.clockOf().Now().Sub(d.failedAt) < discoveryRetrySpacing {
 		return value, d.failure, true
 	}
 	return value, nil, false
@@ -123,9 +135,9 @@ func (d *discovery[T]) settled() (value T, err error, settled bool) {
 
 // run discovers the issuer from the process's start, so the first request that needs it does not
 // wait for the read: it attempts at once and, while attempts fail, again after a wait of
-// discoveryRetryFirst that doubles after each failure up to discoveryRetryMax. It logs a failure
-// at ERROR at most once per discoveryLogInterval, and the success once, and returns once the
-// issuer is discovered or ctx ends.
+// discoveryRetryFirst that doubles after each failure up to discoveryRetryMax, each wait on d's
+// clock. It logs a failure at ERROR at most once per discoveryLogInterval, and the success once,
+// and returns once the issuer is discovered or ctx ends.
 func (d *discovery[T]) run(ctx context.Context) {
 	wait := discoveryRetryFirst
 	for {
@@ -135,10 +147,12 @@ func (d *discovery[T]) run(ctx context.Context) {
 		} else if ctx.Err() == nil {
 			d.logFailure(err)
 		}
+		timer := d.clockOf().NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-time.After(wait):
+		case <-timer.C():
 		}
 		wait = min(2*wait, discoveryRetryMax)
 	}
@@ -146,7 +160,7 @@ func (d *discovery[T]) run(ctx context.Context) {
 
 func (d *discovery[T]) logFailure(err error) {
 	d.mu.Lock()
-	now := d.now()
+	now := d.clockOf().Now()
 	due := d.loggedAt.IsZero() || now.Sub(d.loggedAt) >= discoveryLogInterval
 	if due {
 		d.loggedAt = now

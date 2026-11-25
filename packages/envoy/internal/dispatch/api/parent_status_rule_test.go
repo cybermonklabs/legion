@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -514,7 +513,8 @@ func TestTheRuleJudgesOnlyThePairsAWriteChanges(t *testing.T) {
 // done, and retro over that child, which R24 takes, is 409 FOREIGN_CHILD_OPEN. Done over a child
 // in icebox, which the open-child check alone takes, is still R24's refusal.
 func TestTheParentStatusRuleDecidesBeforeTheOpenForeignChildCheck(t *testing.T) {
-	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, parentStatusRule: true})
+	// A settle delay staged a day ahead (stagedAhead), state and not a wait.
+	handler, database, deps := newTestServer(t, testServerOptions{settle: stagedAhead, parentStatusRule: true})
 	rig := ruleRig{handler: handler, database: database, deps: deps}
 	parent := createListedIssues(t, handler, "CORE", 1)[0]
 	child := createListedIssues(t, handler, "SIDE", 1)[0]
@@ -598,7 +598,7 @@ func TestACreateRacingItsParentsCloseIsRefusedEitherWay(t *testing.T) {
 	t.Run("the close's update first", func(t *testing.T) {
 		rig := newRuleRig(t, true)
 		parent := rig.file(t, "Parent closed before the create", "in_progress", "")
-		awaitNoSettlementOwed(t, rig.database)
+		awaitSettled(t, rig.database)
 		hold, err := rig.database.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin the close: %v", err)
@@ -620,7 +620,7 @@ func TestACreateRacingItsParentsCloseIsRefusedEitherWay(t *testing.T) {
 	t.Run("the create's share lock first", func(t *testing.T) {
 		rig := newRuleRig(t, true)
 		parent := rig.file(t, "Parent closed after the create", "in_progress", "")
-		awaitNoSettlementOwed(t, rig.database)
+		awaitSettled(t, rig.database)
 		var number int
 		if err := rig.database.Pool.QueryRow(ctx, `
 			update projects set next_number = next_number + 1 where key = $1 returning next_number - 1
@@ -649,19 +649,6 @@ func TestACreateRacingItsParentsCloseIsRefusedEitherWay(t *testing.T) {
 		if status, _ := rig.issue(t, parent); status != "in_progress" {
 			t.Errorf("the refused close left %s %s, want in_progress", parent, status)
 		}
-	})
-}
-
-// awaitNoSettlementOwed waits until no document of the database owes a settlement, so a test that
-// then holds an issue's row holds it against the write it sends, not against a settlement.
-func awaitNoSettlementOwed(t *testing.T, database *store.Store) {
-	t.Helper()
-	testwait.Eventually(t, "every document to settle", func() bool {
-		var owed bool
-		if err := database.Pool.QueryRow(context.Background(), `select exists (select 1 from doc_settlements_pending)`).Scan(&owed); err != nil {
-			t.Fatalf("read the settlements owed: %v", err)
-		}
-		return !owed
 	})
 }
 

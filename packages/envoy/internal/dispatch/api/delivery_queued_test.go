@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -41,7 +42,7 @@ type fakeSession struct {
 // sendHold is a send the listener has taken and not yet answered: arrived closes when the first
 // send to the session reaches the listener, and the listener answers it, and every later one,
 // once the test frees the hold. The listener client gives up on an answer after its own window
-// (envoy's defaultTimeout, 5 s), so a test reads what it needs and frees the hold well inside it.
+// (envoy's CallWindow, 5 s), so a test reads what it needs and frees the hold well inside it.
 type sendHold struct {
 	arrived, release chan struct{}
 	once, freed      sync.Once
@@ -286,7 +287,10 @@ func TestDirectMessageToAStoppedSessionIsQueued(t *testing.T) {
 func TestMentionOfAStoppedSessionIsQueuedOnOneSend(t *testing.T) {
 	t.Parallel()
 	listener := stoppedAndLive(t)
-	handler, database := newTargetedMessageHandler(t, listener.url)
+	// A clock whose timers never fire: the comment's lookup of s1 is answered as the listener
+	// answers it and is never left unanswered by its bound (mentionLookupTimeout), so the comment
+	// answers its attempt pinned to s1, which this row reads.
+	handler, database := newTargetedMessageHandlerOn(t, listener.url, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "QUE", "A mention of a stopped session", "before")
 
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{

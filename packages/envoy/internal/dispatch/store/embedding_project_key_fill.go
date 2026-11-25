@@ -74,8 +74,7 @@ const EmbeddingProjectKeyBatch = 200
 // each second of work would be.
 //
 // It is a variable only so a test can see a progress line without labelling a deployment's worth
-// of rows, as duty's jitterN is a variable only so a test can fix the draw
-// (internal/dispatch/duty/ticker.go:22).
+// of rows, as duty's jitterN is a variable only so a test can fix the draw.
 var embeddingProjectKeyProgressEvery = 30 * time.Second
 
 // fillEmbeddingProjectKeysCursorQuery reads the cursor the next batch starts from. It is a

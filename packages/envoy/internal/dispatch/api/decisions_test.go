@@ -88,7 +88,7 @@ const (
 
 func newDecisionsFixture(t *testing.T) decisionsFixture {
 	t.Helper()
-	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: stagedAhead})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE",
 		shipIt("Ship it.")+"\n\n"+holdIt("Hold it.")+"\n\nOther paragraph.\n")
@@ -592,17 +592,20 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a
 // spec's ask blocks, and until it has the issue holds none. Its one bound is the test binary's
-// deadline (testwait.UntilPolling), and its failure prints the questions it last read.
+// deadline (testwait.Until), and its failure prints the questions it last read.
 func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want int) (issueDecisions, []string) {
 	t.Helper()
-	var view issueDecisions
-	questions := testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the issue's decisions to hold %d open questions (the questions last read)", want), func() ([]string, bool) {
-		view = readIssueDecisions(t, handler, key)
+	type read struct {
+		view      issueDecisions
+		questions []string
+	}
+	got := testwait.Until(t, fmt.Sprintf("the issue's decisions to hold %d open questions", want), func() (read, bool) {
+		view := readIssueDecisions(t, handler, key)
 		questions := []string{}
 		for _, question := range view.OpenQuestions {
 			questions = append(questions, question.Question)
 		}
-		return questions, len(questions) == want
+		return read{view, questions}, len(questions) == want
 	})
-	return view, questions
+	return got.view, got.questions
 }

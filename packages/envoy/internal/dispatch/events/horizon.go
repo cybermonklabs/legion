@@ -194,9 +194,7 @@ const eventWritersSQL = `
 
 // StallHolderSQL names the oldest event writer of this database, a backend's or a prepared
 // transaction's, by the transaction id it holds: the transactions oldestEventWriterSQL reads, so
-// the oldest is the one whose end a pending observation waits for. warnStall reads it, and a
-// test's wait on the horizon reads it too (internal/dispatch/horizontest), when the warning is
-// late.
+// the oldest is the one whose end a pending observation waits for. warnStall reads it.
 const StallHolderSQL = `
 	select kind, pid, started, state, application_name, database, query from (
 		select 'backend' as kind, a.pid, a.xact_start as started, coalesce(a.state, '') as state,
@@ -376,6 +374,18 @@ func (h *Horizon) SetStallWarning(stallAfter, warnEvery time.Duration) {
 	}
 	if warnEvery > 0 {
 		h.warnEvery = warnEvery
+	}
+}
+
+// SetLogger replaces the sink of every warning this Horizon logs: the stall warning, the
+// failed-observation warning and the failed-persist warning. A nil logger leaves it as it is, and a
+// Horizon whose sink nobody set logs to slog.Default as it stands at each warning, which is what
+// production keeps. A test sets it to read only the warnings of the horizons it built (horizontest
+// keeps them by the database the test's server reads), where tests that run beside it share
+// slog.Default. Call it before the Horizon is shared.
+func (h *Horizon) SetLogger(logger *slog.Logger) {
+	if logger != nil {
+		h.logger = logger
 	}
 }
 

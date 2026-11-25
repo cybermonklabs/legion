@@ -607,7 +607,9 @@ func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const session = "ses_narrowed"
-	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	// The tokens expire stagedAhead from now, staged state for the verifier's clock and not a wait,
+	// so none lapses however long the row takes.
+	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(stagedAhead).Unix())
 	read := []string{model.ScopeRead}
 	personAndRead := []string{model.ScopePerson, model.ScopeRead}
 	wantScopes := map[string][]string{

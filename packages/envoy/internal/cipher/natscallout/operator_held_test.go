@@ -302,11 +302,11 @@ const storeFailed = "error creating store for stream"
 // nats-server answers a delete before a goroutine of its own has removed the account's streams
 // directory, and a create that arrives first is answered 10049, storeFailed; no API says when that
 // goroutine has run (testnats.RecreateKeyValue's doc gives the server's code). So the create is
-// sent again on exactly that answer, every 100 ms, its one bound the test binary's deadline
-// (testwait.UntilPolling); any other refusal fails the test at once.
+// sent again on exactly that answer, at the shared wait's pace, its one bound the test binary's
+// deadline (testwait.Until); any other refusal fails the test at once.
 func createsAfterDelete(t *testing.T, nc *nats.Conn, subject string, body any) {
 	t.Helper()
-	testwait.UntilPolling(t, 100*time.Millisecond, subject+" to be answered with no store failure", func() (string, bool) {
+	testwait.Until(t, subject+" to be answered with no store failure", func() (string, bool) {
 		answer := answered(t, nc, subject, body)
 		if answer.Error != nil && answer.Error.ErrCode == 10049 && answer.Error.Description == storeFailed {
 			t.Logf("%s answered %s; asking again", subject, answer.raw)

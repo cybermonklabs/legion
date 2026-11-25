@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // A write phase past the send bound goes as several batches (partEnd): every statement once and
@@ -80,9 +82,9 @@ func TestAFailedBuildEndsThePartAtItsStatement(t *testing.T) {
 // later part, as missing from the rows.
 func TestAWritePhasePastTheSendBoundRunsEveryStatementInOrder(t *testing.T) {
 	ctx := context.Background()
-	config, err := pgx.ParseConfig(testDatabaseURL(t))
+	config, err := pgx.ParseConfig(testdb.DispatchServer.Database(t, "dispatch_test"))
 	if err != nil {
-		t.Fatalf("parse the test database's URL: %v", err)
+		t.Fatalf("parse the test's own database's URL: %v", err)
 	}
 	sent := &sentBatches{}
 	config.Tracer = sent

@@ -14,19 +14,25 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// jetStreamWait bounds each JetStream request of a context Cluster.JetStream opens. A create of a
-// stream of more than one copy on a cluster is answered from the stream's first leader, once its
-// members have elected one (processStreamLeaderChange), and on a loaded machine that election can
-// come after jetStreamWait, or the answer never come (sendCreate). Such a create goes through
+// jetStreamWait bounds each JetStream request of a context Cluster.JetStream opens, main's bound:
+// internal/bus's TestRaisingTheStreamWhileAPublisherSendsKeepsEveryAcknowledgedMessage counts a
+// publish that draws no answer across the stream's raise as failed once this wait ends, and with
+// the test binary's deadline in its place that publish waits out the whole run.
+// A2's callers still use this bound; A2 deletes it with its last caller. A create of a stream of
+// more than one copy on a cluster is answered from the stream's first leader, once its members
+// have elected one (processStreamLeaderChange), and on a loaded machine that election can come
+// after jetStreamWait, or the answer never come (sendCreate). Such a create goes through
 // Cluster.CreateStream.
 const jetStreamWait = 10 * time.Second
 
-// JetStream is a JetStream context, its requests bounded by jetStreamWait, on whichever running
-// member of the cluster answers (Connect), closed when the test ends. A test creates a stream of
-// more than one copy with Cluster.CreateStream, and updates a stream with UpdateStream, not
-// through it.
+// JetStream is a JetStream context, each request of it bounded by jetStreamWait, on whichever
+// running member of the cluster answers (Connect), closed when the test ends. A test creates a
+// stream of more than one copy with Cluster.CreateStream, and updates a stream with UpdateStream,
+// not through it.
 func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 	t.Helper()
 	conn := Connect(t, c.URL())
@@ -51,18 +57,28 @@ func (c *Cluster) MemberJetStream(t testing.TB, i int) natsgo.JetStreamContext {
 	return js
 }
 
+// createConnectOptions are the options of CreateStream's own connection, which retries its first
+// dial and reconnects after a drop for as long as it is open: nats.go's handshake timeout for one
+// dial (a second) and its pause between two dials (100 ms). Neither bounds the create, which
+// sendCreate waits for through the shared wait.
+var createConnectOptions = []natsgo.Option{
+	natsgo.Timeout(time.Second), natsgo.RetryOnFailedConnect(true), natsgo.MaxReconnects(-1),
+	natsgo.ReconnectWait(100 * time.Millisecond),
+}
+
 // CreateStream creates the stream config names on a connection of its own to the cluster, sending
 // the create until the cluster answers it (sendCreate), and fails the test with the cluster's
-// refusal. The connection retries its first dial as it reconnects after a drop, every
-// retryInterval: a create sent before it has connected waits in it, as on a loaded machine whose
-// members take longer than dialTimeout to answer a dial, and a create whose answer a drop lost is
-// sent again on it. A stream the cluster already holds under the name with another configuration
-// is refused as "stream name already in use", and the failure then names each field config sets
-// that the stream the cluster holds sets otherwise (streamDifference): a send again of this
-// create is answered with the stream it made, so that refusal is never this create's own stream.
+// refusal. The connection retries its first dial as it reconnects after a drop
+// (createConnectOptions): a create sent before it has connected waits in it, as on a loaded
+// machine whose members take longer than a dial's handshake timeout to answer a dial, and a create
+// whose answer a drop lost is sent again on it. A stream the cluster already holds under the name
+// with another configuration is refused as "stream name already in use", and the failure then
+// names each field config sets that the stream the cluster holds sets otherwise
+// (streamDifference): a send again of this create is answered with the stream it made, so that
+// refusal is never this create's own stream.
 func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 	t.Helper()
-	conn, err := natsgo.Connect(c.URL(), natsgo.Timeout(dialTimeout), natsgo.RetryOnFailedConnect(true), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(retryInterval))
+	conn, err := natsgo.Connect(c.URL(), createConnectOptions...)
 	if err != nil {
 		t.Fatalf("connect to the cluster to create stream %s: %v", config.Name, err)
 	}
@@ -71,7 +87,7 @@ func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	err = sendCreate(t, conn, "create stream "+config.Name, createSendWait, []string{"$JS.API.STREAM.CREATE." + config.Name}, func() error {
+	err = sendCreate(t, conn, "create stream "+config.Name, []string{"$JS.API.STREAM.CREATE." + config.Name}, func() error {
 		_, err := js.AddStream(&config)
 		return err
 	})
@@ -87,21 +103,12 @@ func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 	}
 }
 
-const (
-	// firstUpdateReadWait is how long UpdateStream waits for the answer to its first read of the
-	// stream before it takes the read as lost and reads again. A read sent while the stream's group
-	// elects a leader can draw no answer, as the update can, so a read cut short is sent again
-	// rather than waited out; each later read's wait follows what the reads before it came to
-	// (updateReadLimit).
-	firstUpdateReadWait = 500 * time.Millisecond
-	// updateReadInterval is the pause between those reads.
-	updateReadInterval = 10 * time.Millisecond
-	// updateMargin is what UpdateStream leaves of the test binary's deadline when it gives up on
-	// an update that never shows: the margin testwait's waits leave (testwait.Until), so this
-	// wait gives up where the test's other waits do, and the test fails by name rather than at go
-	// test's own timeout, which names no test.
-	updateMargin = 30 * time.Second
-)
+// firstUpdateReadWait is how long UpdateStream waits for the answer to its first read of the
+// stream before it takes the read as lost and reads again. A read sent while the stream's group
+// elects a leader can draw no answer, as the update can, so a read cut short is sent again rather
+// than waited out; each later read's wait follows what the reads before it came to
+// (updateReadLimit).
+const firstUpdateReadWait = 500 * time.Millisecond
 
 // updateReadLimit is the wait of UpdateStream's next read of the stream, set as the bus sets a
 // start's reads (readLimit, internal/bus/start_wait.go): a read the server leaves unanswered, or
@@ -158,9 +165,15 @@ func (h *LeaderlessStream) Restart(t testing.TB) {
 // left running has answered a read naming no leader. A member can take leadership alone while the
 // others first stop; that attempt is restored and selected again. readWait is the caller's read
 // limit, so a test keeps the limit its behaviour asserts rather than duplicating election setup.
+// Each attempt is one try of the shared wait (testwait.Until), so the attempts have no count and
+// no bound of their own: the wait's give-up names the stream and prints the last attempt's
+// stopped members, the copy it left running and the leader that copy named.
 func HoldStreamWithoutLeader(t testing.TB, cluster *Cluster, stream string, readWait time.Duration) *LeaderlessStream {
 	t.Helper()
-	for attempt := 1; attempt <= 8; attempt++ {
+	var attempt leaderlessAttempt
+	what := fmt.Sprintf("the copy of stream %s left running, once its leader and one peer stop, to answer a read naming no leader", stream)
+	return testwait.Until(t, what, func() (leaderlessAttempt, bool) {
+		attempt.number++
 		read := AwaitStreamCopies(t, cluster.JetStream(t), stream, 3)
 		members := []int{cluster.Member(read.Cluster.Leader)}
 		for _, peer := range read.Cluster.Replicas {
@@ -174,32 +187,43 @@ func HoldStreamWithoutLeader(t testing.TB, cluster *Cluster, stream string, read
 			cluster.Servers[member].Stop(t)
 		}
 		js := cluster.MemberJetStream(t, kept)
-		var lost error
-		var answer *natsgo.StreamInfo
-		bound := boundOf(t)
-		for {
-			answer, lost = js.StreamInfo(stream, natsgo.MaxWait(readWait))
-			if lost == nil || bound.over() {
-				break
-			}
-		}
-		if answer == nil {
-			t.Fatalf("no read of %s on member %d was answered by %s, short of the test's deadline; the last drew %v", stream, kept, bound, lost)
-		}
+		// Each read of the copy left running is bounded by readWait, and a read that draws no
+		// answer is sent again through the shared wait (awaitInfo) until one is answered, with no
+		// bound of its own: its give-up prints the last read and its error.
+		answer := awaitInfo(t, fmt.Sprintf("a read of %s on member %d, the copy left running, to be answered", stream, kept),
+			func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream, natsgo.MaxWait(readWait)) },
+			func(*natsgo.StreamInfo) bool { return true },
+			describeStream)
 		if answer.Cluster == nil {
 			t.Fatalf("the read of %s on member %d names no cluster: %+v", stream, kept, answer)
 		}
-		t.Logf("attempt %d: stopped members %v; the copy left running, member %d, names leader %q", attempt, stopped, kept, answer.Cluster.Leader)
+		attempt.stopped, attempt.kept, attempt.leader = stopped, kept, answer.Cluster.Leader
+		t.Logf("%s", attempt)
 		if answer.Cluster.Leader == "" {
-			return &LeaderlessStream{cluster: cluster, Info: answer, Stopped: stopped, Kept: kept}
+			attempt.held = &LeaderlessStream{cluster: cluster, Info: answer, Stopped: stopped, Kept: kept}
+			return attempt, true
 		}
 		for _, member := range stopped {
 			cluster.Servers[member].Start(t)
 		}
 		cluster.AwaitReady(t)
-	}
-	t.Fatalf("in 8 attempts the copy left running led %s after the stops each time, so no update went to a group with no leader", stream)
-	return nil
+		return attempt, false
+	}).held
+}
+
+// leaderlessAttempt is HoldStreamWithoutLeader's last attempt: its number, the members it stopped,
+// the copy it left running and the leader that copy named, and the held stream once that copy
+// named none.
+type leaderlessAttempt struct {
+	number  int
+	stopped []int
+	kept    int
+	leader  string
+	held    *LeaderlessStream
+}
+
+func (a leaderlessAttempt) String() string {
+	return fmt.Sprintf("attempt %d: stopped members %v; the copy left running, member %d, names leader %q", a.number, a.stopped, a.kept, a.leader)
 }
 
 // UpdateStream is a test's own update of a stream: a change an operator or another program makes
@@ -217,9 +241,9 @@ func HoldStreamWithoutLeader(t testing.TB, cluster *Cluster, stream string, read
 // whose period these tests set to 250 ms). Each read waits as long as the reads before it showed
 // the server needs (updateReadLimit).
 //
-// It reads until the test binary's deadline, less updateMargin, and has no bound of its own. When
-// no read holds config by then, it fails the test naming the stream and each setting the last read
-// held otherwise.
+// It reads through the shared wait (testwait.Until), one read of the stream each try, and has no
+// bound and no pace of its own: when no read holds config by the wait's give-up, the give-up names
+// the stream and prints what the update drew and each setting the last read held otherwise.
 //
 // It sends the update again only after the 503 with error code 10008 (leaderUnknown): a member
 // answers that while it knows no leader of the metadata group, before anything is proposed
@@ -240,7 +264,6 @@ func HoldStreamWithoutLeader(t testing.TB, cluster *Cluster, stream string, read
 // itself.
 func UpdateStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.StreamConfig) *natsgo.StreamInfo {
 	t.Helper()
-	until := updateDeadline(t)
 	type answer struct {
 		info *natsgo.StreamInfo
 		err  error
@@ -255,15 +278,16 @@ func UpdateStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.Stream
 	}
 	send()
 	limit := &updateReadLimit{limit: firstUpdateReadWait}
-	var unanswered, lostRead error
-	var last *natsgo.StreamInfo
+	read := updateRead{config: config}
 	var sendAgainAt time.Time
-	for {
+	what := fmt.Sprintf("the update of stream %s to be answered, or a read of the stream to hold it", config.Name)
+	return testwait.Until(t, what, func() (updateRead, bool) {
 		select {
 		case got := <-answered:
 			switch {
 			case got.err == nil:
-				return got.info
+				read.info = got.info
+				return read, true
 			case leaderUnknown(got.err):
 				t.Logf("the update of stream %s drew %v: no member applied it; it is sent again", config.Name, got.err)
 				sendAgainAt = time.Now().Add(limit.limit)
@@ -273,7 +297,7 @@ func UpdateStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.Stream
 					t.Fatalf("the server refused the update of stream %s: %v", config.Name, got.err)
 				}
 			}
-			unanswered = got.err
+			read.unanswered = got.err
 		default:
 		}
 		if !sendAgainAt.IsZero() && !time.Now().Before(sendAgainAt) {
@@ -281,7 +305,7 @@ func UpdateStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.Stream
 			send()
 		}
 		readSent := time.Now()
-		read, err := js.StreamInfo(config.Name, natsgo.MaxWait(limit.limit))
+		info, err := js.StreamInfo(config.Name, natsgo.MaxWait(limit.limit))
 		if readLost(err) {
 			limit.lost()
 		} else {
@@ -289,41 +313,43 @@ func UpdateStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.Stream
 		}
 		switch {
 		case err != nil:
-			lostRead = err
-		case len(settingsNotHeld(config, read.Config)) == 0:
-			return read
+			read.lost = err
+		case len(settingsNotHeld(config, info.Config)) == 0:
+			read.info = info
+			return read, true
 		default:
-			last = read
+			read.last, read.lost = info, nil
 		}
-		if !until.IsZero() && time.Now().After(until) {
-			sendResult := "no answer yet"
-			if unanswered != nil {
-				sendResult = fmt.Sprintf("no answer: %v", unanswered)
-			}
-			if last == nil {
-				t.Fatalf("the update of stream %s drew %s, and no read of the stream was answered by %s before the test's deadline; the last read drew %v",
-					config.Name, sendResult, updateMargin, lostRead)
-			}
-			t.Fatalf("the update of stream %s drew %s, and by %s before the test's deadline no read held it: %s",
-				config.Name, sendResult, updateMargin, strings.Join(settingsNotHeld(config, last.Config), "; "))
-		}
-		time.Sleep(updateReadInterval)
-	}
+		return read, false
+	}).info
 }
 
-// updateDeadline is the test binary's deadline less updateMargin: the one bound on every read
-// UpdateStream makes, so a failed update fails by name before go test's own timeout. It is zero,
-// no bound, when t reports no deadline: a testing.TB with no Deadline method, such as a
-// benchmark's, or a test run with -timeout 0. The test's Context is no such bound: the testing
-// package cancels it before the test's cleanups run, and a cleanup that puts a stream back updates
-// it.
-func updateDeadline(t testing.TB) time.Time {
-	if test, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
-		if deadline, bounded := test.Deadline(); bounded {
-			return deadline.Add(-updateMargin)
-		}
+// updateRead is what UpdateStream's tries have seen: the error the update drew, nil while no answer
+// came; the last read of the stream that was answered; the error of the last try's read, nil when
+// that read was answered; and the info UpdateStream returns once the update is answered or a read
+// holds config.
+type updateRead struct {
+	config     natsgo.StreamConfig
+	unanswered error
+	last       *natsgo.StreamInfo
+	lost       error
+	info       *natsgo.StreamInfo
+}
+
+func (r updateRead) String() string {
+	sent := "no answer yet"
+	if r.unanswered != nil {
+		sent = fmt.Sprintf("no answer: %v", r.unanswered)
 	}
-	return time.Time{}
+	if r.last == nil {
+		return fmt.Sprintf("the update of stream %s drew %s, and no read of the stream was answered; the last read drew %v", r.config.Name, sent, r.lost)
+	}
+	held := fmt.Sprintf("the update of stream %s drew %s, and the last read answered held it otherwise: %s",
+		r.config.Name, sent, strings.Join(settingsNotHeld(r.config, r.last.Config), "; "))
+	if r.lost != nil {
+		held += fmt.Sprintf("; the read after it drew %v", r.lost)
+	}
+	return held
 }
 
 // settingsNotHeld names each setting of sent that held does not hold, as "<json name>: sent <its
@@ -471,44 +497,55 @@ func settled(cluster *natsgo.ClusterInfo, n int) bool {
 		!slices.ContainsFunc(cluster.Replicas, func(peer *natsgo.PeerInfo) bool { return !peer.Current || peer.Offline })
 }
 
-// AwaitSettledStream waits, until the test's deadline (awaitInfo), until stream holds as many
-// settled copies as its configuration asks (settled), and returns its info. A test that asserts the
-// copies a write left reads them from the info it returns.
+// AwaitSettledStream waits until stream holds as many settled copies as its configuration asks
+// (settled), and returns its info. A test that asserts the copies a write left reads them from the
+// info it returns.
 func AwaitSettledStream(t testing.TB, js natsgo.JetStreamContext, stream string) *natsgo.StreamInfo {
 	t.Helper()
-	return awaitInfo(t, fmt.Sprintf("stream %s did not settle", stream),
-		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
+	return awaitInfo(t, fmt.Sprintf("stream %s to settle", stream),
+		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream, natsgo.MaxWait(readWait)) },
 		func(info *natsgo.StreamInfo) bool { return settled(info.Cluster, info.Config.Replicas) },
 		describeStream)
 }
 
-// AwaitStreamCopies waits, until the test's deadline (awaitInfo), until stream is configured with n
-// copies and holds n settled ones (settled), and returns its info.
+// AwaitStreamCopies waits until stream is configured with n copies and holds n settled ones
+// (settled), and returns its info. A member that was killed or lame-ducked mid-write rejoins and
+// catches its streams up, which this waits out however long it takes.
 func AwaitStreamCopies(t testing.TB, js natsgo.JetStreamContext, stream string, n int) *natsgo.StreamInfo {
 	t.Helper()
-	return awaitInfo(t, fmt.Sprintf("stream %s did not hold %d settled copies", stream, n),
-		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
+	return awaitInfo(t, fmt.Sprintf("stream %s to hold %d settled copies", stream, n),
+		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream, natsgo.MaxWait(readWait)) },
 		func(info *natsgo.StreamInfo) bool { return info.Config.Replicas == n && settled(info.Cluster, n) },
 		describeStream)
 }
 
-// AwaitConsumerCopies waits, until the test's deadline (awaitInfo), until stream's consumer holds n
-// settled copies (settled), as a durable that sets no replica count of its own does once it has
-// followed its stream to n, and returns its info.
+// AwaitStreamCopiesWithin is AwaitStreamCopies under main's name and signature, from when it took
+// a bound of its own; within is no longer read, and the wait is AwaitStreamCopies's.
+// A2's callers still use this; A2 deletes it with its last caller.
+func AwaitStreamCopiesWithin(t testing.TB, js natsgo.JetStreamContext, stream string, n int, _ time.Duration) *natsgo.StreamInfo {
+	t.Helper()
+	return AwaitStreamCopies(t, js, stream, n)
+}
+
+// AwaitConsumerCopies waits until stream's consumer holds n settled copies (settled), as a durable
+// that sets no replica count of its own does once it has followed its stream to n, and returns its
+// info.
 func AwaitConsumerCopies(t testing.TB, js natsgo.JetStreamContext, stream, consumer string, n int) *natsgo.ConsumerInfo {
 	t.Helper()
-	return awaitInfo(t, fmt.Sprintf("consumer %s of %s did not hold %d settled copies", consumer, stream, n),
-		func() (*natsgo.ConsumerInfo, error) { return js.ConsumerInfo(stream, consumer) },
+	return awaitInfo(t, fmt.Sprintf("consumer %s of %s to hold %d settled copies", consumer, stream, n),
+		func() (*natsgo.ConsumerInfo, error) {
+			return js.ConsumerInfo(stream, consumer, natsgo.MaxWait(readWait))
+		},
 		func(info *natsgo.ConsumerInfo) bool { return settled(info.Cluster, n) },
 		describeConsumer)
 }
 
-// AwaitStreamLeader waits, until the test's deadline (awaitInfo), until stream has a leader other
-// than not, the server_name of a member the test stopped or "" for any, and returns its info.
+// AwaitStreamLeader waits until stream has a leader other than not, the server_name of a member
+// the test stopped or "" for any, and returns its info.
 func AwaitStreamLeader(t testing.TB, js natsgo.JetStreamContext, stream, not string) *natsgo.StreamInfo {
 	t.Helper()
-	return awaitInfo(t, fmt.Sprintf("stream %s had no leader other than %q", stream, not),
-		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
+	return awaitInfo(t, fmt.Sprintf("stream %s to have a leader other than %q", stream, not),
+		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream, natsgo.MaxWait(readWait)) },
 		func(info *natsgo.StreamInfo) bool {
 			return info.Cluster != nil && info.Cluster.Leader != "" && info.Cluster.Leader != not
 		},
@@ -562,24 +599,29 @@ func describeCluster(cluster *natsgo.ClusterInfo) string {
 		Copies(cluster), cluster.Leader, strings.Join(peers, "; "))
 }
 
-// awaitInfo reads an info every retryInterval until a read succeeds and done holds for it, and
-// returns that info; when none has by the test's deadline (testDeadline), it fails the test with
-// failure, what describe says of the info it read last, and the last error. The wait ends on done,
-// bounded only by that deadline: every caller waits for a cluster to settle, which a loaded machine
-// delays without anything being wrong.
-func awaitInfo[T any](t testing.TB, failure string, read func() (*T, error), done func(*T) bool, describe func(*T) string) *T {
+// infoRead is one read of awaitInfo's wait: what the describer says of the info it read, and the
+// server's answer, which is what the failure of a wait that ran out prints.
+type infoRead[T any] struct {
+	info     *T
+	err      error
+	describe func(*T) string
+}
+
+func (r infoRead[T]) String() string { return fmt.Sprintf("%s (%v)", r.describe(r.info), r.err) }
+
+// awaitInfo reads an info through the shared wait until a read succeeds and done holds for it, and
+// returns that info. Each caller bounds its read by readWait, whatever the wait of the context it
+// was given, so a read sent across a leader change that draws no answer is sent again: a member
+// that still counts a stream's or a consumer's leader that is gone answers nothing for it
+// (nats-server v2.15.1, jsStreamInfoRequest, jsConsumerInfoRequest, isGroupLeaderless). The
+// failure of a wait that ran out prints what describe says of the info it read last and the last
+// error.
+func awaitInfo[T any](t testing.TB, what string, read func() (*T, error), done func(*T) bool, describe func(*T) string) *T {
 	t.Helper()
-	bound := boundOf(t)
-	for {
+	return testwait.Until(t, what, func() (infoRead[T], bool) {
 		info, err := read()
-		if err == nil && done(info) {
-			return info
-		}
-		if bound.over() {
-			t.Fatalf("%s (gave up at %s, short of the test's deadline): %s (%v)", failure, bound, describe(info), err)
-		}
-		bound.pause()
-	}
+		return infoRead[T]{info: info, err: err, describe: describe}, err == nil && done(info)
+	}).info
 }
 
 // StreamWrites records every stream create and update a JetStream account's clients ask for: a
@@ -600,7 +642,7 @@ func WatchStreamWrites(t testing.TB, uri string) *StreamWrites {
 	if err != nil {
 		t.Fatalf("watch stream writes: %v", err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("watch stream writes: %v", err)
 	}
 	return &StreamWrites{conn: conn, sub: sub}
@@ -611,7 +653,7 @@ func WatchStreamWrites(t testing.TB, uri string) *StreamWrites {
 // writer's answer, leaves every one queued here.
 func (w *StreamWrites) Take(t testing.TB) []string {
 	t.Helper()
-	if err := w.conn.Flush(); err != nil {
+	if err := w.conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush the stream-write watch: %v", err)
 	}
 	var subjects []string

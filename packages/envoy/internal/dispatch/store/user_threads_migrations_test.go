@@ -3,7 +3,8 @@ package store
 import (
 	"context"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // beforeUserThreads is the last migration before user_threads: the five that make, fill and catch
@@ -160,7 +161,7 @@ func TestUserThreadsSeedStartsReadAndTriggersKeepEachRow(t *testing.T) {
 	}
 	if _, err := store.Pool.Exec(ctx, `
 		update asks set answer = jsonb_build_object('user', 'alice', 'selected', '[]'::jsonb, 'at', $2::timestamptz) where id = $1
-	`, ask, time.Now().Add(time.Second)); err != nil {
+	`, ask, testdb.Now(t, store.Pool)); err != nil {
 		t.Fatalf("change the answer: %v", err)
 	}
 	if row, _ := readUserThread(t, store, "alice", ask); row.unread {

@@ -7,11 +7,11 @@ import (
 	"reflect"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A settlement already past its entry check when a transaction opens its write can reach the
@@ -21,7 +21,7 @@ import (
 func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	paused := make(chan struct{})
 	resume := make(chan struct{})
@@ -47,13 +47,9 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 		default:
 			close(resume)
 		}
-		<-settled
+		testwait.Receive(t, "settleRoom to return once it was resumed", settled)
 	})
-	select {
-	case <-paused:
-	case <-time.After(5 * time.Second):
-		t.Fatal("settlement never reached its warm hook")
-	}
+	testwait.Receive(t, "the settlement to reach its warm hook", paused)
 
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
@@ -79,11 +75,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 		t.Fatalf("commit edit transaction: %v", err)
 	}
 	close(resume)
-	select {
-	case <-settled:
-	case <-time.After(10 * time.Second):
-		t.Fatal("paused settlement did not finish")
-	}
+	testwait.Receive(t, "the paused settlement to finish", settled)
 	ledger.publish()
 	settleCurrentGeneration(t, service, artifactID)
 
@@ -174,7 +166,7 @@ func TestARolledBackWriteIsNoAuthorOfTheNextVersion(t *testing.T) {
 func TestAJoinedWritesVersionNamesItsWriterNotAConnectedBrowser(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	browser := model.Actor{Kind: "user", ID: "alice"}
 	connectionID := service.nextConnection.Add(1)
@@ -232,8 +224,10 @@ func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *t
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	appends := &heldStore{VersionedStore: NewPgVersioned(database), room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
-	testcleanup.Add(t, appends.let)
 	service := newShutdownTestService(t, database, appends)
+	// Registered after the service, so it runs before its shutdown: a row that fails while the
+	// room's batch is held lets it go rather than leave the service holding it past the test.
+	testcleanup.Add(t, appends.let)
 	seedServiceText(t, service, artifactID, "First.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	waitForLandedAppends(t, service, artifactID)
@@ -242,11 +236,7 @@ func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *t
 	// document's lock, as one lingering for the keystrokes after it is.
 	appends.armed.Store(true)
 	editAsPeer(t, service, artifactID, appendBlocks(t, "Browser words.\n"))
-	select {
-	case <-appends.entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the browser's update never reached the room's persistence")
-	}
+	testwait.Receive(t, "the browser's update to reach the room's persistence", appends.entered)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	const markID = "00000000-0000-4000-8000-000000000605"

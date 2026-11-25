@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	gws "github.com/gorilla/websocket"
@@ -65,13 +66,16 @@ func (k *fakeLiveKind) next(t *testing.T, what string) *fakeLiveSubscription {
 	return testwait.Receive(t, "a subscription started: "+what, k.started)
 }
 
-// none fails when the kind starts a subscription within within.
-func (k *fakeLiveKind) none(t *testing.T, within time.Duration, what string) {
+// none fails when the kind has started a subscription the test has not taken. The socket's read
+// loop starts a subscription (start, which hands it to started before it returns) before it reads
+// the page's next frame, so once the socket has answered the frame that must start nothing, or one
+// the page sent after it, started holds every subscription that frame could have started.
+func (k *fakeLiveKind) none(t *testing.T, what string) {
 	t.Helper()
 	select {
 	case running := <-k.started:
 		t.Fatalf("%s: started %q", what, running.sub)
-	case <-time.After(within):
+	default:
 	}
 }
 
@@ -161,7 +165,7 @@ func TestASubscriptionPastTheCapIsRefused(t *testing.T) {
 	client.refusal(t, "over-d", "TOO_MANY_SUBSCRIPTIONS")
 	client.send(t, liveSubscribe("over-e", eventsView(), ""))
 	client.refusal(t, "over-e", "TOO_MANY_SUBSCRIPTIONS")
-	events.none(t, 200*time.Millisecond, "a subscribe past the cap")
+	events.none(t, "a subscribe past the cap")
 	if held := hubSubs(rig.served.deliveryHub); held != deliveryViews {
 		t.Fatalf("the hub holds %d subscriptions, want the %d under the cap", held, deliveryViews)
 	}
@@ -187,8 +191,9 @@ func TestARepeatedSubReplacesAnotherKind(t *testing.T) {
 	events := newFakeLiveKind(-1, 512)
 	held := &heldWrites{}
 	// The page reads nothing until the writer is let go, so it answers no ping until then: a
-	// heartbeat past the run keeps the pong deadline from ending the socket however long that takes.
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: pastTheRun, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, held.listen)
+	// heartbeat staged a day ahead (stagedAhead) keeps the pong deadline from ending the socket
+	// however long that takes.
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: stagedAhead, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, held.listen)
 	client := rig.open(t, gws.DefaultDialer, asUser("alice"))
 
 	// The writer is held inside its first write of x's events, as a page that reads nothing holds
@@ -205,7 +210,7 @@ func TestARepeatedSubReplacesAnotherKind(t *testing.T) {
 	if err := first.ended(t); !errors.Is(err, context.Canceled) {
 		t.Fatalf("the replaced events subscription's SendWait answered %v, want its context's end", err)
 	}
-	waitUntil(t, "the hub answers x", func() bool { return len(socket.queue) == 1 })
+	testwait.Eventually(t, "the hub answers x", func() bool { return len(socket.queue) == 1 })
 	if len(socket.stream) == 0 {
 		t.Fatal("no frame of x's was left on the stream queue for the answer to overtake")
 	}
@@ -220,7 +225,12 @@ func TestARepeatedSubReplacesAnotherKind(t *testing.T) {
 			break
 		}
 	}
-	client.quiet(t, 500*time.Millisecond, "after the delivery view took x's place")
+	// x's subscription has ended, so the frames it left on the stream queue are all it will ever
+	// send. Once the writer has taken each off the queue, every one it wrote is on the connection
+	// ahead of the answer to the page's next frame, which Dispatch queues on the hub's queue.
+	testwait.Eventually(t, "the writer takes x's last frames off the stream queue", func() bool { return len(socket.stream) == 0 })
+	client.send(t, LiveUnsubscribe{Type: "unsubscribe"})
+	client.refusal(t, "", "INVALID_FRAME")
 	if held := hubSubs(rig.served.deliveryHub); held != 1 {
 		t.Fatalf("the hub holds %d subscriptions, want x's", held)
 	}
@@ -258,7 +268,7 @@ func TestAReplacedDeliveryViewsAnswerGoesOutBeforeItsReplacementsFrames(t *testi
 	rig := newLiveSocketRig(t, testServerOptions{
 		liveKinds: map[string]liveKind{liveEventsView: events.kind(true)},
 		// No heartbeat takes one of the writer's turns while the test holds it.
-		streamHeartbeat: time.Hour,
+		streamHeartbeat: stagedAhead,
 	}, nil)
 	writer := newIdleWriterHold(t)
 	rig.served.liveWriterBeforePick = writer.beforePick
@@ -273,10 +283,10 @@ func TestAReplacedDeliveryViewsAnswerGoesOutBeforeItsReplacementsFrames(t *testi
 		// view under sub (delivery is not configured), and then an events subscription takes sub
 		// and queues its first event.
 		client.send(t, deliverySubscribe(sub, livePipelineView(nil)))
-		waitUntil(t, "the hub answers "+sub, func() bool { return len(socket.queue) == 1 })
+		testwait.Eventually(t, "the hub answers "+sub, func() bool { return len(socket.queue) == 1 })
 		client.send(t, liveSubscribe(sub, eventsView(), ""))
 		running := events.next(t, sub+"'s events subscription")
-		waitUntil(t, sub+"'s first event on the stream", func() bool { return len(socket.stream) == 1 })
+		testwait.Eventually(t, sub+"'s first event on the stream", func() bool { return len(socket.stream) == 1 })
 		if queued := len(socket.queue); queued != 1 {
 			t.Fatalf("round %d: the hub's queue holds %d frames when the writer picks, want its answer to %s", round, queued, sub)
 		}
@@ -388,8 +398,8 @@ func TestAResumeOfTheWrongShapeIsAnInvalidFrame(t *testing.T) {
 		client.send(t, test.frame)
 		client.refusal(t, test.frame.Sub, "INVALID_FRAME")
 	}
-	events.none(t, 200*time.Millisecond, "an events view with a resume of another shape")
-	agent.none(t, 0, "an agent view with a resume")
+	events.none(t, "an events view with a resume of another shape")
+	agent.none(t, "an agent view with a resume")
 	if held := hubSubs(rig.served.deliveryHub); held != 0 {
 		t.Fatalf("the hub holds %d subscriptions after a delivery view with an events resume", held)
 	}
@@ -436,17 +446,19 @@ func TestASlowStreamWaitsAndNeverClosesTheSocket(t *testing.T) {
 	t.Parallel()
 	const frames = 400
 	events := newFakeLiveKind(frames, 512)
-	// The page answers no ping while it reads nothing: a heartbeat past the run keeps the pong
-	// deadline from ending the socket however long the steps before its read take.
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: pastTheRun, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}},
+	// The page answers no ping while it reads nothing: a heartbeat staged a day ahead (stagedAhead)
+	// keeps the pong deadline from ending the socket however long the steps before its read take.
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: stagedAhead, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}},
 		func(listener net.Listener) net.Listener { return smallSendBuffers{listener} })
 	client := rig.open(t, smallReadDialer(), asUser("alice"))
 	client.send(t, liveSubscribe("slow", eventsView(), ""))
 	running := events.next(t, "the slow events subscription")
 	socket := rig.sockets(t, 1)[0]
-	waitUntil(t, "the stream queue fills while the page reads nothing", func() bool { return streamFull(socket) })
+	testwait.Eventually(t, "the stream queue fills while the page reads nothing", func() bool { return streamFull(socket) })
 
-	time.Sleep(300 * time.Millisecond)
+	testwait.Span(t, 300*time.Millisecond, "a subscription that did not wait for room would go on queueing on its own "+
+		"goroutine: no state the test reads says it is blocked in SendWait rather than about to send, the socket is "+
+		"real TCP (no synctest), and no later action of the test is ordered after that goroutine's next send")
 	if sent := running.sent.Load(); sent >= frames {
 		t.Fatalf("the subscription queued all %d frames while the page read nothing: it never waited", sent)
 	}
@@ -473,9 +485,9 @@ func TestSendWaitReturnsWhenItsSubscriptionStops(t *testing.T) {
 	t.Run("the page unsubscribes", func(t *testing.T) {
 		events := newFakeLiveKind(-1, 512)
 		held := &heldWrites{}
-		// The page never reads, so it answers no ping: a heartbeat past the run keeps the pong
-		// deadline from ending the socket however long the steps take.
-		rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: pastTheRun, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, held.listen)
+		// The page never reads, so it answers no ping: a heartbeat staged a day ahead (stagedAhead)
+		// keeps the pong deadline from ending the socket however long the steps take.
+		rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: stagedAhead, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, held.listen)
 		client := rig.open(t, gws.DefaultDialer, asUser("alice"))
 		held.hold(t)
 		client.send(t, liveSubscribe("x", eventsView(), ""))
@@ -491,38 +503,42 @@ func TestSendWaitReturnsWhenItsSubscriptionStops(t *testing.T) {
 	})
 
 	t.Run("its context ends", func(t *testing.T) {
-		stream := &liveSubscriptionStream{socket: &liveSocket{stream: make(chan liveStreamFrame, 1), closed: make(chan struct{})}}
-		requireSendWaitWaits(t, stream, context.Background())
-		ctx, cancel := context.WithCancel(context.Background())
-		returned := sendWaitInBackground(stream, ctx)
-		requireNoReturn(t, returned)
-		cancel()
-		if err := awaitReturn(t, returned); !errors.Is(err, context.Canceled) {
-			t.Fatalf("SendWait answered %v once its context ended, want context.Canceled", err)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			stream := &liveSubscriptionStream{socket: &liveSocket{stream: make(chan liveStreamFrame, 1), closed: make(chan struct{})}}
+			requireSendWaitWaits(t, stream, context.Background())
+			ctx, cancel := context.WithCancel(context.Background())
+			returned := sendWaitInBackground(stream, ctx)
+			requireNoReturn(t, returned)
+			cancel()
+			if err := awaitReturn(t, returned); !errors.Is(err, context.Canceled) {
+				t.Fatalf("SendWait answered %v once its context ended, want context.Canceled", err)
+			}
+		})
 	})
 
 	t.Run("the socket ends", func(t *testing.T) {
-		// The socket's end ends the subscription's context too, which derives from the socket's, and
-		// SendWait answers the socket's end whichever of the two it sees first.
-		socket := newLiveSocket(context.Background(), nil, nil, nil)
-		socket.stream = make(chan liveStreamFrame, 1)
-		stream := &liveSubscriptionStream{socket: socket}
-		ctx, cancel := context.WithCancel(socket.ctx)
-		defer cancel()
-		requireSendWaitWaits(t, stream, ctx)
-		returned := sendWaitInBackground(stream, ctx)
-		requireNoReturn(t, returned)
-		socket.ended()
-		if err := awaitReturn(t, returned); !errors.Is(err, errLiveSocketClosed) {
-			t.Fatalf("SendWait answered %v once the socket ended, want errLiveSocketClosed", err)
-		}
-		if ctx.Err() == nil {
-			t.Fatal("the socket ended and the subscription's context did not")
-		}
-		if err := stream.SendWait(ctx, "after the end"); !errors.Is(err, errLiveSocketClosed) {
-			t.Fatalf("SendWait after the socket ended answered %v, want errLiveSocketClosed", err)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			// The socket's end ends the subscription's context too, which derives from the socket's,
+			// and SendWait answers the socket's end whichever of the two it sees first.
+			socket := newLiveSocket(context.Background(), nil, nil, nil)
+			socket.stream = make(chan liveStreamFrame, 1)
+			stream := &liveSubscriptionStream{socket: socket}
+			ctx, cancel := context.WithCancel(socket.ctx)
+			defer cancel()
+			requireSendWaitWaits(t, stream, ctx)
+			returned := sendWaitInBackground(stream, ctx)
+			requireNoReturn(t, returned)
+			socket.ended()
+			if err := awaitReturn(t, returned); !errors.Is(err, errLiveSocketClosed) {
+				t.Fatalf("SendWait answered %v once the socket ended, want errLiveSocketClosed", err)
+			}
+			if ctx.Err() == nil {
+				t.Fatal("the socket ended and the subscription's context did not")
+			}
+			if err := stream.SendWait(ctx, "after the end"); !errors.Is(err, errLiveSocketClosed) {
+				t.Fatalf("SendWait after the socket ended answered %v, want errLiveSocketClosed", err)
+			}
+		})
 	})
 }
 
@@ -540,20 +556,33 @@ func sendWaitInBackground(stream *liveSubscriptionStream, ctx context.Context) <
 	return returned
 }
 
+// requireNoReturn fails when SendWait, with no room in the queue, has returned once every goroutine
+// of the test's synctest bubble is blocked liveSocketWriteWait on (testwait.Idle): SendWait's
+// goroutine is then waiting for room, past any bound of its own up to the socket's write wait.
 func requireNoReturn(t *testing.T, returned <-chan error) {
 	t.Helper()
+	testwait.Idle(t, liveSocketWriteWait, "SendWait arms no timer, and a page that reads nothing holds its queue full "+
+		"until the socket's writer gives up a write liveSocketWriteWait in and ends the socket: a SendWait that gave up "+
+		"at a bound of its own shorter than that would end a slow page's subscription while its socket still lives")
 	select {
 	case err := <-returned:
 		t.Fatalf("SendWait returned %v with no room in the queue", err)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 }
 
-// awaitReturn answers what SendWait returned. Its one bound is the test binary's deadline
-// (testwait.Receive).
+// awaitReturn answers what SendWait returned, failing when it has not returned once every goroutine
+// of the test's synctest bubble is blocked.
 func awaitReturn(t *testing.T, returned <-chan error) error {
 	t.Helper()
-	return testwait.Receive(t, "SendWait's return", returned)
+	synctest.Wait()
+	select {
+	case err := <-returned:
+		return err
+	default:
+		t.Fatal("SendWait never returned")
+		return nil
+	}
 }
 
 // contextBoundSubscription relies on the socket's context alone, as a test of the socket's end: its
@@ -571,9 +600,9 @@ func TestASubscriptionsContextEndsWhenItsSocketEnds(t *testing.T) {
 	for name, end := range map[string]func(t *testing.T, rig *liveSocketRig, client *socketClient){
 		"the page closes it": func(t *testing.T, _ *liveSocketRig, client *socketClient) {
 			closing := gws.FormatCloseMessage(gws.CloseGoingAway, "")
-			// A zero deadline is none: the close frame's write waits for the connection alone, and
-			// the test binary's deadline bounds it.
-			if err := client.conn.WriteControl(gws.CloseMessage, closing, time.Time{}); err != nil {
+			// The close's write ends where the shared wait gives up (none under -timeout 0).
+			closeBy, _ := testwait.GiveUpAt(t)
+			if err := client.conn.WriteControl(gws.CloseMessage, closing, closeBy); err != nil {
 				t.Fatalf("the page's close: %v", err)
 			}
 		},

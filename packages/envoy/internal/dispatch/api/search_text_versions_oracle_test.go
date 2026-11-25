@@ -94,11 +94,11 @@ func (h *keywordHistory) keepInside(step string, backend int32) {
 
 // keepAt keeps a time as keep does while the transactions of the backends open may be open: a
 // time inside their window when open names any. Its wait for that moment has one bound, the test
-// binary's deadline (testwait.UntilPolling).
+// binary's deadline (testwait.Until).
 func (h *keywordHistory) keepAt(step string, open []int32) {
 	h.t.Helper()
 	var kept keptTime
-	testwait.UntilPolling(h.t, 20*time.Millisecond,
+	testwait.Until(h.t,
 		fmt.Sprintf("a moment after %s at which no other transaction of the database is open", step), func() (bool, bool) {
 			var quiet bool
 			kept, quiet = h.read(open)
@@ -458,11 +458,11 @@ func (h *keywordHistory) requireVersion(step string, key keywordItem, want func(
 }
 
 // keywordAwaitReach waits for the keyword table's reach to come to at, the latest time the test
-// reads the relation at. Its one bound is the test binary's deadline (testwait.UntilPolling),
+// reads the relation at. Its one bound is the test binary's deadline (testwait.Until),
 // whose failure prints the reach last read.
 func keywordAwaitReach(t *testing.T, database *store.Store, at time.Time) {
 	t.Helper()
-	testwait.UntilPolling(t, 100*time.Millisecond, "the keyword table's reach to come to the last kept time, "+at.Format(time.RFC3339Nano)+" (the reach last read)", func() (string, bool) {
+	testwait.Until(t, "the keyword table's reach to come to the last kept time, "+at.Format(time.RFC3339Nano)+" (the reach last read)", func() (string, bool) {
 		reach, reached, err := database.TextVersionsReach(t.Context())
 		if err != nil {
 			t.Fatalf("read the keyword table's reach: %v", err)

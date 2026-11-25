@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -179,7 +178,7 @@ func TestARestrictedMembersMachineLoginEnrollsNothing(t *testing.T) {
 		// person's failed read 2 s before it asks Dispatch again, so the release is asked until
 		// it is no longer refused 503.
 		dispatch.SetDown(false)
-		testwait.UntilPolling(t, 250*time.Millisecond, "the release of "+unaskedMember+"'s grant to stop being refused 503 once Dispatch answers", func() (int, bool) {
+		testwait.Until(t, "the release of "+unaskedMember+"'s grant to stop being refused 503 once Dispatch answers", func() (int, bool) {
 			status, _ := after.Session(t, sessionKey, enrollment, http.MethodPost, "/v1/grants/"+grant+"/values", nil)
 			return status, status != http.StatusServiceUnavailable
 		})

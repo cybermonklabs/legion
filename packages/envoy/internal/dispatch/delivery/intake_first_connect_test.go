@@ -2,24 +2,24 @@ package delivery
 
 import (
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // firstConnectNumber is the pull request the row below publishes once the first-connect callback
 // has landed. The number is this file's own, so the row's fetch count is its own message's.
 const firstConnectNumber = 7
-
-// firstConnectWithin bounds the row's waits: the take-over's bind, and the first-connect callback
-// running once the gate is open.
-const firstConnectWithin = 20 * time.Second
 
 // givingUpLines are the lines heldDurable writes when it stops delivering from a durable it
 // bound: a lost hold (run) and a durable that no longer delivers to it (check).
@@ -36,13 +36,16 @@ var givingUpLines = []string{intakeHoldLost, durableDeliversElsewhere}
 // The row makes that order happen on every run. The bus holds the first-connect callback
 // (bus.HoldFirstConnectForTest); the intake starts while its client is CONNECTED and still waiting
 // for the callback; the take-over's boundHook, which runs after the bind subscribed and created the
-// durable, opens the gate and waits until the callback has run. Two bind intervals later the
-// durable still delivers to the subject this intake bound, the hold is still this intake's, no line
-// says it stopped delivering, and a message published after the callback is handled by it.
+// durable, opens the gate and holds the take-over until the row has seen the callback run. Once
+// the run loop has checked the durable after the callback (its first check, intakeHoldRenew into
+// its run on the hold's clock), the durable still delivers to the subject this intake bound, the
+// hold is still this intake's, no line says it stopped delivering, and a message published after
+// the callback is handled by it.
 func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBind(t *testing.T) {
-	// The default logger, not the intake's: the row orders the bind against the bus client's own
-	// "envoy nats connected" line.
-	logs := captureLogs(t)
+	// The default logger, which this test's intakes write to as well (captureLogsFrom), from Debug
+	// up: the row orders the bind against the bus client's own "envoy nats connected" line, and
+	// reads the intake's numbered checks of its durable (DurableChecked).
+	logs := captureLogsFrom(t, slog.LevelDebug)
 	_, uri := testnats.Start(t)
 	// A client that connects in the foreground creates the stream before the intake's client
 	// exists: the intake's client ensures nothing until its held callback runs. It also reads the
@@ -57,7 +60,7 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	if err != nil {
 		t.Fatalf("connect the intake's client in the background: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	openGate := sync.OnceFunc(func() { close(gate) })
 	// After the client's Close in registration, so it runs first: a row that fails before the
 	// bind does not leave the callback held.
@@ -71,32 +74,34 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	seedDeliverySettings(t, ctx, pool)
 	fetches, github := countingGitHub(t)
 	intake := newIntake(tuningFor(t), client, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-	type firstBind struct {
-		subject string
-		landed  bool
-	}
-	bound := make(chan firstBind, 1)
+	// The run loop's checks of the durable and the hold's loss run on the hold's clock, a fake the
+	// row moves: the check after the callback comes when the row brings it.
+	checks := clocktest.New(time.Now())
+	intake.holdClock = checks
+	// The first bind's subject, sent from the run loop: boundHook runs there after the take-over
+	// set the subject, so it reads it there. Only the first bind is the row's, and only it waits
+	// for the row to have seen the callback run.
+	bound := make(chan string, 1)
+	landed := make(chan struct{})
+	letBindReturn := sync.OnceFunc(func() { close(landed) })
+	var firstBind sync.Once
 	intake.boundHook = func() {
-		openGate()
-		landed := testwait.Holds(firstConnectWithin, time.Millisecond, func() bool { return !client.AwaitingConnectionForTest() })
-		// boundHook runs on the run loop after the take-over set the subject, so it reads it
-		// there. Only the first bind is the row's.
-		select {
-		case bound <- firstBind{subject: intake.subject, landed: landed}:
-		default:
-		}
+		firstBind.Do(func() {
+			openGate()
+			bound <- intake.subject
+			<-landed
+		})
 	}
 	runIntake(t, intake)
+	// After runIntake in registration, so it runs before the intake's stop: a row that fails
+	// before the callback lands does not leave the take-over held.
+	t.Cleanup(letBindReturn)
 
-	var first firstBind
-	select {
-	case first = <-bound:
-	case <-time.After(firstConnectWithin):
-		t.Fatalf("the intake never bound its durable within %s; the messages logged were %q", firstConnectWithin, loggedMessages(logs()))
-	}
-	if !first.landed {
-		t.Fatalf("the first-connect callback did not run within %s of the gate opening inside the bind", firstConnectWithin)
-	}
+	firstSubject := testwait.Receive(t, "the intake to bind its durable", bound)
+	testwait.Eventually(t, "the first-connect callback to run once the gate opened inside the bind", func() bool {
+		return !client.AwaitingConnectionForTest()
+	})
+	letBindReturn()
 	boundAt, boundLogged := loggedAt(logs(), "dispatch delivery: NATS consumer bound")
 	connectedAt, connectedLogged := loggedAt(logs(), "envoy nats connected")
 	if !boundLogged || !connectedLogged || connectedAt.Before(boundAt) {
@@ -121,27 +126,49 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 		}
 	}
 
-	time.Sleep(2*durableBindInterval + 500*time.Millisecond)
-	keptTheDurable("two bind intervals after the callback")
+	// The run loop's first check of the durable, intakeHoldRenew into its run: the row brings it and
+	// waits for its line (DurableChecked), so a check that found the durable delivering elsewhere has
+	// logged its give-up by then. The move brings the hold's renewal too, which the row reads below
+	// as an expiry intakeHoldTTL past a statement that ran after renewing, a moment of the
+	// database's clock taken before the move: an expiry judged against the database's now() at the
+	// read would pass intakeHoldTTL after the renewal, however correct the hold.
+	renewing := testdb.ClockTimestamp(t, pool)
+	checks.Advance(intakeHoldRenew)
+	testwait.Until(t, "the run loop's first check of the durable after the callback", func() ([]map[string]any, bool) {
+		records := logs()
+		for _, record := range records {
+			if record["msg"] == DurableChecked && record["pass"] == float64(1) {
+				return records, true
+			}
+		}
+		return records, false
+	})
+	keptTheDurable("once the run loop had checked the durable after the callback")
 
 	info := deliveryConsumerInfo(t, observer)
-	if !info.PushBound || info.Config.DeliverSubject != first.subject {
-		t.Fatalf("two bind intervals after the callback the durable is push-bound = %t on %q, want bound on %q, the subject this intake bound; the messages logged were %q",
-			info.PushBound, info.Config.DeliverSubject, first.subject, loggedMessages(logs()))
+	if !info.PushBound || info.Config.DeliverSubject != firstSubject {
+		t.Fatalf("once the run loop had checked it after the callback the durable is push-bound = %t on %q, want bound on %q, the subject this intake bound; the messages logged were %q",
+			info.PushBound, info.Config.DeliverSubject, firstSubject, loggedMessages(logs()))
 	}
-	var holder, token string
-	var live bool
-	if err := pool.QueryRow(ctx, "select holder::text, token, expires_at > now() from duty_holds where name = $1",
-		intakeHoldName(bus.DispatchDeliveryDurable)).Scan(&holder, &token, &live); err != nil {
-		t.Fatalf("read the durable's hold: %v", err)
+	type holdRead struct {
+		holder, token string
+		renewed       bool
 	}
-	if holder != intake.holder.String() || !live || parseIntakeHoldToken(token).subject != first.subject {
-		t.Fatalf("the durable's hold names holder %s, live = %t, token %q; want this intake's %s, live, recording %q",
-			holder, live, token, intake.holder, first.subject)
+	hold := testwait.Until(t, "the durable's hold to be renewed by the move, after "+renewing.Format(time.RFC3339Nano), func() (holdRead, bool) {
+		var read holdRead
+		if err := pool.QueryRow(ctx, "select holder::text, token, expires_at - make_interval(secs => $2) >= $3 from duty_holds where name = $1",
+			intakeHoldName(bus.DispatchDeliveryDurable), intakeHoldTTL.Seconds(), renewing).Scan(&read.holder, &read.token, &read.renewed); err != nil {
+			t.Fatalf("read the durable's hold: %v", err)
+		}
+		return read, read.renewed
+	})
+	if hold.holder != intake.holder.String() || parseIntakeHoldToken(hold.token).subject != firstSubject {
+		t.Fatalf("the durable's hold names holder %s, renewed by the move, token %q; want this intake's %s, recording %q",
+			hold.holder, hold.token, intake.holder, firstSubject)
 	}
 
 	publishPullRequestEnvelope(t, observer, "acme", "widgets", firstConnectNumber, mergedPullRequest(firstConnectNumber))
-	waitFor(t, firstConnectWithin, func() bool { return fetches.Load() >= 1 }, func() string {
+	waitFor(t, func() bool { return fetches.Load() >= 1 }, func() string {
 		return fmt.Sprintf("the intake never handled pull request %d published after the callback; the messages logged were %q", firstConnectNumber, loggedMessages(logs()))
 	})
 	if !intakeHoldsSubscription(intake) {

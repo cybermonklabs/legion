@@ -1,8 +1,9 @@
 // Package docstest speaks the Hocuspocus websocket sync that docs.Service.ServeHTTP serves,
-// writes the deep trees a crafted client sends, builds the load harness's spec, and holds the
-// whole-view backlink count refs.BacklinkCounts is held to (ViewBacklinkCountSQL), for Dispatch
-// tests in more than one package. It is an ordinary package rather than a _test.go file because
-// api, docs, pmdoc and refs cannot import one another's test helpers, and it imports none of them.
+// writes the deep trees a crafted client sends, builds the load harness's spec, holds the
+// whole-view backlink count refs.BacklinkCounts is held to (ViewBacklinkCountSQL) and shuts a
+// document service down through the shared wait, for Dispatch tests in more than one package. It
+// is an ordinary package rather than a _test.go file because api, docs, pmdoc and refs cannot
+// import one another's test helpers, and it imports none of them.
 package docstest
 
 import (
@@ -25,6 +26,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The Hocuspocus message kinds a Peer reads and writes: the outer type after the document's name.
@@ -75,8 +77,6 @@ type Peer struct {
 	// awareness is every client the room has sent a state of, a client that left included, as
 	// y-protocols folds the updates (foldAwareness).
 	awareness map[uint64]AwarenessEntry
-	// awarenessChanged is closed, and replaced, each time awareness changes.
-	awarenessChanged chan struct{}
 	// clocks is the clock of the last state SetAwareness sent for each client.
 	clocks map[uint64]uint64
 	scope  string
@@ -108,31 +108,45 @@ type authReply struct {
 // schema_version, with header naming the caller, starts its reader, and asks the room for what doc
 // lacks. doc is the peer's copy of the document: a new one, or the copy a reconnecting browser
 // kept. The room's answer arrives on Answers. The connection closes when t ends. The handshake
-// carries no span of its own: its one bound is the test binary's deadline less dialMargin, so a
-// room a loaded machine answers late still opens the peer, and one that never answers fails the
-// test by name, as the deadline's error.
+// carries no span of its own: the dial runs on a goroutine of its own and the test waits for its
+// answer through the shared wait (testwait.Receive), so a room a loaded machine answers late still
+// opens the peer, and one that never answers fails the test at the give-up naming the room's answer
+// to the upgrade it waited for. The dial runs on a context t's cleanup cancels, which ends the
+// handshake (DialContext), and the cleanup waits for the dial to return and closes a peer it
+// opened that the test no longer waited for, so no dial outlives the test.
 func Dial(t testing.TB, url string, header http.Header, artifactID string, doc *crdt.Doc) *Peer {
 	t.Helper()
-	ctx := context.Background()
-	if test, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
-		if deadline, bounded := test.Deadline(); bounded {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithDeadline(ctx, deadline.Add(-dialMargin))
-			defer cancel()
+	type dialed struct {
+		peer *Peer
+		err  error
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	answered := make(chan dialed, 1)
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		peer, err := DialContext(ctx, url, header, artifactID, doc)
+		answered <- dialed{peer: peer, err: err}
+	}()
+	testcleanup.Add(t, func() {
+		stop()
+		<-returned
+		// An answer the test never took, its wait having given up first.
+		select {
+		case late := <-answered:
+			if late.peer != nil {
+				late.peer.Close()
+			}
+		default:
 		}
+	})
+	got := testwait.Receive(t, fmt.Sprintf("document %s's room to answer the upgrade of %s", artifactID, url), answered)
+	if got.err != nil {
+		t.Fatal(got.err)
 	}
-	peer, err := DialContext(ctx, url, header, artifactID, doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	testcleanup.Add(t, peer.Close)
-	return peer
+	testcleanup.Add(t, got.peer.Close)
+	return got.peer
 }
-
-// dialMargin is how long before the test binary's deadline Dial gives up on the handshake, the
-// margin testwait's waits leave: the time the failing test's cleanups and the failure itself have
-// to run in before go test's alarm.
-const dialMargin = 30 * time.Second
 
 // DialContext is Dial for a caller that is not a test, such as a load driver: ctx alone bounds the
 // connection's opening (gorilla's own 45 s handshake bound is dropped), a failure is returned, and
@@ -178,7 +192,7 @@ func DialContext(ctx context.Context, url string, header http.Header, artifactID
 	peer := &Peer{
 		Doc: doc, Answers: answers, Awareness: awareness, Ended: ended, UpgradeHeader: response.Header,
 		artifactID: artifactID, connection: connection, auth: make(chan authReply, 4),
-		awareness: make(map[uint64]AwarenessEntry), awarenessChanged: make(chan struct{}), clocks: make(map[uint64]uint64),
+		awareness: make(map[uint64]AwarenessEntry), clocks: make(map[uint64]uint64),
 	}
 	go func() {
 		peer.read(answers, awareness)
@@ -266,30 +280,27 @@ func (p *Peer) awarenessStatesLocked() map[uint64]json.RawMessage {
 	return states
 }
 
-// WaitForAwareness waits up to within for the awareness states the room has sent this peer
-// (AwarenessStates) to satisfy holds, which it calls each time they change. It fails naming the
-// states it last saw when they do not, or when the connection ends first.
-func (p *Peer) WaitForAwareness(within time.Duration, holds func(map[uint64]json.RawMessage) bool) error {
-	deadline := time.NewTimer(within)
-	defer deadline.Stop()
-	for {
-		p.mu.Lock()
-		states, changed := p.awarenessStatesLocked(), p.awarenessChanged
-		p.mu.Unlock()
-		if holds(states) {
-			return nil
-		}
+// WaitForAwareness waits, through the shared wait, for the awareness states the room has sent this
+// peer (AwarenessStates) to satisfy holds, and fails t naming the states it last read when they
+// never do. It returns an error naming them when the connection ends first.
+func (p *Peer) WaitForAwareness(t testing.TB, holds func(map[uint64]json.RawMessage) bool) error {
+	t.Helper()
+	var ended error
+	testwait.Until(t, "the awareness states the room sent the peer to hold what was awaited", func() (string, bool) {
 		select {
-		case <-changed:
 		case <-p.Ended:
-			if final := p.AwarenessStates(); holds(final) {
-				return nil
+			// The reader has stopped, so these states are the last.
+			final := p.AwarenessStates()
+			if !holds(final) {
+				ended = fmt.Errorf("the peer's connection closed before its awareness states held what was awaited; they hold %s", describeStates(final))
 			}
-			return fmt.Errorf("the peer's connection closed before its awareness states held what was awaited; they hold %s", describeStates(p.AwarenessStates()))
-		case <-deadline.C:
-			return fmt.Errorf("the peer's awareness states did not hold what was awaited within %v; they hold %s", within, describeStates(p.AwarenessStates()))
+			return describeStates(final), true
+		default:
 		}
-	}
+		states := p.AwarenessStates()
+		return describeStates(states), holds(states)
+	})
+	return ended
 }
 
 func describeStates(states map[uint64]json.RawMessage) string {
@@ -301,49 +312,83 @@ func describeStates(states map[uint64]json.RawMessage) string {
 }
 
 // WaitForText asks the room for its document until render, which renders the peer's copy, answers
-// want, and fails when it does not within that time or the connection ends first. render is the
-// caller's, since this package imports no document renderer (see the package comment).
-func (p *Peer) WaitForText(render func(*Peer) string, want string, within time.Duration) error {
-	deadline := time.NewTimer(within)
-	defer deadline.Stop()
-	for render(p) != want {
-		if err := p.AskForDocument(); err != nil {
-			return fmt.Errorf("ask the room for the document: %w", err)
+// want, asking again each time the room has answered. It waits through the shared wait, and fails
+// t naming the copy's last render when the room never sends want; it returns an error when the
+// connection ends first. render is the caller's, since this package imports no document renderer
+// (see the package comment).
+func (p *Peer) WaitForText(t testing.TB, render func(*Peer) string, want string) error {
+	t.Helper()
+	var failed error
+	got, asked := render(p), false
+	testwait.Until(t, fmt.Sprintf("the peer's copy of the document to render %q", want), func() (string, bool) {
+		select {
+		case <-p.Ended:
+			// The reader has stopped, so this render is the last.
+			if got = render(p); got != want {
+				failed = fmt.Errorf("the peer's connection closed before the room sent the document: its copy renders %q, want %q", got, want)
+			}
+			return got, true
+		default:
 		}
 		select {
 		case <-p.Answers:
-		case <-p.Ended:
-			return fmt.Errorf("the peer's connection closed before the room sent the document: its copy renders %q, want %q", render(p), want)
-		case <-deadline.C:
-			return fmt.Errorf("the peer's copy renders %q, want %q, after %v", render(p), want, within)
+			got, asked = render(p), false
+		default:
 		}
-	}
-	return nil
+		if got == want {
+			return got, true
+		}
+		if asked {
+			return got, false
+		}
+		if err := p.AskForDocument(); err != nil {
+			failed = fmt.Errorf("ask the room for the document: %w", err)
+			return got, true
+		}
+		asked = true
+		return got, false
+	})
+	return failed
 }
 
 // Authenticate sends the room token, as a Hocuspocus provider authenticates (the document room
-// reads it as the editor's schema version), and waits up to within for the answer: the scope the
-// room granted, "read-write" or "readonly", or an error naming its refusal.
-func (p *Peer) Authenticate(token string, within time.Duration) (string, error) {
+// reads it as the editor's schema version), and waits through the shared wait for the answer: the
+// scope the room granted, "read-write" or "readonly", or an error naming its refusal. It fails t
+// when the room never answers, and returns an error when the connection ends first.
+func (p *Peer) Authenticate(t testing.TB, token string) (string, error) {
+	t.Helper()
 	if err := p.writeFrame(messageAuth, func(encoder *encoding.Encoder) {
 		encoder.WriteVarUint(authToken)
 		encoder.WriteVarString(token)
 	}); err != nil {
 		return "", fmt.Errorf("send the auth token: %w", err)
 	}
-	deadline := time.NewTimer(within)
-	defer deadline.Stop()
-	select {
-	case reply := <-p.auth:
-		if !reply.granted {
-			return "", fmt.Errorf("the room refused the auth token: %s", reply.text)
+	var reply authReply
+	ended := false
+	testwait.Eventually(t, "the room's answer to the auth token", func() bool {
+		select {
+		case reply = <-p.auth:
+			return true
+		case <-p.Ended:
+			// The reader hands on every answer it read before it stops and Ended closes, so an
+			// answer the room sent before its close is taken here, not reported as the close.
+			select {
+			case reply = <-p.auth:
+			default:
+				ended = true
+			}
+			return true
+		default:
+			return false
 		}
-		return reply.text, nil
-	case <-p.Ended:
+	})
+	if ended {
 		return "", errors.New("the peer's connection closed before the room answered the auth token")
-	case <-deadline.C:
-		return "", fmt.Errorf("the room did not answer the auth token within %v", within)
 	}
+	if !reply.granted {
+		return "", fmt.Errorf("the room refused the auth token: %s", reply.text)
+	}
+	return reply.text, nil
 }
 
 // Scope is the scope the room's last authenticated answer granted, "read-write" or "readonly", or
@@ -505,18 +550,12 @@ func decodeAwareness(update []byte) ([]AwarenessEntry, error) {
 func (p *Peer) foldAwareness(entries []AwarenessEntry) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	changed := false
 	for _, entry := range entries {
 		current, known := p.awareness[entry.Client]
 		present := known && !current.Removed()
 		if current.Clock < entry.Clock || (current.Clock == entry.Clock && entry.Removed() && present) {
 			p.awareness[entry.Client] = entry
-			changed = true
 		}
-	}
-	if changed {
-		close(p.awarenessChanged)
-		p.awarenessChanged = make(chan struct{})
 	}
 }
 
@@ -568,4 +607,17 @@ func NestedLinkUpdate(t testing.TB, doc *crdt.Doc, nested any) []byte {
 		t.Fatal(err)
 	}
 	return update
+}
+
+// Shutdown shuts service, a docs.Service, down on ctx, as a test's cleanup does once the test is
+// over, and answers Shutdown's error. Shutdown joins the service's room workers, its settlements,
+// its evictions, its compaction worker and its awareness relay's sends, and the last of these
+// waits on no context, so the call runs through the shared wait: a join that never returns fails
+// the test naming the shutdown rather than hanging the binary to its timeout. The service is taken
+// by its method because this package imports no docs package (see the package comment).
+func Shutdown(t testing.TB, ctx context.Context, service interface{ Shutdown(context.Context) error }) error {
+	t.Helper()
+	var err error
+	testwait.Returns(t, "the document service's shutdown to return", func() { err = service.Shutdown(ctx) })
+	return err
 }

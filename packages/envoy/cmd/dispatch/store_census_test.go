@@ -33,8 +33,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,7 +48,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -63,6 +60,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testbaseline"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testtmp"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // censusSigningKey is the one DISPATCH_SIGNING_KEY every process of this run carries: the older
@@ -142,7 +140,10 @@ type inventoryRow struct {
 // answers agree and prove nothing either.
 func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	ctx := context.Background()
-	databaseURL := censusDatabase(t)
+	// The run's database is empty (storetest.Empty) and not storetest's clone of a migrated
+	// template, because the older build has to run its own migrations on it: a database already
+	// carrying this branch's schema would never prove that the migration kept what was there.
+	databaseURL := storetest.Empty(t)
 	older := baseBuild(t)
 
 	// ───── before the migration: the older build writes the rows ─────
@@ -152,13 +153,13 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	})
 	before.waitHealthy(t)
 	seeded := seedThroughTheOlderBuild(t, before)
-	waitForTheCensusDelivery(t, ctx, before, databaseURL)
+	waitForTheCensusDelivery(t, before, databaseURL)
 	inventory := readInventory(t, ctx, databaseURL)
 	keepInventory(t, inventory)
 	requireInventoryCarriesEveryKind(t, inventory)
 	sessions := readSessionInventory(t, ctx, databaseURL)
 	before.Cmd.Process.Signal(os.Interrupt)
-	<-before.Exited
+	before.WaitExit(t, "SIGINT")
 	requireTheSizingRunsBeforeTheMigration(t, databaseURL)
 
 	// ───── this build migrates the same database and backfills it ─────
@@ -168,7 +169,7 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	})
 	now.waitHealthy(t)
 	runBackfill(t, databaseURL)
-	waitForTheBlockIndex(t, ctx, databaseURL)
+	waitForTheBlockIndex(t, databaseURL)
 	addressTheRole(t, now, seeded.issue)
 	addressALongRole(t, now)
 	deleteABlockThroughThisBuild(t, ctx, now, databaseURL)
@@ -217,70 +218,6 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 }
 
 // ───── the database of this run's own ─────────────────────────────────────
-
-// censusDatabase creates an empty database on the test server for this run alone and answers its
-// URL. It is empty and not storetest's clone of a migrated template, because the older build has
-// to run its own migrations on it: a database already carrying this branch's schema would never
-// prove that the migration kept what was there.
-func censusDatabase(t *testing.T) string {
-	t.Helper()
-	raw := strings.TrimSpace(os.Getenv(storetest.DatabaseURLEnv))
-	if raw == "" {
-		t.Skipf("%s is unset", storetest.DatabaseURLEnv)
-	}
-	server, err := url.Parse(raw)
-	if err != nil {
-		t.Fatalf("read %s: %v", storetest.DatabaseURLEnv, err)
-	}
-	suffix := make([]byte, 6)
-	if _, err := rand.Read(suffix); err != nil {
-		t.Fatalf("name the census database: %v", err)
-	}
-	name := "dispatch_census_" + hex.EncodeToString(suffix)
-	admin := *server
-	admin.Path = "/postgres"
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, admin.String())
-	if err != nil {
-		t.Fatalf("connect to the test server: %v", err)
-	}
-	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
-		t.Fatalf("create the census database: %v", err)
-	}
-	t.Cleanup(func() { dropCensusDatabase(t, admin.String(), name) })
-	own := *server
-	own.Path = "/" + name
-	return own.String()
-}
-
-// dropCensusDatabase drops the run's database once every process on it has gone. Postgres tears a
-// backend down after its client has closed the socket, so a drop can find a connection that is on
-// its way out; it is tried again while Postgres answers object_in_use (55006), as storetest's own
-// drop is.
-func dropCensusDatabase(t *testing.T, adminURL, name string) {
-	t.Helper()
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, adminURL)
-	if err != nil {
-		t.Logf("drop the census database %s: connect: %v", name, err)
-		return
-	}
-	defer conn.Close(ctx)
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		_, err := conn.Exec(ctx, "drop database if exists "+name)
-		if err == nil {
-			return
-		}
-		var postgres *pgconn.PgError
-		if !errors.As(err, &postgres) || postgres.Code != "55006" || time.Now().After(deadline) {
-			t.Logf("drop the census database %s: %v", name, err)
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-}
 
 // censusConnect opens one connection to the run's database for a read of the test's own.
 func censusConnect(t *testing.T, ctx context.Context, databaseURL string) *pgx.Conn {
@@ -549,26 +486,21 @@ func seedCensusDelivery(t *testing.T, server *dispatchProcess, issue string) {
 }
 
 // waitForTheCensusDelivery waits until the older build has settled the attempt that delivered a
-// comment to censusReached sent.
-func waitForTheCensusDelivery(t *testing.T, ctx context.Context, server *dispatchProcess, databaseURL string) {
+// comment to censusReached sent. The wait is the shared wait: an attempt that never settles sent
+// fails the test naming the session, with the older build's output after it.
+func waitForTheCensusDelivery(t *testing.T, server *dispatchProcess, databaseURL string) {
 	t.Helper()
+	ctx := testwait.Context(t)
 	conn := censusConnect(t, ctx, databaseURL)
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("the older build to deliver the comment to %s, its attempt settled sent", censusReached), func() (withOutput[string], bool) {
 		var sent bool
 		if err := conn.QueryRow(ctx, `
 			select exists (select 1 from comment_deliveries where session_id = $1 and state = 'sent')
 		`, censusReached).Scan(&sent); err != nil {
 			t.Fatalf("read the delivery to %s: %v", censusReached, err)
 		}
-		if sent {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the older build did not deliver the comment to %s:\n%s", censusReached, server.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return readWith("no attempt to "+censusReached+" settled sent; the older build's output:", server.Output), sent
+	})
 }
 
 // censusListener is a stand-in Envoy listener for the older build: every session it is asked
@@ -752,28 +684,23 @@ func runBackfill(t *testing.T, databaseURL string) {
 // reconciliation states the part_of tuple, writes parent_block_id and clears the mark. The census
 // reads a difference on every backfilled block until that mark is drained, so this run waits for
 // it, and for every document owed a block index by a null version, rather than reading either as
-// a difference.
-func waitForTheBlockIndex(t *testing.T, ctx context.Context, databaseURL string) {
+// a difference. The wait is the shared wait: a mark that never drains fails the test naming how
+// many documents are still owed.
+func waitForTheBlockIndex(t *testing.T, databaseURL string) {
 	t.Helper()
+	ctx := testwait.Context(t)
 	conn := censusConnect(t, ctx, databaseURL)
-	deadline := time.Now().Add(3 * time.Minute)
-	ticks := 0
-	for {
+	reads := 0
+	testwait.Until(t, "the reconciliation to drain the owed mark the backfill left and index every document a null version owes", func() (string, bool) {
+		reads++
 		var owed int
 		if err := conn.QueryRow(ctx,
 			`select count(*) from document_block_versions where version is null or store_owed_at is not null`).Scan(&owed); err != nil {
 			t.Fatalf("read the documents owed a block index: %v", err)
 		}
-		if owed == 0 {
-			t.Logf("the reconciliation drained the owed mark after %d read(s)", ticks)
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d document(s) are still owed a block index", owed)
-		}
-		ticks++
-		time.Sleep(500 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d document(s) still owed a block index", owed), owed == 0
+	})
+	t.Logf("the reconciliation drained the owed mark after %d read(s)", reads)
 }
 
 // addressTheRole routes an issue to a role through this build and writes a comment on it, so the
@@ -813,13 +740,13 @@ func addressALongRole(t *testing.T, server *dispatchProcess) {
 // projected by one. The document is written here and not by the older build, because the edit
 // would otherwise move rows the inventory already holds.
 //
-// It waits for the block index to settle the edit and then reads the deletion back: a row of
-// document_blocks is gone and its node stands, held gone.
+// It waits for the block index to settle the edit and then reads the deletion back, through the
+// shared wait: a row of document_blocks is gone and its node stands, held gone.
 func deleteABlockThroughThisBuild(t *testing.T, ctx context.Context, server *dispatchProcess, databaseURL string) {
 	t.Helper()
 	_, artifact := createCensusIssue(t, server, "CENSUS", "The issue whose block is deleted",
 		"# Doomed\n\nThe block that stays.\n\n## Deleted\n\nThe block this run deletes.\n")
-	waitForTheBlockIndex(t, ctx, databaseURL)
+	waitForTheBlockIndex(t, databaseURL)
 	conn := censusConnect(t, ctx, databaseURL)
 	var before int
 	var block string
@@ -834,27 +761,21 @@ func deleteABlockThroughThisBuild(t *testing.T, ctx context.Context, server *dis
 	// the block that held it and leaves its row where it was.
 	server.call(t, http.MethodPost, "/api/v1/artifacts/"+artifact+"/edits",
 		`{"ops":[{"op":"delete","block":"`+block+`"}]}`, http.StatusOK)
-	waitForTheBlockIndex(t, ctx, databaseURL)
-	deadline := time.Now().Add(time.Minute)
-	for {
-		var after, gone int
-		if err := conn.QueryRow(ctx, `
+	waitForTheBlockIndex(t, databaseURL)
+	reading := testwait.Context(t)
+	var after, gone int
+	testwait.Until(t, fmt.Sprintf("the edit to delete a block row of %s and the store to hold its node gone: the run needs a deleted block", artifact), func() (withOutput[string], bool) {
+		if err := conn.QueryRow(reading, `
 			select (select count(*) from document_blocks where artifact_id = $1::uuid),
 			       (select count(*) from graph_nodes where kind = 'block' and state = 'gone')
 		`, artifact).Scan(&after, &gone); err != nil {
 			t.Fatalf("read the deletion back: %v", err)
 		}
-		if after < before && gone > 0 {
-			t.Logf("the edit deleted %d block row(s) of %s, and the store holds %d block node(s) gone",
-				before-after, artifact, gone)
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the edit left %d block rows (it found %d) and %d gone block node(s): the run needs a deleted block",
-				after, before, gone)
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
+		return readWith(fmt.Sprintf("the edit left %d block rows (it found %d) and %d gone block node(s); this build's output:", after, before, gone), server.Output),
+			after < before && gone > 0
+	})
+	t.Logf("the edit deleted %d block row(s) of %s, and the store holds %d block node(s) gone",
+		before-after, artifact, gone)
 }
 
 // ───── the two comparisons ────────────────────────────────────────────────

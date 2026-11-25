@@ -269,7 +269,7 @@ func TestGoingRunStillAnsweringAtTheDeleteSlipsNoFramePastIt(t *testing.T) {
 		rig.handler.ServeHTTP(sink, request)
 	}()
 	const first = "id: 1\nevent: text\ndata: {\"text\":\"Before the delete, \"}\n\n"
-	waitUntil(t, "the open stream writing the answer's first frame", func() bool {
+	testwait.Eventually(t, "the open stream writing the answer's first frame", func() bool {
 		return sink.text() == first
 	})
 

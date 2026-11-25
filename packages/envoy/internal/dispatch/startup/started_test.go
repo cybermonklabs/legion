@@ -11,20 +11,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // The two builds the fleet rolls between, and the relation kinds each writes as tuples: the two
 // lists differ, so an announcement naming one build with the other's kinds is told apart.
@@ -269,6 +274,43 @@ func TestTheFleetsBuildIsAnnouncedOnceEachTimeItChanges(t *testing.T) {
 	requireFleetCommit(t, onC1, c1)
 }
 
+// An Announcer writes AnnouncerPassed at Debug for each pass, numbered from 1 in its life, with
+// what the pass found and the fleet's commit as the pass left it, so a test that runs the real
+// binary counts a process's passes from its log: the announcer serves c1, the build of the one
+// live process, so its first pass announces c1 and publishes it, and the second finds nothing
+// unpublished.
+func TestAnAnnouncerLogsEachPassAtDebug(t *testing.T) {
+	var logged logtest.Buffer
+	logtest.SetDefault(t, slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	database := storetest.Open(t)
+	announcer := New(serving(database.Pool, &recordingPublisher{}, c1))
+	register(t, database, c1)
+	announcer.pass(context.Background())
+	announcer.pass(context.Background())
+
+	var passes []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+		var record map[string]any
+		if json.Unmarshal([]byte(line), &record) == nil && record["msg"] == AnnouncerPassed {
+			passes = append(passes, record)
+		}
+	}
+	want := []map[string]any{
+		{"level": "DEBUG", "pass": float64(1), "found": passPublished, "fleet": c1},
+		{"level": "DEBUG", "pass": float64(2), "found": passNothingUnpublished, "fleet": c1},
+	}
+	if len(passes) != len(want) {
+		t.Fatalf("the announcer logged %d passes, want %d: %v", len(passes), len(want), passes)
+	}
+	for i, fields := range want {
+		for key, value := range fields {
+			if passes[i][key] != value {
+				t.Fatalf("the announcer logged pass %d as %v, want %s = %v", i+1, passes[i], key, value)
+			}
+		}
+	}
+}
+
 // A build nothing stamped names nothing, so a fleet any of whose live processes carries no commit
 // is never announced: not alone, and not beside a stamped one.
 func TestAnUnstampedBuildIsNeverAnnounced(t *testing.T) {
@@ -304,8 +346,7 @@ func TestTwoAnnouncersAtOnceAnnounceAndPublishOnce(t *testing.T) {
 	}
 	// Ends the passes only if a regression keeps them from ever overlapping the publish: a pass
 	// takes milliseconds, and the overlap comes within a few of them.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	start := make(chan struct{})
 	finished := make(chan struct{}, len(announcers))
 	var passes sync.WaitGroup
@@ -330,9 +371,9 @@ func TestTwoAnnouncersAtOnceAnnounceAndPublishOnce(t *testing.T) {
 	close(start)
 	// The first process to finish is not the one whose publish is held, so it has passed while
 	// that publish was in flight.
-	<-finished
+	testwait.Receive(t, "the first process to finish its passes", finished)
 	publisher.release()
-	passes.Wait()
+	testwait.Returns(t, "both processes' passes to return once the held publish was released", passes.Wait)
 	if err := ctx.Err(); err != nil {
 		t.Errorf("the passes ran until the bound ended them, so no process finished passing while the other's publish was held: %v", err)
 	}
@@ -379,17 +420,34 @@ func TestAnAnnouncementIsPublishedOnceAPublishSucceeds(t *testing.T) {
 // of it runs on once its pass has given up and moved on: the announcement stays unpublished, and
 // a later pass whose publish answers publishes it.
 func TestAPublishThatOutlivesItsBoundIsAbandoned(t *testing.T) {
-	before := publishTimeout
-	publishTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { publishTimeout = before })
 	database := storetest.Open(t)
 	register(t, database, c1)
 	ctx := context.Background()
 
 	publisher := &recordingPublisher{}
 	publisher.hang(true)
-	announcer := New(serving(database.Pool, publisher, c1))
-	announcer.pass(ctx)
+	// Every bound of the pass runs on this clock, which stands until the test moves it: the
+	// publish is abandoned where the test moves it past publishTimeout and nowhere else.
+	fake := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
+	deps := serving(database.Pool, publisher, c1)
+	deps.Clock = fake
+	announcer := New(deps)
+	began := fake.Now()
+	passed := make(chan struct{})
+	go func() {
+		defer close(passed)
+		announcer.pass(ctx)
+	}()
+	// The announce's bound ends with its transaction, before the publishing transaction arms its
+	// own and the publish its own, so two armed bounds are those two.
+	armed := fake.AwaitArmed(t, "the publish's bound beside its transaction's", 2)
+	publishBound, passBound := began.Add(publishTimeout), began.Add(publishPassTimeout)
+	if len(armed) != 2 || !armed[0].Equal(publishBound) || !armed[1].Equal(passBound) {
+		t.Fatalf("the pass armed %v, want the publish's bound at %s and its transaction's at %s, publishTimeout and publishPassTimeout from the pass's start, and nothing else",
+			armed, publishBound, passBound)
+	}
+	fake.Set(armed[0])
+	testwait.Receive(t, "the pass to end once the publish outlived its bound", passed)
 	if running := publisher.inFlight(); running != 0 {
 		t.Fatalf("%d publishes still running after the pass that gave up on them", running)
 	}

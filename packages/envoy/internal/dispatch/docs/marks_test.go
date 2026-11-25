@@ -15,6 +15,8 @@ import (
 	"github.com/reearth/ygo/crdt"
 	ygws "github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -85,76 +87,111 @@ func TestMarkQuoteJoinsTheCallerTransaction(t *testing.T) {
 	}
 }
 
+// VerifyMark's wait for a mark runs on the service's clock (markWait, Deps.Clock), a fake here that
+// moves only as the test moves it: a mark the browser writes while the wait is armed is found
+// before the fake moves at all, and a mark that never comes is refused only once the fake passes
+// the wait's deadline, MarkWait after it was armed.
 func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 	t.Parallel()
+	const markWait = 300 * time.Millisecond
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := New(Deps{
 		Store:    database,
 		Events:   events.NewBroker(),
 		Settle:   time.Hour,
-		MarkWait: 300 * time.Millisecond,
+		MarkWait: markWait,
+		Clock:    fake,
 	})
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		browserMark(t, service, artifactID, "proofComment", "b1", "brown")
-	}()
-	anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "b1")
-	if err != nil || anchored.Quote != "brown" {
-		t.Fatalf("VerifyMark = %q, %v", anchored.Quote, err)
+	type verified struct {
+		anchored Anchored
+		err      error
+	}
+	verify := func(id string) <-chan verified {
+		done := make(chan verified, 1)
+		go func() {
+			anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, id)
+			done <- verified{anchored: anchored, err: err}
+		}()
+		return done
+	}
+	awaitMarkWait := func(what string) {
+		t.Helper()
+		fake.AwaitArmedAt(t, what+": VerifyMark's wait", fake.Now().Add(markWait))
 	}
 
-	started := time.Now()
-	if _, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "never"); !errors.Is(err, ErrAnchorMissing) {
-		t.Fatalf("missing mark err = %v", err)
+	found := verify("b1")
+	awaitMarkWait("the wait for b1")
+	browserMark(t, service, artifactID, "proofComment", "b1", "brown")
+	if got := testwait.Receive(t, "VerifyMark to find the mark the browser wrote while it waited", found); got.err != nil || got.anchored.Quote != "brown" {
+		t.Fatalf("VerifyMark = %q, %v", got.anchored.Quote, got.err)
 	}
-	if waited := time.Since(started); waited < 250*time.Millisecond || waited > time.Second {
-		t.Fatalf("waited %v, want approximately MarkWait", waited)
+
+	missing := verify("never")
+	awaitMarkWait("the wait for a mark that never comes")
+	select {
+	case got := <-missing:
+		t.Fatalf("VerifyMark of a missing mark returned (%v) before its wait's deadline", got.err)
+	default:
+	}
+	fake.Advance(markWait)
+	if got := testwait.Receive(t, "VerifyMark of a missing mark to return once its wait's deadline passed", missing); !errors.Is(got.err, ErrAnchorMissing) {
+		t.Fatalf("missing mark err = %v", got.err)
 	}
 }
 
 // Two processes serving one document can have one evict the room instance a verification
 // subscribed to, so no update of that instance ever announces the mark the browser writes next.
 // The wait ends with a read of the document as it then is, which finds the mark, rather than
-// refusing an anchor the document holds.
+// refusing an anchor the document holds. The wait runs on a fake clock: the mark is written once
+// the verification's first read has found nothing and its wait is armed, and the wait ends only
+// as the test moves the fake past it.
 func TestVerifyMarkReadsTheDocumentAgainWhenItsWaitEnds(t *testing.T) {
 	t.Parallel()
+	const markWait = 300 * time.Millisecond
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := New(Deps{
 		Store:    database,
 		Events:   events.NewBroker(),
 		Settle:   time.Hour,
-		MarkWait: 300 * time.Millisecond,
+		MarkWait: markWait,
+		Clock:    fake,
 	})
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
-	written := make(chan struct{})
 	var replaced atomic.Int32
 	service.afterReadWarm = func(room string) {
 		if room != artifactID || !replaced.CompareAndSwap(0, 1) {
 			return
 		}
 		// The verification subscribes to this instance as the hook returns, so evicting it here
-		// leaves the mark to land in the instance that replaces it, announced to nobody. The
-		// write waits out the verification's first read, which must find nothing.
+		// leaves the mark to land in the instance that replaces it, announced to nobody.
 		if err := service.Evict(context.Background(), room); err != nil {
 			t.Errorf("evict the warm room: %v", err)
 		}
-		go func() {
-			defer close(written)
-			time.Sleep(100 * time.Millisecond)
-			browserMark(t, service, artifactID, "proofComment", "b1", "brown")
-		}()
 	}
-	anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "b1")
-	<-written
-	if err != nil || anchored.Quote != "brown" {
-		t.Fatalf("VerifyMark of a mark written into the room that replaced the subscribed one = %q, %v, want brown", anchored.Quote, err)
+	type verified struct {
+		anchored Anchored
+		err      error
+	}
+	done := make(chan verified, 1)
+	go func() {
+		anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "b1")
+		done <- verified{anchored: anchored, err: err}
+	}()
+	fake.AwaitArmedAt(t, "VerifyMark's wait, its first read having found nothing,", fake.Now().Add(markWait))
+	browserMark(t, service, artifactID, "proofComment", "b1", "brown")
+	fake.Advance(markWait)
+	got := testwait.Receive(t, "VerifyMark to return once its wait's deadline passed", done)
+	if got.err != nil || got.anchored.Quote != "brown" {
+		t.Fatalf("VerifyMark of a mark written into the room that replaced the subscribed one = %q, %v, want brown", got.anchored.Quote, got.err)
 	}
 }
 
@@ -211,7 +248,7 @@ func TestSuggestionKindReadsBrowserMark(t *testing.T) {
 func TestAcceptSuggestionReplacesMarkedTextAndRemovesTheMark(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 	spec := MarkSpec{Kind: MarkSuggestion, ID: "s1", By: model.Actor{Kind: "session", ID: "s1"}}
 	if _, err := joinedMarkQuote(service, artifactID, spec, "brown", nil); err != nil {
@@ -236,7 +273,7 @@ func TestAcceptSuggestionReplacesMarkedTextAndRemovesTheMark(t *testing.T) {
 func TestEditsBesideAPlainWebAddressInTheirParagraphAreAccepted(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "Placeholder.\n")
 	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 		tree.Children[0].Children = []*pmdoc.Node{{Type: "text", Text: "The quick fox x;https://x.test jumps over the lazy dog"}}
@@ -264,7 +301,7 @@ func TestEditsBesideAPlainWebAddressInTheirParagraphAreAccepted(t *testing.T) {
 func TestRejectSuggestionInCodeGivesBackTheCode(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, ":::callout{#c1 kind=\"note\" title=\"T\"}\n```\nabc added\n```\n:::\n")
 	browserMarkWithAttrs(t, service, artifactID, "proofSuggestion", " added", pmdoc.Attrs{
 		"id": "ins", "by": "user:bob", "kind": "insert",
@@ -308,7 +345,7 @@ func TestRejectSuggestionDeletesTheInsertsText(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, test.spec)
 			for _, run := range test.runs {
 				browserMarkWithAttrs(t, service, artifactID, "proofSuggestion", run, pmdoc.Attrs{
@@ -356,7 +393,7 @@ func TestRejectSuggestionRefusesARemovalTheDocumentCannotHold(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, test.spec)
 			runs := test.runs
 			if runs == nil {
@@ -386,7 +423,7 @@ func TestRejectSuggestionRefusesARemovalTheDocumentCannotHold(t *testing.T) {
 func TestRejectSuggestionIsKindAware(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "keep this and drop that")
 	if _, err := joinedMarkQuote(service, artifactID, MarkSpec{
 		Kind: MarkSuggestion,
@@ -521,13 +558,13 @@ func newUnrecordedMarkService(t *testing.T) (*Service, string, func(age time.Dur
 	service := New(Deps{
 		Store:             database,
 		Events:            events.NewBroker(),
-		Settle:            time.Hour,
+		Settle:            stagedAhead,
 		UnrecordedMarkTTL: markSweepTTL,
 	})
 	started := time.Now()
 	var aged atomic.Int64
 	service.now = func() time.Time { return started.Add(time.Duration(aged.Load())) }
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	return service, artifactID, func(age time.Duration) { aged.Store(int64(age)) }
 }
 
@@ -740,13 +777,13 @@ func TestSettleKeepsTheAnchoredMarkOfAnAskThatAlsoNamesABlock(t *testing.T) {
 	service := New(Deps{
 		Store:             database,
 		Events:            events.NewBroker(),
-		Settle:            time.Hour,
+		Settle:            stagedAhead,
 		UnrecordedMarkTTL: ttl,
 	})
 	started := time.Now()
 	var aged atomic.Int64
 	service.now = func() time.Time { return started.Add(time.Duration(aged.Load())) }
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, documentA, "The quick brown fox")
 	seedServiceText(t, service, documentB, "The quick brown fox")
 	askID := insertAnchoredAsk(t, service, documentA, "brown")
@@ -795,7 +832,7 @@ func TestCompactionRetainsContentClassificationAcrossMarkUpdates(t *testing.T) {
 	for _, keep := range []int{1, 500} {
 		t.Run(fmt.Sprintf("keep_%d", keep), func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "before")
 			if _, err := joinedReplaceText(service, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 				t.Fatalf("write content update: %v", err)
@@ -826,7 +863,7 @@ func TestCompactionRetainsContentClassificationAcrossMarkUpdates(t *testing.T) {
 func TestCompactionDoesNotCarryCoveredContentClassificationPastCursor(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "| header |\n| :--- |\n| `one\\|two` |\n")
 	if _, err := service.store.Pool.Exec(context.Background(), `
 		update artifact_versions set markdown = $2 where artifact_id = $1 and number = 1
@@ -856,7 +893,7 @@ func TestCompactionDoesNotCarryCoveredContentClassificationPastCursor(t *testing
 func TestCompactionRetainsUncoveredContentBeyondVersionCursor(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	alignLatestVersionWithUpdates(t, service, artifactID)
 	for index := range 2 {
@@ -933,7 +970,7 @@ func TestProjectMarkRearmsPendingSettlement(t *testing.T) {
 func TestTransactionalMarkWritesSettleWithoutAVersion(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 	alignLatestVersionWithUpdates(t, service, artifactID)
 	tx, err := service.store.Pool.Begin(context.Background())
@@ -1025,7 +1062,7 @@ func TestAReplaceKeepsTheAnchorOverItsWholeCurrentExtent(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, text)
 			askID := insertAnchoredAsk(t, service, artifactID, quote)
 			commentID := insertAnchoredComment(t, service, artifactID, quote)
@@ -1069,7 +1106,7 @@ func TestAReplaceKeepsTheAnchorOverItsWholeCurrentExtent(t *testing.T) {
 func TestAnAcceptedSuggestionStaysInsideTheCommentAroundIt(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox jumps over the lazy dog")
 	commentID := insertAnchoredComment(t, service, artifactID, "quick brown fox jumps")
 	if _, err := joinedMarkQuote(service, artifactID, MarkSpec{
@@ -1095,7 +1132,7 @@ func TestAnAcceptedSuggestionStaysInsideTheCommentAroundIt(t *testing.T) {
 func TestAcceptingOneOfTwoSuggestionsOverAWordKeepsTheOther(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 	for _, id := range []string{"earlier", "later"} {
 		if _, err := joinedMarkQuote(service, artifactID, MarkSpec{
@@ -1209,15 +1246,18 @@ func loadAnchor(t *testing.T, service *Service, table, id string) storedAnchor {
 }
 
 // waitForPersistedUpdates waits for every update the live document has queued to reach
-// doc_updates, then checks that at least want rows landed. It waits on the room's idle signal
-// (awaitRoomAppends), which each append wakes, and sets no span of its own: the drain takes as
-// long as the machine needs - it runs at roughly a hundred appends a second, so five hundred
-// marks is seconds of work on an idle box and longer on a loaded one - while appends that have
-// stopped, or a run whose own deadline is at hand, still fail by name (docs/testing.md, "A
-// document test that waits for a room's appends").
+// doc_updates, then checks that at least want rows landed. The service counts its own queue
+// (durableAppends, decremented after each append commits), so this waits on that signal rather
+// than polling the row count against a stopwatch: the drain takes as long as the machine needs -
+// it runs at roughly a hundred appends a second, so five hundred marks is seconds of work on an
+// idle box and longer on a loaded one - while a drain that never finishes still fails, on the
+// shared wait's context (testwait.Context) rather than on how busy the box was.
 func waitForPersistedUpdates(t *testing.T, service *Service, artifactID string, want int) {
 	t.Helper()
-	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
+	ctx := testwait.Context(t)
+	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
+		t.Fatalf("waiting for queued document updates to persist: %v", err)
+	}
 	var count int
 	if err := service.store.Pool.QueryRow(context.Background(),
 		`select count(*) from doc_updates where artifact_id = $1`, artifactID).Scan(&count); err != nil {
@@ -1228,9 +1268,10 @@ func waitForPersistedUpdates(t *testing.T, service *Service, artifactID string, 
 	}
 }
 
-func waitFor(t *testing.T, timeout time.Duration, description string, condition func() bool) {
+// waitFor waits through the shared wait until condition holds, failing the test naming what.
+func waitFor(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, timeout, 5*time.Millisecond, description, condition)
+	testwait.Eventually(t, what, condition)
 }
 
 // askTree parses markdown and gives its ask blocks the ids named, in document order, repeats
@@ -1338,7 +1379,7 @@ func repeatLiveBlockID(t *testing.T, service *Service, artifactID string) {
 func TestAcceptSuggestionBesideABlockTheParserAlreadyRefuses(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "- Lead.\n\n  :::callout{#c1 kind=\"note\" title=\"T\"}\n  Gone.\n  :::\n\nIntro.\n\nBody.\n\nAfter.\n")
 	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 		pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
@@ -1375,7 +1416,7 @@ func TestAcceptSuggestionBesideABlockTheParserAlreadyRefuses(t *testing.T) {
 func TestAcceptSuggestionInAFootnoteDefinitionWhoseReferenceIsGone(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "Intro[^1].\n\n[^1]: Body.\n")
 	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 		intro := tree.Children[0]
@@ -1428,7 +1469,7 @@ func TestAcceptSuggestionLeavesCodeItDoesNotWrite(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, test.spec)
 			editLiveTree(t, service, artifactID, codeWithMarkedBreak(test.code))
 			spec := MarkSpec{Kind: MarkSuggestion, ID: "s1", By: model.Actor{Kind: "session", ID: "s1"}}
@@ -1450,7 +1491,7 @@ func TestAcceptSuggestionLeavesCodeItDoesNotWrite(t *testing.T) {
 func TestAcceptSuggestionLeavesASiblingItemsSpread(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "- Body.\n- two\n")
 	sibling := func(tree *pmdoc.Node) *pmdoc.Node {
 		var found *pmdoc.Node
@@ -1502,7 +1543,7 @@ func TestAcceptSuggestionRefusesCodeWithAPipeAfterABackslashInATableCell(t *test
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "| Cmd | Note |\n| --- | --- |\n| run | Body. |\n")
 			if test.browser {
 				editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
@@ -1598,7 +1639,7 @@ func TestWritesBesideALiveRepeatedBlockIDAreTaken(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, seed)
 			repeatLiveBlockID(t, service, artifactID)
 			before, err := service.Text(context.Background(), artifactID)
@@ -1726,7 +1767,7 @@ func refreshedAnchor(t *testing.T, event model.Event) (string, model.Anchor) {
 func TestRefreshAnchorsRefreshesEveryRowSharingAMark(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 	if _, err := joinedMarkQuote(service, artifactID, MarkSpec{
 		Kind: MarkComment, ID: "shared", By: model.Actor{Kind: "user", ID: "alice"},
@@ -1764,7 +1805,7 @@ func TestAcceptSuggestionSkipsItsMarkIDForRowsOfEveryType(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
 	// No settlement may run: it refreshes without the accept's skip.
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox jumps")
 	by := model.Actor{Kind: "session", ID: "s1"}
 	// The ask's mark shares the suggestion's id, so the ask row would read "quick" if refreshed.
@@ -1813,7 +1854,7 @@ func TestAcceptSuggestionSkipsItsMarkIDForRowsOfEveryType(t *testing.T) {
 func TestRefreshAnchorsFollowsAMarkRemovedRestoredAndRemovedAgain(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 	if _, err := joinedMarkQuote(service, artifactID, MarkSpec{
 		Kind: MarkComment, ID: "c1", By: model.Actor{Kind: "user", ID: "alice"},
@@ -1870,7 +1911,7 @@ func TestRefreshAnchorsFollowsAMarkRemovedRestoredAndRemovedAgain(t *testing.T) 
 func TestRefreshAnchorsAnnouncesEveryKindInRowOrder(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "alpha bravo charlie delta echo")
 	rows := []struct{ kind, id, quote string }{
 		{"suggestion", "00000000-0000-4000-8000-0000000000d1", "echo"},
@@ -1982,7 +2023,7 @@ func TestMarkQuoteReturnsTheWrittenMarksAnchor(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, test.text)
 			spec := MarkSpec{Kind: MarkComment, ID: "c1", By: model.Actor{Kind: "user", ID: "alice"}}
 			anchored, err := joinedMarkQuote(service, artifactID, spec, test.quote, nil)

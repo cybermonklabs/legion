@@ -13,6 +13,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -20,7 +21,23 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// stagedAhead is how far past the database's now() a row of this package stages a time the
+// service judges against the database's clock: a notice's quiet time, an issue's close the store's
+// close margin is read against, or a process's heartbeat (fleetProcess). It is also the age a row
+// passes the settlement resumption (resumeOwedSettlements), which takes only a pending settlement
+// marked that long before the database's now(), so one the row marked reads as too young however
+// long the row takes. And it is how long a row sets a delay of the service's own on the real clock
+// that must not run out inside the row: a settle delay (Deps.Settle) no timer may run before the
+// row settles the document itself, a settle timer a row arms itself (roomstate_lifecycle_test.go's
+// "armed settlement timer"), and the idle time ygo's sweep retires a room after
+// (RoomIdleTimeout). It is staged state for the product's clock, not a wait: longer than any
+// `go test -timeout` CI gives this package (80 minutes in docs's race lane), so what the row
+// staged reads as not yet passed however long the run takes, where the production thirty seconds
+// or a minute would pass on a loaded machine.
+const stagedAhead = 24 * time.Hour
 
 // editNoticeRow is a document's pending edit notice as document_edit_notices holds it, with the
 // database's own now() at the read beside its due time.
@@ -59,12 +76,18 @@ func readEditNotice(t *testing.T, service *Service, artifactID string) (editNoti
 	return row, true
 }
 
-// requireDueWithin requires the notice to be due quiet after the database's now() at the read,
-// within slack: the settlement that wrote it set due_at to now() + quiet a moment before.
-func requireDueWithin(t *testing.T, row editNoticeRow, quiet, slack time.Duration) {
+// requireDueQuietAfterItsWrite requires the notice to be due quiet after the moment the settlement
+// wrote it (openEditNotice's clock_timestamp()), read from the database's own stamps on either
+// side of that write: the created_at of the version it names, its transaction's start, before
+// it, and the database's now() at the read after it. Neither is a moment of the test's, so
+// however long the machine took between the write and the read, a notice due quiet after its
+// write passes, and one due before or after that does not.
+func requireDueQuietAfterItsWrite(t *testing.T, service *Service, artifactID string, row editNoticeRow, quiet time.Duration) {
 	t.Helper()
-	if gap := row.dueAt.Sub(row.now); gap > quiet || gap < quiet-slack {
-		t.Fatalf("the notice is due %v after the read, want within %v of %v", gap, slack, quiet)
+	began := versionCreatedAt(t, service.store, artifactID, row.to)
+	if written := row.dueAt.Add(-quiet); written.Before(began) || written.After(row.now) {
+		t.Fatalf("the notice is due at %v, %v after %v; want %v after a moment between its settlement's transaction start %v and the read %v",
+			row.dueAt, quiet, written, quiet, began, row.now)
 	}
 }
 
@@ -75,7 +98,7 @@ func requireDueWithin(t *testing.T, row editNoticeRow, quiet, slack time.Duratio
 func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	service.editNoticeQuiet = 30 * time.Second
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
@@ -98,7 +121,7 @@ func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 	if row.from != first-1 || row.to != first || !slices.Equal(row.editors, []string{alice.ID}) || row.lastEditor != alice {
 		t.Fatalf("notice after alice = from %d to %d editors %v last %+v, want from %d to %d naming alice", row.from, row.to, row.editors, row.lastEditor, first-1, first)
 	}
-	requireDueWithin(t, row, 30*time.Second, 2*time.Second)
+	requireDueQuietAfterItsWrite(t, service, artifactID, row, 30*time.Second)
 
 	bob := model.Actor{Kind: "user", ID: "bob@example.com"}
 	editAsConnectedPeer(t, service, artifactID, 2, bob, replaceRun("Second.", "Second, edited."))
@@ -114,7 +137,7 @@ func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 	if extended.from != first-1 || extended.to != second || !slices.Equal(extended.editors, []string{alice.ID, bob.ID}) || extended.lastEditor != bob {
 		t.Fatalf("notice after bob = from %d to %d editors %v last %+v, want from %d to %d naming alice and bob, bob last", extended.from, extended.to, extended.editors, extended.lastEditor, first-1, second)
 	}
-	requireDueWithin(t, extended, 30*time.Second, 2*time.Second)
+	requireDueQuietAfterItsWrite(t, service, artifactID, extended, 30*time.Second)
 	if !extended.dueAt.After(row.dueAt) {
 		t.Fatalf("bob's edit left the notice due at %v, want after alice's %v", extended.dueAt, row.dueAt)
 	}
@@ -126,7 +149,7 @@ func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 func TestEditNoticeNamesThePersonWhoEditedLast(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
@@ -144,30 +167,31 @@ func TestEditNoticeNamesThePersonWhoEditedLast(t *testing.T) {
 }
 
 // The quiet window starts when the settlement writes the notice, not when its transaction began:
-// a settlement that waited on its locks longer than the quiet time still commits a notice that is
-// not due yet, so the card never goes out before the document has been quiet that long.
+// a settlement that waited on its locks writes a window that still has its whole quiet time to
+// run, so the card never goes out before the document has been quiet that long. The quiet time is
+// stagedAhead here, so the notice is still inside it at the read and at the sweep however long the
+// row takes to reach them.
 func TestEditNoticeQuietStartsWhenTheNoticeIsWrittenNotWhenItsTransactionBegan(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
-	service.editNoticeQuiet = 500 * time.Millisecond
+	service.settle = stagedAhead
+	service.editNoticeQuiet = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	editAsConnectedPeer(t, service, artifactID, 1, alice, replaceRun("First.", "First, edited."))
-	service.afterSettleVersionWrite = func(room string) error {
-		if room == artifactID {
-			// The settlement's transaction began before this wait, as it begins before the owner
-			// and advisory locks a busy document makes it wait on.
-			time.Sleep(time.Second)
-		}
-		return nil
-	}
 	settleCurrentGeneration(t, service, artifactID)
-	service.afterSettleVersionWrite = nil
 	row, open := readEditNotice(t, service, artifactID)
 	if !open {
 		t.Fatal("alice's settled edit opened no edit notice")
+	}
+	// The version's created_at is the settlement's transaction start (now()), taken before the
+	// owner and advisory locks a busy document makes the writer wait on; the notice is written
+	// later in that transaction, so a window counted from the write is due strictly later than one
+	// counted from the start, however long the locks held the settlement up.
+	began := versionCreatedAt(t, service.store, artifactID, row.to)
+	if written := row.dueAt.Sub(began); written <= service.editNoticeQuiet {
+		t.Fatalf("the notice is due %v after its settlement's transaction began, want more than the quiet window %v: the window starts when the notice is written", written, service.editNoticeQuiet)
 	}
 	if !row.dueAt.After(row.now) {
 		t.Fatalf("the notice was due at %v, %v before it could be read, want it still inside its quiet window", row.dueAt, row.now.Sub(row.dueAt))
@@ -177,12 +201,25 @@ func TestEditNoticeQuietStartsWhenTheNoticeIsWrittenNotWhenItsTransactionBegan(t
 	}
 }
 
+// versionCreatedAt is when version number of document was stored, the now() of the transaction
+// that wrote it.
+func versionCreatedAt(t *testing.T, database *store.Store, document string, number int) time.Time {
+	t.Helper()
+	var created time.Time
+	if err := database.Pool.QueryRow(context.Background(),
+		`select created_at from artifact_versions where artifact_id = $1 and number = $2`, document, number,
+	).Scan(&created); err != nil {
+		t.Fatalf("read when version %d was stored: %v", number, err)
+	}
+	return created
+}
+
 // A named version an agent writes over two people's edits names the person who edited last as the
 // notice's last editor, not the one whose id sorts last.
 func TestEditNoticeAnAgentsNamedVersionNamesThePersonWhoEditedLast(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
@@ -204,7 +241,7 @@ func TestEditNoticeAnAgentsNamedVersionNamesThePersonWhoEditedLast(t *testing.T)
 func TestEditNoticeASnapshotVersionNamesThePersonWhoEditedLast(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
@@ -235,7 +272,7 @@ func TestEditNoticeQuietDefaultsToThirtySeconds(t *testing.T) {
 func TestEditNoticeAnAgentsSettledEditOpensNone(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	before := latestVersionNumber(t, service, artifactID)
@@ -255,7 +292,7 @@ func TestEditNoticeAnAgentsSettledEditOpensNone(t *testing.T) {
 func TestEditNoticeANamedVersionByAPersonOverTheirOwnEditOpensTheWindow(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -279,7 +316,7 @@ func TestEditNoticeANamedVersionByAPersonOverTheirOwnEditOpensTheWindow(t *testi
 func TestEditNoticeAnAgentOnlyNamedVersionOpensNone(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
@@ -301,7 +338,7 @@ func TestEditNoticeAnAgentOnlyNamedVersionOpensNone(t *testing.T) {
 func TestEditNoticeAnAgentsNamedVersionThatCapturesAPersonsEditOpensTheWindow(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -330,7 +367,7 @@ func TestEditNoticeAnAgentsNamedVersionThatCapturesAPersonsEditOpensTheWindow(t 
 func TestEditNoticeASnapshotVersionThatCapturesAPersonsEditOpensTheWindow(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -444,7 +481,7 @@ func addPersonsVersion(t *testing.T, database *store.Store, document string, num
 func TestEditNoticeSweepSendsADueNotice(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -480,13 +517,8 @@ func TestEditNoticeSweepSendsADueNotice(t *testing.T) {
 	if _, open := readEditNotice(t, service, artifactID); open {
 		t.Fatal("the sent notice's row is still there")
 	}
-	select {
-	case event := <-published:
-		if event.Type != "artifact.human_edited" {
-			t.Fatalf("published %q, want artifact.human_edited", event.Type)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the sent notice was never published")
+	if event := testwait.Receive(t, "the sent notice to be published", published); event.Type != "artifact.human_edited" {
+		t.Fatalf("published %q, want artifact.human_edited", event.Type)
 	}
 }
 
@@ -548,18 +580,24 @@ func TestEditNoticeSweepSendsNothingForANoticeMovedBehindItsClaim(t *testing.T) 
 	if from != 1 || to != 3 {
 		t.Fatalf("notice = %d..%d, want the moved 1..3 left as it stands", from, to)
 	}
+	// The sweep publishes a notice's event only once it has committed it, before the sweep returns
+	// (sendEditNotice), and the events table holds no new row, so nothing can arrive later: the
+	// subscription is read as it stands.
 	select {
 	case event := <-published:
 		t.Fatalf("published %s for a notice the sweep did not claim", event.Type)
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 }
 
-// A notice whose quiet time has not passed stays, and sends nothing.
+// A notice whose quiet time has not passed stays, and sends nothing. The quiet time is
+// stagedAhead, so the notice is still inside it at the sweep however long the row takes to reach
+// it.
 func TestEditNoticeSweepLeavesANoticeThatIsNotDue(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
+	service.editNoticeQuiet = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	editAsConnectedPeer(t, service, artifactID, 1, model.Actor{Kind: "user", ID: "alice@example.com"}, replaceRun("First.", "First, edited."))
@@ -649,11 +687,11 @@ func TestEditNoticeSweepDropsANoticeOnAClosedIssue(t *testing.T) {
 func TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
-	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	second := New(Deps{Store: storetest.SecondProcess(t, database), Events: events.NewBroker(), Settle: time.Hour})
+	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
+	second := New(Deps{Store: storetest.SecondProcess(t, database), Events: events.NewBroker(), Settle: stagedAhead})
 	testcleanup.Add(t, func() {
-		_ = first.Shutdown(context.Background())
-		_ = second.Shutdown(context.Background())
+		_ = docstest.Shutdown(t, context.Background(), first)
+		_ = docstest.Shutdown(t, context.Background(), second)
 	})
 	const documents = 6
 	ids := make([]string, documents)
@@ -677,7 +715,7 @@ func TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce(t *testing.T) {
 		})
 	}
 	close(start)
-	wg.Wait()
+	testwait.Returns(t, "the two services' sweeps to return (a deadlock between them never does)", wg.Wait)
 	if totals[0]+totals[1] != documents {
 		t.Fatalf("the two sweeps sent %d and %d notices, want %d between them", totals[0], totals[1], documents)
 	}
@@ -698,8 +736,7 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
-	service.editNoticeQuiet = 500 * time.Millisecond
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -725,22 +762,15 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 			sent, err := service.sendDueEditNotices(store.WithTransactionTracking(context.Background()))
 			swept <- sweepResult{sent, err}
 		}()
-		deadline := time.Now().Add(10 * time.Second)
-		for {
+		waitFor(t, "the sweep to wait on the document owner's lock the settlement holds", func() bool {
 			waiting, err := storetest.CountLockWaits(context.Background(), service.store, "%as owner_lock%")
 			if err != nil {
 				t.Errorf("count the sweep's lock waits: %v", err)
-				return nil
+				return true
 			}
-			if waiting > 0 {
-				return nil
-			}
-			if time.Now().After(deadline) {
-				t.Error("the sweep never waited on the document owner's lock the settlement holds")
-				return nil
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
+			return waiting > 0
+		})
+		return nil
 	}
 	settleCurrentGeneration(t, service, artifactID)
 	service.afterSettleVersionWrite = nil
@@ -751,24 +781,14 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 	if bobVersion != aliceVersion+1 {
 		t.Fatalf("bob's settlement wrote version %d, want %d", bobVersion, aliceVersion+1)
 	}
-	select {
-	case result := <-swept:
-		if result.err != nil || result.sent != 0 {
-			t.Fatalf("the sweep that met the settlement = %d sent, %v; want none sent, since the settlement moved the notice on", result.sent, result.err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the sweep that met the settlement never finished")
+	if result := testwait.Receive(t, "the sweep that met the settlement to finish", swept); result.err != nil || result.sent != 0 {
+		t.Fatalf("the sweep that met the settlement = %d sent, %v; want none sent, since the settlement moved the notice on", result.sent, result.err)
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
-	for len(humanEdits(t, service.store, artifactID)) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("no notice went once the quiet time passed")
-		}
-		if _, err := service.sendDueEditNotices(store.WithTransactionTracking(context.Background())); err != nil {
-			t.Fatalf("sweep after the quiet time: %v", err)
-		}
-		time.Sleep(50 * time.Millisecond)
+	// The quiet window the settlement moved on ends, and one sweep sends the notice it left.
+	makeEditNoticeDue(t, service.store, artifactID)
+	if sent, err := service.sendDueEditNotices(store.WithTransactionTracking(context.Background())); err != nil || sent != 1 {
+		t.Fatalf("the sweep once the quiet time passed = %d sent, %v; want the notice both versions are in sent", sent, err)
 	}
 	edits := humanEdits(t, service.store, artifactID)
 	for _, version := range []int{aliceVersion, bobVersion} {
@@ -937,7 +957,7 @@ func TestEditNoticeAPersonsRebuildOpensTheWindow(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	replacement := "replacement\n"
 	_, written, err := rebuildDocument(t, service, artifactID, &replacement)
 	if err != nil || !written.Wrote {
@@ -988,7 +1008,7 @@ func TestEditNoticeAPersonsQuestionEditSendsOne(t *testing.T) {
 func TestOutsideReviewColdAgentVersionLastHuman(t *testing.T) {
 	t.Parallel()
 	first, artifactID := newTestService(t)
-	first.settle = time.Hour
+	first.settle = stagedAhead
 	seedServiceText(t, first, artifactID, "First.\n\nSecond.\n\nThird.\n")
 	settleCurrentGeneration(t, first, artifactID)
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
@@ -996,8 +1016,8 @@ func TestOutsideReviewColdAgentVersionLastHuman(t *testing.T) {
 	editAsConnectedPeer(t, first, artifactID, 1, zoe, replaceRun("First.", "First, by zoe."))
 	editAsConnectedPeer(t, first, artifactID, 2, adam, replaceRun("Second.", "Second, by adam."))
 	waitForLandedAppends(t, first, artifactID)
-	second := New(Deps{Store: storetest.SecondProcess(t, first.store), Events: events.NewBroker(), Settle: time.Hour})
-	testcleanup.Add(t, func() { _ = second.Shutdown(context.Background()) })
+	second := New(Deps{Store: storetest.SecondProcess(t, first.store), Events: events.NewBroker(), Settle: stagedAhead})
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), second) })
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	if err := joinedWrite(second, func(ctx context.Context) error {
 		if _, err := second.ApplyOps(ctx, artifactID, []model.EditOp{{Op: "replace", Find: "Third.", With: "Third, by agent."}}, agent, nil); err != nil {
@@ -1024,7 +1044,7 @@ func TestOutsideReviewColdAgentVersionLastHuman(t *testing.T) {
 func TestOutsideReviewJoinedHumanEditLastHuman(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
@@ -1057,7 +1077,7 @@ func TestEditNoticeTwoConnectedOneEditsNamesNobody(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	adam := model.Actor{Kind: "user", ID: "adam@example.com"}
@@ -1081,7 +1101,7 @@ func TestEditNoticeTwoConnectedOneEditsNamesNobody(t *testing.T) {
 func TestEditNoticeASessionPeerEditingBesideAConnectedPersonNamesNobody(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	adam := model.Actor{Kind: "user", ID: "adam@example.com"}
@@ -1104,7 +1124,7 @@ func TestEditNoticeASessionPeerEditingBesideAConnectedPersonNamesNobody(t *testi
 func TestEditNoticeABrowserEditAfterAJoinedWriteNamesTheBrowserEditor(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	adam := model.Actor{Kind: "user", ID: "adam@example.com"}
@@ -1145,7 +1165,7 @@ func TestEditNoticeARebuildNamesThePersonWhoRebuiltIt(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into doc_pending_authors (artifact_id, actor_kind, actor_id, actor, written_through)
@@ -1196,7 +1216,7 @@ func recordLatestEditSourceTx(t *testing.T, service *Service, artifactID string,
 func TestEditNoticeAnAgentsCommittedEditAfterAPersonsLandedEditNamesThePerson(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -1223,7 +1243,7 @@ func TestEditNoticeAnAgentsCommittedEditAfterAPersonsLandedEditNamesThePerson(t 
 func TestEditNoticeAnAgentsNamedVersionAfterItsCommittedEditNamesThePerson(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -1254,7 +1274,7 @@ func TestEditNoticeAnAgentsNamedVersionAfterItsCommittedEditNamesThePerson(t *te
 func TestEditNoticeAClosedAndReopenedIssueNamesTheLaterBrowserEditor(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	adam := model.Actor{Kind: "user", ID: "adam@example.com"}
@@ -1293,7 +1313,7 @@ func TestEditNoticeAClosedAndReopenedIssueNamesTheLaterBrowserEditor(t *testing.
 func TestEditNoticeAnUnnamedVersionAfterASentNoticeIsInTheNextNotice(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n\nThird.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -1345,7 +1365,7 @@ func TestEditNoticeAnUnnamedVersionAfterASentNoticeIsInTheNextNotice(t *testing.
 func TestEditNoticeATwoPeerEditThatLandedClearsTheStoredPerson(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}

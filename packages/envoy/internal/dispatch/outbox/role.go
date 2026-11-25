@@ -828,7 +828,7 @@ func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envel
 // of their own, and the record of what those handovers delivered is shared between them (handed,
 // keptHandovers).
 func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, item contracts.Envelope, handed *keptHandovers) <-chan error {
-	keptAt := time.Now()
+	keptAt := deps.keptNow()
 	item.MentionDedupeKeys = f.settledKeys
 	stored := sender.PublishStoredAsync(bus.KeptRoleSubject(f.keptFor), item, bus.KeptMsgID(item.DedupeKey, f.keptFor))
 	answer := make(chan error, 1)

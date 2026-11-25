@@ -25,7 +25,7 @@ func TestAGraphQLRateLimitStopsEveryProcess(t *testing.T) {
 	// limit stands: a mint is budgeted under the App, and this test is about the queries the
 	// GraphQL limit stops.
 	h.pass()
-	other.Pass(h.ctx)
+	h.passOf(other)
 
 	h.github.rateLimitQuery(limitByErrorEntry)
 
@@ -61,7 +61,7 @@ func TestAGraphQLRateLimitStopsEveryProcess(t *testing.T) {
 	h.github.forgetRequests()
 
 	h.pass()
-	other.Pass(h.ctx)
+	h.passOf(other)
 
 	if sent := h.github.count(); sent != 0 {
 		t.Fatalf("the two processes sent GitHub %d requests inside a GraphQL rate limit: %+v", sent, h.github.received())
@@ -85,7 +85,7 @@ func TestAPrimaryGraphQLRateLimitLeavesRESTReadsAlone(t *testing.T) {
 			other := h.replica()
 
 			h.pass()
-			other.Pass(h.ctx)
+			h.passOf(other)
 			h.github.rateLimitQuery(limit)
 
 			h.pass()
@@ -145,7 +145,7 @@ func TestASecondaryQueryLimitHoldsTheInstallationsRESTReads(t *testing.T) {
 			// Both processes mint their token first: a mint is the App's call, and this test is
 			// about the installation's own budget.
 			h.pass()
-			other.Pass(h.ctx)
+			h.passOf(other)
 			h.github.rateLimitQuery(limit)
 
 			h.pass()

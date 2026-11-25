@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -235,8 +236,9 @@ type queryer interface {
 
 // loadLookups reads what want asks for, one statement per kind that asks anything, so a batch costs
 // at most eight reads however many events it holds: ask followers, thread root authors, message
-// authors, document credits (loadDocumentSessionAuthors), mention deliveries and the fallback
-// copies that own a destination of one (loadMentionDeliveries, two statements), comment recipients
+// authors, document credits (loadDocumentSessionAuthors), mention deliveries, each attempt judged
+// against forwardBound (Deps.unnamedForwardWait), and the fallback copies that own a destination
+// of one (loadMentionDeliveries, two statements), comment recipients
 // (loadCommentRecipients) and primary document authors (loadPrimaryDocumentAuthors). Each read is
 // the per-id read the outbox made before, over a set of ids: the same rows, in the same order for
 // each id. Every kind but the issues' is a uuid, read and answered in its canonical form
@@ -261,7 +263,7 @@ type queryer interface {
 // jsonb_array_elements refuses - backs off the events that read it and holds back their owners'
 // later session copies, and nothing else. A recipient read that fails for the stop or for the
 // connection fails every event that asked it, as each run alone would.
-func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error) {
+func loadLookups(ctx context.Context, db queryer, want *wanted, forwardBound time.Duration) (*lookups, error) {
 	found := &lookups{
 		asks: map[string][]string{}, roots: map[string]json.RawMessage{},
 		messages: map[string]json.RawMessage{}, documents: map[string][]string{},
@@ -288,7 +290,7 @@ func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error
 	}
 	_ = loadRecipients(ctx, db, loadDocumentSessionAuthors, documents, "document", found.documents, found.failed)
 	found.editOnly = editOnlyIDs(mentions, editMentions)
-	if err := loadMentionDeliveries(ctx, db, mergedIDs(mentions, editMentions), found); err != nil {
+	if err := loadMentionDeliveries(ctx, db, mergedIDs(mentions, editMentions), forwardBound, found); err != nil {
 		return nil, err
 	}
 	_ = loadRecipients(ctx, db, loadCommentRecipients, threads, "thread", found.threads, found.failed)
@@ -542,8 +544,9 @@ func loadDocumentSessionAuthors(ctx context.Context, db queryer, ids []string) (
 // abandoned (model.MentionAbandonedSQL), whether any attempt of it failed or is abandoned
 // (mentionDeliveries.fallbackKeys; that flag and the sent one together say whether the group has
 // settled at all, which is what mentionDeliveries.settledKeys holds a key for), and whether an
-// attempt of it still owed a send was created more than the bound a role route's forward waits
-// an unnamed mention out for ago (unnamedForwardBound, unpinnedRoleMentions.record). That last
+// attempt of it still owed a send was created more than forwardBound ago, the bound a role route's
+// forward waits an unnamed mention out for, which the statement takes as its second parameter in
+// seconds (Deps.unnamedForwardWait, unnamedForwardBound, unpinnedRoleMentions.record). That last
 // one is read of every group and carried by the unpinned ones alone: the attempts of a session
 // the reading can name decide their copies by their state, and the state of one past this bound
 // is mentionResending whichever side of it the attempt is. What mode those
@@ -568,7 +571,7 @@ var mentionDeliveryQuery = `
 	       bool_or(d.state = 'pending' and ` + model.MentionAbandonedSQL("d") + `),
 	       bool_or(d.state = 'failed' or (d.state = 'pending' and ` + model.MentionAbandonedSQL("d") + `)),
 	       bool_or(d.state = 'pending' and ` + model.MentionResumedSQL("d") +
-	` and d.created_at < now() - ` + unnamedForwardBoundInterval + `)
+	` and d.created_at < now() - make_interval(secs => $2))
 	from comment_deliveries d
 	left join comment_mentions m on m.comment_id = d.comment_id and m.target = d.target
 	where d.comment_id = any($1::text[]::uuid[])
@@ -631,11 +634,11 @@ func (m settledMention) beats(current settledMention) bool {
 // suppresses nothing either.
 //
 // An attempt that names no session is read under its target alone, as every reading here is, and
-// its target's role is recorded beside it with the state the attempt is in
-// (unpinnedRoleMentions.record), for as long as its send is still coming: that role is all there
-// is to say whose copies of the comment the attempt decides, and its holder is resolved once the
-// batch has read every comment (resolveUnpinnedRoleMentions).
-func loadMentionDeliveries(ctx context.Context, db queryer, ids []string, found *lookups) error {
+// its target's role is recorded beside it with the state the attempt is in and whether it is past
+// forwardBound (unpinnedRoleMentions.record), for as long as its send is still coming: that role
+// is all there is to say whose copies of the comment the attempt decides, and its holder is
+// resolved once the batch has read every comment (resolveUnpinnedRoleMentions).
+func loadMentionDeliveries(ctx context.Context, db queryer, ids []string, forwardBound time.Duration, found *lookups) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -647,7 +650,7 @@ func loadMentionDeliveries(ctx context.Context, db queryer, ids []string, found 
 		}
 		return deliveries
 	}
-	rows, err := db.Query(ctx, mentionDeliveryQuery, ids)
+	rows, err := db.Query(ctx, mentionDeliveryQuery, ids, forwardBound.Seconds())
 	if err != nil {
 		return fmt.Errorf("load the batch's mention deliveries: %w", err)
 	}
@@ -730,11 +733,12 @@ func loadMentionDeliveries(ctx context.Context, db queryer, ids []string, found 
 // its key's attempts as a copy held back for that key reads them (destinations.leftTo). The read
 // is of every mention of that comment, not of that key's alone, which is what lets the pass key
 // a role destination's forward by the holder's own settled mention as the event's own publish
-// does (decideFallbackCopy, roleFallbackKey).
-func mentionDeliveriesOf(ctx context.Context, db queryer, commentID string) (mentionDeliveries, error) {
+// does (decideFallbackCopy, roleFallbackKey). Each attempt is judged against forwardBound, as the
+// batch's read judges it (Deps.unnamedForwardWait).
+func mentionDeliveriesOf(ctx context.Context, db queryer, commentID string, forwardBound time.Duration) (mentionDeliveries, error) {
 	found := &lookups{mentions: map[string]mentionDeliveries{}, failed: map[string]error{}}
 	id := canonicalID(commentID)
-	if err := loadMentionDeliveries(ctx, db, []string{id}, found); err != nil {
+	if err := loadMentionDeliveries(ctx, db, []string{id}, forwardBound, found); err != nil {
 		return mentionDeliveries{}, fmt.Errorf("load mention deliveries of comment %q: %w", commentID, err)
 	}
 	deliveries, ok := found.mentions[id]

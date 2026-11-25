@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
@@ -17,27 +18,47 @@ import (
 // still writing.
 func TestTheBackgroundWaitHoldsForWorkARequestLeftRunning(t *testing.T) {
 	t.Parallel()
-	served := register(http.NewServeMux(), t.Context(), Deps{})
-	started, release := make(chan struct{}), make(chan struct{})
-	served.detached.goDetached(func() {
-		close(started)
-		<-release
-	})
-	<-started
+	// A server with no store runs nothing but the detached worker, all of it in the bubble.
+	synctest.Test(t, func(t *testing.T) {
+		served := register(http.NewServeMux(), t.Context(), Deps{})
+		started, release := make(chan struct{}), make(chan struct{})
+		served.detached.goDetached(func() {
+			close(started)
+			<-release
+		})
+		<-started
 
-	waited := make(chan struct{})
-	go func() {
-		defer close(waited)
-		served.waitBackground()
-	}()
-	select {
-	case <-waited:
-		t.Fatal("the background wait returned while a detached worker was still running")
-	case <-time.After(200 * time.Millisecond):
-	}
-	close(release)
-	testwait.Receive(t, "the background wait's return once the detached worker ended", waited)
+		waited := make(chan struct{})
+		go func() {
+			defer close(waited)
+			served.waitBackground()
+		}()
+		// keyedHandlerLimit on the bubble's clock (testwait.Idle): a wait that a bound of its own up
+		// to that limit lets return while the worker runs has returned by the read.
+		testwait.Idle(t, keyedHandlerLimit, "the background wait arms no timer while it waits for detached work, and "+
+			"among that work is a keyed handler's run past its client, which keyedHandlerLimit ends: a wait that gave up "+
+			"at a bound of its own shorter than that would return under a run still inside its limit, and shutdown would "+
+			"close the pool under it")
+		select {
+		case <-waited:
+			t.Fatal("the background wait returned while a detached worker was still running")
+		default:
+		}
+		close(release)
+		synctest.Wait()
+		select {
+		case <-waited:
+		default:
+			t.Fatal("the background wait never returned once the detached worker ended")
+		}
+	})
 }
+
+// backgroundWaitWhy is why a test holds the background wait quiet for a span: the wait returns on
+// its own goroutine once the last piece of work it waits for ends.
+const backgroundWaitWhy = "the background wait returns on its own goroutine, and no state says it is still blocked " +
+	"rather than about to return, the socket and the database are real I/O (no synctest), and no later action of " +
+	"the test is ordered after a return that should not come"
 
 // The background wait holds for every live socket's handler, and so every subscription it ran,
 // until the socket ends: production shutdown waits for it before it closes the database pool,
@@ -53,11 +74,7 @@ func TestTheBackgroundWaitHoldsForAnOpenLiveSocket(t *testing.T) {
 		defer close(waited)
 		rig.served.waitBackground()
 	}()
-	select {
-	case <-waited:
-		t.Fatal("the background wait returned while a live socket's handler was still running")
-	case <-time.After(200 * time.Millisecond):
-	}
+	testwait.Quiet(t, "the background wait's return while a live socket's handler still runs", waited, 200*time.Millisecond, backgroundWaitWhy)
 	_ = client.conn.Close()
 	testwait.Receive(t, "the background wait's return once the live socket closed", waited)
 }
@@ -75,13 +92,13 @@ func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
 	stream := newGatedStream()
 	close(stream.gate)
 	running := served.startEventsSubscription(ctx, stream, "feed", nil)
-	t.Cleanup(running.stop)
+	stop := stopOnCleanup(t, "events", running)
 	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool {
 		return relaySubscribers(served.eventRelay) == 1
 	})
 	requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t, served, "the event stream relay", func() {
-		running.stop()
-		waitUntil(t, "the stopped subscription leaves the relay", func() bool {
+		stop()
+		testwait.Eventually(t, "the stopped subscription leaves the relay", func() bool {
 			return relaySubscribers(served.eventRelay) == 0
 		})
 
@@ -98,7 +115,7 @@ func TestTheBackgroundWaitHoldsForTheDeliveryHub(t *testing.T) {
 	if !served.deliveryHub.Subscribe(conn, subscribeFrame("p", presetView(deliveryLiveTimeline, 7, ""))) {
 		t.Fatal("the hub refused the view")
 	}
-	waitUntil(t, "the hub answers the view", func() bool { return len(conn.frames) > 0 })
+	testwait.Eventually(t, "the hub answers the view", func() bool { return len(conn.frames) > 0 })
 	requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t, served, "the delivery hub", func() {
 		served.deliveryHub.Close(conn)
 	})
@@ -115,11 +132,7 @@ func requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t *testing.T, served *se
 		defer close(waited)
 		served.waitBackground()
 	}()
-	select {
-	case <-waited:
-		t.Fatalf("the background wait returned while %s still ran for an open subscription", what)
-	case <-time.After(200 * time.Millisecond):
-	}
+	testwait.Quiet(t, "the background wait's return while "+what+" still runs for an open subscription", waited, 200*time.Millisecond, backgroundWaitWhy)
 	leave()
 	testwait.Receive(t, "the background wait's return once "+what+"'s last subscriber left", waited)
 }

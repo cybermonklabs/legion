@@ -9,26 +9,32 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // parkRig is a mention sender whose sends to one recipient, session:parked, wait for an earlier
 // event (the send answers its item to take up again, as sendCommentMention does for a
-// *mentionHeldForOrder) until the test opens it, and whose every other send takes a moment and
-// records itself. Its timers are the sender's own (after, which starts a time.AfterFunc), counted:
-// pending is how many parks' timers have been started and not run, which the sender starts only
-// once no goroutine serves the parked lane (serve), and fired how many have run. parked has a
-// value once a park's timer has started since it was last read (awaitPark).
+// *mentionHeldForOrder) until the test opens it, and whose every other send waits at gate, which
+// the test releases, and records itself. The sender runs on clock, a fake that moves only when the
+// test moves it, so a parked lane tries again only once the test moves the fake to its park's
+// deadline. Its timers are the sender's own (an AfterFunc on that fake), counted: pending is how
+// many parks' timers have been started and not run, which the sender starts only once no goroutine
+// serves the parked lane (serve), and fired how many have run. Its claim refreshes tick every
+// mentionClaimRefresh on refreshes, a fake of their own (newMentionSender), so a refresh comes only
+// where the test moves refreshes to it, and clock holds the parks alone.
 type parkRig struct {
-	sender  *mentionSender
-	open    atomic.Bool
-	pending atomic.Int32
-	fired   atomic.Int64
-	parked  chan struct{}
+	sender    *mentionSender
+	clock     *clocktest.Fake
+	refreshes *clocktest.Fake
+	open      atomic.Bool
+	pending   atomic.Int32
+	fired     atomic.Int64
+	// release closes gate, at which every send to a recipient other than session:parked waits.
+	release func()
 	mu      sync.Mutex
 	tries   []time.Time
 	sent    []string
@@ -41,12 +47,15 @@ type parkRig struct {
 func newParkRig(t *testing.T, capacity int) *parkRig {
 	t.Helper()
 	lifetime, stop := context.WithCancel(context.Background())
-	rig := &parkRig{written: map[mentionKey]int{}, parked: make(chan struct{}, 1)}
-	rig.sender = newMentionSender(lifetime, 100*time.Millisecond,
+	gate := make(chan struct{})
+	rig := &parkRig{written: map[mentionKey]int{}, clock: clocktest.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		refreshes: clocktest.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		release:   sync.OnceFunc(func() { close(gate) })}
+	rig.sender = newMentionSender(lifetime, mentionClaimRefresh, rig.refreshes,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			if item.mention.Target == "session:parked" && !rig.open.Load() {
 				rig.mu.Lock()
-				rig.tries = append(rig.tries, time.Now())
+				rig.tries = append(rig.tries, rig.clock.Now())
 				rig.mu.Unlock()
 				return item, true
 			}
@@ -54,7 +63,7 @@ func newParkRig(t *testing.T, capacity int) *parkRig {
 			rig.active++
 			rig.most = max(rig.most, rig.active)
 			rig.mu.Unlock()
-			time.Sleep(20 * time.Millisecond)
+			<-gate
 			rig.mu.Lock()
 			rig.active--
 			rig.sent = append(rig.sent, item.comment.ID)
@@ -79,58 +88,37 @@ func newParkRig(t *testing.T, capacity int) *parkRig {
 	)
 	rig.sender.mu.Lock()
 	rig.sender.capacity = capacity
-	own := rig.sender.after
+	rig.sender.clock = rig.clock
 	rig.sender.after = func(delay time.Duration, f func()) {
 		rig.pending.Add(1)
-		own(delay, func() {
+		rig.clock.AfterFunc(delay, func() {
 			rig.pending.Add(-1)
 			rig.fired.Add(1)
 			f()
 		})
-		select {
-		case rig.parked <- struct{}{}:
-		default:
-		}
 	}
 	rig.sender.mu.Unlock()
 	t.Cleanup(func() {
+		rig.release()
 		stop()
-		rig.sender.wait()
+		testwait.Returns(t, "the park rig's mention sender's lanes and claim refresh to return once its gate opened and its lifetime ended", rig.sender.wait)
 	})
 	return rig
 }
 
 func (r *parkRig) enqueue(id, target string) mentionSend {
 	item := mentionSend{
-		comment: model.Comment{ID: id}, mention: ResolvedMention{Target: target}, attempt: 1, claimed: time.Now(),
+		comment: model.Comment{ID: id}, mention: ResolvedMention{Target: target}, attempt: 1, claimed: r.clock.Now(),
 	}
 	r.sender.enqueue(context.Background(), item)
 	return item
 }
 
-// awaitPark waits for the sender's next park - which, in a synctest bubble, moves the bubble's
-// clock on to the timers that make the next tries - and then for every goroutine of the bubble to
-// block. A lane that stops trying never parks again, and the bubble never deadlocks while the
-// sender's claim refresh ticks in it, so the wait is bounded on the bubble's clock (parkLiveness),
-// which costs no real time: past it the test fails at once, naming what the sender holds.
-func (r *parkRig) awaitPark(t *testing.T) {
-	t.Helper()
-	select {
-	case <-r.parked:
-	case <-time.After(parkLiveness()):
-		serving, parked, onLane, queued := r.state()
-		t.Fatalf("no park within %v of the bubble's clock: %d goroutines serve lanes, the held lane parked %v with %d sends on it, %d sends queued; a lane that stops trying never parks again",
-			parkLiveness(), serving, parked, onLane, queued)
-	}
-	synctest.Wait()
-}
-
-// parkLiveness is how long awaitPark waits on the bubble's clock for the next park. It is
-// liveness alone, never the bound under test, so it grows with the sender's own waits
-// (mentionOrderRetryFirst, mentionOrderRetryMax): a schedule of longer waits reads the rule less,
-// which the cost requirement allows, and must not fail here.
-func parkLiveness() time.Duration {
-	return time.Minute + 2*(mentionOrderRetryFirst+mentionOrderRetryMax)
+// atGate is how many of the rig's sends to other recipients wait at its gate now.
+func (r *parkRig) atGate() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.active
 }
 
 // state is what the sender holds now: how many goroutines serve lanes, whether session:parked's
@@ -153,9 +141,9 @@ func (r *parkRig) state() (serving int, parked bool, onLane, queued int) {
 }
 
 // countParks has sender count each park whose timer it starts - which it does once no goroutine
-// serves the parked lane (serve) - and start that timer as the sender does, unless hold, which
-// leaves every parked lane parked for the rest of the test. It answers the count. Call it before
-// the first send is queued.
+// serves the parked lane (serve) - and start that timer as the sender does, on its clock, unless
+// hold, which leaves every parked lane parked for the rest of the test. It answers the count. Call
+// it before the first send is queued.
 func countParks(sender *mentionSender, hold bool) *atomic.Int32 {
 	parks := &atomic.Int32{}
 	sender.mu.Lock()
@@ -163,7 +151,7 @@ func countParks(sender *mentionSender, hold bool) *atomic.Int32 {
 	sender.after = func(delay time.Duration, f func()) {
 		parks.Add(1)
 		if !hold {
-			time.AfterFunc(delay, f)
+			sender.sendClock().AfterFunc(delay, f)
 		}
 	}
 	return parks
@@ -187,10 +175,6 @@ const (
 	parkedReadEvery = 2 * time.Second
 	parkedFirstWait = 50 * time.Millisecond
 )
-
-// parkedTries is how many tries the pacing tests read of a parked send: its first, and one after
-// each of nine waits, the last three of which come after the ramp, at parkedReadEvery or more.
-const parkedTries = 10
 
 // parkedWait is the shortest wait the cost requirement allows before a parked send's next try,
 // the parks'th time it waited: parkedFirstWait doubled for each park before it, at most
@@ -218,219 +202,271 @@ func shortWaits(tries []time.Time) (waits []time.Duration, short []string) {
 
 // A send that waits for an earlier event of its comment's owner parks its lane: no goroutine is
 // on that lane, so no goroutine holds a connection for it, while it waits, however long - here
-// parkedTries tries, past the point where its waits reach their longest value - and each wait
-// before its next try is at least parkedWait: 50 ms doubling to 2 s, then 2 s or more each. The
-// lane keeps its order: the send behind it waits behind it. The parked sends still count among
-// the maxQueuedMentionSends the queue holds: with a capacity of two, the two parked sends fill it
-// and a third recipient's send is refused and its claim given back, whenever it comes. Every other
-// recipient's sends go meanwhile, at most mentionSendLanes at once, and the parked sends' claims
-// are written again as every queued send's are. Once the earlier event is sent, the lane sends
-// its two in order.
-//
-// The test runs in a synctest bubble, so its clock is the bubble's: each wait is read as the
-// sender scheduled it, whatever the machine's load, and the test waits for parkedTries tries
-// however long the schedule makes them take; a lane that stops trying fails at once (awaitPark).
-// The lane is read after each park, once every goroutine of the bubble is blocked (awaitPark),
-// which is when a goroutine that slept a park's wait out on the lane would still be on it.
+// eight tries, past the point where its tries come at mentionOrderRetryMax - and its tries come
+// after waits that double from mentionOrderRetryFirst to that cap, each its park's span exactly on
+// the fake, which the test moves to each park's deadline in turn, and each at least parkedWait:
+// 50 ms doubling to 2 s. The lane keeps its order: the send behind it waits behind it. The parked
+// sends still count among the maxQueuedMentionSends the queue holds: with a capacity of two, the
+// two parked sends fill it and a third recipient's send is refused and its claim given back,
+// whenever it comes. Every other recipient's sends go meanwhile, mentionSendLanes at once and no
+// more, held at the rig's gate until the test has seen the sender run that many and keep the rest
+// waiting for a goroutine, and the parked sends' claims are written again as every queued send's
+// are. Once the earlier event is sent, the lane sends its two in order.
 func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 	// Not parallel: serveStacks reads every goroutine of the process (runtime.Stack, all), so a
 	// lane loop of another test's sender counts as this lane's (envoy-go-race-api job 137408608768).
-	synctest.Test(t, func(t *testing.T) {
-		rig := newParkRig(t, 2)
-		first := rig.enqueue("parked-first", "session:parked")
-		second := rig.enqueue("parked-second", "session:parked")
-		synctest.Wait()
-		if serving, parked, onLane, _ := rig.state(); !parked || serving != 0 || onLane != 2 {
-			t.Fatalf("once every goroutine is blocked the lane is parked %v, with %d goroutines serving and %d sends on it; want parked, 0 and 2",
-				parked, serving, onLane)
+	rig := newParkRig(t, 2)
+	first := rig.enqueue("parked-first", "session:parked")
+	second := rig.enqueue("parked-second", "session:parked")
+	testwait.Eventually(t, "the parked lane with no goroutine on it", func() bool {
+		serving, parked, onLane, _ := rig.state()
+		return parked && serving == 0 && onLane == 2
+	})
+	if stacks := serveStacks(); stacks != 0 {
+		t.Fatalf("%d goroutines are in the sender's lane loop while its one lane is parked, want none", stacks)
+	}
+
+	// The two parked sends fill a queue of two, however long they have waited: another
+	// recipient's send is refused and its claim given back.
+	refused := rig.enqueue("one-too-many", "session:other-z")
+	rig.mu.Lock()
+	gaveUp := append([]mentionClaim(nil), rig.gaveUp...)
+	rig.mu.Unlock()
+	if len(gaveUp) != 1 || gaveUp[0].key != refused.key() {
+		t.Fatalf("the queue gave back %v with its two places held by the parked sends, want the one send past its capacity", gaveUp)
+	}
+
+	// Ten other recipients' sends go while the lane is parked, the queue holding twelve. Held at
+	// the gate, mentionSendLanes of them are in flight together and the other lanes wait for a
+	// goroutine: the sender's own count of the goroutines serving lanes is the bound, and it starts
+	// none past it while every one is busy.
+	rig.sender.mu.Lock()
+	rig.sender.capacity = 12
+	rig.sender.mu.Unlock()
+	for index := range 10 {
+		rig.enqueue("other-"+string(rune('a'+index)), "session:other-"+string(rune('a'+index)))
+	}
+	testwait.Until(t, fmt.Sprintf("%d of the other recipients' sends in flight, the rest waiting for a goroutine", mentionSendLanes), func() (string, bool) {
+		rig.sender.mu.Lock()
+		serving, ready := rig.sender.serving, len(rig.sender.ready)
+		rig.sender.mu.Unlock()
+		inFlight := rig.atGate()
+		return fmt.Sprintf("%d at the gate, %d goroutines serving, %d lanes waiting for one", inFlight, serving, ready),
+			inFlight == mentionSendLanes && serving == mentionSendLanes && ready == 10-mentionSendLanes
+	})
+	rig.release()
+	// A send is in the rig's list before its goroutine lets it go (claimedDuring) and leaves its
+	// lane (next), so the ten are done only once the sender holds the two parked sends alone and
+	// no goroutine serves a lane.
+	testwait.Eventually(t, "the other recipients' sends", func() bool {
+		rig.mu.Lock()
+		sent := len(rig.sent)
+		rig.mu.Unlock()
+		serving, _, _, queued := rig.state()
+		return sent == 10 && queued == 2 && serving == 0
+	})
+	// The sender writes the claims it holds again on its own ticker (keepClaims), whose tick the row
+	// brings by moving refreshes to it; the ticker arms the next tick once the refresh has returned,
+	// so the next tick armed says the refresh is done, and the claims it wrote are read then.
+	refresh := rig.refreshes.AwaitArmed(t, "the sender's first claim refresh", 1)[0]
+	rig.refreshes.Set(refresh)
+	rig.refreshes.AwaitArmedAt(t, "the sender's claim refresh after the one the row ran", refresh.Add(mentionClaimRefresh))
+	rig.mu.Lock()
+	firstWritten, secondWritten := rig.written[first.key()], rig.written[second.key()]
+	rig.mu.Unlock()
+	if firstWritten != 1 || secondWritten != 1 {
+		t.Fatalf("the claim refresh wrote the parked sends' claims %d and %d times, want once each: a refresh writes again every claim the sender holds",
+			firstWritten, secondWritten)
+	}
+
+	// Eight more tries of the parked lane, each as the fake reaches its park's deadline; before
+	// each the lane is parked with no goroutine on it and both sends on it.
+	const tries = 8
+	for try := 1; try <= tries; try++ {
+		deadline := rig.clock.AwaitArmed(t, fmt.Sprintf("park %d of the lane", try), 1)[0]
+		if serving, parked, onLane, queued := rig.state(); !parked || serving != 0 || onLane != 2 || queued != 2 {
+			t.Fatalf("parked lane after park %d: parked %v, %d goroutines serving, %d sends on it, %d queued; want parked, 0, 2 and 2",
+				try, parked, serving, onLane, queued)
 		}
 		if stacks := serveStacks(); stacks != 0 {
-			t.Fatalf("%d goroutines are in the sender's lane loop while its one lane is parked, want none", stacks)
+			t.Fatalf("%d goroutines are in the sender's lane loop after park %d, want none", stacks, try)
 		}
-
-		// The two parked sends fill a queue of two, however long they have waited: another
-		// recipient's send is refused and its claim given back.
-		refused := rig.enqueue("one-too-many", "session:other-z")
-		rig.mu.Lock()
-		gaveUp := append([]mentionClaim(nil), rig.gaveUp...)
-		rig.mu.Unlock()
-		if len(gaveUp) != 1 || gaveUp[0].key != refused.key() {
-			t.Fatalf("the queue gave back %v with its two places held by the parked sends, want the one send past its capacity", gaveUp)
-		}
-
-		// Ten other recipients' sends go while the lane is parked, the queue holding twelve.
-		rig.sender.mu.Lock()
-		rig.sender.capacity = 12
-		rig.sender.mu.Unlock()
-		for index := range 10 {
-			rig.enqueue("other-"+string(rune('a'+index)), "session:other-"+string(rune('a'+index)))
-		}
-		// A send is in the rig's list before its goroutine lets it go (claimedDuring) and leaves
-		// its lane (next), so the ten are done only once the sender holds the two parked sends
-		// alone and no goroutine serves a lane. The wait is bounded on the bubble's clock
-		// (parkLiveness), as awaitPark's is, which costs no real time. waitUntil's bound is the
-		// test binary's deadline, a time on the machine's clock, which the bubble's clock, starting
-		// in 2000, never reaches, and the sender's claim refresh keeps the bubble from deadlocking,
-		// so a send that never goes would hold the row until go test's alarm.
-		othersDone := func() bool {
-			rig.mu.Lock()
-			sent := len(rig.sent)
-			rig.mu.Unlock()
-			serving, _, _, queued := rig.state()
-			return sent == 10 && queued == 2 && serving == 0
-		}
-		if !testwait.Holds(parkLiveness(), testwait.Poll, othersDone) {
-			rig.mu.Lock()
-			sent := append([]string(nil), rig.sent...)
-			rig.mu.Unlock()
-			serving, _, _, queued := rig.state()
-			t.Fatalf("the other recipients' sends were not done within %v of the bubble's clock: sent %v, %d sends queued (want the 2 parked), %d goroutines serving (want none)",
-				parkLiveness(), sent, queued, serving)
-		}
-
-		// The parked send's tries until it has made parkedTries, the lane read after each park.
-		for {
+		rig.clock.Set(deadline)
+		testwait.Eventually(t, fmt.Sprintf("try %d of the parked lane, and its park", try+1), func() bool {
 			rig.mu.Lock()
 			tried := len(rig.tries)
 			rig.mu.Unlock()
-			if tried >= parkedTries {
-				break
-			}
-			rig.awaitPark(t)
-			serving, parked, onLane, queued := rig.state()
-			if !parked || serving != 0 || onLane != 2 || queued != 2 {
-				t.Fatalf("once every goroutine is blocked the lane is parked %v, with %d goroutines serving, %d sends on it and %d queued; want parked, 0, 2 and 2",
-					parked, serving, onLane, queued)
-			}
-		}
-		if stacks := serveStacks(); stacks != 0 {
-			t.Fatalf("%d goroutines are in the sender's lane loop after %d tries of the parked send, want none", stacks, parkedTries)
-		}
+			_, parked, _, _ := rig.state()
+			return tried == try+1 && parked
+		})
+	}
 
-		rig.mu.Lock()
-		tries := append([]time.Time(nil), rig.tries...)
-		most, sent, gaveUp := rig.most, append([]string(nil), rig.sent...), append([]mentionClaim(nil), rig.gaveUp...)
-		writtenFirst, writtenSecond := rig.written[first.key()], rig.written[second.key()]
-		rig.mu.Unlock()
-		waits, short := shortWaits(tries)
-		t.Logf("the parked send's tries: %d, the waits between them %v; the most sends at once %d; queued sends written again: first %d times, second %d times",
-			len(tries), waits, most, writtenFirst, writtenSecond)
-		if len(short) != 0 {
-			t.Errorf("the parked send's waits are shorter than the cost requirement allows (parkedWait): %s", strings.Join(short, "; "))
+	rig.mu.Lock()
+	tried := append([]time.Time(nil), rig.tries...)
+	most, sent, gaveUp := rig.most, append([]string(nil), rig.sent...), append([]mentionClaim(nil), rig.gaveUp...)
+	rig.mu.Unlock()
+	var gaps []time.Duration
+	for index := 1; index < len(tried); index++ {
+		gaps = append(gaps, tried[index].Sub(tried[index-1]))
+	}
+	t.Logf("the parked send's tries: %d, the waits between them %v; the most sends at once %d", len(tried), gaps, most)
+	// The fake moves only to each park's deadline, so each wait is its park's span exactly: a
+	// shorter one would read the rule more often than the cost bound says.
+	for index, gap := range gaps {
+		if want := mentionOrderRetry(index + 1); gap != want {
+			t.Errorf("wait %d before the parked send's next try is %v, want %v (mentionOrderRetry)", index+1, gap, want)
 		}
-		if most > mentionSendLanes {
-			t.Errorf("%d sends ran at once, want at most mentionSendLanes (%d)", most, mentionSendLanes)
-		}
-		if len(sent) != 10 {
-			t.Errorf("sent %v while the lane was parked, want the ten other recipients' sends", sent)
-		}
-		if len(gaveUp) != 1 || gaveUp[0].key != refused.key() {
-			t.Errorf("the queue gave back %v, want only the one send refused while the parked sends filled it", gaveUp)
-		}
-		if writtenFirst == 0 || writtenSecond == 0 {
-			t.Errorf("the parked sends' claims were written again %d and %d times, want both kept live", writtenFirst, writtenSecond)
-		}
+	}
+	if len(gaps) == 0 || gaps[len(gaps)-1] != mentionOrderRetryMax {
+		t.Errorf("the waits %v never reached mentionOrderRetryMax (%v)", gaps, mentionOrderRetryMax)
+	}
+	if _, short := shortWaits(tried); len(short) != 0 {
+		t.Errorf("the parked send's waits are shorter than the cost requirement allows (parkedWait): %s", strings.Join(short, "; "))
+	}
+	if most != mentionSendLanes {
+		t.Errorf("%d sends ran at once, want mentionSendLanes (%d) and no more", most, mentionSendLanes)
+	}
+	if len(sent) != 10 {
+		t.Errorf("sent %v while the lane was parked, want the ten other recipients' sends", sent)
+	}
+	if len(gaveUp) != 1 || gaveUp[0].key != refused.key() {
+		t.Errorf("the queue gave back %v, want only the one send refused while the parked sends filled it", gaveUp)
+	}
 
-		// Once open, the lane's next try sends both, whenever its timer runs.
-		rig.open.Store(true)
-		for {
-			synctest.Wait()
-			rig.mu.Lock()
-			sent := len(rig.sent)
-			rig.mu.Unlock()
-			if sent == 12 {
-				break
-			}
-			if serving, parked, _, _ := rig.state(); !parked && serving == 0 {
-				t.Fatalf("the lane sent %d of its two once open and is neither parked nor served, so it never will", sent-10)
-			}
-			time.Sleep(time.Second)
-		}
+	rig.open.Store(true)
+	rig.clock.Set(rig.clock.AwaitArmed(t, "the lane's park once its earlier event is sent", 1)[0])
+	testwait.Eventually(t, "the parked lane's two sends", func() bool {
 		rig.mu.Lock()
-		order := append([]string(nil), rig.sent[10:]...)
-		rig.mu.Unlock()
-		if order[0] != "parked-first" || order[1] != "parked-second" {
-			t.Errorf("the lane sent %v once open, want parked-first and then parked-second", order)
-		}
+		defer rig.mu.Unlock()
+		return len(rig.sent) == 12
 	})
+	rig.mu.Lock()
+	order := append([]string(nil), rig.sent[10:]...)
+	rig.mu.Unlock()
+	if order[0] != "parked-first" || order[1] != "parked-second" {
+		t.Errorf("the lane sent %v once open, want parked-first and then parked-second", order)
+	}
 }
 
-// The read load of many parked lanes: each parked lane's tries come at least parkedWait apart, and
-// a try of a held send reads the rule once (TestAHeldMentionSendIsCountedAndReportedOnce counts
-// that on the database), so N lanes held behind a stuck topic family read the rule at most N
-// times each parkedReadEvery once their waits have ramped up - here 200 lanes, each tried at least
-// parkedTries times, every wait between two tries of one lane read. It runs in a synctest bubble,
-// as the test above does: each wait is the one the sender scheduled, the test waits for the tries
-// however long the schedule makes them take, and after each park, with every goroutine of the
-// bubble blocked, no goroutine serves a lane. A park that held its goroutine (slept its wait out
-// on it) would keep one on every lane it serves. The wait for the tries is bounded on the bubble's
-// clock by progress, as awaitPark's is: it fails by name once the fewest tries of any lane has
-// not grown for parkLiveness, which costs no real time. One lane that keeps parking keeps
-// awaitPark answering, so a lane that is never tried, or stops being tried, would otherwise hold
-// the row until go test's alarm.
+// triesWithin is how many tries a send that waits behind an earlier event makes within elapsed of
+// its first: the first, and one each time a park's wait (mentionOrderRetry) runs out.
+func triesWithin(elapsed time.Duration) int {
+	tries, waited := 1, time.Duration(0)
+	for parks := 1; ; parks++ {
+		waited += mentionOrderRetry(parks)
+		if waited > elapsed {
+			return tries
+		}
+		tries++
+	}
+}
+
+// The read load of many parked lanes: each parked lane tries once per mentionOrderRetry, each try
+// at least parkedWait after the one before, and a try of a held send reads the rule once
+// (TestAHeldMentionSendIsCountedAndReportedOnce counts that on the database), so N lanes held
+// behind a stuck topic family read the rule at most N times each parkedReadEvery once their waits
+// have ramped up - here 200 lanes over eight seconds of the fake, which the test moves to the next
+// park's deadline only once every lane whose park ended has been tried again and every lane has
+// parked again, its timer armed on the fake: each lane is tried exactly as often as triesWithin
+// says, every wait between two tries of one lane is read against parkedWait, and once the lanes
+// have parked no goroutine serves any. A park that held its goroutine (slept its wait out on it)
+// would keep one on every lane it serves, and the count would never reach 0.
 func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
 	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		const lanes = 200
-		rig := newParkRig(t, maxQueuedMentionSends)
-		tries := map[string][]time.Time{}
-		var triesMu sync.Mutex
-		rig.sender.send = func(_ context.Context, item mentionSend) (mentionSend, bool) {
-			triesMu.Lock()
-			tries[item.mention.Target] = append(tries[item.mention.Target], time.Now())
-			triesMu.Unlock()
-			return item, true
-		}
-		started := time.Now()
-		for index := range lanes {
-			rig.enqueue(fmt.Sprintf("held-%d", index), fmt.Sprintf("session:held-%d", index))
-		}
-		progressed, lastFewest := time.Now(), -1
-		for {
-			triesMu.Lock()
-			fewest, tried := parkedTries, len(tries)
-			if tried < lanes {
-				fewest = 0
-			}
-			for _, times := range tries {
-				fewest = min(fewest, len(times))
-			}
-			triesMu.Unlock()
-			if fewest >= parkedTries {
-				break
-			}
-			if fewest > lastFewest {
-				progressed, lastFewest = time.Now(), fewest
-			} else if stalled := time.Since(progressed); stalled > parkLiveness() {
-				serving, _, _, queued := rig.state()
-				t.Fatalf("the fewest tries of any lane stayed %d for %v of the bubble's clock: %d of the %d lanes tried at all, %d goroutines serving, %d sends queued; a lane never tried, or no longer tried, never reaches %d tries",
-					fewest, stalled, tried, lanes, serving, queued, parkedTries)
-			}
-			rig.awaitPark(t)
-			if serving, _, _, queued := rig.state(); serving != 0 || queued != lanes {
-				t.Fatalf("once every goroutine is blocked %d goroutines serve the parked lanes and %d sends are queued; want none serving and the %d parked sends queued",
-					serving, queued, lanes)
-			}
-		}
-		elapsed := time.Since(started)
+	const lanes = 200
+	const window = 8 * time.Second
+	rig := newParkRig(t, maxQueuedMentionSends)
+	tries := map[string][]time.Time{}
+	var triesMu sync.Mutex
+	rig.sender.send = func(_ context.Context, item mentionSend) (mentionSend, bool) {
 		triesMu.Lock()
-		total, read := 0, 0
-		var short []string
-		for lane, times := range tries {
+		tries[item.mention.Target] = append(tries[item.mention.Target], rig.clock.Now())
+		triesMu.Unlock()
+		return item, true
+	}
+	started := rig.clock.Now()
+	for index := range lanes {
+		rig.enqueue(fmt.Sprintf("held-%d", index), fmt.Sprintf("session:held-%d", index))
+	}
+	triesSoFar := func() int {
+		triesMu.Lock()
+		defer triesMu.Unlock()
+		total := 0
+		for _, times := range tries {
 			total += len(times)
-			waits, laneShort := shortWaits(times)
-			read += len(waits)
-			for _, wait := range laneShort {
-				short = append(short, lane+": "+wait)
+		}
+		return total
+	}
+	// allParked waits until the lanes have made tried tries in all and every lane has parked again,
+	// its timer armed on the fake past at: no goroutine serves any, every park is counted
+	// (pending), and the fake holds one timer per lane, none due by at. The rig counts a park
+	// before the sender's AfterFunc arms its timer, and a lane whose goroutine gives it up has left
+	// the goroutines serving before that (serve, next), so pending and serving alone can read every
+	// lane parked while one park's timer is still to be armed; a move made then arms that timer from
+	// the moved fake, and its lane is tried a park later than its waits say. Every timer on the fake
+	// is a lane's park: the sender reads the fake for its parks alone (newParkRig), and its claim
+	// refreshes tick on a fake of their own that this row never moves (parkRig.refreshes).
+	allParked := func(what string, tried int, at time.Time) {
+		t.Helper()
+		testwait.Until(t, what, func() (string, bool) {
+			serving, _, _, queued := rig.state()
+			pending := rig.pending.Load()
+			armed := rig.clock.Armed()
+			total := triesSoFar()
+			return fmt.Sprintf("%d tries of %d, %d parks pending, %d timers armed, %d goroutines serving, %d sends queued",
+					total, tried, pending, len(armed), serving, queued),
+				total == tried && pending == lanes && serving == 0 && len(armed) == lanes && armed[0].After(at)
+		})
+	}
+	allParked("every lane parked after its first try, with no goroutine serving any", lanes, started)
+	for {
+		armed := rig.clock.Armed()
+		next := armed[0]
+		if next.Sub(started) > window {
+			break
+		}
+		// Each lane whose park ends by next is tried once more as the fake reaches it.
+		due := 0
+		for _, at := range armed {
+			if !at.After(next) {
+				due++
 			}
 		}
-		triesMu.Unlock()
-		slices.Sort(short)
-		t.Logf("%d lanes parked for %v of the bubble's clock: %d tries, %d waits between two tries of one lane read, %d of them shorter than parkedWait",
-			lanes, elapsed, total, read, len(short))
-		if len(short) != 0 {
-			t.Fatalf("%d waits between two tries of one lane are shorter than the cost requirement allows (parkedWait), the first %s",
-				len(short), strings.Join(short[:min(5, len(short))], "; "))
+		tried := triesSoFar() + due
+		rig.clock.Set(next)
+		allParked(fmt.Sprintf("every lane parked again once the fake reached %v, with no goroutine serving any", next.Sub(started)), tried, next)
+	}
+	elapsed := rig.clock.Now().Sub(started)
+	serving, _, _, queued := rig.state()
+	triesMu.Lock()
+	defer triesMu.Unlock()
+	total, most, laneCount := 0, 0, len(tries)
+	var short []string
+	for lane, times := range tries {
+		total += len(times)
+		most = max(most, len(times))
+		_, laneShort := shortWaits(times)
+		for _, wait := range laneShort {
+			short = append(short, lane+": "+wait)
 		}
-	})
+	}
+	slices.Sort(short)
+	bound := triesWithin(elapsed)
+	t.Logf("%d lanes parked for %v of the fake: %d tries (%.2f a lane a second at the end's 1 per %v), at most %d on one lane (bound %d); %d goroutines serving, %d sends queued; %d waits shorter than parkedWait",
+		lanes, elapsed, total, float64(total)/elapsed.Seconds()/lanes, mentionOrderRetryMax, most, bound, serving, queued, len(short))
+	if laneCount != lanes {
+		t.Fatalf("%d lanes were tried, want all %d", laneCount, lanes)
+	}
+	if len(short) != 0 {
+		t.Fatalf("%d waits between two tries of one lane are shorter than the cost requirement allows (parkedWait), the first %s",
+			len(short), strings.Join(short[:min(5, len(short))], "; "))
+	}
+	for target, times := range tries {
+		if len(times) != bound {
+			t.Fatalf("lane %s was tried %d times in %v, want %d (triesWithin, mentionOrderRetry)", target, len(times), elapsed, bound)
+		}
+	}
+	if queued != lanes {
+		t.Fatalf("%d sends are queued, want the %d parked ones still among them", queued, lanes)
+	}
 }

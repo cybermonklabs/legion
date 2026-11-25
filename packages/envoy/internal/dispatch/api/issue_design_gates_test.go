@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // publishDesignGatesResponse publishes on one issue the way the deployment's daemon does: over the
@@ -600,7 +602,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 			answered <- response
 		}()
 		waitForDatabaseLocks(t, lockTx, 1)
-		response := <-answered
+		response := testwait.Receive(t, "the edit to answer while the gate read is locked out", answered)
 
 		superseded := adviceFromResponse(t, response.Code, response.Body.String()).SupersededApproval
 		if superseded == nil || superseded.ApprovedVersion != approved || superseded.Version != approved+1 {
@@ -678,12 +680,12 @@ func TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 				response := publishDesignGatesResponse(t, handler, issue, map[string]any{"gates": set, "actor": sessionActor()})
 				codes[index] = response.Code
 				if response.Code == http.StatusOK {
-					answers[index] = decodeBody[issueDesignGates](t, response).Gates
+					answers[index] = decodeBodyOrError[issueDesignGates](t, response).Gates
 				}
 			}()
 		}
 		start.Done()
-		done.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d's two design-gate publishes of one issue to answer", round+1), done.Wait)
 		stored := recordedDesignGates(t, handler, issue)
 		if !slices.Equal(stored, sets[0]) && !slices.Equal(stored, sets[1]) {
 			t.Errorf("round %d: the issue records %v, want exactly %v or %v", round+1, stored, sets[0], sets[1])

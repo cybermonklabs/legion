@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // A stored tree is read back in an array of its own grown by append, whose capacity is the whole
 // allocation the runtime rounded the tree's length up to. The display cache charges a tree its

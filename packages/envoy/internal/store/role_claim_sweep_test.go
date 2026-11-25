@@ -36,6 +36,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -78,6 +79,15 @@ const (
 	// counts.
 	sweepDeadline = 30 * time.Second
 )
+
+// stagedAhead is how long a row of this package stages a session TTL the registry judges a role
+// claim's grace by: a claim restored when the registry opened is kept for one session TTL after
+// the open, on the registry's clock, which is the real clock when the row gives it none
+// (releaseReadExpiredRoleClaim). It is staged state for that clock, not a wait: longer than any
+// `go test -timeout` CI gives this package (30 minutes in the race lane), so a restored claim
+// still reads within its grace however long the machine takes, where a minute would pass on a
+// loaded one.
+const stagedAhead = 24 * time.Hour
 
 // sweepRoleKeyValue is the role bucket's legacy handle with every Get and Delete counted, per key
 // and in total, and each delayed by delay. It is how these cases read what a deregistration cost:
@@ -238,26 +248,48 @@ func countRoleBucketCalls(t *testing.T, reg *Registry, handle *sweepRoleKeyValue
 // putRoleClaimsInParallel stores one claim per role, each held by holder(role), from a bounded
 // pool of goroutines. The pool is here for the clock alone: 5,002 sequential puts through one
 // handle measured 3.61 s in this pod, which is too slow to pay once per case, so the large
-// fixture is built once and shared by the cases that can share it.
+// fixture is built once and shared by the cases that can share it. A worker that cannot store a
+// claim stops and hands its error to the test's goroutine, which stops handing out roles and fails
+// the test naming the claim.
 func putRoleClaimsInParallel(t *testing.T, kv natsgo.KeyValue, roles []string, holder func(role string) string) {
 	t.Helper()
 	const workers = 32
 	pending := make(chan string)
+	// Each worker sends at most one error and then returns, so no send waits.
+	failed := make(chan error, workers)
 	var pool sync.WaitGroup
 	for range workers {
 		pool.Add(1)
 		go func() {
 			defer pool.Done()
 			for role := range pending {
-				putRoleClaim(t, kv, role, holder(role))
+				if _, err := putRoleClaimOffTest(kv, role, holder(role)); err != nil {
+					failed <- err
+					return
+				}
 			}
 		}()
 	}
+	var stored error
+handing:
 	for _, role := range roles {
-		pending <- role
+		select {
+		case pending <- role:
+		case stored = <-failed:
+			break handing
+		}
 	}
 	close(pending)
 	pool.Wait()
+	if stored == nil {
+		select {
+		case stored = <-failed:
+		default:
+		}
+	}
+	if stored != nil {
+		t.Fatalf("a claim of the parallel fixture: %v", stored)
+	}
 }
 
 // otherSessionsClaims is count role names, each held by a session of its own, none of them the
@@ -365,9 +397,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		t.Fatalf("open the registry over the seeded role bucket: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	ready, cancelReady := context.WithTimeout(context.Background(), time.Minute)
-	defer cancelReady()
-	if err := reg.WaitForCacheReady(ready); err != nil {
+	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for the caches over %d stored claims: %v", otherRoleClaims, err)
 	}
 
@@ -383,7 +413,10 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		if _, err := reg.Upsert(Interest{SessionID: session, MachineID: "m1"}, topics); err != nil {
 			t.Fatalf("store %s's interest record: %v", session, err)
 		}
-		waitForHeld(t, reg, session, roles...)
+		testwait.Until(t, fmt.Sprintf("the role claim view to name %s the holder of %v", session, roles), func() (string, bool) {
+			held, err := reg.RolesHeldBy(session)
+			return fmt.Sprintf("RolesHeldBy(%s) = %v, %v", session, held, err), err == nil && slices.Equal(held, roles)
+		})
 
 		counting := countRoleBucketCalls(t, reg, &sweepRoleKeyValue{delay: claimCallDelay})
 		ctx, cancel := context.WithTimeout(context.Background(), sweepDeadline)

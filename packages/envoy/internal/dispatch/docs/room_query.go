@@ -1,7 +1,6 @@
 package docs
 
 import (
-	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -114,10 +113,11 @@ type roomAnswer struct {
 // lanes call them, roomSync.handlers).
 type roomQueries struct {
 	service *Service
-	// wait is answerWait's bound, roomQueryWait where it is zero, as it is in production. A test
-	// of what an answer holds sets a bound of its own: roomQueryWait is a latency budget, and on a
-	// loaded machine an answer can take longer than that to cross Postgres twice.
-	wait    time.Duration
+	// wait answers answerWait's bound at each ask, and nil leaves it roomQueryWait, as it is in
+	// production. A test of what an answer holds sets a bound of its own: roomQueryWait is a
+	// latency budget, and on a loaded machine an answer can take longer than that to cross
+	// Postgres twice.
+	wait    func() time.Duration
 	mu      sync.Mutex
 	pending map[string]*pendingRoomQuery
 }
@@ -125,7 +125,10 @@ type roomQueries struct {
 // answerWait is how long this process's queries wait for the other members' answers, and how
 // long a flush it answers waits for its room's appends.
 func (r *roomQueries) answerWait() time.Duration {
-	return cmp.Or(r.wait, roomQueryWait)
+	if r.wait != nil {
+		return r.wait()
+	}
+	return roomQueryWait
 }
 
 // pendingRoomQuery is one query of this process's waiting on answers: the parts of each member's
@@ -173,7 +176,8 @@ func readRoomQueryMembers(ctx context.Context, q Queryer, room string, checkLock
 }
 
 // ask sends a kind query about room to every other member, read through q, and returns the whole
-// answers that arrive within answerWait. asked says whether any other member was there to ask.
+// answers that arrive within answerWait on the service's clock. asked says whether any other
+// member was there to ask.
 // A query this process could not send, or whose answers it could not hear - its own listener is
 // not connected, so it is no member - is logged and answered by nobody; only a failed read of the
 // members, which leaves a transaction q belongs to aborted, is an error.
@@ -219,7 +223,7 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 		delete(r.pending, query.ID)
 		r.mu.Unlock()
 	}()
-	started := time.Now()
+	started := r.service.clock.Now()
 	if err := r.service.roomSyncSender.Notify(ctx, documentQueryChannel, string(payload)); err != nil {
 		if ctx.Err() != nil {
 			return nil, true, ctx.Err()
@@ -228,11 +232,11 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 			"room", room, "kind", kind, "error", err)
 		return nil, true, nil
 	}
-	timer := time.NewTimer(r.answerWait())
+	timer := r.service.clock.NewTimer(r.answerWait())
 	defer timer.Stop()
 	select {
 	case <-pending.done:
-	case <-timer.C:
+	case <-timer.C():
 	case <-ctx.Done():
 		return nil, true, ctx.Err()
 	}
@@ -243,7 +247,7 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 	if len(missing) > 0 {
 		slices.Sort(missing)
 		slog.Warn("dispatch: other processes did not answer a document room query in time; going on without them",
-			"room", room, "kind", kind, "members", missing, "waited", time.Since(started))
+			"room", room, "kind", kind, "members", missing, "waited", r.service.clock.Now().Sub(started))
 	}
 	for _, answer := range answers {
 		if answer.tooLarge {
@@ -321,7 +325,8 @@ func (p *roomAnswerParts) assemble() (roomAnswer, error) {
 
 // query is documentQueryChannel's handler, on room sync's query lane. This process's own queries
 // are dropped. A holds or share query is answered here; a flush waits for the room's appends on a
-// goroutine of its own, bounded by answerWait, so a slow flush never holds up the next query.
+// goroutine of its own, bounded by answerWait on the service's clock, so a slow flush never
+// holds up the next query.
 func (r *roomQueries) query(ctx context.Context, payload string) {
 	var query roomQuery
 	if err := json.Unmarshal([]byte(payload), &query); err != nil || query.ID == "" || query.Room == "" {
@@ -359,7 +364,7 @@ func (r *roomQueries) query(ctx context.Context, payload string) {
 		done := s.askRoomAppends(query.Room)
 		go func() {
 			defer done()
-			flushed, cancel := context.WithTimeout(ctx, r.answerWait())
+			flushed, cancel := s.clock.WithTimeout(ctx, r.answerWait())
 			defer cancel()
 			if err := awaitStored(flushed, s.instanceOf(live), classes); err != nil {
 				slog.Warn("dispatch: a document room's updates were not stored in time to answer another process's flush; it is left unanswered",
@@ -374,7 +379,8 @@ func (r *roomQueries) query(ctx context.Context, payload string) {
 }
 
 // send sends answer, to query, with actors and updates, in as many parts as their size takes
-// (roomAnswerPayloads).
+// (roomAnswerPayloads), within roomSyncSendTimeout on the service's clock: the real clock in
+// production, and in a test a fake the test moves, so a send it holds ends only where it moves it.
 func (r *roomQueries) send(ctx context.Context, query roomQuery, answer roomAnswerPart, actors []model.Actor, updates []byte) {
 	answer.ID, answer.Process = query.ID, r.service.processID
 	payloads, err := roomAnswerPayloads(answer, actors, base64.StdEncoding.EncodeToString(updates))
@@ -382,7 +388,7 @@ func (r *roomQueries) send(ctx context.Context, query roomQuery, answer roomAnsw
 		slog.Error("dispatch: encode a document room answer", "room", query.Room, "error", err)
 		return
 	}
-	sending, cancel := context.WithTimeout(ctx, roomSyncSendTimeout)
+	sending, cancel := r.service.clock.WithTimeout(ctx, roomSyncSendTimeout)
 	defer cancel()
 	for _, payload := range payloads {
 		if err := r.service.roomSyncSender.Notify(sending, documentAnswerChannel, payload); err != nil {

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -27,9 +26,8 @@ type Fill struct {
 // StartFill runs start, which runs textversions.Run with the test's own Config, in a goroutine of
 // its own: on a context Stop ends, with the events wake Wake signals and the logger whose lines
 // the Fill reads, both of which start puts in its Config. start answering an error fails the test.
-// The fill is stopped once the test ends. It takes *testing.T, as Stop does, whose wait is
-// testwait's.
-func StartFill(t *testing.T, start func(ctx context.Context, wake <-chan struct{}, logger *slog.Logger) error) *Fill {
+// The fill is stopped once the test ends.
+func StartFill(t testing.TB, start func(ctx context.Context, wake <-chan struct{}, logger *slog.Logger) error) *Fill {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	fill := &Fill{events: make(chan struct{}, 1), logs: &logtest.Buffer{}, cancel: cancel, stopped: make(chan struct{})}
@@ -40,7 +38,7 @@ func StartFill(t *testing.T, start func(ctx context.Context, wake <-chan struct{
 			t.Errorf("run the keyword fill: %v", err)
 		}
 	}()
-	t.Cleanup(func() { fill.Stop(t) })
+	t.Cleanup(func() { fill.Stop(t, "the keyword fill to return after its stop") })
 	return fill
 }
 
@@ -53,18 +51,19 @@ func (f *Fill) Wake() {
 	}
 }
 
-// Stop ends the fill's context, as a serving process's stop does, and waits for Run to return. Its
-// one bound is the test binary's deadline less testwait's margin (testwait.Until): a Run that never
-// returns fails the test with the fill's log as it stood then.
-func (f *Fill) Stop(t *testing.T) {
+// Stop ends the fill's context, as a serving process's stop does, and waits, through the shared
+// wait, for Run to return: what names that wait, and its failure carries the fill's log. The
+// reading is the fill's log buffer, which the shared wait renders (String) only when it gives up,
+// so an ask reads nothing of the log.
+func (f *Fill) Stop(t testing.TB, what string) {
 	t.Helper()
 	f.cancel()
-	testwait.Until(t, "the keyword fill's Run to return once its context ended (the fill's log)", func() (string, bool) {
+	testwait.Until(t, what, func() (fmt.Stringer, bool) {
 		select {
 		case <-f.stopped:
-			return "", true
+			return nil, true
 		default:
-			return f.Log(), false
+			return f.logs, false
 		}
 	})
 }
@@ -93,16 +92,11 @@ func (f *Fill) Logged(t testing.TB, prefix string) bool {
 	return len(f.Lines(t, prefix)) > 0
 }
 
-// AwaitLine waits until the fill logs a line whose message starts with prefix, reading its log
-// every 20 ms. Its one bound is the test binary's deadline less testwait's margin
-// (testwait.UntilPolling): a fill that never logs the line fails the test with its log as it stood
-// then.
-func (f *Fill) AwaitLine(t *testing.T, prefix string) {
+// AwaitLine waits, through the shared wait, until the fill logs a line whose message starts with
+// prefix. Its failure carries the fill's log as it stood at the last read.
+func (f *Fill) AwaitLine(t testing.TB, prefix string) {
 	t.Helper()
-	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the keyword fill to log a %q line (its log)", prefix), func() (string, bool) {
-		if f.Logged(t, prefix) {
-			return "", true
-		}
-		return f.Log(), false
+	testwait.Until(t, fmt.Sprintf("the keyword fill to log a %q line", prefix), func() (string, bool) {
+		return f.Log(), f.Logged(t, prefix)
 	})
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // treesRequest is a GET as the dashboard makes it when trees is true (`Dispatch-Trees: 1`) and as
@@ -823,7 +824,7 @@ func TestReadersOfOneListAtOnceAreAnsweredTheSameTrees(t *testing.T) {
 			answers[reader] = builtShapedComments(comments, true)
 		}()
 	}
-	readers.Wait()
+	testwait.Returns(t, "every reader of the one list at once to be answered its trees", readers.Wait)
 	for reader, answer := range answers {
 		for index, read := range answer {
 			if !bytes.Equal(read.BodyTree, want[index].BodyTree) {

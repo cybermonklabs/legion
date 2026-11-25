@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"slices"
 	"sync"
 	"testing"
@@ -12,6 +11,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build, raced (ownerlock_fleet_test.go): the writers of either
@@ -36,7 +37,7 @@ func raceShapes(t *testing.T, s *Store, owners fleetOwners, a, b writerShape, ro
 	committed := map[Owner]int{}
 	tally := raceTally{rounds: rounds}
 	var mu sync.Mutex
-	for range rounds {
+	for round := range rounds {
 		var wg sync.WaitGroup
 		for _, shape := range []writerShape{a, b} {
 			subset, touch := randomOwners(all)
@@ -58,7 +59,7 @@ func raceShapes(t *testing.T, s *Store, owners fleetOwners, a, b writerShape, ro
 				}
 			})
 		}
-		wg.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d: the writers %q and %q to end their transactions", round, a, b), wg.Wait)
 	}
 	tally.lost = lostIncrements(t, s, all, start, committed)
 	return tally
@@ -123,13 +124,18 @@ const (
 // its row deregistered and its mark aged past the window, as that much time passing does. No
 // update is lost, nothing deadlocks and nothing else fails: a writer of this build that read no
 // earlier build holds the gate until it ends, so the arrival waits for it, and every writer that
-// starts while the arrival waits, or after it, takes the owners' rows. Writers run in both modes,
-// and the arrivals that waited for the gate, and how long, are logged. With the gate taken out of
-// the two arrival triggers, a writer that read no earlier build writes beside that build's
-// writers, and updates are lost. The registration's own 5 s bound on the gate is not this row's
-// subject, so the row takes it off the function (waitRegistrationsOut): each registration waits as
-// its own transaction allows, until shortly before the test binary's deadline, and one that waits
-// longer behind a slow writer is no failure here.
+// starts while the arrival waits, or after it, takes the owners' rows. Writers commit in both modes
+// in every cycle, and the row waits for each: the earlier build leaves only once a writer of this
+// build has committed beside it since its publish, and the next cycle starts only once a writer of
+// this build has committed in the advisory mode since it left, so each arrival meets writers that
+// read no earlier build, which hold the gate. A build whose writers never commit in one of the two
+// modes fails the row by name at that wait's give-up. The arrivals that waited for the gate, and
+// how long, are logged. The heartbeat runs back to back, as the writers do, with no pace of its
+// own. With the gate taken out of the two arrival triggers, a writer that read no earlier build
+// writes beside that build's writers, and updates are lost. The registration's own 5 s bound on
+// the gate is not this row's subject, so the row takes it off the function (waitRegistrationsOut):
+// each registration waits as its own transaction allows, until shortly before the test binary's
+// deadline, and one that waits longer behind a slow writer is no failure here.
 func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing.T) {
 	t.Parallel()
 	s, owners := openFleetStore(t)
@@ -140,8 +146,18 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 	start := ownerSeqs(t, s, all)
 	ledger := newRaceLedger()
 
+	// This build's writers and heartbeat stop and are joined however the row ends, so none outlives
+	// the test, as ownerlock_fleet_mark_test.go's writers do. The join is the shared wait's, outside
+	// the once that closes the stop, since a give-up inside a sync.OnceFunc becomes a panic with a
+	// nil argument; a second call closes nothing and finds the writers already joined.
 	stop := make(chan struct{})
 	var thisBuild sync.WaitGroup
+	closeStop := sync.OnceFunc(func() { close(stop) })
+	stopThisBuild := func() {
+		closeStop()
+		testwait.Returns(t, "this build's writers and its heartbeat to stop once told", thisBuild.Wait)
+	}
+	t.Cleanup(stopThisBuild)
 	for range gateRaceWriters {
 		thisBuild.Go(func() {
 			for {
@@ -159,11 +175,22 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 			select {
 			case <-stop:
 				return
-			case <-time.After(5 * time.Millisecond):
+			default:
 			}
 			ledger.record(t, "this build's heartbeat", heartbeatAsThisBuild(ctx, t, s, mine), nil)
 		}
 	})
+	// commitsIn is how many commits of this build's writers the ledger has seen in a mode: beside an
+	// earlier build (true), where their fleet read found one, or advisory (false), where it found
+	// none. A commit is counted only once its transaction has returned, so at any moment each of the
+	// gateRaceWriters writers can hold one commit already made that the ledger has not counted yet:
+	// a count that grows past a reading by more than gateRaceWriters holds a commit made after that
+	// reading.
+	commitsIn := func(besideAnEarlierBuild bool) int {
+		ledger.mu.Lock()
+		defer ledger.mu.Unlock()
+		return ledger.modes[besideAnEarlierBuild]
+	}
 
 	var waits []time.Duration
 	timedArrival := func(arrival earlierBuildArrival, key string) {
@@ -174,6 +201,8 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 	}
 	for cycle := range gateRaceCycles {
 		timedArrival(earlierBuildArrivals[0], uuid.NewString())
+		// The earlier build is in the fleet from its publish on, until it leaves below.
+		besideBefore := commitsIn(true)
 		var earlier sync.WaitGroup
 		for range 2 {
 			earlier.Go(func() {
@@ -186,15 +215,28 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 		if cycle%2 == 0 {
 			timedArrival(earlierBuildArrivals[1], instance)
 		}
-		earlier.Wait()
+		testwait.Returns(t, fmt.Sprintf("cycle %d: the earlier build's two row-first writers to end their writes", cycle), earlier.Wait)
+		// The earlier build leaves only once a writer of this build has committed beside it: a
+		// commit in that mode, which only a fleet read that finds an earlier build answers, made
+		// after the publish (commitsIn).
+		testwait.Until(t, fmt.Sprintf("cycle %d: a writer of this build to commit beside the earlier build before it leaves", cycle), func() (string, bool) {
+			beside := commitsIn(true)
+			return fmt.Sprintf("%d commits beside an earlier build, %d when it published", beside, besideBefore), beside > besideBefore+gateRaceWriters
+		})
 		if _, err := s.Pool.Exec(ctx, `delete from server_processes where instance = $1::uuid`, instance); err != nil {
 			t.Fatal(err)
 		}
 		ageLegacyMark(t, s, OwnerLockMarkWindow+time.Minute)
-		time.Sleep(time.Duration(10+rand.IntN(40)) * time.Millisecond)
+		// The earlier build has left. The next cycle starts once a writer of this build has
+		// committed in the advisory mode since: a commit in that mode, which only a fleet read that
+		// finds no earlier build answers, made after the leaving (commitsIn).
+		advisoryBefore := commitsIn(false)
+		testwait.Until(t, fmt.Sprintf("cycle %d: a writer of this build to commit in the advisory mode once the earlier build left", cycle), func() (string, bool) {
+			advisory := commitsIn(false)
+			return fmt.Sprintf("%d commits in the advisory mode, %d when the earlier build left", advisory, advisoryBefore), advisory > advisoryBefore+gateRaceWriters
+		})
 	}
-	close(stop)
-	thisBuild.Wait()
+	stopThisBuild()
 
 	lost, deadlocks, failures := ledger.settle(t, s, all, start)
 	slices.Sort(waits)
@@ -203,6 +245,8 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 	if lost != 0 || deadlocks != 0 || failures != 0 {
 		t.Errorf("%d increments lost, %d deadlocks, %d other failures; want none of each", lost, deadlocks, failures)
 	}
+	// Both modes committed in every cycle, which the waits above hold: each fails the row by name
+	// when no writer of this build commits in its mode.
 	if ledger.modes[true] == 0 || ledger.modes[false] == 0 {
 		t.Errorf("this build's writers committed %d beside an earlier build and %d in the advisory mode; want both modes raced", ledger.modes[true], ledger.modes[false])
 	}

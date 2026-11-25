@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -51,7 +52,8 @@ type deliverySubscription struct {
 // changes, and a page keeps the last one it was sent, so a socket that was down at a change, or a
 // page that held no delivery view then, would otherwise show the old one for good. Nothing follows
 // before the hub knows a verdict: the first is set silently, from the read that answers the first
-// snapshot (recompute).
+// snapshot, and the verdict of a freshness row the hub heard while that read ran follows it when
+// the two differ (recompute).
 // While delivery is not configured the sub is told DELIVERY_NOT_CONFIGURED once and stays open,
 // and the settings' first save answers its snapshot. A sub id conn already holds is replaced. The
 // first sub of a hub with none starts a generation (deliveryHub); once the server's lifetime has
@@ -82,7 +84,7 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		}
 	}
 
-	now := h.clock.Now()
+	now := h.now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	g := h.generation
@@ -248,8 +250,10 @@ type hubGeneration struct {
 	// for. The relay subscription is taken apart (seedEvents), so neither waits on the horizon.
 	ready chan struct{}
 	// Each wake holds at most one pending signal: what it asks for covers every signal before it.
-	wakeWork, wakeChanges, connected chan struct{}
-	barrier                          chan chan struct{}
+	// wakeFreshness asks the intake to read the freshness row again once a read of it after a
+	// LISTEN failed (readFreshness).
+	wakeWork, wakeChanges, wakeFreshness, connected chan struct{}
+	barrier                                         chan chan struct{}
 	// feeds hands the intake the relay subscription seedEvents took. It has no slot: a hand-over
 	// completes only as the intake takes it, so a subscription is always either the intake's, which
 	// it cancels as it returns, or still seedEvents', which cancels it once g has ended. A slot
@@ -268,31 +272,26 @@ type hubGeneration struct {
 	// p0 is the open P0 issues (OpenP0Keys), kept current from issue event payloads.
 	p0 map[string]struct{}
 	// fresh is the freshness row as last heard, and sent the verdict last sent; known is false
-	// until the first recompute sets them, silently.
+	// until the first recompute sets them, silently. heard counts the freshness rows applied from a
+	// notification or from the read after a LISTEN (hearFreshnessLocked), so a read that began
+	// before one of them leaves the row it applied in place (readFreshness, recompute).
 	fresh deliveryFreshnessHeard
 	sent  deliveryFreshnessVerdict
 	known bool
+	heard int64
 }
 
-// hubClock is the hub's clock: what time it is, and a timer that calls f once the clock reaches
-// at, at once when it already has. The timer names a moment rather than a wait, so a clock that
-// moves between the hub's read of it and the arm (a test's, which moves forward without waiting)
-// fires the timer all the same.
+// hubClock is the hub's clock, a narrowing of clock.Clock: clock.Real in production and a test's
+// clocktest.Fake. The worker arms its one timer for a moment as the wait from the clock's present
+// at the arm, so a clock that moved between the worker's read of it and the arm fires the timer at
+// that moment all the same.
 type hubClock interface {
 	Now() time.Time
-	At(at time.Time, f func()) hubTimer
+	AfterFunc(d time.Duration, f func()) clock.Timer
 }
 
-type hubTimer interface{ Stop() bool }
-
-// deliveryHubClock is the real clock.
-type deliveryHubClock struct{}
-
-func (deliveryHubClock) Now() time.Time { return time.Now().UTC() }
-
-func (deliveryHubClock) At(at time.Time, f func()) hubTimer {
-	return time.AfterFunc(time.Until(at), f)
-}
+// now is the hub's clock in UTC, where its days and their midnights are counted.
+func (h *deliveryHub) now() time.Time { return h.clock.Now().UTC() }
 
 // deliveryView is one view the open pages show, shared by every sub that names it.
 type deliveryView struct {
@@ -391,7 +390,7 @@ type deliveryFreshnessVerdict struct {
 
 // deliveryHubNote is one thing the hub did, for a test's observe.
 type deliveryHubNote struct {
-	what  string // "recompute begin", "recompute position", "recompute read", "recompute end", "connected", "feed ready", "events seeded", "event", "feed closed"
+	what  string // "recompute begin", "recompute position", "recompute read", "recompute end", "connected", "feed ready", "events seeded", "event", "feed closed", "notified"
 	view  string // the view's key
 	cause string
 	sent  int
@@ -401,6 +400,8 @@ type deliveryHubNote struct {
 	// eventID is the event an "event" note applied, or the head a "feed ready" or "events seeded"
 	// note's feed began at.
 	eventID int64
+	// channel and payload are the notification a "notified" note's onNotify routed.
+	channel, payload string
 }
 
 const (
@@ -446,7 +447,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	g := &hubGeneration{
 		ctx: ctx, stop: stop,
 		ready:    make(chan struct{}),
-		wakeWork: make(chan struct{}, 1), wakeChanges: make(chan struct{}, 1), connected: make(chan struct{}, 1),
+		wakeWork: make(chan struct{}, 1), wakeChanges: make(chan struct{}, 1), wakeFreshness: make(chan struct{}, 1), connected: make(chan struct{}, 1),
 		barrier: make(chan chan struct{}),
 		feeds:   make(chan hubEventFeed),
 		views:   map[string]*deliveryView{},
@@ -504,7 +505,9 @@ func (h *deliveryHub) note(n deliveryHubNote) {
 // onNotify routes one notification to g, on the listener's goroutine: a change wakes the intake's
 // catch-up of the change log, a freshness row is applied at once, reading nothing, a read of a
 // Legion daemon or a write of its setting marks that project's Legion views, and a write of a run
-// marks the legion_issue views of its issue.
+// marks the legion_issue views of its issue. Once it has, it notes the notification ("notified")
+// for a test's observe, with no lock held; the note does nothing in production, where observe is
+// nil. A Legion notification's marks are made by then; a change's are the intake's to make later.
 func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	switch channel {
 	case deliveryChangesChannel:
@@ -516,6 +519,7 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	case workflowstore.RunsChannel:
 		h.dirtyLegionIssue(g, payload)
 	}
+	h.note(deliveryHubNote{what: "notified", channel: channel, payload: payload})
 }
 
 // dirtyLegionProject marks every Legion view of the project a read of a Legion daemon just recorded,
@@ -525,7 +529,7 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 // whose issues did. A setting's write moves every such view too: the board appears or is refused,
 // and an issue's view says whether the project names a daemon (configured).
 func (h *deliveryHub) dirtyLegionProject(g *hubGeneration, project string) {
-	now := h.clock.Now()
+	now := h.now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, view := range g.views {
@@ -539,7 +543,7 @@ func (h *deliveryHub) dirtyLegionProject(g *hubGeneration, project string) {
 // committed for, and nothing else: no other view shows an issue's runs, and a run's write appends
 // no event the intake would hear (workflowstore.RunsChannel).
 func (h *deliveryHub) dirtyLegionIssue(g *hubGeneration, issue string) {
-	now := h.clock.Now()
+	now := h.now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, view := range g.views {
@@ -559,7 +563,7 @@ func (h *deliveryHub) dirtyLegionIssue(g *hubGeneration, issue string) {
 // whatever the lost notification announced; one that finds nothing moved sends nothing, since the
 // board's computed_at is in no delta and an issue's body has no computed time.
 func (h *deliveryHub) dirtyLegionViews(g *hubGeneration) {
-	now := h.clock.Now()
+	now := h.now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, view := range g.views {

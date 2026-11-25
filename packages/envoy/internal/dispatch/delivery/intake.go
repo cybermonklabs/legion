@@ -279,8 +279,9 @@ const githubIntakeSubject = "notifications.github.>"
 // failure it does not cover is a deadline that falls on a pull request's head write, or on
 // either of the reads before it, which leaves a head row no pass can offer (ErrHeadNotStored);
 // that envelope is handed back instead, for the bounded number of redeliveries deliver allows.
-// It is the default of the intake's own messageTimeout (intakeTuning), which a test shortens on
-// the intakes it builds.
+// It is the default of the intake's own messageTimeout (intakeTuning), which a test sets on the
+// intakes it builds, and it runs on the intake's clock (heldDurable.clock), as the job intake's
+// read does (JobIntake.fire), so a test moves a fake past it rather than waiting it out.
 const intakeMessageTimeout = time.Minute
 
 // intakeMaxAckPending bounds how many messages NATS may have outstanding with this consumer at
@@ -296,7 +297,8 @@ const intakeMaxAckPending = 4
 // intake's maxAckPending and messageTimeout rather than chosen: when every outstanding message is
 // one key's, the last of maxAckPending waits for the ones before it, so the bound is their total
 // handling time, plus a minute for the acknowledgement itself to land. A test that shortens either
-// on its intakes gets an ack wait derived from what it set.
+// on its intakes gets an ack wait derived from what it set. Production's two (intakeMaxAckPending,
+// intakeMessageTimeout) make it five minutes.
 func (t *intakeTuning) ackWait() time.Duration {
 	return time.Duration(t.maxAckPending)*t.messageTimeout + time.Minute
 }
@@ -342,7 +344,8 @@ func consumerGenerationMetadata() map[string]string {
 }
 
 // deliver handles one message on its key's goroutine: it routes the envelope's payload by the
-// settings the cache holds under the intake's messageTimeout, and acks: a malformed envelope has
+// settings the cache holds under the intake's messageTimeout on its clock (heldDurable.clock), or
+// until the end a test gave it (heldDurable.messageDeadline), and acks: a malformed envelope has
 // nothing to retry, and a route error (a failed GitHub call, or that deadline passing) is caught
 // up by the next reconcile pass rather than by NATS redelivery -- see the package doc comment --
 // as a push the importer failed to take is by the importer's own five-minute pass. One route error
@@ -414,7 +417,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		}
 		d.acknowledge(msg)
 	}()
-	ctx, cancel := context.WithTimeout(handling, in.tuning.messageTimeout)
+	ctx, cancel := in.messageDeadline.WithTimeout(in.clock, handling, in.tuning.messageTimeout)
 	defer cancel()
 
 	envelope := message.envelope

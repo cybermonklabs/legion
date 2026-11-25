@@ -33,14 +33,15 @@ func TestHoldStalledWriteReturnsWithAWriteStillInTheSocket(t *testing.T) {
 	}
 }
 
-// writeCountingDialer dials as nats.go's own dialer does, and counts the writes begun on the sockets
-// it hands out and those that returned.
+// writeCountingDialer dials as nats.go's own dialer does, with nats.go's default timeout (as
+// giveUpDialer dials), and counts the writes begun on the sockets it hands out and those that
+// returned.
 type writeCountingDialer struct {
 	begun, returned atomic.Int64
 }
 
 func (d *writeCountingDialer) Dial(network, address string) (net.Conn, error) {
-	conn, err := (&net.Dialer{Timeout: dialTimeout}).Dial(network, address)
+	conn, err := (&net.Dialer{Timeout: natsgo.DefaultTimeout}).Dial(network, address)
 	if err != nil {
 		return nil, err
 	}

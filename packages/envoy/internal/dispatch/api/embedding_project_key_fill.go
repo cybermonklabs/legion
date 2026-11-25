@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -29,9 +30,9 @@ const embeddingProjectKeyFillLease = "embeddings-project-key-fill"
 // one try for the lease and one read of a one-row table every five minutes for as long as the
 // labelling lasts, which is a dozen round trips an hour.
 //
-// It is a variable only so a test can drive the retry without waiting five minutes, as
-// store.embeddingProjectKeyProgressEvery is a variable only so a test can see a progress line.
-var embeddingProjectKeyFillRetry = 5 * time.Minute
+// The wait runs on the caller's clock (runEmbeddingProjectKeyFillOn), so a test moves a fake to
+// the next try rather than waiting five minutes or shortening the interval.
+const embeddingProjectKeyFillRetry = 5 * time.Minute
 
 // RunEmbeddingProjectKeyFill makes store.FillEmbeddingProjectKeys' pass under
 // embeddingProjectKeyFillLease, and keeps trying for that lease until the labelling is over,
@@ -62,7 +63,7 @@ var embeddingProjectKeyFillRetry = 5 * time.Minute
 // through duty_passes (duty/exclusive.go, readPeriod), and a pass made once in the life of a
 // release serves no interval, which is why the period here is zero: a lease and no period, the
 // pairing the delivery consumers' bind takes for its own non-periodic work
-// (delivery/intake.go:660). So what duty gives this file is the gate (Exclusive) and the jitter
+// (delivery/held_durable.go:397). So what duty gives this file is the gate (Exclusive) and the jitter
 // (Jittered), and the stop is the one thing written here.
 //
 // A duty.Hold is the other primitive and is still the wrong one: a hold is for a duty one
@@ -78,6 +79,12 @@ var embeddingProjectKeyFillRetry = 5 * time.Minute
 // failure it does not try again on is the progress row not being there to read - the row gone,
 // or the table it lives in gone (progressRowGone) - which is the loop's third way out.
 func RunEmbeddingProjectKeyFill(ctx context.Context, database *store.Store, leases duty.Leases) {
+	runEmbeddingProjectKeyFillOn(ctx, clock.Real(), database, leases)
+}
+
+// runEmbeddingProjectKeyFillOn is RunEmbeddingProjectKeyFill with its wait between tries on c, so
+// a test moves a fake to the next try.
+func runEmbeddingProjectKeyFillOn(ctx context.Context, c clock.Clock, database *store.Store, leases duty.Leases) {
 	for {
 		finished, gone := false, false
 		duty.Exclusive(ctx, leases, embeddingProjectKeyFillLease, time.Time{}, 0, func(ctx context.Context) {
@@ -102,10 +109,8 @@ func RunEmbeddingProjectKeyFill(ctx context.Context, database *store.Store, leas
 		}
 		// The try was skipped or it failed. Jittered, so two processes that booted together do
 		// not try in step for the length of the labelling.
-		select {
-		case <-ctx.Done():
+		if c.Sleep(ctx, duty.Jittered(embeddingProjectKeyFillRetry)) != nil {
 			return
-		case <-time.After(duty.Jittered(embeddingProjectKeyFillRetry)):
 		}
 		// Another process may have finished it while this one waited, and that is this loop's
 		// other way out: one row read, no lease taken, and no "nothing to do" line of a pass that

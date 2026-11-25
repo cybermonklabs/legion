@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // docsTestParallelism is how many of this package's tests run at once when the command line names
@@ -45,7 +46,7 @@ func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(docsTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	code := storetest.Main(m)
+	code := storetest.Main(m.Run)
 	if reportLeakedServices() && code == 0 {
 		code = 1
 	}
@@ -243,7 +244,7 @@ func TestLoadAfterClosingThePoolErrors(t *testing.T) {
 	t.Parallel()
 	unusedDatabase := storetest.Open(t)
 	unusedArtifact := createDocument(t, unusedDatabase, "before")
-	unusedDatabase.Pool.Close()
+	testwait.Returns(t, "every connection of the unused database's pool to come back, so the pool closes", unusedDatabase.Pool.Close)
 	if _, err := NewPgVersioned(unusedDatabase).Load(context.Background(), unusedArtifact); err == nil {
 		t.Fatal("load after closing an unused pool: no error, want one")
 	}
@@ -254,7 +255,7 @@ func TestLoadAfterClosingThePoolErrors(t *testing.T) {
 	if _, err := versioned.Load(context.Background(), artifactID); err != nil {
 		t.Fatalf("load before close: %v", err)
 	}
-	database.Pool.Close()
+	testwait.Returns(t, "every connection of the used database's pool to come back, so the pool closes", database.Pool.Close)
 	if _, err := versioned.Load(context.Background(), artifactID); err == nil {
 		t.Fatal("load after closing a used pool: no error, want one")
 	}

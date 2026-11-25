@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  Dispatch: reopening an issue could credit the move of its approval request to the document
+  settlement rather than to the person who edited the spec while the issue was closed. The request
+  still waited on that person, but its ask.edited event named system:document-settlement. This
+  happened when the settlement resumption picked the document's owed settlement while the room's
+  own settlement of the same edit was committing: the second settlement found nothing owed and
+  forgot the editor the first had kept. Now only the settlement that settles the owed row
+  changes the kept editor, so the reopen names the person whose text the closed issue's versions
+  hold.

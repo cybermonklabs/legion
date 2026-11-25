@@ -17,8 +17,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
@@ -76,7 +79,8 @@ func newClockedHubRig(t *testing.T, clock *fakeHubClock) *hubRig {
 
 // newMeasuredHubRig is newClockedHubRig with the hub reading through a pool of its own on the same
 // database, which hubAcquires counts: the relay reads the event log on the shared pool, as the
-// rest of the process does, and its reads are none of the hub's. So a test that measures what an
+// rest of the process does, and its reads - its first one among them, which its coalescing window
+// places after the hub has its feed - are none of the hub's. So a test that measures what an
 // answer costs the database counts the hub's own reads and waits for no other reader.
 func newMeasuredHubRig(t *testing.T, clock *fakeHubClock) *hubRig {
 	t.Helper()
@@ -84,35 +88,52 @@ func newMeasuredHubRig(t *testing.T, clock *fakeHubClock) *hubRig {
 	return hubOnStore(t, handler, database, deps, storetest.SecondProcess(t, database), clock, nil)
 }
 
-// fakeHubClock is the real clock moved forward by Advance: Now is the wall clock plus its offset,
-// which every advance grows, and a timer fires once the wall clock plus the offset reaches its
-// moment, so a test moves the hub past a threshold or a midnight without waiting for it. A timer
-// armed for a moment the clock has already reached fires at once, however far an Advance moved it
-// before the arm. A clock from newNoonHubClock starts with the offset that makes it read noon UTC,
-// and runs with the wall clock from there. A clock from newStillHubClock stands still between
-// advances instead: Now is noon UTC plus the advances. Its timers still fire on the wall clock as
-// well, but the hub's one timer only wakes its worker, which compares each view's due moment with
-// Now (deliveryHub.work, runDue), so how long the test's own writes take decides nothing.
+// fakeHubClock is the hub's clock in these tests: a clocktest.Fake that Advance moves, so a test
+// moves the hub past a threshold or a midnight without waiting for it, whose timers also run on
+// the wall clock. Each arm is placed on the fake and on a real timer of the same wait, and fires
+// once, on whichever comes first, so a timer armed for a moment the fake has already reached fires
+// at once, however far an Advance moved it before the arm. A clock from newNoonHubClock reads noon
+// UTC now and runs with the wall clock from there; one from newHeldHubClock is the wall clock. A
+// clock from newStillHubClock stands still between advances instead: Now is noon UTC plus the
+// advances. Its timers still fire on the wall clock as well, but the hub's one timer only wakes its
+// worker, which compares each view's due moment with Now (deliveryHub.work, runDue), so how long the
+// test's own writes take decides nothing. A clock from newFakeOnlyHubClock stands still too, and
+// arms the fake's timers alone. Now reads in UTC, as the hub's own clock does.
 type fakeHubClock struct {
-	mu     sync.Mutex
-	still  time.Time
-	offset time.Duration
-	timers []*fakeHubTimer
-	// beforeArm, when set, runs at each arm, before the timer is placed, until it answers true: a
-	// test's Advance landing between the worker's read of the clock and its arm.
-	beforeArm func() bool
-	// firing counts the timer callbacks that have won their timer's one run and not yet returned,
-	// and returned is signalled as each returns (waitCallbacks).
-	firing   int
-	returned *sync.Cond
+	*clocktest.Fake
+	still bool
+	// fakeOnly arms the fake's timers alone (newFakeOnlyHubClock).
+	fakeOnly bool
+	// hookMu guards the move moveAfterReads sets up and the count of the timers the hub armed.
+	hookMu sync.Mutex
+	// readsBeforeMove counts down the hub's reads of the clock (Now); the read that takes it to
+	// zero moves the clock on by moveBy once it has answered, so that read and the next differ.
+	readsBeforeMove int
+	moveBy          time.Duration
+	// arms counts the hub's AfterFunc calls.
+	arms int
+}
+
+// moveAfterReads moves the clock on by d right after the hub's nth read of it from now.
+func (c *fakeHubClock) moveAfterReads(n int, d time.Duration) {
+	c.hookMu.Lock()
+	defer c.hookMu.Unlock()
+	c.readsBeforeMove, c.moveBy = n, d
+}
+
+// armedCount is how many timers the hub has armed, and whether the move moveAfterReads set up
+// is spent.
+func (c *fakeHubClock) armedCount() (arms int, moved bool) {
+	c.hookMu.Lock()
+	defer c.hookMu.Unlock()
+	return c.arms, c.readsBeforeMove == 0
 }
 
 type fakeHubTimer struct {
-	clock *fakeHubClock
-	at    time.Time
-	f     func()
-	real  *time.Timer
-	done  atomic.Bool
+	f    func()
+	fake clock.Timer
+	real *time.Timer
+	done atomic.Bool
 }
 
 // noonToday is noon UTC of the present's day. Every preset view is due at the next UTC midnight
@@ -121,127 +142,86 @@ type fakeHubTimer struct {
 func noonToday() time.Time { return nextUTCMidnight(time.Now()).Add(-12 * time.Hour) }
 
 // newNoonHubClock is a fakeHubClock that reads noon UTC now and runs with the wall clock from there.
-func newNoonHubClock() *fakeHubClock { return &fakeHubClock{offset: time.Until(noonToday())} }
+func newNoonHubClock() *fakeHubClock {
+	held := clocktest.Held()
+	held.Set(noonToday())
+	return &fakeHubClock{Fake: held}
+}
+
+// newHeldHubClock is a fakeHubClock on the wall clock, moved on by its advances.
+func newHeldHubClock() *fakeHubClock { return &fakeHubClock{Fake: clocktest.Held()} }
 
 // newStillHubClock is a fakeHubClock standing still at noon UTC until Advance moves it.
-func newStillHubClock() *fakeHubClock { return &fakeHubClock{still: noonToday()} }
+func newStillHubClock() *fakeHubClock {
+	return &fakeHubClock{Fake: clocktest.New(noonToday()), still: true}
+}
 
-func (c *fakeHubClock) nowLocked() time.Time {
-	if c.still.IsZero() {
-		return time.Now().UTC().Add(c.offset)
-	}
-	return c.still.Add(c.offset)
+// newFakeOnlyHubClock is a fakeHubClock standing still at noon UTC whose timers fire only when the
+// test moves it: no real timer stands beside the fake's, so nothing of the wall clock reaches the
+// hub, and the fake's report of what is armed is the hub's whole timer. A view due a moment past
+// the fake, such as a pull request leaving 500 ns on, would on newStillHubClock have its real timer
+// fire and the worker arm it again at that pace until the test moved the fake.
+func newFakeOnlyHubClock() *fakeHubClock {
+	return &fakeHubClock{Fake: clocktest.New(noonToday()), still: true, fakeOnly: true}
 }
 
 func (c *fakeHubClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.nowLocked()
+	now := c.Fake.Now().UTC()
+	c.hookMu.Lock()
+	move := time.Duration(0)
+	if c.readsBeforeMove > 0 {
+		if c.readsBeforeMove--; c.readsBeforeMove == 0 {
+			move = c.moveBy
+		}
+	}
+	c.hookMu.Unlock()
+	if move != 0 {
+		c.Fake.Advance(move)
+	}
+	return now
 }
 
 // standsStill is whether the clock moves only by Advance, so a view's recompute, due on this
 // clock, waits for the test rather than for the wall clock.
-func (c *fakeHubClock) standsStill() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return !c.still.IsZero()
-}
+func (c *fakeHubClock) standsStill() bool { return c.still }
 
-func (c *fakeHubClock) At(at time.Time, f func()) hubTimer {
-	c.mu.Lock()
-	hook := c.beforeArm
-	c.mu.Unlock()
-	cleared := hook != nil && hook()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if cleared {
-		c.beforeArm = nil
+func (c *fakeHubClock) AfterFunc(d time.Duration, f func()) clock.Timer {
+	defer func() {
+		c.hookMu.Lock()
+		c.arms++
+		c.hookMu.Unlock()
+	}()
+	if c.fakeOnly {
+		return c.Fake.AfterFunc(d, f)
 	}
-	timer := &fakeHubTimer{clock: c, at: at, f: f}
-	timer.real = time.AfterFunc(at.Sub(c.nowLocked()), timer.fire)
-	c.timers = append(c.timers, timer)
+	timer := &fakeHubTimer{f: f}
+	timer.fake = c.Fake.AfterFunc(d, timer.fire)
+	timer.real = time.AfterFunc(d, timer.fire)
 	return timer
 }
 
-// onArm runs f inside each of the hub's arms of its timer, before the timer is placed, until f
-// answers true.
-func (c *fakeHubClock) onArm(f func() bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.beforeArm = f
-}
-
-// returnedLocked is the condition waitCallbacks waits on, made on first use, with c.mu held.
-func (c *fakeHubClock) returnedLocked() *sync.Cond {
-	if c.returned == nil {
-		c.returned = sync.NewCond(&c.mu)
-	}
-	return c.returned
-}
-
-// waitCallbacks returns once no timer callback that has begun is still running. A callback of an
-// earlier arm that has won its timer's one run (fire) can be descheduled before it sends its wake,
-// and a timer's Stop cannot take that run back; a wake it sends after a test read the worker's
-// wakes as spent would wake the worker in place of the timer the test is about.
-func (c *fakeHubClock) waitCallbacks() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for c.firing > 0 {
-		c.returnedLocked().Wait()
-	}
-}
-
-// fire runs the timer's callback once, whether the real timer or an Advance comes first. Its win
-// of that one run and the count of callbacks under way change together under the clock's lock, as
-// Stop's win does, so waitCallbacks sees every callback that has won and not yet returned.
 func (t *fakeHubTimer) fire() {
-	c := t.clock
-	c.mu.Lock()
-	won := t.done.CompareAndSwap(false, true)
-	if won {
-		c.firing++
+	if t.done.CompareAndSwap(false, true) {
+		t.f()
 	}
-	c.mu.Unlock()
-	if !won {
-		return
-	}
-	t.f()
-	c.mu.Lock()
-	c.firing--
-	c.returnedLocked().Broadcast()
-	c.mu.Unlock()
 }
+
+// C is nil, as an AfterFunc timer's is.
+func (t *fakeHubTimer) C() <-chan time.Time { return nil }
 
 func (t *fakeHubTimer) Stop() bool {
+	t.fake.Stop()
 	t.real.Stop()
-	t.clock.mu.Lock()
-	defer t.clock.mu.Unlock()
 	return t.done.CompareAndSwap(false, true)
 }
 
-// Advance moves the clock forward by d and fires every timer whose moment it reached.
-func (c *fakeHubClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	c.offset += d
-	now := c.nowLocked()
-	var due []*fakeHubTimer
-	kept := c.timers[:0]
-	for _, timer := range c.timers {
-		if timer.done.Load() {
-			continue
-		}
-		if !timer.at.After(now) {
-			due = append(due, timer)
-			continue
-		}
-		kept = append(kept, timer)
-	}
-	c.timers = kept
-	c.mu.Unlock()
-	for _, timer := range due {
-		timer.real.Stop()
-		timer.fire()
-	}
+func (t *fakeHubTimer) Reset(d time.Duration) bool {
+	t.fake.Stop()
+	t.real.Stop()
+	was := !t.done.Swap(false)
+	t.fake.Reset(d)
+	t.real.Reset(d)
+	return was
 }
 
 // hubOn builds a hub and its relay on an existing test server, as a second Dispatch task's would
@@ -253,9 +233,9 @@ func hubOn(t *testing.T, handler http.Handler, database *store.Store, deps Deps,
 	return hubOnStore(t, handler, database, deps, deps.Store, clock, configure)
 }
 
-// hubOnStore is hubOn with the hub reading through hubStore: deps' own store, but for a test that
-// counts the hub's connections (newMeasuredHubRig), which gives it a pool of its own. The relay
-// keeps deps' store either way, since it is the process's one reader of the event log.
+// hubOnStore is hubOn with the hub reading through hubStore. It is deps' own store but for a test
+// that counts the hub's connections (newMeasuredHubRig), which gives it a pool of its own: the
+// relay keeps deps' store either way, since it is the process's one reader of the event log.
 func hubOnStore(t *testing.T, handler http.Handler, database *store.Store, deps Deps, hubStore *store.Store, clock *fakeHubClock, configure func(*deliveryHub)) *hubRig {
 	t.Helper()
 	rig := &hubRig{handler: handler, database: database, deps: deps, hubStore: hubStore, clock: clock}
@@ -276,11 +256,15 @@ func hubOnStore(t *testing.T, handler http.Handler, database *store.Store, deps 
 	if configure != nil {
 		configure(rig.hub)
 	}
-	rig.stop = sync.OnceFunc(func() {
-		cancel()
-		rig.hub.wait()
-		rig.relay.wait()
-	})
+	// The cancel runs once; the waits run on every call, outside the once, so a give-up ends the
+	// test as any wait's does rather than panicking the binary from inside sync.OnceFunc. A second
+	// call, the cleanup's after a row's own stop, finds both waits already at zero and returns.
+	stopping := sync.OnceFunc(cancel)
+	rig.stop = func() {
+		stopping()
+		testwait.Returns(t, "the hub's generation goroutines (its listener, intake and work) to return once its lifetime ended", rig.hub.wait)
+		testwait.Returns(t, "the relay's generation goroutines (its listener and its run) to return once its lifetime ended", rig.relay.wait)
+	}
 	t.Cleanup(rig.stop)
 	return rig
 }
@@ -296,37 +280,42 @@ func (r *hubRig) changeCursor() int64 {
 }
 
 // settle waits until the hub has acted on everything the test's setup wrote, so none of it counts
-// against the measurement that follows: its change cursor at the delivery change log's newest
-// entry (settings and pull requests seeded through delivery.PutSettings and its kin), its feed at
-// or past the event log's head, and then nothing owed, which is what waitNothingOwed reads. The
-// hub takes delivery changes independently of the safe horizon the relay reads events up to, and
-// an event write of the test's database still open, the server's own on a loaded machine, can keep
-// that horizon below the setup's events for a while, so either catch-up can land after the test's
-// snapshots. On a clock standing still a dirty view the clock has not made due is owed nothing
-// (viewOwes): such a test moves the clock itself and takes what the recompute then sends. Each wait
-// ends on what it waits for, and its one bound is the test binary's deadline.
+// against the measurement that follows: its feed at or past the event log's head, its change
+// cursor at the delivery change log's newest entry (settings and pull requests seeded through
+// delivery.PutSettings and its kin), and then nothing owed, which is what waitNothingOwed reads.
+// The hub takes delivery changes independently of the safe horizon the relay reads events up to,
+// and an event write of the test's database still open, the server's own on a loaded machine, can
+// keep that horizon below the setup's events for a while, so either catch-up can land after the
+// test's snapshots.
 func (r *hubRig) settle(t *testing.T) {
 	t.Helper()
 	latest, err := delivery.LatestChangeSeq(t.Context(), r.database.Pool)
 	if err != nil {
 		t.Fatalf("read the newest delivery change: %v", err)
 	}
-	testwait.Until(t, fmt.Sprintf("the hub's change cursor to reach %d, the newest delivery change", latest), func() (int64, bool) {
-		seq := r.changeCursor()
-		return seq, seq >= latest
-	})
 	r.waitForEventCursor(t, eventHead(t, r.database), "the log's head before the measurement")
 	r.waitNothingOwed(t, latest)
 }
 
+// requireNothingSent waits until the hub owes nothing for everything committed so far (settle),
+// and then reads conn, which must hold no frame. Every frame a recompute, an expiry or a verdict
+// sends is queued on the conn in the hold of the hub's lock that clears what settle waits on, so
+// a frame still there is one nobody should be sent rather than one yet to come. after names what
+// the conn was read after.
+func (r *hubRig) requireNothingSent(t *testing.T, conn *fakeLiveConn, after string) {
+	t.Helper()
+	r.settle(t)
+	conn.empty(t, after)
+}
+
 // waitNothingOwed waits until the hub owes no work for anything committed up to latest: nothing
 // the intake has taken in and not run yet (intakeOwes), its change cursor at latest, and no view
-// it will recompute or narrow without the test moving its clock (viewOwes), the last two read in
-// one hold of its lock. A change marks the views it touches inside the same critical section that
-// moves the cursor (catchUpChanges), a recompute clears the mark inside its read, once it holds
-// the position it answers for, and computing stays set until that recompute has ended, in the
-// hold of the lock that sends its frames. So a hub that owes nothing here has no recompute left
-// to run that would read what the test writes next and send it as a change its subs had already
+// it will recompute without the test moving its clock (viewOwes), the last two read in one hold
+// of its lock. A change marks the views it touches inside the same critical section that moves
+// the cursor (catchUpChanges), a recompute clears the mark inside its read, once it holds the
+// position it answers for, and computing stays set until that recompute has ended, in the hold
+// of the lock that sends its frames. So a hub that owes nothing here has no recompute left to
+// run that would read what the test writes next and send it as a change its subs had already
 // heard, and every frame it owed its subs is queued on them.
 //
 // The intake is read first and the views last, with a barrier between them: the relay's feed is
@@ -338,35 +327,47 @@ func (r *hubRig) settle(t *testing.T) {
 // test binary's deadline.
 func (r *hubRig) waitNothingOwed(t *testing.T, latest int64) {
 	t.Helper()
-	owed := func() (int64, []string) {
-		now, still := r.clock.Now(), r.clock.standsStill()
-		r.hub.mu.Lock()
-		defer r.hub.mu.Unlock()
-		generation := r.hub.generation
-		var busy []string
-		for key, view := range generation.views {
-			if what := viewOwes(view, now, still); what != "" {
-				busy = append(busy, key+"("+what+")")
-			}
-		}
-		slices.Sort(busy)
-		return generation.changeSeq, busy
-	}
-	testwait.Until(t, fmt.Sprintf("the hub to owe nothing for the delivery changes through %d (what it still owed)", latest), func() (string, bool) {
-		intake := r.intakeOwes()
-		r.hub.catchUpNow()
-		changeSeq, busy := owed()
-		return fmt.Sprintf("change cursor %d of %d, views owing work %v, the intake owes %q", changeSeq, latest, busy, intake),
-			intake == "" && changeSeq >= latest && len(busy) == 0
+	testwait.Until(t, fmt.Sprintf("the hub to owe nothing for the delivery changes through %d", latest), func() (string, bool) {
+		owed := r.owes(latest)
+		return owed, owed == ""
 	})
 }
 
-// viewOwes names what the hub will do to view without the test moving its clock, and is empty
+// owes names what the hub has still to do for everything committed up to latest, and is empty
+// when it has nothing. A hub no sub has started a generation on owes nothing: it reads neither
+// log and holds no view.
+func (r *hubRig) owes(latest int64) string {
+	intake := r.intakeOwes()
+	r.hub.catchUpNow()
+	now := r.clock.Now()
+	r.hub.mu.Lock()
+	defer r.hub.mu.Unlock()
+	generation := r.hub.generation
+	if generation == nil {
+		return ""
+	}
+	var owed []string
+	if intake != "" {
+		owed = append(owed, intake)
+	}
+	if generation.changeSeq < latest {
+		owed = append(owed, fmt.Sprintf("the changes through %d, its cursor at %d", latest, generation.changeSeq))
+	}
+	for key, view := range generation.views {
+		if what := viewOwes(view, now, r.clock.standsStill()); what != "" {
+			owed = append(owed, key+" ("+what+")")
+		}
+	}
+	slices.Sort(owed)
+	return strings.Join(owed, "; ")
+}
+
+// viewOwes names what the hub will do to the view without the test moving its clock, and is empty
 // when it will do nothing: a recompute under way; a dirty view, whose recompute a clock running
-// with the wall clock makes due of itself; a dirty view the clock standing still has made due;
-// and an answer whose expiry the clock has reached. A dirty view on a clock standing still that
-// the clock has not made due is owed nothing here: its recompute waits for the test's Advance.
-func viewOwes(view *deliveryView, now time.Time, still bool) string {
+// with the wall clock makes due of itself; and an answer whose expiry the clock has reached. A
+// dirty view on a clock standing still, due only once the test advances it, is owed nothing here:
+// such a test moves the clock itself and takes what the recompute then sends.
+func viewOwes(view *deliveryView, now time.Time, stillClock bool) string {
 	if view.computing {
 		return "computing"
 	}
@@ -374,7 +375,7 @@ func viewOwes(view *deliveryView, now time.Time, still bool) string {
 	switch {
 	case !due:
 		return ""
-	case view.dirty && !still:
+	case view.dirty && !stillClock:
 		return "dirty"
 	case at.After(now):
 		return ""
@@ -384,22 +385,10 @@ func viewOwes(view *deliveryView, now time.Time, still bool) string {
 	return "its answer's expiry reached"
 }
 
-// requireNothingSent waits until the hub owes nothing for everything committed so far (settle),
-// then reads conn, which must hold no frame: every frame a recompute or an expiry sends is queued
-// on the conn in the hold of the hub's lock that clears what settle waits on, so a frame still
-// there is one nobody should be sent rather than one yet to come. after names what the conn was
-// read after. A verdict a delivery_freshness notification changes is sent where the hub applies
-// it, which settle does not see: a caller that wrote one first waits for it (waitFreshnessHeard).
-func (r *hubRig) requireNothingSent(t *testing.T, conn *fakeLiveConn, after string) {
-	t.Helper()
-	r.settle(t)
-	conn.empty(t, after)
-}
-
-// waitFreshnessHeard waits until the freshness the hub has heard matches, which what names. The
-// hub applies a delivery_freshness notification and sends the frame a changed verdict needs in one
-// hold of its lock (applyFreshness), so once it has heard one, every frame that notification sends
-// is queued on the open conns.
+// waitFreshnessHeard waits until the freshness the hub has heard matches, naming it as what. The
+// hub applies a delivery_freshness notification and sends the frame a changed verdict needs in
+// one hold of its lock (applyFreshness), so once it has heard one, the frames that notification
+// sends are queued on every open conn.
 func (r *hubRig) waitFreshnessHeard(t *testing.T, what string, matches func(deliveryFreshnessHeard) bool) {
 	t.Helper()
 	testwait.Until(t, what, func() (deliveryFreshnessHeard, bool) {
@@ -436,6 +425,9 @@ func (r *hubRig) intakeOwes() string {
 	r.hub.mu.Lock()
 	generation := r.hub.generation
 	r.hub.mu.Unlock()
+	if generation == nil {
+		return ""
+	}
 	seeded := func(note deliveryHubNote) bool { return note.what == "events seeded" }
 	switch {
 	case len(generation.wakeChanges) > 0:
@@ -475,38 +467,67 @@ func (r *hubRig) eventsApplied(since int) []int64 {
 	return applied
 }
 
+// withOnlyView runs read on the hub's one view, under the hub's lock. It fails unless exactly one
+// view is open, so a test that reads through it holds the hub to the single view it set up.
+func (r *hubRig) withOnlyView(t *testing.T, read func(*deliveryView)) {
+	t.Helper()
+	r.hub.mu.Lock()
+	defer r.hub.mu.Unlock()
+	if n := len(r.hub.generation.views); n != 1 {
+		t.Fatalf("the hub holds %d views, want one", n)
+	}
+	for _, view := range r.hub.generation.views {
+		read(view)
+	}
+}
+
+// onlyViewBody is the JSON body the hub's one view last answered (withOnlyView). It fails unless
+// the view holds a body.
+func (r *hubRig) onlyViewBody(t *testing.T) json.RawMessage {
+	t.Helper()
+	var body json.RawMessage
+	answered := false
+	r.withOnlyView(t, func(view *deliveryView) {
+		if view.body != nil {
+			answered, body = true, view.body.snapshot("", view.seq, view.changedAt).Body
+		}
+	})
+	if !answered {
+		t.Fatal("the hub's view holds no body")
+	}
+	return body
+}
+
+// onlyViewFrom is the window start the hub's one view last answered for (withOnlyView).
+func (r *hubRig) onlyViewFrom(t *testing.T) (from time.Time) {
+	t.Helper()
+	r.withOnlyView(t, func(view *deliveryView) { from = view.from })
+	return from
+}
+
+// onlyViewDirty is whether the hub's one view is marked for a recompute, and the cause of the mark
+// (withOnlyView).
+func (r *hubRig) onlyViewDirty(t *testing.T) (dirty bool, cause string) {
+	t.Helper()
+	r.withOnlyView(t, func(view *deliveryView) { dirty, cause = view.dirty, view.cause })
+	return dirty, cause
+}
+
 // cursors is where the hub stands in both logs: its generation's delivery change cursor, and how
 // far its events have come.
 func (r *hubRig) cursors() (changeSeq, eventCursor int64) {
 	return r.changeCursor(), r.eventsThrough()
 }
 
-// waitForEventCursor waits until the hub holds every event through want. The relay publishes an
-// event to the hub only once the server's event horizon has passed it, and an open event write of
-// the server's database holds that back, so the wait is the horizon's (horizontest.PollInProcess).
+// waitForEventCursor waits until the hub holds every event through want. The wait has no bound of
+// its own: the relay publishes an event to the hub only once the server's event horizon has passed
+// it, and an open event write of the server's database holds that back, so the wait is the
+// horizon's (horizontest.PollInProcess), which waits out any hold to the shared give-up and then
+// names the holder, one in the test's own database among them.
 func (r *hubRig) waitForEventCursor(t *testing.T, want int64, what string) {
 	t.Helper()
 	horizontest.PollInProcess(t, fmt.Sprintf("the hub's event log through %d (%s)", want, what), r.database, func() bool {
 		return r.eventsThrough() >= want
-	})
-}
-
-// waitNoRecompute waits until the hub has begun or ended no recompute for quiet (awaitStill). It
-// counts no other note: while a gap stands open above the safe horizon, which an event write of the
-// test's database keeps open for as long as it stays open, the relay re-reads the log every 10-250
-// ms, and a wait for no note at all could last as long as that write.
-func (r *hubRig) waitNoRecompute(t *testing.T, quiet time.Duration) {
-	t.Helper()
-	awaitStill(t, "the hub's recompute notes", quiet, func() int64 {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		var n int64
-		for _, note := range r.notes {
-			if note.what == "recompute begin" || note.what == "recompute end" {
-				n++
-			}
-		}
-		return n
 	})
 }
 
@@ -539,11 +560,36 @@ func (r *hubRig) count(since int, match func(deliveryHubNote) bool) int {
 	return n
 }
 
-// waitFor waits for a note since mark that matches; what names the note. Its one bound is the test
-// binary's deadline (waitUntil).
-func (r *hubRig) waitFor(t *testing.T, since int, what string, match func(deliveryHubNote) bool) {
+// waitFor waits for a note since mark that matches, and returns it. A try that finds none reads
+// the notes the hub made since mark (notesSince), so a wait that gives up names what the hub did
+// instead.
+func (r *hubRig) waitFor(t *testing.T, since int, what string, match func(deliveryHubNote) bool) deliveryHubNote {
 	t.Helper()
-	waitUntil(t, what+" (a note of the hub's)", func() bool { return r.count(since, match) > 0 })
+	var found deliveryHubNote
+	testwait.Until(t, what, func() (string, bool) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for _, note := range r.notes[since:] {
+			if match(note) {
+				found = note
+				return fmt.Sprintf("%+v", note), true
+			}
+		}
+		return notesSince(r.notes[since:]), false
+	})
+	return found
+}
+
+// notesSince renders notes, the hub's notes since a mark, for a wait's reading: how many there are
+// and the last of them, each by what it was, its view and its cause.
+func notesSince(notes []deliveryHubNote) string {
+	const shown = 12
+	from := max(0, len(notes)-shown)
+	described := make([]string, 0, len(notes)-from)
+	for _, note := range notes[from:] {
+		described = append(described, fmt.Sprintf("%q view=%q cause=%q", note.what, note.view, note.cause))
+	}
+	return fmt.Sprintf("%d notes since the mark, none matching; the last %d: %s", len(notes), len(described), strings.Join(described, "; "))
 }
 
 // waitForEvent waits for a note since mark that matches, made as the hub acted on what its event
@@ -559,70 +605,75 @@ func recomputeBegin(cause string) func(deliveryHubNote) bool {
 	}
 }
 
-// fakeLiveConn is a socket as the hub sees it, recording every frame it is sent and when.
+// fakeLiveConn is a socket as the hub sees it, recording every frame it is sent.
 type fakeLiveConn struct {
-	frames chan sentFrame
+	frames chan any
 	full   atomic.Bool
 }
 
-// sentFrame is one frame the hub sent a fakeLiveConn, and the moment Send took it: when the hub
-// sent it, whatever later moment the test reads it at.
-type sentFrame struct {
-	frame any
-	at    time.Time
-}
-
-func newFakeLiveConn() *fakeLiveConn { return &fakeLiveConn{frames: make(chan sentFrame, 256)} }
+func newFakeLiveConn() *fakeLiveConn { return &fakeLiveConn{frames: make(chan any, 256)} }
 
 func (c *fakeLiveConn) Send(frame any) bool {
 	if c.full.Load() {
 		return false
 	}
 	select {
-	case c.frames <- sentFrame{frame: frame, at: time.Now()}:
+	case c.frames <- frame:
 		return true
 	default:
 		return false
 	}
 }
 
-// next is the next frame the conn is sent. Its one bound is the test binary's deadline
-// (testwait.Receive).
+// next is the next frame the conn is sent.
 func (c *fakeLiveConn) next(t *testing.T, what string) any {
 	t.Helper()
-	return testwait.Receive(t, what, c.frames).frame
+	return testwait.Receive(t, what, c.frames)
 }
 
-// eventNext is the next frame the conn is sent once the hub has acted on an event of its feed,
-// which stands behind database's event horizon, so the wait is the horizon's.
+// eventNext is the next frame the conn is sent, where the frame comes of an event on the hub's
+// feed, which stands behind the server's event horizon: the wait is the horizon's
+// (horizontest.WaitInProcess), which waits out any hold to the shared give-up and then names the
+// holder, one in database, the test's own, among them.
 func (c *fakeLiveConn) eventNext(t *testing.T, database *store.Store, what string) any {
 	t.Helper()
-	return horizontest.WaitInProcess(t, what, c.frames, database).frame
+	return horizontest.WaitInProcess(t, what, c.frames, database)
 }
 
-// none fails when the conn is sent a frame within within.
-func (c *fakeLiveConn) none(t *testing.T, within time.Duration, after string) {
+// eventDelta is delta for a delta that comes of an event on the hub's feed (eventNext).
+func (c *fakeLiveConn) eventDelta(t *testing.T, database *store.Store, sub string) DeliveryLiveDelta {
 	t.Helper()
-	select {
-	case sent := <-c.frames:
-		raw, _ := json.Marshal(sent.frame)
-		t.Fatalf("after %s, a frame nobody should be sent: %s", after, raw)
-	case <-time.After(within):
+	frame := c.eventNext(t, database, "a delta of "+sub)
+	delta, ok := frame.(DeliveryLiveDelta)
+	if !ok || delta.Sub != sub {
+		raw, _ := json.Marshal(frame)
+		t.Fatalf("frame = %s, want a delta of %s", raw, sub)
 	}
+	return delta
 }
 
-// empty fails when the conn holds a frame. Its caller has waited for the fact that would have
-// sent one, the hub owing nothing (hubRig.requireNothingSent) or its having heard a notification
-// (hubRig.waitFreshnessHeard), and every frame is queued before that fact holds, so a frame here
-// is one nobody should be sent rather than one still to come. after names what the conn was read
-// after.
+// empty fails when the conn holds a frame nobody should be sent. Its caller has waited for the
+// fact that would have sent one - the note of the recompute that sends it, or the hub owing
+// nothing (hubRig.requireNothingSent) - and every frame is queued before either, so a frame here
+// is one too many rather than one still to come. after names what the conn was read after.
 func (c *fakeLiveConn) empty(t *testing.T, after string) {
 	t.Helper()
 	select {
-	case sent := <-c.frames:
-		raw, _ := json.Marshal(sent.frame)
+	case frame := <-c.frames:
+		raw, _ := json.Marshal(frame)
 		t.Fatalf("after %s, a frame nobody should be sent: %s", after, raw)
 	default:
+	}
+}
+
+// drain takes every frame the conn holds now and drops it.
+func (c *fakeLiveConn) drain() {
+	for {
+		select {
+		case <-c.frames:
+		default:
+			return
+		}
 	}
 }
 
@@ -639,28 +690,7 @@ func (c *fakeLiveConn) snapshot(t *testing.T, sub string) DeliveryLiveSnapshot {
 
 func (c *fakeLiveConn) delta(t *testing.T, sub string) DeliveryLiveDelta {
 	t.Helper()
-	delta, _ := c.deltaSent(t, sub)
-	return delta
-}
-
-// deltaSent is the next frame the conn is sent, which must be a delta of sub, and the moment the
-// hub sent it (sentFrame), for a verdict on how soon the hub sent it rather than on how soon the
-// test got round to reading it.
-func (c *fakeLiveConn) deltaSent(t *testing.T, sub string) (DeliveryLiveDelta, time.Time) {
-	t.Helper()
-	sent := testwait.Receive(t, "a delta of "+sub, c.frames)
-	delta, ok := sent.frame.(DeliveryLiveDelta)
-	if !ok || delta.Sub != sub {
-		raw, _ := json.Marshal(sent.frame)
-		t.Fatalf("frame = %s, want a delta of %s", raw, sub)
-	}
-	return delta, sent.at
-}
-
-// eventDelta is eventNext, which must be a delta of sub.
-func (c *fakeLiveConn) eventDelta(t *testing.T, database *store.Store, sub string) DeliveryLiveDelta {
-	t.Helper()
-	frame := c.eventNext(t, database, "a delta of "+sub)
+	frame := c.next(t, "a delta of "+sub)
 	delta, ok := frame.(DeliveryLiveDelta)
 	if !ok || delta.Sub != sub {
 		raw, _ := json.Marshal(frame)
@@ -879,7 +909,7 @@ func applyLiveDelta(t *testing.T, kind string, held json.RawMessage, delta Deliv
 	return raw
 }
 
-// truncateChanges empties the delivery change log and restarts its numbering, as e2e/seed.ts:150's
+// truncateChanges empties the delivery change log and restarts its numbering, as e2e/seed.ts:285's
 // reset does.
 func truncateChanges(t *testing.T, database *store.Store) {
 	t.Helper()
@@ -923,11 +953,14 @@ func TestAProductionJobFlipsTheWaitingPullRequestsItShips(t *testing.T) {
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("p", presetView(deliveryLiveTimeline, 7, "")))
 	snapshot := conn.snapshot(t, "p")
-	// The hub acts on everything the setup wrote before the job finishes. The relay's feed reaches
-	// the generation after the snapshot, on its own goroutine (seedEvents), and taking it marks the
-	// view dirty (applyFeed); a recompute for that mark whose reads straddled the job's commit would
-	// send a delta torn across it, and the read below would take that one rather than the job's.
-	// Settled, the job's change is the one mark left, and every read of its recompute follows it.
+	// The hub acts on everything the setup wrote before the job finishes. The relay's feed
+	// reaches the generation after the snapshot, on its own goroutine (seedEvents), and taking it
+	// marks the view dirty (applyFeed). A recompute's population reads run side by side, each on
+	// its own snapshot (readDeliveryRows), so a recompute for that mark whose reads straddled the
+	// job's commit answered the pull requests and the run after it and the measures' deploys
+	// before it, and the delta read below was that torn answer rather than the job's own (the
+	// recompute the job's change then made sent the rest). Settled, the job's change is the one
+	// mark left, and every read of its recompute comes after the commit.
 	rig.settle(t)
 
 	// The production job finishes: every pull request the run's head holds ships.
@@ -1007,9 +1040,11 @@ func TestASessionGroupEditReachesEveryView(t *testing.T) {
 	rig.waitFor(t, start, "the measures view's recompute", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && strings.HasPrefix(note.view, deliveryLiveMeasures)
 	})
+
 	rig.waitFor(t, start, "the pipeline view's recompute", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && strings.HasPrefix(note.view, deliveryLivePipeline)
 	})
+
 }
 
 func TestAResetChangeLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
@@ -1040,6 +1075,7 @@ func TestAResetChangeLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 	rig.waitFor(t, start, "the measures view's recompute", func(note deliveryHubNote) bool {
 		return note.what == "recompute begin" && strings.HasPrefix(note.view, deliveryLiveMeasures)
 	})
+
 	if seq := rig.changeCursor(); seq != 1 {
 		t.Fatalf("the hub's change cursor after the reset = %d, want 1", seq)
 	}
@@ -1070,6 +1106,7 @@ func TestAResetChangeLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 	rig.waitFor(t, start, "the measures view's recompute after the second reset", func(note deliveryHubNote) bool {
 		return note.what == "recompute begin" && strings.HasPrefix(note.view, deliveryLiveMeasures)
 	})
+
 	if seq := rig.changeCursor(); seq != 3 {
 		t.Fatalf("the hub's change cursor after the second reset = %d, want 3", seq)
 	}
@@ -1202,11 +1239,13 @@ func TestAReconnectCatchesUpWhatTheListenerMissed(t *testing.T) {
 	blind.Store(true)
 	terminateListener(t, rig.database, &dials)
 	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-time.Hour)))
-	// No state of the hub tells a merge it could not hear from one it has yet to catch up: its
-	// change cursor stands below the merge until a catch-up runs either way. So this stays a
-	// window, and it cannot fail a correct hub, which hears the merge only once the reconnection
-	// below lets it; the window is long enough for a hub that heard it to send its delta (dueAt).
-	conn.none(t, viewMaxWait+time.Second, "a merge the listener could not hear")
+	// A hub that heard the merge all the same would recompute the view and send its delta; a hub
+	// that could not hear it owes nothing for it, and the two read alike in every state the hub
+	// keeps, since its change cursor stands below the merge until a catch-up runs either way.
+	// The reconnection below is what makes the hub hear the merge, so the later action whose
+	// effect would prove the absence is the one that ends it.
+	testwait.Quiet(t, "the page's frames while the listener is blind", conn.frames, viewMaxWait,
+		"no state of the hub tells a merge it could not hear from one it has yet to catch up, and the only later action whose effect would, the listener's reconnection, is what makes it hear the merge; the span is viewMaxWait from the store, the latest a hub that marked the view by then would begin its recompute")
 	blind.Store(false)
 	rig.waitFor(t, start, "the listener's reconnection", func(note deliveryHubNote) bool { return note.what == "connected" })
 	delta := conn.delta(t, "t")
@@ -1227,15 +1266,13 @@ func TestAReconnectCatchesUpWhatTheListenerMissed(t *testing.T) {
 //
 // The caller has already made the hub blind, so a dial that begins now fails; one already under
 // way can still connect after a round has ended what it found. So the rounds go on until one finds
-// no backend to end while no dial is under way. Only the first round must find one. The rounds, and
-// each round's wait for the backends it ended to exit, end on those facts, and their one bound is
-// the test binary's deadline: a listener that keeps connecting fails here, naming what the last
-// round found, rather than running to the package's test timeout.
+// no backend to end while no dial is under way. Only the first round must find one, and the rounds
+// wait for a dial under way and for each exit through the shared wait, so a listener that keeps
+// connecting fails with the test binary's own deadline rather than running to the package's test
+// timeout.
 func terminateListener(t *testing.T, database *store.Store, dials *listenerDials) {
 	t.Helper()
-	round := 0
-	testwait.UntilPolling(t, 5*time.Millisecond, "a round that finds no backend of the listener's to end while no dial of it is under way (what the last round found)", func() (string, bool) {
-		defer func() { round++ }()
+	for round := 0; ; round++ {
 		conns, settled := dials.settled()
 		pids := pidsOf(conns)
 		var ended []int32
@@ -1251,18 +1288,26 @@ func terminateListener(t *testing.T, database *store.Store, dials *listenerDials
 			if round == 0 {
 				t.Fatalf("terminate the listener's backend: none of the %d connections it dialed (%v) is connected", len(pids), pids)
 			}
-			return fmt.Sprintf("round %d ended no backend, a dial under way: %t", round, !settled), settled
+			if settled {
+				return
+			}
+			// A dial under way when the round read the dials can connect after the round's scan:
+			// the next round reads what it dialed once it has returned.
+			testwait.Eventually(t, "the listener's dial under way to return", func() bool {
+				_, settled := dials.settled()
+				return settled
+			})
+			continue
 		}
-		testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("the listener's terminated backends %v to leave pg_stat_activity (how many are still there)", ended), func() (int, bool) {
+		testwait.Eventually(t, fmt.Sprintf("the listener's terminated backends %v to leave pg_stat_activity", ended), func() bool {
 			var left int
 			if err := database.Pool.QueryRow(context.Background(),
 				`select count(*) from pg_stat_activity where pid = any($1)`, ended).Scan(&left); err != nil {
 				t.Fatalf("read whether the listener's backend has exited: %v", err)
 			}
-			return left, left == 0
+			return left == 0
 		})
-		return fmt.Sprintf("round %d ended backends %v", round, ended), false
-	})
+	}
 }
 
 // createHubIssue creates issue title in project HUB (creating the project the first time), and
@@ -1405,7 +1450,7 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-	testwait.Receive(t, "the timeline view's first recompute, held between its read and its answer", reading)
+	testwait.Receive(t, "the view's first recompute to finish its read", reading)
 
 	start := rig.mark()
 	patchHubIssue(t, rig.handler, key, map[string]any{"title": "Ship the widgets"})
@@ -1416,6 +1461,7 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	rig.waitForEvent(t, start, "the retitle on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == newest
 	})
+
 	releaseOnce()
 
 	snapshot := conn.snapshot(t, "t")
@@ -1473,7 +1519,7 @@ func TestASessionWriteDuringAViewsReadThatItsAnswerDoesNotShowRecomputesNothing(
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-	testwait.Receive(t, "the timeline view's first recompute, held between its read and its answer", reading)
+	testwait.Receive(t, "the view's first recompute to finish its read", reading)
 
 	start := rig.mark()
 	written := appendHubEvent(t, rig, projectOwner("HUB").event("user_state.updated",
@@ -1481,6 +1527,7 @@ func TestASessionWriteDuringAViewsReadThatItsAnswerDoesNotShowRecomputesNothing(
 	rig.waitForEvent(t, start, "the session's event on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == written.ID
 	})
+
 	releaseOnce()
 
 	snapshot := conn.snapshot(t, "t")
@@ -1594,6 +1641,7 @@ func TestAnArchitectureSyncReachesEveryView(t *testing.T) {
 		rig.waitForEvent(t, start, "the "+kind+" view's recompute", func(note deliveryHubNote) bool {
 			return note.what == "recompute begin" && strings.HasPrefix(note.view, kind)
 		})
+
 	}
 }
 
@@ -1636,7 +1684,7 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 	// waits on the event horizon; each reset below is of a feed it holds.
 	rig.waitForEvent(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
 
-	// The event log restarts at id 1, as e2e/seed.ts:20 and :150 reset it; then a title the view
+	// The event log restarts at id 1, as e2e/seed.ts:43 and :285 reset it; then a title the view
 	// names changes, its event (id 1) below the relay's cursor.
 	firstReset := rig.mark()
 	if _, err := rig.database.Pool.Exec(t.Context(), `truncate events restart identity cascade`); err != nil {
@@ -1718,6 +1766,7 @@ func TestEventsNoViewReadsRecomputeNothing(t *testing.T) {
 	rig.waitForEvent(t, start, "the newest event on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == newest
 	})
+
 	if n := rig.count(start, func(note deliveryHubNote) bool { return note.what == "event" }); n != 500 {
 		t.Fatalf("the hub received %d events, want each of the 500 once", n)
 	}
@@ -1853,9 +1902,9 @@ func TestAHubActsOnAnEventOnlyOnceEveryLowerIDIsFinal(t *testing.T) {
 		t.Fatalf("commit the lower id: %v", err)
 	}
 	rig.waitForEventCursor(t, high.ID, "both ids committed")
-	// The hub applies what the relay publishes, in the order it publishes it, and its notes keep
-	// that order: a relay that had published the committed higher id while the lower was open would
-	// have reached the hub with it first, which the lower id's commit cannot undo.
+	// The hub applies what the relay publishes, in the order it publishes it, and the notes keep
+	// that order: a relay that had published the committed higher id while the lower was open
+	// would have reached the hub with it first, which the commit below cannot undo.
 	applied := rig.eventsApplied(start)
 	if at := slices.Index(applied, low.ID); at < 0 || at > slices.Index(applied, high.ID) {
 		t.Fatalf("the hub applied the events %v, want the open id %d before the committed id %d", applied, low.ID, high.ID)
@@ -1871,7 +1920,8 @@ func TestAHubActsOnAnEventOnlyOnceEveryLowerIDIsFinal(t *testing.T) {
 // do with that horizon, and the relay subscription that waits on it is taken on a goroutine of the
 // generation's own (seedEvents), so the hub is ready at once, answers a page its snapshot and
 // carries a delivery change to it while the write is open, and the issue event committed meanwhile
-// reaches the page once the horizon is proven.
+// reaches the page once the horizon is proven. The write is held until the test releases it, so
+// all that comes before release() came while it held the horizon.
 func TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -1880,9 +1930,6 @@ func TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon(t *
 	key := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
 	upsertPR(t, rig.database, prNaming(1, rig.clock.Now().Add(-3*time.Hour), key))
 
-	// The event write stands until the row releases it, once the delivery change has reached the
-	// page and the retitle has committed, so both happen while it holds the horizon however long the
-	// row takes to get there.
 	release := holdEventWrite(t, rig.database)
 	// The page's subscribe starts the hub's generation.
 	conn := newFakeLiveConn()
@@ -1890,7 +1937,7 @@ func TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon(t *
 	rig.hub.mu.Lock()
 	ready := rig.hub.generation.ready
 	rig.hub.mu.Unlock()
-	testwait.Receive(t, "the hub's ready, while a transaction holds the event horizon", ready)
+	testwait.Receive(t, "the hub to be ready while a transaction holds the event horizon", ready)
 	held := conn.snapshot(t, "t").Body
 
 	upsertPR(t, rig.database, hubPR(2, rig.clock.Now().Add(-time.Hour)))
@@ -1976,7 +2023,7 @@ func pidsOf(conns []*pgx.Conn) []int32 {
 // ends on that backend's LISTEN, and its one bound is the test binary's deadline.
 func waitListening(t *testing.T, database *store.Store, what string, dials *listenerDials) {
 	t.Helper()
-	testwait.UntilPolling(t, 20*time.Millisecond, what+" (how many of its backends hold one)", func() (int, bool) {
+	testwait.Until(t, what+" (how many of its backends hold one)", func() (int, bool) {
 		pids := dials.pids()
 		var count int
 		if err := database.Pool.QueryRow(context.Background(),
@@ -2028,9 +2075,8 @@ func TestAHubWithNoViewReadsNothingAndHoldsNoListener(t *testing.T) {
 	idle := func(when string) {
 		t.Helper()
 		dialed := len(allDials())
-		// Neither the hub nor its relay runs a generation, so neither listens or reads: that is the
-		// state the commits below must cost nothing from, and what keeps the span below from
-		// failing a correct hub, however late it ends.
+		// Neither the hub nor its relay runs a generation, so neither listens or reads: that is
+		// the state the commits below must cost nothing from.
 		rig.hub.mu.Lock()
 		hubRunning := rig.hub.generation != nil
 		rig.hub.mu.Unlock()
@@ -2044,9 +2090,7 @@ func TestAHubWithNoViewReadsNothingAndHoldsNoListener(t *testing.T) {
 		patchHubIssue(t, handler, key, map[string]any{"title": "Retitled " + when})
 		merges++
 		upsertPR(t, database, hubPR(merges, rig.clock.Now().Add(-2*time.Hour)))
-		// Longer than the relay's coalescing window and the hub's quiet, either of which a reader
-		// that heard the commits would have waited out before its read.
-		time.Sleep(time.Second)
+		testwait.Span(t, time.Second, "with no generation running there is no reader whose state or report could tell a read it did not make; the span is longer than the relay's coalescing window and the hub's quiet, either of which a reader that heard the commits would have waited out before its read")
 		if got := acquires(deps.Store); got != before {
 			t.Fatalf("the hub and its relay took %d connections %s, want none", got-before, when)
 		}
@@ -2200,7 +2244,7 @@ func TestAnEventAnotherTaskCommittedReachesThisHub(t *testing.T) {
 	// Another task: its own broker and documents, on the same database.
 	other := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: rig.database, Events: other, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
-	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 	deps, err := NewDeps(DepsInput{
 		Store: rig.database, Identity: headerIdentity(rig.database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: "https://dispatch.example", Docs: documents, Events: other,
@@ -2209,7 +2253,7 @@ func TestAnEventAnotherTaskCommittedReachesThisHub(t *testing.T) {
 		t.Fatalf("the other task's dependencies: %v", err)
 	}
 	otherTask := http.NewServeMux()
-	t.Cleanup(Register(otherTask, t.Context(), deps).Wait)
+	registerJoined(t, otherTask, deps)
 	patchHubIssue(t, otherTask, key, map[string]any{"title": "Ship the widgets"})
 	delta := conn.eventDelta(t, rig.database, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {
@@ -2221,15 +2265,14 @@ func TestAnEventAnotherTaskCommittedReachesThisHub(t *testing.T) {
 // acquires is how many connections the shared pool has handed out so far.
 func acquires(database *store.Store) int64 { return database.Pool.Stat().AcquireCount() }
 
-// waitConnected waits for the hub's listener to have connected and caught the change log up, for
-// the hub to hold the relay's feed, and then for the shared pool to stand still for 300 ms: the
-// generation's start, its reads of the change log and the relay's reset check all take a
-// connection, and a measurement of what one change costs is taken after them.
+// waitConnected waits for the hub's listener to have connected and caught the change log up, and
+// for the hub to hold the relay's feed. A test that measures what an answer costs the database
+// takes its reading after both, on a rig whose hub reads through a pool of its own, which the
+// relay's own reads never touch (newMeasuredHubRig).
 func (r *hubRig) waitConnected(t *testing.T) {
 	t.Helper()
 	r.waitFor(t, 0, "the listener's connection", func(note deliveryHubNote) bool { return note.what == "connected" })
 	r.waitForEvent(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
-	awaitStill(t, "the shared pool's acquires", 300*time.Millisecond, func() int64 { return acquires(r.deps.Store) })
 }
 
 // freshness is the next frame conn is sent, which must be a freshness frame.
@@ -2269,8 +2312,7 @@ func TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase(t
 	rig.settle(t)
 	for drained := false; !drained; {
 		select {
-		case sent := <-conn.frames:
-			frame := sent.frame
+		case frame := <-conn.frames:
 			earlier, ok := frame.(DeliveryLiveDelta)
 			if !ok {
 				t.Fatalf("frame before the expiry = %+v, want a delta of a change the snapshot did not hold", frame)
@@ -2292,6 +2334,199 @@ func TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase(t
 	}
 	rig.requireNothingSent(t, conn, "the expiry's one delta")
 	requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, held, delta, "")
+}
+
+// A GET reaches PostgreSQL with its window's start truncated to the microsecond (pgx's binary
+// timestamptz), and every stored time is a whole microsecond, so the live hub's window must start on
+// a whole microsecond too (presetWindow) for its narrowed view to hold what a GET over the frame's
+// window reads. A pull request leaves a preset window at the first instant whose truncated start
+// lies past it, the end of the microsecond of its merge plus the window's length (nextExpiry), and
+// the hub arms its one timer for that moment. The test moves the fake 500 ns past it, as a timer
+// fires late in production: on a process whose scheduler never rests, about one wake in 300 read
+// the clock less than a microsecond after its timer's moment (the earliest 727 ns after). There the
+// expiry's narrowed view has dropped the leaving pull request and holds the same pull requests the
+// GET route's SQL does over the window it reports. With the window at nanoseconds and the leaving a
+// nanosecond past, the hub dropped the pull request while a GET over that start, truncated onto the
+// row's microsecond, kept it; with a truncated window and the leaving a nanosecond past, the hub's
+// window still started on the row's microsecond at that wake and the pull request stayed.
+func TestAViewsWindowEdgeAgreesWithPostgresAtASubMicrosecondExpiry(t *testing.T) {
+	clock := newStillHubClock()
+	rig := newClockedHubRig(t, clock)
+	seedHubSettings(t, rig.database)
+	now := clock.Now()
+	merged := now.Add(-28*24*time.Hour + 2*time.Second)
+	upsertPR(t, rig.database, hubPR(1, merged))
+	upsertPR(t, rig.database, hubPR(2, now.Add(-time.Hour)))
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("p", presetView(deliveryLiveTimeline, 28, "")))
+	conn.snapshot(t, "p")
+	rig.waitConnected(t)
+	rig.settle(t)
+	// Run the recompute a seeded change left due, so the only timer left is the pull request's
+	// expiry, and drain its delta.
+	clock.Advance(2 * viewQuiet)
+	rig.settle(t)
+	conn.drain()
+	// The view's one timer is the pull request's leaving, a moment just past merged + 28 days and
+	// well before the midnight expiry; the fake clock reports the exact deadline it is armed for,
+	// which the test moves 500 ns past, as a real timer fires late (above), without asserting its
+	// sub-second part, since what the view holds there is what the moment's resolution decides.
+	leaves, midnight := merged.Add(28*24*time.Hour), nextUTCMidnight(clock.Now())
+	armed := clock.AwaitArmed(t, "the pull request's expiry", 1)
+	if len(armed) != 1 || !armed[0].After(leaves) || !armed[0].Before(midnight) {
+		t.Fatalf("the view's timer is armed for %v, want the pull request's leaving between %v and %v", armed, leaves, midnight)
+	}
+	start := rig.mark()
+	clock.Set(armed[0].Add(500 * time.Nanosecond))
+	rig.waitFor(t, start, "the expiry's recompute to end", func(note deliveryHubNote) bool {
+		return note.what == "recompute end" && note.cause == deliveryCauseExpiry
+	})
+	body := rig.onlyViewBody(t)
+	requireSameBody(t, "the view narrowed 500 ns past its pull request's expiry", body,
+		getBody(t, rig.handler, windowTarget(t, deliveryLiveTimeline, body, "")))
+	if held := timelinePRIDs(t, body); slices.Contains(held, "acme/widgets#1") {
+		t.Fatalf("the view narrowed 500 ns past acme/widgets#1's expiry holds %v, want acme/widgets#1 gone", held)
+	}
+}
+
+// A recompute the pull request's own leaving does not cause can land inside its microsecond too:
+// the view's midnight expiry, when the pull request merged a microsecond after the midnight 28 days
+// before. The view is due at the first instant past the midnight, when its truncated end has passed
+// it (nextExpiry), and the test moves the fake 500 ns past that, as a timer fires late. The
+// window's truncated start then lies on the pull request's own microsecond, so the view keeps it,
+// as a GET over the frame's window does. A window started at nanoseconds there would start 500 ns
+// into that microsecond and drop the pull request, while the GET, its start truncated onto the
+// microsecond, kept it.
+func TestAViewsWindowEdgeAgreesWithPostgresWhenItsMidnightLandsInsideAPullRequestsMicrosecond(t *testing.T) {
+	clock := newFakeOnlyHubClock()
+	rig := newClockedHubRig(t, clock)
+	seedHubSettings(t, rig.database)
+	window := 28 * 24 * time.Hour
+	midnight := nextUTCMidnight(clock.Now())
+	merged := midnight.Add(-window).Add(time.Microsecond)
+	upsertPR(t, rig.database, hubPR(1, merged))
+	upsertPR(t, rig.database, hubPR(2, clock.Now().Add(-time.Hour)))
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("p", presetView(deliveryLiveTimeline, 28, "")))
+	conn.snapshot(t, "p")
+	rig.waitConnected(t)
+	rig.settle(t)
+	// Run the recompute a seeded change left due, so the only timer left is the midnight's, and
+	// drain its delta.
+	clock.Advance(2 * viewQuiet)
+	rig.settle(t)
+	conn.drain()
+	// The view's one timer is the midnight's, a microsecond before the pull request leaves, so a
+	// wake 500 ns past it reads a window starting inside the pull request's microsecond.
+	dayEdge := midnight.Add(time.Microsecond)
+	armed := clock.AwaitArmed(t, "the view's midnight expiry", 1)
+	if len(armed) != 1 || !armed[0].Equal(dayEdge) {
+		t.Fatalf("the view's timer is armed for %v, want the first instant past the midnight, %v, where its window's "+
+			"truncated start reaches acme/widgets#1's microsecond %v", armed, dayEdge, merged)
+	}
+	start := rig.mark()
+	clock.Set(dayEdge.Add(500 * time.Nanosecond))
+	rig.waitFor(t, start, "the midnight expiry's recompute to end", func(note deliveryHubNote) bool {
+		return note.what == "recompute end" && note.cause == deliveryCauseExpiry
+	})
+	body := rig.onlyViewBody(t)
+	requireSameBody(t, "the view narrowed 500 ns past its midnight expiry", body,
+		getBody(t, rig.handler, windowTarget(t, deliveryLiveTimeline, body, "")))
+	if held := timelinePRIDs(t, body); !slices.Contains(held, "acme/widgets#1") {
+		t.Fatalf("the view narrowed at the midnight holds %v, want acme/widgets#1, merged on its window start's own microsecond", held)
+	}
+}
+
+// A change to a pull request merged on a preset view's window start marks the view (touchedBy): a
+// row on the start's own microsecond is in the window PostgreSQL reads, so the view must answer
+// for its change as a GET over its window does. The view reads at a moment 500 ns into a
+// microsecond, so its truncated window start (presetWindow) is the pull request's merge, and a
+// change to that pull request then commits. A window start at nanoseconds would lie 500 ns past
+// the merge, judge the change outside the window and mark nothing, while a GET over the view's
+// window still read the pull request. The view is then recomputed for the change, at its quiet
+// delay, and its frame is a GET's over its window.
+func TestAChangeToAPullRequestOnAPresetViewsWindowStartMarksTheView(t *testing.T) {
+	clock := newFakeOnlyHubClock()
+	rig := newClockedHubRig(t, clock)
+	seedHubSettings(t, rig.database)
+	window := 28 * 24 * time.Hour
+	// The view's own read below happens 3*viewQuiet and 500 ns after noon, so its window starts on
+	// this merge's microsecond.
+	merged := clock.Now().Add(3 * viewQuiet).Add(-window)
+	upsertPR(t, rig.database, hubPR(1, merged))
+	upsertPR(t, rig.database, hubPR(2, clock.Now().Add(-time.Hour)))
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("m", presetView(deliveryLiveMeasures, 28, "")))
+	conn.snapshot(t, "m")
+	rig.waitConnected(t)
+	rig.settle(t)
+	// Run the recompute a seeded change left due.
+	clock.Advance(2 * viewQuiet)
+	rig.settle(t)
+
+	// A change well inside the window marks the view at a moment 500 ns into a microsecond, so its
+	// recompute is due a quiet delay later, at noon + 3*viewQuiet + 500 ns.
+	clock.Advance(500 * time.Nanosecond)
+	read := clock.Now().Add(viewQuiet)
+	inside := hubPR(2, clock.Now().Add(-time.Hour))
+	inside.Title = "feat: change 2, renamed"
+	upsertPR(t, rig.database, inside)
+	clock.Fake.AwaitArmedAt(t, "the recompute the change inside the window left due", read)
+	start := rig.mark()
+	clock.Set(read)
+	rig.waitFor(t, start, "the recompute of the change inside the window to end", func(note deliveryHubNote) bool {
+		return note.what == "recompute end" && note.cause == deliveryCauseChange
+	})
+	if from := rig.onlyViewFrom(t); !from.Equal(merged) {
+		t.Fatalf("the view read at %v holds the window start %v, want acme/widgets#1's merge %v, the start truncated to its microsecond",
+			read, from, merged)
+	}
+
+	// The change to the pull request on the window start: an earlier opening moves the measures'
+	// opened-to-merge time.
+	edge := hubPR(1, merged)
+	edge.CreatedAt = new(merged.Add(-5 * time.Hour))
+	upsertPR(t, rig.database, edge)
+	latest, err := delivery.LatestChangeSeq(t.Context(), rig.database.Pool)
+	if err != nil {
+		t.Fatalf("read the newest delivery change: %v", err)
+	}
+	testwait.Until(t, fmt.Sprintf("the hub's change cursor through the change to acme/widgets#1, change %d", latest), func() (int64, bool) {
+		at := rig.changeCursor()
+		return at, at >= latest
+	})
+	if dirty, cause := rig.onlyViewDirty(t); !dirty || cause != deliveryCauseChange {
+		t.Fatalf("after a change to acme/widgets#1, merged on the view's window start %v, the view is dirty=%t cause=%q; want it marked for the change",
+			merged, dirty, cause)
+	}
+	again := clock.Now().Add(viewQuiet)
+	clock.Fake.AwaitArmedAt(t, "the recompute the change to acme/widgets#1 left due", again)
+	start = rig.mark()
+	clock.Set(again)
+	rig.waitFor(t, start, "the recompute of the change to acme/widgets#1 to end", func(note deliveryHubNote) bool {
+		return note.what == "recompute end" && note.cause == deliveryCauseChange
+	})
+	body := rig.onlyViewBody(t)
+	requireSameBody(t, "the view recomputed for the change on its window start", body,
+		getBody(t, rig.handler, windowTarget(t, deliveryLiveMeasures, body, "")))
+}
+
+// timelinePRIDs is the ids of the pull requests a timeline body lists.
+func timelinePRIDs(t *testing.T, body json.RawMessage) []string {
+	t.Helper()
+	var timeline struct {
+		PRs []struct {
+			ID string `json:"id"`
+		} `json:"prs"`
+	}
+	if err := json.Unmarshal(body, &timeline); err != nil {
+		t.Fatalf("decode the timeline body's pull requests: %v", err)
+	}
+	ids := make([]string, len(timeline.PRs))
+	for i, pr := range timeline.PRs {
+		ids[i] = pr.ID
+	}
+	return ids
 }
 
 // The clock reads noon UTC (newNoonHubClock) and runs on from there, so the row's run itself
@@ -2330,83 +2565,69 @@ func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing
 	}
 }
 
-// TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer moves the clock past midnight
-// inside the worker's arm of its timer, after the worker has read the clock and before the timer is
-// placed, where a test's Advance can land when the race detector slows the worker. It moves it at
-// the first arm once the relay's feed has been applied and the view holds its answer with no wake
-// left pending, so only the timer can wake the worker: the expiry the clock already passed is due,
-// so the timer fires and the expiry's delta follows. The clock reads noon UTC (newNoonHubClock)
-// until then, so the run itself crossing a real UTC midnight decides nothing.
-//
-// The feed is waited for because a generation takes it on a goroutine of its own (seedEvents), so
-// it can reach the intake at any moment until then, and its apply marks every view dirty
-// (applyFeed). Landing after the clock moved, that mark makes the view due as a change rather than
-// as the expiry: a change recompute then sends the moved days and no expiry recompute runs. That
-// recompute reads at the moved clock, so the page is still answered right, but the row then proves
-// nothing about the timer.
-//
-// So the hook is installed only once the feed's apply has made its note, which it makes after its
-// mark: no arm can then ask the hook while the feed is still to come, and no arm can be missed by
-// a hook that saw the mark's wake spent before the note was made. The row then wakes the worker
-// itself, as any mark would, so that the hook is asked. It installs the hook and sends that wake
-// in one hold of the hub's lock, which the hook takes (catchUpNow, then its read of the view)
-// before it can answer: a hook asked in between, by the arm that follows the feed's change
-// recompute, waits for the lock and then finds the row's wake pending, so it answers false, and
-// the row's wake is spent before the clock moves rather than standing in for the timer after it.
-// A wake can also still be on its way from an earlier arm's timer: its callback can have won its
-// timer's one run and be descheduled before it sends, and the worker's Stop of that timer cannot
-// take the run back. Sent after the clock moved, it too would wake the worker in the timer's place.
-// So the hook waits for every such callback to return (waitCallbacks) before it reads the worker's
-// wakes. No timer can begin a run after that: the worker stopped its last timer before this arm,
-// and this arm's timer is placed only once the hook has answered.
-//
-// Each arm at which the hook answers false is followed by another: the view is dirty or
-// computing, so a recompute is due, or a wake is pending. Nothing else the intake can still owe
-// here, a catch-up of the change log after a notification or a connection, marks the view, since
-// the row writes nothing after the generation starts.
+// TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer holds the hub's one timer to
+// the moment the view's answer next expires (nextUTCMidnight), on a clock only the test moves: once
+// the view holds its answer with nothing dirty or computing, the worker's timer is armed for the
+// next UTC midnight, which the clock's report of what is armed shows (AwaitArmed). Then a wake
+// with nothing due runs the worker's loop once more, and the clock moves between the worker's read
+// of it and its arm (moveAfterReads): the timer is armed for the expiry all the same, since the arm
+// reads the clock again rather than counting from the read before the move. The test moves the
+// clock to that very moment, and the timer fires, the expiry's recompute ends and its delta
+// reaches the page.
 func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testing.T) {
 	t.Parallel()
-	clock := newNoonHubClock()
+	clock := newFakeOnlyHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("p", livePipelineView(nil)))
 	conn.snapshot(t, "p")
-
-	// The feed stands behind the server's event horizon, so the wait for it is the horizon's.
-	rig.waitForEvent(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
-	// No hub code holds the fake clock's lock while it takes the hub's, and the hook runs outside
-	// the clock's lock (fakeHubClock.At), so the clock's onArm under the hub's lock cannot deadlock.
-	rig.hub.mu.Lock()
-	clock.onArm(func() bool {
-		// catchUpNow returns once the intake has finished whatever it had already taken off its
-		// channels, such as a catch-up under way, so a mark that work made is on the view by the
-		// time the view is read.
-		rig.hub.catchUpNow()
-		clock.waitCallbacks()
+	rig.waitConnected(t)
+	// The relay's feed, seeded after the subscribe, marks every view dirty (applyFeed); on a clock
+	// that stands still that recompute comes due only once the clock moves, so the test moves it a
+	// quiet past the mark to run it and drains its delta. Without this the view can stay dirty for
+	// good and the wait below, for a view holding its answer with nothing dirty, never ends.
+	clock.Advance(viewQuiet)
+	rig.settle(t)
+	conn.drain()
+	testwait.Eventually(t, "the view to hold its answer with nothing dirty, computing or waking", func() bool {
 		rig.hub.mu.Lock()
+		defer rig.hub.mu.Unlock()
 		g := rig.hub.generation
-		ready := g != nil && len(g.views) == 1 && len(g.wakeWork) == 0
-		if ready {
-			for _, view := range g.views {
-				ready = ready && view.body != nil && !view.dirty && !view.computing && !view.expiry.IsZero()
-			}
+		if g == nil {
+			return false
 		}
-		rig.hub.mu.Unlock()
-		if ready {
-			now := clock.Now()
-			clock.Advance(nextUTCMidnight(now).Sub(now) + time.Second)
+		ready := len(g.views) == 1 && len(g.wakeWork) == 0
+		for _, view := range g.views {
+			ready = ready && view.body != nil && !view.dirty && !view.computing && !view.expiry.IsZero()
 		}
 		return ready
 	})
-	g := rig.hub.generation
-	signal(g.wakeWork)
+	expiry := nextUTCMidnight(clock.Now())
+	armed := clock.AwaitArmed(t, fmt.Sprintf("the hub's timer for the view's expiry at %v", expiry), 1)
+	if len(armed) != 1 || !armed[0].Equal(expiry) {
+		t.Fatalf("the hub's timer is armed for %v, want the view's expiry at %v", armed, expiry)
+	}
+	// A wake with nothing due makes the worker read the clock twice before the read its arm takes
+	// (runDue's read, which finds nothing due, and the read the wake is judged on), and the clock
+	// moves a second right after the second of them: between the worker's read and its arm. An arm
+	// that counted from that earlier read would place the timer a second past the expiry.
+	before, _ := clock.armedCount()
+	clock.moveAfterReads(2, time.Second)
+	rig.hub.mu.Lock()
+	wake := rig.hub.generation.wakeWork
 	rig.hub.mu.Unlock()
-	// The expiry's recompute is what the row waits for, with the test binary's deadline as its only
-	// bound. It sends its delta, when it has one, before it makes its note (expire, finishRecompute),
-	// so the read below takes a delta already sent, and an expiry that sent nothing fails it by name
-	// before the test binary's deadline (testwait.Receive).
-	rig.waitFor(t, 0, "the expiry's recompute", func(note deliveryHubNote) bool {
+	signal(wake)
+	armed = testwait.Until(t, "the worker's arm after the wake that moved the clock between its read and its arm", func() ([]time.Time, bool) {
+		arms, moved := clock.armedCount()
+		return clock.Armed(), moved && arms > before
+	})
+	if len(armed) != 1 || !armed[0].Equal(expiry) {
+		t.Fatalf("with the clock moved between the worker's read and its arm, the hub's timer is armed for %v, want the view's expiry at %v", armed, expiry)
+	}
+	start := rig.mark()
+	clock.Set(expiry)
+	rig.waitFor(t, start, "the expiry's recompute to end", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && note.cause == deliveryCauseExpiry
 	})
 	delta := conn.delta(t, "p")
@@ -2441,15 +2662,17 @@ func TestAPresetRecomputeWhereOnlyTheWindowMovedSendsNothing(t *testing.T) {
 	start := rig.mark()
 	old.Title = "feat: a title no view shows"
 	upsertPR(t, rig.database, old)
-	rig.waitFor(t, start, "the recompute of the change", func(note deliveryHubNote) bool {
+	if note := rig.waitFor(t, start, "the recompute of the change", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && note.cause == deliveryCauseChange
-	})
+	}); note.sent != 0 {
+		t.Fatalf("the recompute whose window alone moved sent %d frames, want none", note.sent)
+	}
 	rig.requireNothingSent(t, conn, "a recompute whose window alone moved")
 }
 
 func TestFreshnessIsSentOnlyWhenItsVerdictChanges(t *testing.T) {
 	t.Parallel()
-	clock := &fakeHubClock{}
+	clock := newHeldHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
 	conn := newFakeLiveConn()
@@ -2693,6 +2916,149 @@ func TestAReconcilePassThatFindsNothingNewSendsNothing(t *testing.T) {
 	rig.requireNothingSent(t, conn, "a reconcile pass that found nothing new")
 }
 
+// freshnessRange is a custom measures range, which has no expiry, so nothing but its answers and
+// the verdict reaches a conn that follows it.
+func freshnessRange() DeliveryLiveView {
+	return measuresRange(time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 6, 8, 0, 0, 0, 0, time.UTC), "")
+}
+
+// A freshness-only write (a reconcile pass, its error, a GitHub event) logs no delivery change and
+// reaches the hub only as a delivery_freshness notification, which Postgres sends only to a
+// connection that listens as the write commits. A generation's first recompute does not wait for
+// its listener's first LISTEN, so a pass recorded between the two is notified to no connection of
+// the hub's, and the hub hears it by reading the freshness row after that LISTEN (readFreshness).
+// The listener's dials are held here until the pass has committed. The pass before it is past the
+// stale threshold, so the page's first answer names the reconciled sources stale, and only a hub
+// that heard the new pass sends the page the verdict that clears them.
+func TestAPassRecordedBeforeTheListenersFirstListenReachesThePage(t *testing.T) {
+	t.Parallel()
+	recorded := make(chan struct{})
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		dial := hub.dial
+		hub.dial = func(ctx context.Context) (*pgx.Conn, error) {
+			select {
+			case <-recorded:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return dial(ctx)
+		}
+	})
+	seedHubSettings(t, rig.database)
+	pool := rig.database.Pool
+	if err := delivery.RecordReconcileSuccess(t.Context(), pool, rig.clock.Now().Add(-deliveryStaleAfter-time.Minute)); err != nil {
+		t.Fatalf("record a pass past the stale threshold: %v", err)
+	}
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("m", freshnessRange()))
+	conn.snapshot(t, "m")
+
+	passed := rig.clock.Now()
+	if err := delivery.RecordReconcileSuccess(t.Context(), pool, passed); err != nil {
+		t.Fatalf("record the pass: %v", err)
+	}
+	close(recorded)
+	fresh := conn.freshness(t, "the freshness frame of the pass recorded before the listener's first LISTEN")
+	if at := fresh.Freshness.LastReconcileAt; at == nil || at.Before(passed.Truncate(time.Microsecond)) || len(fresh.Stale) != 0 || fresh.Freshness.LastError != nil {
+		t.Fatalf("the pass's freshness frame = %+v, want last_reconcile_at at %v, nothing stale and no last_error", fresh, passed)
+	}
+	rig.requireNothingSent(t, conn, "the pass's freshness frame")
+}
+
+// A freshness-only write committed while the listener has no connection is notified to no
+// connection of the hub's either, and the catch-up of the change log after the reconnection finds
+// no change it logged: the hub hears it by reading the freshness row after the new LISTEN
+// (readFreshness). The listener's connection is ended here, and its next dial held, until a
+// reconcile error has committed; only a hub that heard it sends the page the verdict naming it.
+func TestAReconcileErrorRecordedWhileTheListenerWasDownReachesThePage(t *testing.T) {
+	t.Parallel()
+	var blind atomic.Bool
+	recorded := make(chan struct{})
+	// The listener's own connections, so the test ends the one it listens on by its backend's pid
+	// (terminateListener). A dial is recorded only once the hold lets it through, so a dial the
+	// hold keeps is none that terminateListener waits for.
+	var dials listenerDials
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		dial := dials.wrap(hub.dial)
+		hub.dial = func(ctx context.Context) (*pgx.Conn, error) {
+			if blind.Load() {
+				select {
+				case <-recorded:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return dial(ctx)
+		}
+	})
+	seedHubSettings(t, rig.database)
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("m", freshnessRange()))
+	conn.snapshot(t, "m")
+	rig.waitFor(t, 0, "the listener's first connection", listenerConnected)
+	start := rig.mark()
+
+	blind.Store(true)
+	terminateListener(t, rig.database, &dials)
+	if err := delivery.RecordReconcileError(t.Context(), rig.database.Pool, "GitHub answered 502"); err != nil {
+		t.Fatalf("record a reconcile error: %v", err)
+	}
+	close(recorded)
+	rig.waitFor(t, start, "the listener's reconnection", listenerConnected)
+	fresh := conn.freshness(t, "the freshness frame naming the error recorded while the listener was down")
+	if fresh.Freshness.LastError == nil || *fresh.Freshness.LastError != "GitHub answered 502" || len(fresh.Stale) != 0 {
+		t.Fatalf("the error's freshness frame = %+v, want last_error \"GitHub answered 502\" and nothing stale", fresh)
+	}
+	rig.requireNothingSent(t, conn, "the error's freshness frame")
+}
+
+// The first recompute sets the hub's first verdict from its own read of the settings, while the
+// listener may already apply a freshness notification: one applied after that read and before
+// the recompute installs its answer is of a newer row, and an install that put the read's row in
+// its place would keep the older verdict on every page until the next freshness write. The first
+// recompute is held here once its read has returned (the "recompute read" note, made before the
+// install takes the hub's lock) until the hub has heard a reconcile error recorded then; the page,
+// answered with the read's verdict, is then sent the error's.
+func TestAReconcileErrorHeardDuringTheFirstRecomputesReadReachesThePage(t *testing.T) {
+	t.Parallel()
+	read, release := make(chan struct{}), make(chan struct{})
+	var hold sync.Once
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		observe := hub.observe
+		hub.observe = func(note deliveryHubNote) {
+			observe(note)
+			if note.what == "recompute read" {
+				hold.Do(func() {
+					close(read)
+					select {
+					case <-release:
+					case <-hub.lifetime.Done():
+					}
+				})
+			}
+		}
+	})
+	seedHubSettings(t, rig.database)
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("m", freshnessRange()))
+	testwait.Receive(t, "the first recompute's read", read)
+	// The listener listens before the error is written, so the hub hears it as a notification.
+	rig.waitFor(t, 0, "the listener's connection", listenerConnected)
+	if err := delivery.RecordReconcileError(t.Context(), rig.database.Pool, "GitHub answered 502"); err != nil {
+		t.Fatalf("record a reconcile error: %v", err)
+	}
+	rig.waitFreshnessHeard(t, "the hub to hear the error recorded while the first recompute held its read", func(heard deliveryFreshnessHeard) bool {
+		return heard.lastError != nil && *heard.lastError == "GitHub answered 502"
+	})
+	close(release)
+	conn.snapshot(t, "m")
+	fresh := conn.freshness(t, "the freshness frame naming the error heard while the first recompute read")
+	if fresh.Freshness.LastError == nil || *fresh.Freshness.LastError != "GitHub answered 502" || len(fresh.Stale) != 0 {
+		t.Fatalf("the error's freshness frame = %+v, want last_error \"GitHub answered 502\" and nothing stale", fresh)
+	}
+	rig.requireNothingSent(t, conn, "the error's freshness frame")
+}
+
 // TestARecomputeAfterTiedRowsAreWrittenAgainSendsNothing: a reconcile pass writes a failed run's
 // jobs and the pull requests a deploy shipped again as they were, which logs no change but puts each
 // row's new version after the rest of its table. The jobs started and finished together and the
@@ -2752,9 +3118,11 @@ func TestARecomputeAfterTiedRowsAreWrittenAgainSendsNothing(t *testing.T) {
 	start := rig.mark()
 	other.Title = "feat: a title no view shows"
 	upsertPR(t, rig.database, other)
-	rig.waitFor(t, start, "the recompute of the change", func(note deliveryHubNote) bool {
+	if note := rig.waitFor(t, start, "the recompute of the change", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && note.cause == deliveryCauseChange
-	})
+	}); note.sent != 0 {
+		t.Fatalf("the recompute after the tied rows were written again sent %d frames, want none", note.sent)
+	}
 	rig.requireNothingSent(t, conn, "a recompute after tied rows were written again unchanged")
 }
 
@@ -2838,7 +3206,8 @@ func TestOneRecomputeAtATime(t *testing.T) {
 	t.Parallel()
 	var inFlight, most atomic.Int32
 	var holding atomic.Bool
-	begun, held := make(chan struct{}), make(chan struct{})
+	begun := make(chan struct{}, 8)
+	held := make(chan struct{})
 	release := sync.OnceFunc(func() { close(held) })
 	rig := newHubRig(t, func(hub *deliveryHub) {
 		observe := hub.observe
@@ -2852,12 +3221,14 @@ func TestOneRecomputeAtATime(t *testing.T) {
 						break
 					}
 				}
-				if holding.CompareAndSwap(true, false) {
-					// Hold the merge's first recompute open until the merge has left every other
-					// view due one too, so a hub that ran two at once would begin a second by then.
-					close(begun)
+				observe(note)
+				if holding.Load() {
+					// Hold the recompute open until the merge has left every other view due one
+					// too, so a hub that ran two at once would have begun a second by then.
+					begun <- struct{}{}
 					<-held
 				}
+				return
 			case "recompute end":
 				inFlight.Add(-1)
 			}
@@ -2882,18 +3253,18 @@ func TestOneRecomputeAtATime(t *testing.T) {
 
 	holding.Store(true)
 	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-time.Hour)))
-	testwait.Receive(t, "the merge's first recompute, held open", begun)
-	testwait.Until(t, "the merge to leave every other view due a recompute, or a second recompute to begin (how many are due)", func() (int, bool) {
-		now := rig.clock.Now()
+	testwait.Receive(t, "the first of the merge's recomputes to begin", begun)
+	testwait.Until(t, "the merge to leave every other view due a recompute", func() (int, bool) {
 		rig.hub.mu.Lock()
 		defer rig.hub.mu.Unlock()
+		now := rig.clock.Now()
 		due := 0
 		for _, view := range rig.hub.generation.views {
 			if at, _, ok := view.dueAt(); ok && view.dirty && !at.After(now) {
 				due++
 			}
 		}
-		return due, due == len(views)-1 || most.Load() > 1
+		return due, due == len(views)-1
 	})
 	release()
 	for range views {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -110,11 +111,13 @@ func (m *mentionSender) claimKnown(item mentionSend) (_ mentionSend, ok bool) {
 }
 
 // keepClaims writes the claims of the sends waiting on the lanes again every claimRefresh
-// (mentionClaimRefresh), until the lifetime ends or wait runs. Nothing is written again after
-// that, which is what hands a stopped process's queue to the delivery sweep a lease later.
-func (m *mentionSender) keepClaims() {
+// (mentionClaimRefresh), on the clock newMentionSender was given for it, until the lifetime ends
+// or wait runs. Nothing is written again after that, which is what hands a stopped process's
+// queue to the delivery sweep a lease later. The refreshes tick on a clock.Ticker, which arms the
+// next refresh once the one before it has returned.
+func (m *mentionSender) keepClaims(on clock.Clock) {
 	defer m.done.Done()
-	refresh := time.NewTicker(m.claimRefresh)
+	refresh := clock.NewTicker(on, m.claimRefresh, false)
 	defer refresh.Stop()
 	for {
 		select {
@@ -122,9 +125,11 @@ func (m *mentionSender) keepClaims() {
 			return
 		case <-m.stopped:
 			return
-		case <-refresh.C:
-			m.refreshHeldClaims(m.ctx)
+		case <-refresh.C():
 		}
+		refresh.Took()
+		m.refreshHeldClaims(m.ctx)
+		refresh.Next()
 	}
 }
 

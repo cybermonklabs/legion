@@ -9,12 +9,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A restart loses the compaction queue, and nothing reopens the documents it held: the sweep of the
@@ -27,21 +30,21 @@ func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testi
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
-	before := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	testcleanup.Add(t, func() { _ = before.Shutdown(context.Background()) })
+	before := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), before) })
 	foldPoint := writeRoomRows(t, before, artifactID)
 	// The rows are young as the service stops, so its rooms' close compactions leave them; they
 	// come of age while no service runs.
-	if err := before.Shutdown(ctx); err != nil {
+	if err := docstest.Shutdown(t, ctx, before); err != nil {
 		t.Fatalf("shut down the first service: %v", err)
 	}
 	ageUpdatesThrough(t, database, artifactID, foldPoint, time.Hour)
 	rows, cursor := storedRows(t, database, artifactID), settlementCursor(t, database, artifactID)
 	reading := storedReading(t, NewPgVersioned(database), artifactID)
 
-	restarted := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	testcleanup.Add(t, func() { _ = restarted.Shutdown(context.Background()) })
-	restarted.compactionSweepTick(ctx, excerptLeases(t, database))
+	restarted := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), restarted) })
+	restarted.compactionSweepTick(ctx, excerptLeases(t, database), time.Now())
 
 	requireCompactedFrom(t, database, artifactID, rows, foldPoint, cursor)
 	if got := storedReading(t, NewPgVersioned(database), artifactID); got != reading {
@@ -52,27 +55,30 @@ func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testi
 // The sweep runs once an aligned hour across the processes that share the database, and across
 // their restarts: a second process's tick inside the hour the first one swept finds the hour served
 // and compacts nothing, however due a document is, and the duty record holds the first pass's hour.
+// A tick's period is the hour its due time falls in (duty.Exclusive), the moment its ticker
+// delivered, so the test names both ticks' due times, ten and forty minutes into one hour, rather
+// than reading a clock that could turn the hour between them.
 func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	waitOutTheSweepHour(t, database)
+	hour := time.Date(2026, time.November, 19, 12, 0, 0, 0, time.UTC)
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
-	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	testcleanup.Add(t, func() { _ = first.Shutdown(context.Background()) })
-	other := New(Deps{Store: second, Events: events.NewBroker(), Settle: time.Hour})
-	testcleanup.Add(t, func() { _ = other.Shutdown(context.Background()) })
+	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), first) })
+	other := New(Deps{Store: second, Events: events.NewBroker(), Settle: stagedAhead})
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), other) })
 
 	swept := storeAgedRows(t, database, 3, 20*time.Minute)
-	first.compactionSweepTick(ctx, excerptLeases(t, database))
+	first.compactionSweepTick(ctx, excerptLeases(t, database), hour.Add(10*time.Minute))
 	if got := storedRows(t, database, swept); len(got) != 1 {
 		t.Fatalf("the first process's sweep left rows %v, want the document folded into one", rowVersions(got))
 	}
 
 	due := storeAgedRows(t, database, 3, 20*time.Minute)
 	rows := storedRows(t, database, due)
-	other.compactionSweepTick(ctx, excerptLeases(t, second))
+	other.compactionSweepTick(ctx, excerptLeases(t, second), hour.Add(40*time.Minute))
 	requireRowsAsStored(t, database, due, rows)
 
 	ran := countExcerptLeaseLines(logs, "dispatch duty: leased pass ran", compactionSweepLease)
@@ -80,15 +86,14 @@ func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 	if ran != 1 || skipped != 1 {
 		t.Fatalf("the two ticks ran %d passes and skipped %d, want one of each:\n%s", ran, skipped, logs.Lines("lease="))
 	}
-	var thisHour bool
+	var boundary time.Time
 	if err := database.Pool.QueryRow(ctx, `
-		select boundary = to_timestamp(floor(extract(epoch from now()) / 3600) * 3600)
-		from duty_passes where lease = $1 and period_ns = $2
-	`, compactionSweepLease, compactionSweepPeriod.Nanoseconds()).Scan(&thisHour); err != nil {
+		select boundary from duty_passes where lease = $1 and period_ns = $2
+	`, compactionSweepLease, CompactionSweepPeriod.Nanoseconds()).Scan(&boundary); err != nil {
 		t.Fatalf("read the sweep's duty record: %v", err)
 	}
-	if !thisHour {
-		t.Fatal("the sweep's duty record does not hold this hour's pass")
+	if !boundary.Equal(hour) {
+		t.Fatalf("the sweep's duty record holds the pass of the hour from %v, want the hour both ticks were due in, from %v", boundary, hour)
 	}
 }
 
@@ -100,13 +105,13 @@ func TestTheCompactionSweepLeavesADocumentWhoseRowsAreYoungerThanTheAgeRule(t *t
 	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	old := storeAgedRows(t, database, 3, 20*time.Minute)
 	young := storeAgedRows(t, database, 3, 5*time.Minute)
 	oldRows, youngRows := storedRows(t, database, old), storedRows(t, database, young)
 
-	service.compactionSweepTick(ctx, excerptLeases(t, database))
+	service.compactionSweepTick(ctx, excerptLeases(t, database), time.Now())
 
 	if got := storedRows(t, database, old); len(got) != 1 || got[0].version != oldRows[len(oldRows)-1].version {
 		t.Fatalf("the old document holds rows %v, want the head %d alone", rowVersions(got), oldRows[len(oldRows)-1].version)
@@ -226,8 +231,8 @@ func TestTheCompactionSweepForgetsADocumentWithNoRowAfterItsFirst(t *testing.T) 
 	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	pruned := storeAgedRows(t, database, 3, time.Hour)
 	if err := NewPgVersioned(database).PruneAfter(ctx, pruned, 1, nil); err != nil {
 		t.Fatalf("prune to version 1: %v", err)
@@ -241,7 +246,7 @@ func TestTheCompactionSweepForgetsADocumentWithNoRowAfterItsFirst(t *testing.T) 
 	youngRows := storedRows(t, database, young)
 	requireOwed(t, database, "every document an append gave a second row", pruned, emptied, young)
 
-	service.compactionSweepTick(ctx, excerptLeases(t, database))
+	service.compactionSweepTick(ctx, excerptLeases(t, database), time.Now())
 
 	requireOwed(t, database, "the document whose young rows are not yet due", young)
 	requireRowsAsStored(t, database, young, youngRows)
@@ -281,14 +286,14 @@ func TestTheCompactionSweepReadsNoRowOfADocumentThatIsNotDue(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	const notDue = 2000
 	createDocuments(t, database, notDue)
 	due := storeAgedRows(t, database, 3, 20*time.Minute)
 	before := docUpdatesTuplesRead(t, database)
 
-	service.compactionSweepTick(ctx, excerptLeases(t, database))
+	service.compactionSweepTick(ctx, excerptLeases(t, database), time.Now())
 
 	if got := storedRows(t, database, due); len(got) != 1 {
 		t.Fatalf("the due document holds rows %v after the sweep, want it folded into one", rowVersions(got))
@@ -340,15 +345,12 @@ func docUpdatesTuplesRead(t *testing.T, database *store.Store) int64 {
 	}
 	// The flushes land as each connection goes idle; read until two reads agree.
 	last := read()
-	for range 20 {
-		time.Sleep(100 * time.Millisecond)
+	return testwait.Until(t, "two reads of doc_updates' statistics in a row to agree, every connection's flush landed", func() (int64, bool) {
 		now := read()
-		if now == last {
-			return now
-		}
+		agreed := now == last
 		last = now
-	}
-	return last
+		return now, agreed
+	})
 }
 
 // A document whose lock another holder has when the sweep reaches it is handed to the service's
@@ -357,26 +359,29 @@ func docUpdatesTuplesRead(t *testing.T, database *store.Store) int64 {
 func TestTheCompactionSweepHandsABusyDocumentToTheQueue(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
-	steps := quickCompactionQueue(service, 20*time.Millisecond)
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
+	steps := recordCompactionSteps(service)
 	busy := storeAgedRows(t, database, 3, 20*time.Minute)
 	free := storeAgedRows(t, database, 3, 20*time.Minute)
 	busyRows := storedRows(t, database, busy)
 	unlock := holdDocumentLock(t, database, busy)
 
-	service.compactionSweepTick(ctx, excerptLeases(t, database))
+	service.compactionSweepTick(ctx, excerptLeases(t, database), time.Now())
 
 	if got := storedRows(t, database, free); len(got) != 1 {
 		t.Fatalf("the free document holds rows %v after the sweep, want it folded into one", rowVersions(got))
 	}
+	stepWhenDue(t, fake, service, busy)
 	steps.await(t, busy, 0, "the queue to take the busy document", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionRetry
 	})
 	requireRowsAsStored(t, database, busy, busyRows)
 	from := steps.count()
 	unlock()
+	stepWhenDue(t, fake, service, busy)
 	steps.await(t, busy, from, "the queue to compact the document once its lock is free", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionAgain
 	})
@@ -385,23 +390,9 @@ func TestTheCompactionSweepHandsABusyDocumentToTheQueue(t *testing.T) {
 	}
 }
 
-// waitOutTheSweepHour returns with at least half a minute of the database clock's aligned hour
-// left, so two sweep ticks a test makes one after the other fall in one period (duty.Exclusive).
-func waitOutTheSweepHour(t *testing.T, database *store.Store) {
-	t.Helper()
-	var left time.Duration
-	if err := database.Pool.QueryRow(context.Background(),
-		`select make_interval(secs => $1 - mod(extract(epoch from now()), $1))`, compactionSweepPeriod.Seconds(),
-	).Scan(&left); err != nil {
-		t.Fatalf("read how much of the hour is left: %v", err)
-	}
-	if left < 30*time.Second {
-		time.Sleep(left + time.Second)
-	}
-}
-
-// compactionSweepTick is one tick of the sweep, due now, as RunCompactionSweep's ticker makes one:
-// the pass, when this process takes the lease and no process has swept this hour.
-func (s *Service) compactionSweepTick(ctx context.Context, leases duty.Leases) {
-	duty.Exclusive(ctx, leases, compactionSweepLease, time.Now(), compactionSweepPeriod, s.compactionSweepPass)
+// compactionSweepTick is one tick of the sweep due at due, as RunCompactionSweep's ticker makes
+// one in production: the pass, when this process takes the lease and no process has swept the hour
+// due falls in.
+func (s *Service) compactionSweepTick(ctx context.Context, leases duty.Leases, due time.Time) {
+	duty.Exclusive(ctx, leases, compactionSweepLease, due, CompactionSweepPeriod, s.compactionSweepPass)
 }

@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  Dispatch's reference excerpt reconciliation times a deferred document's retry on the database's
+  clock. Postgres's now() already stamped each retry and judged when it fell due, but the loop's
+  timer waited for the retry's database timestamp on the process's own clock: a process whose clock
+  ran behind the database's retried late, and one whose clock ran ahead ran its pass again at every
+  minimum gap until the retry fell due. The timer now waits the span the database measures from its
+  now() to the retry, so no process's clock moves it.

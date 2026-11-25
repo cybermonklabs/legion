@@ -181,9 +181,11 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 // window the record gave it (goingRequest.EndsAt), which is what every reader of the run reads
 // too; the writes are bounded by that window and goingStreamGrace, because the terminal frame of
 // a run reaching its deadline is stored at the moment the deadline passes and a context that
-// ended with the run could not store it.
+// ended with the run could not store it. Both deadlines are armed on the server's clock
+// (Deps.Clock, the real one in a deployment), as the stream's are, so a test that holds a fake
+// clock holds the run's window, and one that moves it to the run's ends_at ends the answer.
 func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
-	storing, endStoring := context.WithDeadline(ctx, request.EndsAt.Add(goingStreamGrace))
+	storing, endStoring := s.clock().WithDeadline(ctx, request.EndsAt.Add(goingStreamGrace))
 	defer endStoring()
 	if s.deps.Answerer == nil {
 		if _, err := s.endGoingRun(storing, request.ID, going.Fault(contracts.GoingErrorNoModelConfigured)); err != nil {
@@ -191,7 +193,7 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 		}
 		return
 	}
-	answering, endAnswering := context.WithDeadline(storing, request.EndsAt)
+	answering, endAnswering := s.clock().WithDeadline(storing, request.EndsAt)
 	defer endAnswering()
 	emit := func(event going.Event) error {
 		if event.Terminal() {
@@ -327,10 +329,12 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// now, so a run already past its ends_at has the time this reader needs to end it; the
 	// caller's own going away ends it sooner.
 	until := request.EndsAt.Add(goingStreamGrace)
-	if soonest := time.Now().Add(goingStreamGrace); until.Before(soonest) {
+	// The grace from now and the deadline are read and armed on the server's clock (Deps.Clock,
+	// the real one in a deployment), so a test that moves a fake clock moves the stream's end.
+	if soonest := s.clock().Now().Add(goingStreamGrace); until.Before(soonest) {
 		until = soonest
 	}
-	ctx, done := context.WithDeadline(r.Context(), until)
+	ctx, done := s.clock().WithDeadline(r.Context(), until)
 	defer done()
 	for {
 		frames, state, err := s.readGoingStream(ctx, id, after)

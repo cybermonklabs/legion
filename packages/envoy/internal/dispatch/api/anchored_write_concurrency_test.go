@@ -14,21 +14,17 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// withDeadline bounds every request the handler serves by the test binary's deadline less
-// testwait's margin (30 s), the moment testwait's own waits give up, and by nothing under
-// -timeout 0. A wedged pool would otherwise hold its connections until go test's alarm kills the
-// process, which reports no failing test and leaves the pool cleanup unrun; at that moment the
-// request aborts, the connections go back, and the test says which scenario wedged. A request a
-// loaded machine runs slowly is no wedge, and runs to its end.
+// withDeadline bounds every request the handler serves by the shared wait's bound
+// (testwait.Context). A wedged pool would otherwise hold its connections until the package
+// timeout kills the process, which reports no failing test and leaves the pool cleanup unrun;
+// with the bound the request aborts before that deadline, the connections go back, and the test
+// says which scenario wedged.
 func withDeadline(t *testing.T, handler http.Handler) http.Handler {
-	end, bounded := t.Deadline()
+	bound := testwait.Context(t)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !bounded {
-			handler.ServeHTTP(w, r)
-			return
-		}
-		ctx, cancel := context.WithDeadline(r.Context(), end.Add(-30*time.Second))
+		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
+		defer context.AfterFunc(bound, cancel)()
 		handler.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -43,7 +39,7 @@ func TestConcurrentAnchoredWritesDoNotWedgeTheirPool(t *testing.T) {
 	const maxConns = 4
 	for _, writers := range []int{maxConns, maxConns * 2} {
 		t.Run(fmt.Sprintf("writers=%d", writers), func(t *testing.T) {
-			handler, _ := pooledDocumentHandler(t, maxConns, time.Hour)
+			handler, _ := pooledDocumentHandler(t, maxConns, stagedAhead)
 			handler = withDeadline(t, handler)
 			issue := createInteractionIssue(t, handler, "TEST", "Anchored concurrency",
 				"alpha bravo charlie delta echo foxtrot golf hotel")
@@ -71,7 +67,7 @@ func TestConcurrentAnchoredWritesDoNotWedgeTheirPool(t *testing.T) {
 						}, "alice").Code
 				}(index)
 			}
-			group.Wait()
+			testwait.Returns(t, fmt.Sprintf("the %d concurrent anchored writes to answer (a wedged pool never does)", writers), group.Wait)
 
 			for index, status := range statuses {
 				if status != http.StatusCreated {
@@ -160,7 +156,7 @@ func TestSettlementsBehindAnAnchoredWriteDoNotWedgeThePool(t *testing.T) {
 				"body":   "held write",
 			}, "alice").Code
 	}()
-	<-gate.entered // the first write holds a connection and the issue row
+	testwait.Receive(t, "the first anchored write to reach MarkQuote, holding a connection and the issue row", gate.entered)
 
 	writes.Add(1)
 	go func() {
@@ -179,7 +175,7 @@ func TestSettlementsBehindAnAnchoredWriteDoNotWedgeThePool(t *testing.T) {
 	waitForAcquiredConns(t, database, maxConns)
 
 	release()
-	writes.Wait()
+	testwait.Returns(t, "the held anchored write and the write queued behind it to answer once released (a wedged pool never does)", writes.Wait)
 
 	for index, status := range statuses {
 		if status != http.StatusCreated {

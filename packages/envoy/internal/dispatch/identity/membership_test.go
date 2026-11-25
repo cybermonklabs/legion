@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -379,7 +380,7 @@ func TestMembershipRefreshesOnceForConcurrentRequests(t *testing.T) {
 	for range 16 {
 		wg.Go(func() { errs <- rig.membership.Confirm(context.Background(), memberEmail) })
 	}
-	wg.Wait()
+	testwait.Returns(t, "the 16 concurrent Confirms of one lapsed membership to return", wg.Wait)
 	close(errs)
 	for err := range errs {
 		if err != nil {

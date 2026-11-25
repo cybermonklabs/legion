@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // markedItem is one kind of item as the marker's behaviour is read over it: the insert that
@@ -195,7 +196,7 @@ func TestTheWindowArmWaitsForTheItemsOwnerLockHoldingNoTransactionID(t *testing.
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the owner lock: %v", err)
 	}
-	if err := <-windowed; err != nil {
+	if err := testwait.Receive(t, "the window arm to return once the owner lock was let go", windowed); err != nil {
 		t.Fatalf("write the comment's windows: %v", err)
 	}
 	if windows := windowIDsOf(t, database, ItemComment, id); len(windows) == 0 {

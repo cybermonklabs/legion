@@ -19,26 +19,27 @@ import (
 
 // The xid window tests (INFRA-636, plan test T1) drive each write route through the real handler
 // on a fixture the size of the load harness's large specs, and judge the transaction the request
-// ran with storetest's xid rig: from the statement that gave the transaction its xid to its
-// COMMIT, no statement-free gap over 5 ms, and no more time in gaps than in statements (plan D6).
-// Every measurement declares the shape of the window it shows (storetest.XidShape): the most
-// statements that window may hold and what they are, which the rig holds it to in every build -
+// ran with storetest's xid rig, from the statement that gave the transaction its xid to its
+// COMMIT. Every measurement declares the shape of the window it shows (storetest.XidShape): the
+// most statements that window may hold and what they are, which the rig holds it to -
 // storetest.XidBatchedWindow for a route whose write phase is one queued batch, and
-// storetest.XidWindowOf for one whose window legitimately holds more. A route that runs an
-// advisory read in its transaction (write advice, the claim's Legion-managed walk) is also held
-// to running none inside the window (refuseAdvisoryReadsInXidWindow): those reads are queries,
-// back to back, which D6 alone would pass. Each request runs under a marked context
-// (storetest.MarkXid), so only the transactions the request itself ran are judged; the server's
-// background work shares the pool but not the verdict. The server settles documents after an
-// hour, so no settlement races the measured request, except where a route needs settlement to
-// have run first (the block ask). The fixture itself is xid_fixture_test.go's.
+// storetest.XidWindowOf for one whose window legitimately holds more. No collaborator is called
+// inside the window (storetest/collabtest) and no document work runs inside it (docwork, which
+// the traced pool observes). A route that runs an advisory read in its transaction (write advice,
+// the claim's Legion-managed walk) is also held to running none inside the window
+// (refuseAdvisoryReadsInXidWindow): those reads are queries, which a count of statements alone
+// could not tell from the write phase's own. None of these checks reads a clock. Each request
+// runs under a marked context (storetest.MarkXid), so only the transactions the request itself
+// ran are judged; the server's background work shares the pool but not the verdict. The server
+// settles documents after an hour, so no settlement races the measured request, except where a
+// route needs settlement to have run first (the block ask). The fixture itself is
+// xid_fixture_test.go's.
 //
 // This file, the route window table's (route_xid_window_test.go and the files of its rows),
 // issue_ask_repair_xid_window_test.go and delivery's xid_window_test.go build without the race
-// detector (`//go:build !race`). Under it the rig judges no gap (storetest.XidJudgesGaps) and the
-// shape is the same rule in either build, so a race run of these tests proved nothing the plain
-// run does not, at about four times the plain run's cost: envoy-go's step "Test what the race
-// build cannot run at all or at full size" runs them, judging shape and gaps both.
+// detector (`//go:build !race`). Their checks are the same rules in either build, so a race run
+// of these tests would prove nothing the plain run does not, at about four times the plain run's
+// cost: envoy-go's step "Test what the race build cannot run at all or at full size" runs them.
 //
 // Seeding the fixture is most of what a window test costs: twenty anchored writes on a 40 KB
 // spec, each of which renders the spec, about fifteen seconds of a race-built run on a two-core
@@ -131,7 +132,8 @@ func (f *xidFixture) measureBatched(t *testing.T, want int, request func(http.Ha
 const advisoryStatement = "set local statement_timeout = '500ms'"
 
 // refuseAdvisoryReadsInXidWindow fails t when a write ran an advisory read while it held its xid.
-// An advisory read is queries, so D6 cannot see it: each runs back to back with the next. The plan
+// An advisory read is queries, each named by its savepoint here rather than counted with the write
+// phase's own statements. The plan
 // moves write advice to the read phase of every caller (M3) and makes the claim's walk xid-free
 // (M1), so the queries a write runs to advise its caller hold back no reader's snapshot.
 func refuseAdvisoryReadsInXidWindow(t *testing.T, report *storetest.XidReport) {
@@ -466,7 +468,7 @@ func TestXidWindowDocumentRebuild(t *testing.T) {
 			return broken
 		},
 	}, "")
-	if err := f.deps.Docs.(*docs.Service).Evict(context.Background(), f.specID); err != nil {
+	if err := f.deps.Docs.Evict(context.Background(), f.specID); err != nil {
 		t.Fatalf("evict the spec: %v", err)
 	}
 	broken.failNextLoad(f.specID)

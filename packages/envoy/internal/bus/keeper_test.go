@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,11 +28,6 @@ const (
 	keeperByteLimit = 2_000_000
 )
 
-// streamReadPoll is how often a test asks for a stream's state while it waits: a STREAM.INFO is a
-// request the stream's leader answers, too costly to send a hundred times a second
-// (testwait.Holds).
-const streamReadPoll = 50 * time.Millisecond
-
 // infoRead is one read of a stream's info: the info, or the error that came instead, so a wait
 // that gives up prints what its last read answered.
 type infoRead struct {
@@ -51,10 +46,11 @@ func readOf(js nats.JetStreamContext, stream string) infoRead {
 // awaitKept waits until kept reports the stream holds what the keeper restores, and returns its
 // info. The wait ends on that fact alone: a keeper pass and the cluster's change of the stream take
 // what they take on a loaded machine, and the test binary's deadline is the one bound
-// (testwait.UntilPolling).
+// (testwait.Until). Each ask is one STREAM.INFO the stream's leader answers, at the shared wait's
+// own pace.
 func awaitKept(t *testing.T, js nats.JetStreamContext, stream, what string, kept func(*nats.StreamInfo) bool) *nats.StreamInfo {
 	t.Helper()
-	return testwait.UntilPolling(t, streamReadPoll, stream+": "+what+" kept", func() (infoRead, bool) {
+	return testwait.Until(t, stream+": "+what+" kept", func() (infoRead, bool) {
 		read := readOf(js, stream)
 		return read, read.err == nil && kept(read.info)
 	}).info
@@ -65,10 +61,11 @@ func awaitKept(t *testing.T, js nats.JetStreamContext, stream, what string, kept
 // stream, so it is asked again rather than failing the row on the wait's span.
 func answeredRead(t *testing.T, js nats.JetStreamContext, stream string) infoRead {
 	t.Helper()
-	return testwait.UntilPolling(t, streamReadPoll, "an answered read of "+stream, func() (infoRead, bool) {
+	return testwait.Until(t, "an answered read of "+stream, func() (infoRead, bool) {
 		read := readOf(js, stream)
 		return read, !unanswered(read.err)
 	})
+
 }
 
 // readStream is answeredRead's info, failing the test on an answer that is an error.
@@ -81,120 +78,14 @@ func readStream(t *testing.T, js nats.JetStreamContext, stream string) *nats.Str
 	return read.info
 }
 
-// keeperPasses waits until the keeper of each of keepers has ended n passes begun after the call
-// (Client.keepPasses): the counted event a test reads an absence after, since a pass that finds
-// nothing to restore sends nothing and logs nothing. A pass in flight at the call may have read the
-// stream before it, so the wait is for one pass more than n.
-func keeperPasses(t *testing.T, keepers []*Client, n int) {
+// closeClient is bustest.Close, which this package's tests cannot import (bustest imports the
+// bus): it closes client, as a test's cleanup does once the test is over. Close stops the client,
+// closes its connection and returns once its stream keeper has ended (awaitKeeper), which it waits
+// for on no context, so the call runs through the shared wait: a keeper that never ends fails the
+// test naming the close rather than hanging the binary to its timeout.
+func closeClient(t testing.TB, client *Client) {
 	t.Helper()
-	from := make([]uint64, len(keepers))
-	for i, keeper := range keepers {
-		from[i] = keeper.keepPasses.Load()
-	}
-	if waiting := keeperPassesWaiting.Load(); waiting != nil {
-		(*waiting)()
-	}
-	testwait.Until(t, fmt.Sprintf("each of %d keepers to end %d passes begun after %v had ended", len(keepers), n, from), func() ([]uint64, bool) {
-		ended := make([]uint64, len(keepers))
-		all := true
-		for i, keeper := range keepers {
-			ended[i] = keeper.keepPasses.Load()
-			all = all && ended[i] > from[i]+uint64(n)
-		}
-		return ended, all
-	})
-}
-
-// keeperPassesWaiting, when set, runs as keeperPasses has read the passes ended so far and is about
-// to wait for more: TestHoldKeeperUpdatesWaitsOutAKeeperPassBegunBeforeItsSwap releases a pass it
-// holds there, so that pass ends only while keeperPasses waits for it.
-var keeperPassesWaiting atomic.Pointer[func()]
-
-// keeperSwapping, when set, runs in holdKeeperUpdates just before it swaps a keeper's JetStream
-// context: TestHoldKeeperUpdatesWaitsOutAKeeperPassBegunBeforeItsSwap holds a keeper pass begun
-// there, with the context from before the swap.
-var keeperSwapping atomic.Pointer[func()]
-
-// heldBucketReads holds every read of stream, once armed, until resume closes, and closes entered
-// at the first it holds: a keeper pass that reads it then waits there, sending its read again each
-// time its read limit passes (readAgain), until the test resumes it.
-type heldBucketReads struct {
-	nats.JetStreamContext
-	stream  string
-	armed   atomic.Bool
-	entered chan struct{}
-	first   sync.Once
-	resume  chan struct{}
-}
-
-func (js *heldBucketReads) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
-	if stream == js.stream && js.armed.Load() {
-		js.first.Do(func() { close(js.entered) })
-		<-js.resume
-	}
-	return js.JetStreamContext.StreamInfo(stream, opts...)
-}
-
-// holdKeeperUpdates returns only once every keeper pass begun before its swap has ended: a pass
-// takes its client's JetStream context once, as it starts, so one that began before the swap still
-// writes through the context with no hold, and it could put back the update the test makes next
-// before the test's read of it came back. The row starts holding the keeper's reads of a bucket at
-// the swap (keeperSwapping), waits there until a keeper pass is held in one, and releases that pass
-// only from inside a wait for passes that comes after the swap (keeperPassesWaiting). So a
-// holdKeeperUpdates with no wait (the independent tester's plant PL7), or with its wait before the
-// swap (PL15), returns while that pass is still held, and the row fails by name; no span decides
-// it. (The tester's forcing FP7 found the gap: each keeper read held 5 s, and the lowering's
-// replies frozen 40 s.)
-func TestHoldKeeperUpdatesWaitsOutAKeeperPassBegunBeforeItsSwap(t *testing.T) {
-	const bucket = "envoy_keeper_held_pass"
-	cluster, _ := startClusterJetStream(t)
-	client := startOnCluster(t, cluster, WithReplicas(3), WithKeptBuckets(bucket), WithKeepInterval(testKeepInterval), heldKeeperStepGuard(t))
-	if _, err := EnsureKeyValue(t.Context(), client.Conn, client.JS(), &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
-		t.Fatalf("open %s at three copies: %v", bucket, err)
-	}
-	held := &heldBucketReads{stream: "KV_" + bucket, entered: make(chan struct{}), resume: make(chan struct{})}
-	release := sync.OnceFunc(func() { close(held.resume) })
-	t.Cleanup(release)
-	client.mu.Lock()
-	held.JetStreamContext = client.js
-	client.js = held
-	client.mu.Unlock()
-
-	var endedBefore atomic.Uint64
-	swapping := func() {
-		held.armed.Store(true)
-		testwait.Receive(t, "a keeper pass to begin its read of KV_"+bucket+" before the swap", held.entered)
-		endedBefore.Store(client.keepPasses.Load())
-	}
-	keeperSwapping.Store(&swapping)
-	t.Cleanup(func() { keeperSwapping.Store(nil) })
-	waiting := func() {
-		client.mu.Lock()
-		swapped := client.js != nats.JetStreamContext(held)
-		client.mu.Unlock()
-		if held.armed.Load() && swapped {
-			release()
-		}
-	}
-	keeperPassesWaiting.Store(&waiting)
-	t.Cleanup(func() { keeperPassesWaiting.Store(nil) })
-	open := holdKeeperUpdates(t, client)
-	defer open()
-	if ended := client.keepPasses.Load(); ended <= endedBefore.Load() {
-		t.Fatalf("holdKeeperUpdates returned while the keeper pass begun before its swap was still running: %d passes ended, as when that pass began", ended)
-	}
-}
-
-// heldFor waits for passes passes of each of keepers, one at a time (keeperPasses), and fails the
-// test when, after any of them, still stops reporting that the stream is as it was left.
-func heldFor(t *testing.T, keepers []*Client, js nats.JetStreamContext, stream, what string, passes int, still func(*nats.StreamInfo) bool) {
-	t.Helper()
-	for range passes {
-		keeperPasses(t, keepers, 1)
-		if info := readStream(t, js, stream); !still(info) {
-			t.Fatalf("%s: %s changed: %+v", stream, what, info.Config)
-		}
-	}
+	testwait.Returns(t, "the NATS client to close and its stream keeper to end", client.Close)
 }
 
 // keptAtSettings reports whether the stream has the setting program's three copies and byte limit
@@ -204,76 +95,6 @@ func keptAtSettings(id string) func(*nats.StreamInfo) bool {
 		got := info.Config.Metadata[StreamIDMetadataKey]
 		return info.Config.Replicas == 3 && info.Config.MaxBytes == keeperByteLimit && got != "" && (id == "" || got == id)
 	}
-}
-
-// interleavedJetStream runs another program's write in the middle of one program's read and write
-// of the stream: firstRead, when set, answers its first StreamInfo in place of the server, a read
-// the test made before that write, and beforeUpdate runs just before its first UpdateStream is
-// sent, once and only when set. It counts the stream updates sent through it.
-type interleavedJetStream struct {
-	nats.JetStreamContext
-	firstRead            *nats.StreamInfo
-	beforeUpdate         func()
-	readOnce, updateOnce sync.Once
-	updates              atomic.Int32
-	// updateErr is the server's answer to the last update sent through the wrapper: nil when the
-	// update was applied, an unanswered wait when nats-server never answered it.
-	updateErr atomic.Pointer[error]
-}
-
-func (js *interleavedJetStream) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
-	var stale *nats.StreamInfo
-	js.readOnce.Do(func() { stale = js.firstRead })
-	if stale != nil {
-		return stale, nil
-	}
-	return js.JetStreamContext.StreamInfo(stream, opts...)
-}
-
-func (js *interleavedJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
-	if js.beforeUpdate != nil {
-		js.updateOnce.Do(js.beforeUpdate)
-	}
-	js.updates.Add(1)
-	info, err := js.JetStreamContext.UpdateStream(cfg, opts...)
-	js.updateErr.Store(&err)
-	return info, err
-}
-
-// holdKeeperUpdates holds the first stream update the keeper of each of keepers sends until the
-// func it returns runs, which a test runs once its own update of what those keepers restore has
-// been read back (testnats.UpdateStream): a keeper that put the update back before a read of it
-// came back would leave no read that ever shows it, and the read-back would fail the test at its
-// deadline. The keeper waits inside a step of its pass for as long as the read-back takes, which a
-// loaded machine can make longer than a start's step guard (startHangGuard, 36 s): each keeper
-// passed here is started with heldKeeperStepGuard, so its step's guard is the test's deadline and
-// not that. A pass takes its client's JetStream context once, as it starts (keepPass), so this
-// waits for one whole pass after the swap: every pass that reads the update holds the gated
-// context. The hold ends on every way out of the test, before a client's close waits for its
-// keeper.
-func holdKeeperUpdates(t *testing.T, keepers ...*Client) func() {
-	t.Helper()
-	gate := make(chan struct{})
-	open := sync.OnceFunc(func() { close(gate) })
-	t.Cleanup(open)
-	for _, keeper := range keepers {
-		if swapping := keeperSwapping.Load(); swapping != nil {
-			(*swapping)()
-		}
-		keeper.mu.Lock()
-		keeper.js = &interleavedJetStream{JetStreamContext: keeper.js, beforeUpdate: func() { <-gate }}
-		keeper.mu.Unlock()
-	}
-	keeperPasses(t, keepers, 1)
-	return open
-}
-
-// heldKeeperStepGuard is the step guard of a keeper whose update holdKeeperUpdates holds: what is
-// left of the test binary's deadline less testwait's 30 s margin as the keeper starts
-// (withKeeperStepGuard). A step that outlasts the test is ended by the client's close at the test's
-// end, after the test's own read-back has failed it by name.
-func heldKeeperStepGuard(t *testing.T) ConnectOption {
-	return withKeeperStepGuard(testwait.Remaining(t, 30*time.Second))
 }
 
 // awaitRestoredLog waits until the keeper's restore lines name every one of wants. The keeper logs
@@ -321,14 +142,36 @@ func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *t
 	}
 
 	defaults := parseConnectOptions([]ConnectOption(nil)).streamConfig()
-	var setting *Client
+	// The hook runs on the goroutine the default program's update is bounded on (Bounded), not on
+	// the test's, so it ends no test there: it keeps what the setting program's start answered and
+	// the stream that start left, and the row fails on them once the default program's start has
+	// returned.
+	var (
+		hooked     bool
+		setting    *Client
+		settingErr error
+		left       infoRead
+	)
 	defaultStart := &interleavedJetStream{JetStreamContext: js, beforeUpdate: func() {
-		setting = startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval), WithLogger(logs.logger))
-		if info, err := js.StreamInfo(Stream); err != nil || !keptAtSettings(id)(info) {
-			t.Fatalf("the setting program's start left the stream at %+v (%v), want three copies, the byte limit and the id", info, err)
+		hooked = true
+		setting, settingErr = ConnectOwningStream(cluster.URLs(), WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval), WithLogger(logs.logger))
+		if settingErr == nil {
+			left = readOf(js, Stream)
 		}
 	}}
-	if _, err := ensureStreamWithConfig(t.Context(), logs.logger, defaultStart, &defaults, capsAnUnsetStream, atStart); err != nil {
+	_, err := ensureStreamWithConfig(t.Context(), logs.logger, defaultStart, &defaults, capsAnUnsetStream, atStart)
+	if setting != nil {
+		t.Cleanup(func() { closeClient(t, setting) })
+	}
+	if hooked {
+		if settingErr != nil {
+			t.Fatalf("the setting program's start: %v", settingErr)
+		}
+		if left.err != nil || !keptAtSettings(id)(left.info) {
+			t.Fatalf("the setting program's start left the stream at %v, want three copies, the byte limit and the id", left)
+		}
+	}
+	if err != nil {
 		t.Fatalf("the default program's start: %v", err)
 	}
 	if n := defaultStart.updates.Load(); n != 1 {
@@ -374,15 +217,33 @@ func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *test
 	lowered.MaxBytes = -1
 	testnats.UpdateStream(t, js, lowered)
 
+	// The hook runs on the goroutine the keeper's update is bounded on (Bounded), not on the
+	// test's, so it ends no test there: it keeps what the newer release's start answered and the
+	// subjects it left, and the row fails on them once the keeper's pass has returned.
+	var (
+		hooked   bool
+		newerErr error
+		left     []string
+	)
 	keeper := &interleavedJetStream{JetStreamContext: js, beforeUpdate: func() {
-		if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), js, &newer, capsAnUnsetStream, atStart); err != nil {
-			t.Fatalf("the newer release's start: %v", err)
+		hooked = true
+		if _, newerErr = ensureStreamWithConfig(t.Context(), slog.Default(), js, &newer, capsAnUnsetStream, atStart); newerErr != nil {
+			return
 		}
-		if subjects := deployedStream(t, js).Config.Subjects; !slices.Contains(subjects, added) {
-			t.Fatalf("the newer release's start left the subjects %v, want %s among them", subjects, added)
+		var info *nats.StreamInfo
+		if info, newerErr = js.StreamInfo(Stream); newerErr == nil {
+			left = info.Config.Subjects
 		}
 	}}
 	restored, err := keepStream(t.Context(), slog.Default(), keeper, &limited, capsAnUnsetStream)
+	if hooked {
+		if newerErr != nil {
+			t.Fatalf("the newer release's start: %v", newerErr)
+		}
+		if !slices.Contains(left, added) {
+			t.Fatalf("the newer release's start left the subjects %v, want %s among them", left, added)
+		}
+	}
 	if want := []string{fmt.Sprintf("max_bytes -1 -> %d", keeperByteLimit)}; err != nil || !slices.Equal(restored, want) {
 		t.Fatalf("the limited program's keeper restored %v (%v), want %v", restored, err, want)
 	}
@@ -626,7 +487,7 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 			t.Fatalf("watch %s: %v", subject, err)
 		}
 	}
-	if err := watcher.Flush(); err != nil {
+	if err := watcher.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the watch: %v", err)
 	}
 
@@ -697,7 +558,7 @@ func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
 	if _, err := watcher.ChanSubscribe(marker, markers); err != nil {
 		t.Fatalf("watch the marker: %v", err)
 	}
-	if err := watcher.Flush(); err != nil {
+	if err := watcher.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the watch: %v", err)
 	}
 	sent := func() int {
@@ -837,7 +698,7 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 	if err != nil {
 		t.Fatalf("connect owning the stream while the server is down: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { closeClient(t, client) })
 	srv.Start(t)
 
 	reader := testnats.Connect(t, uri)
@@ -848,10 +709,11 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 	reconciled := func(info *nats.StreamInfo) bool {
 		return slices.Contains(info.Config.Subjects, replacing) && !slices.Contains(info.Config.Subjects, replaced)
 	}
-	testwait.UntilPolling(t, streamReadPoll, fmt.Sprintf("the first connection's reconcile to replace %s with %s", replaced, replacing), func() (infoRead, bool) {
+	testwait.Until(t, fmt.Sprintf("the first connection's reconcile to replace %s with %s", replaced, replacing), func() (infoRead, bool) {
 		read := readOf(js, Stream)
 		return read, read.err == nil && reconciled(read.info)
 	})
+
 	// A hundred keeper passes begun after the reconcile was read: a pass that read the stream
 	// before the reconcile has ended by then, and the subject it put back would stay, since the
 	// keeper only adds subjects.
@@ -865,7 +727,10 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 }
 
 // An owning client that connects in the background and stops before its server ever answered
-// started no keeper, and Close and Drain return at once rather than wait for one.
+// started no keeper, and Close and Drain return at once rather than wait for one. The client dials
+// a listener that answers nothing and counts its dials (dialsCounted), and the row stops it only
+// once its dial loop has dialled again after the constructor's first dial, so a keeper the loop
+// started would be running by the stop.
 func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *testing.T) {
 	t.Parallel()
 	for _, stop := range []struct {
@@ -876,13 +741,15 @@ func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *test
 		{name: "drain", stop: func(client *Client) { _ = client.Drain(5 * time.Second) }},
 	} {
 		t.Run(stop.name, func(t *testing.T) {
-			srv, uri := testnats.Start(t)
-			srv.Stop(t)
+			uri, dials := dialsCounted(t)
 			client, err := ConnectOwningStream([]string{uri}, WithConnectInBackground(), WithKeepInterval(time.Millisecond))
 			if err != nil {
-				t.Fatalf("connect owning the stream while the server is down: %v", err)
+				t.Fatalf("connect owning the stream while no server answers: %v", err)
 			}
-			time.Sleep(20 * time.Millisecond)
+			testwait.Until(t, "the background client's dial loop to dial again after its first dial", func() (string, bool) {
+				n := dials.Load()
+				return fmt.Sprintf("%d dials", n), n >= 2
+			})
 			stopped := make(chan struct{})
 			go func() {
 				stop.stop(client)
@@ -897,6 +764,30 @@ func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *test
 			}
 		})
 	}
+}
+
+// dialsCounted listens on a port of its own, closes every connection it accepts at once and
+// answers none, as a NATS server that never answered would, and returns its NATS URL and how many
+// connections it has accepted so far. It stops listening when the test ends.
+func dialsCounted(t *testing.T) (string, *atomic.Int64) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the client's dials: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	var dials atomic.Int64
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			dials.Add(1)
+			_ = conn.Close()
+		}
+	}()
+	return "nats://" + listener.Addr().String(), &dials
 }
 
 // The keeper names the consumer cap it raised, with the deployed value and the new one, so an

@@ -18,9 +18,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // page is an index.html as Vite writes it, naming entry as its module script and a stylesheet
 // after it, with marker making two pages of one entry differ.
@@ -426,7 +427,7 @@ func TestPublishAndPruneTogetherLeaveThePublishedBuildReadable(t *testing.T) {
 			_, pruneErr = Prune(ctx, pool, nil)
 		}()
 		close(start)
-		wg.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d: the publish and the prune started together to return", round), wg.Wait)
 
 		if publishErr != nil || pruneErr != nil {
 			t.Fatalf("round %d: publish %v, prune %v", round, publishErr, pruneErr)

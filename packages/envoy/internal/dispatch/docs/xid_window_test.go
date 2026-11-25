@@ -5,16 +5,28 @@ package docs
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/crdt"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/collabtest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The document service's own write transactions under storetest's xid rig (INFRA-636, plan test
@@ -37,21 +49,25 @@ import (
 // these tests proved nothing the plain run does not: envoy-go's step "Test what the race build
 // cannot run at all or at full size" runs them, judging shape and gaps both.
 
-// xidService is a document service on a traced pool of a fresh database, settling after an hour so
-// only the settlement a test runs itself settles.
+// xidService is a document service on a traced pool of a fresh database, settling after a day so
+// only the settlement a test runs itself settles. Its document store and its identity check every
+// call (checkedVersioned, collabtest.CheckedIdentity): none may run inside a transaction's xid
+// window, from its first write to its end (store.InXidWindow); and the tracer fails the test for
+// document work inside one (storetest.Traced).
 func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 	t.Helper()
 	tracer := storetest.NewXidTracer()
 	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
 	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Store:       database,
+		Persistence: checkedVersioned(t, NewPgVersioned(database)),
+		Events:      events.NewBroker(),
+		Identity:    collabtest.CheckedIdentity(t, headerIdentity(database)),
+		ServerURL:   "https://dispatch.example",
+		Settle:      stagedAhead,
 	})
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -160,11 +176,16 @@ func TestXidWindowRigCatchesAGapAfterTheFirstWrite(t *testing.T) {
 // replaces is gone: nothing here waits. A build whose bound reached what that parse costs would
 // let the real fault through, so this is the test that would go red first were XidMaxGap ever
 // widened too far. The parse runs no statement of its own, so the window's shape is the same
-// with it as without it and only the bound can see it. A document call that does run a
-// statement inside the window is caught by the shape each window test asserts as well.
+// with it as without it, and of the window's verdicts only the bound sees it. The tracer's
+// document-work check sees the parse too, and TestXidWindowCatchesDocumentWorkInsideTheWindow
+// holds that check, so here the pool reports to a recorder: its report of the parse is no failure
+// of this row, and any other report is. A document call that does run a statement inside the
+// window is caught by the shape each window test asserts as well.
 func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
-	_, database, tracer := xidService(t)
+	tracer := storetest.NewXidTracer()
+	caught := &collabtest.RecordedFailures{TB: t}
+	database := &store.Store{Pool: storetest.Traced(caught, storetest.Open(t).Pool, tracer, nil)}
 	spec, _ := storetest.XidSpec("DOC", 1)
 	report := tracer.Measure(t, database.Pool, func() {
 		runRigTransactionDoing(t, database, func() {
@@ -173,6 +194,11 @@ func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 			}
 		})
 	})
+	for _, failure := range caught.Reported() {
+		if !strings.HasPrefix(failure, "document work (") {
+			t.Errorf("the rig reported a failure that is not the document work it was shown:\n%s", failure)
+		}
+	}
 	err := report.Err()
 	if err == nil || len(report.Problems) > 0 || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") ||
 		!strings.Contains(err.Error(), "follows statement 0: insert into projects") {
@@ -180,6 +206,284 @@ func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 			len(spec), err)
 	}
 	t.Logf("the rig's verdict on a parse of the %d-byte spec after the write:\n%v", len(spec), err)
+}
+
+// The control on the document-work check, in INFRA-636's own shape: document work inside the
+// window, once for each entry point that announces its work (docwork.Enter), each in a transaction
+// of its own, made after that transaction's first write and before its commit, and the sleep it
+// replaces is gone: nothing here waits. No entry point runs a statement of its own or calls a
+// collaborator, so the window's shape is the same with it as without it; what sees it in every run
+// is the tracer's document-work check (docwork), which must name the work's kind and, as the frame
+// that announced it, the entry point itself: one whose Enter were deleted would be seen, if at all,
+// through another entry point of its kind beneath it, and its case fails by name. The parse is the
+// one every write route does on the text it writes (parseInput), on a document the size of the load
+// harness's large specs; the rest run on a small document read and written outside the window.
+// Nothing else may fail. The pool reports to a recorder rather than to t, so the check firing is
+// what this test asserts.
+func TestXidWindowCatchesDocumentWorkInsideTheWindow(t *testing.T) {
+	spec, _ := storetest.XidSpec("DOC", 1)
+	tree, err := pmdoc.Parse("Intro with a quote to find.\n\nOutro.\n")
+	if err != nil {
+		t.Fatalf("parse the small document: %v", err)
+	}
+	markdown, _, layout, err := pmdoc.RenderWithLayout(tree)
+	if err != nil {
+		t.Fatalf("render the small document: %v", err)
+	}
+	stored := crdt.New()
+	storedFragment := stored.GetXmlFragment(fragmentName)
+	var stores error
+	stored.Transact(func(txn *crdt.Transaction) { stores = pmdoc.Update(txn, storedFragment, tree) }, nil)
+	if stores != nil {
+		t.Fatalf("write the small document into a fragment: %v", stores)
+	}
+	for _, entry := range []struct {
+		// kind is the work the entry point announces, and enteredBy the frame that calls
+		// docwork.Enter for it: the entry point, as the stack names it.
+		name, kind, enteredBy string
+		work                  func() error
+	}{
+		{"a parse of the large spec", docwork.Parse, "pmdoc.readContext(", func() error {
+			_, err := parseInput(spec)
+			return err
+		}},
+		// ParseInline reads with a parser context of its own, not through readContext, so it
+		// reaches the Enter of pmdoc.readInline alone, as an inline replacement's text
+		// (inlineReplacement) and the renderer's read-backs (parseInlineWithDefinitions,
+		// altReadsBack) do.
+		{"an inline parse", docwork.Parse, "pmdoc.readInline(", func() error {
+			_, err := pmdoc.ParseInline("**x**", nil)
+			return err
+		}},
+		{"a render", docwork.Render, "pmdoc.renderDocument(", func() error {
+			_, err := pmdoc.Render(tree)
+			return err
+		}},
+		{"a layout's splice", docwork.Render, "pmdoc.(*Layout).Splice(", func() error {
+			if _, _, ok := layout.Splice(markdown, []int{0}, func(index int) (*pmdoc.Node, error) { return tree.Children[index], nil }); !ok {
+				return fmt.Errorf("the splice of block 0 was refused")
+			}
+			return nil
+		}},
+		{"a read of a fragment", docwork.Read, "pmdoc.readDocument(", func() error {
+			_, err := pmdoc.Read(storedFragment)
+			return err
+		}},
+		{"a write into a fragment", docwork.Encode, "pmdoc.updateShape(", func() error {
+			written := crdt.New()
+			fragment := written.GetXmlFragment(fragmentName)
+			var err error
+			written.Transact(func(txn *crdt.Transaction) { err = pmdoc.Update(txn, fragment, tree) }, nil)
+			return err
+		}},
+		{"a quote's walk", docwork.AnchorWalk, "pmdoc.(*QuoteFinder).matches(", func() error {
+			_, err := pmdoc.NewQuoteFinder(tree).Find("a quote to find", nil, nil)
+			return err
+		}},
+		{"a walk for marks", docwork.AnchorWalk, "pmdoc.FindMarks(", func() error {
+			pmdoc.FindMarks(tree, []pmdoc.MarkRef{{Type: string(MarkComment), ID: "c1"}})
+			return nil
+		}},
+		{"a reference extraction", docwork.References, "text.ExtractAt(", func() error {
+			text.ExtractAt("See dispatch://DOC-1 for it.", "https://dispatch.example")
+			return nil
+		}},
+		{"the mentions of a text", docwork.References, "text.Mentions(", func() error {
+			_, err := text.Mentions("See DOC-1 for it.", "https://dispatch.example", noReferences{})
+			return err
+		}},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			tracer := storetest.NewXidTracer()
+			caught := &collabtest.RecordedFailures{TB: t}
+			database := &store.Store{Pool: storetest.Traced(caught, storetest.Open(t).Pool, tracer, nil)}
+			report := tracer.Measure(t, database.Pool, func() {
+				runRigTransactionDoing(t, database, func() {
+					if err := entry.work(); err != nil {
+						t.Errorf("%s: %v", entry.name, err)
+					}
+				})
+			})
+			failures := caught.Reported()
+			prefix := "document work (" + entry.kind + ") ran inside a transaction's xid window"
+			named := slices.IndexFunc(failures, func(failure string) bool { return strings.HasPrefix(failure, prefix) })
+			switch {
+			case named < 0:
+				t.Fatalf("%s after the write: the document-work check reported %q, want its work, %s, named", entry.name, failures, entry.kind)
+			case !strings.Contains(enteredBy(failures[named]), entry.enteredBy):
+				t.Fatalf("%s after the write: the document-work check named its %s as entered by %q, want %s, the entry point itself:\n%s",
+					entry.name, entry.kind, enteredBy(failures[named]), entry.enteredBy, failures[named])
+			}
+			for _, failure := range failures {
+				if !strings.HasPrefix(failure, "document work (") {
+					t.Errorf("the rig reported a failure that is not the document work it was shown:\n%s", failure)
+				}
+			}
+			t.Logf("the document-work check on %s after the write:\n%s", entry.name, failures[named])
+			// Where the build judges gaps, D6 sees the parse of the large spec too
+			// (TestXidWindowCatchesADocumentCallInsideTheWindow); this row holds the document-work
+			// check, so a D6 violation is no failure of it, and a rig problem is.
+			if err := report.Err(); err != nil && (len(report.Problems) > 0 || !strings.Contains(err.Error(), "XID WINDOW VIOLATION")) {
+				t.Fatalf("the rig could not judge the transaction: %v", err)
+			}
+		})
+	}
+}
+
+// enteredBy is the frame below docwork.Enter in a document-work failure's stack: the function that
+// announced the work. A stack names each frame's function on one line and its file on the next.
+func enteredBy(failure string) string {
+	lines := strings.Split(failure, "\n")
+	for index, line := range lines {
+		if strings.Contains(line, "/docwork.Enter(") && index+2 < len(lines) {
+			return lines[index+2]
+		}
+	}
+	return ""
+}
+
+// noReferences is a text.Resolver that resolves nothing: no issue exists, the text belongs to no
+// document, and no short id names an item.
+type noReferences struct{}
+
+func (noReferences) Issues([]string) (map[string]bool, error)    { return nil, nil }
+func (noReferences) Questions() (map[string]text.Ref, error)     { return nil, nil }
+func (noReferences) Items([]text.Prefix) (map[int]string, error) { return nil, nil }
+
+// The collaborator check's control through this package's rig, in every run: the tracer opens a
+// transaction's xid window at its first write (store.OpenXidWindow), and a call to a collaborator
+// the rig decorates (collabtest.CheckedIdentity, through collabtest.Check) is then named, where
+// the same call before the write is not. A tracer that stopped opening the window, a decorator
+// that stopped checking or a check that stopped reporting would leave every rig row passing, and
+// fails this one.
+func TestXidWindowCatchesACollaboratorCallInsideTheWindow(t *testing.T) {
+	tracer := storetest.NewXidTracer()
+	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
+	caught := &collabtest.RecordedFailures{TB: t}
+	people := collabtest.CheckedIdentity(caught, signedIn("alice@example.com"))
+	ctx := storetest.MarkXid(context.Background())
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	login := func(when string) {
+		t.Helper()
+		if _, err := people.Login(httptest.NewRequest(http.MethodGet, "/ws/doc/rig", nil).WithContext(ctx)); err != nil {
+			t.Fatalf("%s: resolve the socket's person: %v", when, err)
+		}
+	}
+	login("before the write")
+	if failures := caught.Reported(); len(failures) != 0 {
+		t.Fatalf("a collaborator call before the transaction's first write was reported: %q", failures)
+	}
+	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('RIG', 'Rig', 'alice')`); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	login("after the write")
+	failures := caught.Reported()
+	if len(failures) != 1 || !strings.HasPrefix(failures[0], "identity.Identity.Login was called while its caller holds a connection of the pool") {
+		t.Fatalf("a collaborator call after the transaction's first write was reported as %q, want one failure naming identity.Identity.Login", failures)
+	}
+}
+
+// signedIn is an identity that resolves every request to one person, reading nothing.
+type signedIn string
+
+func (s signedIn) Login(*http.Request) (string, error) { return string(s), nil }
+
+// The document-work check's one gap, held in place: the same parse as the control above, handed
+// to another goroutine while the window is open and waited for, holds the transaction id as long,
+// but runs on a goroutine that wrote in no window, so the check reports nothing (the gap
+// storetest's package doc names). Where the build judges gaps, D6 sees it, since the window's
+// goroutine waits on the parse in its gap, which is the code's time; a build that judges none sees
+// it nowhere. Were the check ever to follow work across goroutines, this row would fail and its
+// doc and that gap would be rewritten.
+func TestXidWindowLeavesDocumentWorkHandedToAnotherGoroutineUnseen(t *testing.T) {
+	tracer := storetest.NewXidTracer()
+	caught := &collabtest.RecordedFailures{TB: t}
+	database := &store.Store{Pool: storetest.Traced(caught, storetest.Open(t).Pool, tracer, nil)}
+	spec, _ := storetest.XidSpec("DOC", 1)
+	report := tracer.Measure(t, database.Pool, func() {
+		runRigTransactionDoing(t, database, func() {
+			parsed := make(chan error, 1)
+			go func() {
+				_, err := parseInput(spec)
+				parsed <- err
+			}()
+			if err := testwait.Receive(t, "the handed-off parse", parsed); err != nil {
+				t.Errorf("parse the %d-byte spec: %v", len(spec), err)
+			}
+		})
+	})
+	if failures := caught.Reported(); len(failures) != 0 {
+		t.Fatalf("the document-work check reported a parse it cannot see on another goroutine: %q; "+
+			"the gap storetest's package doc names is closed, so rewrite it and this row", failures)
+	}
+	err := report.Err()
+	switch judged := storetest.XidJudgesGaps(); {
+	case judged && (err == nil || len(report.Problems) > 0 || !strings.Contains(err.Error(), "XID WINDOW VIOLATION")):
+		t.Fatalf("a parse of the %d-byte spec handed to another goroutine after the write: verdict %v, want a D6 violation, the one check that sees it", len(spec), err)
+	case !judged && err != nil:
+		t.Fatalf("the rig could not judge the transaction: %v", err)
+	}
+}
+
+// The tracer opens a transaction's xid window, which the collaborator and document-work checks
+// read, at the first statement whose own result says it wrote, whether that statement ran on its
+// own or in a batch (store.OpenXidWindow), and the window closes when the transaction ends. A read
+// before the write leaves it shut, and so does an update that matched no row, which took no
+// transaction id. No measurement runs: the tracer opens windows whenever it traces.
+func TestXidWindowOpensAtATransactionsFirstWriteInlineOrBatched(t *testing.T) {
+	_, database, _ := xidService(t)
+	for _, write := range []struct {
+		name string
+		key  string
+		run  func(ctx context.Context, tx pgx.Tx, insert string) error
+	}{
+		{name: "inline", key: "INL", run: func(ctx context.Context, tx pgx.Tx, insert string) error {
+			_, err := tx.Exec(ctx, insert)
+			return err
+		}},
+		{name: "batched", key: "BAT", run: func(ctx context.Context, tx pgx.Tx, insert string) error {
+			return store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
+				batch.Queue("insert the project", insert)
+				return nil
+			})
+		}},
+	} {
+		t.Run(write.name, func(t *testing.T) {
+			ctx := storetest.MarkXid(context.Background())
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			defer tx.Rollback(ctx)
+			var count int
+			if err := tx.QueryRow(ctx, `select count(*) from projects`).Scan(&count); err != nil {
+				t.Fatalf("read before the write: %v", err)
+			}
+			if _, err := tx.Exec(ctx, `update projects set name = name where key = 'NONE'`); err != nil {
+				t.Fatalf("update no row: %v", err)
+			}
+			if store.InXidWindow(ctx) {
+				t.Fatal("a transaction that read and updated no row is inside its xid window")
+			}
+			insert := fmt.Sprintf(`insert into projects (key, name, default_assignee) values ('%s', 'Rig', 'alice')`, write.key)
+			if err := write.run(ctx, tx, insert); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if !store.InXidWindow(ctx) {
+				t.Fatalf("a transaction that wrote %s is outside its xid window", write.name)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit: %v", err)
+			}
+			if store.InXidWindow(ctx) {
+				t.Fatal("a transaction that committed is still inside its xid window")
+			}
+		})
+	}
 }
 
 // A write phase that is one batch can hold its xid for less than the poller's interval, which on a
@@ -358,8 +662,7 @@ func settlementFixture(t *testing.T, service *Service, database *store.Store, ed
 	editAsConnectedPeer(t, service, artifactID, 1, editor, replaceRun("Revision token r0", "Revision token r1"))
 	before := latestVersionNumber(t, service, artifactID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 		t.Fatalf("wait for live updates to reach persistence: %v", err)
 	}

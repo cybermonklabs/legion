@@ -57,16 +57,17 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 		panic("cistore: non-positive tick for StartSummaryLoop")
 	}
 	wake := store.attachSummary()
-	start := time.Now()
+	clk := store.clock
+	start := clk.Now()
 	z := newSummarizer(store, debounce)
 	backlog := &backlogHeld{gauge: held}
 	go func() {
 		// armed is the k of the instant start + k*tick the timer is set for, 0 while it is stopped.
 		armed := int64(1)
-		timer := time.NewTimer(tick)
+		timer := clk.NewTimer(tick)
 		arm := func(k int64) {
 			armed = k
-			timer.Reset(time.Until(start.Add(time.Duration(k) * tick)))
+			timer.Reset(start.Add(time.Duration(k) * tick).Sub(clk.Now()))
 		}
 		for {
 			select {
@@ -75,26 +76,25 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 				store.detachSummary()
 				return
 			case <-wake:
-				if k := int64(time.Since(start)/tick) + 1; armed == 0 || k < armed {
+				if k := int64(clk.Now().Sub(start)/tick) + 1; armed == 0 || k < armed {
 					arm(k)
 				}
-			case <-timer.C:
+			case <-timer.C():
 				passed := armed
 				armed = 0
-				count, next, ok := z.pass(pub, logger, time.Now().UnixMilli())
+				count, next, ok := z.pass(pub, logger, clk.Now().UnixMilli())
 				backlog.observe(count, logger)
 				if ok {
-					arm(max(passed+1, gridIndexAtOrAfter(start, tick, next)))
+					arm(max(passed+1, gridIndexAtOrAfter(clk.Now(), start, tick, next)))
 				}
 			}
 		}
 	}()
 }
 
-// gridIndexAtOrAfter returns the least k for which start + k*tick is at or after the wall-clock
+// gridIndexAtOrAfter returns the least k for which start + k*tick is at or after the clock
 // millisecond at, which it places on the monotonic clock by its distance from now.
-func gridIndexAtOrAfter(start time.Time, tick time.Duration, at int64) int64 {
-	now := time.Now()
+func gridIndexAtOrAfter(now, start time.Time, tick time.Duration, at int64) int64 {
 	since := now.Add(time.Duration(at-now.UnixMilli()) * time.Millisecond).Sub(start)
 	k := int64(since / tick)
 	if time.Duration(k)*tick < since {

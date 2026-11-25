@@ -80,9 +80,11 @@ func (s *server) listResidentRooms(w http.ResponseWriter, r *http.Request) {
 }
 
 // getRoomCounters answers {"room_failures": n, "lock_waiting_compactions": n, "room_closes": n,
-// "settlement_resumptions": [time, ...], "awareness_clients": n}: what this process did with the
-// document's rooms and owed settlement since it started, and how many awareness client entries
-// its room of the document holds now.
+// "notified_head": n, "swept_head": n, "listen_stands": n, "notified_issue_closes": n,
+// "rechecked_issue_closes": n, "relayed_awareness": {client: {"states": n, "removals": n,
+// "expired": n}, ...}, "settlement_resumptions": [time, ...], "awareness_clients": n}: what this
+// process did with the document's rooms and owed settlement since it started (docs.RoomCounters),
+// and how many awareness client entries its room of the document holds now.
 func (s *server) getRoomCounters(w http.ResponseWriter, r *http.Request) {
 	hooks, ok := s.requireDocumentTestHooks(w, r)
 	if !ok {

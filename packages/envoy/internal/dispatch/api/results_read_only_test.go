@@ -1087,7 +1087,8 @@ func parityStandIn(t *testing.T, script *parityGitHub, calls *parityCalls) strin
 	})
 	route(parityToken, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		// The installation token expires a day ahead (stagedAhead), staged state: the client caches it.
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(stagedAhead).Format(time.RFC3339))
 	})
 	route(parityRepository, func(w http.ResponseWriter, r *http.Request) {
 		if !unread(w, r) {
@@ -1291,7 +1292,9 @@ func newParityPair(t *testing.T, appKey string) *parityPair {
 		appKey: appKey,
 	}
 	pair.github = parityScript{pair: pair}
-	pair.narrowed = ciphertokentest.NarrowedAnswers(t, pair.caller.jkt, parityTestSession, time.Now().Add(time.Hour).Unix())["machine-login"]
+	// The token expires a day ahead (stagedAhead), staged state: one that lapsed in the middle of
+	// the run would be refused as expired.
+	pair.narrowed = ciphertokentest.NarrowedAnswers(t, pair.caller.jkt, parityTestSession, time.Now().Add(stagedAhead).Unix())["machine-login"]
 	pair.writing = pair.narrowed
 	pair.writing.ProjectScope, pair.writing.Scope = ciphertoken.ProjectScopePerson, ""
 	pair.writer = pair.stack(t, "the writer's read", parityWriterToken)

@@ -27,9 +27,10 @@ const coverageStatementRows = 500
 // after a failed run before it tries that run again. While a rolling deploy that changes the
 // identity still has an old-configuration process embedding, that process commits vectors the
 // new identity must drop; ten minutes was the whole pass's period before, and nothing faster is
-// owed to a vector search already filters out by identity. A var, not a const, so a test can
-// shrink it rather than wait out ten minutes.
-var identityRecheckInterval = 10 * time.Minute
+// owed to a vector search already filters out by identity. A test that wants the recheck sooner
+// hands Deps a fake clock and moves it there (Deps.Clock), so this is the one interval the
+// product runs under.
+const identityRecheckInterval = 10 * time.Minute
 
 // issueKind is the one kind of row meaning search ranks that no indexer owns, and so the one
 // kind this pass builds: insertMissingIssues and repairStaleIssues, the two statements that
@@ -653,6 +654,7 @@ func recheckCoverage(ctx context.Context, deps Deps) (identityRun, error) {
 // lost by waiting. A boot pass whose report alone failed has done every step, so it does not
 // fail (coverPass). The context ending returns at once.
 func runCoverage(ctx context.Context, deps Deps) {
+	c := deps.clock()
 	pass := coverPass
 	for {
 		steps, err := pass(ctx, deps)
@@ -668,12 +670,12 @@ func runCoverage(ctx context.Context, deps Deps) {
 				answered = deps.proven.answered()
 			}
 		}
-		timer := time.NewTimer(duty.Jittered(identityRecheckInterval))
+		timer := c.NewTimer(duty.Jittered(identityRecheckInterval))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
-		case <-timer.C:
+		case <-timer.C():
 		case <-answered:
 			timer.Stop()
 		}

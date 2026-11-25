@@ -129,7 +129,7 @@ func TestAMarkMadeBeforeAReadTakesItsPositionIsThatReadsToAnswer(t *testing.T) {
 				t.Fatalf("the recompute's delta upserts %v, want both merges", got)
 			}
 			requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, held, delta, "")
-			rig.waitNoRecompute(t, 2*viewQuiet)
+			rig.settle(t)
 			holdsSecond := func(note deliveryHubNote) bool {
 				return note.what == "recompute position" && note.through >= second
 			}

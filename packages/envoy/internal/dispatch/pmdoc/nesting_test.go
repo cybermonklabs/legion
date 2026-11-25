@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/yuin/goldmark/ast"
@@ -346,18 +345,133 @@ func nestedCallouts(depth int) string {
 }
 
 // A megabyte of bare quote markers is a million nested quotes, a tree deep enough to overflow the
-// process stack in the document pipeline's recursive walks. It is refused in bounded time, before
-// the parser builds that tree for them to enter.
+// process stack in the document pipeline's recursive walks. It is refused in work linear in the
+// markers, counted by Go's coverage counters at an eighth of a mebibyte and at the whole of it
+// (countedWorkIsLinear), before the parser builds that tree for them to enter.
 func TestParseRefusesAMebibyteOfQuotesInBoundedTime(t *testing.T) {
 	t.Parallel()
-	started := time.Now()
-	_, err := Parse(strings.Repeat(">", 1<<20))
-	if !errors.Is(err, ErrSchema) {
-		t.Fatalf("1 MiB of `>`: %v, want ErrSchema", err)
+	row := t.Name()
+	for _, shape := range quoteMarkerShapes() {
+		t.Run(shape.name, func(t *testing.T) {
+			countedWorkIsLinear(t, row, shape)
+		})
 	}
-	if elapsed := time.Since(started); elapsed > 10*time.Second {
-		t.Fatalf("refusing 1 MiB of `>` took %s, want under 10 s", elapsed)
+}
+
+// quoteMarkerShapes is the refusal of a line of bare quote markers.
+func quoteMarkerShapes() []countedShape {
+	const name = "a line of `>`"
+	return []countedShape{{
+		name:    name,
+		sizes:   [2]int{1 << 20 / growthStep, 1 << 20},
+		unit:    "character",
+		reading: quoteMarkerReadings[name],
+		stage:   searchedBytes,
+		prepare: func(t *testing.T, size int) (int, func()) {
+			markdown := strings.Repeat(">", size)
+			return len(markdown), func() {
+				if _, err := Parse(markdown); !errors.Is(err, ErrSchema) {
+					t.Fatalf("%d `>`: %v, want ErrSchema", size, err)
+				}
+			}
+		},
+	}}
+}
+
+// quoteMarkerReadings are the readings (countedReading) of
+// TestParseRefusesAMebibyteOfQuotesInBoundedTime's shape, by name, taken as
+// delimiterAndOpenerHeavyReadings were (linear_test.go). ParseWork's bound for it was 200 steps a
+// character; the counted parse reads every `>` at about 142 statements each.
+var quoteMarkerReadings = map[string]countedReading{
+	"a line of `>`": {past: 142.0, most: 142.3},
+}
+
+// Emphasis nested 4,000 deep, 24,001 characters, holds the browser editor's parse for about a
+// minute, and strong as deep, 32,001 characters, as long: that parse (micromark) resolves what each
+// pair encloses again each time an enclosing pair closes, so its work grows with the square of the
+// depth, 672,095,992 `attention` steps at 4,000 deep (cybermonklabs/legion#4437's class search,
+// dispatch://INFRA-3149). A document write refuses it at its first line, for marks nested past
+// maxInlineNesting, through the parse the server's write takes (ParseWritten), in work linear in
+// its characters, counted by Go's coverage counters at 500 deep and at 4,000
+// (countedWorkIsLinear): goldmark pairs the runs in one pass (delimiterList), and markNesting stops
+// one level past the bound, before any walk that recurses through the marks.
+func TestParseWrittenRefusesEmphasisNested4000DeepInBoundedWork(t *testing.T) {
+	countedRowIsLinear(t, nestedEmphasisShapes())
+}
+
+// nestedEmphasisDepth is the depth TestParseWrittenRefusesEmphasisNested4000DeepInBoundedWork
+// grows its shapes to.
+const nestedEmphasisDepth = 4_000
+
+// nestedEmphasisShapes are the refusals of emphasis and of strong nested
+// nestedEmphasisDepth/growthStep and nestedEmphasisDepth deep, each run checking that the write is
+// refused for its inline marks at its first line.
+func nestedEmphasisShapes() []countedShape {
+	var shapes []countedShape
+	for _, marker := range []string{"*", "**"} {
+		name := fmt.Sprintf("`%sa ` … ` c%s`", marker, marker)
+		shapes = append(shapes, countedShape{
+			name:    name,
+			sizes:   [2]int{nestedEmphasisDepth / growthStep, nestedEmphasisDepth},
+			unit:    "character",
+			reading: nestedEmphasisReadings[name],
+			stage:   searchedBytes,
+			prepare: func(t *testing.T, depth int) (int, func()) {
+				markdown := nestedEmphasis(marker, depth)
+				return len(markdown), func() {
+					if _, _, err := ParseWritten(markdown, nil); !refusedForInlineNesting(err) {
+						t.Fatalf("ParseWritten of %s nested %d deep: %v, want ErrSchema saying %q", name, depth, err, inlineNestingRefusal)
+					}
+				}
+			},
+		})
 	}
+	return shapes
+}
+
+// nestedEmphasisReadings are the readings (countedReading) of
+// TestParseWrittenRefusesEmphasisNested4000DeepInBoundedWork's shapes, by name, taken on
+// 2026-11-21 in INFRA-3149's pod (Go 1.27.3) as delimiterAndOpenerHeavyReadings were
+// (linear_test.go), over the body's characters. Emphasis counted 732,599 statements over 3,001
+// characters and 5,828,708 over 24,001, 7.96 times over 8 times the characters, 3,438,938 of the
+// larger count goldmark's; strong counts the same work over a third more characters.
+var nestedEmphasisReadings = map[string]countedReading{
+	"`*a ` … ` c*`":   {past: 242.7, most: 244.1},
+	"`**a ` … ` c**`": {past: 182.5, most: 183.6},
+}
+
+// The same shapes nested to the bound are read by every reader of caller markdown, a document
+// write's among them (upload: ParseForWrite, whose parse ParseWritten is), and one level past it
+// are refused at their line, naming the bound.
+func TestNestedEmphasisAndStrongAreReadAtTheBoundAndRefusedOnePastIt(t *testing.T) {
+	for _, reader := range inlineMarkReaders() {
+		t.Run(reader.name, func(t *testing.T) {
+			for _, marker := range []string{"*", "**"} {
+				if _, err := reader.parse(nestedEmphasis(marker, expectedMaxInlineNesting)); err != nil {
+					t.Errorf("%q nested %d deep: %v, want it read", marker, expectedMaxInlineNesting, err)
+				}
+				if _, err := reader.parse(nestedEmphasis(marker, expectedMaxInlineNesting+1)); !refusedForInlineNesting(err) {
+					t.Errorf("%q nested %d deep: %v, want ErrSchema saying %q", marker, expectedMaxInlineNesting+1, err, inlineNestingRefusal)
+				}
+			}
+		})
+	}
+}
+
+// nestedEmphasis is emphasis nested depth deep, written with marker (`*` for emphasis, `**` for
+// strong): depth openers `<marker>a `, then `b`, then depth closers ` c<marker>`, each opener and
+// each closer a run of its own.
+func nestedEmphasis(marker string, depth int) string {
+	return strings.Repeat(marker+"a ", depth) + "b" + strings.Repeat(" c"+marker, depth)
+}
+
+// inlineNestingRefusal is what the refusal of a one-line body nested past the inline bound says.
+var inlineNestingRefusal = fmt.Sprintf("line 1 starts text nested inside more than %d inline marks", expectedMaxInlineNesting)
+
+// refusedForInlineNesting reports whether err refuses a one-line body for its inline marks nested
+// past the bound.
+func refusedForInlineNesting(err error) bool {
+	return errors.Is(err, ErrSchema) && strings.Contains(err.Error(), inlineNestingRefusal)
 }
 
 // A tree from any source is outside the schema when a node stands more than 1,000 levels below the

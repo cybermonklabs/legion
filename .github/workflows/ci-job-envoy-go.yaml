@@ -93,6 +93,14 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # The service allows prepared transactions: the image leaves max_prepared_transactions at 0,
+      # which refuses PREPARE TRANSACTION, and internal/dispatch/events'
+      # TestAnObservationFindsAnEventWriterThatPreparesDuringItsRead, whose subject is an event writer
+      # that prepares its transaction, skips on such a server. The setting takes effect at a restart,
+      # which the sizing step below makes (pg-connection-ceiling.sh restarts the service), and the
+      # version step after it fails the job if the restarted server still allows none.
+      - name: Allow the service prepared transactions
+        run: docker exec "${{ job.services.postgres.id }}" psql -U postgres -c "alter system set max_prepared_transactions = 10"
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # No commit, checkpoint or database copy here waits for the runner's disk: why every
@@ -101,10 +109,14 @@ jobs:
         timeout-minutes: 2
         run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
-      # the run shows which Postgres the tests below ran on.
+      # the run shows which Postgres the tests below ran on, and the prepared transactions it allows,
+      # which the first step above set and the sizing step's restart applied.
       - name: Postgres service version
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
+          prepared=$(docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "show max_prepared_transactions")
+          echo "max_prepared_transactions = $prepared"
+          [ "$prepared" -gt 0 ]
       # Every image the tests here start: testnats.HubImage, which the natslive step below runs
       # Envoy on, testnats.Image (nats:2.10), which only the tests of that server itself and of the
       # listener's refusal of it start, and tests3.Image, pulled first for the reason the action
@@ -119,16 +131,17 @@ jobs:
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
       # HoldsSeed's allocations, which the race runtime's own allocations would be counted into;
-      # the API's, delivery's and the documents package's xid window tests judge a window's gaps,
-      # which the detector stretches past any bound, so a race run would check only their shape,
-      # which this run checks as well (storetest.XidJudgesGaps, INFRA-636); and the documents
-      # package measures the heap a room keeps, which the detector's shadow memory and
-      # instrumentation move. Those are out of the race build altogether (//go:build !race), and
-      # the two render-reuse storms run fewer seeds and fewer edits under it (raceEnabled), so this
-      # is their full-size run. The documents package's line runs under Go's cleanup detector
-      # (GODEBUG=checkfinalizers=1), as envoy-go-race-docs' run of the rest of it does, since it is
-      # the one package that registers a cleanup (ci_job_reads.py's CLEANUP_DETECTOR), and with -v,
-      # so its TestMain's count of services left alive and the xid rig's logs print. So is the
+      # the API's, delivery's and the documents package's xid window tests, whose checks (a
+      # window's statement count, the collaborators and the document work inside it, none of which
+      # reads a clock) a race run would repeat at four times the cost (storetest's xidwindow.go,
+      # INFRA-636); and the documents package measures the heap a room keeps, which the detector's
+      # shadow memory and instrumentation move. Those are out of the race build altogether
+      # (//go:build !race), and the two render-reuse storms run fewer seeds and fewer edits under
+      # it (raceEnabled), so this is their full-size run. The documents package's line runs under
+      # Go's cleanup detector (GODEBUG=checkfinalizers=1), as envoy-go-race-docs' run of the rest
+      # of it does, since it is the one package that registers a cleanup (ci_job_reads.py's
+      # CLEANUP_DETECTOR), and with -v, so its TestMain's count of services left alive and the xid
+      # rig's logs print. So is the
       # NATS auth service's restart storm's: five hundred connections, two hundred under the
       # detector (raceEnabled), whose instrumentation makes each in-process connect several times
       # the cost (natscallout's race_disabled_test.go says why). The API's mention sender claim
@@ -162,7 +175,7 @@ jobs:
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
           go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
           go test -count=1 -timeout 10m -run '^(TestAPriorityListAnswersWithinItsBoundOnEveryPlan|TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec|TestXidWindowsUnderTheParentStatusRule)$' ./internal/dispatch/api
-          GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound|TestXidWindowAnchorBlockBackfill|TestXidWindowBlockIndexWindowArm|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowCatchesADocumentCallInsideTheWindow|TestXidWindowClosedIssueSettlementVersionWrite|TestXidWindowEditNoticeSweep|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowReconcileTaskProgress|TestXidWindowRigCatchesAGapAfterTheFirstWrite|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigJudgesAWriteThePollerNeverSaw|TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps|TestXidWindowRigNeverExcusesASleepForSoftirqs|TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite|TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes|TestXidWindowRigReadsTheMachinesLoadAsTheMachines|TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes|TestXidWindowSettlementVersionWrite)$' ./internal/dispatch/docs
+          GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound|TestXidWindowAnchorBlockBackfill|TestXidWindowBlockIndexWindowArm|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowCatchesACollaboratorCallInsideTheWindow|TestXidWindowCatchesADocumentCallInsideTheWindow|TestXidWindowCatchesDocumentWorkInsideTheWindow|TestXidWindowClosedIssueSettlementVersionWrite|TestXidWindowEditNoticeSweep|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowLeavesDocumentWorkHandedToAnotherGoroutineUnseen|TestXidWindowOpensAtATransactionsFirstWriteInlineOrBatched|TestXidWindowReconcileTaskProgress|TestXidWindowRigCatchesAGapAfterTheFirstWrite|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigJudgesAWriteThePollerNeverSaw|TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps|TestXidWindowRigNeverExcusesASleepForSoftirqs|TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite|TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes|TestXidWindowRigReadsTheMachinesLoadAsTheMachines|TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes|TestXidWindowSettlementVersionWrite)$' ./internal/dispatch/docs
         working-directory: packages/envoy
         # This step judges the xid window tests' statement-free gaps (storetest.XidJudgesGaps).
         # With this set, a runner whose kernel stops showing a thread's scheduler clocks, or
@@ -288,10 +301,12 @@ jobs:
       # which reads the names off the source at run time, and no test name is spelled here. Each
       # assignment is a line of its own: under bash -e it carries the script's exit status, so an
       # empty or refused list fails the step instead of running -run "", which matches every test.
+      # Over this job's 20 newest green merge-group runs up to 2026-11-15 internal/testnats took at
+      # most 3.538 s here and internal/bus 5.029 s (run 43582507175), against 10 and 5 minutes.
       - name: Test the container-backed NATS matrix (natslive)
         run: |
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
-          go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
+          go test -count=1 -timeout 10m -tags natslive -run "$rig" ./internal/testnats/
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
           callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/cipher/natscallout)
