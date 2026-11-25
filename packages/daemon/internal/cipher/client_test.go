@@ -238,7 +238,7 @@ func withLoginRetry(t *testing.T, initial, most time.Duration) {
 }
 
 // withUnansweredRetry sets the wait after a login the broker was not there to decide (no HTTP
-// answer, or a 5xx), and the most it doubles to, for one test.
+// answer, or an outage: a 5xx, a 408 or a 429), and the most it doubles to, for one test.
 func withUnansweredRetry(t *testing.T, initial, most time.Duration) {
 	t.Helper()
 	oldInitial, oldMax := unavailableRetryInitial, unavailableRetryMax
@@ -419,9 +419,12 @@ func TestALoginAnswerWithNoExpiryNamesNoCredential(t *testing.T) {
 
 // TestARefusedRenewalLeavesTheHeldCredentialIssued: a renewal the broker refuses while the
 // credential it would replace has not expired leaves that credential working: the state stays
-// issued and pods still enroll under it until it expires, after which the state reads failed.
+// issued and pods still enroll under it until it expires, after which the state reads failed. The
+// renewal is answered 429, an outage, so the test holds the short schedule at a minute too, and
+// the next login comes after the expiry it reads.
 func TestARefusedRenewalLeavesTheHeldCredentialIssued(t *testing.T) {
 	withLoginRetry(t, time.Minute, time.Minute)
+	withUnansweredRetry(t, time.Minute, time.Minute)
 	broker, server := newFakeBroker(t)
 	broker.lifetime = 2 * time.Second
 	ctx, cancel := context.WithCancel(context.Background())
@@ -448,11 +451,12 @@ func TestARefusedRenewalLeavesTheHeldCredentialIssued(t *testing.T) {
 }
 
 // TestRefusedRenewalsKeepTheirWaitPastTheCredentialsExpiry: renewals the broker keeps refusing are
-// retried after loginRetryWait, before the held credential expires and after it, never in a loop
-// that waits for nothing: two seconds of a broker that answers every renewal 429 at once see a
-// handful of logins, not thousands.
+// retried after the wait their schedule names, before the held credential expires and after it,
+// never in a loop that waits for nothing: two seconds of a broker that answers every renewal 429
+// at once see a handful of logins, not thousands. A 429 is an outage, so it takes the short
+// schedule, which this test sets.
 func TestRefusedRenewalsKeepTheirWaitPastTheCredentialsExpiry(t *testing.T) {
-	withLoginRetry(t, 200*time.Millisecond, 400*time.Millisecond)
+	withUnansweredRetry(t, 200*time.Millisecond, 400*time.Millisecond)
 	broker, server := newFakeBroker(t)
 	broker.lifetime = time.Second
 	ctx, cancel := context.WithCancel(context.Background())
@@ -528,10 +532,10 @@ func TestTheLoginLoopRenewsHalfwayToExpiry(t *testing.T) {
 }
 
 // TestAFailedLoginIsRetriedAfterItsWait: a login the broker refuses is logged and retried by the
-// loop once loginRetryWait has passed, and the first one that succeeds gives the client its
-// credential.
+// loop once the wait its schedule names has passed, and the first one that succeeds gives the
+// client its credential. A 429 is an outage, so it takes the short schedule, which this test sets.
 func TestAFailedLoginIsRetriedAfterItsWait(t *testing.T) {
-	withLoginRetry(t, 50*time.Millisecond, 100*time.Millisecond)
+	withUnansweredRetry(t, 50*time.Millisecond, 100*time.Millisecond)
 	broker, server := newFakeBroker(t)
 	broker.refuseLogins = []enrollAnswer{
 		{http.StatusTooManyRequests, `{"code":"RATE_LIMITED","error":"slow down"}`},
@@ -931,6 +935,8 @@ func TestEnrollRefusalsCarryTheCodeAndPermanence(t *testing.T) {
 		{http.StatusForbidden, "POD_TOKEN_EXPIRED", false, true},
 		{http.StatusConflict, "ALREADY_ENROLLED", true, false},
 		{http.StatusTooManyRequests, "RATE_LIMITED", false, false},
+		// The broker, or a proxy before it, did not take the request: an outage, as a 429 is.
+		{http.StatusRequestTimeout, "REQUEST_TIMEOUT", false, false},
 		{http.StatusServiceUnavailable, "DATABASE", false, false},
 	} {
 		broker, c := newIssuedClient(t)

@@ -742,7 +742,7 @@ func TestListIssuesQueryUsesAsksOpenIndex(t *testing.T) {
 	}
 
 	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false).Scan(&planJSON); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, false, "", "").Scan(&planJSON); err != nil {
 		t.Fatalf("explain list query: %v", err)
 	}
 
@@ -1002,6 +1002,20 @@ func TestIssueLabelsCreateNormalizePatchAndFilter(t *testing.T) {
 	issues := decodeBody[[]model.IssueSummary](t, filtered)
 	if len(issues) != 1 || issues[0].Key != second.Key {
 		t.Fatalf("issues matching frontend and docs = %#v, want only %s (not %s)", issues, second.Key, third.Key)
+	}
+
+	// The filter matches a label where strings.EqualFold matches it (labelKey), whatever the
+	// collation of the labels column. ä lists the issue labelled Ä. legion lists the issue
+	// labelled legion, but not the issue labelled only LEGİON (with U+0130), which
+	// strings.ToLower, and lower() in a glibc collation, map to legion.
+	umlaut := create("Umlaut", []string{"\u00c4"})
+	if listed := listedKeys(t, handler, "project=CORE&label=%C3%A4"); !slices.Equal(listed, []string{umlaut.Key}) {
+		t.Fatalf("issues matching \u00e4 = %v, want only %s", listed, umlaut.Key)
+	}
+	lookAlike := create("Look-alike", []string{"LEG\u0130ON"})
+	labelled := create("Labelled", []string{"legion"})
+	if listed := listedKeys(t, handler, "project=CORE&label=legion"); !slices.Contains(listed, labelled.Key) || slices.Contains(listed, lookAlike.Key) {
+		t.Fatalf("issues matching legion = %v, want %s listed and %s not listed", listed, labelled.Key, lookAlike.Key)
 	}
 }
 

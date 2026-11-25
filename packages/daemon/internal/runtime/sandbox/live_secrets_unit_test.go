@@ -39,6 +39,7 @@ func configMapList(t *testing.T, data map[string]map[string]string) []byte {
 // daemons use different ones. Each row that reads one audience has a neighbour that reads another
 // from the same ConfigMaps changed in one line.
 func TestStage4aEnrollsForTheDeploymentsBrokerAudience(t *testing.T) {
+	t.Parallel()
 	const enrolled = "runtime:\n  kubernetes:\n    agent_secrets:\n      url: https://secrets.internal.example\n"
 	named := enrolled + "      audience: agent-secrets\n"
 	unenrolled := "runtime:\n  kubernetes:\n    namespace: legion\n"
@@ -95,6 +96,7 @@ func TestStage4aEnrollsForTheDeploymentsBrokerAudience(t *testing.T) {
 }
 
 func TestShellJoin(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		args []string
 		want string
@@ -115,6 +117,7 @@ func TestShellJoin(t *testing.T) {
 }
 
 func TestAgentSecretsBlockReason(t *testing.T) {
+	t.Parallel()
 	const url, sha, bin, token = "https://secrets.internal.example", "deadbeef", "/bin/agent-secrets", "/tmp/agent-secrets-token"
 	for name, tc := range map[string]struct {
 		url, sha, bin, token string
