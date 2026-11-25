@@ -43,7 +43,10 @@ test("an issue and its ask show a cross-project message and structural backlinks
     name: "Referenced by",
   });
   await expect(issueReferences).toContainText(`Message · ${source.key}`);
-  await expect(issueReferences).toContainText(`Depends on dispatch://${target.key}`);
+  // The excerpt is the head of the message's own body, drawn by the renderer: each address in
+  // it reads as its target's name, and none is left as text.
+  await expect(issueReferences).toContainText(`Depends on ${target.key} Target issue and`);
+  await expect(issueReferences).not.toContainText("dispatch://");
   await expect(issueReferences).toContainText(`Child issue · ${child.key}`);
   await expect(issueReferences).toContainText("Child issue");
   await expect(issueReferences).toContainText(`Attached document · ${target.key}`);
@@ -126,7 +129,10 @@ test("an open backlink panel follows a mention added, replied to, and removed", 
 
   await createMessage(source.key, { body: `Blocked on dispatch://${target.key} today.` });
   await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-  await expect(references).toContainText("Blocked on dispatch://", live);
+  // The excerpt is the message's stored text, drawn by the renderer, so the bare address reads as
+  // the target's current name once the target's read lands. Before that it shows
+  // the address as written, for a moment (76 ms measured in the pod), which is no claim to read.
+  await expect(references).toContainText(`Blocked on ${target.key} ${target.title} today.`, live);
 
   const reply = await createComment(source.key, {
     body: `Still blocked on dispatch://${target.key} after the rollback.`,
@@ -398,7 +404,7 @@ test("an issue's backlinks skip an edge of a node kind this build does not know"
   await header.getByRole("button", { name: /^Referenced by \(2\)$/ }).click();
   const references = header.getByRole("region", { name: "Referenced by" });
   await expect(references).toContainText(`Message · ${source.key}`);
-  await expect(references).toContainText(`Waiting on dispatch://${target.key}`);
+  await expect(references).toContainText(`Waiting on ${target.key} Cited by two builds to land.`);
   await expect(references).not.toContainText("Referenced by unavailable.");
 });
 
