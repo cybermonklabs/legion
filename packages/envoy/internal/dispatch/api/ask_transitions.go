@@ -371,9 +371,16 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 			"reason may not begin with "+strconv.Quote(docs.SettlementRetractionReason)+", which marks a retraction the document's settlement wrote")
 		return
 	}
+	// Read before closeAsk opens its transaction (specWriterOf), for the check in Apply.
+	writer := s.specWriterOf(r, actor)
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
 		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask) (model.Ask, error) {
+			// The check of who writes an issue's spec or Verification document, on the block's
+			// document and each copy of the ask, before the first document call.
+			if err := s.refuseSpecWriterOfAsk(ctx, tx, writer, ask); err != nil {
+				return model.Ask{}, err
+			}
 			if err := s.writeClosedBlockState(ctx, ask, actor); err != nil {
 				return model.Ask{}, err
 			}

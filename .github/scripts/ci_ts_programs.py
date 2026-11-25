@@ -77,7 +77,7 @@ PROGRAMS = [
 #           refusal carries
 BUNDLES = [
     ("dispatch_two_builds_go", "packages/envoy-client/bin/dispatch.ts",
-     at("dispatch-two-builds", "Two-build tests of the Dispatch server (cmd/dispatch/twobuild_cli_test.go:52-56 runs "
+     at("dispatch-two-builds", "Two-build tests of the Dispatch server (`packages/envoy/cmd/dispatch/twobuild_cli_test.go#currentCLI` runs "
                                "`bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
     ("envoy_go_checks", "packages/envoy/scripts/approve/scan.ts",
      at("envoy-go-checks", "Scan tests of approve-check's session (bun test scripts/approve/, whose tests spawn "
@@ -105,34 +105,36 @@ BUNDLES = [
 LISTED = [
     ("dispatch_ui", "packages/contracts/src", ("dispatch_ui",),
      "the dashboard's and the proof editor's typechecks, tests and SPA build compile the contracts modules "
-     "these two programs import and what those import, and no other: packages/dispatch/web/vite.config.ts:117-123 "
-     "aliases the three entries the dashboard imports to the same sources"),
+     'these two programs import and what those import, and no other: `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`, '
+     '`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"` and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` '
+     "alias the three entries the dashboard imports to the same sources"),
     # The browser suite has no tsc program of its own. Its rows drive the SPA built from
     # packages/dispatch, which bundles the proof editor, and the Playwright config and the e2e
     # helpers it loads are packages/dispatch/e2e, which the dashboard's program compiles: that
     # much of @legion/contracts is dispatch_ui's set. Its rows also spawn the dispatch command:
-    # packages/dispatch/e2e/dispatch-cli.ts:8,39 runs `bun packages/envoy-client/bin/dispatch.ts`
+    # `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry` runs `bun packages/envoy-client/bin/dispatch.ts`
     # for the inbox-cli, asked-of-cli, asked-of and doc specs, and ci_job_reads.py's
     # dispatch_browser gate declares that entry as a read. The contracts modules that command
     # loads are its bundle's, which BUNDLES pairs with dispatch_two_builds_go, so the block is
     # the union of the two sets: a module only the command loads is one the suite loads too.
     # Its jobs' `Build contracts for dispatch e2e` step runs packages/contracts' `build:dispatch`,
-    # which bundles the three entries the dashboard imports (web/vite.config.ts:117-123 aliases the
-    # same three) and so compiles nothing outside dispatch_ui's set: not
+    # which bundles the three entries the dashboard imports (`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`,
+    # `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"` and `packages/dispatch/web/vite.config.ts#"@legion/contracts"`
+    # alias the same three) and so compiles nothing outside dispatch_ui's set: not
     # packages/contracts/src/legion-api.ts, which neither Dispatch nor the command imports. A
     # change that breaks the package's full `build` fails the contracts job's own
     # `Build contracts` step, whose filter takes the whole tree.
     ("dispatch_browser", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),
      "the browser suite runs the SPA built from packages/dispatch and the Playwright config and e2e helpers of "
      "packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, and its rows spawn "
-     "the dispatch command (packages/dispatch/e2e/dispatch-cli.ts:8,39 runs `bun packages/envoy-client/bin/dispatch.ts`) "
+     "the dispatch command (`packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry` runs `bun packages/envoy-client/bin/dispatch.ts`) "
      "whose bundle dispatch_two_builds_go's row builds; no step loads any other"),
     # The browser suite's pull-request lane runs the same file under ci.yaml's dispatch-browser-pr
     # job, so its filter takes the same block for the same reason.
     ("dispatch_browser_pr", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),
      "the browser suite's pull-request lane runs the SPA built from packages/dispatch and the Playwright config "
      "and e2e helpers of packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, "
-     "and its rows spawn the dispatch command (packages/dispatch/e2e/dispatch-cli.ts:8,39 runs "
+     "and its rows spawn the dispatch command (`packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry` runs "
      "`bun packages/envoy-client/bin/dispatch.ts`) whose bundle dispatch_two_builds_go's row builds; no step loads "
      "any other"),
     # The two-build job's Go step reaches packages/contracts through the one dispatch command its
