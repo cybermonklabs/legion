@@ -1,5 +1,7 @@
 import { decodeBlockId, encodeBlockId, itemFromSearch } from "@legion/contracts";
 import { isCleanUrl } from "@legion/contracts/log-text";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import { joinUrl } from "@legion/contracts/url-join";
 
 /**
  * The dispatch:// form of a dashboard URL on the configured server, or undefined when the
@@ -8,18 +10,21 @@ import { isCleanUrl } from "@legion/contracts/log-text";
  * their ?ask= / ?comment= deep links, which name the item whatever the fragment), the
  * `#b-<block id>` of a live document page or of an issue ask's, comment's or message's page,
  * which names that block, and the page of an upload an agent's conversation owns
- * (`/agents/<session id>/artifacts/<slug>`).
+ * (`/agents/<session id>/artifacts/<slug>`). Each page sits under the server URL's path, where
+ * `linkFor` joins it (`https://host/dispatch/issues/<key>` on `https://host/dispatch`).
  */
 export function dispatchRefFromUrl(value: string, serverUrl: string): string | undefined {
   let url: URL;
-  let origin: string;
+  let server: URL;
   try {
     url = new URL(value);
-    origin = new URL(serverUrl).origin;
+    server = new URL(serverUrl);
   } catch {
     return undefined;
   }
-  if (url.origin !== origin) return undefined;
+  const root = withoutTrailingSlashes(server.pathname);
+  if (url.origin !== server.origin || !`${url.pathname}/`.startsWith(`${root}/`)) return undefined;
+  const dashboardPath = url.pathname.slice(root.length);
   // The SPA's version selector: `?v=N` on issue pages, `?version=N` on project document pages.
   const versionOf = (name: string): string => {
     const value = url.searchParams.get(name);
@@ -35,7 +40,7 @@ export function dispatchRefFromUrl(value: string, serverUrl: string): string | u
       ? ""
       : `#b-${encodeBlockId(id)}`;
   };
-  const issuePage = url.pathname.match(
+  const issuePage = dashboardPath.match(
     /^\/issues\/([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?:\/(spec|log|conversation|activity|children|decisions)|\/artifacts\/([^/]+)|\/asks\/([^/]+)|\/comments\/([^/]+)|\/messages\/([^/]+))?\/?$/
   );
   if (issuePage) {
@@ -66,7 +71,7 @@ export function dispatchRefFromUrl(value: string, serverUrl: string): string | u
     if (message !== undefined) return `dispatch://${key}/message/${message}${blockOf()}`;
     return `dispatch://${key}`;
   }
-  const agentArtifactPage = url.pathname.match(/^\/agents\/([^/]+)\/artifacts\/([^/]+)\/?$/);
+  const agentArtifactPage = dashboardPath.match(/^\/agents\/([^/]+)\/artifacts\/([^/]+)\/?$/);
   if (agentArtifactPage) {
     const [, session, slug] = agentArtifactPage;
     try {
@@ -75,7 +80,7 @@ export function dispatchRefFromUrl(value: string, serverUrl: string): string | u
       return undefined;
     }
   }
-  const documentPage = url.pathname.match(
+  const documentPage = dashboardPath.match(
     /^\/projects\/([A-Z][A-Z0-9]{1,9})\/documents\/([^/]+)\/?$/
   );
   if (!documentPage) return undefined;
@@ -107,15 +112,22 @@ export function linkBaseOf(base: string): string | undefined {
 const STAND_IN = "http://dispatch.invalid";
 
 /**
- * `href`, a dashboard path or a URL Dispatch answered, as a printed link: absolute against
+ * `href`, a dashboard path or a URL Dispatch answered, as a printed link: joined onto the path of
  * `linkBase` where there is one (`linkBaseOf`), and otherwise the `dispatch://` reference of the
  * page it names (`dispatch://DSP-1`, `dispatch://DSP-1/ask/<id>`), which `dispatch read` reads
- * as the link would have opened it. A href no reference names prints as the server sent it.
+ * as the link would have opened it. A link keeps the page's query and fragment. A href the join
+ * refuses, or no reference names, prints as the server sent it.
  */
 export function linkFor(href: string, linkBase: string | undefined): string {
   if (linkBase !== undefined) {
+    // Joined, not resolved: an absolute path resolved against the base drops the base's path
+    // (`https://host/dispatch` and `/issues/<key>` resolve to `https://host/issues/<key>`). The
+    // join takes no fragment, so the block a page lands on (`#b-<block id>`) is set after it.
+    const hashAt = href.indexOf("#");
     try {
-      return new URL(href, linkBase).toString();
+      const url = joinUrl(linkBase, hashAt < 0 ? href : href.slice(0, hashAt));
+      if (hashAt >= 0) url.hash = href.slice(hashAt);
+      return url.toString();
     } catch {
       return href;
     }
