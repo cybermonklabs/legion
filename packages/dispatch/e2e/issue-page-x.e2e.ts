@@ -18,7 +18,8 @@ import { DRAWN_LEVELS, NARROW_LEVELS } from "../web/src/features/issue-page/tree
 import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { parseNodeReference } from "../web/src/features/refs/routes";
 import { wordsOf as readingWords } from "../web/src/features/refs/tree-fragment";
-import { getIssue } from "./api";
+import { pageStateText } from "../web/src/theme/classes";
+import { answerAsk, getIssue } from "./api";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { readTree } from "./issue-layout-seed-support";
 import { contentsPane, gotoIssue, issuePage, issueRead, openDetails, phase } from "./issue-page";
@@ -140,9 +141,10 @@ import { asUser } from "./users";
  * the page draws and counts the statement under the question alone), row 1's readings of
  * statement 8 as a load draws it, made where the page's own fold draws a live node in its place
  * open on load (`openOnLoadGate`), and row 3 whole until the page opens with every node drawn
- * open (`drawnOpenGate`). A gate never reads what this part draws: the nodes at or under an
- * overtaken one are left out of the page's opening, so a build that draws an overtaken node
- * folded where a live one is drawn open fails the reading of that node and does not turn it owed.
+ * open (`drawnOpenGate`). A gate never reads what this part draws: the nodes the page closes, at
+ * or under an overtaken one, with the block of a question whose ask's node is overtaken, are left
+ * out of the page's opening (`closedIdsOf`), so a build that draws an overtaken node folded where
+ * a live one is drawn open fails the reading of that node and does not turn it owed.
  */
 
 /** The mark of a proposed node, an overtaken one and one reserved for its reader, each as the
@@ -171,6 +173,10 @@ const SETTLE_ROUTE = "**/api/v1/issues/*/nodes/*/settle";
 
 /** The focused row's Settle act. */
 const SETTLE_ACT = '[data-row-act="settle"]';
+
+/** Keep and Change on a decision's row, by the mark `DecisionActions.tsx` puts on each
+ *  (`data-row-action`). */
+const KEEP_OR_CHANGE = 'button[data-row-action="keep"], button[data-row-action="change"]';
 
 /** The four views, by the filter each reads its view of the tree for. */
 const VIEWS = ["spec", "verification", "plan", "decisions"] as const satisfies readonly TreeView[];
@@ -390,6 +396,23 @@ async function expectWithOpenQuestions(
       message: `${what} does not carry ${mark.word} under Decisions`,
     })
     .toEqual([mark]);
+}
+
+/** Whether the Decisions view's row `row` draws its state in the colour of a decision that waits
+ *  on the reader: the decisions' violet, which the margin's state carries as its class
+ *  (`NodeRow.tsx`' `RowMargin`, `pageStateText.decision`), as it does for a decision the reader
+ *  kept or asked to change. Null where the row draws no state; a decision of the review part
+ *  draws one, its standing with the reader. */
+function drawnWaiting(row: Locator): Promise<boolean | null> {
+  return row
+    .first()
+    .evaluate(
+      (element, waiting) =>
+        element
+          .querySelector("[data-node-margin] [data-node-state]")
+          ?.parentElement?.classList.contains(waiting) ?? null,
+      pageStateText.decision
+    );
 }
 
 /** What a row reads its page with: the issue, its tree read, the id the page draws each node of
@@ -952,8 +975,11 @@ async function expectProposedInGraph(page: Page, read: ProposedPage): Promise<vo
  * Step (3), with the Decisions view on: the overtaken decision stands with the decisions that
  * wait for review, read first, so a page that leaves it out of the view fails on that and not on
  * the address; loading its address keeps that view on, with the focus on the decision's row,
- * which carries "Overtaken". The to-review flag and the header's count of what waits do not count
- * it, and the header's presses never reach it (`expectWaitsLeaveOut`).
+ * which carries "Overtaken". Nothing waits on the reader at or under an overtaken node, so the row
+ * draws no Keep and no Change and not the waiting colour, as the outline's row of the same node
+ * draws neither; they are read once the row is drawn whole, focused and marked, so a page that
+ * draws them draws them by then. The to-review flag and the header's count of what waits do not
+ * count it, and the header's presses never reach it (`expectWaitsLeaveOut`).
  */
 async function expectOvertakenDecisionAddress(page: Page, read: ProposedPage): Promise<void> {
   const { key, seeded, treeId } = read;
@@ -995,6 +1021,15 @@ async function expectOvertakenDecisionAddress(page: Page, read: ProposedPage): P
       message: "the overtaken decision does not carry Overtaken under Decisions",
     })
     .toEqual([OVERTAKEN]);
+  await expect(
+    decision.locator(KEEP_OR_CHANGE),
+    "the overtaken decision draws no Keep or Change"
+  ).toHaveCount(0);
+  await expect
+    .poll(() => drawnWaiting(decision), {
+      message: "the overtaken decision draws its state in the waiting colour under Decisions",
+    })
+    .toBe(false);
   await expectWaitsLeaveOut(page, read);
 }
 
@@ -1275,6 +1310,7 @@ test("a proposed node is marked and settled on the page, and an overtaken one is
     const graph = await graphGate(page);
     const opens = await openOnLoadGate(page, {
       answer: loaded.answer,
+      asks: (await getIssue(loaded.key)).open_asks ?? [],
       levels: size === PHONE ? NARROW_LEVELS : DRAWN_LEVELS,
       readId: seeded.ids.statement8,
       treeId: loaded.treeId,
@@ -1502,11 +1538,24 @@ async function expectQuestionInDecisions(page: Page, read: SeededPage): Promise<
   );
 }
 
-/** Conversation opens with the focus on the spec's own open question, the first in the tree's
- *  order of those that wait on alice, and not on the overtaken one. */
+/**
+ * Conversation opens with the focus on the first question in the tree's order that waits on
+ * alice, and not on the overtaken question nor on a row under it. The spec's own open question,
+ * which stands right before the overtaken one, is answered first: the overtaken question is then
+ * the first in the tree's order that would wait on alice were it live, so a page that let it keep
+ * its wait would open on it. The proposed question, which stands right after it and still waits
+ * on alice (`seedNodeStates`), is where the page opens. The readings after this one hold with the
+ * spec's own question answered: the header's count reads what waits from the issue read as it
+ * stands (`expectWaitsLeaveOut`), and the Graph readings read the overtaken question alone.
+ */
 async function expectOpensOnLiveQuestion(page: Page, read: SeededPage): Promise<void> {
   const { plain, seeded, traffic } = read;
   const { ids } = seeded;
+  await answerAsk(seeded.whole.openQuestion.askId, {
+    expected_edited_at: null,
+    selected: [],
+    text: "1280 px.",
+  });
   await gotoSettled(page, traffic, plain);
   await expectOpeningLanded(page);
   await expect
@@ -1514,7 +1563,7 @@ async function expectOpensOnLiveQuestion(page: Page, read: SeededPage): Promise<
       message:
         "Conversation opens with the focus on a row other than the open question that waits on alice",
     })
-    .toBe(ids.openQuestion);
+    .toBe(ids.proposedQuestion);
 }
 
 /** The overtaken question in Graph, with its statement open under it, and its criterion where the
@@ -1542,8 +1591,8 @@ async function expectQuestionInGraph(page: Page, read: SeededPage): Promise<void
 }
 
 // SLOW(>=2s): a whole seeded issue with ten node states, two questions with the two nodes under one
-// and a lens written, five loads of the outline, its Contents list and the Decisions view, and the
-// header's count pressed past each thing that waits.
+// and a lens written, five loads of the outline, its Contents list and the Decisions view, the
+// spec's own question answered, and the header's count pressed past each thing that waits.
 test("an overtaken question stays a Contents entry and counts in no waiting count", async ({
   browser,
 }) => {
@@ -1568,8 +1617,10 @@ test("an overtaken question stays a Contents entry and counts in no waiting coun
     await expectOvertakenQuestionRows(page, read);
     await expectQuestionInContents(page, read);
     await expectQuestionInDecisions(page, read);
-    await expectWaitsLeaveOut(page, read);
+    // The first focus is read before the header's count: a closed question that kept its wait
+    // would be reached by the count's presses too, and the first focus is the reading of that wait.
     await expectOpensOnLiveQuestion(page, read);
+    await expectWaitsLeaveOut(page, read);
     await expectQuestionInGraph(page, read);
   });
 });
@@ -2177,7 +2228,7 @@ test("a node reserved for its author is on its author's page and on nobody else'
     await page.setViewportSize(DESKTOP);
     const traffic = watchApiRequests(page);
     await gotoSettled(page, traffic, plain);
-    owedUnless(await drawnOpenGate(page, hers));
+    owedUnless(await drawnOpenGate(page, hers, (await getIssue(key)).open_asks ?? []));
     const reserved = new Map(
       RESERVED_NODES.map((name) => [
         name,
