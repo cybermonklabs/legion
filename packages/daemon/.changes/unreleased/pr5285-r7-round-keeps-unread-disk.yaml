@@ -22,8 +22,10 @@ body: |-
   Sandbox with it: a replacement whose call fails, whose daemon stops, or whose notice the store
   refuses once the pod is taken is finished at a later sweep from the read made before it, never
   kept, and two acts on one pod or Sandbox, a launch's delete of a Sandbox over its live pod among
-  them, are told once, from the newest read recorded before the take. A round stays open while the
-  store refuses its notice, and a sweep reads a recorded act only under the pod's launch turn, from the
-  API server. The update-stalled notice of a replacement that failed says "The pod replacement
-  failed" and that the pod may be gone, with the runtime's error quoted. The round's ask says a
-  round can end with no replacement, and the ask of a round that breaks the pod says it cannot.
+  them, are told once, from the read of their records that tells most: one that found work over one
+  that failed, one that failed over one that found nothing, and the newest of reads of one kind. A
+  round stays open while the store refuses its notice, and a sweep reads a recorded act only under
+  the pod's launch turn, from the API server. The update-stalled notice of a replacement that
+  failed says "The pod replacement failed" and that the pod may be gone, with the runtime's error
+  quoted. The round's ask says a round can end with no replacement, and the ask of a round that
+  breaks the pod says it cannot.
