@@ -58,7 +58,7 @@ func TestAHeadingKeepThatWaitsBehindTheStepsRetirementIsNotFound(t *testing.T) {
 		kept <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+decisions+"/blocks/"+headingID+"/keep",
 			map[string]any{"text_sha256": section.TextSHA256}, "alice")
 	}()
-	storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second)
+	storetest.WaitForLockWaiters(t, holder, 1)
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the retirement: %v", err)
 	}

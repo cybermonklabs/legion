@@ -343,7 +343,7 @@ func TestTheBackfillWritesNoNodeForADocumentRemovedWhileItWaited(t *testing.T) {
 	}
 
 	pid, answered := startBackfill(t, database)
-	if early, done := storetest.WaitForQueuedBehind(t, removal, pid, answered, 30*time.Second); done {
+	if early, done := storetest.WaitForQueuedBehind(t, removal, pid, answered); done {
 		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the removal's owner lock", early.report, early.err)
 	}
 	t.Logf("the backfill waits behind the removal at: %s", lockstep.WaitingStatement(t, database, pid))

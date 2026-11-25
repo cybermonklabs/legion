@@ -1327,6 +1327,46 @@ test("board: asking - the board going away ends the move, leaves no board move p
   }
 });
 
+// A list read already on the wire when a card's move asks its question does not wait for the move,
+// so it can fail while the question is open. The board then says it could not load the list, and
+// the question stays: it belongs to the board's move, not to the list, and its answer ends the move
+// that every later read of the list waits for.
+test("board: asking - a list read that fails while the question is open leaves the question drawn, and its answer ends the move", async () => {
+  const user = userEvent.setup();
+  const statusChanges = answerTheQuestion(() => new Promise<StatusChangeAnswer>(() => {}));
+  const patchIssue = patchInFlight();
+  const { cleanup, listIssues, queryClient } = renderBoard({}, undefined, parentIssues);
+  try {
+    const shown = await screen.findByRole("region", { name: "Project board" });
+    const inFlight = Promise.withResolvers<IssueSummary[]>();
+    listIssues.mockImplementationOnce(() => inFlight.promise);
+    await act(async () => {
+      void queryClient.invalidateQueries({ queryKey: ["issues"] });
+    });
+    await waitFor(() => expect(listIssues).toHaveBeenCalledTimes(2));
+    act(() => within(shown).getByRole("article", { name: "CORE-1 Parent" }).focus());
+    await user.keyboard("{Shift>}L{/Shift}");
+    const question = await screen.findByRole("dialog", { name: "Move CORE-1 to In progress?" });
+    expect(boardMovesPending(queryClient)).toBe(1);
+
+    await act(async () => {
+      inFlight.reject(new ApiError(500, { code: "INTERNAL", error: "the list failed" }));
+    });
+    await screen.findByText("Could not load board.");
+    expect(screen.getByRole("dialog", { name: "Move CORE-1 to In progress?" })).toBe(question);
+
+    await user.click(within(question).getByRole("button", { name: "Keep as it is" }));
+    await waitFor(() => expect(boardMovesPending(queryClient)).toBe(0));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(patchIssue).not.toHaveBeenCalled();
+    expect(statusChanges.mock.calls.filter(([, input]) => input.dry_run !== true)).toEqual([]);
+  } finally {
+    cleanup();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
 // The board goes while the move's dry run is out. Where the rule asks nothing, the drop needs no
 // answer of the person's, so its PATCH still goes, as a card with no parent is saved at once, and
 // the board's move settles once it lands.
@@ -1436,6 +1476,46 @@ for (const [board, lanes] of [
     }
   });
 }
+
+// A keyboard move of a card with a parent or an open child places nothing before its dry run, so
+// focus follows the card only once the move places it. A move that ends without placing it takes no
+// focus later: the next change of the board's columns leaves focus where the reader put it.
+test("Shift+L of a card with an open child, its question cancelled, leaves focus where the reader puts it when the board next changes", async () => {
+  const user = userEvent.setup();
+  const statusChanges = answerTheQuestion(() => new Promise<StatusChangeAnswer>(() => {}));
+  const patchIssue = patchInFlight();
+  const { cleanup, listIssues, queryClient } = renderBoard({}, undefined, parentIssues);
+  try {
+    const shown = await screen.findByRole("region", { name: "Project board" });
+    act(() => within(shown).getByRole("article", { name: "CORE-1 Parent" }).focus());
+    await user.keyboard("{Shift>}L{/Shift}");
+    const question = await screen.findByRole("dialog", { name: "Move CORE-1 to In progress?" });
+    await user.click(within(question).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // The reader goes on to another card.
+    const bravo = within(shown).getByRole("article", { name: "CORE-2 Bravo" });
+    act(() => bravo.focus());
+
+    // Another writer's change, read again, moves Charlie into Todo.
+    listIssues.mockResolvedValue(
+      parentIssues.map((entry) => (entry.key === "CORE-3" ? { ...entry, status: "todo" } : entry))
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["issues"] });
+    });
+    await waitFor(() =>
+      expect(articleLabels(within(shown).getByRole("region", { name: "Todo" }))).toContain(
+        "CORE-3 Charlie"
+      )
+    );
+    expect(within(shown).getByRole("article", { name: "CORE-2 Bravo" })).toHaveFocus();
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
 
 /** CORE-1 with its open child CORE-2 in work under it, both in Todo. */
 const childIssues: IssueSummary[] = [

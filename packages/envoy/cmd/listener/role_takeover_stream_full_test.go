@@ -31,6 +31,7 @@ import (
 // record, so the 503 rows come from the record that did not store and from nothing else of the
 // rig. A record write that failed another way (a seam) is the same 503.
 func TestATakeoverClaimWhoseRecordDidNotStoreWritesNoClaim(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t, bus.WithStreamMaxBytes(16<<10))
 	rig := newSessionConsumerRigOn(t, client, testnats.URL(t))
 	const previous, claimant = "ses_full_stream_previous", "ses_full_stream_claimant"

@@ -26,6 +26,7 @@ import (
 // CORE-1, and runs the tick's read: it must answer, having read that event and written no comment,
 // with no backend waiting on an owner lock.
 func TestATickLocksNoOwnerOfACommentThatNamesANode(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 

@@ -502,9 +502,10 @@ func (r headRig) begin() (pgx.Tx, int32) {
 // a read of the marked issue sent no statement of the walk, and the census kind issue_head_node
 // reads no difference.
 //
-// Three writes of the release before, by plain SQL with no head row and no setting - a tuple out of
-// a node of the tree, a new node with its part_of into the tree, and a node row updated in place -
-// each take the mark away when they commit, so the read walks the tuples and answers the new state;
+// Four writes of the release before, by plain SQL with no head row and no setting - a tuple out of
+// a node of the tree, a new node with its part_of into the tree, a node row updated in place and a
+// comment's body rewritten - each take the mark away, the comment's inside the statement that
+// writes it, before its transaction commits, so the read walks the tuples and answers the new state;
 // the fill then marks the issue again. A fill and a write of the release before do not interleave,
 // in either order: a write after the fill waits for the fill's head-fill lock, then takes away the
 // mark it committed; a fill after the write waits for the write to commit, then fills and marks the
@@ -708,6 +709,21 @@ func TestTheHeadProjectionAnswersAsTheWalk(t *testing.T) {
 	r.releaseBefore("release before's node row", key, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `update graph_nodes set visibility = $3 where kind = $1 and id = $2`, graphstore.KindLens, lens.ID, graphstore.VisibilityAuthor)
 		return err
+	})
+	// The trigger of comments runs inside the statement that writes the row, as the other three do:
+	// the mark is gone before the write's transaction commits.
+	r.releaseBefore("release before's comment", key, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `update comments set body = $2 where id = $1`, agentComment.ID, "A comment the release before rewrote."); err != nil {
+			return err
+		}
+		var marked bool
+		if err := tx.QueryRow(ctx, `select exists (select 1 from issue_head_marks where issue_key = $1)`, key).Scan(&marked); err != nil {
+			return err
+		}
+		if marked {
+			return fmt.Errorf("the mark of %s stands after the comment's update, inside its transaction: the trigger of comments did not take it away as the statement ran", key)
+		}
+		return nil
 	})
 
 	// A fill and a write of the release before: the fill holds the issue's owner lock and its

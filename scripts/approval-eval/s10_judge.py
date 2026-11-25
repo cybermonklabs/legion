@@ -49,9 +49,14 @@ Each request, once, in the inventory's order (point 6):
   its prompt names, lands under `--out`. A read the inputs cannot give, or an error S10's own code
   raises on them, is a deviation (`inputs`); an error of this driver stops the run. A fact that
   holds ends there: `finish_judgement` gives `never_decide:waiting-legion-root` with no judge.
-  Before the run's first `started.json`, the sandbox's preflight runs once (`preflight`): the
-  sandbox's Job with no bundle, every check of it made and made again here, its result kept
-  under `preflights/`; any failure stops the run before a request has started.
+  Before each `started.json`, the sandbox's preflight runs (`preflight`): the sandbox's Job with
+  no bundle, every check of it made and made again here, and its calls of point 2's model to
+  point 2's gateway with the Job's own key, each a session of its own and each of which must be
+  answered with a message by that model (`s10_sandbox.probe_refusal`); its result kept under
+  `preflights/`. Any failure stops the run before the request has started, so a refusal the probe
+  meets, at the run's start or before a later request, costs no request, and the same command
+  resumes once the gateway answers. A refusal that starts after a passed probe can still make that
+  request's deviation.
 - Else the five bundles and the five calls are kept under `--out`, and only then is the request
   sent to the sandbox (`s10_sandbox.py`, one Kubernetes Job, `s10_job.py`), whose one `omp -p`
   makes those five calls. Its result is read from the Job's log, the Job is deleted, and every
@@ -376,8 +381,8 @@ class Recorder:
 @dataclass
 class Context:
     """What judging each request reads: the frozen module, its pins, the inputs, the stage, the
-    sandbox, the image the sandbox must run, the read-back each outcome passes before it is
-    committed (`read_back_with_bun`), and whether this run's preflight passed."""
+    sandbox, the image the sandbox must run, and the read-back each outcome passes before it is
+    committed (`read_back_with_bun`)."""
 
     shadow: object
     pins: object
@@ -386,7 +391,6 @@ class Context:
     runner: object
     image: str
     read_back: object
-    preflighted: bool = False
 
 
 def outcome_of(line, outcome, verdict=None, deviation=None, judgement=None, judges=None, sandbox=None,
@@ -612,24 +616,30 @@ def kept_result(directory, run, key):
 
 
 def preflight(context):
-    """Once a run, before its first request starts: the sandbox with no bundle and no judge
-    (`KubeRunner.preflight`), its result kept under `preflights/<n>/`, and every check of
-    `sandbox_problems` made on it. A refusal, a failed check, a gateway key in its files or a Job
-    that gave no readable result stops the run before any request has started, so no request
-    meets a sandbox that would refuse it."""
-    if context.preflighted:
-        return
+    """Before each request starts: the sandbox with no bundle and no judge (`KubeRunner.preflight`),
+    its result kept under `preflights/<n>/`, every check of `sandbox_problems` made on it, and its
+    calls of point 2's model held to `SANDBOX.probe_refusal`. A refusal, a failed check, a gateway
+    key in its files, a Job that gave no readable result, or a call of the model that the gateway
+    did not answer with a message by the model stops the run before the request has started, so no
+    request meets a sandbox that would refuse it, and none is spent on a refusal the probe met; a
+    refusal that starts after a passed probe can still make that request's deviation."""
     stage = context.stage
-    run = context.runner.preflight()
+    run = context.runner.preflight(context.pins.model)
     done = {name.split("/")[1] for name in stage.record["files"] if name.startswith(PREFLIGHT_DIRECTORY + "/")}
     kept, held = kept_result(f"{PREFLIGHT_DIRECTORY}/{len(done)}", run, context.runner.key)
     stage.commit(kept)
-    problems = sandbox_problems(context, run, sandbox_record(run), {}, preflight=True)
+    record = sandbox_record(run)
+    problems = sandbox_problems(context, run, record, {}, preflight=True)
+    if not problems:
+        refusal = SANDBOX.probe_refusal(record.get("probe"), context.pins.model)
+        if refusal is not None:
+            problems.append(refusal)
+    held = sorted(set(held) | set((record or {}).get("keyFound") or []))
     if held:
         problems.append(f"the gateway key's bytes were in the preflight's {held}")
     if problems:
-        raise Stopped(f"the sandbox's preflight, Job {run.job}, stops the run before any request: {problems[0]}")
-    context.preflighted = True
+        raise Stopped(f"the sandbox's preflight, Job {run.job}, stops the run before its next request starts: "
+                      f"{problems[0]}")
 
 
 def judge(context, line):

@@ -233,7 +233,7 @@ func (s *Service) pinCommentAnchorBlock(ctx context.Context, tx pgx.Tx, id, bloc
 	err := tx.QueryRow(ctx, `
 		update comments c
 		set anchor = jsonb_set(c.anchor, '{block_id}', to_jsonb($2::text), true)
-		where c.id = $1 and nullif(c.anchor->>'block_id', '') is null
+		where c.id = $1 and nullif(c.anchor->>'block_id', '') is null and `+graphstore.KeptHeadRows+`
 		returning case when c.node_kind is not null then `+graphstore.CommentAnchoredInSQL("c")+` end
 	`, id, blockID).Scan(&block)
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -51,8 +51,14 @@ export function issueHasParentOrOpenChild(
 export function cardHasParentOrOpenChild(
   issue: Pick<IssueSummary, "parent" | "progress">
 ): boolean {
+  return issue.parent !== null || cardHasOpenChild(issue);
+}
+
+/** Whether a card's count of its children (`progress.children`) shows one that is not done. A
+ *  card with no count shows none. */
+export function cardHasOpenChild(issue: Pick<IssueSummary, "progress">): boolean {
   const children = issue.progress.children;
-  return issue.parent !== null || (children !== null && children.done < children.total);
+  return children !== null && children.done < children.total;
 }
 
 /**

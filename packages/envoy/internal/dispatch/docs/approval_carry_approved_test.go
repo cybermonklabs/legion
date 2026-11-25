@@ -27,6 +27,7 @@ import (
 // own. Another build serves (serveTwoBuilds), so the answer is written into the block, as the
 // version without the repeat must show.
 func TestAnApprovedVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := seededRegionDocument(t, time.Second)
 	serveTwoBuilds(t, database)
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}

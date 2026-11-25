@@ -53,6 +53,7 @@ import (
 // that drain, and this build's reconciliation must then state every parent, as its part_of tuple
 // and as the parent_block_id the seed's own indexing computed.
 func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
@@ -173,6 +174,7 @@ func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *t
 // pass lists the document no more. Where the stand is at the version, the lower rule has nothing
 // to do, and a pass that listed the document would lose the fence and list it again every tick.
 func TestALowerRulesDrainLeavesAHigherRulesMark(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, lower := blockIndexService(t)
 	higher := markingRuleBuild(t, database, nextBuildCommit, lower.markingRule+1)
@@ -221,6 +223,7 @@ func TestALowerRulesDrainLeavesAHigherRulesMark(t *testing.T) {
 // version, indexes it at that version and clears the mark: the mark is of a rule its pass owes
 // everything of (R13).
 func TestAHigherRulesPassListsAndClearsALowerRulesMark(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, lower := blockIndexService(t)
 	higher := markingRuleBuild(t, database, nextBuildCommit, lower.markingRule+1)
@@ -254,6 +257,7 @@ func TestAHigherRulesPassListsAndClearsALowerRulesMark(t *testing.T) {
 // stands. Each statement is read as its writer runs it, and run over a document it marks: one
 // whose store stands below its version.
 func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	lowerRule := refs.BlockIndexMarkingRule
 	higherRule := lowerRule + 1
@@ -439,9 +443,18 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // reads the comment's edited_at, deleted_at and deleted_by for the comment and for each of its
 // blocks, and writes them into three more columns of issue_head_nodes. It still writes
 // issue_head_nodes alone; no other marking statement changed with it.
+//
+// It moved a fifth time, from 349ad57c4983da437d4904a67c55aad25864f849b28ae1b86998c179d3fcd005,
+// when the head mark triggers of the conversation tables came to fire inside the statement that
+// writes the row rather than at the commit: the update that names each comment's node on its row,
+// which refs.CommentWrite.Queue sends after the node write, carries graphstore's KeptHeadRows in its
+// WHERE as the node write's statements do, which is true of every row, so it names the nodes it
+// named before. It still marks no document, writes no other comment and moves no revision fence; no
+// other marking statement changed with it, and with the predicate taken out the statements give the
+// digest recorded before.
 var markingStatementDigests = map[int]string{
 	1: "2d31bf086bf3f1960b792517ad5744f180da731f220cb4c48a838b2bf8a03700",
-	2: "349ad57c4983da437d4904a67c55aad25864f849b28ae1b86998c179d3fcd005",
+	2: "ff98e8c680479fa8b9b29a1ff1f44c48b723dcfa7eab0f97bcb36decbbfd8226",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
@@ -450,6 +463,7 @@ var markingStatementDigests = map[int]string{
 // beside a build of the old ones, during a roll or after a rollback, would otherwise read each
 // other's cursors, horizons and marks as their own.
 func TestTheMarkingRuleNamesTheStatementsItMarksWith(t *testing.T) {
+	t.Parallel()
 	digest := sha256.New()
 	for _, statement := range markingStatements(t) {
 		fmt.Fprintf(digest, "%s\x00%s\x00", statement.name, strings.Join(strings.Fields(statement.sql), " "))

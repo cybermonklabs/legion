@@ -271,8 +271,8 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
 }
 
 /** `dispatch issue-update`: change one issue's fields, posting a closing reason first. `--labels-add`
- *  adds labels to those the issue holds, inside Dispatch's write, where `--label` replaces them. With
- *  an option of the status change, it sends that route in place of the PATCH. */
+ *  adds labels to those the issue holds, inside Dispatch's write, where `--label` replaces them.
+ *  With an option of the status change, it sends that route in place of the PATCH. */
 export async function issueUpdateCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, issue } = context;
   const issueKey = issue();

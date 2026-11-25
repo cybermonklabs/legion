@@ -234,7 +234,7 @@ func TestALensWriteThatWaitsBehindARemovalIsRefused(t *testing.T) {
 		answered <- dispatchRequest(t, writeHandler, http.MethodPost, "/api/v1/issues/"+issue+"/lenses",
 			map[string]any{"on": dAddress, "kind": "trade-off"}, "alice")
 	}()
-	if early, answeredEarly := storetest.WaitForQueuedBehind(t, owner.Tx, writePID, answered, 30*time.Second); answeredEarly {
+	if early, answeredEarly := storetest.WaitForQueuedBehind(t, owner.Tx, writePID, answered); answeredEarly {
 		t.Fatalf("the lens write on %s answered %d %s before the removal, want it waiting for the issue's owner lock", dAddress, early.Code, early.Body.String())
 	}
 	if err := deleteArtifactRows(ctx, owner.Tx, d); err != nil {

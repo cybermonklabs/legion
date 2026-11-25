@@ -79,10 +79,6 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	// A credential that names one project is refused a target or a parent outside it where its
-	// project is read, since this route's own address names neither (project_scope.go): the write
-	// core first, before a close settles anything (writeIssue), the lock step before any lock, and
-	// writeIssueNeeds or validateIssueParent again under them.
 	callerProject, _ := s.callerProject(r)
 	written, err := s.writeIssue(r.Context(), issueWriteCall{
 		writer:        writer,
@@ -145,6 +141,11 @@ type issueWriteCallStep struct {
 	// leaves the issue as it stands: the step writes no row, no event and no comment, and rolls
 	// its transaction back. It is nil for a step that always writes: the named issue's own.
 	leaves func(before model.Issue) bool
+	// moved is what the write of a step of an option changes, from the issue as the step reads it
+	// under its owner lock, which the comment on named lists (statusChangeRun.namedComment). A
+	// step of a keyed call that writes keeps it in the call's recovery point (queueStatusChangeStep).
+	// It is nil for the named issue's own step and for a step of R25's fix.
+	moved func(before model.Issue) statusChangeMove
 	// sweepsLater is that the caller runs the ask sweep of the step's close itself, after the
 	// call's last step (issueWriteResult.closed), so that no fence of the call reads the events of
 	// the sweep. Only the named issue's own step sets it.
@@ -211,6 +212,9 @@ type issueWriteResult struct {
 	// sweep itself, except for a step whose caller sweeps later (issueWriteCallStep.sweepsLater).
 	closed    bool
 	withdrawn []model.Ask
+	// moved is what the write of a step of an option changed (issueWriteCallStep.moved): nil for
+	// every other write, and for a write that wrote nothing.
+	moved *statusChangeMove
 }
 
 // writeIssue is the PATCH's write core. It parses the call's fields, takes the owner locks of
@@ -318,8 +322,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// first here, with no lock held and before a close settles the issue's documents or the
 	// transaction begins, so a write the credential may not make settles nothing; the
 	// pre-handler check already held the issue to the credential's project, which is therefore
-	// the issue's own. The lock step refuses it again before any lock, and writeIssueNeeds or
-	// validateIssueParent under them.
+	// the issue's own, and a status change holds each issue a step of it writes to that project
+	// before its first step (refuseStepsOutsideCallerProject). The lock step refuses it again
+	// before any lock, and writeIssueNeeds or validateIssueParent under them.
 	if call.callerProject != "" && (parentKey != "" || len(waits.targets) > 0) {
 		if _, err := foreignDependencyTargets(ctx, s.deps.Store.Pool, call.callerProject, call.callerProject, waits, parentKey); err != nil {
 			return issueWriteResult{}, err
@@ -445,10 +450,16 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			holdsNamed = true
 		}
 	}
-	// The call's comment is worded from the issue as the write reads it under its owner lock.
+	// The call's comment is worded from the issue as the write reads it under its owner lock, and
+	// so is what a step of an option changes.
 	var commentBody string
 	if call.comment != nil {
 		commentBody = call.comment.words(before)
+	}
+	var moved *statusChangeMove
+	if step != nil && step.moved != nil {
+		move := step.moved(before)
+		moved = &move
 	}
 	if parentProvided && parent != nil {
 		if err := validateIssueParent(ctx, tx, key, call.callerProject, *parent); err != nil {
@@ -936,19 +947,19 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// An issue's own field write made for a run (store.WithRun, which withinGoingRun puts on a
 	// request naming its run) names the issue as changed by that run when it changed a field of
 	// it (spec requirement r-interaction), as changedFields, which compares every field
-	// this route writes, says; a write that sent only values the issue already held appends its
-	// event with nothing changed and names no change. Under a run it writes the issue's node as the
-	// create and the backfill write it (graphstore.IssueNode), made by the issue's creator at its
-	// created_at, the two columns of the issue's row the backfill reads them from
+	// this write core writes, says; a write that sent only values the issue already held appends
+	// its event with nothing changed and names no change. Under a run it writes the issue's node as
+	// the create and the backfill write it (graphstore.IssueNode), made by the issue's creator at
+	// its created_at, the two columns of the issue's row the backfill reads them from
 	// (graphcensus/projects_backfill.go's objectKinds), and names it changed now by its writer
 	// (graphstore.PlanChangedForRun, which plans nothing for no run). A write that states a
 	// relation of the issue (queueIssueRelations) writes the same node unmarked, for no run, since
-	// graph_edges answers a relation out of a node the store holds. The node write is queued here,
-	// after every row and document write the patch queued above and after the node of the item
-	// filed_from names where the store held none (stateFiledFromNode), and what it states right
-	// after the issue's own event (graphstore.QueueCaused over graphstore.LatestEvent), as the
-	// create's is. A write made for no run that states no relation writes no node and sends no
-	// statement more than it did.
+	// graph_edges answers a relation out of a node the store holds; the comment a call leaves
+	// (queueIssueComment) states its own node. The node write is queued here, after every row and
+	// document write the patch queued above and after the node of the item filed_from names where
+	// the store held none (stateFiledFromNode), and what it states right after the issue's own
+	// event (graphstore.QueueCaused over graphstore.LatestEvent), as the create's is. A write made
+	// for no run that states no relation writes no node and sends no statement more than it did.
 	if err := stateFiledFromNode(ctx, tx, filedFrom); err != nil {
 		return issueWriteResult{}, err
 	}
@@ -1065,7 +1076,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			if err := ledger.AfterWrites(func(b *store.WriteBatch) error {
 				answered := after
 				answered.LastSeq = appendedIssueLastSeq(key, appended)
-				return queueStatusChangeStep(b, step, answeredStatusChangeEntry(answered, before.LastSeq),
+				return queueStatusChangeStep(b, step, answeredStatusChangeEntry(answered, before.LastSeq), moved,
 					namedLastSeq, holdsNamed, closedAsks, &namedEvents)
 			}); err != nil {
 				return issueWriteResult{}, err
@@ -1127,7 +1138,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	return issueWriteResult{
 		issue: after, advice: advice, previousLastSeq: before.LastSeq, wrote: true, appended: appended,
-		namedEvents: namedEvents, closed: closing, withdrawn: withdrawn,
+		namedEvents: namedEvents, closed: closing, withdrawn: withdrawn, moved: moved,
 	}, nil
 }
 

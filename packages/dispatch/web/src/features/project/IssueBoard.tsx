@@ -437,9 +437,10 @@ export function IssueBoard({
   // One `aria-live` sentence per keyboard move; `focusAfterMove` names the card focus follows
   // once the optimistic list has rendered (a status move remounts the article under its new
   // column, so the old node cannot keep focus; a card moved into a rail has no node, and focus
-  // lands on the rail). The effect runs on the `columns`/`boardLanes` render - the
-  // announcement's own render comes first, before the query observer has notified, and would
-  // focus the doomed node.
+  // lands on the rail). A move sets it only once it has placed the card (its `onPlaced`), so a
+  // move that ends without placing it takes no focus later. The effect runs on the
+  // `columns`/`boardLanes` render - the announcement's own render comes first, before the query
+  // observer has notified, and would focus the doomed node.
   const [announcement, setAnnouncement] = useState("");
   const focusAfterMove = useRef<{
     key: string;
@@ -523,15 +524,17 @@ export function IssueBoard({
     if (target === undefined) {
       return;
     }
-    // Both move functions place the card in the cache synchronously before their request goes
-    // out, so the announcement reads the optimistic position - the one the user sees. A move the
-    // rule's question checks first places nothing yet: it is announced once the move functions
-    // place it, after the dry run or a choice of the question (`announce`, their `onPlaced`); after
-    // a choice, each other issue it moved is already in its cell, so the count holds them.
+    // Each move function tells `placed` (its `onPlaced`) once it has placed the card in the cache:
+    // in the call itself, before its request goes out, or, for a move the rule's question checks
+    // first, after the dry run or a choice of the question. So the announcement reads the
+    // optimistic position - the one the user sees - and, after a choice, each other issue it
+    // moved is already in its cell, so the count holds them. A move that ends without placing
+    // the card (kept, cancelled or refused) says nothing and takes no focus.
     const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
-    /** Says where the card stands now: its position and count in the visible cell - the one the
-     *  user sees - or nothing while it is not in that cell yet. */
-    const announce = () => {
+    /** Says where the card stands now - its position and count in the visible cell, the one the
+     *  user sees, or nothing while it is not in that cell - and has focus follow it once the
+     *  board has drawn it there (`focusAfterMove`). */
+    const placed = () => {
       const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
         (issue) =>
           issue.status === target.status &&
@@ -542,14 +545,13 @@ export function IssueBoard({
       if (position !== -1) {
         setAnnouncement(announceMove(key, target.status, position + 1, column.length));
       }
+      focusAfterMove.current = { key, status: target.status, laneId };
     };
     if (lanes && lane !== undefined) {
-      void moveCardToLane(key, target.status, lane, target.insertionIndex, announce);
+      void moveCardToLane(key, target.status, lane, target.insertionIndex, placed);
     } else {
-      void moveCard(key, target.status, target.insertionIndex, announce);
+      void moveCard(key, target.status, target.insertionIndex, placed);
     }
-    announce();
-    focusAfterMove.current = { key, status: target.status, laneId };
   };
   const focusedCard = () => cardAround(document.activeElement) !== null;
   /** Copies the focused card's key or `dispatch://` reference and announces which. */
@@ -679,14 +681,15 @@ export function IssueBoard({
         columnAround(document.activeElement) === document.activeElement,
     },
   ]);
-  if (issues.isPending) {
-    return <LoadingSkeleton label="Loading board" />;
-  }
-  if (issues.isError) {
-    return <p className={textSecondaryOnSurface}>Could not load board.</p>;
-  }
-
-  return (
+  // The question belongs to the board's moves (`useBoardMoves`), not to the list: it is drawn
+  // whatever the list read shows, so a read that fails while it is open leaves it to be answered,
+  // and its answer ends the move that holds every later read of the list.
+  const questionDialog = question === undefined ? null : <ParentStatusDialog question={question} />;
+  const body = issues.isPending ? (
+    <LoadingSkeleton label="Loading board" />
+  ) : issues.isError ? (
+    <p className={textSecondaryOnSurface}>Could not load board.</p>
+  ) : (
     <section aria-label="Project board" className="min-w-0" ref={boardRef}>
       {error === undefined ? null : (
         <div
@@ -700,7 +703,6 @@ export function IssueBoard({
       <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
         {announcement}
       </p>
-      {question === undefined ? null : <ParentStatusDialog question={question} />}
       {issues.data.length === 0 ? (
         // The active query is the label-filtered list, so an empty answer under a label filter
         // means "nothing matches", not "empty project" - the same copy the List shows.
@@ -758,5 +760,11 @@ export function IssueBoard({
         </DndContext>
       )}
     </section>
+  );
+  return (
+    <>
+      {questionDialog}
+      {body}
+    </>
   );
 }

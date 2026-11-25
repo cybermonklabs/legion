@@ -90,9 +90,11 @@ func TestEveryUploadAtTheCapStaysWithinTheMemoryBound(t *testing.T) {
 // settlement - and then reading it - its text, its blocks, and a websocket load of its room - each
 // hold at most the bound, a read on a server that has not loaded the document. Escaped syntax is
 // among them (escapedAdmittedShapes): a stored document of `\)\_`, which weighed four elements
-// before an escape weighed one, held 256 MiB to read cold.
+// before an escape weighed one, held 256 MiB to read cold. Each row runs its writer and its reader
+// at once, so the test reserves both slots before its first start (dispatchSlots.reserve).
 func TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound(t *testing.T) {
 	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	memory := newMemoryHarness(t)
 	for _, shape := range append(heaviestAdmittedShapes(t), escapedAdmittedShapes(t)...) {
 		t.Run(shape.name, func(t *testing.T) {
@@ -1038,7 +1040,10 @@ func TestARoleDocumentCannotLeaveItsIssueRoomTooLargeToDecode(t *testing.T) {
 		}
 		return loaded
 	}
-	heaviest := heaviestAdmitted(t, func(units int) string { return strings.Repeat("- a\n", units) })
+	heaviest, err := heaviestAdmitted(func(units int) string { return strings.Repeat("- a\n", units) })
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"plan.md", "verification.md"} {
 		var held, named int
 		count := func() {
