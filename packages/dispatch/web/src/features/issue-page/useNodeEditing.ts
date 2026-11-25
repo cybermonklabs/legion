@@ -109,22 +109,32 @@ export function nodeEditable(
 /** What takes a pointer's press inside a row's words as its own rather than the words': each
  *  control a drawn text can hold - a link in the words, a code block's copy control, the link of
  *  a parent line - a disclosure's summary, which a drawn diagram carries for its source, a label,
- *  and an element that plays a button. It is `RowText.tsx`'s `FOCUSABLE` without its
- *  `[tabindex]`: `RowText` gives each element of the words that scrolls, a wide code block or a
- *  table's wrapper, a tab index of its own (`useOutOfTabOrder`), and such an element acts on no
- *  press, so a press on its text is the words'. */
+ *  and an element that plays a button. It is `RowText.tsx`'s `FOCUSABLE` with `summary`, `label`
+ *  and `[role="button"]` added, which take a press of their own, and without its `[tabindex]`:
+ *  `RowText` gives each element of the words that scrolls, a wide code block or a table's wrapper,
+ *  a tab index of its own (`useOutOfTabOrder`), and such an element acts on no press, so a press
+ *  on its text is the words'. */
 const OWN_PRESS =
   'a[href], area[href], button, input, select, textarea, iframe, summary, label, [role="button"]';
 
 /** Whether a pointer's click on a row's words asks for the caret in them, as Enter on the row
- *  does. A click on a control inside the element that heard it (`OWN_PRESS`) is that control's
+ *  does, given the document the row's text is being edited in while it is the row edited
+ *  (`editing`). While the row is edited no click on its words asks: the editor is drawn in their
+ *  place, and its own presses never reach the words' handler, since React sends a portal's events
+ *  up the portal's own parents, so a click the handler hears then is on what stands beside the
+ *  editor. A click on a control inside the element that heard it (`OWN_PRESS`) is that control's
  *  own. A click that ends a selection the reader made - a drag over the words, which leaves the
  *  window's selection not collapsed - asks for nothing, nor does the second click of a double
  *  click or a later one, which selects a word or a line: the editor drawn in the words' place
  *  would drop that selection and put the caret at the start. The Verification and Decisions views
  *  read it, and ask for the caret where the row takes one (`useWordsPress`). */
-export function pressAsksCaret(event: MouseEvent<HTMLElement>): boolean {
-  if (event.detail > 1 || window.getSelection()?.isCollapsed === false) return false;
+export function pressAsksCaret(
+  event: MouseEvent<HTMLElement>,
+  editing: string | undefined
+): boolean {
+  if (editing !== undefined || event.detail > 1 || window.getSelection()?.isCollapsed === false) {
+    return false;
+  }
   const owner = event.target instanceof Element ? event.target.closest(OWN_PRESS) : null;
   return owner === null || !event.currentTarget.contains(owner);
 }

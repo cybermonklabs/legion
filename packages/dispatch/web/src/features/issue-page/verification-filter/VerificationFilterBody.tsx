@@ -1204,8 +1204,7 @@ function Statement({
       <div
         className={`flex min-w-0 flex-col ${CELL}`}
         onClick={(event) => {
-          // A press inside the editor drawn in the words' place is the editor's own.
-          if (editing === undefined && pressAsksCaret(event)) onPressWords(node.id, node);
+          if (pressAsksCaret(event, editing)) onPressWords(node.id, node);
         }}
       >
         <p
@@ -1431,8 +1430,7 @@ function Check({
           className={`flex min-w-0 items-baseline gap-2 text-sm leading-5 ${pageWordsText} ${focusVisibleRing}`}
           data-verification-check-words=""
           onClick={(event) => {
-            // A press inside the editor drawn in the words' place is the editor's own.
-            if (editing === undefined && pressAsksCaret(event)) onPressWords();
+            if (pressAsksCaret(event, editing)) onPressWords();
           }}
           onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
             // A key on a link in the words, or typed into the editor drawn in their place, is
@@ -1764,8 +1762,7 @@ function OtherRow({
         className={`min-w-0 text-[15px] leading-6 ${pageWordsText}`}
         data-node-words=""
         onClick={(event) => {
-          // A press inside the editor drawn in the words' place is the editor's own.
-          if (editing === undefined && pressAsksCaret(event)) onPressWords();
+          if (pressAsksCaret(event, editing)) onPressWords();
         }}
       >
         {deleted === null ? (

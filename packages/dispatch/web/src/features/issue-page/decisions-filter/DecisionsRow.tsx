@@ -255,8 +255,7 @@ export function DecisionsRow({
             } ${clamped ? "overflow-clip" : ""}`}
             data-node-words=""
             onClick={(event) => {
-              // A press inside the editor drawn in the words' place is the editor's own.
-              if (editing === undefined && pressAsksCaret(event)) onPressWords();
+              if (pressAsksCaret(event, editing)) onPressWords();
             }}
             ref={words}
             style={clamped ? { maxHeight: clamp.height } : undefined}
