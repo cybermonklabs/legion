@@ -346,6 +346,8 @@ REACH = (
     "packages/pi-legion/scripts/skill-scenarios/rig.sh",
     "scripts/e2e/stage1-skeleton.sh",
     "packages/envoy/deploy/scripts/compose-2.12.2_test.sh",
+    "scripts/e2e/shared-clone-kind.sh",
+    "scripts/e2e/lib/kind-sandbox.sh",
 )
 
 # A docker command whose image is a variable, and where that variable's value comes from. The
@@ -372,6 +374,11 @@ IMAGE_FROM = {
         "scripts/e2e/lib/nats-image.sh sets it to testnats.HubImage, the Go string constant "
         "packages/envoy/internal/testnats/nats.go declares, which is in the reach above and whose "
         "reference this check reads (scripts/e2e/lib/nats-image.test.ts holds the helper to it)"
+    ),
+    ("scripts/e2e/shared-clone-kind.sh", "kind_busybox"): (
+        "scripts/e2e/lib/kind-sandbox.sh, which the script sources, assigns it the busybox copy of "
+        ".github/ci-images.yaml by digest; that file is in the reach above, and this check reads "
+        "the reference in it"
     ),
     (".github/workflows/ci-job-envoy-smoke.yaml", "ENVOY_SMOKE_IMAGE"): (
         "the local tag the envoy-smoke job's own build loaded (the job sets it to "
@@ -414,7 +421,6 @@ EXCEPTIONS = {
     "scripts/e2e/controller-sweep-kind.sh": NO_CI_JOB,
     "scripts/e2e/dispatch-user-turns.sh": NO_CI_JOB,
     "scripts/e2e/lib/bridge-tunnel.sh": NO_CI_JOB,
-    "scripts/e2e/lib/kind-sandbox.sh": NO_CI_JOB,
     "scripts/e2e/parked-decision-devbox.sh": NO_CI_JOB,
     "scripts/e2e/share-volumes-kind.sh": NO_CI_JOB,
     "scripts/e2e/stage2-tmux-supervision.sh": NO_CI_JOB,

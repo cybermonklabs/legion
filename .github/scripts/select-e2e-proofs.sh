@@ -7,7 +7,12 @@
 # This script reads three variables: EVENT, the event that started the run; REQUESTED, the script
 # a `workflow_dispatch` asks for, with or without its `.sh`; and GITHUB_OUTPUT, the file the
 # matrix is written to. A `workflow_dispatch` selects the one row it names. Every other event
-# selects every row of `hosted`, in name order.
+# selects every row of `hosted`, in name order, but a row carrying `"dispatch_only": true`: such
+# a proof runs on the commit its dispatch names alone (`gh workflow run e2e.yaml --ref <branch>`,
+# whose checkout is that branch's head), never on a label's merge commit or on the nightly's main,
+# because it runs the image of its checkout's own commit (shared-clone-kind.sh's worker image,
+# which worker-image.yaml publishes for a pull request's head, and for main's head only when
+# release.yaml's paths call it, so a nightly cannot rely on the tag existing yet).
 #
 # Every refusal names the file, the row and the remedy, and no input reaches a traceback. The
 # script prints one `::error::` line per problem and exits 1 on:
@@ -21,7 +26,8 @@
 #      row whose `run_timeout_minutes`, the limit of the step that runs the script, is not below
 #      its `timeout_minutes`, the job's, which would cut that step before its own limit names it
 #      (.github/ci-notes/e2e.md, "The proof step's own limit");
-#   4. an `elsewhere` row with no `needs` text, which is the text a refusal of that script prints;
+#   4. an `elsewhere` row with no `needs` text, which is the text a refusal of that script prints,
+#      or a hosted row whose `dispatch_only`, a key it may leave out, is not a boolean;
 #   5. a script under scripts/e2e/ that neither list names, or a row naming a script the tree
 #      does not hold;
 #   6. a `workflow_dispatch` for a script of the `elsewhere` list, with what that script's own
@@ -173,6 +179,11 @@ for script, row in rows["hosted"].items():
                         f"run_timeout_minutes below timeout_minutes, each as the file's comment "
                         f"derives it.")
 
+for script, row in rows["hosted"].items():
+    if "dispatch_only" in row and not a_boolean(row["dispatch_only"]):
+        problems.append(f"hosted row {script} has dispatch_only {row['dispatch_only']!r}, which is not "
+                        f"a boolean. Write dispatch_only as a boolean, or leave it out.")
+
 for script, row in rows["elsewhere"].items():
     if not isinstance(row.get("needs"), str) or not row["needs"].strip():
         problems.append(f"elsewhere row {script} has no needs text. Write what the script's own "
@@ -211,7 +222,7 @@ if event == "workflow_dispatch":
                f"{', '.join(sorted(hosted))}.", about=None)
     chosen = [hosted[name]]
 else:
-    chosen = [hosted[name] for name in sorted(hosted)]
+    chosen = [hosted[name] for name in sorted(hosted) if not hosted[name].get("dispatch_only", False)]
 
 proofs = []
 for row in chosen:

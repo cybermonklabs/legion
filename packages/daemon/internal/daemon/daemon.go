@@ -3505,6 +3505,13 @@ func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue strin
 	return s.Store.DropCatchUps(ctx, tx, issue, now)
 }
 
+func (s projectRecords) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error {
+	if !s.ownsKey(record.OutboxKindCheckWake, issue) {
+		return nil
+	}
+	return s.Store.DropUnfencedCheckWakes(ctx, tx, issue)
+}
+
 func (s projectRecords) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error {
 	if !s.ownsKey(record.OutboxKindDispatchStatus, issue) {
 		return nil
