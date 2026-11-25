@@ -50,6 +50,7 @@ func oneContainerStatus(phase corev1.PodPhase, container corev1.ContainerStatus)
 // ended on its own: no mark. Neither does an end whose reason is Error, which carries 128, the
 // very exit code an out-of-memory end carries — the reason decides and the code never does.
 func TestTheRolesContainerOutOfMemoryEndIsMarkedOnTheRolesItCut(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	ended := func(end corev1.ContainerStateTerminated) corev1.ContainerStatus {
@@ -110,6 +111,7 @@ func TestTheRolesContainerOutOfMemoryEndIsMarkedOnTheRolesItCut(t *testing.T) {
 // the third exclusion, and its own test holds it
 // (TestAnEndedPodOfTheEarlierLayoutReportsTheRolesOwnContainer).
 func TestAnOutOfMemoryEndOutsideTheRolesContainerIsNotMarked(t *testing.T) {
+	t.Parallel()
 	t.Run("an init container", func(t *testing.T) {
 		g := newRig(t, nil)
 		loc := g.spawn(workerSpec(t))
