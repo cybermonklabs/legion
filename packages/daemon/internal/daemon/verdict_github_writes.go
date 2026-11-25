@@ -94,11 +94,15 @@ type listedStatus struct {
 // A head with no conclusion is written on only when overForeign is set, which is the writers'
 // sweep's ask to put failure over each run and status of the App there that does not show it; a
 // write a fact asks for (writeVerdictOver without overForeign) writes nothing there and makes no
-// GitHub call. In token mode the daemon mints no verdict token (appauth.ErrNoVerdictToken): it
-// writes nothing and logs that once. So it does while it holds no App id: an id that is no number
-// tells no run as the App's, its own among them, and a write would make a new run at each write;
-// the one ERROR where the writer is built says why (newVerdictWriter). One goroutine makes every
-// write (writeVerdicts), so no two writes of one head read its runs together and each create one.
+// GitHub call. A head with no decision yet (verdict.Undecided) gets no run or status of the daemon's
+// own, and those the record holds stand as they are; only the writers' sweep's write there still
+// puts, over each run and status of the App the record does not hold, the conclusion of the
+// daemon's newest write at the head, or failure where it has none (R19). In token mode the daemon
+// mints no verdict token (appauth.ErrNoVerdictToken): it writes nothing and logs that once. So it
+// does while it holds no App id: an id that is no number tells no run as the App's, its own among
+// them, and a write would make a new run at each write; the one ERROR where the writer is built says
+// why (newVerdictWriter). One goroutine makes every write (writeVerdicts), so no two writes of one
+// head read its runs together and each create one.
 func (w *workflowRuntime) writeDecided(ctx context.Context, target verdictTarget, decided verdictDecision, overForeign bool) error {
 	_, err := w.writeDecidedChanged(ctx, target, decided, overForeign)
 	return err
@@ -106,10 +110,13 @@ func (w *workflowRuntime) writeDecided(ctx context.Context, target verdictTarget
 
 // writeDecidedChanged is writeDecided, and answers too, where it answers no error, whether it
 // created or updated a check run or set a commit status: a pass that writes a success is followed
-// by one more merge-state read (writeVerdictOver), and a pass that finds it written is not. A
-// decision that is no decision yet (verdict.Undecided) is written by no caller, and not here either.
+// by one more merge-state read (writeVerdictOver), and a pass that finds it written is not. Its test
+// of verdict.Undecided is the writer's one: every write of legion-verdict, a head's
+// (writeVerdictOver) and a merge group's (writeMergeGroup), reaches GitHub only through here, and
+// each hands its decision on as it is, so no caller needs a test of its own.
 func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdictTarget, decided verdictDecision, overForeign bool) (bool, error) {
-	if decided.conclusion == verdict.None && !overForeign || decided.conclusion == verdict.Undecided || w.verdicts.appID == 0 {
+	undecided := decided.conclusion == verdict.Undecided
+	if (decided.conclusion == verdict.None || undecided) && !overForeign || w.verdicts.appID == 0 {
 		return false, nil
 	}
 	serving := w.repositories.serving(target.repository)
@@ -124,7 +131,7 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 	client := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(w.githubAPI, serving)}
 	call, cancel := context.WithTimeout(ctx, issueRead)
 	defer cancel()
-	ownRuns, ownStatuses, err := w.recordedVerdictWrites(ctx, target)
+	ownRuns, ownStatuses, newest, err := w.recordedVerdictWrites(ctx, target)
 	if err != nil {
 		return false, err
 	}
@@ -133,7 +140,10 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 		return false, fmt.Errorf("list the legion-verdict runs of %s at %s: %w", serving, target.head, err)
 	}
 	over := decided.conclusion
-	if over == verdict.None {
+	switch {
+	case undecided && newest != verdict.None:
+		over = newest
+	case over == verdict.None || undecided:
 		over = verdict.Failure
 	}
 	output := verdictOutput(decided, over)
@@ -145,7 +155,7 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 		shown = true
 		foreign := run.ID
 		if ownRuns[run.ID] {
-			if run.Conclusion == string(over) && run.Output.Title == output["title"] && run.Output.Summary == output["summary"] {
+			if undecided || run.Conclusion == string(over) && run.Output.Title == output["title"] && run.Output.Summary == output["summary"] {
 				continue
 			}
 			foreign = 0
@@ -155,7 +165,7 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 		}
 		changed = true
 	}
-	if decided.conclusion != verdict.None && !shown {
+	if decided.conclusion != verdict.None && !undecided && !shown {
 		if err := w.createVerdictRun(call, client, target, decided); err != nil {
 			return false, err
 		}
@@ -173,7 +183,7 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 		switch {
 		case !ownStatuses[status.ID]:
 			return true, w.createVerdictStatus(call, client, target, decided.kind, over, status.ID)
-		case status.State != string(over):
+		case !undecided && status.State != string(over):
 			return true, w.createVerdictStatus(call, client, target, decided.kind, over, 0)
 		}
 		return changed, nil
@@ -182,8 +192,9 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 }
 
 // recordedVerdictWrites is the GitHub id of each check run and of each commit status the store
-// records the daemon wrote on target's head.
-func (w *workflowRuntime) recordedVerdictWrites(ctx context.Context, target verdictTarget) (runs, statuses map[int64]bool, err error) {
+// records the daemon wrote on target's head, and the conclusion of the newest of them, verdict.None
+// where it records none.
+func (w *workflowRuntime) recordedVerdictWrites(ctx context.Context, target verdictTarget) (runs, statuses map[int64]bool, newest verdict.Conclusion, err error) {
 	runs, statuses = map[int64]bool{}, map[int64]bool{}
 	err = store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		writes, err := store.VerdictWritesTx(ctx, tx, target.repository, target.head)
@@ -193,10 +204,11 @@ func (w *workflowRuntime) recordedVerdictWrites(ctx context.Context, target verd
 			} else {
 				statuses[written.GitHubID] = true
 			}
+			newest = written.Conclusion
 		}
 		return err
 	})
-	return runs, statuses, err
+	return runs, statuses, newest, err
 }
 
 // The output of a legion-verdict run that concludes failure on a Legion head where each check reads

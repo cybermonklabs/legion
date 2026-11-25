@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -1074,18 +1073,31 @@ func TestLegionVerdictASuccessWhoseVerdictNoLongerStandsTurnsToFailure(t *testin
 // them does, though the pull request's own verdict still stands. Here pull request 91, on another
 // project's issue branch, where no verdict stands, opens at code after the owner's acceptance wrote
 // success there, so the head's verdict is none; the next fact of pull request 86 at code turns the
-// success to failure at once, rather than at the writers' next sweep.
+// success to failure at once, rather than at the writers' next sweep. So it does while GitHub gives
+// no answer to the read of pull request 86's change: pull request 91's verdict is none whatever that
+// read would answer.
 func TestLegionVerdictASuccessAnotherPullRequestAtTheHeadNoLongerBacksTurnsToFailure(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
-	run := rig.acceptedAndWritten(t)
-	rig.github.mu.Lock()
-	rig.github.opened = append(rig.github.opened, fakePull{number: 91, ref: "legion/OTHER-1", head: "code"})
-	rig.github.pulls[91] = `{"number":91,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/OTHER-1","sha":"code"}}`
-	rig.github.mu.Unlock()
-	rig.checkState(t, "code", "k1", verdict.StateYes)
-	rig.written(t)
-	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "failure" {
-		t.Fatalf("legion-verdict runs on code = %+v, want run %d turned to failure: no verdict stands at code over pull requests 86 and 91", runs, run.ID)
+	for _, tc := range []struct {
+		name   string
+		status int
+	}{
+		{"GitHub answers the read of the change", 0},
+		{"GitHub gives no answer to the read of the change", http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+			run := rig.acceptedAndWritten(t)
+			rig.github.mu.Lock()
+			rig.github.opened = append(rig.github.opened, fakePull{number: 91, ref: "legion/OTHER-1", head: "code"})
+			rig.github.pulls[91] = `{"number":91,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/OTHER-1","sha":"code"}}`
+			rig.github.compareStatus = tc.status
+			rig.github.mu.Unlock()
+			rig.checkState(t, "code", "k1", verdict.StateYes)
+			rig.written(t)
+			if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "failure" {
+				t.Fatalf("legion-verdict runs on code = %+v, want run %d turned to failure: no verdict stands at code over pull requests 86 and 91", runs, run.ID)
+			}
+		})
 	}
 }
 
@@ -2141,15 +2153,16 @@ const changeUnreadLine = "verdict: the change's commits could not be read, so no
 
 // changeUnansweredLine is what the writer logs each time GitHub gives no answer to its read of the
 // change's commits, and noAnswerLine what it logs once a head has had none on noAnswerSweeps of the
-// writers' sweep's passes in a row.
+// writers' sweeps in a row, when the head is decided failure.
 const (
-	changeUnansweredLine = "verdict: GitHub gave no answer to the read of the change's commits, so nothing is decided at this head yet; the next write or sweep reads it again"
-	noAnswerLine         = "verdict: GitHub has given no answer to the read of a head's change on several sweeps in a row, so nothing is decided there and legion-verdict stays as it stands"
+	changeUnansweredLine = "verdict: GitHub gave no answer to the read of the change's commits, so this read decides nothing; the next write or sweep reads it again"
+	noAnswerLine         = "verdict: GitHub has given no answer to the read of a head's change on 3 of the writers' sweeps in a row, so the change counts as unread and legion-verdict is now failure there, until GitHub answers"
 )
 
 // A read of the change GitHub gives no answer to (a 5xx, as a transport error or a timeout) decides
-// nothing yet: the success that stands at code stays as it is, with no failure written over it, on
-// a fact's write, on a merge group's write, and on the writers' sweep's, and each such read says so.
+// nothing yet, before the bound of noAnswerSweeps sweeps: the success that stands at code stays as
+// it is, with no failure written over it, on a fact's write, on a merge group's write, and on the
+// writers' sweep's, and each such read says so.
 func TestLegionVerdictNoAnswerToTheChangesReadLeavesTheSuccessAsItStands(t *testing.T) {
 	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
 	run := rig.acceptedAndWritten(t)
@@ -2199,16 +2212,25 @@ func TestLegionVerdictAPersonsRefusalWritesFailureWhileGitHubGivesNoAnswer(t *te
 	}
 }
 
-// A head whose change GitHub gives no answer to on noAnswerSweeps of the writers' sweep's passes in a
-// row is logged once, as a WARN naming the repository, the head, the count and the last error, so a
-// head left undecided does not stay so silently. An answer starts the count again.
-func TestLegionVerdictSweepsWithNoAnswerAtAHeadWarnOnce(t *testing.T) {
+// R4, with no answer bounded: a head whose change GitHub gives no answer to on noAnswerSweeps of the
+// writers' sweeps in a row is one whose commits the daemon cannot read, so its success turns to
+// failure with the no-reader title, as for a compare GitHub refuses, and a WARN at that moment names
+// the repository, the head, the count and the last error, once. Before the bound the success stands,
+// and a merge group of the head's pull request gets nothing; past it, the group gets failure too
+// (R6). An answer starts the count again.
+func TestLegionVerdictNoAnswerOnTheBoundsSweepsInARowIsFailure(t *testing.T) {
 	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
-	rig.acceptedAndWritten(t)
+	run := rig.acceptedAndWritten(t)
 	answers := func(status int) {
 		rig.github.mu.Lock()
 		rig.github.compareStatus = status
 		rig.github.mu.Unlock()
+	}
+	at := func(conclusion, after string) {
+		t.Helper()
+		if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != conclusion {
+			t.Fatalf("legion-verdict runs on code %s = %+v, want run %d at %s", after, runs, run.ID, conclusion)
+		}
 	}
 	warned := func(want int, after string) {
 		t.Helper()
@@ -2223,28 +2245,103 @@ func TestLegionVerdictSweepsWithNoAnswerAtAHeadWarnOnce(t *testing.T) {
 			}
 		}
 	}
+	grouped := func() {
+		t.Helper()
+		rig.w.queueMergeGroupWrite(widgets, 86, "group-86", false)
+		rig.written(t)
+	}
 	answers(http.StatusBadGateway)
 	for range noAnswerSweeps - 1 {
 		rig.swept(t)
 	}
-	warned(0, fmt.Sprintf("%d sweeps", noAnswerSweeps-1))
+	before := fmt.Sprintf("%d sweeps with no answer", noAnswerSweeps-1)
+	at("success", "after "+before)
+	grouped()
+	rig.nothingWrittenOn(t, "group-86")
 	rig.swept(t)
+	at("failure", fmt.Sprintf("after %d sweeps with no answer", noAnswerSweeps))
+	rig.noReader(t, "code", wantUnreadOpening)
 	warned(1, fmt.Sprintf("%d sweeps", noAnswerSweeps))
+	grouped()
+	groupConcluded(t, rig.github, rig.pool, "group-86", "failure")
 	rig.swept(t)
 	rig.swept(t)
+	at("failure", "more sweeps with no answer")
 	warned(1, "more sweeps with no answer")
 	answers(0)
 	rig.swept(t)
+	at("success", "a sweep GitHub answered")
 	answers(http.StatusBadGateway)
 	for range noAnswerSweeps - 1 {
 		rig.swept(t)
 	}
-	warned(1, "an answer and then fewer sweeps with no answer than the count")
+	at("success", "an answer and then "+before)
+	warned(1, "an answer and then "+before)
 	rig.swept(t)
-	warned(2, "the count of sweeps with no answer again")
-	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].Conclusion != "success" {
-		t.Fatalf("legion-verdict runs on code = %+v, want the success left as it stands", runs)
+	at("failure", "the bound's sweeps with no answer again")
+	warned(2, "the bound's sweeps with no answer again")
+}
+
+// R19 while no decision stands: the writers' sweep writes over each run and status of the App its
+// record does not hold, whatever the head's decision. Here GitHub gives no answer to the read of
+// code's change from the owner's acceptance on, so the daemon has written nothing there, and then
+// another token of the App leaves a success run at code. Two sweeps, inside the bound, turn that run
+// to failure, the conclusion of the daemon's newest write there or failure where it has none, and
+// make no run of the daemon's own. A compare GitHub refuses (404), which writes failure at once, is
+// the control.
+func TestLegionVerdictTheSweepWritesOverAForeignSuccessWhileNoDecisionStands(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusBadGateway} {
+		t.Run(fmt.Sprintf("GitHub answers the compare %d", status), func(t *testing.T) {
+			rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
+			rig.github.mu.Lock()
+			rig.github.compareStatus = status
+			rig.github.mu.Unlock()
+			rig.apply(t, rig.signOff(t))
+			rig.written(t)
+			own := rig.github.legionRuns("code")
+			rig.foreign([]fakeRun{{ID: 900, Head: "code", Name: verdict.CheckName, Conclusion: "success", App: verdictAppSlug}}, nil)
+			rig.swept(t)
+			rig.swept(t)
+			runs := rig.github.legionRuns("code")
+			if at := slices.IndexFunc(runs, func(run fakeRun) bool { return run.ID == 900 }); at < 0 || runs[at].Conclusion != "failure" || len(runs) != len(own)+1 {
+				t.Fatalf("legion-verdict runs on code = %+v (before the foreign run %+v), want the App's run 900 at failure and no run of the daemon's own beside those", runs, own)
+			}
+		})
 	}
+}
+
+// The writers' sweep counts a head whose change GitHub gives no answer to once per pass, however
+// many open pull requests stand at it: here CAPTURE-1's pull request 86 and the outside pull
+// request 90 at code. A fact whose write gets no answer about the change either - a person's request
+// for changes, then the same person's approval - does not start the count again. So the bound's
+// last sweep, and not an earlier one, warns and writes failure.
+func TestLegionVerdictTheNoAnswerCountIsOnePerHeadPerSweep(t *testing.T) {
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode,
+		openCapture, sweptPull{number: 90, ref: "feature/faster-builds", head: "code"})
+	rig.apply(t, intake.OutsidePullRequest{Repo: "acme/widgets", Number: 90, Branch: "feature/faster-builds", HeadSHA: "code"})
+	rig.acceptedAndWritten(t)
+	rig.github.mu.Lock()
+	rig.github.compareStatus = http.StatusBadGateway
+	rig.github.mu.Unlock()
+	warned := func(want int, after string) {
+		t.Helper()
+		if lines := loggedMessages(t, rig.logs.String(), noAnswerLine); len(lines) != want {
+			t.Fatalf("%q lines after %s = %v, want %d", noAnswerLine, after, lines, want)
+		}
+	}
+	for range noAnswerSweeps - 1 {
+		rig.swept(t)
+	}
+	warned(0, fmt.Sprintf("%d sweeps of two pull requests at code", noAnswerSweeps-1))
+	rig.soleRun(t, "code", "success")
+	rig.review(t, personsReview(1, "changes_requested"))
+	rig.written(t)
+	rig.review(t, personsReview(2, "approved"))
+	rig.written(t)
+	warned(0, "a person's request for changes and approval")
+	rig.swept(t)
+	warned(1, fmt.Sprintf("%d sweeps", noAnswerSweeps))
+	rig.noReader(t, "code", wantUnreadOpening)
 }
 
 // A head the writers' sweep no longer lists, as when its pull request closed or moved on, keeps no
@@ -2253,10 +2350,10 @@ func TestLegionVerdictSweepsWithNoAnswerAtAHeadWarnOnce(t *testing.T) {
 func TestLegionVerdictASweepForgetsTheCountOfAHeadItNoLongerLists(t *testing.T) {
 	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
 	rig.acceptedAndWritten(t)
-	counted := func() map[string]int {
+	counted := func() int {
 		rig.w.verdicts.mu.Lock()
 		defer rig.w.verdicts.mu.Unlock()
-		return maps.Clone(rig.w.verdicts.unanswered)
+		return len(rig.w.verdicts.unanswered)
 	}
 	listing := func(open []sweptPull) {
 		rig.sweep.mu.Lock()
@@ -2269,13 +2366,13 @@ func TestLegionVerdictASweepForgetsTheCountOfAHeadItNoLongerLists(t *testing.T) 
 	for range noAnswerSweeps - 1 {
 		rig.swept(t)
 	}
-	if counts := counted(); len(counts) != 1 {
-		t.Fatalf("the writer counts %v after %d sweeps with no answer at code, want code counted", counts, noAnswerSweeps-1)
+	if counts := counted(); counts != 1 {
+		t.Fatalf("the writer counts %d heads after %d sweeps with no answer at code, want code counted", counts, noAnswerSweeps-1)
 	}
 	listing(nil)
 	rig.swept(t)
-	if counts := counted(); len(counts) != 0 {
-		t.Fatalf("the writer counts %v after a sweep that listed no pull request at code, want nothing counted", counts)
+	if counts := counted(); counts != 0 {
+		t.Fatalf("the writer counts %d heads after a sweep that listed no pull request at code, want none", counts)
 	}
 	listing([]sweptPull{openCapture})
 	for range noAnswerSweeps - 1 {
@@ -2305,8 +2402,9 @@ func unreadReviewersCommit(t *testing.T, pool *store.Pool) {
 // failure whose conclusion stays is written over the run. Here the reviewer's own commit code has
 // no reader once the owner accepts it. First the failure stands for another reason: a person's
 // request for changes before the owner's acceptance, which names no reason; or the change GitHub
-// did not serve, refused (404) or with no answer (502), which a later read serves. Then the writer
-// writes the run's title and summary again, naming code.
+// did not serve, refused (404), or with no answer on noAnswerSweeps of the writers' sweeps in a row
+// (502), before which nothing is written. Then a read GitHub serves rewrites the run's summary,
+// naming code.
 func TestLegionVerdictANewReasonOfAFailureIsWrittenOverItsRun(t *testing.T) {
 	t.Run("a person's request for changes, then a commit with no reader", func(t *testing.T) {
 		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, unreadReviewersCommit)
@@ -2322,23 +2420,42 @@ func TestLegionVerdictANewReasonOfAFailureIsWrittenOverItsRun(t *testing.T) {
 		rig.written(t)
 		rig.noReader(t, "code", wantNoReaderOpening, "code")
 	})
-	for _, status := range []int{http.StatusNotFound, http.StatusBadGateway} {
-		t.Run(fmt.Sprintf("a compare GitHub answered %d, then a commit with no reader", status), func(t *testing.T) {
-			rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, unreadReviewersCommit)
-			rig.github.mu.Lock()
-			rig.github.messages["code"] = commitOf(captureReviewerSession)
-			rig.github.compareStatus = status
-			rig.github.mu.Unlock()
-			rig.apply(t, rig.signOff(t))
-			rig.written(t)
-			rig.github.mu.Lock()
-			rig.github.compareStatus = 0
-			rig.github.mu.Unlock()
-			rig.checkState(t, "code", "k1", verdict.StateYes)
-			rig.written(t)
-			rig.noReader(t, "code", wantNoReaderOpening, "code")
-		})
+	answered := func(t *testing.T, rig *sweepRig) {
+		t.Helper()
+		rig.github.mu.Lock()
+		rig.github.compareStatus = 0
+		rig.github.mu.Unlock()
+		rig.checkState(t, "code", "k1", verdict.StateYes)
+		rig.written(t)
+		rig.noReader(t, "code", wantNoReaderOpening, "code")
 	}
+	newRig := func(t *testing.T, status int) *sweepRig {
+		t.Helper()
+		rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, unreadReviewersCommit, openCapture)
+		rig.github.mu.Lock()
+		rig.github.messages["code"] = commitOf(captureReviewerSession)
+		rig.github.compareStatus = status
+		rig.github.mu.Unlock()
+		rig.apply(t, rig.signOff(t))
+		rig.written(t)
+		return rig
+	}
+	t.Run("a compare GitHub answered 404, then a commit with no reader", func(t *testing.T) {
+		rig := newRig(t, http.StatusNotFound)
+		rig.noReader(t, "code", wantUnreadOpening)
+		answered(t, rig)
+	})
+	t.Run("a compare GitHub gives no answer on the bound's sweeps, then a commit with no reader", func(t *testing.T) {
+		rig := newRig(t, http.StatusBadGateway)
+		rig.nothingWrittenOn(t, "code")
+		for range noAnswerSweeps - 1 {
+			rig.swept(t)
+		}
+		rig.nothingWrittenOn(t, "code")
+		rig.swept(t)
+		rig.noReader(t, "code", wantUnreadOpening)
+		answered(t, rig)
+	})
 }
 
 // R4: a failure for a commit with no reader says each check reads yes. Once a check leaves yes
