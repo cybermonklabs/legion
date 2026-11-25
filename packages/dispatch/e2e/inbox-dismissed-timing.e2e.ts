@@ -38,7 +38,7 @@ import { asUser } from "./users";
 const OVERSCAN = 12;
 
 /** How many times each pile is opened and timed. */
-const READINGS = 5;
+const READINGS = 11;
 
 /** The first row's median time with 5,000 dismissed threads is at most this many times the
  *  median with 250. */
@@ -82,7 +82,7 @@ async function expectEmptyInbox(login: string): Promise<void> {
 // would stand in its person's Inbox, and the page's Inbox read would be timed as well. Every
 // timing is read before the first hard assertion, so a build without the window prints its
 // medians and sizes before it fails.
-// SLOW(>=2s): 5,250 threads seeded and dismissed, ten timed page loads, three more pages read
+// SLOW(>=2s): 5,250 threads seeded and dismissed, 22 timed page loads, three more pages read
 // and thirty steps of the selection walked.
 test("the Dismissed view draws a window of its rows over thousands dismissed", async ({
   browser,
@@ -106,7 +106,7 @@ test("the Dismissed view draws a window of its rows over thousands dismissed", a
   try {
     const page = await timedPage(alice);
     const bobPage = await timedPage(bob);
-    // One load at a time, alternating the two people, until each has five.
+    // After both warmups, alternate 5,000 then 250, one load at a time, for eleven readings each.
     const many: Opening[] = [];
     const few: Opening[] = [];
     for (let reading = 0; reading < READINGS; reading += 1) {
