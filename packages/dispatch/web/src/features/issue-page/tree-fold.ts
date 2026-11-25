@@ -125,16 +125,20 @@ export function treeRows(
  *  node's id: every child up to the one the path goes through. */
 function reachedChildren(root: TreeNode, named: readonly string[]): ReadonlyMap<string, number> {
   const reached = new Map<string, number>();
-  for (const id of named) {
-    const path = pathTo(root, id) ?? [];
-    for (let at = 1; at < path.length; at += 1) {
-      const parent = path[at - 1];
-      const child = path[at];
-      if (parent === undefined || child === undefined) continue;
-      const upTo = parent.children.indexOf(child) + 1;
-      reached.set(parent.id, Math.max(reached.get(parent.id) ?? 0, upTo));
+  const pending = new Set(named);
+  // Preorder finds the same first placement of each named id as pathTo.
+  const walk = (node: TreeNode): boolean => {
+    let found = pending.delete(node.id);
+    for (let at = 0; at < node.children.length && pending.size > 0; at += 1) {
+      const child = node.children[at];
+      if (child !== undefined && walk(child)) {
+        reached.set(node.id, Math.max(reached.get(node.id) ?? 0, at + 1));
+        found = true;
+      }
     }
-  }
+    return found;
+  };
+  if (pending.size > 0) walk(root);
   return reached;
 }
 

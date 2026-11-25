@@ -121,7 +121,7 @@ export function ViewPlanSlot({
         : { state: "waiting" };
   // The address's own node, resolved against the whole tree as the outline resolves it
   // (`useAddressTarget`, `slots/body.tsx`): a step it names takes the focus.
-  const found = useAddressTarget(root.views?.trees?.plan ?? root, address).reveal;
+  const found = useAddressTarget(root.views?.treeOf?.("plan") ?? root, address).reveal;
   // Plan draws no node but a task, so the address's node is kept in the view, and given the
   // focus, only where it is a task. `presetView` keeps a named node of any kind (`presets.ts`'s
   // `filterView`), as `AddressedNode.named` names it: handed every node, `/plan?comment=<id>`

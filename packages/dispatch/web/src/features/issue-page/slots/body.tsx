@@ -81,6 +81,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // address's own node; and a block or the children the tree holds no node of are said to be
   // so, in the outline's place.
   const addressed = useAddressTarget(root, address);
+  const zoomed = address.zoom === undefined ? undefined : pathTo(root, address.zoom);
   // An address that names a node no page of the outline read yet holds - its own node, or the
   // node Graph's address zooms to - reads the read's next pages until one brings it, or none is
   // left (R15), and lands on it then as on a node the first page held: until the reading ends,
@@ -88,7 +89,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   const unloaded =
     address.document === undefined &&
     ((address.target !== undefined && addressed.reveal === undefined) ||
-      (address.zoom !== undefined && pathTo(root, address.zoom) === undefined));
+      (address.zoom !== undefined && zoomed === undefined));
   const readingPages = useReadUntilHeld(issue, unloaded);
   const fallback = useAddressFallback({
     address,
@@ -119,21 +120,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // row while its answer names one (R15).
   const older = useOlderComments(issue);
   const more = useNextTreePage(issue);
-  // An address on Conversation's own address that names a node Conversation draws no row of - a
-  // plan task, a result - opens the filter of its kind at that node (R9): the address is
-  // replaced by that filter's, with the same search and fragment, which the filter lands on as
-  // on any node its own address names, and where it draws none, the stage draws the outline in
-  // its place (`StageSlot`). A block Conversation's read holds no node of, once its reads have
-  // answered, opens the filter whose view answer the page holds it in (`filterHolding`), else
-  // Graph where Graph's read, as the page holds it, answers it (`answerHolds`); where none does,
-  // the outline says in its place that it has no row for the block.
-  // A node address (`?node=`), which the outline alone reads, goes to Graph's of that node
-  // instead where Conversation's tree holds the node and draws no row of it, or where
-  // Conversation's read holds none of it and Graph's read does. A node no read holds opens the
-  // outline's own address, Conversation's or Graph's, with the same search less `node` and the
-  // same fragment, and no line (`addressView`); Graph's keeps the node it zooms to where the tree
-  // holds it (`/graph/<id>`). Graph's address zoomed to a node no read holds, once its reads have
-  // answered, opens as Graph's own address, with the same search and fragment.
+  // `addressView` decides what opens in place of an address the outline cannot draw.
   // A load of Conversation sends no Graph read, so where Conversation's read holds no node of the
   // address's and the page holds no Graph read, the body sends Graph's read here, once, and
   // decides once it has answered: Graph's `?node=` where its answer holds the node, else the
@@ -150,7 +137,6 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
     enabled: (query) => unheldNode && query.state.status === "pending",
   });
   const graphOut = unheldNode && graph.status === "pending";
-  const zoomed = address.zoom === undefined ? undefined : pathTo(root, address.zoom);
   const zoomUnheld =
     address.zoom !== undefined && readsHeld && !readingPages && zoomed === undefined;
   const undrawn: AddressView | undefined = graphOut

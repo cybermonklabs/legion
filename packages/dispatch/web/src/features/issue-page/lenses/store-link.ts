@@ -35,9 +35,10 @@ interface PageAddress {
  */
 export function storeLinkPath(href: string, title: string, page: PageAddress): string | undefined {
   const address = storeAddressReference(href);
-  const issueKey = parseIssuePath(page.pathname, page.search)?.key;
   const query = title.indexOf("?");
-  if (address === undefined || issueKey === undefined || query === -1) return undefined;
+  if (address === undefined || query === -1) return undefined;
+  const issueKey = parseIssuePath(page.pathname, page.search)?.key;
+  if (issueKey === undefined) return undefined;
   const readId = new URLSearchParams(title.slice(query + 1)).get("node");
   return readId !== null && namesNode(address, readId) && title === outlineRowPath(issueKey, readId)
     ? title

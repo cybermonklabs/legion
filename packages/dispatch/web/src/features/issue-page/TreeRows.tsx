@@ -187,7 +187,7 @@ export function NextPageWords({ left }: { left: number | undefined }): ReactNode
  * and under the guides of the levels above them: the row after a node's drawn children, the
  * control above the first row that reads older comments, and the control after the last row that
  * reads the read's next page. A press replaces it with what it drew, so it takes no focus from
- * that press: it leaves the focus where it is (decision 366), and it is out of the tab order, as
+ * that press: it leaves the focus where it is, and it is out of the tab order, as
  * every control inside the tree is, since the tree is one tab stop. The keys press it from the row
  * beside it, and leave the focus on the first row it drew (`useTreeKeymap.ts`'s `tree-next` and
  * `tree-previous`); a press of the read's next page leaves it there too.

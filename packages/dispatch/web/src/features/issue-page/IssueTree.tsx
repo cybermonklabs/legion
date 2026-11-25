@@ -35,6 +35,7 @@ import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
 import { TreeRows } from "./TreeRows";
 import { focusIsLoose, nodeRowSelectorOf, rowSelectorOf } from "./tree-focus";
 import {
+  type DrawnRow,
   NOTHING_OPENED,
   type OpenedBranches,
   type PageRow,
@@ -314,10 +315,9 @@ export function IssueTree({
   });
   // A reader who zoomed into a node reads the tree from there: the node is the tree's root, the
   // path above it the breadcrumb, and everything below it folded as they left it.
-  const rootedAt = zoom;
-  const rootedPath = (rootedAt === undefined || rootedAt === root.id
-    ? undefined
-    : pathTo(root, rootedAt)) ?? [root];
+  const rootedPath = (zoom === undefined || zoom === root.id ? undefined : pathTo(root, zoom)) ?? [
+    root,
+  ];
   const rooted = rootedPath.at(-1) ?? root;
   // The node the rows are drawn from where that is not the issue: the zoom's own row, which is
   // drawn open by definition. Undefined where the tree is drawn from the issue, which is no row.
@@ -359,8 +359,7 @@ export function IssueTree({
     head?.kind === "node" && head.node.id === root.id
       ? drawn.slice(1).map((row) => ({ ...row, level: row.level - 1 }))
       : drawn;
-  const breadcrumb: readonly TreeNode[] =
-    rootedAt === undefined ? [] : zoomBreadcrumb(root, rootedAt);
+  const breadcrumb: readonly TreeNode[] = zoom === undefined ? [] : zoomBreadcrumb(root, zoom);
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
   const threads = useMemo(() => threadMarks(root), [root]);
 
@@ -606,7 +605,7 @@ export function IssueTree({
     olderActs.current?.abort();
     olderActs.current = abortOnReaderAct(() => setDrawnFrom(undefined));
     setDrawnFrom({
-      before: new Set(rows.flatMap((row) => (row.kind === "node" ? [rowKeyOf(row)] : []))),
+      before: new Set(nodeRowKeys(rows)),
     });
   };
   const readOlder = (focus: boolean): void => {
@@ -628,9 +627,7 @@ export function IssueTree({
     const key =
       "key" in drawnFrom
         ? drawnFrom.key
-        : rows
-            .flatMap((row) => (row.kind === "node" ? [rowKeyOf(row)] : []))
-            .find((one) => !drawnFrom.before.has(one));
+        : nodeRowKeys(rows).find((one) => !drawnFrom.before.has(one));
     const row =
       key === undefined ? null : body.current?.querySelector<HTMLElement>(rowSelectorOf(key));
     // A page of children draws its first row in the render its press asked for; the older
@@ -653,19 +650,21 @@ export function IssueTree({
   }, []);
   useEffect(() => {
     if (searching === undefined) return;
+    const endSearch = () => {
+      searchActs.current?.abort();
+      setSearching(undefined);
+    };
     const found =
       searching.kind === "question"
         ? nextQuestion(root, searching.from)
         : decisionBehind(root, searching.from);
     if (found !== undefined) {
-      searchActs.current?.abort();
-      setSearching(undefined);
+      endSearch();
       goToNode(found.id);
       return;
     }
     if (more === undefined) {
-      searchActs.current?.abort();
-      setSearching(undefined);
+      endSearch();
       if (readsHeld) {
         reportHere(
           searching.kind === "question" ? KEY_REPORTS.no_next_question : KEY_REPORTS.no_decision
@@ -673,10 +672,7 @@ export function IssueTree({
       }
       return;
     }
-    more.read().catch(() => {
-      searchActs.current?.abort();
-      setSearching(undefined);
-    });
+    more.read().catch(endSearch);
   }, [goToNode, more, readsHeld, reportHere, root, searching]);
 
   // The Contents list's asks, each acted on once. With Focus branch on, the outline is zoomed to
@@ -698,6 +694,7 @@ export function IssueTree({
 
   useTreeKeymap({
     container: body,
+    cycleLabel: "Unfold every row you folded",
     editing: editing !== undefined,
     holdsEscape,
     onCycle: unfoldAll,
@@ -1271,12 +1268,17 @@ export function IssueTree({
  *  is a request away, so a read that has not drawn the node by then is not going to. */
 export const LANDING_WAIT_MS = 10_000;
 
-/** No node folded: what `z` leaves, and the address's path with nothing let go of its hold. */
+/** No id has been let go from the address path's hold (`released`). */
 const NO_FOLDS: ReadonlySet<string> = new Set();
 
 /** `ids` without the ids of `drop`. */
 function withoutIds(ids: ReadonlySet<string>, drop: readonly string[]): ReadonlySet<string> {
   return new Set([...ids].filter((id) => !drop.includes(id)));
+}
+
+/** The keys of the node rows, in drawing order. */
+function nodeRowKeys(rows: readonly DrawnRow[]): string[] {
+  return rows.flatMap((row) => (row.kind === "node" ? [rowKeyOf(row)] : []));
 }
 
 /** What a crumb above a zoom says of `node`: the issue's key for the issue, the node's first line

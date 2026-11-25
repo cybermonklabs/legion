@@ -1977,7 +1977,7 @@ test("a script's focus on another row ends the editing, and a Tab out of the tre
   await user.tab();
   expect(document.activeElement, "Tab did not leave the outline").toBe(control);
   await waitFor(() =>
-    expect(rowLetGo(row), "the row Tab left kept its body or its focused look").toBe(true)
+    expect(rowLetGo(row), "the row Tab left kept its editor or focused look").toBe(true)
   );
   expect(view.focusedNode(), "the panel still holds the facts of the row Tab left").toBeUndefined();
   await waitFor(() =>
@@ -4184,7 +4184,7 @@ function rowLetGo(row: HTMLElement): boolean {
 // editor's box scrolled to it, away from the node's block. Tab from the row's editor goes past
 // every control the editor draws outside the node's block, to the first tab stop after its box,
 // here a control of the page below the outline, and the editing ends as a Tab out of the outline
-// does: the row lets go of the editor, its body and its focused look. The document stays as it
+// does: the row lets go of the editor and its focused look. The document stays as it
 // was.
 test("Tab from the row's editor goes past a control another block draws to the first tab stop after its box, and ends the editing", async () => {
   setViewport(1440);
@@ -4209,7 +4209,7 @@ test("Tab from the row's editor goes past a control another block draws to the f
   ).toBe(true);
   expect(blocksOf(view), "Tab changed the document").toEqual(before);
   await waitFor(() =>
-    expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
+    expect(rowLetGo(row), "Tab left the row, but it kept its editor or focused look").toBe(true)
   );
 });
 
@@ -4310,7 +4310,7 @@ test("Tab from the row's editor stops at a link the node's own block draws, and 
     "Tab from the node's link did not go to the first tab stop after the editor's box"
   ).toBe(true);
   await waitFor(() =>
-    expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
+    expect(rowLetGo(row), "Tab left the row, but it kept its editor or focused look").toBe(true)
   );
 });
 
@@ -4364,7 +4364,7 @@ test("Tab from the row's editor stops at each control of the action bar its sele
     "Tab from the action bar did not go to the first tab stop after the editor's box"
   ).toBe(true);
   await waitFor(() =>
-    expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
+    expect(rowLetGo(row), "Tab left the row, but it kept its editor or focused look").toBe(true)
   );
 });
 
@@ -4425,7 +4425,7 @@ test("Tab from the row's editor stops at the references button of the node's own
     `Tab from the node's references button went to ${focused()}, not the first tab stop after the editor's box`
   ).toBe(true);
   await waitFor(() =>
-    expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
+    expect(rowLetGo(row), "Tab left the row, but it kept its editor or focused look").toBe(true)
   );
 });
 
@@ -5858,8 +5858,7 @@ test("the frame after Escape gives the row back a focus the editor dropped, and 
   }
 });
 
-// R11: below 1024 px the outline is no longer read one node at a time; `q` reaches every open
-// question there as at every width.
+// R11: `q` reaches open questions across branches below 1024 px.
 test("q reaches every open question below 1024 px", async () => {
   setViewport(1000);
   const user = userEvent.setup();
@@ -6034,8 +6033,8 @@ test("a zoom into a row taller than the window places its crumb line, and the ro
 // focus still on that row: it took no new focus, so nothing of its own placed it, and a zoom back
 // out to the issue placed nothing either - at 1440 by 900 on a long issue the row stood 2,000 to
 // 40,000 px below the window until the next key. Once the outline is drawn the row is brought on
-// screen by the page's one rule and held there while the rows above it grow, as the cycle key's
-// row is. A row `,` moves the focus to - the zoom's own, from a row under it - places itself as it
+// screen by the page's one rule and held there while the rows above it grow, as the `z` key's row
+// is. A row `,` moves the focus to - the zoom's own, from a row under it - places itself as it
 // takes the focus, and the zoom places it no second time. happy-dom lays nothing out, so the boxes
 // are given, moved by each scroll, and the size observers watching the page are called by hand.
 test(", from the row . zoomed into brings that row on screen and holds it there as the page grows", async () => {
@@ -6561,8 +6560,7 @@ test("a row keeps its key through a zoom in and back out", async () => {
     keyOfRequirement
   );
 
-  // Back out of the zoom, both rows keep the keys they had, and the tab stop rests on the row the
-  // zoom was on.
+  // Back out of the zoom, the check keeps its key and the requirement takes the tab stop.
   await user.keyboard(",");
   await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
   expect(rowsFor(view.container, "verification#b-c1")[0]?.getAttribute("data-row-key")).toBe(
@@ -6832,14 +6830,8 @@ test("a focus taken off the opening's row while the row stays on the page ends t
 // The same for the question the page opened on, which is where the page stays until the reader
 // acts: a later read places the question under a node that has arrived since, which gives its
 // row another key, and the browser drops the focus of the element that leaves the page. The
-// opening gives the focus back to the question's new row. An answer arriving for the question
-// then moves nothing: the question is open no more, so the thread the frontier opened for it
-// alone folds, and its row leaves the page with the focus, which went to the page's body. The
-// opening unfolds the thread again where the outline stands, and the focus stays on the
-// question, not on the outline's first row or on the next question that waits on the reader.
-// At 390 px, where the outline is read one node at a time, it went to the question as a key
-// goes to a node, which zooms to the node's parent there: the answer drew the question's thread
-// alone, under a crumb line.
+// opening gives the focus back to the question's new row. At either width, an answer arriving
+// for the question leaves the focus on it and the outline unzoomed.
 test("the question the page opened on takes back a focus a redraw drops, and keeps it", async () => {
   const question = (open: boolean) =>
     node({ id: "ask-mine", question: open, text: "Yours?", type: "ask", waiting: open });
@@ -6850,8 +6842,7 @@ test("the question the page opened on takes back a focus a redraw drops, and kee
     type: "ask",
     waiting: true,
   });
-  // A later read places the question under a node that has arrived since, whose thread the
-  // frontier opens because the question in it is open.
+  // A later read places the question under a comment that has arrived since.
   const placedUnder = (open: boolean) =>
     node({
       children: [
@@ -7768,10 +7759,9 @@ test(". on the row the tree is zoomed to says the tree is zoomed to it already",
   });
 });
 
-// Where the whole tree is drawn, Left on the row the tree is zoomed to folded nothing, since the
-// zoom's own row stays open, and moved nowhere, since its parent is above the zoom: it said
-// nothing. At 390 px the same key zooms back out, so the case is read at 1440 px alone.
-test("Left on the row the tree is zoomed to, the whole tree drawn, says the tree is zoomed to it already", async () => {
+// The zoom's own row cannot fold, and its parent is above the zoom. Left on that row
+// leaves the focus there and reports that the tree is already zoomed to it.
+test("Left on the row the tree is zoomed to says the tree is zoomed to it already", async () => {
   await expectNowhereToGo({
     key: "{ArrowLeft}",
     next: "j",
@@ -10927,7 +10917,7 @@ test("a read that drops the row being edited ends the editing, and a Tab out of 
   const row = rowsFor(view.container, "comment-2")[0];
   if (row === undefined) throw new Error("the last comment's row is not drawn");
   await waitFor(() =>
-    expect(rowLetGo(row), "the row Tab left kept its body or its focused look").toBe(true)
+    expect(rowLetGo(row), "the row Tab left kept its editor or focused look").toBe(true)
   );
   expect(view.focusedNode(), "the panel still holds the facts of the row Tab left").toBeUndefined();
 });

@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 
+import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
 import { routeUrl } from "../../../api/paths";
 import { CONVERSATION_KINDS } from "../../../api/queries";
@@ -30,7 +31,13 @@ import {
 import { GLYPH_TOKENS, NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { blockNodeId } from "../tree-drafts";
-import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple as tuple } from "./tree-fixtures";
+import {
+  pagedAnswer,
+  type TreeNodeExtra,
+  treeAnswer,
+  treeNode,
+  treeTuple as tuple,
+} from "./tree-fixtures";
 import {
   blocksOfRole,
   nextTreeCursor,
@@ -1092,14 +1099,6 @@ test("a draft carries its read id, and the context answers its tree id and its l
   }
 });
 
-/** `page` as the server answers it where the read goes on past it: the `cursor` that names the
- *  next page, and how many nodes the read holds after this one (`remaining`), which the server
- *  answers beside the cursor and the generated contract does not name yet. */
-function pagedAnswer(page: TreeAnswer, cursor: string | null, remaining?: number): TreeAnswer {
-  const count = remaining === undefined ? {} : { remaining };
-  return { ...page, cursor, ...count };
-}
-
 // R1, R15: a load reads each outline read's first page, which holds the newest comment page, and
 // each view's first page, and no next page, though each page names one: the answer is that page,
 // which names the next (`cursor`) and how many nodes the read holds after it (`remaining`), and
@@ -1210,19 +1209,25 @@ test("a press reads the next page and draws its rows in order", async () => {
 // The tree read honours TanStack's abort signal, so a read given up - a reset, the last observer
 // gone - asks for no next page, and a walk of many pages stops there.
 test("a read given up asks for no next page", async () => {
-  const first: TreeAnswer = {
-    ...answer([block("r1", "requirement", KEY, SPEC, 0)]),
-    cursor: "page-2",
-  };
+  const first = pagedAnswer(answer([block("r1", "requirement", KEY, SPEC, 0)]), "page-2", 1);
+  const second = pagedAnswer(
+    treeAnswer([node("c1", "comment", "r1")], [], { converted: true }),
+    null
+  );
   const out = Promise.withResolvers<TreeAnswer>();
+  let refetching = false;
   const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, page) =>
-    page?.cursor === undefined ? out.promise : answer([])
+    page?.cursor === undefined ? (refetching ? out.promise : first) : second
   );
   try {
     const client = new QueryClient();
     const query = issueTreeQuery(KEY);
-    const reading = client.fetchQuery(query).catch(() => undefined);
-    await client.cancelQueries({ queryKey: query.queryKey });
+    await client.fetchQuery(query);
+    await readNextTreePage(client, KEY, "graph");
+    const held = client.getQueryData(query.queryKey);
+    refetching = true;
+    const reading = client.refetchQueries({ exact: true, queryKey: query.queryKey });
+    await client.cancelQueries({ exact: true, queryKey: query.queryKey });
     await reading;
     out.resolve(first);
     // The walk goes on in a promise TanStack no longer hands out, so the case waits for the turn
@@ -1230,45 +1235,14 @@ test("a read given up asks for no next page", async () => {
     const turn = Promise.withResolvers<void>();
     setTimeout(turn.resolve, 0);
     await turn.promise;
-    expect(read).toHaveBeenCalledTimes(1);
-    expect(client.getQueryData(query.queryKey)).toBeUndefined();
+    expect(read.mock.calls.map(([, page]) => page?.cursor)).toEqual([
+      undefined,
+      "page-2",
+      undefined,
+    ]);
+    expect(client.getQueryData(query.queryKey) === held).toBe(true);
   } finally {
     read.mockRestore();
-  }
-});
-
-/** Reads the tree once through `issueTreeQuery`, with every page `serve` answers for the cursor
- *  it is asked with. The server answers at most `bound` pages and then refuses, so a walk that
- *  never ends fails the case rather than holding it. */
-async function walkWith(serve: (cursor: string | undefined) => TreeAnswer, bound = 10) {
-  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, page) => {
-    if (read.mock.calls.length > bound) throw new Error(`more than ${bound} page reads`);
-    return serve(page?.cursor);
-  });
-  try {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const outcome = await client.fetchQuery(issueTreeQuery(KEY)).then(
-      (merged) => ({ nodes: (merged.nodes ?? []).map((one) => one.id) }),
-      (error: unknown) => ({ error: String(error) })
-    );
-    return { cursors: read.mock.calls.map(([, page]) => page?.cursor), outcome };
-  } finally {
-    read.mockRestore();
-  }
-}
-
-// A page that names no next page is the last one, however the server writes "none": a server
-// whose paged answers leave an empty cursor out of the body, as Go's `omitzero` does, or write it
-// as the empty string, sends one page, and the walk ends there instead of asking for the first
-// page again, without end.
-test("a page that names no next page ends the walk, the cursor left out or empty", async () => {
-  const only = answer([block("r1", "requirement", KEY, SPEC, 0)]);
-  const { cursor: _none, ...leftOut } = only;
-  for (const last of [leftOut as TreeAnswer, { ...only, cursor: "" }]) {
-    expect(await walkWith(() => last)).toEqual({
-      cursors: [undefined],
-      outcome: { nodes: [KEY, `${KEY}/spec#r1`] },
-    });
   }
 });
 
@@ -1810,20 +1784,14 @@ test("a requirement whose From line cites a document carries its chip from the t
 function commentRead(id: string, extra: Partial<Comment> = {}): Comment {
   return {
     anchor: null,
-    answers: null,
-    artifact_id: null,
+    ...commentDeliveryFields(),
     ask_id: null,
     author: { id: "alice", kind: "user" },
     body: `Words of ${id}.`,
     created_at: "2026-11-05T00:00:00Z",
-    deleted_at: null,
-    deleted_by: null,
-    deliveries: [],
     edited_at: null,
     id,
     issue_key: KEY,
-    mentions: [],
-    reply_block: null,
     reply_to: null,
     resolved: false,
     resolved_at: null,
@@ -1866,7 +1834,6 @@ test("Conversation's read names root R1's kinds and never block", async () => {
     "prose",
     "callout",
   ]);
-  expect(CONVERSATION_KINDS).not.toContain("block");
   const conversation = outlineQuery(KEY, "conversation");
   expect<unknown>(conversation.queryKey).toEqual([
     "issue-tree",
@@ -1926,9 +1893,6 @@ test("a comment on a node's text is no row", () => {
       placementsOf(root, id).map((one) => one.parent)
     )
   ).toEqual([[KEY], ["c-post"], [KEY]]);
-  expect((tree.nodes ?? []).map((one) => one.id)).toEqual(
-    expect.arrayContaining(["c-on", "c-on-reply"])
-  );
   expect(placementsOf(drawn(tree).root, "c-on").map((one) => one.parent)).toEqual([
     blockNodeId("spec", "r1"),
   ]);

@@ -298,7 +298,7 @@ function stubIssueApi() {
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
   ];
   const pinReads = {
-    asks: spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    asks: spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
     comments: spyOn(api, "listComments").mockResolvedValue([]),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([]),
   };

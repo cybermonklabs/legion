@@ -487,18 +487,13 @@ function draftRequirement(
   // Where the answer counts the checks that serve it (`checks`, which every read of the route
   // answers on a requirement), a statement lacks a check by that count, whatever the coverage
   // read says (R9).
-  const { checks: served } = node as CountedRequirement;
+  const { checks: served } = node;
   if (draft.statement === true && typeof served === "number") {
     const others = draft.gaps.filter((gap) => gap !== "no_check");
     draft.gaps = served === 0 ? [...others, "no_check"] : others;
   }
   return draft;
 }
-
-/** A requirement node as every read of the route answers it once the model serves the count:
- *  with `checks`, the number of checks that serve it at the read's cut, of the issue and of each
- *  issue under it, which the generated contract does not name yet. */
-type CountedRequirement = TreeAnswerNode & { readonly checks?: unknown };
 
 /** Whether `node` is a decision, by the rule the decisions read's entries are read by
  *  (`isDecisionEntry`): a decision node is an agent's decision, and an ask is a person's where a
@@ -795,15 +790,17 @@ function draftTurn(
 function onNodeText(
   node: TreeAnswerNode,
   context: TreeDraftContext,
-  passed: Set<string> = new Set()
+  passed?: Set<string>
 ): boolean {
   const { parent } = node;
-  if (node.supertag !== "comment" || parent === null || passed.has(node.id)) return false;
-  passed.add(node.id);
+  if (node.supertag !== "comment" || parent === null || passed?.has(node.id)) return false;
   if (context.kept.anchored.has(node.id)) return parent.supertag !== "issue";
   if (parent.supertag !== "comment") return false;
   const above = context.nodeOf(parent.id);
-  return above !== undefined && onNodeText(above, context, passed);
+  if (above === undefined) return false;
+  const seen = passed ?? new Set<string>();
+  seen.add(node.id);
+  return onNodeText(above, context, seen);
 }
 
 /** A callout or an image: a typed block with its words and nothing more. */
@@ -1432,19 +1429,15 @@ export function mergeTreePages(pages: readonly [TreeAnswer, ...TreeAnswer[]]): T
   const [first] = pages;
   if (pages.length === 1) return first;
   const last = pages[pages.length - 1] ?? first;
-  const merged: PagedAnswer = {
+  const merged: TreeAnswer = {
     ...first,
     cursor: last.cursor ?? null,
     nodes: pages.flatMap((page) => page.nodes ?? []),
-    remaining: (last as PagedAnswer).remaining,
+    remaining: last.remaining,
     tuples: pages.flatMap((page) => page.tuples ?? []),
   };
   return merged;
 }
-
-/** A page of the tree read with the count of the nodes the read holds after it (`remaining`),
- *  which the server answers beside `cursor` and the generated contract does not name yet. */
-type PagedAnswer = TreeAnswer & { readonly remaining?: unknown };
 
 /**
  * How many nodes the read holds after the pages `answer` holds (`remaining`), the exact number the
@@ -1452,7 +1445,7 @@ type PagedAnswer = TreeAnswer & { readonly remaining?: unknown };
  * (`nextTreeCursor`) or gives no count.
  */
 export function nodesRemaining(answer: TreeAnswer): number | undefined {
-  const { remaining } = answer as PagedAnswer;
+  const { remaining } = answer;
   return nextTreeCursor(answer) !== undefined && typeof remaining === "number"
     ? remaining
     : undefined;
@@ -1526,9 +1519,16 @@ function compareIds(left: string, right: string): number {
  */
 export function mergeCommentPage(answer: TreeAnswer, page: TreeAnswer): TreeAnswer {
   const nodes = [...(answer.nodes ?? [])];
-  const held = new Set(nodes.map((node) => node.id));
-  for (const run of commentRuns((page.nodes ?? []).filter((node) => !held.has(node.id)))) {
-    nodes.splice(placeOfRun(nodes, run[0], answer.issue), 0, ...run);
+  const parents = new Map(nodes.map((node) => [node.id, node.parent]));
+  const runs = commentRuns((page.nodes ?? []).filter((node) => !parents.has(node.id)));
+  for (const run of runs) {
+    const at = placeOfRun(nodes, run[0], answer.issue, parents);
+    nodes.splice(at, 0, ...run);
+    for (const node of run) {
+      // If a page repeats an id, keep the last placement in the merged walk.
+      const last = parents.has(node.id) ? nodes[lastPlaceOf(nodes, node.id)] : node;
+      parents.set(node.id, last?.parent ?? null);
+    }
   }
   return {
     ...answer,
@@ -1564,22 +1564,26 @@ function commentRuns(nodes: readonly TreeAnswerNode[]): [TreeAnswerNode, ...Tree
  * where that node's branch ends. A parent's branch is every node after it whose chain of parents
  * reaches it, which the read's walk keeps together, each node after its parent.
  */
-function placeOfRun(nodes: readonly TreeAnswerNode[], head: TreeAnswerNode, issue: string): number {
-  const at = new Map(nodes.map((node, place) => [node.id, place]));
-  const named = head.parent === null ? undefined : at.get(head.parent.id);
+function placeOfRun(
+  nodes: readonly TreeAnswerNode[],
+  head: TreeAnswerNode,
+  issue: string,
+  parents: ReadonlyMap<string, TreeAnswerNode["parent"]>
+): number {
+  const named = head.parent === null ? -1 : lastPlaceOf(nodes, head.parent.id);
   const parentAt =
-    named ??
-    nodes.findIndex(
-      (node) => node.supertag === "issue" && (node.id === issue || node.parent === null)
-    );
+    named >= 0
+      ? named
+      : nodes.findIndex(
+          (node) => node.supertag === "issue" && (node.id === issue || node.parent === null)
+        );
   const parent = nodes[parentAt];
   if (parent === undefined) return nodes.length;
   const reaches = (node: TreeAnswerNode): boolean => {
     let above = node.parent;
     for (let steps = 0; above !== null && steps < nodes.length; steps += 1) {
       if (above.id === parent.id) return true;
-      const place = at.get(above.id);
-      above = place === undefined ? null : (nodes[place]?.parent ?? null);
+      above = parents.get(above.id) ?? null;
     }
     return false;
   };
@@ -1589,6 +1593,14 @@ function placeOfRun(nodes: readonly TreeAnswerNode[], head: TreeAnswerNode, issu
     if (node.parent?.id === parent.id && sortsAfter(node, head)) return place;
   }
   return nodes.length;
+}
+
+/** The last placement of `id`, as the map of a walk's ids would see it. */
+function lastPlaceOf(nodes: readonly TreeAnswerNode[], id: string): number {
+  for (let at = nodes.length - 1; at >= 0; at -= 1) {
+    if (nodes[at]?.id === id) return at;
+  }
+  return -1;
 }
 
 /** Whether the read orders `sibling` after `node` under one parent: ranked siblings first, by

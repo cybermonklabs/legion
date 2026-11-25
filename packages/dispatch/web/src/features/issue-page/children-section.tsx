@@ -10,7 +10,7 @@ import { useUserPreference } from "../shell/userPreference";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
 import { ChildrenProgress } from "./IssuePropertiesRow";
 import { bringOnScreen } from "./identity-block";
-import { issueAddress } from "./issue-address";
+import { issueAddress, presetOf } from "./issue-address";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import type { SlotProps } from "./slot-props";
@@ -77,7 +77,7 @@ export function openChildEntry(key: string): void {
  */
 export function ChildrenSection({ issue, route }: SlotProps): ReactNode {
   const childIssues = issue.children ?? [];
-  const { preset } = issueAddress(route, "", "", undefined);
+  const preset = presetOf(route);
   if (childIssues.length === 0 || outlineOf(preset) === undefined) return null;
   // Keyed on the issue, so the pages the reader opened and a child's opening are the issue's own.
   return <ChildrenList childIssues={childIssues} key={issue.key} route={route} />;
@@ -234,10 +234,10 @@ function ChildrenList({
  *  the list draws no entry for it. */
 function entryKey(list: HTMLElement | null, key: string | undefined): HTMLElement | undefined {
   if (list === null || key === undefined) return undefined;
-  const entry = [...list.querySelectorAll<HTMLElement>("[data-child-entry]")].find(
-    (each) => each.dataset.childEntry === key
+  return (
+    list.querySelector<HTMLElement>(`[data-child-entry="${CSS.escape(key)}"] [data-child-key]`) ??
+    undefined
   );
-  return entry?.querySelector<HTMLElement>("[data-child-key]") ?? undefined;
 }
 
 /** Puts the focus on `target` without scrolling to it, and brings it on screen by the page's one

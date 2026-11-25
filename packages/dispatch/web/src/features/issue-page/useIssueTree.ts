@@ -253,12 +253,11 @@ function builtTree(reads: IssueTreeReads): TreeNode {
  * or an address (R15) - which place, order and word every node; no document's blocks are read.
  * `IssueTreeReads.tree` is that read's whole answer as loaded (R7), so
  * `presetView`, `filterSignals` and `blocksOf` read the one tree the page holds. Beside it stand
- * the reads that tell what the answer does not, each under the key another surface of this issue
- * reads too, so opening Details, the history or the Contents pane after the tree finds them
- * answered rather than fetching again: the coverage, the decisions, the results, the issue's asks
- * with each ask's thread (`issueAskThreadsQuery`), its comments - which also say which decision of
- * the decisions read a person asked to change (`decision-review.ts`) - its messages, and the
- * reader's login, which says which open questions wait on the reader (`IssueTreeReads.viewer`).
+ * the reads that tell what the answer does not: the coverage, decisions, results, comments,
+ * messages and the reader's login. Details' pins and the new page's margin share the outline's
+ * asks read with each ask's thread (`issueAskThreadsQuery`). The comments also say which
+ * decision a person asked to change (`decision-review.ts`); the login says which open questions
+ * wait on the reader (`IssueTreeReads.viewer`).
  *
  * Each filter's view read (`viewQuery`) is watched here and never sent: `ViewReadProvider`
  * (`tree-read/view-read.tsx`) reads a view the first time its filter is on, and whatever it holds,
@@ -332,12 +331,14 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const verification = viewOf("verification");
   const plan = viewOf("plan");
   const views = useMemo((): TreeViews | undefined => {
-    const held: TreeViews = {
+    const held: { -readonly [K in keyof TreeViews]: TreeViews[K] } = {
       ...(decisions.data === undefined ? {} : { decisions: decisions.data }),
-      ...(plan === undefined ? {} : { plan }),
-      ...(spec === undefined ? {} : { spec }),
-      ...(verification === undefined ? {} : { verification }),
     };
+    const answers = { plan, spec, verification };
+    for (const filter of TREE_FILTERS) {
+      const answer = answers[filter];
+      if (answer !== undefined) held[filter] = answer;
+    }
     return Object.keys(held).length === 0 ? undefined : held;
   }, [decisions.data, plan, spec, verification]);
   // One value, so the model is given the reads and nothing else.
@@ -487,55 +488,25 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     () => (named === undefined ? unnamed : builtTree({ ...reads, targets: named })),
     [named, reads, unnamed]
   );
-  // The view supplies its rows and their placement. The outline supplies any context nodes and
-  // ties the view left out, such as the statements a Plan step serves. Keep the view's own
-  // metadata and index its answer first so no outline node displaces a view node (R4, R5).
-  const viewContexts = useMemo(() => {
-    const held: [TreeFilter, TreeAnswer][] = [];
-    const supplement = reads.tree;
-    for (const [filter, answer] of [
-      ["plan", plan],
-      ["spec", spec],
-      ["verification", verification],
-    ] as const) {
-      if (answer === undefined) continue;
-      if (supplement === undefined) {
-        held.push([filter, answer]);
-        continue;
-      }
-      const nodes = new Set(answer.nodes?.map(({ id, kind }) => `${kind}:${id}`));
-      const tupleKey = ({ kind, from, to }: NonNullable<TreeAnswer["tuples"]>[number]) =>
-        JSON.stringify([kind, from.kind, from.id, to.kind, to.id]);
-      const tuples = new Set(answer.tuples?.map(tupleKey));
-      const extraNodes = supplement.nodes?.filter(({ id, kind }) => !nodes.has(`${kind}:${id}`));
-      const extraTuples = supplement.tuples?.filter((tuple) => !tuples.has(tupleKey(tuple)));
-      held.push([
-        filter,
-        extraNodes?.length || extraTuples?.length
-          ? {
-              ...answer,
-              nodes: [...(answer.nodes ?? []), ...(extraNodes ?? [])],
-              tuples: [...(answer.tuples ?? []), ...(extraTuples ?? [])],
-            }
-          : answer,
-      ]);
-    }
-    return held;
-  }, [plan, reads.tree, spec, verification]);
-  const trees = useMemo(() => {
-    const held: Partial<Record<TreeFilter, TreeNode>> = {};
-    for (const [filter, answer] of viewContexts) {
-      held[filter] = builtTree({
+  const treeOf = useMemo(() => {
+    const held = new Map<TreeFilter, TreeNode>();
+    return (filter: TreeFilter): TreeNode | undefined => {
+      const answer = views?.[filter];
+      if (answer === undefined) return undefined;
+      const cached = held.get(filter);
+      if (cached !== undefined) return cached;
+      const tree = builtTree({
         ...reads,
-        tree: answer,
+        tree: viewWithContext(answer, reads.tree),
         ...(named === undefined ? {} : { targets: named }),
       });
-    }
-    return held;
-  }, [named, reads, viewContexts]);
+      held.set(filter, tree);
+      return tree;
+    };
+  }, [named, reads, views]);
   const root = useMemo(
-    () => (views === undefined ? built : { ...built, views: { ...views, trees } }),
-    [built, trees, views]
+    () => (views === undefined ? built : { ...built, views: { ...views, treeOf } }),
+    [built, treeOf, views]
   );
   return useMemo(
     () => ({
@@ -559,4 +530,21 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       root,
     ]
   );
+}
+
+/** Keep the view's placement and metadata, adding only outline context the view omitted. */
+function viewWithContext(answer: TreeAnswer, outline: TreeAnswer | undefined): TreeAnswer {
+  if (outline === undefined) return answer;
+  const nodes = new Set(answer.nodes?.map(({ id, kind }) => `${kind}:${id}`));
+  const tupleKey = ({ kind, from, to }: NonNullable<TreeAnswer["tuples"]>[number]) =>
+    `${kind} ${from.kind} ${from.id} ${to.kind} ${to.id}`;
+  const tuples = new Set(answer.tuples?.map(tupleKey));
+  const extraNodes = outline.nodes?.filter(({ id, kind }) => !nodes.has(`${kind}:${id}`));
+  const extraTuples = outline.tuples?.filter((tuple) => !tuples.has(tupleKey(tuple)));
+  if (!extraNodes?.length && !extraTuples?.length) return answer;
+  return {
+    ...answer,
+    nodes: [...(answer.nodes ?? []), ...(extraNodes ?? [])],
+    tuples: [...(answer.tuples ?? []), ...(extraTuples ?? [])],
+  };
 }

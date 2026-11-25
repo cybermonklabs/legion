@@ -80,6 +80,7 @@ import { nodesInOrder } from "./tree-keys";
 import {
   commentNode,
   treeAnswer as fixtureAnswer,
+  pagedAnswer,
   type TreeNodeExtra,
   treeNode,
   treeTuple,
@@ -1402,14 +1403,6 @@ test("a remount after 30 s sends no read", async () => {
     for (const stub of stubs) stub.mockRestore();
   }
 });
-
-/** `page` as the server answers it where the read goes on past it: the `cursor` that names the
- *  next page, and how many nodes the read holds after this one (`remaining`), which the server
- *  answers beside the cursor and the generated contract does not name yet. */
-function pagedAnswer(page: TreeAnswer, cursor: string | null, remaining?: number): TreeAnswer {
-  const count = remaining === undefined ? {} : { remaining };
-  return { ...page, cursor, ...count };
-}
 
 // R5, R15: the tree read holds data once its first page does: the load reads that page alone,
 // though it names a next one, and the tree and a role's blocks are drawn from it. The reader's

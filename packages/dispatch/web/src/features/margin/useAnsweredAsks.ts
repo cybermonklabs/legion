@@ -1,7 +1,10 @@
+import type { QueryFunctionContext } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { api } from "../../api/client";
+import type { AskWithTrees } from "../../api/types";
+import { issueAskThreadsQuery } from "../issue-page/useIssueTree";
 import { useNewIssuePageFreshness } from "../refs/reference-target";
 import type { MarginOwner } from "./useMarginItems";
 
@@ -11,6 +14,12 @@ import type { MarginOwner } from "./useMarginItems";
  */
 export function useAnsweredAsks(owner: MarginOwner | undefined, artifactID: string | undefined) {
   const freshness = useNewIssuePageFreshness();
+  // On the new issue page, watch the same ask threads the outline reads.
+  const threads =
+    freshness !== undefined && owner?.kind === "issue"
+      ? issueAskThreadsQuery(owner.key)
+      : undefined;
+  const readThreads = threads?.queryFn;
   const query = useQuery({
     enabled: owner !== undefined,
     queryFn: () => {
@@ -26,6 +35,13 @@ export function useAnsweredAsks(owner: MarginOwner | undefined, artifactID: stri
         ? ["artifact", owner.artifactId, "asks"]
         : ["asks", owner?.kind === "issue" ? owner.key : undefined],
     ...freshness,
+    ...(threads !== undefined && typeof readThreads === "function"
+      ? {
+          queryKey: threads.queryKey,
+          queryFn: (context: QueryFunctionContext): AskWithTrees[] | Promise<AskWithTrees[]> =>
+            readThreads({ ...context, queryKey: threads.queryKey }),
+        }
+      : {}),
   });
   const asks = useMemo(
     () =>
