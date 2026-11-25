@@ -33,13 +33,13 @@ import (
 // of TestEveryApiStoreWriterTakesTheStoreLockOrder, which holds that node step with the block
 // index's.
 //
-// What each create is held to is the order this slice adds: its owner lock first, then the
-// object's node, written before the row that holds the object, an ask's or a message's body
-// blocks, written as nodes after its block state row and before the block rows that name them
-// (bodyBlockSteps), the event, appended after those rows, and the facts the node write stated,
-// appended after the event that causes them. An ask's create, a message and a broadcast then run
-// the one writer of a thread (inboxwrite.Recording.Queue), whose user_threads steps each lists
-// after its event. The id of each object is drawn inside its own transaction, so no other
+// What each create is held to is the store's lock order for its object's node: its owner lock
+// first, then the object's node, written before the row that holds the object, an ask's or a
+// message's body blocks, written as nodes after its block state row and before the block rows that
+// name them (bodyBlockSteps), the event, appended after those rows, and the facts the node write
+// stated, appended after the event that causes them. An ask's create, a message and a broadcast
+// then run the one writer of a thread (inboxwrite.Recording.Queue), whose user_threads steps each
+// lists after its event. The id of each object is drawn inside its own transaction, so no other
 // transaction can hold its node or its row before they exist: those steps are held as the tables
 // they are written to, and its first block's node by the key its row's insert names
 // (holdFirstBlockNode).

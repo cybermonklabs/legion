@@ -1020,6 +1020,8 @@ func (s *Service) reconcileAskBlocks(
 	// kept for one release: roll-window-attributes
 	// kept for one release: stored-ask-state
 	twoBuilds := false
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	if len(blocks)+len(invalidBlocks) > 0 {
 		if twoBuilds, err = anotherBuildServes(ctx, tx); err != nil {
 			return settlementReconciliation{}, err
@@ -1031,6 +1033,7 @@ func (s *Service) reconcileAskBlocks(
 	// settlement writes - one it restores - is written as it states it.
 	// kept for one release: stored-ask-state
 	var nodes map[string]askNodeAnswer
+	// kept for one release: stored-ask-state
 	if !twoBuilds && len(rows)+len(sources) > 0 {
 		ids := make([]string, 0, len(rows)+len(sources))
 		for _, ask := range rows {
@@ -1329,6 +1332,7 @@ func (s *Service) reconcileAskBlocks(
 			model.BlockRepairedEventPayload{BlockID: block.id, DisturbedBy: actor},
 		)
 		kept := ask
+		// kept for one release: stored-ask-state
 		if !stated {
 			kept = shown(ask)
 		}

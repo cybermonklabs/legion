@@ -472,15 +472,8 @@ func nodeParams(nodes []Node) ([]any, error) {
 		supertags[index], visibilities[index], states[index] = node.Supertag, node.Visibility, node.State
 		attributes[index], madeAts[index], madeBys[index] = encoded, node.MadeAt, madeBy
 		sourceEvents[index] = node.SourceEvent
-		if node.Project != "" {
-			projects[index] = &nodes[index].Project
-		}
-		value, err := PartiesValue(node.Parties)
-		if err != nil {
+		if projects[index], parties[index], err = scopeColumns(&nodes[index].Project, node.Parties); err != nil {
 			return nil, fmt.Errorf("node %s/%s: %w", node.Kind, node.ID, err)
-		}
-		if value != "" {
-			parties[index] = &value
 		}
 	}
 	return []any{kinds, ids, supertags, visibilities, states, attributes, madeAts, madeBys, sourceEvents, projects, parties}, nil

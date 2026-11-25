@@ -1,0 +1,89 @@
+{
+  "description": "The rule by which POST /api/v1/priorities makes a priority's id from its title when the body names no id, written once as cases. The slug of a title is artifactSlug's (packages/envoy/internal/dispatch/api/artifacts.go): the title lower-cased by Go's simple case mapping, each run of characters other than a to z and 0 to 9 made one hyphen, and no hyphen at either end; a title that holds no ASCII letter or digit has no slug. The id is the slug when the slug has at most PRIORITY_ID_MAX (200) characters; otherwise it is the longest start of the slug that has at most 200 characters and ends at the end of a word, which is where the next character of the slug is a hyphen; and when the first word has more than 200 characters, it is the first 200. When the title has no slug, or the cut leaves none or any, which the issue listing reads in ?advances= as keywords and so no priority may take as its id, the id is priority- followed by the first 12 lower-case hex characters of the SHA-256 of the title's UTF-8 bytes; those ids here were computed with `jq -j '.cases[N].title' priority-ids.json | sha256sum | cut -c1-12`. So every title gives an id, and a case is {\"title\", \"id\"}. Every id is distinct, because the route test writes them all into one store. The cases, in order: a short title; a slug of exactly 200 characters; slugs of 250, 376 and 510 characters; a slug whose 201st character is a hyphen; one whose 201st character is inside a word; one whose 200th character is a hyphen; a first word of exactly 200 characters with more after it; a first word of 218 characters, of a letter no other case's first 200 characters hold; U+0130 beside ASCII letters, which Go lower-cases to i; U+212A beside ASCII letters, which lower-cases to k; a title whose only letter is U+0130 and one whose only letter is U+212A, which have no slug because the guard reads the raw title; an i followed by U+0307 and then more letters, which gives i- because U+0307 is no ASCII letter; punctuation and spaces alone; question marks alone; U+0130 alone; None; Any; and None followed by 300 letters x, which the cut leaves as none. Three tests hold code to these cases: TestPriorityIDFromTitle and TestPriorityIDFromTitleThroughTheRoute in packages/envoy/internal/dispatch/api/priority_id_fixture_test.go (the server's priorityIDFromTitle and its route), and the long-title row of packages/dispatch/e2e/priorities.e2e.ts (the page's New priority form). Every title is made up: no real priority title goes into this file, because the repository is public.",
+  "cases": [
+    {
+      "title": "Ship the weekly report",
+      "id": "ship-the-weekly-report"
+    },
+    {
+      "title": "Move every nightly build of the docs site onto the shared runner pool, so the queue stops growing at night, the old build boxes can be retired, and the cost report for the quarter reads one line less now",
+      "id": "move-every-nightly-build-of-the-docs-site-onto-the-shared-runner-pool-so-the-queue-stops-growing-at-night-the-old-build-boxes-can-be-retired-and-the-cost-report-for-the-quarter-reads-one-line-less-now"
+    },
+    {
+      "title": "Write down how a release is cut, from the branch to the tag, so that any engineer on the rota can cut one alone: which checks must be green first, who signs the notes, where the image is pushed, and what to do when the roll-out stops half way through today",
+      "id": "write-down-how-a-release-is-cut-from-the-branch-to-the-tag-so-that-any-engineer-on-the-rota-can-cut-one-alone-which-checks-must-be-green-first-who-signs-the-notes-where-the-image-is-pushed-and-what-to"
+    },
+    {
+      "title": "Replace the hand-kept spreadsheet of vendor contracts with a small service that reads each contract's renewal date, warns the owner thirty days before it, keeps a history of every price the vendor quoted, and lets the finance team export the whole list as a file they can open in any tool they already use, without asking an engineer to run a query for them each month of the year",
+      "id": "replace-the-hand-kept-spreadsheet-of-vendor-contracts-with-a-small-service-that-reads-each-contract-s-renewal-date-warns-the-owner-thirty-days-before-it-keeps-a-history-of-every-price-the-vendor"
+    },
+    {
+      "title": "Rebuild the onboarding path for a new engineer so that on the first day they get a laptop that is already set up, an account on every service the team uses, a short written tour of the code base with links to the five files that matter most, a buddy who has blocked an hour each day of the first week to answer questions, a first task small enough to ship before Friday, and a form at the end of the second week that asks what was missing, which the team reads at its next meeting and turns into changes to this path",
+      "id": "rebuild-the-onboarding-path-for-a-new-engineer-so-that-on-the-first-day-they-get-a-laptop-that-is-already-set-up-an-account-on-every-service-the-team-uses-a-short-written-tour-of-the-code-base-with"
+    },
+    {
+      "title": "Cut the time a pull request waits for its first review to under one working day, by naming a reviewer of the day on every team, by showing each waiting pull request on the team's own board, and by paging nobody",
+      "id": "cut-the-time-a-pull-request-waits-for-its-first-review-to-under-one-working-day-by-naming-a-reviewer-of-the-day-on-every-team-by-showing-each-waiting-pull-request-on-the-team-s-own-board-and-by-paging"
+    },
+    {
+      "title": "Teach the search page to rank recent documents above old ones when two of them match the words a person typed equally well, and to say beside each result how old it is, so readers stop opening stale pages first",
+      "id": "teach-the-search-page-to-rank-recent-documents-above-old-ones-when-two-of-them-match-the-words-a-person-typed-equally-well-and-to-say-beside-each-result-how-old-it-is-so-readers-stop-opening-stale"
+    },
+    {
+      "title": "Give the support desk one page that lists every open customer ticket by how long it has waited, with the account's plan, its owners and the last reply beside each ticket, so the oldest ones are answered first today",
+      "id": "give-the-support-desk-one-page-that-lists-every-open-customer-ticket-by-how-long-it-has-waited-with-the-account-s-plan-its-owners-and-the-last-reply-beside-each-ticket-so-the-oldest-ones-are-answered"
+    },
+    {
+      "title": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz and then the rest of it",
+      "id": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+    },
+    {
+      "title": "jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj and a tail",
+      "id": "jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj"
+    },
+    {
+      "title": "Fix the \u0130ndex page",
+      "id": "fix-the-index-page"
+    },
+    {
+      "title": "\u212Aeep the cache warm",
+      "id": "keep-the-cache-warm"
+    },
+    {
+      "title": "\u0130 ?",
+      "id": "priority-878556dc7dcd"
+    },
+    {
+      "title": "(\u212A)",
+      "id": "priority-6e555e234c1a"
+    },
+    {
+      "title": "Li\u0307nk checker for the docs",
+      "id": "li-nk-checker-for-the-docs"
+    },
+    {
+      "title": "... ?! -- ...",
+      "id": "priority-c3cab50272c0"
+    },
+    {
+      "title": "???",
+      "id": "priority-a03b221c6c6e"
+    },
+    {
+      "title": "\u0130",
+      "id": "priority-a65018cffe8e"
+    },
+    {
+      "title": "None",
+      "id": "priority-dc937b598926"
+    },
+    {
+      "title": "Any",
+      "id": "priority-2b505597daa7"
+    },
+    {
+      "title": "None xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "id": "priority-d8c4ba214100"
+    }
+  ]
+}

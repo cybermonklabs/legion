@@ -80,7 +80,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		if err := store.LockOwners(ctx, tx, owners...); err != nil {
 			return fmt.Errorf("the asks' owners: %w", err)
 		}
-		if err := writeItemNodes(ctx, tx, nodes); err != nil {
+		if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
 			return fmt.Errorf("the asks' nodes: %w", err)
 		}
 		for index := from; index < to; index++ {
@@ -272,15 +272,6 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		}
 		return stateAtSentinel(ctx, tx, graphstore.Uncaused{Tuples: append(questionCited, cited...)})
 	})
-}
-
-// writeItemNodes writes the nodes of the asks one batch copies, before any row of the batch, each
-// in its project (seedRun.itemProject), at the sentinel, as every write of the seed's is. The rows
-// carry no foreign key into the store, so where they fall beside this moves no lock of the store's
-// order. A message batch writes its nodes with the facts it states of them in its own
-// graphstore.Write (writeMessages), since the messages rows it inserts name those nodes.
-func writeItemNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node) error {
-	return graphstore.Write(ctx, tx, nodes, nil)
 }
 
 // stateAtSentinel appends what one of the seed's index passes states in the node and tuple store

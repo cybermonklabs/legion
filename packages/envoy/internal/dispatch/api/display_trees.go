@@ -63,6 +63,22 @@ func builtDisplayTree(sum [32]byte, markdown string, mode pmdoc.DisplayMode) jso
 	return tree
 }
 
+// displayExactJudgements makes one judgement of one text at a time (pmdoc.DisplayExact): the
+// verdict cache holds a verdict only once it is made, so without this two requests that read one
+// description at once, cold, would each parse it. The key is the text's SHA-256, which is what
+// the verdict cache is keyed by.
+var displayExactJudgements singleflight.Group
+
+// judgedDisplayExact is whether Parse takes whole a text whose sum its caller already holds,
+// judged once however many goroutines ask at the same moment.
+func judgedDisplayExact(sum [32]byte, markdown string) bool {
+	judged, _, _ := displayExactJudgements.Do(string(sum[:]), func() (any, error) {
+		return pmdoc.DisplayExact(sum, markdown), nil
+	})
+	exact, _ := judged.(bool)
+	return exact
+}
+
 // buildDisplayTrees reads the count texts of one request that the table held no tree of, each by
 // its own index, on as many processors as the process may use. A read of a 200-comment issue
 // after a restart reads 200 texts, each a markdown parse; one after another that is the whole

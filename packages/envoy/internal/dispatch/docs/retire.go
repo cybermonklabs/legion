@@ -89,8 +89,10 @@ var retirementEvents = events.NewBroker()
 //
 // It takes no new text after it: every process closes its room of the document once tx commits,
 // through the announcement a removal sends (AnnounceDocumentRemoved), a socket that comes back is
-// refused (ServeHTTP), api refuses an upload, a create and an edit of it 409 DOCUMENT_RETIRED, and
-// this package refuses a live write, a version and a rebuild of it (retiredWriteRefusal).
+// refused (ServeHTTP), api refuses an upload, a create and an edit of it 409 DOCUMENT_RETIRED, or
+// DECISIONS_ARE_NODES for an issue's decisions document (api's retiredDocumentRefusal), and this
+// package refuses a live write, a version and a rebuild of it (retiredWriteRefusal), a rebuild
+// only where DOCUMENT_LIVE and DOCUMENT_LOADS do not refuse it first.
 //
 // No version is written, so the approval is not left behind a later version as a write leaves
 // one: the approval read answers a retired document's approval stale (api's applyApprovals), and

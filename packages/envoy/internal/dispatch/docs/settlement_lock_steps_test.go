@@ -78,10 +78,10 @@ var coreIssue = "CORE-1"
 // version (editAsVersion), whose `shaped` pointer names the requirement block of the same
 // document. A version written while the block had no ask stated none of its shaped ties, so the
 // settlement, which writes no version, states them beside the ask's row (writeOpenedAskTies): the
-// block_refs rows first, naming the ask's node, and their tuples held for the ask.opened, which
-// appendEvents states under it right after the follows' facts (causedByEvent). The ties' rows are
-// the settlement's first write of block_refs, so the table is held; the ties' tuples come after
-// the follows' and are held by their gate.
+// block_refs rows first, naming the ask's node, and their tuples held for the ask.opened:
+// appendEvents states them under it right after the follows' facts (causedByEvent). The ties'
+// rows are the settlement's first write of block_refs, so the table is held; the ties' tuples come
+// after the follows' and are held by their gate.
 func (r *docsWriterRig) settledAskTies() docsWriter {
 	return docsWriter{
 		name: "the opened ask's ties under its ask.opened",

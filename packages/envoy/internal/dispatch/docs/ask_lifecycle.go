@@ -593,6 +593,7 @@ func readIssueAskStateWrites(
 	}
 	// kept for one release: stored-ask-state
 	var nodes map[string]askNodeAnswer
+	// kept for one release: stored-ask-state
 	if !twoBuilds {
 		ids := make([]string, 0, len(blocks))
 		for _, block := range blocks {
@@ -606,6 +607,7 @@ func readIssueAskStateWrites(
 			return nil, err
 		}
 	}
+	// kept for one release: stored-ask-state
 	shown := func(ask, row model.Ask) model.Ask {
 		// kept for one release: roll-window-attributes
 		if twoBuilds {
@@ -665,7 +667,9 @@ func (w *issueAskStateWrites) empty() bool {
 // resolved, and reports whether any changed it.
 func (w *issueAskStateWrites) apply(live *pmdoc.Node) bool {
 	repaired := w.writes.repairLive(live)
+	// kept for one release: roll-window-attributes
 	repeated := markRepeatedAskBlocks(live, w.artifactID, w.repeats)
+	// kept for one release: roll-window-attributes
 	w.marked = append(w.marked, repeated...)
 	return repaired || len(repeated) > 0
 }
@@ -745,6 +749,7 @@ func unindexedAskResolution(twoBuilds bool) func(*pmdoc.Node) bool {
 // (markRepeatedAskBlocks).
 func readableAskBlocks(tree *pmdoc.Node) ([]askBlock, []repeatedAskBlock) {
 	var blocks []askBlock
+	// kept for one release: roll-window-attributes
 	var repeats []repeatedAskBlock
 	seen := map[string]struct{}{}
 	index := -1

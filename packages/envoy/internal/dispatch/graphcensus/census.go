@@ -207,7 +207,7 @@ type StoreReport struct {
 	// how many reach one in a document that still owes its block index (storeOnlyRead). An
 	// unresolved far end refuses the census; a count does not, and neither does a far end left out.
 	StoreOnly []StoreOnlyReport
-	// Dangling is the dangling-citation counter over the restore's work (DanglingCitations), and
+	// Dangling is the dangling-citation counter over the restore's work (danglingCitations), and
 	// Collisions the collision census of the same work (CollisionsOf), the block ids the restore
 	// must change for each issue: both read the census's snapshot, so both answer before the
 	// restore moves anything. Neither refuses the census: the returning set counts before the
@@ -1665,7 +1665,7 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, declined 
 			return nil, err
 		}
 		report.Collisions = CollisionsOf(work)
-		if report.Dangling, err = danglingCitationsOver(ctx, tx, work, declined); err != nil {
+		if report.Dangling, err = danglingCitations(ctx, tx, work, declined); err != nil {
 			return nil, err
 		}
 		if report.Projects, err = ProjectCensus(ctx, tx); err != nil {

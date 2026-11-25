@@ -1,4 +1,4 @@
-import { dispatchWritingBox } from "@legion/contracts";
+import { type DispatchWritingBoxRow, dispatchWritingBox } from "@legion/contracts";
 import type {
   EditorReferencePicker,
   ReferenceInsertion,
@@ -9,12 +9,16 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useTooltips } from "../../components/tooltips";
 import { pageQuietText, textMutedOnCanvas } from "../../theme/classes";
 import { RefPickerList } from "../refs/RefPickerList";
-import type { RefPickerInsertion } from "../refs/ref-picker";
+import { type RefPickerInsertion, readTrigger } from "../refs/ref-picker";
 import { useRefPicker } from "../refs/useRefPicker";
 import type { EditorHandle } from "./editor";
 
 /** How far under the caret the list hangs, so it clears the line being typed. */
 const LIST_GAP_PX = 4;
+
+/** The writing list's row of a document's own body, which an editor names unless it hosts the
+ *  picker for another box. */
+const DOCUMENT_BODY = dispatchWritingBox("document-body", "document-text");
 
 /** A pick as the document takes it: a party's mention is the words it shows with the address
  *  it names, which the editor writes as a link mark, and every other pick is the bare address
@@ -30,6 +34,12 @@ function documentInsertion(insertion: RefPickerInsertion): ReferenceInsertion {
     : { end, href: link.href, start, text: link.words, trigger };
 }
 
+/** Whether a door of the picker stands open at `caret`, as the picker reads the text before it
+ *  (`useRefPicker`, a document's links being marks). */
+function opensDoor(caret: ReferencePickerCaret | undefined): boolean {
+  return caret !== undefined && readTrigger(caret.text, caret.text.length, "marks") !== undefined;
+}
+
 /**
  * The reference picker in a document's body: the same picker every other box has
  * (`features/refs/useRefPicker.ts`), hosted by the editor rather than by the shared text field,
@@ -42,13 +52,16 @@ function documentInsertion(insertion: RefPickerInsertion): ReferenceInsertion {
  * from those characters, draws the rows, and answers a pick as the words to write and the
  * stretch of that same text they replace, which the editor writes as one transaction. So the
  * pick reaches every other reader of the document through collaboration and stands in the
- * document's stored text, which is what a drawn title never does.
+ * document's stored text, which is what a drawn title never does. Another text drawn in the same
+ * editor - a priority's description (`PriorityDescription`) - hosts the same picker under its own
+ * row of the writing list (`writing`).
  */
 export function DocumentRefPicker({
   editor,
   enabled,
   issueKey,
   project,
+  writing = DOCUMENT_BODY,
 }: {
   editor: EditorHandle | undefined;
   /** False while the document takes no edits: a reader who cannot type has nothing to pick. */
@@ -57,8 +70,10 @@ export function DocumentRefPicker({
   issueKey?: string;
   /** The project a document of a project belongs to, whose components it offers. */
   project?: string;
+  /** The box's row of the writing list, whose words the line under the editor says: a
+   *  document's body where it is left out. */
+  writing?: DispatchWritingBoxRow;
 }): ReactNode {
-  const writing = dispatchWritingBox("document-body", "document-text");
   const tooltips = useTooltips();
   const [caret, setCaret] = useState<ReferencePickerCaret | undefined>(undefined);
   const picker = useRefPicker({
@@ -76,10 +91,19 @@ export function DocumentRefPicker({
   pickerNow.current = picker;
   const editorNow = useRef(editor);
   editorNow.current = editor;
+  // The caret the picker last drew. A report draws the picker again only where it may change
+  // what the picker shows: a door open at the caret drawn, or at the one reported
+  // (`readTrigger`). Between two carets with no door the picker draws nothing either way, so a
+  // keystroke of plain words, or the focus coming to the editor, draws nothing again.
+  const drawn = useRef<ReferencePickerCaret | undefined>(undefined);
 
   const bridge = useMemo<EditorReferencePicker>(
     () => ({
-      onCaret: setCaret,
+      onCaret: (reported) => {
+        if (!opensDoor(drawn.current) && !opensDoor(reported)) return;
+        drawn.current = reported;
+        setCaret(reported);
+      },
       pressKey: (key) => {
         const result = pickerNow.current.pressKey(key);
         if (result.action === "ignored") return false;
@@ -97,6 +121,7 @@ export function DocumentRefPicker({
     editor?.setReferencePicker(bridge);
     return () => {
       editor?.setReferencePicker(null);
+      drawn.current = undefined;
       setCaret(undefined);
     };
   }, [bridge, editor, enabled]);
@@ -122,7 +147,7 @@ export function DocumentRefPicker({
           lines there are the page's. */}
       <p
         className={`mt-2 text-xs ${tooltips ? textMutedOnCanvas : pageQuietText}`}
-        data-testid="document-body-hint"
+        data-testid={`${writing.box}-hint`}
       >
         {writing.hint}
       </p>

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"log/slog"
 	"maps"
@@ -24,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/ghrename"
+	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -1659,11 +1661,18 @@ func runListener(credentialWait time.Duration) {
 		// handovers the claim route, the keep, the registration and the sweep start
 		// (role_keep.go).
 		now: time.Now,
+		// Whether this listener's NATS user holds the session consumers' calls, which a
+		// takeover pass needs and Dispatch's user and a host's do not: the one answer every copy
+		// of this configuration reads, given its source below once the session delivery is open
+		// (consumerGrantAnswer).
+		consumerGrant: &consumerGrantAnswer{},
 	}
 	// The role lane's forwards run off its handler (roleForwarder): the handler resolves each
 	// role message's holder and hands the forward over, and the forwards to one holder are
-	// published in order while each waits for its outcome on its own. It is wired here, last, so
-	// every seam of the configuration it copies is set (wireRoleForwarder).
+	// published in order while each waits for its outcome on its own. It is wired after every
+	// seam of the configuration it copies is set (wireRoleForwarder); the consumer grant's answer,
+	// which needs the session delivery opened below, is a holder the copy shares and is filled in
+	// there (consumerGrantAnswer).
 	deliveryConfig = wireRoleForwarder(deliveryConfig)
 	roleForwards := deliveryConfig.roleForwards
 
@@ -1698,6 +1707,10 @@ func runListener(credentialWait time.Duration) {
 		client.Conn.Close()
 		os.Exit(1)
 	}
+	// The answer to whether a takeover pass may run here is the session delivery's, which
+	// remembers a refusal for its episode (sessionDelivery.holdsConsumerGrant). The configuration
+	// and each copy made of it already hold the answer this sets.
+	deliveryConfig.consumerGrant.set(delivery.holdsConsumerGrant)
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
 	// machine's durable binding (below). An edge listener's relay takes its receipts under its
 	// machine's receipt family (natsgrant.EdgeRelayReplyPrefix), on which the replica serving the
@@ -1891,12 +1904,15 @@ func runListener(credentialWait time.Duration) {
 	// claims no second time and its heartbeats start none. A role nobody holds is handed nothing
 	// at all, and its copies must still end at the end of their hour, each with a dead letter to
 	// its sender, while the copies still young wake the role again. This is the backstop over
-	// them, on the reapers' cadence and under their context, with a pass as the listener starts.
+	// them, on the reapers' cadence and under their context, with its first pass inside its first
+	// interval, at the phase its pod name gives it (sweepPhaseSeed), so the shared listeners'
+	// passes stay apart however their restarts line up.
 	// It costs one stream read a pass while no role has a kept lane (startKeptRoleSweep,
 	// role_keep_sweep.go), and its cadence is the interval the repeated wake report is named by
 	// (roleWakeInterval). An edge listener runs none, since its grant writes no kept lane: the
 	// shared listeners' sweeps hand over the lanes of roles held at the edge too.
-	kvLoopsDone = append(kvLoopsDone, startKeptRoleSweep(kvLoopsCtx, deliveryConfig, roleWakeInterval))
+	kvLoopsDone = append(kvLoopsDone, startKeptRoleSweep(kvLoopsCtx, deliveryConfig, roleWakeInterval,
+		sweepPhase(sweepPhaseSeed("kept role sweep"), roleWakeInterval)))
 
 	// Phase 6b0: An edge listener reads its projects' repositories again every
 	// edgeRepositoryRefresh and removes the interests of a repository that left them
@@ -1929,7 +1945,7 @@ func runListener(credentialWait time.Duration) {
 		deps:     ready,
 		relays:   relays,
 		logger:   logger,
-	}, sessionConsumerSweepInterval))
+	}, sessionConsumerSweepInterval, sweepPhase(sweepPhaseSeed("session consumer sweep"), sessionConsumerSweepInterval)))
 
 	// Phase 6b1: Collect the interest bucket's delete markers, which the reaper above leaves one of
 	// per dead session on a key that is never reused and which nothing else removes, so every
@@ -2030,30 +2046,70 @@ func runListener(credentialWait time.Duration) {
 	})
 }
 
-// startSweep runs pass every interval, and once as the listener starts, which is the loop every
-// backstop sweep of the listener runs: the kept role lanes' (startKeptRoleSweep) and the session
-// consumers' (startSessionConsumerSweep). It runs under the context the listener's other KV
-// loops run under and returns a channel closed once its goroutine has returned, as they do
-// (store.Registry.StartReaper), so the shutdown ends it and waits for a pass in flight
-// (listenerLoops.kvLoopsDone). A pass that is still running when ctx ends is not cut short by
-// this loop: each pass watches ctx itself and the shutdown waits for it, so a sweep ends
-// between two of its own calls rather than inside one.
-func startSweep(ctx context.Context, interval time.Duration, pass func(context.Context)) <-chan struct{} {
+// startSweep runs pass at each instant whose time since the epoch, less phase, is a whole number
+// of intervals (untilPhase), which is the loop every backstop sweep of the listener runs: the kept
+// role lanes' (startKeptRoleSweep) and the session consumers' (startSessionConsumerSweep). phase,
+// below interval (sweepPhase), is where in each interval of the clock the sweep's passes fall, so
+// two listeners pass at their own phases whenever each started, and one that restarted passes
+// where it passed before; its first pass is inside its first interval. A pass that outlasts an
+// interval is followed by the next instant of its phase, and the ones it overran are not made up.
+// It runs under the context the listener's other KV loops run under and returns a channel closed
+// once its goroutine has returned, as they do (store.Registry.StartReaper), so the shutdown ends it
+// and waits for a pass in flight (listenerLoops.kvLoopsDone); a shutdown between passes runs no
+// other. A pass that is still running when ctx ends is not cut short by this loop: each pass
+// watches ctx itself and the shutdown waits for it, so a sweep ends between two of its own calls
+// rather than inside one.
+func startSweep(ctx context.Context, interval, phase time.Duration, pass func(context.Context)) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
 		for {
-			pass(ctx)
+			wait := time.NewTimer(untilPhase(time.Now(), interval, phase))
 			select {
 			case <-ctx.Done():
+				wait.Stop()
 				return
-			case <-ticker.C:
+			case <-wait.C:
 			}
+			pass(ctx)
 		}
 	}()
 	return done
+}
+
+// untilPhase is how long after now the next instant comes whose time since the epoch, less phase,
+// is a whole number of intervals: more than zero and at most interval. interval is above zero, as
+// every sweep's is (roleWakeInterval, and envconf.PositiveDuration for the session consumers'),
+// and phase is below it (sweepPhase), so one interval added makes any wait that is not above zero
+// one that is.
+func untilPhase(now time.Time, interval, phase time.Duration) time.Duration {
+	wait := phase - time.Duration(now.UnixNano()%int64(interval))
+	if wait <= 0 {
+		wait += interval
+	}
+	return wait
+}
+
+// sweepPhase is a sweep's phase in interval (startSweep), an interval above zero as untilPhase's
+// is: a share of interval read from the FNV-1a hash of seed, the listener's pod name and the
+// sweep's name (sweepPhaseSeed). Two listeners' phases differ by what their names hash to,
+// whenever each started, so a restart of both at the same instant leaves them as far apart as
+// before; and one listener's two sweeps fall apart in its interval too.
+func sweepPhase(seed string, interval time.Duration) time.Duration {
+	hash := fnv.New64a()
+	_, _ = hash.Write([]byte(seed))
+	return time.Duration(hash.Sum64() % uint64(interval))
+}
+
+// sweepPhaseSeed is the seed of sweep's phase (sweepPhase): the host name, which in a Kubernetes
+// pod is the pod's name and so new at each pod a Deployment makes, then the sweep's name. A host
+// whose name cannot be read seeds from a random id instead, never from the start time.
+func sweepPhaseSeed(sweep string) string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = id.New()
+	}
+	return host + " " + sweep
 }
 
 // listenerLoops are the background loops main starts once the durable binds: stop ends them,
