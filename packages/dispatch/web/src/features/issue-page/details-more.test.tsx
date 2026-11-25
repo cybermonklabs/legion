@@ -18,9 +18,12 @@ import {
   userStateQuery,
 } from "../../api/queries";
 import type {
+  AskRead,
+  AskThread,
   Comment,
   CommentDelivery,
   DispatchEvent,
+  IssueAskRow,
   IssueCoverage,
   IssueDetails,
   MessageDelivery,
@@ -30,6 +33,7 @@ import type {
 } from "../../api/types";
 import { answeredWithErrorGuidance, queuedWait } from "../conversation/delivery";
 import { conversationItemId, pinnedItemMarker } from "../issue/pins";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -754,9 +758,10 @@ test("each following of the collaborators' address opens their list, though the 
   }
 });
 
-// Under "The row you are on", the facts of the row the reader is on:
-// its kind with its first line, its state where its kind has one, and who wrote it.
-test("the facts name the focused node's kind, first line, state and author", async () => {
+// Under "The row you are on", the facts of the row the reader is on: its kind, its state where
+// its kind has one, and who wrote it. They draw no line of its text, since the row beside them
+// draws it whole.
+test("the facts name the focused node's kind, state and author, and draw no first line of its text", async () => {
   const question: FocusedNode = {
     author: { id: "bob", kind: "user" },
     id: "ask-1",
@@ -791,12 +796,251 @@ test("the facts name the focused node's kind, first line, state and author", asy
         fact.querySelector("dd")?.textContent,
       ])
     ).toEqual([
-      [`${sentenceCase(NODE_TYPE_NAMES.ask)}:`, "Which store holds the drafts?"],
+      [`${CONTROL_LABELS.node_kind}:`, sentenceCase(NODE_TYPE_NAMES.ask)],
       [`${PROPERTY_LABELS.status}:`, NODE_STATE_WORDS.ask.open],
       [`${CONTROL_LABELS.written_by}:`, "bob"],
     ]);
+    expect(facts.textContent, "the facts drew the row's first line").not.toContain(question.title);
   } finally {
     view.unmount();
+  }
+});
+
+/** A question a planner session asked on the issue and reworded once, as the issue's questions
+ *  read holds it: its author carries the title and the tmux target the session stamped. */
+const PLANNERS_QUESTION: IssueAskRow = {
+  anchor: null,
+  answer: null,
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
+  author: {
+    id: "planner-session-0001",
+    kind: "session",
+    origin: { session_title: "Planner", tmux: "legion:4" },
+  },
+  block_id: null,
+  created_at: "2026-11-15T10:00:00Z",
+  edited_at: "2026-11-15T11:00:00Z",
+  id: "ask-7",
+  issue_key: KEY,
+  kind: "question",
+  last_reply: null,
+  multiple: false,
+  options: null,
+  question: "Which store holds the drafts?",
+  state: "open",
+  urgency: "med",
+};
+
+/** That question's thread: its one earlier wording, the session that follows it, and the session
+ *  holding the issue's claim, which a person's answer reaches too. */
+const PLANNERS_THREAD: AskThread = {
+  answers: [],
+  claimant: "implementer-session-0002",
+  edits: [
+    {
+      at: "2026-11-15T11:00:00Z",
+      edited_by: PLANNERS_QUESTION.author,
+      previous: {
+        multiple: false,
+        options: null,
+        question: "Where do the drafts go?",
+        urgency: "med",
+      },
+    },
+  ],
+  followers: [{ session_id: "planner-session-0001", since: "2026-11-15T10:00:00Z" }],
+  replies: [],
+  route: null,
+  route_holder: null,
+  route_status: null,
+  route_status_reason: null,
+};
+
+/** The question's own read, `GET /api/v1/asks/{id}`. */
+const PLANNERS_READ: AskRead = { ...PLANNERS_THREAD, ask: PLANNERS_QUESTION };
+
+/** The question's row, as the outline hands it to Details. */
+const PLANNERS_NODE: FocusedNode = {
+  author: PLANNERS_QUESTION.author,
+  id: "ask-7",
+  item: { id: "ask-7", kind: "ask" },
+  state: NODE_STATE_WORDS.ask.open,
+  title: PLANNERS_QUESTION.question,
+  type: "ask",
+};
+
+/** What the facts of the planner's question draw from its thread: its edit history, whose one
+ *  earlier wording its control counts, and who a person's answer reaches, its follower and the
+ *  issue's claimant, which its control counts. Each is the ask card's own words. */
+async function threadDrawn(facts: HTMLElement): Promise<void> {
+  expect(await within(facts).findByText("Show 1 previous version")).toBeDefined();
+  expect(within(facts).getByRole("button", { name: "Reaches 2" })).toBeDefined();
+}
+
+/** Details as the page holds it around the facts: a drawer that starts shut, which `hold.open`
+ *  opens and shuts. */
+function FactsInDrawer({
+  hold,
+  node,
+}: {
+  hold: { open?: (open: boolean) => void };
+  node: FocusedNode;
+}): ReactNode {
+  const [open, setOpen] = useState(false);
+  hold.open = setOpen;
+  const drawer: MarginDrawer = { open, setOpen, setPage: () => undefined };
+  return (
+    <MarginSlotProvider drawer={drawer}>
+      <FocusedNodeProvider>
+        <Focus node={node} />
+        <DetailsFocusedNode issue={issue} state={undefined} />
+      </FocusedNodeProvider>
+    </MarginSlotProvider>
+  );
+}
+
+// Where the page holds the issue's questions read with each one's thread, the facts of a focused
+// question draw its edit history, its recipients and, behind its asker's name, the asking
+// session's copy handles, from that read: they send no read of the question, and no read of the
+// issue's questions of their own.
+test("a focused question's facts draw its edit history, its recipients and its copy handles from the issue's questions read with their threads, and send no read", async () => {
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(PLANNERS_READ);
+  const listIssueAskThreads = spyOn(api, "listIssueAskThreads").mockResolvedValue([]);
+  await warmMarkdownRenderer();
+  const client = readsHeld();
+  client.setQueryData(["asks", KEY, "thread"], [{ ...PLANNERS_QUESTION, thread: PLANNERS_THREAD }]);
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <FocusedNodeProvider>
+          <Focus node={PLANNERS_NODE} />
+          <DetailsFocusedNode issue={issue} state={undefined} />
+        </FocusedNodeProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("focused-node-facts").getAttribute("data-focused-node")).toBe(
+        "ask-7"
+      )
+    );
+    const facts = screen.getByTestId("focused-node-facts");
+    await threadDrawn(facts);
+
+    // The handles stand behind the asker's name, shut until a press on it opens them.
+    const handles = [
+      "Copy session ID planner-session-0001",
+      "Copy session title Planner",
+      "Copy tmux target legion:4",
+    ];
+    const drawnHandles = () =>
+      handles.filter((name) => within(facts).queryByRole("button", { name }) !== null);
+    expect(drawnHandles(), "the handles were open before the asker's name was pressed").toEqual([]);
+    const asker = within(facts).getByRole("button", { name: "Planner" });
+    expect(asker.getAttribute("aria-expanded")).toBe("false");
+    await userEvent.click(asker);
+    expect(asker.getAttribute("aria-expanded")).toBe("true");
+    expect(drawnHandles()).toEqual(handles);
+
+    expect(
+      getAsk,
+      "the facts read the question though the page held its thread"
+    ).not.toHaveBeenCalled();
+    expect(
+      listIssueAskThreads,
+      "the facts read the issue's questions themselves"
+    ).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    listIssueAskThreads.mockRestore();
+  }
+});
+
+// Where the page holds no read of the issue's questions with their threads, the facts of a
+// focused question read that question (`GET /api/v1/asks/{id}`) once Details opens, and never
+// while it is shut: a load that leaves Details shut costs no request for it, and Details shut and
+// opened again reads it no second time.
+test("a focused question's facts read the question once Details opens, and never while it is shut", async () => {
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(PLANNERS_READ);
+  const listIssueAskThreads = spyOn(api, "listIssueAskThreads").mockResolvedValue([]);
+  await warmMarkdownRenderer();
+  const hold: { open?: (open: boolean) => void } = {};
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={readsHeld()}>
+        <FactsInDrawer hold={hold} node={PLANNERS_NODE} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("focused-node-facts").getAttribute("data-focused-node")).toBe(
+        "ask-7"
+      )
+    );
+    expect(getAsk, "the facts read the question while Details was shut").not.toHaveBeenCalled();
+
+    act(() => hold.open?.(true));
+    await threadDrawn(screen.getByTestId("focused-node-facts"));
+    expect(getAsk.mock.calls).toEqual([["ask-7"]]);
+
+    act(() => hold.open?.(false));
+    act(() => hold.open?.(true));
+    await threadDrawn(screen.getByTestId("focused-node-facts"));
+    expect(getAsk, "Details opened again read the question again").toHaveBeenCalledTimes(1);
+    expect(
+      listIssueAskThreads,
+      "the facts read the issue's questions themselves"
+    ).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    listIssueAskThreads.mockRestore();
+  }
+});
+
+// A read of the focused question that failed says so in its facts, in the page's words, with
+// Retry: a press reads it again, and once that read answers, the line goes with its Retry and the
+// focus Retry held goes to the facts' first control rather than to the page.
+test("a failed read of the focused question says so in its facts, with Retry", async () => {
+  let reads = 0;
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async () => {
+    reads += 1;
+    if (reads === 1) throw new Error("Dispatch could not read the question");
+    return PLANNERS_READ;
+  });
+  await warmMarkdownRenderer();
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={readsHeld()}>
+        <FocusedNodeProvider>
+          <Focus node={PLANNERS_NODE} />
+          <DetailsFocusedNode issue={issue} state={undefined} />
+        </FocusedNodeProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const facts = await screen.findByTestId("focused-node-facts");
+    const alert = await within(facts).findByRole("alert");
+    expect(alert.textContent).toBe(ANSWER_LINES.ask_thread_unreadable);
+    expect(within(facts).queryByText("Show 1 previous version")).toBeNull();
+
+    await userEvent.click(within(facts).getByRole("button", { name: CONTROL_LABELS.retry }));
+    await threadDrawn(facts);
+    expect(getAsk).toHaveBeenCalledTimes(2);
+    expect(within(facts).queryByRole("alert")).toBeNull();
+    expect(document.activeElement, "the focus fell to the page with the question's Retry").toBe(
+      within(facts).getByRole("button", { name: "Planner" })
+    );
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
   }
 });
 

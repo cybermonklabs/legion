@@ -48,6 +48,11 @@ export default {
       /** What Details' People section says when Dispatch refused the reader's Unsubscribe
        *  (`details-more.tsx`): today's issue header's words, with Retry beside them. */
       unsubscribe_failed: "Could not unsubscribe this agent.",
+      /** What the facts of a question the reader is on say when the read of its edits and of who
+       *  its answer reaches failed, with Retry beside it. That read is the question's own, which
+       *  the facts send only while Details is open and only where the page holds no read of the
+       *  issue's questions with their threads (`FocusedNodeFacts.tsx`). */
+      ask_thread_unreadable: "Could not load this question's edits and who it reaches.",
     },
     CONTROL_LABELS: {
       /** The words of the list of who worked the issue, in Details' People section
@@ -128,6 +133,17 @@ export default {
        *  the list reads it as written. */
       open_history: "Open the issue's history in Details",
       open_collaborators: "Open the issue's collaborators in Details",
+      /** What the facts of the row the reader is on call its kind, before the kind's own name,
+       *  "Kind: Question" (`FocusedNodeFacts.tsx`). The issue's own facts name it by its kind
+       *  before its title instead, "Issue: …". */
+      node_kind: "Kind",
+      /** What a question an agent session asked draws behind its asker's name, in the facts of
+       *  the row the reader is on, once a press on that name opens them, as the ask card draws
+       *  them (`FocusedNodeFacts.tsx`): the control that copies the session's ID, and the one
+       *  that copies the title the session gave itself. The control that copies its tmux target
+       *  draws the target itself. */
+      session_id: "Session ID",
+      session_title: "Session title",
       /** What the shell's indicator calls that Retry's write: the delivery sent to its agent again
        *  (`FocusedNodeFacts.tsx`). */
       retry_delivery: "Delivery to an agent again",
