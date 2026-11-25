@@ -17,6 +17,7 @@ import (
 // session named INFRA.s1, which none is. It would find no record, wait once and then report the
 // wake of a session that does not exist, although s1's own consumer delivers the message.
 func TestAnAgentSubjectNamesItsSessionInEitherForm(t *testing.T) {
+	t.Parallel()
 	for subject, want := range map[string]string{
 		"notifications.agent.s1":       "s1",
 		"notifications.agent._.s1":     "s1",
@@ -38,6 +39,7 @@ func TestAnAgentSubjectNamesItsSessionInEitherForm(t *testing.T) {
 // with no record is woken by its own name, not as <PROJECT>.<session>. The core handler delivers
 // with no metadata, so the session with no record is woken on its first delivery.
 func TestTheAgentPathReadsTheSessionOfEitherForm(t *testing.T) {
+	t.Parallel()
 	for _, project := range []string{"INFRA", contracts.NoProject} {
 		t.Run(project, func(t *testing.T) {
 			harness := newListenerDeliveryHarness(t)

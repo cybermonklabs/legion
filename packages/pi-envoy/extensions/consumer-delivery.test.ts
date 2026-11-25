@@ -21,6 +21,7 @@ import {
   SESSION,
   STREAM,
 } from "../test/consumer-delivery-session";
+import type { EnvoyModule } from "../test/envoy-module";
 import {
   busOutageAnswer,
   createPi,
@@ -226,9 +227,9 @@ describe("consumer delivery", () => {
   test("a connection probe on the relay subject is answered, follows a session-id change, and the relay subscription closes when the session moves or shuts down", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?connection-probe");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?connection-probe");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     let inboxes = 0;
     /** Probes `controls` as the listener does; answers what the session replied on the inbox. */
     const probe = async (

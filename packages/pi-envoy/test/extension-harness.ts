@@ -1002,18 +1002,31 @@ export function listenCountingDials(
   }
 }
 
+/** One turn of the real event loop, from before any test fakes the timers: a file read the
+ *  settings make lands in such a turn, which no microtask flush reaches. */
+const realSetImmediate = globalThis.setImmediate;
+const realTurn = () => new Promise<void>((resolve) => realSetImmediate(() => resolve()));
+
 /**
  * Settles `pending` on the test's clock (`jest.useFakeTimers`, on for the call), moving it a
  * second at a time: a write Dispatch keeps failing is asked again under its key until the
  * accept's 10 s bound, and those pauses and that bound pass at once rather than in real time.
+ * The clock stands still until `waiting` says the work is waiting on it: before its first
+ * request, the accept reads the session's envoy.json, which is real I/O, while the accept's bound
+ * (an `AbortSignal.timeout`, on the test's clock) already runs, and a second moved then would be
+ * one the code under test never waited.
  */
-export async function onTestClock<T>(pending: () => Promise<T>): Promise<T> {
+export async function onTestClock<T>(
+  pending: () => Promise<T>,
+  waiting: () => boolean
+): Promise<T> {
   jest.useFakeTimers();
   try {
     let settled = false;
     const watched = pending().finally(() => {
       settled = true;
     });
+    while (!settled && !waiting()) await realTurn();
     for (let second = 0; second < 60 && !settled; second++) {
       for (let flush = 0; flush < 50 && !settled; flush++) await Promise.resolve();
       jest.advanceTimersByTime(1_000);

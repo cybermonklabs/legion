@@ -21,6 +21,7 @@ import (
 // gives the dotted id's durable and queue group, so a second listener started with it would take
 // the first one's durable: it is refused at start, naming ENVOY_MACHINE_ID.
 func TestADottedMachineIDStartsAndDelivers(t *testing.T) {
+	t.Parallel()
 	const machineID = "host.example.internal"
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)

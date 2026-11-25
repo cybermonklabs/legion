@@ -21,6 +21,7 @@ import (
 // ENVOY_SESSION_MAX_AGE raises it. The control is a listener that creates its own bucket: that
 // bucket keeps a record past the horizon, and the listener logs no such line.
 func TestAListenerWarnsWhenTheBucketAgeIsShort(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 
 	t.Run("a bucket made at 5 minutes", func(t *testing.T) {

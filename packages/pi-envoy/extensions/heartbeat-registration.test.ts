@@ -9,6 +9,7 @@ import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
 import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { EnvoyModule } from "../test/envoy-module";
 import {
   createPi,
   realReadTmuxPlace,
@@ -57,7 +58,7 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-hung-hook");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-hung-hook");
     let hookCalls = 0;
     onEnvoyRoleRegained(async () => {
       hookCalls += 1;
@@ -71,7 +72,7 @@ describe("envoy OMP extension", () => {
       setInterval: (callback) => intervals.push(callback),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
     expect(registrations).toBe(1);
@@ -121,7 +122,9 @@ describe("envoy OMP extension", () => {
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-wedged-pass");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?heartbeat-wedged-pass"
+      );
       const fixture = createPi();
       const intervals: (() => void)[] = [];
       const context: SessionContext = {
@@ -149,7 +152,7 @@ describe("envoy OMP extension", () => {
         }
         return registrations;
       };
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       expect(registrations).toBe(1);
 
@@ -204,14 +207,16 @@ describe("envoy OMP extension", () => {
         if (url.pathname === "/v1/interests/subscribe") registrations += 1;
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-wedged-move");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?heartbeat-wedged-move"
+      );
       const fixture = createPi();
       const intervals: (() => void)[] = [];
       const context: SessionContext = {
         ...sessionContext("ses_wedged_move"),
         setInterval: (callback) => intervals.push(callback),
       };
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
       expect(registrations).toBe(1);
@@ -247,7 +252,9 @@ describe("envoy OMP extension", () => {
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-stall-said-once");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?heartbeat-stall-said-once"
+      );
       const warnings: string[] = [];
       const stopSink = logger.registerLogSink((entry) => {
         if (entry.level === "warn") warnings.push(entry.message);
@@ -261,7 +268,7 @@ describe("envoy OMP extension", () => {
           setInterval: (callback) => intervals.push(callback),
           ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
         };
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
 
         // A healthy tick before any stall is silent.
@@ -336,7 +343,7 @@ describe("envoy OMP extension", () => {
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+      const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
       const fixture = createPi();
       const heartbeats: (() => void)[] = [];
       const context: SessionContext = {
@@ -345,7 +352,7 @@ describe("envoy OMP extension", () => {
           heartbeats.push(callback);
         },
       };
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       return {
         places,

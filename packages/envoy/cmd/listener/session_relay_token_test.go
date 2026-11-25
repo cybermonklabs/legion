@@ -53,6 +53,7 @@ func counterStep(prev, next string) bool {
 // a finished frame's token, and the right token with one more subject token after it. The right
 // token acknowledges its frame once and ends it.
 func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
+	t.Parallel()
 	// The rig does not hold the durable binding, so no relay runs: every frame is one this test
 	// publishes through publishFrame, as a relay's pull loop does.
 	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)

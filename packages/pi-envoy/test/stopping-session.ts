@@ -116,7 +116,7 @@ function handlerFor(event: string): EventHandler {
 
 // The stand-in host is a subset of the real `PiApi`: the extension reads only what the suite's
 // host supplies, and the cast is that same narrowing.
-envoyExtension(pi as unknown as PiApi);
+await envoyExtension(pi as unknown as PiApi);
 await handlerFor("session_start")({}, context);
 
 let claim: string | undefined;

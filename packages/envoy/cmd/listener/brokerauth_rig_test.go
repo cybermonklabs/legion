@@ -145,6 +145,7 @@ func (r *brokerRig) call(t *testing.T, handler http.Handler, method, token, path
 // credential existed. R9 is here too: the same routes behind a listener given no broker setting
 // serve that very presentation and read no credential out of it (rig.open).
 func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerRig(t)
 	const (
 		bound    = "ses_rig_bound"
@@ -439,6 +440,7 @@ func walkEveryV1Route(t *testing.T, rig *brokerRig, refused []walkToken, control
 // project and its scope, is answered anything but 401 on each of the same requests, and its
 // presentation writes no rejection line, so the refusal is the scope's and not the route's.
 func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerRig(t)
 	const (
 		reader        = "ses_rig_reader"
@@ -486,6 +488,7 @@ func TestAPIAuthRefusesANarrowedTokenOfEveryKindOnEveryV1Route(t *testing.T) {
 // proof presented to the replica that never saw it. Two handles on one bucket stand in for the
 // two listeners.
 func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	js, err := client.Conn.JetStream()
 	if err != nil {
@@ -534,6 +537,7 @@ func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 // memory — would let a proof captured from one replica be presented to another, so there is no
 // fallback to refuse into.
 func TestBrokerTokensRefuseABusWithNoJetStream(t *testing.T) {
+	t.Parallel()
 	// A server of this test's own with no -js, connected to directly: testnats.Connect waits for
 	// JetStream, which this one will never have.
 	_, uri := testnats.StartConfig(t, "", nil, true)

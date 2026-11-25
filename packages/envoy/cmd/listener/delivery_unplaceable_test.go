@@ -12,6 +12,7 @@ import (
 // property no delivery test would report: the durable's pending budget stops being bounded, or a
 // slot is reclaimed while its message still waits, with no failure and no record anywhere.
 func TestUnplaceableRetryWindowFitsTheBoundsItDependsOn(t *testing.T) {
+	t.Parallel()
 	// A message that waits is NAKed rather than ACKed, so it holds one of the durable's pending
 	// slots for the whole wait instead of giving it back at once. The cap on how many this
 	// listener holds back at a time is what keeps those holds from becoming every slot there is.
@@ -45,6 +46,7 @@ func TestUnplaceableRetryWindowFitsTheBoundsItDependsOn(t *testing.T) {
 // and read again at the expiry, where a new message takes a slot and the orphans are gone. A
 // sequence whose own entry expired is taken afresh, with an expiry counted from the new take.
 func TestAnOrphanedDeferralSlotIsReclaimedAtItsExpiry(t *testing.T) {
+	t.Parallel()
 	start := time.Unix(1_800_000_000, 0)
 	clock := start
 	set := newUnplaceableDeferrals(defaultUnplaceableRetryWindow)

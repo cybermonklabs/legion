@@ -8,6 +8,7 @@ import {
 import { claimRefusedForStop } from "@legion/pi-shared/role-claim-stopping";
 import { logger } from "@oh-my-pi/pi-utils";
 import { REPLAY_STATE_ENTRY } from "../src/missed-messages";
+import type { EnvoyModule } from "../test/envoy-module";
 import {
   createPi,
   response,
@@ -85,12 +86,14 @@ test("a session_start registration that fails after the stop began tells the pan
   };
   // A fresh instance of the entry, as each row of `envoy.test.ts` loads: the query makes it a
   // module of its own, with state no other row shares, which a static import cannot give.
-  const { default: envoyExtension } = await import("./envoy.ts?start-failed-while-stopping");
+  const { default: envoyExtension }: EnvoyModule = await import(
+    "./envoy.ts?start-failed-while-stopping"
+  );
   const fixture = createPi();
   const intervals: (() => void)[] = [];
   const notifications: string[] = [];
   const context = host(session, [HISTORY], intervals, notifications);
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
 
   const starting = fixture.handlers.get("session_start")?.({}, context);
   try {
@@ -130,12 +133,12 @@ test("control: a session_start registration that fails with no stop begun tells 
     return responseWithRegistration(input, init, {});
   };
   // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension } = await import("./envoy.ts?start-failed-no-stop");
+  const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?start-failed-no-stop");
   const fixture = createPi();
   const intervals: (() => void)[] = [];
   const notifications: string[] = [];
   const context = host(session, [HISTORY], intervals, notifications);
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
 
   const starting = fixture.handlers.get("session_start")?.({}, context);
   try {
@@ -189,10 +192,10 @@ async function followingSession(query: string, session: string, topic: string) {
     return responseWithRegistration(input, init, {});
   };
   // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
   const fixture = createPi();
   const context = host(session, [], [], []);
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   const tool = (name: string) => {
     const found = fixture.tools.find((candidate) => candidate.name === name);
@@ -296,13 +299,15 @@ test("a notice a switch raises after the stop began is dropped by the tell gate"
     return responseWithRegistration(input, init, {});
   };
   // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension } = await import("./envoy.ts?switched-while-stopping");
+  const { default: envoyExtension }: EnvoyModule = await import(
+    "./envoy.ts?switched-while-stopping"
+  );
   const fixture = createPi();
   const notifications: string[] = [];
   const intervals: (() => void)[] = [];
   const before = host(first, [], intervals, notifications);
   const after = host(switched, [HISTORY], intervals, notifications);
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, before);
 
   const switching = fixture.handlers.get("session_switch")?.({ reason: "new" }, after);
@@ -344,13 +349,13 @@ test("control: a switch whose pass fails with no stop begun tells the pane", asy
     return responseWithRegistration(input, init, {});
   };
   // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension } = await import("./envoy.ts?switched-no-stop");
+  const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?switched-no-stop");
   const fixture = createPi();
   const notifications: string[] = [];
   const intervals: (() => void)[] = [];
   const before = host(first, [], intervals, notifications);
   const after = host(switched, [HISTORY], intervals, notifications);
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, before);
 
   const switching = fixture.handlers.get("session_switch")?.({ reason: "new" }, after);
@@ -381,7 +386,7 @@ test("a session event after the stop began runs no subagent check", async () => 
   const session = "ses_event_after_stop";
   globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
   // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension } = await import("./envoy.ts?event-after-stop");
+  const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?event-after-stop");
   const fixture = createPi();
   let publishes = 0;
   const base = host(session, [], [], []);
@@ -396,7 +401,7 @@ test("a session event after the stop began runs no subagent check", async () => 
       },
     },
   };
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   await fixture.handlers.get("session_shutdown")?.({}, context);
   const before = publishes;
@@ -415,7 +420,7 @@ test("control: a session event with no stop begun runs the subagent check again"
   const session = "ses_event_no_stop";
   globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
   // A fresh instance of the entry, as the row above loads: no static import gives one.
-  const { default: envoyExtension } = await import("./envoy.ts?event-no-stop");
+  const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?event-no-stop");
   const fixture = createPi();
   let publishes = 0;
   const base = host(session, [], [], []);
@@ -429,7 +434,7 @@ test("control: a session event with no stop begun runs the subagent check again"
       },
     },
   };
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   const before = publishes;
   try {
@@ -481,10 +486,10 @@ async function controllerSession(query: string, session: string) {
     return responseWithRegistration(input, init, {});
   };
   // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
   const fixture = createPi();
   const context = host(session, [], [], []);
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   await claimEnvoyRole(session, CONTROLLER_ROLE, context);
   return {
@@ -552,7 +557,7 @@ test("a claim for a session whose stop ended is refused naming the stop, and no 
   const role = "legion-acme-repo-1-implementer";
   globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
   // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension } = await import("./envoy.ts?claim-after-stop");
+  const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?claim-after-stop");
   // Another live instance of the process, bound before the session's own: it records what the
   // bridge hands it.
   const asked: string[] = [];
@@ -569,7 +574,7 @@ test("a claim for a session whose stop ended is refused naming the stop, and no 
   instances.push(other);
   const fixture = createPi();
   const context = host(session, [], [], []);
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   await fixture.handlers.get("session_shutdown")?.({}, context);
 
@@ -626,10 +631,10 @@ async function sessionHoldingRole(
     return responseWithRegistration(input, init, {});
   };
   // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
   const fixture = createPi();
   const context = host(session, [], [], []);
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   await claimEnvoyRole(session, role, context);
   return { fixture, context };

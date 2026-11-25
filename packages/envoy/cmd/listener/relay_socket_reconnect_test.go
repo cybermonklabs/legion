@@ -16,6 +16,7 @@ import (
 // limit exceeded". Control: endNATS logging the error as nats.go gave it; the row fails naming
 // that text.
 func TestAReceiptARelaySocketPublishesWhileNATSReconnectsFailsByName(t *testing.T) {
+	t.Parallel()
 	const closed = "listener: the relay socket could not reach NATS; it is closed"
 	rig := newRelaySocketRig(t, withSocketNATSProxy())
 	const session = "ses_edge_receipt_reconnect"

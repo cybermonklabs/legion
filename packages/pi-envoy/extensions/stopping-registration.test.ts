@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { LISTENER_CALL_RETRY_DELAY_MS } from "@legion/contracts";
 import { projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
 import { onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
+import type { EnvoyModule } from "../test/envoy-module";
 import {
   createPi,
   response,
@@ -108,9 +109,9 @@ async function projectRefusedSession(query: string, session: string) {
   };
   // A fresh instance of the entry, as each row of `envoy.test.ts` loads: the query makes it a
   // module of its own, with state no other row shares, which a static import cannot give.
-  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
   const { fixture, intervals, notifications, context } = stoppingHost(session);
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
   if (subscribeTool === undefined) throw new Error("envoy_subscribe was not registered");
@@ -257,13 +258,13 @@ async function roleSession(query: string, session: string) {
     return responseWithRegistration(input, init, {});
   };
   // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
   const regained: string[] = [];
   onEnvoyRoleRegained(async (role, reason) => {
     regained.push(`${role}:${reason}`);
   });
   const { fixture, intervals, notifications, context } = stoppingHost(session);
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
   if (roleTool === undefined) throw new Error("envoy_role_set was not registered");
@@ -477,9 +478,9 @@ async function heldRegistrationSession(query: string, session: string) {
     return responseWithRegistration(input, init, {});
   };
   // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
   const { fixture, intervals, notifications, context } = stoppingHost(session);
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   return {
     fixture,
@@ -709,9 +710,11 @@ test("envoy_role_set called once the stop has begun is refused naming the stop a
     return responseWithRegistration(input, init, {});
   };
   // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension } = await import("./envoy.ts?role-set-while-stopping");
+  const { default: envoyExtension }: EnvoyModule = await import(
+    "./envoy.ts?role-set-while-stopping"
+  );
   const { fixture, context } = stoppingHost(session);
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
   if (roleTool === undefined) throw new Error("envoy_role_set was not registered");

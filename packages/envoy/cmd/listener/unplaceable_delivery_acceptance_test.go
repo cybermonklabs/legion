@@ -128,6 +128,7 @@ func agentWakeProbe(t *testing.T, harness listenerDeliveryHarness) *natsgo.Subsc
 // The negative control is the Get below: if the cache held the target the delivery would prove
 // nothing about reading through to the bucket, since every warm-cache delivery acknowledges it.
 func TestAgentDeliveryReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
+	t.Parallel()
 	const target = "ses_cold_cache_delivery_target"
 	harness := newListenerDeliveryHarness(t)
 
@@ -319,6 +320,7 @@ func agentWakesFor(t *testing.T, subscription *natsgo.Subscription, sessionID st
 // no way of receiving, is acknowledged as a skip, with no wait and no wake. So the rig takes the
 // row that names this listener, and the first subtest's wake is the missing record's doing.
 func TestACopyForASessionWithNoRecordWaitsOnceAndWakesEvenWhenItsInterestNamesThisListener(t *testing.T) {
+	t.Parallel()
 	const window = 2 * time.Second
 	// start registers target's interest row naming the harness's own listener and, when entry is
 	// not nil, its record, then drives one envelope on target's agent subject through the
@@ -458,6 +460,7 @@ const capWait = time.Minute
 // the cap, the same message on the same rig waits, so the report above is the cap's doing and not
 // the rig's.
 func TestUnplaceableDeferralsStopAtTheirCap(t *testing.T) {
+	t.Parallel()
 	start := func(t *testing.T, target string, preload int) (unplaceableDeliveryRun, *unplaceableDeferrals, *natsgo.Subscription) {
 		t.Helper()
 		harness := unplaceableHarness(t)
@@ -533,6 +536,7 @@ func TestUnplaceableDeferralsStopAtTheirCap(t *testing.T) {
 // it. The redelivery is settled two ways: it reports the wake, or the durable acknowledges it
 // before it decodes it, because the session registered during the wait.
 func TestARedeliveryGivesItsDeferralSlotBack(t *testing.T) {
+	t.Parallel()
 	const window = 2 * time.Second
 	start := func(t *testing.T, target string) (listenerDeliveryHarness, *unplaceableDeferrals) {
 		t.Helper()
@@ -599,6 +603,7 @@ func TestARedeliveryGivesItsDeferralSlotBack(t *testing.T) {
 // other messages' slots: a release keyed on the message returns none of them, and the set reads
 // what it started with after the report.
 func TestARedeliveryThisListenerNeverDeferredGivesNoSlotBack(t *testing.T) {
+	t.Parallel()
 	start := func(t *testing.T, target string, preload int) (listenerDeliveryHarness, *unplaceableDeferrals) {
 		t.Helper()
 		harness := unplaceableHarness(t)

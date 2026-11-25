@@ -8,9 +8,10 @@
 import { createHash } from "node:crypto";
 import { RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
-import type { SessionContext as HostSessionContext } from "@legion/pi-shared/pi-types";
+import type { SessionContext as HostSessionContext, PiApi } from "@legion/pi-shared/pi-types";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { REPLAY_NOTICE_ENTRY } from "../src/missed-messages";
+import type { EnvoyModule } from "./envoy-module";
 import {
   createPi,
   natsState,
@@ -211,7 +212,7 @@ export async function bootConsumer(
     const data = natsState.published.at(-1)?.data;
     events.push(data === undefined ? subject : `${subject} ${new TextDecoder().decode(data)}`);
   };
-  const { default: envoyExtension } = await import(`../extensions/envoy.ts?${query}`);
+  const { default: envoyExtension }: EnvoyModule = await import(`../extensions/envoy.ts?${query}`);
   const fixture = createPi();
   const intervals: (() => void)[] = [];
   const written: unknown[] = [];
@@ -230,7 +231,9 @@ export async function bootConsumer(
       context
     );
   };
-  envoyExtension({
+  // The stand-in host is a subset of the real `PiApi`: the extension reads only what this host
+  // supplies, and the cast is that same narrowing.
+  await envoyExtension({
     ...fixture.pi,
     sendMessage: (message: SentCard, sendOptions: unknown) => {
       if (options.refuseCard?.(message) === true) throw new Error("the host refused the card");
@@ -239,7 +242,7 @@ export async function bootConsumer(
       if (turn === "idle") void write(message);
       else held.push(message);
     },
-  });
+  } as unknown as PiApi);
   const prior = options.entries ?? [];
   const base = sessionContext(SESSION);
   const notifications: string[] = [];

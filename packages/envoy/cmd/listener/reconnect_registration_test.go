@@ -11,6 +11,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: an answer inside the client's 5 s attempt, from a route whose budget is 3.5 s.
+//
 // A registration the listener answers while its NATS connection is reconnecting fails by name, and
 // inside the client's own deadline (R14 of dispatch://INFRA-3589). A registration of a session the
 // listener already serves reads and updates the session's consumer, and those are JetStream

@@ -19,6 +19,9 @@ import (
 // not free within the write's budget (storedFilterWrite).
 const lockNotFreeLine = "session consumer filter left unchanged: the session's lock was not free within the filter write's budget; the session's next heartbeat sets it"
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: an answer between the route's 3.5 s budget and the client's 5 s attempt.
+//
 // An unsubscribe whose session's lock is held past the route's budget answers 200 and leaves the
 // consumer's filter as it was. A registration of the session holds that lock across its consumer
 // call and its writes, and the test holds it here in the same way. The route's filter write

@@ -184,6 +184,7 @@ type bodyLimitRow struct {
 // A body past the limit is refused whatever it holds: one that is not JSON, sent with its
 // Content-Length and without one (chunked), is answered 413 as well, and not 400.
 func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newBodyLimitRig(t)
 	const (
 		sendTarget = "ses_body_limit_send_target"
@@ -513,6 +514,7 @@ func (f *failsAfter) Read(p []byte) (int, error) {
 // "invalid json", and a body both read cleanly is served. Each case is sent with no
 // Content-Length, so the route learns the body's size only by reading it.
 func TestAV1BodyIsJudgedByItsDecodeAndTheReadOfItsRest(t *testing.T) {
+	t.Parallel()
 	overTheLimit := strings.Repeat(" ", v1BodyLimit)
 	for _, row := range []struct {
 		name    string

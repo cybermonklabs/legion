@@ -80,6 +80,7 @@ func oldPluginRegistration(sessionID, plugin, version string) string {
 // that subject opens. A client that reads no relay frame it did not ask for is still refused, and
 // the refusal names what that build needs (dispatch://INFRA-3589, R21).
 func TestANewOldPluginSessionRegistersAfterAFailedFirstPass(t *testing.T) {
+	t.Parallel()
 	for _, version := range []string{"16.49.2", "16.36.1"} {
 		t.Run("@sjawhar/pi-envoy "+version+" is given a consumer", func(t *testing.T) {
 			rig := newRelayRig(t)

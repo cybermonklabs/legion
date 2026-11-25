@@ -48,6 +48,10 @@ import { isolatePaneEnvironment } from "./pane-environment"
 import { beforeTheGuard, collected, ROW_GUARD_MS, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
+// Every row's hang guard (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`), set above the first row:
+// Bun holds `setDefaultTimeout` only for the rows registered after it.
+setDefaultTimeout(ROW_GUARD_MS)
+
 isolatePaneEnvironment()
 
 const scratchState = useScratchState()
@@ -836,16 +840,14 @@ test("a Dispatch frame the channel answered with an error is answered again when
       ),
     )
     const replied: string[] = []
-    const controlAnswered = Promise.withResolvers<void>()
     server = Bun.serve({
       port: 0,
       fetch: (request) => {
-        const path = new URL(request.url).pathname
-        replied.push(path)
-        if (path.includes("55555555")) controlAnswered.resolve()
+        replied.push(new URL(request.url).pathname)
         return Response.json({})
       },
     })
+    const answersTo = (id: string) => replied.filter((path) => path.includes(id)).length
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
     const nats = new FakeNats()
@@ -860,23 +862,30 @@ test("a Dispatch frame the channel answered with an error is answered again when
 
     relayed(nats, 1, rejectedFrameRaw)
     // Answered on Dispatch, and the frame is done: the key it was claimed under is released
-    // again, since Claude Code was never handed the message.
-    await waitFor(async () => nats.repliesOn("_INBOX.1").includes("done"), "the first answer")
-    expect(replied.filter((path) => path.includes("44444444"))).toHaveLength(1)
+    // again, since Claude Code was never handed the message. The channel answers a frame `done`
+    // only once it is through with it, its reply on Dispatch posted, so each verdict below is
+    // read at that frame's own `done`.
+    expect(await nats.settled("_INBOX.1")).toBe("done")
+    expect(answersTo("44444444")).toBe(1)
 
     // The listener mints a fresh event id for the re-send; its dedupe key is the first send's.
     relayed(nats, 2, JSON.stringify({ ...JSON.parse(rejectedFrameRaw), event_id: "resend" }))
-    // The relay hands frames over in stream order, so the control's answer comes after whatever
-    // the channel did with the re-send.
+    // A frame of another key after it. The two answers can reach Dispatch in either order, since
+    // each reads the session's settings first, asynchronously, so neither frame's answer stands
+    // for the other's: each is read at its own `done`.
     relayed(
       nats,
       3,
       JSON.stringify({ ...control, event_id: "control", dedupe_key: "dispatch-control" }),
     )
-    await controlAnswered.promise
+    expect(await Promise.all([nats.settled("_INBOX.2"), nats.settled("_INBOX.3")])).toEqual([
+      "done",
+      "done",
+    ])
 
     expect(notifier.notifications).toEqual([])
-    expect(replied.filter((path) => path.includes("44444444"))).toHaveLength(2)
+    expect(answersTo("44444444")).toBe(2)
+    expect(answersTo("55555555")).toBe(1)
   } finally {
     await session?.shutdown()
     server?.stop(true)
@@ -963,7 +972,6 @@ const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 // fixed 20 s decided these rows before: at a load near 1,000 a server that wrote that cache into
 // its empty HOME first had not answered its `initialize` in 20 s.
 beforeEach(rowStarted)
-setDefaultTimeout(ROW_GUARD_MS)
 
 /**
  * Runs the channel server as Claude Code does, in `env.HOME` with `env` as its whole environment:

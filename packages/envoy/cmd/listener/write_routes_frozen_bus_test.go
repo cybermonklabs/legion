@@ -110,6 +110,9 @@ func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.Respo
 	t.Logf("%s with the bus silent: 503 once its budget was spent: %s", route, refusal.Error)
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: each answer inside 4 s, from a route whose budget is 3.5 s (writeRoutesWithin).
+//
 // Every /v1 route that writes - subscribe, unsubscribe, DELETE /v1/interests/<session_id>, POST
 // /v1/roles/set and DELETE /v1/sessions/<session_id> - does its store work within
 // sendRequestBudget of the request's own context. nats.go's KV reads and writes take no context
@@ -214,6 +217,9 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 	})
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: each answer inside 4 s, from a route whose budget is 3.5 s (writeRoutesWithin).
+//
 // POST /v1/roles/set's claim (store.Registry.SetRoleWithPrevious) and a soft claim's read of the
 // role's holder are role-bucket calls the claimant's registration write does not reach, so each
 // is frozen on its own here: the relay passes everything up to the first protocol line naming the
@@ -255,6 +261,7 @@ func TestAClaimWhoseRoleStoreStopsAnsweringIsAnsweredInsideTheBudget(t *testing.
 // of store answers, a store answer wrapped alone, and a store answer wrapped with its detail by one
 // fmt.Errorf (an unreadable record and its decode error) are each still the store's answer.
 func TestAJoinedStoreErrorIsTheStoresAnswerOnlyWhenEveryPartIs(t *testing.T) {
+	t.Parallel()
 	dropped := &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}
 	for _, c := range []struct {
 		name     string

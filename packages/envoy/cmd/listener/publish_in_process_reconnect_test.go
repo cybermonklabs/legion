@@ -15,6 +15,7 @@ import (
 // call's error is still the earlier attempt's, carries the refusal, and names the reconnect, so the
 // route's 503 maybe_stored says the bus was reconnecting rather than only that the budget ended.
 func TestAnInProcessResendThatWaitsOutAReconnectNamesIt(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	refusal := fmt.Errorf("publish notifications.team.x: %w", bus.ErrDuplicateInProcess)

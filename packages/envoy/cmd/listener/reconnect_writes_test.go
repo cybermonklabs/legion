@@ -82,6 +82,9 @@ func reconnectWritesCallWritten(port int, path, body string, timeout time.Durati
 	return reconnectWritesAnswer{status: response.StatusCode, body: string(answer), err: err}
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: the listener's reconnect inside the route's 3.5 s budget, after the test gave up.
+//
 // A write the listener makes while its NATS connection is reconnecting waits for the connection
 // within its caller's deadline and is then sent, or fails by name, at once or once that deadline
 // ends: the answer is a 503 whose reason says the bus is reconnecting. No answer and no log line
@@ -383,6 +386,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 // restart line the relay writes then names that; a restart line for a pull request nats.go
 // refused names the reconnect.
 func TestAWriteThroughANATSReconnectWaitsOrFailsByNameInASessionRelay(t *testing.T) {
+	t.Parallel()
 	const (
 		answerFailed   = "session relay could not answer the consumer for a frame"
 		pullEnded      = "session relay pull ended; restarting at the ack floor"

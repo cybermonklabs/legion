@@ -295,8 +295,8 @@ export function createControllerSession(
     const capability =
       controllerCapability ??
       (supervised
-        ? requiredSecret(process.env, "LEGION_BOOT_TOKEN")
-        : requiredControllerCapability(process.env));
+        ? await requiredSecret(process.env, "LEGION_BOOT_TOKEN")
+        : await requiredControllerCapability(process.env));
     controllerCapability = capability;
     const launched = classifySession(process.env).kind === "controller";
     // Read and validate before anything below mutates daemon-side state (the registration that

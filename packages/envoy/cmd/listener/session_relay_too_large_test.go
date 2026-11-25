@@ -78,6 +78,9 @@ func storeEnvelopeOfSize(t *testing.T, rig *relayRig, subject string, size int) 
 	return item, ack.Sequence
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: a relay's receipt wait of 500 ms, which the silent session's pause waits out.
+//
 // A stored message can fit the server's max payload while its relay frame, the same bytes with
 // the relay's headers, does not, and NATS refuses that frame however often it is sent. The relay
 // acknowledges such a message, writes one WARN naming the session, the event and the stream

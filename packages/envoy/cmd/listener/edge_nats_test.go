@@ -51,6 +51,7 @@ func startEdgeListenerProcess(t *testing.T, binary, uri, machineID, projects, br
 // on a server that holds none, and it starts on the same server once a shared listener, which
 // owns the stream, has created it.
 func TestTheEdgeRefusesToStartWithoutTheStream(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	broker := ciphertokentest.NewStubBroker(t)
@@ -77,6 +78,9 @@ func TestTheEdgeRefusesToStartWithoutTheStream(t *testing.T) {
 	}
 }
 
+// Serial (listenerTestParallelism): it changes something the whole process shares: it calls
+// t.Setenv.
+//
 // Check l16 of dispatch://INFRA-3589 (R18) at the edge's start: an edge listener whose machine id
 // is a fully qualified host name takes the grant natsgrant.Edge builds for that id, and its start
 // names every inbox under the prefix that grant subscribes, the id spelled as its durable spells it

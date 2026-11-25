@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test"
+import { afterEach, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -6,6 +6,7 @@ import { SESSION_HEARTBEAT_MS, SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
 import type { SetRoleInput, SetRoleResult } from "@legion/envoy-client/transport"
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
 import { legion } from "../package.json" with { type: "json" }
 import type { RoleRegainHook } from "../src/envoy-channel-server"
 import {
@@ -20,6 +21,10 @@ import {
   stopPane,
   waitForTranscript,
 } from "../src/legion-claim"
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS)
 
 const SESSION = "0b9c2f4e-2d3a-4c55-9a1e-6f7d8e9a0b1c"
 /** The channel server's client instance, which the pane's claim names as its process. */
@@ -69,9 +74,9 @@ function daemonAnswering(answer: (path: string) => Response): {
   return { posted, fetch: stub }
 }
 
-test("a session with no boot token is no Legion pane", () => {
-  expect(legionPane({ LEGION_DAEMON_URL: "http://daemon.test" })).toBeUndefined()
-  expect(legionPane({ LEGION_BOOT_TOKEN: " " })).toBeUndefined()
+test("a session with no boot token is no Legion pane", async () => {
+  expect(await legionPane({ LEGION_DAEMON_URL: "http://daemon.test" })).toBeUndefined()
+  expect(await legionPane({ LEGION_BOOT_TOKEN: " " })).toBeUndefined()
 })
 
 test("a Legion pane reads its boot token from the file the daemon named, and needs its address and directory", async () => {
@@ -80,7 +85,7 @@ test("a Legion pane reads its boot token from the file the daemon named, and nee
   const bootToken = fixtureSecret("boot")
   await writeFile(tokenFile, `${bootToken}\n`)
   expect(
-    legionPane({
+    await legionPane({
       LEGION_BOOT_TOKEN_FILE: tokenFile,
       LEGION_BOOT_TOKEN: "ignored",
       LEGION_DAEMON_URL: "http://daemon.test",
@@ -92,19 +97,19 @@ test("a Legion pane reads its boot token from the file the daemon named, and nee
     configDir: dir,
     launcherSaves: false,
   })
-  expect(() => legionPane({ LEGION_BOOT_TOKEN: "t", CLAUDE_CONFIG_DIR: dir })).toThrow(
+  await expect(legionPane({ LEGION_BOOT_TOKEN: "t", CLAUDE_CONFIG_DIR: dir })).rejects.toThrow(
     "LEGION_DAEMON_URL is required for Legion",
   )
-  expect(() =>
+  await expect(
     legionPane({ LEGION_BOOT_TOKEN: "t", LEGION_DAEMON_URL: "http://daemon.test" }),
-  ).toThrow("CLAUDE_CONFIG_DIR is required for Legion")
-  expect(() =>
+  ).rejects.toThrow("CLAUDE_CONFIG_DIR is required for Legion")
+  await expect(
     legionPane({
       LEGION_BOOT_TOKEN_FILE: join(dir, "missing"),
       LEGION_DAEMON_URL: "http://daemon.test",
       CLAUDE_CONFIG_DIR: dir,
     }),
-  ).toThrow("LEGION_BOOT_TOKEN_FILE")
+  ).rejects.toThrow("LEGION_BOOT_TOKEN_FILE")
 })
 
 test("the transcript wait answers the file Claude Code wrote under any project, and stops when aborted", async () => {
@@ -567,7 +572,7 @@ async function bootOn(env: Record<string, string>): Promise<{
   readonly booted: Promise<void>
 }> {
   const configDir = await tempDir()
-  const pane = legionPane({
+  const pane = await legionPane({
     LEGION_BOOT_TOKEN: "boot-1",
     LEGION_DAEMON_URL: "http://daemon.test",
     CLAUDE_CONFIG_DIR: configDir,

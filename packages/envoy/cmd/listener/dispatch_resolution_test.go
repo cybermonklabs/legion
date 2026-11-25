@@ -549,6 +549,7 @@ func (rig *dispatchRig) mention(t *testing.T, issueKey, sessionID, body string) 
 // about the one session by id, against a route that reads the session store, and the frame
 // arrives at the agent's own endpoint.
 func TestDispatchMentionResolvesASessionTheCacheHasNotRefilled(t *testing.T) {
+	t.Parallel()
 	rig := newDispatchRig(t)
 	planner := rig.registerSession(t, "ses_planner", "Planner")
 	key := rig.issueKey(t, "A mention while the cache refills")
@@ -569,6 +570,7 @@ func TestDispatchMentionResolvesASessionTheCacheHasNotRefilled(t *testing.T) {
 // Now each selected session is read by id against the session store, so both are recipients and
 // both frames arrive.
 func TestDispatchBroadcastResolvesSessionsTheCacheHasNotRefilled(t *testing.T) {
+	t.Parallel()
 	rig := newDispatchRig(t)
 	planner := rig.registerSession(t, "ses_planner", "Planner")
 	tester := rig.registerSession(t, "ses_tester", "Tester")
@@ -609,6 +611,7 @@ func TestDispatchBroadcastResolvesSessionsTheCacheHasNotRefilled(t *testing.T) {
 // under its idempotency key, where no retry of the human's could ever reach them — and the
 // mention's attempt would have recorded that same wording.
 func TestDispatchRefusesABroadcastWhenASessionReadDoesNotAnswer(t *testing.T) {
+	t.Parallel()
 	rig := newDispatchRig(t)
 	planner := rig.registerSession(t, "ses_planner", "Planner")
 	tester := rig.registerSession(t, "ses_tester", "Tester")
@@ -654,6 +657,7 @@ func TestDispatchRefusesABroadcastWhenASessionReadDoesNotAnswer(t *testing.T) {
 // taken over. Both sides are here: the cache that has not refilled keeps its holder's claim, and
 // the session that genuinely ended loses it.
 func TestDispatchRefusesAClaimTakeoverWhileTheCacheRefills(t *testing.T) {
+	t.Parallel()
 	rig := newDispatchRig(t)
 	holder := rig.registerSession(t, "ses_holder", "Implementer")
 	contender := rig.registerSession(t, "ses_contender", "Second agent")
@@ -744,6 +748,7 @@ func recordsFor(records []deliveryRecord, sessionID string) []deliveryRecord {
 // would store nothing and wake nothing, and the person would have to send the message again once
 // the pod is back (#4088).
 func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
+	t.Parallel()
 	rig := newDispatchRig(t)
 	wakes, err := rig.warm.client.Conn.SubscribeSync(bus.LegionWakeTopic)
 	if err != nil {

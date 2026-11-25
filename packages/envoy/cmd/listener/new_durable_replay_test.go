@@ -223,6 +223,9 @@ func deliverPolicyName(policy natsgo.DeliverPolicy) string {
 	return string(name)
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: a wake stored inside 2 s past the latest time the agent wait allows (aloneLatest).
+//
 // TestANewListenerDurableDoesNotReplayTheStream is check l24. Its rows run in order on one rig,
 // each on what the row before it left.
 //

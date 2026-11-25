@@ -175,8 +175,9 @@ export function createClaimSession(
     if (capability !== undefined && capability.sessionID !== sessionID) return;
     if (booting !== undefined) return booting;
 
-    const bootToken = requiredSecret(process.env, "LEGION_BOOT_TOKEN");
-    booting = boot(context, sessionID, bootToken, deps.daemon());
+    booting = requiredSecret(process.env, "LEGION_BOOT_TOKEN").then((bootToken) =>
+      boot(context, sessionID, bootToken, deps.daemon())
+    );
     try {
       await booting;
     } catch (error) {

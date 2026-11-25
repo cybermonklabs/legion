@@ -22,6 +22,7 @@ import (
 // The new state is a string literal, so this file compiles against a listener that predates it.
 // There the first send fails, because its answer says live.
 func TestPlainSendDistinguishesUnavailableConversationReceiver(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 
 	const terminal = "ses_terminal_without_mod"

@@ -25,6 +25,7 @@ import (
 // and publishes nothing, and a subscriber on each lane sees nothing. A team topic and a role topic
 // still publish on the same route.
 func TestThePublishRouteRefusesDispatchAndGitHubLanes(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		holder = "ses_lane_refusal_holder"

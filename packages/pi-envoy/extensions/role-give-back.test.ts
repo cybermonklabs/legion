@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { EnvoyModule } from "../test/envoy-module";
 import {
   ANY_CLIENT_INSTANCE,
   busOutageAnswer,
@@ -60,9 +61,11 @@ describe("envoy OMP extension", () => {
       }
     });
     try {
-      const { default: envoyExtension } = await import("./envoy.ts?notice-removal-unanswered");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?notice-removal-unanswered"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = sessionContext("ses_notice");
       await fixture.handlers.get("session_start")?.({}, context);
       for (const [index, row] of rows.entries()) {
@@ -106,10 +109,12 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?shutdown-gives-back-role");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?shutdown-gives-back-role"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_shutdown");
     await fixture.handlers.get("session_start")?.({}, context);
     const claimed = await fixture.tools

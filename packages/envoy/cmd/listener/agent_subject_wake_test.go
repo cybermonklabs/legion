@@ -417,6 +417,9 @@ func sessionReadDenied() string {
 	return listenerGrant("$JS.API.DIRECT.GET."+bucket, "$JS.API.DIRECT.GET."+bucket+".>", "$JS.API.STREAM.MSG.GET."+bucket)
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: row e's session must register again inside the 2 s agent wait.
+//
 // TestAnAgentMessageIsTheSessionConsumersAlone is check l1. Each subtest is one row of it.
 //
 // Rows a to f and i run on two listener processes A and B, built from this tree, with a wait of

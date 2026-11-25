@@ -24,6 +24,7 @@ import (
 // relay is granted, and the stream holds its one record, so the row's read of the records would
 // see one that the server stored.
 func TestATakeoverRecordWriteTheBusDidNotAnswerIsAnsweredAsTheBusUnanswered(t *testing.T) {
+	t.Parallel()
 	url := testnats.URL(t)
 	relay := startSubjectStallRelay(t, url)
 	client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1))

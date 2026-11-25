@@ -12,6 +12,7 @@ import { NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { logger } from "@oh-my-pi/pi-utils";
 import { ErrorCode, NatsError } from "nats";
+import type { EnvoyModule } from "../test/envoy-module";
 import {
   configDirectory,
   createPi,
@@ -77,9 +78,11 @@ describe("envoy OMP extension", () => {
         setTimeout: () => undefined,
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?broker-answers-no-trade");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?broker-answers-no-trade"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       expect(
         notifications.some((message) => message.includes("the trade for the session's token"))
@@ -165,9 +168,11 @@ describe("envoy OMP extension", () => {
     const passMs = 30_000;
     await withEnvoyTimings({ heartbeatMs: passMs, passDeadlineMs: passMs }, async () => {
       brokerPod(() => "503");
-      const { default: envoyExtension } = await import("./envoy.ts?broker-answers-503");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?broker-answers-503"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       // Timed from the start itself, not from before the module loads: a module slow to load on a
       // loaded machine is no slower start.
       const { context, notifications } = timedContext("ses_broker_503", Date.now());
@@ -197,9 +202,9 @@ describe("envoy OMP extension", () => {
     const { minted } = brokerPod((trade) => (trade === 1 ? "503" : "grant"));
     const started = Date.now();
     const { context, notifications } = timedContext("ses_broker_once_away", started);
-    const { default: envoyExtension } = await import("./envoy.ts?broker-away-once");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?broker-away-once");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(
       natsState.presented.map((token) => minted.get(token)),
@@ -231,9 +236,11 @@ describe("envoy OMP extension", () => {
     });
     try {
       const { context, notifications } = timedContext("ses_first_dial_refused", Date.now());
-      const { default: envoyExtension } = await import("./envoy.ts?first-dial-refused-twice");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?first-dial-refused-twice"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       expect(natsState.failConnects, notifications.map(({ message }) => message).join(" | ")).toBe(
         0
@@ -279,9 +286,11 @@ describe("envoy OMP extension", () => {
         expires_in: 900,
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-switch");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?nats-credential-switch"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_switch_from"));
     // Each CONNECT presented a token the broker minted for the session it names here.
     expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_switch_from"]);
@@ -309,9 +318,9 @@ describe("envoy OMP extension", () => {
     // session is told of as every other inbound outage is (the review of 2fa6fbf7cf, M2).
     const { minted } = brokerPod(() => "grant");
     const { context, notifications } = timedContext("ses_keeper_notice", Date.now());
-    const { default: envoyExtension } = await import("./envoy.ts?keeper-notice");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?keeper-notice");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_keeper_notice"]);
     const refused = () =>
@@ -354,9 +363,9 @@ describe("envoy OMP extension", () => {
         return await pod(input, init);
       };
       const before = timedContext("ses_follow_from", started);
-      const { default: envoyExtension } = await import("./envoy.ts?follow-bound");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?follow-bound");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, before.context);
       const after = timedContext("ses_follow_to", started);
       const switchedAt = Date.now() - started;
@@ -407,9 +416,11 @@ describe("envoy OMP extension", () => {
         expires_in: 900,
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-failed-switch");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?nats-credential-failed-switch"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_failed_from"));
     const oldControl = "agentstream.ses_failed_from.control";
     expect(natsState.controls.get(oldControl)?.active()).toBe(true);
@@ -442,9 +453,11 @@ describe("envoy OMP extension", () => {
     // returns to A with no event. Until the next pass runs, A's control subject is closed and B's
     // is still open; what the host records then is A's, and B's viewer must be replayed only B's.
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?agent-stream-ring-per-session");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?agent-stream-ring-per-session"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const first = sessionContext("ses_ring_a");
     await fixture.handlers.get("session_start")?.({}, first);
     const second = sessionContext("ses_ring_b");
@@ -497,9 +510,11 @@ describe("envoy OMP extension", () => {
         expires_in: 2,
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-keeper");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?nats-credential-keeper"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_kept"));
     const [first] = minted;
     expect(first).toBeString();

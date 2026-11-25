@@ -35,6 +35,7 @@ import (
 // would be as good an answer, since its client registers again; what may never happen is the 200
 // with no record.
 func TestARegistrationWhoseBudgetTheStepsBeforeItsRecordSpentStillWritesTheRecordBeforeIts200(t *testing.T) {
+	t.Parallel()
 	rig := setupKnownRig(t)
 	clock := rig.stillClock()
 	const sessionID = "ses_spent_budget"
@@ -75,6 +76,7 @@ func TestARegistrationWhoseBudgetTheStepsBeforeItsRecordSpentStillWritesTheRecor
 // which this moves past the store budget once the write has been swallowed, past the write's own
 // bound with it. A write that shared that budget would fail as a WARN beside a 200.
 func TestARegistrationWhoseKnownSessionRecordIsNotWrittenIsRefusedForItsClientToRetry(t *testing.T) {
+	t.Parallel()
 	url := testnats.URL(t)
 	relay := startListenerRelay(t, url)
 	client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1))
@@ -117,6 +119,7 @@ func TestARegistrationWhoseKnownSessionRecordIsNotWrittenIsRefusedForItsClientTo
 // TestAStoppedSessionPastTheMaxPayloadIsStillSentToAndCounted, where a known-session record of the
 // same size is written in chunks, answered 200, and read back with every topic.
 func TestARegistrationWhoseKnownSessionChunkIsNotWrittenIsRefusedAndLeavesNoRecord(t *testing.T) {
+	t.Parallel()
 	url := testnats.URL(t)
 	relay := startListenerRelay(t, url)
 	client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1))

@@ -22,6 +22,7 @@ import {
   type connect as realConnect,
 } from "nats";
 import { version as packageVersion } from "../package.json" with { type: "json" };
+import type { EnvoyModule } from "../test/envoy-module";
 import {
   createPi,
   forwardedRoleEnvelope,
@@ -52,10 +53,10 @@ describe("envoy OMP extension", () => {
       setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    const { default: envoyExtension } = await import("./envoy.ts?retry");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?retry");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     expect(notifications.some((message) => message.includes("retrying in the background"))).toBe(
@@ -118,9 +119,9 @@ describe("envoy OMP extension", () => {
       setInterval: () => {},
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    const { default: envoyExtension } = await import("./envoy.ts?seed-notice");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?seed-notice");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(
       notifications.some((message) =>
@@ -149,9 +150,9 @@ describe("envoy OMP extension", () => {
         setInterval: () => {},
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?redial-first-dial");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?redial-first-dial");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
 
       expect(natsState.failConnects).toBe(0);
@@ -201,9 +202,11 @@ describe("envoy OMP extension", () => {
         setInterval: () => {},
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?redial-resumed-start");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?redial-resumed-start"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
 
       expect(natsState.failConnects).toBe(0);
@@ -240,9 +243,9 @@ describe("envoy OMP extension", () => {
         setInterval: (callback) => intervals.push(callback),
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?inbound-restored");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?inbound-restored");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       const transcript = () =>
         fixture.entries
@@ -308,9 +311,11 @@ describe("envoy OMP extension", () => {
         setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?relay-lost-mid-session");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?relay-lost-mid-session"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const heartbeat = () => {
         for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
       };
@@ -417,9 +422,11 @@ describe("envoy OMP extension", () => {
         ...sessionContext(id),
         setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
       };
-      const { default: envoyExtension } = await import("./envoy.ts?control-lost-mid-session");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?control-lost-mid-session"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       try {
         await fixture.handlers.get("session_start")?.({}, context);
         const first = natsState.controls.get(control);
@@ -459,9 +466,9 @@ describe("envoy OMP extension", () => {
       setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     const written = (word: string) =>
       fixture.entries
@@ -668,9 +675,9 @@ describe("envoy OMP extension", () => {
           setInterval: () => {},
           ui: sessionContext().ui,
         };
-        const { default: envoyExtension } = await import("./envoy.ts?pass-budget");
+        const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pass-budget");
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
         // The rest of the pass needs 20.25 s, more than the 7.5 s it has, so no redial fits.
         expect(bounds).toHaveLength(1);
@@ -701,6 +708,9 @@ describe("envoy OMP extension", () => {
         // An instance of its own (the query), as each row of this file loads one: the build source
         // it is given is that instance's module state.
         const entry = await import("./envoy.ts?connection-build");
+        // The query names no file, so `entry` is untyped; its factory is read through
+        // `EnvoyModule`, so a call of it left without `await` fails Biome's noFloatingPromises.
+        const { default: envoyExtension }: EnvoyModule = entry;
         const commit = "0123456789abcdef0123456789abcdef01234567";
         const rows = [
           { stamp: `${commit}\n`, packed: true, want: `omp-ses_build legion@${commit}` },
@@ -722,7 +732,7 @@ describe("envoy OMP extension", () => {
             ui: sessionContext().ui,
           };
           const fixture = createPi();
-          entry.default(fixture.pi);
+          await envoyExtension(fixture.pi);
           names.length = 0;
           await fixture.handlers.get("session_start")?.({}, context);
           await fixture.handlers.get("session_shutdown")?.({}, context);
@@ -767,11 +777,11 @@ describe("envoy OMP extension", () => {
           setInterval: (callback) => intervals.push(callback),
           ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
         };
-        const { default: envoyExtension } = await import(
+        const { default: envoyExtension }: EnvoyModule = await import(
           `./envoy.ts?named-failure-${withheld.length}`
         );
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
         // The start race is held for its bound (`INBOUND_FIRST_OPEN_BOUND_MS`). Past it, the
         // background retry's pass, whose dial fails too, tells the session.

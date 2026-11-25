@@ -12,6 +12,7 @@ import (
 // ack floor it read, and those of another stream, and leaves other sessions' entries alone. So a
 // relay that keeps passing such messages holds only those still above its last start's floor.
 func TestTheTooLargeSetKeepsOnlyWhatIsAboveTheFloor(t *testing.T) {
+	t.Parallel()
 	const stream = "stream-a"
 	held := func(set *relayPassedSet, sessionID string) int {
 		set.mu.Lock()

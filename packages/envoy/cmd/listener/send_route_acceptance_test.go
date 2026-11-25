@@ -94,6 +94,7 @@ func assertRecordFields(t *testing.T, record map[string]any, want map[string]any
 // delivery read back from notifications.agent.<id> is the second half: a 200 alone would pass
 // even if the envelope never left the listener.
 func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
+	t.Parallel()
 	const target = "ses_cold_cache_target"
 	registrar, cold := trailingListeners(t)
 	if err := registrar.sessions.Put(target, session.SessionEntry{
@@ -232,6 +233,9 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	t.Logf("bus unreachable: 503 in %s: %s", elapsed, refusal.Error)
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: each answer inside 4 s, from a route whose budget is 3.5 s.
+//
 // A bus that goes silent without closing the connection - a partition, or a hub host that stops
 // answering without resetting its sockets - is unreachable too, and a send and a publish answer it
 // with the same named 503 inside the caller's attempt. nats.go cannot tell such a link is dead
@@ -436,6 +440,7 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 // topic goes to the bus as written, so `notifications..x` clears the handler's prefix checks and
 // is refused by the bus's own subject check (bus.ErrInvalidSubject).
 func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) {
+	t.Parallel()
 	const target = "ses_refused_publish_target"
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{target})
@@ -534,6 +539,7 @@ func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) 
 // the line's own fields (the summary among them) are checked on a refusal that has an envelope
 // and on one refused before any envelope exists.
 func TestListenerRecordsEverySendAndPublishRequest(t *testing.T) {
+	t.Parallel()
 	const target = "ses_recorded_target"
 	const sender = "ses_recorded_sender"
 	client := setupPublishTestClient(t)
