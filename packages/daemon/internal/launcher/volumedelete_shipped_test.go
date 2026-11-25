@@ -28,6 +28,8 @@ import (
 // cases' do: the deleter covers the container's /tmp, and a runner whose TMPDIR is /tmp keeps the
 // fixture's volume there, which the deleter would otherwise refuse to cover and end on.
 func TestTheShippedDeletersRemovalFollowsNoLinkIntoTheVolume(t *testing.T) {
+	// Not parallel: it writes the package variable roleSystemRoot (useRoleSystemRoot), which
+	// parallel tests read.
 	requireRoleNamespaces(t)
 	f := newTrimFixture(t, 1)
 	useRoleSystemRoot(t, f.cover, filepath.Join(f.coverRoot, "system"))
