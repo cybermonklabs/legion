@@ -211,3 +211,88 @@ func TestThePrioritiesReadWalksIssuesOnceOnTheCorpus(t *testing.T) {
 		}
 	}
 }
+
+// newestEventWalk is the plan of the walk over the members in plan, an analyzed plan of a text of
+// the newest event: the subplan newestEventWalkCTE (planSubplan). The walk is told by its place in
+// the plan rather than by the tables it reads, so a read of issues beside the walk is never taken
+// for the walk's own.
+func newestEventWalk(t testing.TB, plan json.RawMessage, subject string) json.RawMessage {
+	t.Helper()
+	return planSubplan(t, plan, newestEventWalkCTE, subject)
+}
+
+// newestEventWalkBuffers is the shared buffers, hit plus read, that the walk over the members in
+// plan reads (newestEventWalk): those of the walk's top node, which count every node under it.
+func newestEventWalkBuffers(t testing.TB, plan json.RawMessage, subject string) float64 {
+	t.Helper()
+	top := explaintest.Nodes(t, newestEventWalk(t, plan, subject))[0]
+	return top.SharedHitBlocks + top.SharedReadBlocks
+}
+
+// requireWalkReadsIssuesOnce holds the walk over the members in plan (newestEventWalk) to one
+// read of issues: one scan of the table, which runs once. Main's walk hashes issues from that one
+// read and joins each step's members to the hash; a walk that probes issues for each member row
+// runs its scan once for each.
+func requireWalkReadsIssuesOnce(t testing.TB, plan json.RawMessage, subject string) {
+	t.Helper()
+	var reads []explaintest.Scan
+	for _, scan := range explaintest.Scans(t, newestEventWalk(t, plan, subject)) {
+		if scan.Relation == "issues" {
+			reads = append(reads, scan)
+		}
+	}
+	if len(reads) != 1 {
+		t.Errorf("%s scans issues %d times in its walk over the members (%s), want one scan:\n%s",
+			subject, len(reads), newestEventWalkCTE, plan)
+		return
+	}
+	if reads[0].Loops != 1 {
+		t.Errorf("%s runs its scan of issues in its walk over the members (%s) %v times, want once:\n%s",
+			subject, newestEventWalkCTE, reads[0].Loops, plan)
+	}
+}
+
+// requireWalkWithinMains holds the walk over the members in plan (newestEventWalk) to reading no
+// more shared buffers, hit plus read, than mainsWalk, those main's walk reads under the same plan
+// over the same scope, beside the read of the relations the walk counts in its own
+// (newestEventWalkRelationsBuffers): main's walk reads its relations by the subscripts of two
+// arrays and so reads no relation.
+func requireWalkWithinMains(t testing.TB, plan json.RawMessage, subject string, mainsWalk float64) {
+	t.Helper()
+	relations := newestEventWalkRelationsBuffers(t, plan, subject)
+	walk := newestEventWalkBuffers(t, plan, subject) - relations
+	t.Logf("%s reads %v shared buffers in its walk over the members beside %v in its read of the relations, and main's walk %v",
+		subject, walk, relations, mainsWalk)
+	if walk > mainsWalk {
+		t.Errorf("%s reads %v shared buffers in its walk over the members (%s) beside its read of the relations, more than the %v of main's walk under the same plan, want at most main's:\n%s",
+			subject, walk, newestEventWalkCTE, mainsWalk, plan)
+	}
+}
+
+// newestEventWalkRelationsBuffers is the shared buffers, hit plus read, that the walk over the
+// members in plan counts in its own (newestEventWalk) for the read of the relations it is seeded
+// from. A node's buffers count every read made while it runs, so the walk counts the relations'
+// read wherever it runs it: the scans of priority_tuples inside it, where the planner folds the
+// relations' term (members_seed) into the walk, and, where the term is a CTE of its own, as it is
+// once the second fault's climb reads it too (priorityBacklogTerms), the buffers of that CTE's
+// plan, which the walk's scan of the CTE runs when it reads the CTE first. A scan of the CTE that
+// another node ran first counts none of the CTE's reads, so the walk's scan counts at most the
+// CTE's own buffers.
+func newestEventWalkRelationsBuffers(t testing.TB, plan json.RawMessage, subject string) float64 {
+	t.Helper()
+	seed := 0.0
+	if seeds := planSubplans(t, plan, "CTE members_seed", subject); len(seeds) == 1 {
+		top := explaintest.Nodes(t, seeds[0])[0]
+		seed = top.SharedHitBlocks + top.SharedReadBlocks
+	}
+	relations := 0.0
+	for _, node := range explaintest.Nodes(t, newestEventWalk(t, plan, subject)) {
+		switch {
+		case node.Relation == "priority_tuples":
+			relations += node.SharedHitBlocks + node.SharedReadBlocks
+		case node.Type == "CTE Scan" && node.CTE == "members_seed":
+			relations += min(node.SharedHitBlocks+node.SharedReadBlocks, seed)
+		}
+	}
+	return relations
+}
