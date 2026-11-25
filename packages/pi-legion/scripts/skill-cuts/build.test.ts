@@ -40,6 +40,7 @@ import {
 import { type Case, caseKind, listedName, loadCases, pathHash } from "./cases";
 import { GhRetries, MAX_RATE_RETRIES, SECONDARY_WAIT_MS } from "./common";
 import {
+  FORMER_STAGES_COLUMNS,
   type GhResult,
   INSTALLERS_COLUMNS,
   LOADERS_COLUMNS,
@@ -99,9 +100,11 @@ const SHA = "0123456789abcdef0123456789abcdef01234567";
 const PACK_PIN = "4444444444444444444444444444444444444444";
 /** The commit of the made-up release v1.0.0 that acme/deploy's worker image takes memo from. */
 const REL_PIN = "6666666666666666666666666666666666666666";
+const DEV_SESSIONS = "/home/fixture/.omp/agent/sessions";
+const LEGION_SESSIONS = "/home/fixture/.omp/profiles/legion/agent/sessions";
 /** The directory of a made-up root session, whose subagent pinned-subagent is, and the times of
  *  its prompt builds: the last one before the subagent's start is ROOT_BUILD. */
-const PINNED_ROOT = "/sessions/2026-11-20T00-00-00-000Z_0a1b2c3d-0000-4000-8000-000000000000";
+const PINNED_ROOT = `${DEV_SESSIONS}/2026-11-20T00-00-00-000Z_0a1b2c3d-0000-4000-8000-000000000000`;
 const ROOT_BUILD = "2026-11-20T01:10:00.000Z";
 const ROOT_DIGESTS = ["2026-11-20T00:10:00.000Z", ROOT_BUILD, "2026-11-20T02:30:00.000Z"];
 /** acme/powers before power-two came (POWERS_AT): its commit, which GitHub gives at or before a
@@ -435,7 +438,7 @@ const SESSIONS: Record<
   // pinned-units' reads in a subagent of the root PINNED_ROOT, which built its prompt last at
   // ROOT_BUILD before the subagent's start: acme/powers (a package) is read then, when it had
   // power-one alone (POWERS_OLD), and acme/dots and the pool it clones are read at the subagent's
-  // start.
+  // start. Its recorded listing names pack-one, which it reads, so its profile has the pool.
   "pinned-subagent": {
     store: "store_a",
     path: `${PINNED_ROOT}/pinned-subagent.jsonl`,
@@ -449,7 +452,13 @@ const SESSIONS: Record<
         resolvedModel: "anthropic/claude-sonnet-5-5",
         task: "Read the alpha steps.",
         tools: SUBAGENT_TOOLS,
-        systemPrompt: SUBAGENT_PROMPT,
+        systemPrompt: [
+          (SUBAGENT_PROMPT[0] ?? "").replace(
+            "</skills>",
+            "- pack-one: Use for the pack-one steps.\n</skills>"
+          ),
+          ...SUBAGENT_PROMPT.slice(1),
+        ],
       });
     },
   },
@@ -522,7 +531,7 @@ const SESSIONS: Record<
   // the workspace its path names.
   "claimed-reviewer": {
     store: "store_b",
-    path: "/sessions/--legion-workspaces-acme-widgets-acme-12--/claimed.jsonl",
+    path: `${LEGION_SESSIONS}/--legion-workspaces-acme-widgets-acme-12--/claimed.jsonl`,
     change: (lines) =>
       insertAfter(lines, branchHead(lines), {
         type: "custom",
@@ -645,7 +654,7 @@ const BY_PATH: Record<
   "path-relative-read": { change: readsUnder(F1_RELATIVE) },
   "path-home": {
     change: readsUnder(F1_TILDE),
-    path: `${F1_HOME}/.omp/profiles/fixture/agent/sessions/--work--/path-home.jsonl`,
+    path: `${F1_HOME}/.omp/agent/sessions/--work--/path-home.jsonl`,
   },
   "path-no-cwd": {
     change: (lines) => {
@@ -736,7 +745,13 @@ function compaction(kept: unknown): Record<string, unknown> {
 
 /** The made-up path of session `name`. */
 const sessionPath = (name: string) =>
-  SESSIONS[name]?.path ?? BY_PATH[name]?.path ?? `/sessions/${name}.jsonl`;
+  SESSIONS[name]?.path ??
+  BY_PATH[name]?.path ??
+  (SESSIONS[name]?.store === "store_b"
+    ? `${LEGION_SESSIONS}/${name}.jsonl`
+    : BY_PATH[name] !== undefined && !["path-tie", "path-unattributed"].includes(name)
+      ? `/sessions/${name}.jsonl`
+      : `${DEV_SESSIONS}/${name}.jsonl`);
 
 /** The made-up session case `c` comes from. */
 const nameOf = (c: Case) =>
@@ -814,22 +829,22 @@ function sessionText(
 const TASK_ROWS = [
   {
     dayStart: mtimeRange("2026-11-20").from,
-    path: "/sessions/task-1.jsonl",
+    path: `${DEV_SESSIONS}/task-1.jsonl`,
     text: "Give me the alpha checklist for the fixture project.",
   },
   {
     dayStart: mtimeRange("2026-11-20").from,
-    path: "/sessions/task-2.jsonl",
+    path: `${DEV_SESSIONS}/task-2.jsonl`,
     text: "Fix the beta greeting.",
   },
   {
     dayStart: mtimeRange("2026-11-21").from,
-    path: "/sessions/task-3.jsonl",
+    path: `${DEV_SESSIONS}/task-3.jsonl`,
     text: "Write the Alpha report of step 2.",
   },
   {
     dayStart: mtimeRange("2026-11-21").from,
-    path: "/sessions/task-4.jsonl",
+    path: `${DEV_SESSIONS}/task-4.jsonl`,
     text: "Give me the alpha checklist for the fixture project.",
   },
 ];
@@ -966,8 +981,9 @@ if (query.includes("omp_session_files_parts pt") && place) {
   rows.sort((a, b) => (a.hash < b.hash ? -1 : 1));
 } else if (query.includes("encode(sha256(convert_to(f.path")) {
   kind = "heads";
-  // Each file of a path hash the query names: its header's cwd and timestamp and its first user
-  // turn, from its whole text (a made-up file is shorter than the head session-head.sql reads).
+  // Each file of a path hash the query names: its header's cwd and timestamp, its first user turn
+  // and its first model_change line's runtime version, from its whole text (a made-up file is
+  // shorter than the head session-head.sql reads).
   const hashes = new Set(literals(query.slice(query.indexOf("ANY"))));
   rows = Object.entries(store.files)
     .map(([p, text]) => ({ text, hash: createHash("sha256").update(p).digest("hex") }))
@@ -992,6 +1008,7 @@ if (query.includes("omp_session_files_parts pt") && place) {
           attribution: typeof user.message.attribution === "string" ? user.message.attribution : null,
         },
         reminders: [],
+        runtime: lines.find((line) => line.type === "model_change")?.runtime?.version ?? null,
         bytes: Buffer.byteLength(text, "utf8"),
         bad_lines: 0,
       };
@@ -1123,7 +1140,7 @@ const CONTROL_SESSIONS: Record<string, { request: string; firstRead: boolean }> 
 };
 
 /** The made-up path of control session `name`. */
-const controlPath = (name: string) => `/sessions/${name}.jsonl`;
+const controlPath = (name: string) => `${DEV_SESSIONS}/${name}.jsonl`;
 
 /** Control session `name`'s transcript text. */
 function controlText(name: string): string {
@@ -1447,8 +1464,7 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
   // the release v1.0.0 of acme/rel as an Oh My Pi plugin under /opt/memo.
   "acme/infra": { "legion/projects/10-ACME.yaml": "key: ACME\ninstructions: acme.md\n" },
   "acme/deploy": {
-    "legion/projects/10-ACME.yaml":
-      "key: ACME\ninstructions: acme.md\nverificationSkillsLeaveOut: [beta-tools]\n",
+    "legion/projects/10-ACME.yaml": `key: ACME\ninstructions: acme.md\nimage: registry.example/acme/worker@sha256:${"3".repeat(64)}\nverificationSkillsLeaveOut: [beta-tools]\n`,
     "legion/acme-setup.sh": [
       "#!/bin/sh",
       "repo=acme/catalog",
@@ -1598,6 +1614,8 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
       },
     }),
     "skills-sources.json": JSON.stringify({ sources: [{ root: "vendor/acme-pack" }] }),
+    // The Oh My Pi build the dev box pins (the configuration's ompPin names this file and key).
+    "mise.toml": '[tools]\n"acme:omp" = "18.13.3-acme.1"  # the dev box\'s Oh My Pi\n',
     "omp/extensions/skill-pools.ts": [
       'import * as fs from "node:fs";',
       "export default function (pi) {",
@@ -1852,6 +1870,9 @@ const io = (lines: string[]): BuildIo => ({
   out: (text) => lines.push(text),
   err: (line) => lines.push(line),
   npm: async (name, version) => TARBALLS[`${name}@${version}`]?.(),
+  // The suite's worker images carry the label of the commit its repositories are read at (SHA),
+  // since an image no source dates is left out and never read at its repository's default branch.
+  imageConfig: async () => ({ env: [], labels: { "org.opencontainers.image.revision": SHA } }),
   gh: async (args) => {
     ghCalls.push([...args]);
     const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
@@ -1902,7 +1923,11 @@ const io = (lines: string[]): BuildIo => ({
       return ok(`${PINNED[`${repo}@${ref}`]?.sha ?? SHA}\n`);
     }
     if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
-      return ok("key: ACME\ninstructions: acme.md\n");
+      // The image is the one whose labels `io` gives (the revision SHA): a deployment that names
+      // none gives no commit of its repository to read it at.
+      return ok(
+        `key: ACME\ninstructions: acme.md\nimage: registry.example/acme/worker@sha256:${"3".repeat(64)}\n`
+      );
     }
     const [, owned = "", file = ""] = /^repos\/([^/]+\/[^/]+)\/contents\/(.+)$/.exec(route) ?? [];
     const text = REPOSITORIES[owned]?.[decodeURIComponent(file)];
@@ -2018,10 +2043,15 @@ beforeAll(() => {
     store[sessionPath(name)] = sessionText(name);
   }
   // A subagent the good session started, one level below its directory, whose recorded prompt
-  // lists alpha and beta: the good case's listing is measured against it.
+  // lists alpha, beta and older, the names the good case's rebuilt profile lists: the good case's
+  // listing is measured against it, and adds no name (score.ts's listing-adds).
   const goodStore = files[SESSIONS.good?.store ?? "store_a"] ?? {};
-  goodStore[`${sessionPath("good").slice(0, -".jsonl".length)}/Helper.jsonl`] =
-    sessionText("subagent");
+  goodStore[`${sessionPath("good").slice(0, -".jsonl".length)}/Helper.jsonl`] = sessionText(
+    "subagent"
+  ).replace(
+    "- beta: Use for the beta greeting.\\n",
+    "- beta: Use for the beta greeting.\\n- older: Use when a task asks for older.\\n"
+  );
   // pinned-subagent's root: its prompt builds' digest lines, the last before the subagent's start
   // at ROOT_BUILD.
   goodStore[`${PINNED_ROOT}.jsonl`] = ROOT_DIGESTS.map(
@@ -2039,8 +2069,8 @@ beforeAll(() => {
   // c-other-model one whose first request ran on openai/gpt-6.1-sol.
   const storeA = files.store_a ?? {};
   const taskSessions: Record<string, string> = {
-    "/sessions/task-1.jsonl": unlistedSubagentText(),
-    "/sessions/task-3.jsonl": sessionText("openai"),
+    [`${DEV_SESSIONS}/task-1.jsonl`]: unlistedSubagentText(),
+    [`${DEV_SESSIONS}/task-3.jsonl`]: sessionText("openai"),
   };
   for (const row of TASK_ROWS) storeA[row.path] = taskSessions[row.path] ?? sessionText("good");
   storeA[controlPath("c-unlisted")] = unlistedSubagentText();
@@ -2297,6 +2327,7 @@ beforeAll(() => {
     ])
   );
   writeFileSync(path.join(copiesDir, "loaders.tsv"), tsv(LOADERS_COLUMNS, []));
+  writeFileSync(path.join(copiesDir, "former-stages.tsv"), tsv(FORMER_STAGES_COLUMNS, []));
 
   // The count: each store's reads of alpha, by the copy path the count gives them. store_a's come
   // from acme/skills's user skills, store_b's from the package the image carries, store_c's from
@@ -2345,6 +2376,10 @@ beforeAll(() => {
         `(${rows.length} rows)`,
         "",
       ].join("\n")
+    );
+    writeFileSync(
+      path.join(countDir, store, "roots.txt"),
+      ` root\n--------\n ${JSON.stringify({ hash: "0123456789abcdef", profile: store === "store_b" ? "legion" : "default" })}\n(1 row)\n`
     );
   }
 }, 60_000);
@@ -2474,12 +2509,15 @@ describe("build-cases over every made-up session", () => {
       subagent: null,
     });
     expect(own.missingShare).toBe(own.missing.length / 2);
-    // The good session records only its digest; its subagent Helper's listing is used.
+    // The good session records only its digest; its subagent Helper's listing, which names older
+    // as well, is used.
     const good = measureOf("good");
+    const helperNames = [...names, "older"];
     expect(good).toMatchObject({
       kind: "subagent listing",
-      recorded: 2,
-      missing: names.filter((name) => !listed("good").includes(name)),
+      recorded: 3,
+      missing: helperNames.filter((name) => !listed("good").includes(name)),
+      added: [],
       sessionDigest: byName("good")?.sessionDigest ?? null,
       rebuiltDigest: null,
       subagent: {
@@ -2501,6 +2539,19 @@ describe("build-cases over every made-up session", () => {
     expect(summary.listing["subagent listing"]).toBe(1);
     expect(summary.listing["not measurable"]).toBeGreaterThan(0);
     expect(summary.listing.none).toBe(0);
+    // The predicate the listing rule reads: a measure is of kind `session listing` exactly when
+    // its case's profile holds the recorded system prompt that the case's capture sends whole
+    // (capture.ts's `c.profile.systemPrompt`), whatever the case; so score.ts's
+    // `listingStanding` reads the capture's own choice from the measure alone.
+    expect(cases.length).toBeGreaterThan(1);
+    for (const each of cases) {
+      const item = each.evidence?.find((entry) => entry.item === LISTING_MEASURE_ITEM);
+      const { kind } = ListingMeasure.parse(JSON.parse(item?.source ?? "{}"));
+      expect([each.id, kind === "session listing"]).toEqual([
+        each.id,
+        each.profile.systemPrompt !== undefined,
+      ]);
+    }
   });
 
   test("exits 0 and writes cases that loadCases loads", () => {
@@ -2764,7 +2815,7 @@ describe("build-cases over every made-up session", () => {
     }
   });
 
-  test("--reprofile builds each profile again from the case and its session's head: the new cases differ from the old ones only in profile and evidence, the store is asked for the session heads alone, one query a store, and no reader is called", async () => {
+  test("--reprofile reads session heads, paths and builds in batches, changes only profile and evidence, and calls no reader", async () => {
     // The case file as a builder that took the copies output's list wrote it: each profile holds
     // `newer`, which acme/skills did not hold at the commit, and not `older`.
     const stale = cases.map((c) => ({
@@ -2815,9 +2866,11 @@ describe("build-cases over every made-up session", () => {
       // query a store (digest-times.sql).
       "store_a digests",
       "store_a heads",
+      "store_a paths",
       "store_a subagents",
       "store_b digests",
       "store_b heads",
+      "store_b paths",
       "store_b subagents",
     ]);
 
@@ -2926,8 +2979,8 @@ describe("build-cases over every made-up session", () => {
     expect(g?.evidence?.find((each) => each.item === "no session head")?.source).toBe(
       "the store store_b holds no file of the session now (session-head.sql), so its working directory is not known: the session repository is the one the old evidence names"
     );
-    // One query a store for each of the heads, the prompt builds and the subagents; each head
-    // saved beside the new case file.
+    // One query a store for each of the heads, paths, prompt builds and subagents.
+    // Each head is saved beside the new case file.
     expect(
       psqlLines(logBefore)
         .map((line) => `${line.db} ${line.kind}`)
@@ -2935,9 +2988,11 @@ describe("build-cases over every made-up session", () => {
     ).toEqual([
       "store_a digests",
       "store_a heads",
+      "store_a paths",
       "store_a subagents",
       "store_b digests",
       "store_b heads",
+      "store_b paths",
       "store_b subagents",
     ]);
     const headFile = `${devbox.source.store}-${devbox.source.pathHash}.json`;
@@ -3722,7 +3777,11 @@ describe("build-cases over reads of the skill by path", () => {
 
   test("a whole read by path in a checkout whose path leaves the copies of several repositories tied goes to the one of them the store's context installs: at the cut's copy, it builds a case that names the copy as read, with the context rule in its evidence", () => {
     const c = caseNamed("path-tie");
-    expect(c?.pathCopy).toEqual({ dir: "/home/dev/notes/skills/alpha", cwd: F1_CWD });
+    expect(c?.pathCopy).toEqual({
+      dir: "/home/dev/notes/skills/alpha",
+      cwd: F1_CWD,
+      home: "/home/fixture",
+    });
     expect(c?.skillReads).toEqual([2, 4]);
     expect(c?.profile.skills).toContainEqual(
       expect.objectContaining({ name: "alpha", repo: "acme/skills", path: "skills/alpha" })
@@ -4141,7 +4200,7 @@ test("a dev-box profile installs the units its dev box's own installers install 
       label: "need",
       source: "session",
       store: "store_a",
-      pathHash: pathHash("/sessions/task-4.jsonl"),
+      pathHash: pathHash(`${DEV_SESSIONS}/task-4.jsonl`),
     })}\n`
   );
   writeFileSync(`${from}.summary.json`, JSON.stringify({ command: "build-tasks", skill: "alpha" }));
@@ -4195,6 +4254,7 @@ test("a Legion profile installs what its deployment gives each role at its start
   mkdirSync(copies, { recursive: true });
   for (const file of [
     "prefix-table.tsv",
+    "former-stages.tsv",
     "installers.tsv",
     "loaders.tsv",
     "skill-copies.tsv",
@@ -4418,6 +4478,7 @@ function setTarget(): { config: string; copies: string } {
     "skill-copies.tsv": [["acme/alpha-set", "skills/alpha", "alpha", 10, "no", "no", "", "", ""]],
   };
   for (const file of [
+    "former-stages.tsv",
     "installers.tsv",
     "loaders.tsv",
     "manifests.tsv",
@@ -5573,7 +5634,7 @@ test("build-cases --written passes over, before asking the written-case reader, 
       )
     );
   });
-  const candidates = [outsideFile, "/sessions/good.jsonl"].map((file) => ({
+  const candidates = [outsideFile, sessionPath("good")].map((file) => ({
     store: "store_a",
     hash: fileHash(file),
     path: file,
@@ -5592,7 +5653,7 @@ test("build-cases --written passes over, before asking the written-case reader, 
   const printed: string[] = [];
   expect(await main(args, io(printed))).toBe(EXIT.ok);
   const summary = summaryOf<WrittenSummary>(out);
-  expect(summary.contextSession.hash).toBe(fileHash("/sessions/good.jsonl"));
+  expect(summary.contextSession.hash).toBe(fileHash(sessionPath("good")));
   expect(summary.contextSession.passed).toEqual([
     { store: "store_a", hash: fileHash(outsideFile), why },
   ]);
@@ -5758,9 +5819,9 @@ function listingMissesStore(): string {
 }
 
 /** Why the screen's rule (score.ts's listingStanding) drops a session whose rebuilt listing
- *  misses ghost of the 3 names its Helper recorded. */
+ *  misses ghost of the 3 names its Helper recorded, and adds older to them. */
 const MISSES_WHY =
-  "listing-misses: its rebuilt listing misses 1 of the 3 names of the recorded subagent listing (33.3%), more than 10%: ghost";
+  "listing-misses: its rebuilt listing misses 1 of the 3 names of the recorded subagent listing (33.3%), more than 10%: ghost; listing-adds: its rebuilt listing adds 1 to the 3 names of the recorded subagent listing (33.3%), more than 10%: older";
 
 // Catches: a written build that takes a context session whose cases the screen drops for the
 // listing (the defect: a build took a session whose rebuilt listing missed 64 of its 204 recorded
@@ -5840,10 +5901,10 @@ test("build-cases --written passes over as listing-misses, in its second pass, a
 });
 
 test("build-cases --written takes, as before, a context session whose rebuilt listing misses none of its recorded names, or that is not measurable, and its cases carry that measure", async () => {
-  // good's Helper records alpha and beta, which its profile lists; openai has no subagent in the
-  // store, so its listing is not measurable, and the screen drops no case for it.
+  // good's Helper records alpha, beta and older, which its profile lists; openai has no subagent
+  // in the store, so its listing is not measurable, and the screen drops no case for it.
   const rows = [
-    { name: "good", kind: "subagent listing", recorded: 2 },
+    { name: "good", kind: "subagent listing", recorded: 3 },
     { name: "openai", kind: "not measurable", recorded: null },
   ] as const;
   for (const row of rows) {
@@ -6165,7 +6226,7 @@ test("build-tasks proposes terms, reads first user messages per store and day, a
     label: "need",
     source: "session",
     store: "store_a",
-    pathHash: pathHash("/sessions/task-1.jsonl"),
+    pathHash: pathHash(`${DEV_SESSIONS}/task-1.jsonl`),
   });
   expect(tasks[1]).toEqual({
     id: "t2",
@@ -6173,7 +6234,7 @@ test("build-tasks proposes terms, reads first user messages per store and day, a
     label: "near-miss",
     source: "session",
     store: "store_a",
-    pathHash: pathHash("/sessions/task-3.jsonl"),
+    pathHash: pathHash(`${DEV_SESSIONS}/task-3.jsonl`),
   });
   expect(tasks[2]).toEqual({
     id: "t3",
@@ -6233,7 +6294,7 @@ test("build-tasks --model offers only the first user messages of sessions whose 
       label: "need",
       source: "session",
       store: "store_a",
-      pathHash: pathHash("/sessions/task-3.jsonl"),
+      pathHash: pathHash(`${DEV_SESSIONS}/task-3.jsonl`),
     },
   ]);
   const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
@@ -6242,7 +6303,7 @@ test("build-tasks --model offers only the first user messages of sessions whose 
   expect(summary.messagesOffered).toBe(1);
   expect(summary.candidateDrops.counts).toEqual({ "other-model": 2 });
   expect(summary.candidateDrops.sessions).toEqual(
-    ["/sessions/task-1.jsonl", "/sessions/task-4.jsonl"].map((file) => ({
+    [`${DEV_SESSIONS}/task-1.jsonl`, `${DEV_SESSIONS}/task-4.jsonl`].map((file) => ({
       store: "store_a",
       pathHash: pathHash(file),
       reason: "other-model",
@@ -7573,7 +7634,7 @@ test("build-tasks --profiles-out gives each session task build-cases' profile of
   expect(tasks[0]).toMatchObject({
     text: "Give me the alpha checklist for the fixture project.",
     source: "session",
-    pathHash: pathHash("/sessions/task-4.jsonl"),
+    pathHash: pathHash(`${DEV_SESSIONS}/task-4.jsonl`),
   });
   expect(lines.join("")).toContain("1 candidate sessions dropped (1 skill-not-listed)");
   for (const task of tasks) expect(task.profile).toBe(path.resolve(dir, `${task.id}.json`));
@@ -7601,7 +7662,7 @@ test("build-tasks --profiles-out gives each session task build-cases' profile of
   expect(summary.candidateDrops.sessions).toEqual([
     {
       store: "store_a",
-      pathHash: pathHash("/sessions/task-1.jsonl"),
+      pathHash: pathHash(`${DEV_SESSIONS}/task-1.jsonl`),
       reason: "skill-not-listed",
       detail: "its context subagent:task does not list alpha",
       context: "subagent:task",
@@ -7614,7 +7675,7 @@ test("build-tasks --profiles-out gives each session task build-cases' profile of
 // a refusal before any store read.
 test("build-tasks fails (exit 1) on a --context-session whose rebuilt context does not list the skill, naming why, before any reader call", async () => {
   const out = path.join(scratch, "profiles-unlisted-context", "tasks.jsonl");
-  const unlisted = fileHash("/sessions/task-1.jsonl");
+  const unlisted = fileHash(`${DEV_SESSIONS}/task-1.jsonl`);
   const from = recorder.requests.length;
   const lines: string[] = [];
   const code = await main(
@@ -7838,7 +7899,7 @@ test("build-tasks --max-candidates ends the candidate search once that many cand
   expect(tasks.filter((task) => task.source === "session")).toEqual([
     expect.objectContaining({
       text: "Give me the alpha checklist for the fixture project.",
-      pathHash: pathHash("/sessions/task-4.jsonl"),
+      pathHash: pathHash(`${DEV_SESSIONS}/task-4.jsonl`),
     }),
   ]);
   expect(tasks.filter((task) => task.source === "written")).toHaveLength(9);
@@ -7940,7 +8001,7 @@ test("build-tasks with bounds, killed mid-search and run again, pulls no decided
     {
       dropped: {
         store: "store_a",
-        pathHash: pathHash("/sessions/task-1.jsonl"),
+        pathHash: pathHash(`${DEV_SESSIONS}/task-1.jsonl`),
         reason: "other-model",
         detail: "its first reply ran on anthropic/claude-sonnet-5-5, not openai/gpt-6.1-sol",
       },
@@ -8090,15 +8151,17 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
     );
     if (profiles.length > 0) digests[`${name} profiles`] = digest(profiles.join(""));
   }
-  // The digests of a run with no bound on this input; a change to what build-tasks writes
-  // changes them.
+  // Fixture path hashes changed when the transcripts moved under their real profile roots.
+  // The summary records their profiles. The profile files keep the same bytes. The profiles
+  // summary counts a subagents.sql query for each of the two session tasks, read before its
+  // profile is built (sessionQueries 2); one query of their store after both was counted before.
   expect(digests).toEqual({
-    "model tasks": "ffa3d7637184a555b27e1b14afee9b1dd58e697112f82f98d3819afda80652d9",
-    "model summary": "fd2cf470c0eaa72f67f8a326ecfaeafd58a63ed82764f9aae296cfffc84bff8b",
-    "model printed": "bf894d108dd96d68557fc836907c898f504618a57f906e073f786c51c1144dc3",
-    "profiles tasks": "6978ce55a25eb77c1f126e1b0e35e0f4899d63975797aee26b9e32d53ff3dea0",
-    "profiles summary": "32ef09d3cd23b9bbf471db9be3982a39cd402b23c359f861735c10560770f534",
-    "profiles printed": "6e4a4b3f3da89a2faa7e4e21ab71ad7d844a05da52f0aa836ebc41b6baee1532",
+    "model tasks": "7065771b7768b39f531ae513e501837a0837349affe5672950558cdaf8230f9e",
+    "model summary": "830ba5a3c2d161a489386c91ee25396de33d21df9deabfb10e8e915059c49c48",
+    "model printed": "8d8a65fe70015b199ecc51a86a5803ef39c5cacbddbe124b22460e6d36a2971b",
+    "profiles tasks": "c29cedaadf7a508a1449548b98da93ab14b079a002eb834365c81cc2f70e79f6",
+    "profiles summary": "85dc0b754ac23142309d9268e69f3483ed1396ad30610b6a0ee508bbc5b4fd0a",
+    "profiles printed": "9ceae9fd265f889f404904ada8fe26a18ca2cbde3e9141337bd67b87b1aa1b0b",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
 }, 120_000);
@@ -8132,6 +8195,193 @@ function changedStore(
   return file;
 }
 
+const POD_BASE = `ghcr.io/acme/worker@sha256:${"1".repeat(64)}`;
+const POD_PIN = `registry.example/acme/session@sha256:${"2".repeat(64)}`;
+const POD_BUILD = "d5".repeat(20);
+
+async function podProfile(
+  name: string,
+  profileName: string,
+  {
+    task = false,
+    label = true,
+    legion = false,
+    readAt,
+  }: { task?: boolean; label?: boolean; legion?: boolean; readAt?: string } = {}
+) {
+  const file = `/home/fixture/.omp/${profileName === "" ? "" : `profiles/${profileName}/`}agent/sessions/--work--/${name}.jsonl`;
+  const db = legion ? "store_b" : "store_a";
+  const template = await profileCase(legion ? "legion" : "good");
+  const cfg = changedStore(name, (files) => {
+    const text = sessionText(legion ? "legion" : "good");
+    const target = legion ? "/legion/workspaces/acme/skills/ACME-12" : "/work";
+    const oldRoot = legion ? "/opt/legion/pi-acme/dist/skills/alpha" : `${F1_SKILLS}/alpha`;
+    const readRoot = legion
+      ? `${target}/.omp/skills/alpha`
+      : (readAt ?? "/opt/legion/pi-acme/dist/skills/alpha");
+    const store = files[db] ?? {};
+    store[file] = inDirectory(text, target).replaceAll(oldRoot, readRoot);
+  });
+  writeFileSync(
+    cfg,
+    JSON.stringify({
+      ...JSON.parse(readFileSync(cfg, "utf8")),
+      sessionPod: {
+        repository: "acme/infra",
+        pinFile: "pods/Pulumi.prod.yaml",
+        pinKey: "pods:image",
+        dockerfile: "pods/Dockerfile",
+        workerRepository: "acme/skills",
+        workerDockerfile: "worker.Dockerfile",
+      },
+    })
+  );
+  const copies = copiesWith(`copies-${name}`, { "manifests.tsv": HOME_MANIFESTS });
+  const dir = path.join(scratch, name);
+  mkdirSync(dir, { recursive: true });
+  const from = path.join(dir, "before.jsonl");
+  const out = path.join(dir, "after.jsonl");
+  const lines: string[] = [];
+  const standin = io(lines);
+  const options: BuildIo = {
+    ...standin,
+    imageConfig: async (image: string) => {
+      expect(image).toBe(POD_BASE);
+      const labels: Record<string, string> = {};
+      if (label) labels["org.opencontainers.image.revision"] = IMAGE_SHA;
+      return { env: ["OMP_PROFILE=legion"], labels };
+    },
+    gh: async (args: readonly string[]) => {
+      const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
+      const answer = (stdout: string): GhResult => ({ code: 0, stdout, stderr: "" });
+      if (route === "repos/acme/infra/contents/pods/Pulumi.prod.yaml")
+        return answer(
+          `config:\n  # The job built commit ${POD_BUILD}.\n  pods:image: ${POD_PIN}\n`
+        );
+      if (route === "repos/acme/infra/contents/pods/Dockerfile") {
+        expect(args).toContain(`ref=${POD_BUILD}`);
+        return answer(
+          `ARG WORKER=${POD_BASE}\nFROM \${WORKER}\nRUN omp plugin link /opt/legion/pi-acme\n`
+        );
+      }
+      if (route.includes(`sha=${POD_BUILD}`)) return answer(POD_BUILD);
+      if (route === "repos/acme/skills/contents/worker.Dockerfile")
+        return answer(
+          "FROM scratch\nENV OMP_PROFILE=legion\nCOPY --from=plugin /out/pi-acme /opt/legion/pi-acme\n"
+        );
+      return standin.gh(args);
+    },
+  };
+  const source = { store: db, pathHash: pathHash(file) };
+  if (task) {
+    writeFileSync(
+      from,
+      `${JSON.stringify({ id: "t1", text: TASK_ROWS[0]?.text, label: "need", source: "session", ...source })}\n`
+    );
+    writeFileSync(
+      `${from}.summary.json`,
+      JSON.stringify({ command: "build-tasks", skill: "alpha" })
+    );
+    const profiles = path.join(dir, "profiles");
+    const args = reprofileArgs(cfg, from, profiles).map((arg) =>
+      arg === copiesDir ? copies : arg
+    );
+    const code = await main(args, options);
+    const profileFile = path.join(profiles, "t1.json");
+    return {
+      code,
+      lines,
+      profile: existsSync(profileFile)
+        ? (JSON.parse(readFileSync(profileFile, "utf8")) as Case["profile"])
+        : undefined,
+    };
+  }
+  const messages = template.messages.map((message) =>
+    JSON.parse(
+      JSON.stringify(message).replaceAll(
+        legion ? "/opt/legion/pi-acme/dist/skills/alpha" : `${F1_SKILLS}/alpha`,
+        legion
+          ? "/legion/workspaces/acme/skills/ACME-12/.omp/skills/alpha"
+          : (readAt ?? "/opt/legion/pi-acme/dist/skills/alpha")
+      )
+    )
+  );
+  writeFileSync(from, `${JSON.stringify({ ...template, source, messages })}\n`);
+  const code = await main(
+    [
+      "build-cases",
+      "--config",
+      cfg,
+      "--old",
+      old,
+      "--copies",
+      copies,
+      "--count",
+      countDir,
+      "--reprofile",
+      from,
+      "--out",
+      out,
+    ],
+    options
+  );
+  const profile = code === EXIT.ok ? loadCases(out, old)[0]?.profile : undefined;
+  return { code, profile, lines };
+}
+
+test("session context row 1: only a default-root session uses the dev box's installers", async () => {
+  const pod = await podProfile("pod-case", "legion");
+  const dev = await podProfile("dev-case", "");
+  expect(dev.profile?.skills.map((skill) => skill.name)).toContain("unread");
+  expect(pod.profile?.skills.map(({ name, commit }) => [name, commit])).toEqual(
+    ["alpha", "beta", "omicron"].map((name) => [name, IMAGE_SHA])
+  );
+}, 60_000);
+
+test("session context row 2: solreview has project skills but no role plugins", async () => {
+  const files = REPOSITORIES["acme/skills"] ?? {};
+  files[".omp/skills/alpha/SKILL.md"] = projectSkillMd("alpha");
+  try {
+    const result = await podProfile("review-case", "solreview", { legion: true });
+    expect(result.profile?.plugins).toEqual([]);
+    expect(result.profile?.skills.map(({ name, path }) => [name, path])).toEqual([
+      ["alpha", ".omp/skills/alpha"],
+    ]);
+  } finally {
+    delete files[".omp/skills/alpha/SKILL.md"];
+  }
+}, 60_000);
+
+test("session context row 3: a pod task uses the image's staged skills", async () => {
+  const result = await podProfile("pod-task", "legion", { task: true });
+  expect(result.profile?.skills.map(({ name, commit }) => [name, commit])).toEqual(
+    ["beta", "omicron"].map((name) => [name, IMAGE_SHA])
+  );
+}, 60_000);
+
+test("session context row 5: without an OCI revision or pin evidence the pod is not measurable", async () => {
+  const result = await podProfile("unresolved-base", "legion", { label: false });
+  expect(result.code).toBe(EXIT.failed);
+  expect(result.lines.join("\n")).toContain("not measurable");
+}, 60_000);
+
+// Catches: vskills-293's porting-released-proofs, whose read of the project's own
+// .claude/skills/porting-released-proofs/SKILL.md the context rule placed at a plugin holding a skill
+// of that name, so the profile installed that plugin whole (20 of the 21 names it added).
+test("session context row 6: a read inside the session checkout's own .claude/skills is that project's skill, and installs no unit that holds a skill of its name", async () => {
+  const project = await podProfile("project-skill-read", "", {
+    readAt: "/work/.claude/skills/alpha",
+  });
+  // The read installs no unit, so the profile has no alpha of acme/skills: the case is left out.
+  expect(project.code).toBe(EXIT.failed);
+  expect(project.lines.join("\n")).toContain(
+    "left out: the profile installs no alpha of acme/skills at the session's start"
+  );
+  // The same read at the plugin's own install location installs it, as row 1's does.
+  const plugin = await podProfile("plugin-skill-read", "");
+  expect((plugin.profile?.skills ?? []).map((skill) => skill.name)).toContain("beta");
+}, 60_000);
+
 /** `text`, a session's transcript, with its header's working directory `cwd`. */
 const inDirectory = (text: string, cwd: string) =>
   text
@@ -8157,7 +8407,7 @@ function readingIn(cwd: string, file: string): string {
 test("a session repository whose whole tree GitHub cuts short is read one directory at a time, only where Oh My Pi reads a project, so build-cases --reprofile gives its case that repository's project skill and context file", async () => {
   const legion = await profileCase("legion");
   // The legion session, in a workspace of acme/big, whose whole tree the stand-in cuts short.
-  const moved = "/sessions/big-legion.jsonl";
+  const moved = `${LEGION_SESSIONS}/big-legion.jsonl`;
   const big = changedStore("truncated-tree", (files) => {
     (files.store_b ?? {})[moved] = inDirectory(
       sessionText("legion"),
@@ -8221,8 +8471,8 @@ test("a session repository whose whole tree GitHub cuts short is read one direct
 // dev box's own checkout mapped to the repository named as its parent.
 test("a dev-box session in the checkout whose .claude/ devboxClaudeConfigDir names gets the dev box's repository, and one under a parent named as a listed repository whose tree lacks the path below it gets no session repository, saying why", async () => {
   const sessions = {
-    "/sessions/dots-home.jsonl": "/home/dev/.dotfiles",
-    "/sessions/proj-missing.jsonl": "/home/dev/src/proj/missing/dir",
+    [`${DEV_SESSIONS}/dots-home.jsonl`]: "/home/dev/.dotfiles",
+    [`${DEV_SESSIONS}/proj-missing.jsonl`]: "/home/dev/src/proj/missing/dir",
   };
   const store = changedStore("checkouts", (files) => {
     for (const [file, cwd] of Object.entries(sessions)) {
@@ -8257,16 +8507,16 @@ test("a dev-box session in the checkout whose .claude/ devboxClaudeConfigDir nam
         .find((c) => c.source.pathHash === pathHash(file))
         ?.evidence?.map((each) => [each.item, each.source]) ?? []
     );
-  expect(evidenceOf("/sessions/dots-home.jsonl")["session repository acme/home"]).toBe(
+  expect(evidenceOf(`${DEV_SESSIONS}/dots-home.jsonl`)["session repository acme/home"]).toBe(
     `${CHECKOUT_RULE}. The working directory /home/dev/.dotfiles is /home/dev/.dotfiles, the checkout of the dev box's repository acme/home, whose .claude/ the configuration's devboxClaudeConfigDir names`
   );
-  const missing = evidenceOf("/sessions/proj-missing.jsonl");
+  const missing = evidenceOf(`${DEV_SESSIONS}/proj-missing.jsonl`);
   expect(missing["session repository acme/proj"]).toBeUndefined();
   expect(missing["no session repository"]).toBe(
     `${CHECKOUT_RULE}. The working directory /home/dev/src/proj/missing/dir is under /home/dev/src/proj, named as acme/proj, whose tree at ${SHA} holds no missing/dir, so that name alone does not make the directory a checkout of it; and it is not directly inside /home/dev/src/proj, so it is not taken as a workspace of acme/proj`
   );
   expect(
-    cases.find((c) => c.source.pathHash === pathHash("/sessions/proj-missing.jsonl"))?.profile
+    cases.find((c) => c.source.pathHash === pathHash(`${DEV_SESSIONS}/proj-missing.jsonl`))?.profile
       .sessionRepository
   ).toBeUndefined();
 }, 120_000);
@@ -8277,12 +8527,15 @@ test("a dev-box session in the checkout whose .claude/ devboxClaudeConfigDir nam
  *  file the tree holds nowhere (notes.md); two levels below it, a read of CLAUDE.md. */
 const PROJ_DIR = "/home/dev/src/proj";
 const BELOW_PROJ: Record<string, { readonly cwd: string; readonly read: string }> = {
-  "/sessions/lane-held.jsonl": { cwd: `${PROJ_DIR}/lane-3`, read: `${PROJ_DIR}/lane-3/CLAUDE.md` },
-  "/sessions/lane-unheld.jsonl": {
+  [`${DEV_SESSIONS}/lane-held.jsonl`]: {
+    cwd: `${PROJ_DIR}/lane-3`,
+    read: `${PROJ_DIR}/lane-3/CLAUDE.md`,
+  },
+  [`${DEV_SESSIONS}/lane-unheld.jsonl`]: {
     cwd: `${PROJ_DIR}/lane-4`,
     read: `${PROJ_DIR}/lane-4/notes.md`,
   },
-  "/sessions/lane-deep.jsonl": {
+  [`${DEV_SESSIONS}/lane-deep.jsonl`]: {
     cwd: `${PROJ_DIR}/lanes/lane-5`,
     read: `${PROJ_DIR}/lanes/lane-5/CLAUDE.md`,
   },
@@ -8324,7 +8577,7 @@ async function belowProj(file: string) {
 // working directory, that the tree check refused as a checkout because the repository's tree does
 // not hold `<workspace>`, so its profile held none of the repository's project skills.
 test("a dev-box session directly inside a directory named as acme/proj whose tree does not hold it, that read a file of the tree there, is in a workspace of acme/proj at its root: it gets acme/proj's root project skills and CLAUDE.md, and the evidence names the read and the file", async () => {
-  const { profile, evidence } = await belowProj("/sessions/lane-held.jsonl");
+  const { profile, evidence } = await belowProj(`${DEV_SESSIONS}/lane-held.jsonl`);
   expect(profile?.sessionRepository).toEqual({ repo: "acme/proj", commit: SHA });
   expect(profile?.workingDirectory).toBeUndefined();
   // As a session in /home/dev/src/proj gets them.
@@ -8353,7 +8606,7 @@ test("a dev-box session directly inside a directory named as acme/proj whose tre
 }, 60_000);
 
 test("a dev-box session directly inside a directory named as acme/proj whose tree does not hold it, that read no file of the tree there, gets no session repository, and the evidence says so", async () => {
-  const { profile, evidence } = await belowProj("/sessions/lane-unheld.jsonl");
+  const { profile, evidence } = await belowProj(`${DEV_SESSIONS}/lane-unheld.jsonl`);
   expect(profile?.sessionRepository).toBeUndefined();
   expect(profile?.skills.some((skill) => skill.repo === "acme/proj")).toBe(false);
   expect(evidence["no session repository"]).toBe(
@@ -8362,7 +8615,7 @@ test("a dev-box session directly inside a directory named as acme/proj whose tre
 }, 60_000);
 
 test("a dev-box session two levels below a directory named as acme/proj whose tree does not hold its path gets no session repository though it read a file of the tree there, and the evidence says why", async () => {
-  const { profile, evidence } = await belowProj("/sessions/lane-deep.jsonl");
+  const { profile, evidence } = await belowProj(`${DEV_SESSIONS}/lane-deep.jsonl`);
   expect(profile?.sessionRepository).toBeUndefined();
   expect(profile?.skills.some((skill) => skill.repo === "acme/proj")).toBe(false);
   expect(evidence["no session repository"]).toBe(
@@ -8375,7 +8628,7 @@ test("a dev-box session two levels below a directory named as acme/proj whose tr
 // Pi 18.18.6 lists each.
 test("build-cases --reprofile of a session in a workspace of acme/agents lists its .agent/skills, .agents/skills and .github/skills, follows a skill directory linked inside the repository, and names the link out of it and the .github skill with no description as left out", async () => {
   const legion = await profileCase("legion");
-  const moved = "/sessions/agents-legion.jsonl";
+  const moved = `${LEGION_SESSIONS}/agents-legion.jsonl`;
   const store = changedStore("agents-dirs", (files) => {
     (files.store_b ?? {})[moved] = inDirectory(
       sessionText("legion"),
@@ -8489,11 +8742,12 @@ test("a subagent whose dev box's skills-sources.json names a pool at its start a
       .sort();
   const names = `acme/dots:skills-sources.json names vendor/acme-pack at ${SHA} (the subagent's start ${F1_START}) and not at ${DOTS_OLD} (the root's last prompt build)`;
   // The recorded listing names pack-two, so the host had cloned the pool: it is installed, and
-  // each of its names is marked as taken from that listing.
+  // each of its names is marked as taken from that listing (POOL_LISTING_RULE, as for a pool of
+  // the root's build).
   expect(poolSkills("pool-listed")).toEqual([`pack-one ${PACK_PIN}`, `pack-two ${PACK_PIN}`]);
   const listed = evidenceOf("pool-listed");
   expect(listed["unit pool:vendor/acme-pack (acme/dots:skills-sources.json)"]).toStartWith(
-    `pool at the subagent's start: ${names}; the subagent's recorded listing names pack-two of its skills, so its host had cloned it then (installed from the recorded listing): Oh My Pi 18.18.6 has a subagent emit resources_discover as it starts`
+    `pool at the subagent's start: ${names}; the session's recorded listing names 1 of the 2 skills it holds at the session's start (named: pack-two; unnamed: pack-one), so it is installed; ${POOL_INFERENCE}, and the listing measure counts its unnamed skills as added names: Oh My Pi 18.18.6 lists the skills of a pool an extension gives through resources_discover`
   );
   const listedMeasure = ListingMeasure.parse(JSON.parse(listed[LISTING_MEASURE_ITEM] ?? "{}"));
   expect(listedMeasure.fromRecorded).toEqual(["pack-one", "pack-two"]);
@@ -8501,20 +8755,275 @@ test("a subagent whose dev box's skills-sources.json names a pool at its start a
   expect(poolSkills("pool-unlisted")).toEqual([]);
   const unlisted = evidenceOf("pool-unlisted");
   expect(unlisted["unit pool:vendor/acme-pack (acme/dots:skills-sources.json)"]).toBeUndefined();
-  expect(unlisted["left out: pool:vendor/acme-pack, a pool at the subagent's start"]).toStartWith(
-    `${names}, and the subagent's recorded listing names none of its skills (pack-one, pack-two), so its host had not cloned it then: Oh My Pi 18.18.6 has a subagent emit resources_discover`
+  expect(
+    unlisted["left out: the pool pool:vendor/acme-pack (acme/dots:skills-sources.json)"]
+  ).toStartWith(
+    `pool at the subagent's start: ${names}; the session's recorded listing names none of the 2 skills it holds at the session's start (pack-one, pack-two), so it is not installed; ${POOL_INFERENCE}: Oh My Pi 18.18.6 lists the skills of a pool an extension gives through resources_discover`
   );
   const unlistedMeasure = ListingMeasure.parse(JSON.parse(unlisted[LISTING_MEASURE_ITEM] ?? "{}"));
   expect(unlistedMeasure.fromRecorded).toBeUndefined();
 }, 120_000);
+
+// The architect's ruling of 2026-11-25: dev-box sessions that ran one Oh My Pi build list the dev
+// box's resources_discover pools in some sessions and not in others, and no file records why. So
+// a session that records its listing (its own recorded prompt's, or the subagent's its listing
+// measure uses) gets each pool from that listing, a pool its root's build has too; one that
+// records none gets them by the Oh My Pi build its dev box pins at its start. Its narrowing of
+// the same day: a name that an installed unit outside the pools also ships is no evidence for a
+// pool, since the session lists it whether or not the pool is there; only a name no such unit
+// ships, or a [Skill file: …] read of the pool, installs it.
+
+/** The root of the listed-pool subagents, which the store does not hold: each repository of their
+ *  profiles is read at their start, when acme/dots's skills-sources.json names the pool
+ *  vendor/acme-pack (pack-one and pack-two at PACK_PIN), as at its root's build, and its plugin
+ *  list installs acme/powers, whose own pack-two (of other text) the pool's shares a name with. */
+const UNHELD_ROOT = `${DEV_SESSIONS}/2026-11-19T00-00-00-000Z_0a1b2c3d-0000-4000-8000-0000000000b2`;
+/** Each listed-pool subagent, and the pool skills its recorded listing names. pool-read also
+ *  reads pack-one of the pool as a `[Skill file: …]`. */
+const POOL_LISTINGS: Record<string, readonly string[]> = {
+  "pool-all": ["pack-one", "pack-two"],
+  "pool-part": ["pack-one"],
+  "pool-shared": ["pack-two"],
+  "pool-read": ["pack-two"],
+  "pool-none": [],
+};
+/** The pool's unit, as the evidence names it. */
+const POOL_KEY = "pool:vendor/acme-pack (acme/dots:skills-sources.json)";
+/** The words of the pool's evidence that say the decision is an inference. */
+const POOL_INFERENCE =
+  "this is an inference from the listing, since no file records why some sessions of one Oh My Pi build list such a pool and others do not";
+/** The words of the pool's evidence that say a named skill is no evidence for the pool, followed
+ *  by the names of those skills. */
+const SHARED_NOTE =
+  "named skills that an installed unit outside the pools also ships give no evidence for this pool";
+
+/** The case of the listed-pool subagent `name` (POOL_LISTINGS), all built once with acme/dots
+ *  as the dev box's repository: its pool skills (name and commit), its evidence by item and its
+ *  listing measure. */
+async function listedPool(name: string) {
+  const pathOf = (each: string) => `${UNHELD_ROOT}/${each}.jsonl`;
+  const out = path.join(scratch, "pool-listed", "cases.jsonl");
+  if (!existsSync(out)) {
+    const store = changedStore("pool-listed", (files) => {
+      for (const [each, names] of Object.entries(POOL_LISTINGS)) {
+        const lines = f1Lines();
+        setText(lines, 5, () => `Step 3 (case ${each}).`);
+        SESSIONS.subagent?.change?.(lines);
+        if (each === "pool-read") {
+          readFirst("9ac0000", "skill://pack-one", PACK_ONE, "# pack-one\n")(lines);
+        }
+        const init = lines.find((line) => line.type === "session_init");
+        if (init !== undefined) {
+          const listed = names.map((skill) => `- ${skill}: Use for the ${skill} steps.\n`).join("");
+          init.systemPrompt = [
+            (SUBAGENT_PROMPT[0] ?? "").replace("</skills>", `${listed}</skills>`),
+            ...SUBAGENT_PROMPT.slice(1),
+          ];
+        }
+        (files.store_a ?? {})[pathOf(each)] = lines
+          .map((line) => `${JSON.stringify(line)}\n`)
+          .join("");
+      }
+    });
+    const copies = copiesWith("copies-pool-listed", { "manifests.tsv": DOTS_MANIFESTS });
+    const file = sessionsFile(
+      "pool-listed.jsonl",
+      [],
+      [],
+      Object.keys(POOL_LISTINGS).map((each) => ({
+        store: "store_a",
+        hash: fileHash(pathOf(each)),
+        path: pathOf(each),
+      }))
+    );
+    const args = buildArgs(file, out, "1", "--copies", copies);
+    args[args.indexOf("--config") + 1] = store;
+    const lines: string[] = [];
+    const code = await main(args, io(lines));
+    expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+      code: EXIT.ok,
+      said: "",
+    });
+  }
+  const c = loadCases(out, old).find((each) => each.source.pathHash === pathHash(pathOf(name)));
+  expect(c?.context).toBe("subagent:task");
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  return {
+    pool: (c?.profile.skills ?? [])
+      .filter((skill) => skill.repo === "acme/pack")
+      .map((skill) => `${skill.name} ${skill.commit}`)
+      .sort(),
+    evidence,
+    measure: ListingMeasure.parse(JSON.parse(evidence[LISTING_MEASURE_ITEM] ?? "{}")),
+  };
+}
+
+// Catches: a pool the dev box's installers install at the root's build installed for a subagent
+// whatever its recorded listing names, with no mark that the listing decided its names, or one of
+// its named skills that an installed package also ships counted as evidence for the pool.
+test("a dev-box subagent whose recorded listing names every skill of a pool its root's build has gets the pool, its names marked fromRecorded, and the evidence counts each named and says which an installed package also ships", async () => {
+  const { pool, evidence, measure } = await listedPool("pool-all");
+  expect(pool).toEqual([`pack-one ${PACK_PIN}`, `pack-two ${PACK_PIN}`]);
+  expect(evidence[`unit ${POOL_KEY}`]).toContain(
+    `the session's recorded listing names 2 of the 2 skills it holds at the session's start (named: pack-one, pack-two; unnamed: none); ${SHARED_NOTE} (pack-two), so it is installed on pack-one; ${POOL_INFERENCE}: `
+  );
+  expect(measure.kind).toBe("session listing");
+  expect(measure.fromRecorded).toEqual(["pack-one", "pack-two"]);
+  expect(measure.added.filter((name) => name.startsWith("pack-"))).toEqual([]);
+}, 120_000);
+
+// Catches: a pool whose skills the recorded listing names in part installed with no record of how
+// many it names, or left out, or its unnamed skills kept out of the measure's added names.
+test("a dev-box subagent whose recorded listing names some skills of a pool gets the whole pool, the evidence counts its named and unnamed skills, and the unnamed are the measure's added names", async () => {
+  const { pool, evidence, measure } = await listedPool("pool-part");
+  expect(pool).toEqual([`pack-one ${PACK_PIN}`, `pack-two ${PACK_PIN}`]);
+  expect(evidence[`unit ${POOL_KEY}`]).toContain(
+    `the session's recorded listing names 1 of the 2 skills it holds at the session's start (named: pack-one; unnamed: pack-two), so it is installed; ${POOL_INFERENCE}, and the listing measure counts its unnamed skills as added names: `
+  );
+  expect(measure.added).toContain("pack-two");
+  expect(measure.added).not.toContain("pack-one");
+  expect(measure.fromRecorded).toEqual(["pack-one", "pack-two"]);
+}, 120_000);
+
+// Catches: a pool installed because the recorded listing names a skill of it that an installed
+// package ships too, which the session lists whether or not the pool is there.
+test("a dev-box subagent whose recorded listing names one skill of a pool, which an installed package also ships, and no other, gets none of the pool, and the evidence names the shared skill", async () => {
+  const { pool, evidence, measure } = await listedPool("pool-shared");
+  expect(pool).toEqual([]);
+  expect(evidence[`unit ${POOL_KEY}`]).toBeUndefined();
+  expect(evidence[`left out: the pool ${POOL_KEY}`]).toContain(
+    `the session's recorded listing names 1 of the 2 skills it holds at the session's start (pack-one, pack-two); ${SHARED_NOTE} (pack-two), so it is not installed; ${POOL_INFERENCE}: `
+  );
+  // The pool's other skill is not in the profile; pack-two is, as the package's copy.
+  expect(measure.added).not.toContain("pack-one");
+  expect(measure.added).not.toContain("pack-two");
+  expect(measure.missing).not.toContain("pack-two");
+  expect(measure.fromRecorded).toBeUndefined();
+}, 120_000);
+
+// Catches: a pool whose skill the session read as a `[Skill file: …]` left out because the
+// listing names only a skill an installed package ships too, or marked as taken from the listing.
+test("a dev-box subagent that reads a skill of a pool as a [Skill file] keeps the pool though its recorded listing names only a skill an installed package also ships, citing the read and not marking its names fromRecorded", async () => {
+  const { pool, evidence, measure } = await listedPool("pool-read");
+  expect(pool).toEqual([`pack-one ${PACK_PIN}`, `pack-two ${PACK_PIN}`]);
+  const unit = evidence[`unit ${POOL_KEY}`] ?? "";
+  expect(unit).toContain(
+    `the session's recorded listing names 1 of the 2 skills it holds at the session's start (named: pack-two; unnamed: pack-one); ${SHARED_NOTE} (pack-two); `
+  );
+  expect(unit).toMatch(
+    new RegExp(
+      `; message \\d+ reads \\[Skill file: ${PACK_ONE.replaceAll(".", "\\.")}\\] of it, so Oh My Pi loaded it, which is direct proof and no inference from the listing, so it is installed and none of its names is marked fromRecorded: `
+    )
+  );
+  expect(evidence[`left out: the pool ${POOL_KEY}`]).toBeUndefined();
+  expect(measure.fromRecorded).toBeUndefined();
+  // The listing names pack-two alone: the pool's pack-one is a name the profile adds.
+  expect(measure.added).toContain("pack-one");
+}, 120_000);
+
+// Catches: a pool the dev box's installers install at the root's build installed for a subagent
+// whose recorded listing names none of its skills.
+test("a dev-box subagent whose recorded listing names no skill of a pool its root's build has gets none of it, and the evidence says why", async () => {
+  const { pool, evidence, measure } = await listedPool("pool-none");
+  expect(pool).toEqual([]);
+  expect(evidence[`unit ${POOL_KEY}`]).toBeUndefined();
+  expect(evidence[`left out: the pool ${POOL_KEY}`]).toContain(
+    `the session's recorded listing names none of the 2 skills it holds at the session's start (pack-one, pack-two), so it is not installed; ${POOL_INFERENCE}: `
+  );
+  // The pool's names are not listed; pack-two still is, as acme/powers's copy, which the pool's
+  // copy outranks only where the pool is installed (rows above: listed as acme-powers/pack-two).
+  expect(measure.added).not.toContain("pack-one");
+  expect(measure.added).toContain("pack-two");
+  expect(measure.added).not.toContain("acme-powers/pack-two");
+  expect(measure.fromRecorded).toBeUndefined();
+}, 120_000);
+
+/** The case of the top-level dev-box session `name` (`pool-plain`, which reads alpha alone, or
+ *  `pool-read`, which reads skill://pack-one of the pool first), built under a configuration whose
+ *  ompPin names acme/dots's mise.toml, which pins 18.13.3-acme.1, and `first` as the first build
+ *  that loads the pools on a fresh start. Neither starts a subagent, so neither has a listing. */
+async function pinnedPool(name: "pool-plain" | "pool-read", first: string) {
+  const pathOf = (each: string) => `${DEV_SESSIONS}/${each}.jsonl`;
+  const out = path.join(scratch, `pool-pinned-${first}`, "cases.jsonl");
+  if (!existsSync(out)) {
+    const store = changedStore(`pool-pinned-${first}`, (files) => {
+      (files.store_a ?? {})[pathOf("pool-plain")] = sessionText("good");
+      (files.store_a ?? {})[pathOf("pool-read")] = sessionText("pinned-units");
+    });
+    writeFileSync(
+      store,
+      JSON.stringify({
+        ...JSON.parse(readFileSync(store, "utf8")),
+        ompPin: { file: "mise.toml", key: ["tools", "acme:omp"], firstPoolVersion: first },
+      })
+    );
+    const copies = copiesWith("copies-pool-pinned", { "manifests.tsv": DOTS_MANIFESTS });
+    const file = sessionsFile(
+      `pool-pinned-${first}.jsonl`,
+      [],
+      [],
+      ["pool-plain", "pool-read"].map((each) => ({
+        store: "store_a",
+        hash: fileHash(pathOf(each)),
+        path: pathOf(each),
+      }))
+    );
+    const args = buildArgs(file, out, "1", "--copies", copies);
+    args[args.indexOf("--config") + 1] = store;
+    const lines: string[] = [];
+    const code = await main(args, io(lines));
+    expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+      code: EXIT.ok,
+      said: "",
+    });
+  }
+  const c = loadCases(out, old).find((each) => each.source.pathHash === pathHash(pathOf(name)));
+  expect(c?.context).toBe("devbox");
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  return {
+    pool: (c?.profile.skills ?? [])
+      .filter((skill) => skill.repo === "acme/pack")
+      .map((skill) => skill.name)
+      .sort(),
+    evidence,
+    measure: ListingMeasure.parse(JSON.parse(evidence[LISTING_MEASURE_ITEM] ?? "{}")),
+  };
+}
+
+// Catches: the pools of a session that records no listing installed whatever Oh My Pi build its
+// dev box pinned, though a build before the first that loads them on a fresh start lists none.
+test("a top-level dev-box session with no listing gets the pools by its dev box's Oh My Pi pin at its start: none before the configuration's first pool-loading build but one a [Skill file] read shows loaded, each at or after it, and the evidence sets the session's runtime version beside the pin", async () => {
+  const before = await pinnedPool("pool-plain", "18.16.0");
+  expect(before.measure.kind).toBe("not measurable");
+  expect(before.pool).toEqual([]);
+  expect(before.evidence[`left out: the pool ${POOL_KEY}`]).toContain(
+    "; the pinned Oh My Pi 18.13.3-acme.1 is before 18.16.0, so the session listed none of its skills on a fresh start; an inference from the pinned build: "
+  );
+  expect(before.evidence["Oh My Pi pin of acme/dots"]).toStartWith(
+    `acme/dots:mise.toml at ${SHA} (the last commit of main at or before the session's start ${F1_START}) pins tools."acme:omp" at 18.13.3-acme.1, which is before 18.16.0, the first build the configuration's ompPin names as loading resources_discover pools on a fresh start; the session's file records Oh My Pi 18.18.6 (the runtime.version of its first model_change line), which differs from the pin's release 18.13.3: `
+  );
+  // A [Skill file: …] read of the pool's skill shows Oh My Pi loaded the pool.
+  const read = await pinnedPool("pool-read", "18.16.0");
+  expect(read.pool).toEqual(["pack-one", "pack-two"]);
+  expect(read.evidence[`unit ${POOL_KEY}`]).toMatch(
+    new RegExp(
+      `; the pinned Oh My Pi 18\\.13\\.3-acme\\.1 is before 18\\.16\\.0, but message \\d+ reads \\[Skill file: ${PACK_ONE.replaceAll(".", "\\.")}\\] of it, so Oh My Pi loaded it: `
+    )
+  );
+  const after = await pinnedPool("pool-plain", "18.13.3-acme.1");
+  expect(after.pool).toEqual(["pack-one", "pack-two"]);
+  expect(after.evidence[`unit ${POOL_KEY}`]).toContain(
+    "; the pinned Oh My Pi 18.13.3-acme.1 is at or after 18.13.3-acme.1, which loads it on a fresh start: "
+  );
+}, 180_000);
 
 // Catches: the skills of a Claude Code plugin that the session repository's own Claude Code
 // settings turn on left out of a dev-box profile, or installed for a project whose settings do
 // not turn it on.
 test("a dev-box session in a checkout whose .claude/settings.json turns a Claude Code plugin on in enabledPlugins gets the plugin's skills at a Claude Code plugin's rank, a second copy of a name under the plugin's name only where its text differs, and a session in a checkout whose settings turn none on gets none", async () => {
   const sessions = {
-    "/sessions/plug-on.jsonl": "/home/dev/src/plug",
-    "/sessions/plug-off.jsonl": "/home/dev/src/unplug",
+    [`${DEV_SESSIONS}/plug-on.jsonl`]: "/home/dev/src/plug",
+    [`${DEV_SESSIONS}/plug-off.jsonl`]: "/home/dev/src/unplug",
   };
   const store = changedStore("plugins-enabled", (files) => {
     for (const [file, cwd] of Object.entries(sessions)) {
@@ -8592,12 +9101,12 @@ test("a dev-box session in a checkout whose .claude/settings.json turns a Claude
       .filter((skill) => skill.repo === "acme/plugs")
       .map((skill) => `${skill.namespace === undefined ? "" : `${skill.namespace}/`}${skill.name}`)
       .sort();
-  const on = caseOf("/sessions/plug-on.jsonl");
+  const on = caseOf(`${DEV_SESSIONS}/plug-on.jsonl`);
   expect(on?.profile.sessionRepository).toEqual({ repo: "acme/plug", commit: SHA });
   // plug-one is the plugin's alone; acme/skills' beta, a unit of a lower rank, keeps the bare
   // name, and the plugin's beta of other text is listed under the plugin's name; its alpha, of
   // the same text as the alpha the session read, is dropped.
-  expect(fromPlugin("/sessions/plug-on.jsonl")).toEqual(["plug-one", "plug-tools/beta"]);
+  expect(fromPlugin(`${DEV_SESSIONS}/plug-on.jsonl`)).toEqual(["plug-one", "plug-tools/beta"]);
   const evidence = Object.fromEntries(on?.evidence?.map((each) => [each.item, each.source]) ?? []);
   const unit = evidence[`unit ${plugin} (acme/plugs:.claude-plugin/marketplace.json)`];
   expect(unit).toStartWith(
@@ -8616,9 +9125,9 @@ test("a dev-box session in a checkout whose .claude/settings.json turns a Claude
     evidence["left out: skill alpha from acme/plugs plugins/plug-tools/skills/alpha"]
   ).toContain("its SKILL.md is the same, and Oh My Pi drops such a copy");
   // acme/unplug's settings turn no plugin on: the plugin's skills are no part of its profile.
-  const off = caseOf("/sessions/plug-off.jsonl");
+  const off = caseOf(`${DEV_SESSIONS}/plug-off.jsonl`);
   expect(off?.profile.sessionRepository).toEqual({ repo: "acme/unplug", commit: SHA });
-  expect(fromPlugin("/sessions/plug-off.jsonl")).toEqual([]);
+  expect(fromPlugin(`${DEV_SESSIONS}/plug-off.jsonl`)).toEqual([]);
   expect((off?.evidence ?? []).filter((each) => each.item.startsWith(`unit ${plugin}`))).toEqual(
     []
   );
@@ -8689,13 +9198,106 @@ test("build-cases --reprofile of a Legion pane reads the worker image's packages
   );
   expect(tagged.worker).toContain(` is ${IMAGE_SHA}${atImage}`);
 
-  // Neither: the package is read at the default branch at the session's start.
-  const none = await reprofiled("none", pulumi(["worker-plus of this week."], plus));
-  expect(none.skills).toEqual([`alpha ${SHA}`, `beta ${SHA}`]);
-  expect(none.worker).toStartWith(
-    `${config0} ${plus}, whose digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${digest(2)}); the comment right above its image: line names no image digest whose build provenance names a commit, no commit and no tag of acme/skills, so acme/skills is read at its default branch's commit at the session's start: a Legion pod runs the worker image`
+  // Neither, and no label: the image's commit is not known, so the case is left out, and the
+  // package is not read at the default branch at the session's start.
+  const none = await reprofiledLegion("none", {
+    pulumi: pulumi(["worker-plus of this week."], plus),
+    attested: { [attested]: IMAGE_SHA },
+    refused: true,
+  });
+  expect({ code: none.code, written: none.written }).toEqual({ code: EXIT.failed, written: false });
+  expect(none.said).toContain(
+    `pod profile not measurable: the worker image's commit of acme/skills is not known, and the repository's default branch is a guess, so the profile is not built: ${config0} ${plus}, whose digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${digest(2)}); the comment right above its image: line names no image digest whose build provenance names a commit, no commit and no tag of acme/skills: a Legion pod runs the worker image`
   );
 }, 240_000);
+
+// Catches: legion-4447's 4 role cases, whose worker image ghcr.io/…/legion-worker@sha256:25f7f0ab…
+// has no build provenance and no comment above its line, read at the head of the repository's main
+// at the session's start: a newer pi-envoy and pi-legion than the image held (dispatch-brainstorming
+// missing, dispatch-writing-specs and leading-a-work-stream added).
+describe("build-cases --reprofile of a Legion pane whose image has no build provenance", () => {
+  const digest = "2".repeat(64);
+  const pulumiOf = (image: string) =>
+    [
+      "config:",
+      "  legion:projects:",
+      "    - key: ACME",
+      "      instructions: acme.md",
+      `      image: ${image}`,
+      "",
+    ].join("\n");
+  const config0 = `acme/infra:legion/Pulumi.prod.yaml at ${SHA} gives the project ACME the image`;
+  const imaged = [`alpha ${IMAGE_SHA}`, `beta ${IMAGE_SHA}`, `omicron ${IMAGE_SHA}`];
+  const without = `, whose digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${digest})`;
+  const atImage = `, so the image's units of acme/skills are read at ${IMAGE_SHA}: a Legion pod runs the worker image`;
+
+  test("the image's own revision label, a commit of the repository, decides the commit its units are read at, though the label's source names no repository the build knows", async () => {
+    const image = `registry.example/acme/worker-plus@sha256:${digest}`;
+    const built = await reprofiledLegion("label-revision", {
+      pulumi: pulumiOf(image),
+      attested: {},
+      labels: {
+        "org.opencontainers.image.revision": IMAGE_SHA,
+        "org.opencontainers.image.source": "https://github.com/acme/skills-before-its-rename",
+      },
+    });
+    expect(built.skills).toEqual(imaged);
+    expect(built.plugins).toContain(`pi-acme ${IMAGE_SHA} packages/pi-acme`);
+    expect(built.registryReads).toContain(image);
+    expect(built.worker).toStartWith(
+      `${config0} ${image}${without}; the OCI config of ${image}, read from its registry by digest, labels org.opencontainers.image.revision ${IMAGE_SHA}, a commit of acme/skills (gh api repos/acme/skills/commits?sha=${IMAGE_SHA}&until=`
+    );
+    expect(built.worker).toContain(atImage);
+  }, 120_000);
+
+  test("a version label with no revision label is the release tag <name>-v<version> of the repository, the longest name first", async () => {
+    const image = `registry.example/acme/acme-image-worker@sha256:${digest}`;
+    const built = await reprofiledLegion("label-version", {
+      pulumi: pulumiOf(image),
+      attested: {},
+      labels: { "org.opencontainers.image.version": "2.0.0" },
+    });
+    expect(built.skills).toEqual(imaged);
+    expect(built.worker).toStartWith(
+      `${config0} ${image}${without}; the OCI config of ${image}, read from its registry by digest, labels org.opencontainers.image.version 2.0.0, so the release acme-image-v2.0.0, a tag of acme/skills (gh api repos/acme/skills/git/matching-refs/tags/acme-image-v2.0.0), whose last commit at or before `
+    );
+    expect(built.worker).toContain(atImage);
+  }, 120_000);
+
+  test.each([
+    [
+      "a revision label that is no commit of the repository",
+      {
+        "org.opencontainers.image.revision": "0b".repeat(20),
+      },
+      "labels org.opencontainers.image.revision " +
+        "0b".repeat(20) +
+        ", which name no commit or release tag of acme/skills",
+    ],
+    ["an image config with neither label", {}, "holds neither label"],
+  ] as const)(
+    "%s, and no comment above the image: line, leave the case out: it is not read at the repository's default branch",
+    async (_name, labels, said) => {
+      const image = `registry.example/acme/worker-plus@sha256:${digest}`;
+      const built = await reprofiledLegion("label-none", {
+        pulumi: pulumiOf(image),
+        attested: {},
+        labels,
+        refused: true,
+      });
+      expect({ code: built.code, written: built.written }).toEqual({
+        code: EXIT.failed,
+        written: false,
+      });
+      expect(built.registryReads).toContain(image);
+      expect(built.said).toContain(
+        `pod profile not measurable: the worker image's commit of acme/skills is not known, and the repository's default branch is a guess, so the profile is not built: ${config0} ${image}${without}, and the OCI config of ${image}, read from its registry by digest, ${said}, and no comment line is right above its image: line: a Legion pod runs the worker image`
+      );
+      expect(built.said).not.toContain("is read at its default branch's commit");
+    },
+    120_000
+  );
+});
 
 // Catches: an image comment that names the base's commit first and an older release after it
 // ("before it …") read at the older release.
@@ -8746,13 +9348,18 @@ function attestationOf(commit: string): string {
  *  to ACME's project file (`project`; the suite's own when undefined) and to each attestation of
  *  acme/skills (`attested`, the commit by digest; a 404 for another digest): the profile's skills
  *  of acme/skills (`<name> <commit>`) and plugins of it (`<name> <commit> <path>`), and the
- *  sources of its evidence items of the worker image's and the daemon image's commits. */
+ *  sources of its evidence items of the worker image's and the daemon image's commits. `labels`
+ *  are the OCI config labels the registry gives each image (no config when undefined, as for an
+ *  image it does not hold), and `registryReads` the images asked; `refused` says the build is
+ *  expected to leave the case out (exit 1) instead of writing it. */
 async function reprofiledLegion(
   name: string,
   answers: {
     readonly pulumi?: string;
     readonly project?: string;
     readonly attested: Readonly<Record<string, string>>;
+    readonly labels?: Readonly<Record<string, string>>;
+    readonly refused?: true;
   }
 ) {
   const legion = await profileCase("legion");
@@ -8763,6 +9370,7 @@ async function reprofiledLegion(
   const fresh = path.join(dir, "reprofiled.jsonl");
   const lines: string[] = [];
   const standin = io(lines);
+  const registryReads: string[] = [];
   const missing = { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
   const code = await main(
     [
@@ -8771,6 +9379,10 @@ async function reprofiledLegion(
     ],
     {
       ...standin,
+      imageConfig: async (image) => {
+        registryReads.push(image);
+        return answers.labels === undefined ? undefined : { env: [], labels: answers.labels };
+      },
       gh: async (args) => {
         const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
         if (route === "repos/acme/infra/contents/legion/Pulumi.prod.yaml") {
@@ -8779,12 +9391,14 @@ async function reprofiledLegion(
             ? { code: 0, stdout: answers.pulumi, stderr: "" }
             : missing;
         }
-        if (
-          route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml" &&
-          answers.project !== undefined
-        ) {
+        // ACME's project file names no image unless the test gives one, so the Pulumi config does.
+        if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
           ghCalls.push([...args]);
-          return { code: 0, stdout: answers.project, stderr: "" };
+          return {
+            code: 0,
+            stdout: answers.project ?? "key: ACME\ninstructions: acme.md\n",
+            stderr: "",
+          };
         }
         const digest = /^repos\/acme\/skills\/attestations\/sha256:([0-9a-f]{64})$/.exec(
           route
@@ -8800,13 +9414,19 @@ async function reprofiledLegion(
       },
     }
   );
-  expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
-    code: EXIT.ok,
-    said: "",
-  });
-  const [c] = loadCases(fresh, old);
+  if (answers.refused !== true) {
+    expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+      code: EXIT.ok,
+      said: "",
+    });
+  }
+  const [c] = code === EXIT.ok ? loadCases(fresh, old) : [];
   const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
   return {
+    code,
+    said: lines.join("\n"),
+    written: c !== undefined,
+    registryReads,
     skills: (c?.profile.skills ?? [])
       .filter((skill) => skill.repo === "acme/skills")
       .map((skill) => `${skill.name} ${skill.commit}`)
@@ -9231,14 +9851,22 @@ test("build-tasks --reprofile builds each task's profile again as --profiles-out
     store: "store_b",
     hash: fileHash(sessionPath("legion")),
   });
-  // The session tasks' paths by their path hashes, one query of their store; the context session
-  // the old summary names by its file hash; and one pull of each of the three sessions.
+  // The session tasks' paths by their path hashes, one query of their store; the subagents of
+  // each session task, one query a session, read as its profile is rebuilt, since their listing
+  // decides its pools; the context session the old summary names by its file hash, and its
+  // subagents; and one pull of each of the three sessions.
   expect(
     psqlLines(logged)
       .filter((line) => line.kind !== "pull")
       .map((line) => `${line.db} ${line.kind}`)
       .sort()
-  ).toEqual(["store_a paths", "store_a subagents", "store_b sessions", "store_b subagents"]);
+  ).toEqual([
+    "store_a paths",
+    "store_a subagents",
+    "store_a subagents",
+    "store_b sessions",
+    "store_b subagents",
+  ]);
   expect(transcriptPulls(logged)).toBe(3);
   expect(existsSync(`${dir}.spool`)).toBe(false);
 
@@ -9265,7 +9893,7 @@ test("build-tasks --reprofile builds each task's profile again as --profiles-out
 
 test("build-tasks --reprofile of a task whose session is now in a checkout of acme/proj gives it a profile that names acme/proj at its commit and lists its project skills and root CLAUDE.md, says changed and lists the evidence items that differ; the other tasks are unchanged", async () => {
   const from = await profiledTasks();
-  const task4 = "/sessions/task-4.jsonl";
+  const task4 = `${DEV_SESSIONS}/task-4.jsonl`;
   const moved = changedStore("reprofile-moved", (files) => {
     (files.store_a ?? {})[task4] = inDirectory(sessionText("good"), "/home/dev/src/proj");
   });
@@ -9325,7 +9953,7 @@ test("build-tasks --reprofile of a task whose session is now directly inside a d
   const from = await profiledTasks();
   const lane = `${PROJ_DIR}/lane-3`;
   const moved = changedStore("reprofile-workspace", (files) => {
-    (files.store_a ?? {})["/sessions/task-4.jsonl"] = readingIn(lane, `${lane}/CLAUDE.md`);
+    (files.store_a ?? {})[`${DEV_SESSIONS}/task-4.jsonl`] = readingIn(lane, `${lane}/CLAUDE.md`);
   });
   const dir = path.join(scratch, "reprofile-workspace", "profiles");
   expect(await main(reprofileArgs(moved, from, dir), io([]))).toBe(EXIT.ok);
@@ -9364,7 +9992,7 @@ test("build-tasks --reprofile of a task whose session is now directly inside a d
 test("build-tasks --reprofile gives each written task the profile of the --context-session it is given, in place of the session the tasks file's summary names, and lists the evidence items that differ", async () => {
   const from = await profiledTasks();
   const dir = path.join(scratch, "reprofile-context", "profiles");
-  const task4 = fileHash("/sessions/task-4.jsonl");
+  const task4 = fileHash(`${DEV_SESSIONS}/task-4.jsonl`);
   expect(
     await main(reprofileArgs(config, from, dir, "--context-session", `store_a:${task4}`), io([]))
   ).toBe(EXIT.ok);
@@ -9386,7 +10014,7 @@ test("build-tasks --reprofile gives each written task the profile of the --conte
   expect(summary.profiles.contextSession).toMatchObject({
     store: "store_a",
     hash: task4,
-    pathHash: pathHash("/sessions/task-4.jsonl"),
+    pathHash: pathHash(`${DEV_SESSIONS}/task-4.jsonl`),
     context: "devbox",
   });
   expect(summary.counts).toMatchObject({ changed: 8, unchanged: 2 });
@@ -9416,6 +10044,7 @@ function copiesWith(
   mkdirSync(dir, { recursive: true });
   for (const file of [
     "prefix-table.tsv",
+    "former-stages.tsv",
     "installers.tsv",
     "manifests.tsv",
     "loaders.tsv",
@@ -9467,7 +10096,7 @@ test("a dev-box session that started before the first commit of a repository its
   const copies = copiesWith("copies-fresh", FRESH_TARGET);
   const from = await profiledTasks();
   const dir = path.join(scratch, "fresh-target", "profiles");
-  const context = `store_a:${fileHash("/sessions/task-4.jsonl")}`;
+  const context = `store_a:${fileHash(`${DEV_SESSIONS}/task-4.jsonl`)}`;
   const said: string[] = [];
   const code = await main(
     reprofileArgs(config, from, dir, "--context-session", context).map((arg) =>
@@ -9543,11 +10172,11 @@ test("a session whose working directory is a checkout of a repository with no co
   });
   // The good session in a checkout of acme/newproj, whose first commit (FRESH_MADE) came after
   // the session's start, and a subagent of it whose recorded listing holds acme/newproj's nova.
-  const session = "/sessions/newproj.jsonl";
+  const session = `${DEV_SESSIONS}/newproj.jsonl`;
   const store = changedStore("newproj-store", (files) => {
     const storeA = files.store_a ?? {};
     storeA[session] = inDirectory(sessionText("good"), "/home/dev/src/newproj");
-    storeA["/sessions/newproj/Helper.jsonl"] = novaSubagent();
+    storeA[`${DEV_SESSIONS}/newproj/Helper.jsonl`] = novaSubagent();
   });
   const from = await profiledTasks();
   const dir = path.join(scratch, "newproj-context", "profiles");
@@ -9600,7 +10229,7 @@ test("a session whose working directory is a checkout of a repository with no co
 
 test("build-tasks --reprofile keeps the old profile of a task whose session its store holds no longer, and of each written task when the context session is gone, each with an evidence item that says so; a store read that fails fails the run", async () => {
   const from = await profiledTasks();
-  const task4 = "/sessions/task-4.jsonl";
+  const task4 = `${DEV_SESSIONS}/task-4.jsonl`;
   const gone = changedStore("reprofile-gone", (files) => {
     delete files.store_a?.[task4];
     delete files.store_b?.[sessionPath("legion")];
@@ -9699,7 +10328,7 @@ test("build-tasks --reprofile keeps the old profile of a task whose session its 
 // the store read that found it, where exit 2 is a refusal before any store read.
 test("build-tasks --reprofile fails (exit 1) on a --context-session whose rebuilt context does not list the skill, naming why, and writes no tasks file", async () => {
   const from = await profiledTasks();
-  const unlisted = fileHash("/sessions/task-1.jsonl");
+  const unlisted = fileHash(`${DEV_SESSIONS}/task-1.jsonl`);
   const dir = path.join(scratch, "reprofile-unlisted-context", "profiles");
   const said: string[] = [];
   const requests = recorder.requests.length;
@@ -9720,8 +10349,8 @@ test("build-tasks --reprofile fails (exit 1) on a --context-session whose rebuil
 test("build-tasks drops a candidate whose pull gives no row as pull-failed and one whose transcript does not parse as unparseable, with --model and with --profiles-out", async () => {
   const broken = changedStore("candidate-drops", (files) => {
     const store = files.store_a ?? {};
-    store["/sessions/task-1.jsonl"] = `not one entry\n${sessionText("good")}`;
-    store["/sessions/task-4.jsonl"] = "";
+    store[`${DEV_SESSIONS}/task-1.jsonl`] = `not one entry\n${sessionText("good")}`;
+    store[`${DEV_SESSIONS}/task-4.jsonl`] = "";
   });
   const args = (out: string, ...extra: string[]) => [
     "build-tasks",
@@ -9737,8 +10366,8 @@ test("build-tasks drops a candidate whose pull gives no row as pull-failed and o
     return summary.candidateDrops.sessions.map((each) => [each.pathHash, each.reason]);
   };
   const wanted = [
-    [pathHash("/sessions/task-1.jsonl"), "unparseable"],
-    [pathHash("/sessions/task-4.jsonl"), "pull-failed"],
+    [pathHash(`${DEV_SESSIONS}/task-1.jsonl`), "unparseable"],
+    [pathHash(`${DEV_SESSIONS}/task-4.jsonl`), "pull-failed"],
   ];
   const model = path.join(scratch, "candidate-drops-model", "tasks.jsonl");
   expect(await main(args(model, "--model", "openai/gpt-6.1-sol"), io([]))).toBe(EXIT.ok);
@@ -9765,7 +10394,7 @@ const LONG_BUILDS = [
 ];
 /** The path of the made-up long-lived session `id`, named as Oh My Pi names a top-level one. */
 const longPath = (id: string) =>
-  `/sessions/newproj/2026-11-20T02-50-00-000Z_0a1b2c3d-0000-4000-8000-0000000000${id}.jsonl`;
+  `${DEV_SESSIONS}/newproj/2026-11-20T02-50-00-000Z_0a1b2c3d-0000-4000-8000-0000000000${id}.jsonl`;
 
 /** `text`, a session's transcript, with its header's working directory `cwd` and start `start`,
  *  and with `digests` as its system-prompt-digest lines in place of its own. */
@@ -10008,7 +10637,7 @@ let readerSubagentRun: Promise<string> | undefined;
 function readerSubagentTasks(): Promise<string> {
   readerSubagentRun ??= (async () => {
     const store = changedStore("reader-subagent", (files) => {
-      (files.store_a ?? {})["/sessions/task-4/Helper.jsonl"] = sessionText("subagent");
+      (files.store_a ?? {})[`${DEV_SESSIONS}/task-4/Helper.jsonl`] = sessionText("subagent");
     });
     const out = path.join(scratch, "reader-subagent", "tasks.jsonl");
     const dir = path.join(scratch, "reader-subagent", "profiles");
@@ -10034,13 +10663,13 @@ test("build-tasks in the reader's mode measures a task from a session against th
     return ListingMeasure.parse(JSON.parse(item?.source ?? "{}"));
   };
   // task-4's session started Helper, whose recorded listing holds alpha and beta.
-  expect(measureOf("/sessions/task-4.jsonl")).toMatchObject({
+  expect(measureOf(`${DEV_SESSIONS}/task-4.jsonl`)).toMatchObject({
     kind: "subagent listing",
     recorded: 2,
-    subagent: { pathHash: pathHash("/sessions/task-4/Helper.jsonl") },
+    subagent: { pathHash: pathHash(`${DEV_SESSIONS}/task-4/Helper.jsonl`) },
   });
   // task-3's session started none, and the store, asked, says so.
-  const none = measureOf("/sessions/task-3.jsonl");
+  const none = measureOf(`${DEV_SESSIONS}/task-3.jsonl`);
   expect(none.kind).toBe("not measurable");
   expect(none.why).toEndWith(
     "the store holds no subagent of it (subagents.sql, asked for those spawned under the session's first prompt build, the one its profile is read at (no later line))"
@@ -10059,9 +10688,9 @@ test("a task's profile keeps each line of the listing its measure sets it agains
   // task-4's session recorded no prompt: its profile keeps the listing of Helper, the subagent
   // its measure uses, line by line, and the copy of alpha the session read, which its skills
   // leave out.
-  const four = profileOf("/sessions/task-4.jsonl");
+  const four = profileOf(`${DEV_SESSIONS}/task-4.jsonl`);
   expect(four.profile.recordedListing).toMatchObject({
-    source: { kind: "subagent", pathHash: pathHash("/sessions/task-4/Helper.jsonl") },
+    source: { kind: "subagent", pathHash: pathHash(`${DEV_SESSIONS}/task-4/Helper.jsonl`) },
     lines: [
       { name: "alpha", text: "Use for the alpha steps." },
       { name: "beta", text: "Use for the beta greeting." },
@@ -10074,7 +10703,7 @@ test("a task's profile keeps each line of the listing its measure sets it agains
     four.profile.recordedListing
   );
   // task-3's session started no subagent and recorded no prompt: its measure has no listing.
-  expect(profileOf("/sessions/task-3.jsonl").profile.recordedListing).toBeUndefined();
+  expect(profileOf(`${DEV_SESSIONS}/task-3.jsonl`).profile.recordedListing).toBeUndefined();
 }, 120_000);
 
 // Catches: a task's profile of a session that recorded its own prompt (the session listing, the
@@ -10084,7 +10713,7 @@ test("a task's profile of a session that recorded its own prompt keeps each line
   // task-1's session is a subagent whose recorded prompt lists alpha, and beta under a line that
   // holds a secret: a build of its own.
   const store = changedStore("session-listing", (files) => {
-    (files.store_a ?? {})["/sessions/task-1.jsonl"] = sessionText("subagent").replace(
+    (files.store_a ?? {})[`${DEV_SESSIONS}/task-1.jsonl`] = sessionText("subagent").replace(
       "- beta: Use for the beta greeting.",
       `- beta: Use for the beta greeting, Bearer ${SECRET_TOKEN}.`
     );
@@ -10094,7 +10723,9 @@ test("a task's profile of a session that recorded its own prompt keeps each line
   const said: string[] = [];
   const args = tasksArgs(out, ...profileFlags(dir)).map((arg) => (arg === config ? store : arg));
   expect(await main(args, io(said))).toBe(EXIT.ok);
-  const task = tasksOf(out).find((each) => each.pathHash === pathHash("/sessions/task-1.jsonl"));
+  const task = tasksOf(out).find(
+    (each) => each.pathHash === pathHash(`${DEV_SESSIONS}/task-1.jsonl`)
+  );
   expect(task?.profile).toBeString();
   const file = String(task?.profile);
   const profile = JSON.parse(readFileSync(file, "utf8"));

@@ -87,8 +87,29 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   served model runs as that served `provider/model`, so an Anthropic model behind another
   gateway prefix runs as `anthropic/<id>`. A case whose listing measure (its `listing measure`
   evidence item, under `build-cases` below) misses more than 10% of the names its session's
-  recorded listing holds is dropped before any call too, as `listing-misses`, with the count and
-  the names. With `--reading-models` (the skill's
+  recorded listing holds is dropped before any call too, as `listing-misses`, with the count, the
+  share and the names; exactly 10% is kept (the architect, 2026-11-22). A recorded name the
+  profile does not install is answered "unknown skill" when a run reads it, where the session got
+  the skill's text, so a miss changes what the runs see. The names the rebuilt profile adds to
+  the recorded listing count only for a case whose capture builds its listing from the rebuilt
+  profile (a measure of kind `subagent listing`): over 10% of the recorded names it is dropped as
+  `listing-adds` (the architect, 2026-11-24), and a case over 10% on both sides is dropped as
+  `listing-misses`, its reason giving the adds part too. A case whose capture sends its session's
+  recorded system prompt whole (a measure of kind `session listing`: its profile holds the
+  session's system prompt, and the capture sends it with only the tested skill's listing line
+  changed per arm) is never dropped for added names, however many: the model in every arm sees
+  exactly the recorded listing, whatever the rebuilt profile installs, and the profile changes
+  there only how a read of a skill is answered, from the profile's installed copy or with the
+  unknown-skill reply (the architect, 2026-11-25). `report` counts those reads (below); the count
+  drops no case and changes no verdict. The rule reads the capture's own choice from the
+  measure: `build.ts` writes the kind `session listing` exactly when the case's profile holds the
+  session's recorded system prompt, and `capture.ts` sends the recorded prompt exactly when the
+  profile holds one (`build.test.ts` checks it over the cases a build writes), so the rule never
+  reads a run's result. `report` applies the rule to saved results as well, so a case with runs
+  saved before the listing-adds rule, whose capture builds its listing from the profile, is
+  dropped at screen when the report runs, with no model call; a case a runner saved as dropped for
+  `listing-adds` before this rule keeps that saved drop (`screen` skips a dropped case and `report`
+  prints its saved reason) until its result file is removed. With `--reading-models` (the skill's
   `<cut or set id>/models/<skill>.json` that `attribute` writes: its reading sessions by model),
   a skill with fewer than 6 reading sessions on models the gateway serves gets no session case
   screened: with no written case it is refused before any call (exit 2), it gets no verdict, with
@@ -196,7 +217,7 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   made by `--confirm-flagged` gets the verdict line under `confirm` above in its place), ending
   with how many of the skill's screened cases have a listing that could not be measured (no
   listing measure, or one that says so); the drops per judge control and the drops counted as
-  `model-not-served`, as `unreadable-directory`, as `listing-misses`, as
+  `model-not-served`, as `unreadable-directory`, as `listing-misses`, as `listing-adds`, as
   `injection-unrebuildable`, the last by kind (a case under each kind it holds), as `path-form`,
   by the arm whose text holds the file, as `reads-past-last-round` and as `provider-refused`; the
   verdict line also counts the screened cases whose profile took names from their recorded
@@ -205,10 +226,18 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   pass rates taken from each case's own screen; its assumptions are printed with it),
   a table of the chance it finds a loss of 10 to 40 points in one informative case, each screened
   case's smallest drop ("The smallest drop" below), the spend at list price (below), the peak
-  memory, how many captures' system-prompt digests differ from their session's, and the text of
-  `--limits <file>` as it is (the limits a result states, so no limit
-  is written into the runner), or that none was given. A screened case is one whose screen runs
-  are counted and that is not dropped at screen. Beside the verdict, as descriptions that
+  memory, how many captures' system-prompt digests differ from their session's, its
+  `outside recorded listing` line (below), and the text of `--limits <file>` as it is (the limits
+  a result states, so no limit is written into the runner), or that none was given. The
+  `outside recorded listing` line is given for the cases whose capture sends their session's
+  recorded system prompt whole (their profile holds the prompt): how many of their runs read a skill
+  outside the recorded listing, of the runs that record their reads (a run saved before runs
+  recorded them, or whose replay failed, records none, and is counted apart), and each such skill
+  with its runs by how the read was answered (`copy`: an installed copy answered it; `absent`: the
+  unknown-skill reply). A run that reads a skill in several rounds counts once for it, and a read
+  answered from the arm's own text (the tested skill) is no count. The line is a count only: it drops
+  no case and changes no verdict (the architect, 2026-11-25). A screened case is one whose screen
+  runs are counted and that is not dropped at screen. Beside the verdict, as descriptions that
   change no rule: each kind's screened cases (their ids), how many are informative, and each
   screen arm's passes summed over them; the screened cases whose real step reads a file of the
   skill other than SKILL.md (`cases whose real step reads a file of the skill other than SKILL.md,
@@ -878,6 +907,12 @@ Prints `count.sql` filled for one store and one UTC day (or hour), the same as
 `bun scripts/skill-cuts/countsql.ts`. `--query models` prints `models.sql` instead: each session
 file's model, read from the first 256 Ki characters of the file, as one row per file hash.
 
+For the `attribute` context step, print the store-wide query with
+`count-sql --config <skill-cuts.json> --store <db> --query roots`. Omit `--day` and `--hour`.
+Run the query with the store's `psqlCommand` and save its result as `<count>/<db>/roots.txt`.
+The query reads only the file table's paths. It returns each file's count hash and Oh My Pi
+profile, not the path. You can add this file to an existing count without running the count again.
+
 Each count row also names, for each file, the keys of the reads that put it in the row (`calls`,
 and `unpaired_calls` for calls with no result). A key is md5 of the call's id, a space and the
 call line's UTC timestamp to the microsecond, cut to 16 hex characters. Inside one query, a key
@@ -1036,16 +1071,36 @@ summary's `dropped` give the reason (`unreadable-directory: ` and the repository
 the path), a run started again skips it while its profile file keeps the same bytes, and the
 verdict rule counts it as a task with no runs.
 
-Every load applies the listing rule (the architect, 2026-11-22), so no one applies it by hand.
-Each task's listing measure comes from the tasks file's build-tasks summary
-(`<tasks>.summary.json`): a session task's own profile's `listing measure` evidence item, and a
-written task's context session's; a task with no summary beside its file is not measurable. A
-task whose rebuilt listing misses more than 10% of the names its session's recorded listing holds
-is dropped before any run (`listing-misses: ` with the count and the names): its line and the
-summary's task give the reason, the summary's `listing` counts the tasks measured, not
-measurable and dropped, and no verdict reads it. Where the rule drops more than half of a load's
-tasks, the command stops before any run (exit 3) and says so with the numbers: the architect
-decides such a load. The skill's verdict is made twice, with and without the tasks whose listing
+Every load applies the listing rule (the architect, 2026-11-22; on added names too, 2026-11-24;
+narrowed by how the capture shows the listing, 2026-11-25), so no one applies it by hand. Each
+task's listing measure comes from the tasks file's build-tasks summary (`<tasks>.summary.json`): a
+session task's own profile's `listing measure` evidence item, and a written task's context
+session's; a task with no summary beside its file is not measurable.
+A task whose rebuilt listing misses more than 10% of the names its session's recorded listing
+holds is dropped before any run (`listing-misses: ` with the count, the share and the names;
+exactly 10% is kept). A task whose capture builds its listing from the rebuilt profile is dropped
+too when its listing adds more names than 10% of the recorded ones (`listing-adds: `, with the
+same reason form); that is a task measured as `subagent listing`, and every task on Claude Code,
+whose capture lists the skills its plugins hold and sends no recorded system prompt. A task over
+10% on both sides is dropped as `listing-misses`, its reason giving the adds part too. A task
+whose capture sends its session's recorded system prompt whole (on Oh My Pi, a measure of kind
+`session listing`: its profile holds the session's system prompt) is never dropped for added
+names: the model in every run sees exactly the recorded listing, whatever the rebuilt profile
+installs, and the profile changes there only how a read of a skill is answered, from an installed
+copy or with the unknown-skill reply. A recorded name the profile does not install is answered
+"unknown skill" when a run reads it, where the session got the text, so a miss still drops the
+task. For such tasks the command counts the runs that read a skill outside the recorded listing,
+by skill and by how the read was answered (`copy`: an installed copy; `absent`: the unknown-skill
+reply), from the reads each run records: the summary's `outsideRecordedListing` (`tasks` counted,
+their `runs`, the runs `examined` that record their reads, the runs that read `outside` the
+listing, and `bySkill`) and the `outside recorded listing` line it prints. The count drops no task
+and changes no verdict. A dropped task's line and the summary's task give the reason, the
+summary's `listing` counts the
+tasks measured, not measurable and dropped, and the drops by the start of their reason
+(`droppedBy`, also on the listing rule's line), and no verdict reads it. Where the rule drops more
+than half of a load's tasks, the command stops before any run (exit 3) and says so with the
+numbers: the architect decides such a load. The skill's verdict is made twice, with and without
+the tasks whose listing
 could not be measured, both in the summary's `verdicts`. Where they agree it stands, its reason
 giving how many tasks were not measured; where they differ there is no verdict (`no verdict:
 depends on tasks whose listing could not be measured`, with both results).
@@ -1063,7 +1118,8 @@ names in two or more repositories, the manifests and installers that install eac
 files outside a skill that name one (found by code search, paced under its limit), and the
 copy-prefix table the read count is attributed by. Its files are listed in `copies.ts`'s header.
 With `--cache-dir`, each owner's listing, each repository's read (its commit, the tree entries it
-keeps and every blob it read) and each finished code search is saved there the moment it ends,
+keeps and every blob it read), each finished code search, each prepack script's history and each
+read of what git did to a directory a prepack script staged from is saved there the moment it ends,
 under a temporary name renamed into place, so a run stopped at any moment and started again with
 the same arguments reads nothing twice; the hit files the searches find are read again. A truncated
 tree is walked a level at a time in GraphQL batches of up to 50 subtrees, at most 4 reads in flight
@@ -1149,13 +1205,41 @@ since. For each skill an older version staged for a package that the script read
 for that package into that directory, the package's unit gets prefix rows at that path under each
 place the unit is installed (`**/node_modules/<package>/dist/skills/<name>/`, and
 `/opt/legion/<package>/dist/skills/<name>/` for a package the worker image carries), each mapped
-to the copy at the directory that version staged it from, as the tree at `--at` holds it. The rows
-name the package's unit, so `build-cases` and `build-tasks` resolve that unit at a session's
-commit as they resolve any. Under the script's line, `skill-copies.md` names each such path with
-the commits that staged it there (`from <commit> (<date>) until <commit> (<date>)`), and each
-path that gets no row, with why: the tree at `--at` holds no `SKILL.md` at the directory it was
-staged from (a skill renamed or removed since), or the package is no package unit of the script's
-own repository.
+to the copy at the directory that version staged it from, as the tree at `--at` holds it. Where the
+tree at `--at` holds no `SKILL.md` there, git says what became of it: the newest commit of the
+default branch since `windowStart`, up to the commit read, that changed `<dir>/SKILL.md`
+(`repos/<r>/commits?sha=<commit read>&path=<dir>/SKILL.md&since=<windowStart>&per_page=1`), and
+that commit's files (`repos/<r>/commits/<sha>`). When that commit renamed the file (status
+`renamed`, its `previous_filename` the staged one) to a directory the tree at `--at` holds a copy
+at, the rows map the path to that copy, under the name the script staged, its former name: the
+row's `name` is that former name. Each of those reads goes through the run's gh rules and is kept
+in the cache. The rows name the package's unit, so `build-cases` and `build-tasks` resolve that
+unit at a session's commit as they resolve any. Under the script's line, `skill-copies.md` names
+each such path with the commits that staged it there (`from <commit> (<date>) until <commit>
+(<date>)`) and the rename that maps it, and each path that gets no row, with why: the tree at
+`--at` holds no `SKILL.md` at the directory it was staged from and git removed it, renamed it to a
+directory the tree holds no copy at, or names no commit that changed it; or the package is no
+package unit of the script's own repository. `former-stages.tsv` holds each such path at each
+place its package is installed: the script, the package, the skill's name there, the commit from
+which the script stages it there no longer, the directory git renamed it to, the copy its prefix
+row maps it to (empty for none) and why.
+
+`copies` also writes the former cache locations of a marketplace's plugin, for each target
+repository whose marketplace manifest changed during the window. It reads the manifest's versions
+in the window (one GraphQL read of its history), and for each plugin a version names by a
+directory of the repository (its marketplace's name, its own, its directory) it writes the cache
+locations Oh My Pi's plugin cache and Claude Code's gave the skills in that directory's
+`skills/`: `**/plugins/cache/plugins/<marketplace>___<plugin>___*/skills/<name>/` and
+`**/plugins/cache/<marketplace>/<plugin>/*/skills/<name>/`. A skill still in that directory,
+whose marketplace or plugin the manifest names no more, maps to the copy now there. A skill git
+moved (a commit that changed the manifest lists its `SKILL.md` as renamed; a later move of the
+same skill is followed) maps to the copy at the directory it went to, with `renamed_to` set in
+`former-stages.tsv`, so `attribute` counts those reads under `former_name_sessions`. A skill git
+removed, or moved to a directory with no copy now, has a `former-stages.tsv` row with no copy, and
+`attribute` says in the outcome of a read there that the plugin held it then and no longer.
+The limit: a move is seen only in a commit that also changed the marketplace manifest, so a skill
+moved by a commit that left the manifest alone keeps no former row. Each file list of a commit is
+read once and cached by repository and commit.
 
 ### `attribute`
 
@@ -1167,7 +1251,39 @@ bun scripts/skill-cuts/cli.ts attribute --config <skill-cuts.json> --count <coun
 
 The read count per skill copy (`attribute.ts`): it maps each read's copy path to a repository
 copy by the prefix table, then by the repository-relative skill directory a checkout's path ends
-with, then by the copies the store's context installs. Copies of several repositories at the
+with, then by the copies the session's Oh My Pi profile installs. Only the prefix table places reads under
+the worker image's install location (`/opt/legion/`, copies.ts's `IMAGE_ROOT`). Matching rows
+must agree on one copy. If no row matches or the rows disagree, the read stays unattributed
+with any former-stage note for that path. Neither checkout nor context can substitute a copy.
+For the profile step, `attribute` groups the prefix-table reads by store and profile.
+It infers which units each group installed from those reads. It places a new read only if
+that group supplies one copy of the name. It does not borrow copies from another profile
+in the same store. If `roots.txt` does not identify the session's profile, this step cannot
+place the read. `attribute` refuses a count output without the corresponding `roots.txt`.
+The default profile of a `devbox` store also has each unit that the dev box's own installers
+install into Oh My Pi, whether or not the session read from it. The dev box's repository is the
+one repository of `manifests.tsv` that holds both an installer script (`installers/*.sh`) and
+`.claude/settings.json`, and its units are the `installers.tsv` rows of that repository with host
+`omp` and the action ships, stages, links or installs (the same rule as the dev-box profile's
+in `build-cases`). So `/home/<user>/.agents/skills/gh/`, which cli/cli's `gh` and another
+repository's `gh` both end, goes to cli/cli's, which the dev box installs with `gh skill install`.
+A session of another profile has none of these units.
+A read inside a project skills directory (`.omp/skills`, `.claude/skills`, `.agent/skills`,
+`.agents/skills`, `.codex/skills`, `.opencode/skills`, `.github/skills`) of a checkout is a
+project skill, whether the path is absolute or relative to the session's working directory. A
+home directory's own skills directory (`/home/<user>/.claude/skills`, `~/.agents/skills`) is a
+user's and is not a project's. The checkout rule places a project skill only at a copy in such a
+directory too, and the profile never places it: a plugin that happens to hold a skill of the
+same name is not that project's skill, and a copy at `skills/<name>` of another repository is
+not either. A project skill that the copies output holds no copy of is unattributed, and its
+outcome says it is a project skill. `build-cases` places each read by the same code, so a read of
+a project skill installs no plugin in a case's profile.
+A read placed by a Git rename's prefix row (a `former-stages.tsv` row with a `renamed_to`) counts
+in the renamed copy's `sessions` and `former_name_sessions`. Outside the worker image, if the
+prefix table does not decide a read that matches a former-name row, the context can choose the
+renamed copy under that name if it installs the row's unit. A copies output with no `former-stages.tsv`
+(made before `copies` wrote it) is refused (exit 1), naming the file, by `attribute` and by
+`build-cases` alike: run `copies` again. Copies of several repositories at the
 skill directory a checkout's path ends with are told apart by how the path names the repository,
 in this order: its owner and its name as two directories in a row; its name as a directory; its
 owner followed by a directory that holds its name; a directory that holds its name (`.dotfiles`
@@ -1641,6 +1757,28 @@ bun scripts/skill-cuts/cli.ts build-tasks --first-read --config <skill-cuts.json
   [--model <model>] [--profiles-out <dir> --copies <copies out dir> --count <count dir>]
 ```
 
+`build-cases` and `build-cases --reprofile` read the Oh My Pi profile from the transcript path.
+`<home>/.omp/agent/sessions/` is the default profile. `<home>/.omp/profiles/<name>/agent/sessions/`
+is a named profile. A subagent's transcript is below its root's directory, so it uses the same
+profile. Only a default-profile session in a `devbox` store gets the dev-box installers.
+
+For a named profile in a `devbox` store, the builder reads the session-pod image pin at the
+root's prompt build. It reads the Dockerfile of the pinned image's build, even if the pin
+moved back to an older image. It uses the base worker's OCI revision or the commit recorded
+with the pin. It reads the staged skills at that commit for packages the image links into
+the profile. It leaves out a case if the evidence cannot identify the image or its commit.
+A separate profile with no known plugin links or explicit extensions gets project skills, not
+Legion role plugins. The evidence states where the builder inferred what the profile loaded.
+
+Set `sessionPod` in the private configuration to enable the image lookup. `repository` names
+the deployment repository. `pinFile` and `pinKey` locate its image pin, and `dockerfile` names
+the image recipe in that repository. `workerRepository` and `workerDockerfile` locate the base's
+source. Use paths relative to their repositories.
+
+`build-tasks --profiles-out` and `build-tasks --reprofile` use the same rule. A task whose pod
+image cannot be identified is not measurable. Case and task `context` labels keep their existing
+forms. The evidence records the pod profile separately.
+
 `build.ts`: `build-cases` pulls each candidate session through the config's `psqlCommand`, has
 the `case` reader propose the step the skill governs, reading the session from the skill's read
 on in windows of at most 40 messages, at most 6 windows a session, and writes the cases
@@ -1648,7 +1786,7 @@ on in windows of at most 40 messages, at most 6 windows a session, and writes th
 and near-miss tasks of a load test from the first requests of real sessions. `--count` and
 `--copies` are the count directory and the copies output that `attribute` read to make the
 sessions file: `build-cases` places each session's read of the skill with `attribute.ts`'s own
-rules (the prefix table, then a checkout, then the store's context), and keeps a session only
+rules (the prefix table, then a checkout, then the session's profile), and keeps a session only
 when they place it at the cut repository's copy; a read they place at another copy, or at none, is
 `not-cut-copy`, with the rule named. `--set <id>` takes a skill set of the configuration (`sets`)
 in place of `--cut <id>`; one of the two is required, and both are refused (exit 2). The set's
@@ -1810,6 +1948,41 @@ prefix rows under `/opt/legion/`) and no other: a dev box's own plugin list is n
 evidence names each list left out. A daemon-launched controller installs the every-role plugins
 alone, which a profile does not tell apart.
 
+A pool that an extension gives through `resources_discover` (a pool of the dev box's
+`skills-sources.json`, its unit named `pool:<root>`) is decided per session, whether the session's
+read or the dev box's installers brought it in. Dev-box sessions that ran the same Oh My Pi build
+list these pools in some sessions and not in others, and no file records why. The builder uses
+the listing in the session's recorded prompt, or the measured subagent's listing if the session
+records only its prompt's digest.
+
+With a recorded listing, the profile installs a pool if the listing names a skill that the pool
+ships at the session's start and no installed unit outside the pools ships. The evidence records
+how many of the pool's skills the listing names and how many it does not (`named: …; unnamed: …`).
+It also names any shared skills: those names do not tell the builder which unit supplied them.
+The builder installs the whole pool and marks its listed names `fromRecorded`. The listing
+measure counts the names that the profile lists but the recording does not as added names.
+
+A `[Skill file: …]` read in the session's own messages also keeps the pool. If only the read
+justifies keeping it, the evidence quotes `message N reads [Skill file: …]` as direct proof that
+Oh My Pi loaded the pool. The measure does not mark its names `fromRecorded` in that case. If
+neither the listing nor a read supports installing the pool, the builder leaves it out. Its
+`left out: the pool …` evidence names any shared skills and says why those names do not count.
+
+Without a recorded listing from the session or a subagent, the builder uses the Oh My Pi build
+that the dev box pinned at the session's start. The optional `ompPin` configuration gives
+that pin's location: `file`, a TOML file of the repository (such as `mise.toml`); `key`, the keys that
+lead to the version in it (such as `["tools", "<tool>"]`); and `firstPoolVersion`, the first build
+that loads such pools on a fresh start. The file is read at the repository's last commit at or
+before the session's start. A pin before `firstPoolVersion` installs no pool, except one that a
+`[Skill file: …]` read of the session places, since that read shows Oh My Pi loaded it; a pin at or
+after it installs every pool. The evidence item `Oh My Pi pin of <repository>` names the pin, and
+sets beside it the Oh My Pi version the session's file records (`runtime.version` of its first
+`model_change` line; a fork's build gives only its release, such as `18.16.0`), as a cross-check
+that decides nothing. Without `ompPin`, or where the file holds no version at those keys, such
+pools are installed as the dev box's installers install them. `--reprofile` reads that version
+from the session's head (`session-head.sql`'s `runtime`); a head saved before it was read gives
+none.
+
 A Legion profile reads the worker image's packages (the units of the repository that the prefix
 rows under `/opt/legion/` come from) at the commit that image was built from, not at that
 repository's default branch at the session's start. The deployment, read at its commit of the
@@ -1821,18 +1994,27 @@ file's: `legion/Pulumi.prod.yaml`). A nested map's `image:` and the `daemonImage
 that line. The commit is the one that
 GitHub's build provenance of the image's digest names (`gh api
 repos/<repository>/attestations/sha256:<digest>`, the `gitCommit` of its first resolved
-dependency). For an image that names no digest, or whose digest has no provenance there (GitHub
-answers 404, as for an image that a deployment builds on the Legion image in another registry),
-the comment lines right above its `image:` line decide, by the first of their words, in their
-order, that names a commit:
+dependency). For an image whose digest has no provenance there (GitHub answers 404, as for an
+image that a deployment builds on the Legion image in another registry), the image itself decides:
+the build reads its OCI config from the registry by digest (the manifest and the config blob of a
+public GHCR image, with the anonymous pull token the registry gives; no layer is pulled). The
+`org.opencontainers.image.revision` label decides when it is a commit of the repository. Else the
+`org.opencontainers.image.version` label decides, as the release tag `v<version>` or
+`<name>-v<version>` (the first words of the image's name, the longest first) that the repository
+has, at the tag's last commit at or before the read. A label that names no commit or tag of the
+repository decides nothing. Failing that, the comment lines right above its `image:` line decide,
+by the first of their words, in their order, that names a commit:
 an image digest whose provenance names one (the base the image was built on), a commit of the
 repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a
 word of the form `<name>-v<version>` or `v<version>`, such as `legion-v15.2.0`, at the tag's last
 commit at or before the deployment's read). The order matters: a comment that names the image's
 base commit first and an older release after it ("before it …") is read at the base commit. Where
 none of these gives a commit (no `image:` line in the project file and no config file at that
-commit, no entry or `image:` line for the project, or a comment that names none), the
-repository is read at its default branch at the session's start. The evidence item `the worker
+commit, no entry or `image:` line for the project, an image no source dates, or a comment that
+names none), the image's commit is not known. The repository's default branch is a guess, so no
+profile is built on it: the case or task is not measurable, and is left out with that reason
+(`build-cases` exits 1 naming the case; `build-tasks` lists the task as left out). A version file
+inside an image layer is not read. The evidence item `the worker
 image's commit of <repository>` says which rule decided, with each read; the image's units are
 resolved from the repository's tree at that commit, and their copies and plugin directories name
 it. The rest of that repository is still read at the session's start: a Legion workspace of the
@@ -2045,13 +2227,10 @@ lists, installers and settings at the root's build, and its pool directories at 
 start; the `read times of <repository>` evidence item names both commits (`its pool directories
 at <sha>`, which context.ts reads). The dev box's own pool units come from its host's tree at the
 subagent's start too: Oh My Pi reads `skills-sources.json` again as a subagent starts (its
-extension's `resources_discover`) and merges what it gets into the parent's snapshot. A pool that
-list names at the subagent's start and not at the root's build is listed only where its clone was
-on the host then, which no repository records, so the profile installs it only where the
-subagent's recorded listing names one of its skills (the unit's evidence says `pool at the
-subagent's start`; one whose skills the listing does not name is left out, with why). This is an
-inference from the recorded listing, which is also what the listing measure compares against, so
-the measure marks each name installed that way (`fromRecorded`, below). The root is the file the topmost `<…>Z_<id>` directory of the
+extension's `resources_discover`) and merges what it gets into the parent's snapshot, so a pool
+that list names at the subagent's start and not at the root's build is a pool of the subagent too
+(the unit's evidence says `pool at the subagent's start`); like every pool, its recorded listing
+decides it (above). The root is the file the topmost `<…>Z_<id>` directory of the
 subagent's path stands for (a file below no such directory is its own root). `digest-times.sql`
 reads the time and digest of each of the root's digest lines, one query a store for
 `--reprofile` and one a session otherwise, and no other text of the file. With no build before
@@ -2095,19 +2274,26 @@ Each case and each load task's profile carries a `listing measure` evidence item
 is one JSON object (`ListingMeasure` in build.ts): how far the listing its rebuilt profile gives
 (its skills less those Oh My Pi hides, the tested skill included) is from the listing its
 session saw. A session that recorded its system prompt (a subagent's) is measured against that
-prompt's `<skills>` lines (`session listing`). A top-level session records only its prompt's
+prompt's `<skills>` lines (`session listing`), and its capture sends that prompt whole, with only
+the tested skill's listing line changed per arm, so the model sees the recorded listing whatever
+the rebuilt profile installs. `build.ts` writes the kind `session listing` exactly when the
+case's or task's profile holds the recorded system prompt, which is exactly when `capture.ts`
+sends that prompt, so the kind says which listing the capture shows. A top-level session records only its prompt's
 digest, and the build makes no prompt, so `rebuiltDigest` is always null; it is measured against
 the recorded listing of a subagent it started under the build its profile is read at (`subagent
 listing`: the earliest one-level child of its directory whose `session_init` holds a listing and
 whose header's time falls between that build's line and the next, or before the second line for
-the first build; read with `subagents.sql`, one query a session as `build-cases` pulls it and one
-a store for `--reprofile` and `build-tasks --profiles-out`, since Oh My Pi gives a subagent its
+the first build; read with `subagents.sql`, one query a session as `build-cases` and `build-tasks
+--profiles-out` and `build-tasks --reprofile` rebuild it, before its profile, and one a store for
+`build-cases --reprofile`, since Oh My Pi gives a subagent its
 parent's skills: task/structured-subagent.ts, lines 811-818 and 900; task/executor.ts, lines
 662-666 and 5256), else it is `not measurable`, with why: a subagent spawned under another build
 is never used. The measure says the store holds no such subagent only after `subagents.sql` was
 asked, and names the window it asked for; a session the store was not asked about (it recorded
-its own listing, no build of it is known, the store no longer holds it, or the query failed) is
-`not measurable` with that reason. A task the reader picked from a session is asked about by the
+its own listing, no build of it is known, or the store no longer holds it) is `not measurable`
+with that reason. A failed query fails that session's profile (`build-cases` drops it as
+`profile-failed`; `build-tasks` gives the task no profile), and fails a `--reprofile` run, since
+the listing decides the profile's pools. A task the reader picked from a session is asked about by the
 path hash its profile was rebuilt from, as every other session is. A context session
 (`--context-session`) has no step: its measured subagent is the earliest of all whose
 `session_init` holds a listing, found first, and its profile is read at the build that subagent
@@ -2120,22 +2306,26 @@ name a model's hint for the skill or a preview of its description (system-prompt
 summaries of `build-cases`, `build-cases --reprofile`, `build-tasks --profiles-out` and
 `build-tasks --reprofile` count the measures of each kind and sum the missing and added names
 (`listing`); a task that keeps its old profile is `not measurable`, with why. A measure whose
-profile installed names only because the recorded listing names one of their pool's skills (a pool
-new at a subagent's start, above) lists those names as `fromRecorded`: the measure cannot see a
-miss of them, since the same listing decided them. The summaries count such measures
+profile installed a pool because the recorded listing names a skill of it that no installed unit
+outside the pools ships (above) lists that pool's names as `fromRecorded`. The measure cannot see a
+miss of those names because the same listing decided which pool to install. The summaries count
+such measures
 (`listing.fromRecorded`), and so do `behaviour report`'s verdict line and `load`'s summary and
-listing line. The measure drops
-nothing here: `behaviour` and `load` apply the listing rule to it (above, under each command).
+listing line. The measure drops nothing here: `behaviour` and `load` apply the listing rule to
+its `missing` names for every case and task, and to its `added` names only for a measure of kind
+`subagent listing`, whose capture builds its listing from the rebuilt profile. The `added` names
+of a `session listing` measure change only how a run's read of that skill is answered, which
+`behaviour report` and `load` count (above, under each command).
 
-`--reprofile` builds the profiles of an existing case file again that way, from the cases and
-their sessions' heads (no transcript pulled, no reader call), and writes a new file in which only
-`profile` and the profile's part of `evidence` differ: each case's `source`, its `kind` among it,
-stays. A written case's profile is built again from the reads of its context session its evidence
-names (`context session read: …`), which its messages do not hold, and its written case's
-evidence stays. A case holds no working directory, so each
-case's is the header's `cwd` in its session's head, read from its store with `session-head.sql`
-(one query per store, through the configuration's `psqlCommand`; each head is kept under
-`<out>.sessions/`). For a case whose session the store no longer holds, the evidence says so
+`--reprofile` rebuilds each profile from the case and its session's head and path.
+It pulls no transcript and calls no reader. Only `profile` and its evidence can change: each
+case's `source`, its `kind` among it, stays. A written case's profile is built again from the
+reads of its context session its evidence names (`context session read: …`), which its messages
+do not hold, and its written case's evidence stays.
+A case holds no working directory. The builder reads `cwd` from its session's head with
+`session-head.sql` and the transcript path with `session-paths.sql`, one query of each per store.
+It saves the head under `<out>.sessions/` but does not save the transcript path.
+For a case whose session the store no longer holds, the evidence says so
 (`no session head`), and the session repository is the one its old evidence names (`session
 repository <repo>` or `no session repository`); a case built before that evidence was written is
 taken to be in the workspace of the repository whose `AGENTS.md` its old profile holds. A Legion
@@ -2282,7 +2472,8 @@ among them), as a session case's is from the reads before its step, at the time 
 reads a written case's (a written case records no time of its step): a top-level session's at its
 start, its first prompt build, and its listing measured against the earliest subagent of it
 spawned under that build; a subagent's at its root's last prompt build before its start. The
-summary's `contextSession` names
+listing its measure is set against (its own recorded prompt's, or that subagent's) decides its
+pools, as a session case's does. The summary's `contextSession` names
 it, how it was chosen, and each session passed over before it with why (a drop reason and its
 detail, `model-not-served` for a session on a model the gateway does not serve,
 `no-user-text: <detail>` for a session whose first user message holds no text, whose kind of work

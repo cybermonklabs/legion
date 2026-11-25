@@ -109,10 +109,14 @@
  *    `skillReadFile` reads one) and its reads of the skill's files by path, by count.sql's rule
  *    (`readsByPath`: a path or URL that, its read selector taken off, ends `<skill>/SKILL.md` or
  *    holds `skills/<skill>/references/`). The copy a read reads is placed by attribute.ts's own
- *    rules (`placer`: the prefix table, then a checkout, then the store's context), from
+ *    rules (`placer`: the prefix table, then a checkout, then the session's Oh My Pi profile), from
  *    `--count` and `--copies`, the two attribute.ts made the sessions file from: a `skill://`
  *    read's at the path of its `[Skill file: <path>]` line, a read by path's at its own path, as
- *    read. A case is built from a successful `skill://` read, or from a successful whole read by
+ *    read. A read inside a project skills directory of a checkout (`.omp/skills`, `.claude/skills`,
+ *    `.agent/skills`, `.agents/skills`, `.codex/skills`, `.opencode/skills`, `.github/skills`, not
+ *    a home directory's) is of a project skill, which they place only at a copy in such a
+ *    directory, never at a unit's copy of its name, so such a read installs no plugin. A case is
+ *    built from a successful `skill://` read, or from a successful whole read by
  *    path (no read selector) that they place at a copy of the cut's repository (a source). A
  *    source's directory is its path up to the skill's directory, resolved as Oh My Pi's read
  *    resolves it (cases.ts's `resolvedReadPath`): a relative path against the session's working
@@ -278,10 +282,13 @@
  * or digest-times.sql for `--reprofile`) and the step's message time, or the session's start for
  * its first build. Below, "the session's start" means that time (a subagent's pools are read at
  * its own start):
+ * - Only the default profile in a devbox store uses the dev box's installers. A named profile in
+ *   that store reads the session-pod image at the root's prompt build. A separate profile in a
+ *   Legion store does not inherit Legion role plugins. The `context` label does not change.
  * - The units installed: each unit (`via`) of each prefix row that a `[Skill file: <path>]` of a
  *   read result before the step is under, or the path of a successful whole read by path of the
  *   case's copy (`pathCopy`, `profileReads`); for a path no row maps, each unit of the prefix rows
- *   of the copy attribute.ts's rules place the read at (a checkout, the store's context); and,
+ *   of the copy attribute.ts's rules place the read at (a checkout, the session's profile); and,
  *   for a Legion context, each Oh My Pi unit with a prefix row under `/opt/legion/` (a package
  *   the worker image carries) and each unit an `omp-plugins` manifest installs. A read no rule
  *   places is listed as left out; a copy a read is placed at that no prefix row names a unit for
@@ -290,15 +297,48 @@
  *   since, whose old name the read's plugin cache directory shows) adds each unit of the prefix
  *   rows that the same manifests give at the session's start (copies.ts's rules, below) and that
  *   its path is under, and that unit's copy is the one the session read.
+ * - Pools: a pool that an extension gives through `resources_discover` (a `pool:` unit of the
+ *   dev box's `skills-sources.json`, which a read or the dev box's installers bring in) is decided
+ *   by the recorded listing the listing measure sets the profile against (POOL_LISTING_RULE): the
+ *   session's own recorded prompt's, or, for a session that records only its prompt's digest, that
+ *   of the subagent the measure uses, which the build reads from the store (subagents.sql) before
+ *   it builds the profile. The pool is installed where that listing names at least one of the
+ *   skills it holds at the session's start that no installed unit outside the pools also ships;
+ *   a name such a unit ships is no evidence for the pool, since the session lists it whether or
+ *   not the pool is there, and the evidence names those names. The pool is left out where the
+ *   listing names no such skill. A pool that a `[Skill file: …]` read of the session places is
+ *   installed whatever the listing names: that read shows Oh My Pi loaded it, which is direct
+ *   proof and no inference from the listing. A pool the listing names in part is installed whole:
+ *   the evidence gives how many of its skills the listing names and how many it does not, and the
+ *   listing measure counts those it does not as added names. The measure marks each name of a
+ *   pool installed on the listing (`fromRecorded`), and no name of a pool installed on a read
+ *   alone. The listing's decision is an inference: dev-box sessions that ran one Oh My Pi build
+ *   list these pools in some sessions and not in others, and no file records why. A session with
+ *   no listing (no recorded prompt, and no subagent the measure can use) has its pools decided by
+ *   the Oh My Pi build its dev box pinned at its start (POOL_VERSION_RULE): the version the
+ *   configuration's `ompPin` names (a TOML file of the dev box's repository and the keys to the
+ *   version in it, read at the repository's last commit at or before the session's start), set
+ *   against `ompPin`'s
+ *   `firstPoolVersion`, the first build that loads such pools on a fresh start. Before that
+ *   version, the profile installs no pool but one that a `[Skill file: …]` read of the session
+ *   places, which shows Oh My Pi loaded it; at or after it, every pool. The Oh My Pi version the
+ *   session's file records (the `runtime.version` of its first `model_change` line) is set beside
+ *   the pin in the evidence as a cross-check, and decides nothing. Without `ompPin`, or where the
+ *   pin file holds no version, such pools are installed as the dev box's installers install them.
  * - Commits: each repository at the last commit of its default branch (repositories.tsv, else
  *   GitHub's) at or before the session's start; a unit's repository that an installer of the
  *   units pins (copies.ts's `installerPins`: a `github:` dependency of an Oh My Pi plugins
  *   package.json, an `ensure_vendor` clone) at the last commit of the ref that installer names at
  *   the session's start, as the session's machine held it; for a Legion pod, the units of its
- *   worker image's repository at the commit the image was built from, which the deployment's
- *   project file (else its Pulumi config) and GitHub's build provenance of the image name
- *   (LEGION_IMAGE_RULE); and the commit its daemon image was built from, at which a capture
- *   composes the role prompt, is an evidence item of its own (LEGION_DAEMON_RULE). A
+ *   worker image's repository at the commit the image was built from (LEGION_IMAGE_RULE). The
+ *   deployment's project file (else its Pulumi config) names the image. Its commit is the one
+ *   GitHub's build provenance of the image's digest names; else the one the labels of the image's
+ *   own OCI config name (`org.opencontainers.image.revision`, else the release tag of
+ *   `org.opencontainers.image.version`); else the one the pin history names (the comment lines
+ *   right above the image's line); else the image's commit is not known, and the case or task is
+ *   not measurable and is left out, since the repository's default branch would be a guess. The
+ *   commit its daemon image was built from, at which a capture composes the role prompt, is an
+ *   evidence item of its own (LEGION_DAEMON_RULE). A
  *   repository GitHub gives no commit of
  *   at or before that time (`NoCommitThen`), such as one the dev box's installers install only by
  *   the copies output's later read, did not exist then, so nothing of it was installed then: it is
@@ -382,7 +422,7 @@
  *   gives Claude Code it as user memory). Each one the copies output or the session does not name
  *   is listed as left out: for a devbox, when no repository or more than one of its units holds
  *   those settings, or that one has no CLAUDE.md then. A subagent's case has none: its recorded
- *   prompt holds them. Its units and skills are read as its store's context's are.
+ *   prompt holds them. The transcript's config root decides which units and skills to read.
  *
  * Output: the case file `--out` (one JSON line per case, written whole after each case and checked
  * with cases.ts's `loadCases` against `--old` at the end) and `<out>.summary.json`: the seed and
@@ -437,7 +477,7 @@
  * read-only call; one whose recorded system prompt, role's prompt or first user message names by
  * an absolute path outside its checkout's root a file it reads itself (a `read` call, or `cat`,
  * `head`, `tail` or `sed -n` in a `bash` call), a skill's file aside, as `outside-material`; one
- * whose listing measure (the one its cases would carry: `sessionMeasure`) the screen's rule drops
+ * whose listing measure (the one its cases would carry: `listingMeasure`) the screen's rule drops
  * (score.ts's `listingStanding`: its rebuilt listing misses more than MAX_LISTING_MISSING_PERCENT
  * of its recorded names, none when the measure says not measurable) as `listing-misses`, all four
  * before the reader is asked; one whose work the reader finds is on the skill's own text as
@@ -513,8 +553,10 @@
  * build-cases rebuilds a case's (`sessionProfile`: the context, `caseProfile` from every read of
  * its branch with `--copies` and `--count`, a subagent's recorded system prompt and tools), a
  * top-level session's at its first build (the session's start: a task runs as its first message),
- * less the tested skill, and written to `<dir>/<task id>.json` (load.ts's LoadProfile); the task
- * line's `profile` is its path. A written task takes the profile of `--context-session
+ * its measured subagent read from the store first (one subagents.sql query a session), since that
+ * subagent's listing decides its pools; less the tested skill, and written to `<dir>/<task
+ * id>.json` (load.ts's LoadProfile); the task line's `profile` is its path. A written task takes
+ * the profile of `--context-session
  * <store>:<hash>` (required in the reader's mode; rebuilt before any reader call, and a session
  * that gives none fails the build), read at the build its listing measure's subagent was spawned
  * under (TOP_BUILD_RULE: that subagent, the earliest whose recorded prompt holds a listing, found
@@ -622,8 +664,11 @@ import {
   readResult,
 } from "./arms";
 import {
+  CLAUDE_SETTINGS,
+  devboxRepositories,
   type InstallersRow,
   type ManifestsRow,
+  MEMBER_ACTIONS,
   type ModelCount,
   modelCountOf,
   modelId,
@@ -685,7 +730,7 @@ import {
   transientReason,
   writeWhole,
 } from "./common";
-import { type CutOrSet, cutOrSet, type SkillCutsConfig, storeNamed } from "./config";
+import { type CutOrSet, cutOrSet, OMP_VERSION, type SkillCutsConfig, storeNamed } from "./config";
 import {
   composedAt,
   DAEMON_IMAGE_ITEM,
@@ -757,6 +802,14 @@ import {
 } from "./judge";
 import { EvidenceItem, messageLoad, type RecordedListing, Task } from "./load";
 import { mib, procPeakRssBytes, RUN_MEMORY_LIMIT_BYTES, startPeakRssSampling } from "./memory";
+import {
+  type ImageConfig,
+  type PodImage,
+  PodNotMeasurable,
+  type ReadImageConfig,
+  registryImageConfig,
+  sessionPodImage,
+} from "./pod-image";
 import { eachStoreRow, PullCheck, storeRows } from "./psql-rows";
 import {
   AuditAnswer,
@@ -777,6 +830,7 @@ import {
 } from "./readers";
 import { isObject } from "./replay";
 import { LISTING_MEASURE_ITEM, listingStanding } from "./score";
+import { sessionProfileName } from "./session-root";
 
 /** Exit statuses: `stopped` at `--budget-usd` or by the memory stop (`BuildPeak`), `stoppedByCost`
  *  by the stop rule (`stopBy`). */
@@ -978,10 +1032,9 @@ const WORKSPACE_DIR = /\/--legion-workspaces-[A-Za-z0-9._-]*?-([a-z][a-z0-9]*)-(
 const LEFT_OUT_CUSTOM = new Set(["prewalk-plan", "vibe-mode-context"]);
 /** Where a Legion pod's worker image installs its Oh My Pi packages (worker.Dockerfile). */
 const IMAGE_ROOT = "/opt/legion/";
-/** Claude Code's settings in its config directory, as copies.ts reads them (its claude-settings
- *  manifest), and the user memory file beside them, which Oh My Pi reads as its user-level context
- *  file (discovery/claude.ts at the pinned tag). */
-const CLAUDE_SETTINGS = ".claude/settings.json";
+/** The user memory file beside Claude Code's settings (CLAUDE_SETTINGS, as copies.ts reads them
+ *  from its claude-settings manifest), which Oh My Pi reads as its user-level context file
+ *  (discovery/claude.ts at the pinned tag). */
 const USER_CONTEXT_FILE = ".claude/CLAUDE.md";
 /** A Legion workspace: `/legion/workspaces/<owner>/<name>/<workspace>`. */
 const LEGION_WORKSPACE = /^\/legion\/workspaces\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)(?:\/|$)/;
@@ -1008,6 +1061,7 @@ export interface BuildIo {
   /** The process's peak resident memory so far, in bytes; memory.ts's `procPeakRssBytes` when
    *  absent (cli.ts's `skill-cuts build-cases`, whose io already samples it). */
   peakRssBytes?(): number;
+  readonly imageConfig?: ReadImageConfig;
   /** Where each reader's answer records its usage span (spend-record.ts; `processSpendRecorder()`
    *  in a real run); none when absent. `main` leaves the wait for its spans to its caller. */
   readonly spendRecorder?: SpendRecorder;
@@ -2697,6 +2751,7 @@ export class GithubReads {
   private readonly dirs = new Map<string, Promise<TreeEntry[]>>();
   /** The skills each package version's tarball ships (`shippedSkills`), by `<name>@<version>`. */
   private readonly shipped = new Map<string, Promise<ReadonlySet<string> | undefined>>();
+  private readonly images = new Map<string, Promise<ImageConfig | undefined>>();
 
   constructor(
     private readonly gh: Gh,
@@ -2704,8 +2759,13 @@ export class GithubReads {
     readonly retries: GhRetries,
     /** One try of a read of the registry's tarball of a package version (`registryTarball` in a
      *  real run). */
-    private readonly npm: NpmTarball = registryTarball
+    private readonly npm: NpmTarball = registryTarball,
+    private readonly readImageConfig: ReadImageConfig = registryImageConfig
   ) {}
+
+  imageConfig(image: string) {
+    return readOnce(this.images, image, () => this.readImageConfig(image));
+  }
 
   /** The registry's tarball of `version` of the package `name`, undefined when it has none. A try
    *  that failed for a transient reason (an NpmFailed whose `failure` names one) is sent again as
@@ -3213,7 +3273,7 @@ function githubReads(
   branches: ReadonlyMap<string, string>,
   who: "build-cases" | "build-tasks"
 ): GithubReads {
-  return new GithubReads(io.gh, branches, commandRetries(io, who), io.npm);
+  return new GithubReads(io.gh, branches, commandRetries(io, who), io.npm, io.imageConfig);
 }
 
 /** Which skills a package pinned by an exact npm version ships, and where its source says so. */
@@ -3253,6 +3313,7 @@ interface Checkout {
 interface ProfileInput {
   readonly store: string;
   readonly context: string;
+  readonly ompProfile: string;
   readonly project: string | undefined;
   readonly reads: readonly ShownRead[];
   /** Each successful read of its messages by an absolute path (`absoluteReads`): a file of them
@@ -3268,9 +3329,24 @@ interface ProfileInput {
    *  start (PARENT_LOAD_RULE), a top-level session's at the build its step ran under
    *  (TOP_BUILD_RULE); every one at the session's start when absent. */
   readonly readTime?: ReadTime;
-  /** The names the session's recorded prompt lists (a subagent's), which alone admit a pool new
-   *  at the subagent's start (POOL_AT_START_RULE). */
-  readonly recordedListing?: readonly string[];
+  /** The recorded listing its listing measure sets it against (`decidingListing`): the session's
+   *  own recorded prompt's (a subagent's), or that of the subagent the measure uses for a session
+   *  that records only its prompt's digest. It decides each pool (POOL_LISTING_RULE). */
+  readonly recordedListing?: DecidingListing;
+  /** The Oh My Pi version the session's file records it ran (`runtimeOf`), which the pool version
+   *  rule sets beside the dev box's pin (POOL_VERSION_RULE). */
+  readonly runtime?: string | undefined;
+  /** Every pool is installed, by no rule of the two: a top-level session's profile at the builds
+   *  a step in the case reader's reach can run under, before its step's build and the subagent
+   *  its listing measure uses are known, which must install all that the step's profile can. */
+  readonly poolsUndecided?: true;
+}
+
+/** A recorded listing that decides a profile's pools (POOL_LISTING_RULE): the names it lists, and
+ *  where it was recorded, in words. */
+interface DecidingListing {
+  readonly names: readonly string[];
+  readonly from: string;
 }
 
 /** How a dev-box session's repository is found from its working directory. */
@@ -3282,9 +3358,13 @@ const DEVBOX_INSTALLERS_RULE =
 /** How Oh My Pi 18.18.6 reads skills.ignoredSkills. */
 const IGNORED_RULE =
   "Oh My Pi 18.18.6 loads no skill whose name a pattern of skills.ignoredSkills matches as a Bun.Glob, matched against the skill's own name and again against the name it is listed under, <namespace>/<name> for a later copy of a name whose text differs (extensibility/skills.ts, lines 386-389, 401-406, 437 and 544), so a session can neither list nor read it";
-/** When a pool new at a subagent's start is installed. */
-const POOL_AT_START_RULE =
-  "Oh My Pi 18.18.6 has a subagent emit resources_discover as it starts and merges the skill directories its extensions give then into the snapshot its parent gave it (session/session-tools.ts, discoverStartupSkillPaths, lines 2530-2547, and #mergeDiscoveredSkillDirectories, lines 2350-2420), so a pool the dev box's skills-sources.json names at the subagent's start is listed where its clone is there then; which clones the host had then no repository records, so the profile installs such a pool only where the subagent's recorded listing names one of its skills, an inference from that listing, and the listing measure marks each name taken so (fromRecorded), since there the recorded listing both installs the names and is what the measure compares against";
+/** Which pools an extension's resources_discover gives a profile installs, where the session
+ *  records a listing. */
+const POOL_LISTING_RULE =
+  "Oh My Pi 18.18.6 lists the skills of a pool an extension gives through resources_discover (a pool of the dev box's skills-sources.json) only where it loaded that extension's pools and the pool's clone was there then: a top-level session as it starts and on each reload that rebuilds its prompt, a subagent as it starts, merging what it gets into the snapshot its parent gave it (session/session-tools.ts, lines 2321-2337, 2466-2506 and 2530-2547, and #mergeDiscoveredSkillDirectories, lines 2350-2420); dev-box sessions that ran one Oh My Pi build list these pools in some sessions and not in others, and no file records why, nor which clones the host had then. So where the session records a listing (its own recorded prompt's, or that of the subagent its listing measure uses), that listing decides each pool, an inference from the listing: the profile installs a pool where the listing names at least one of the skills the pool holds at the session's start that no installed unit outside the pools also ships (a name such a unit ships is no evidence for the pool, since the session lists it whether or not the pool is there), and leaves it out where the listing names no such skill; a pool the listing names in part is installed whole, and the listing measure counts its unnamed skills as added names. A pool that a [Skill file: …] read of the session places is installed whatever the listing names, since that read shows Oh My Pi loaded it, which is direct proof and no inference from the listing. The measure marks each name of a pool installed on the listing (fromRecorded), since there the recorded listing both installs the names and is what the measure compares against; it marks no name of a pool installed on a read alone";
+/** Which pools a profile installs where the session records no listing. */
+const POOL_VERSION_RULE =
+  "where the session records no listing and no subagent's listing measures it, the Oh My Pi build its dev box ran decides the pools: the version the dev box's own repository pins (the configuration's ompPin: a TOML file of that repository and the keys to the version in it), read at its last commit at or before the session's start, set against ompPin's firstPoolVersion, the first build that loads an extension's resources_discover pools on a fresh start (an earlier build deferred an extension whose only registration is resources_discover, so a fresh session listed none of its pools); a pin before that version installs no pool but one a [Skill file: …] read of the session places, which shows Oh My Pi loaded it, and a pin at or after it installs each pool, both inferences from the pinned build. The Oh My Pi version the session's file records (the runtime.version of its first model_change line; a fork's build gives its release alone) is set beside the pin as a cross-check and decides nothing. With no ompPin, or no version the file holds at those keys, each pool is installed as the dev box's installers install it";
 /** Which Claude Code plugins Oh My Pi lists for a session. */
 const CLAUDE_PLUGIN_RULE =
   "Oh My Pi 18.18.6 lists the skills of a Claude Code plugin that Claude Code's registry installs for the project: a project- or local-scope install recorded for the active project, or one that enabledPlugins of the project's .claude/settings.json (or settings.local.json, or the config directory's settings.json) turns on (discovery/helpers.ts, readClaudeEnabledPlugins, lines 1310-1333, and loadClaudePluginRoots, lines 1494-1570), at priority 70, a second copy of a name under the plugin's name (discovery/claude-plugins.ts, lines 36 and 226-275); a user-scope install only where Oh My Pi's enabledProviders names claude-plugins or claude (extensibility/skills.ts, lines 361-362; capability/index.ts, lines 419-429), which no profile config read here sets. Claude Code installs the plugins a project's .claude/settings.json enables for that project, so a session in a checkout of the repository that holds those settings lists them; the registry itself is host state that no repository holds";
@@ -3292,14 +3372,7 @@ const CLAUDE_PLUGIN_RULE =
 /** The dev box's repository by DEVBOX_INSTALLERS_RULE, or undefined, with the evidence of why,
  *  when no repository or more than one holds both. */
 function devboxHome(copies: Copies, evidence: Evidence[]): string | undefined {
-  const holding = (kind: string, file?: string) =>
-    new Set(
-      copies.manifests
-        .filter((row) => row.kind === kind && (file === undefined || row.path === file))
-        .map((row) => row.repository ?? "")
-    );
-  const settings = holding("claude-settings", CLAUDE_SETTINGS);
-  const homes = [...holding("installer-script")].filter((repo) => settings.has(repo)).sort();
+  const homes = devboxRepositories(copies.manifests);
   const [home] = homes;
   if (homes.length === 1 && home !== undefined) return home;
   evidence.push({
@@ -3307,6 +3380,56 @@ function devboxHome(copies: Copies, evidence: Evidence[]): string | undefined {
     source: `${DEVBOX_INSTALLERS_RULE}; ${homes.length === 0 ? "no repository holds both" : `${homes.length} repositories hold both (${homes.join(", ")})`}, so the profile installs only the units the session's reads come from`,
   });
   return undefined;
+}
+
+/** The item of a profile's evidence that names the Oh My Pi build the dev box's repository pins
+ *  (POOL_VERSION_RULE), followed by that repository. */
+const OMP_PIN_ITEM = "Oh My Pi pin of ";
+
+/** The release of the version `version` (`18.16.0` of `v18.16.0-fork.1+b`): a fork's build gives
+ *  its runtime version so. */
+function releaseOf(version: string): string {
+  return version.replace(/^v/, "").split(/[-+]/)[0] ?? "";
+}
+
+/** The Oh My Pi build the dev box's repository `home` pins at the session's start `start`, by the
+ *  configuration's ompPin `pin` (POOL_VERSION_RULE): the value at its keys in its TOML file, read
+ *  at the last commit of the repository's branch at or before `start`, when it is a version; and
+ *  what was read, in words. No `version` where the repository has no commit then, the file is not
+ *  there or not TOML, or it holds no version at those keys. Throws when a GitHub read fails. */
+async function pinnedOmp(
+  github: GithubReads,
+  home: string,
+  pin: NonNullable<SkillCutsConfig["ompPin"]>,
+  start: string
+): Promise<{ readonly version?: string; readonly read: string }> {
+  const keys = pin.key
+    .map((key) => (/^[A-Za-z0-9_-]+$/.test(key) ? key : JSON.stringify(key)))
+    .join(".");
+  const { branch } = await github.branch(home);
+  let sha: string;
+  try {
+    sha = await github.commitAt(home, branch, start);
+  } catch (error) {
+    if (!(error instanceof NoCommitThen)) throw error;
+    return { read: `${home} has no commit of ${branch} at or before the session's start ${start}` };
+  }
+  const read = `${home}:${pin.file} at ${sha} (the last commit of ${branch} at or before the session's start ${start})`;
+  const text = await github.text(home, sha, pin.file);
+  if (text === undefined) return { read: `${read} does not exist` };
+  let value: unknown;
+  try {
+    value = Bun.TOML.parse(text);
+  } catch (error) {
+    return { read: `${read} is no TOML file (${messageFor(error)})` };
+  }
+  for (const key of pin.key) value = isObject(value) ? value[key] : undefined;
+  if (typeof value !== "string" || !OMP_VERSION.test(value)) {
+    return {
+      read: `${read} pins no version at ${keys}${typeof value === "string" ? ` (it holds ${value})` : ""}`,
+    };
+  }
+  return { version: value, read: `${read} pins ${keys} at ${value}` };
 }
 
 /** What a Legion pod installs beside its worker image's packages. */
@@ -3363,7 +3486,7 @@ function legionCatalog(
 }
 
 /** Which commit of its repository a Legion pod's worker image carries. */
-const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that the deployment names for its project at the deployment's commit of the session's start: the top-level image: line of the project file, else the image: line of the project's entry in the deployment's Pulumi config (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>); that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the repository is read at its default branch's commit at the session's start, as any other`;
+const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that the deployment names for its project at the deployment's commit of the session's start: the top-level image: line of the project file, else the image: line of the project's entry in the deployment's Pulumi config (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>); that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the image itself decides, by the labels of its OCI config (read from the registry by digest, the config blob alone and no layer: org.opencontainers.image.revision, a commit of the repository, else org.opencontainers.image.version, mapped to the release tag v<version> or <name>-v<version> that the repository has); failing that, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the image's commit is not known, the repository's default branch is a guess that no profile is built on, and the case or task is not measurable`;
 
 /** At which commit of the worker image's repository a Legion pod's daemon composed its role
  *  prompt (context.ts reads the item DAEMON_IMAGE_ITEM that names it). */
@@ -3434,11 +3557,93 @@ function projectFileImage(
   return { image: unquoted(value), comment: commentAbove(lines, at, 0) };
 }
 
+const OCI_REVISION = "org.opencontainers.image.revision";
+const OCI_VERSION = "org.opencontainers.image.version";
+
+/**
+ * The commit of `imageRepo` that the OCI config of the image `image` (a digest-pinned GHCR
+ * reference; `GithubReads.imageConfig` reads its manifest and config blob from the registry,
+ * which gives a public image's anonymous pull token, and pulls no layer) names: the commit of its
+ * `org.opencontainers.image.revision` label that `imageRepo` holds at or before `when.at`; else
+ * the last commit at or before `when.at` of the release tag its `org.opencontainers.image.version`
+ * label names (`v<version>`, or `<name>-v<version>` for the first words of the image's name, the
+ * longest first), the first of them that `imageRepo` has. `how` says what was read, and, with no
+ * `sha`, why no label decided; it is empty when the registry gave no config (not a GHCR image, or
+ * no anonymous pull). A commit or tag that `imageRepo` does not have, such as a label that names
+ * another repository's build, decides nothing.
+ */
+async function labelCommit(
+  github: GithubReads,
+  read: {
+    readonly image: string;
+    readonly imageRepo: string;
+    readonly when: { readonly at: string; readonly words: string };
+  }
+): Promise<{ readonly sha?: string; readonly how: string }> {
+  const { image, imageRepo, when } = read;
+  const config = await github.imageConfig(image);
+  if (config === undefined) return { how: "" };
+  const found = `the OCI config of ${image}, read from its registry by digest,`;
+  const revision = config.labels[OCI_REVISION];
+  const version = config.labels[OCI_VERSION];
+  /** The commit of `imageRepo` that `ref` (a commit or a tag) names, or undefined when it names
+   *  none there at or before `when.at`. */
+  const resolve = async (ref: string) => {
+    try {
+      return await github.commitAt(imageRepo, ref, when.at);
+    } catch (error) {
+      if (transientFailure(error)) throw error;
+      return undefined;
+    }
+  };
+  if (revision !== undefined && /^[0-9a-f]{40}$/.test(revision)) {
+    const commit = await resolve(revision);
+    if (commit === revision) {
+      return {
+        sha: commit,
+        how: `${found} labels ${OCI_REVISION} ${revision}, a commit of ${imageRepo} (${commitsRead(imageRepo, revision, when.at)})`,
+      };
+    }
+  }
+  if (version !== undefined && version !== "") {
+    const words = (
+      image
+        .replace(/@.*$/, "")
+        .replace(/:[^/]*$/, "")
+        .split("/")
+        .pop() ?? ""
+    ).split("-");
+    const tags = [
+      `v${version}`,
+      ...words.map((_, at) => `${words.slice(0, words.length - at).join("-")}-v${version}`),
+    ];
+    for (const tag of new Set(tags)) {
+      if (!(await github.hasTag(imageRepo, tag))) continue;
+      const commit = await resolve(tag);
+      if (commit === undefined) continue;
+      return {
+        sha: commit,
+        how: `${found} labels ${OCI_VERSION} ${version}, so the release ${tag}, a tag of ${imageRepo} (gh api repos/${imageRepo}/git/matching-refs/tags/${tag}), whose last commit at or before ${when.words} ${when.at} is ${commit}`,
+      };
+    }
+  }
+  const labels = [OCI_REVISION, OCI_VERSION]
+    .flatMap((name) =>
+      config.labels[name] === undefined ? [] : [`${name} ${config.labels[name]}`]
+    )
+    .join(" and ");
+  return {
+    how: `${found} ${labels === "" ? "holds neither label" : `labels ${labels}, which name no commit or release tag of ${imageRepo}`}`,
+  };
+}
+
 /** The commit of `imageRepo` that the image the `key:` line names for the project `project` was
  *  built from, read from `deployment` at `sha` by LEGION_IMAGE_RULE: the project file's top-level
  *  `key:` line, else the one of the project's entry in the Pulumi config; `how` gives the reads
- *  that decided it, or, with no `sha`, why no rule gave one. Throws when a GitHub read fails other
- *  than with a 404 of the project file, of the config file or of a provenance. */
+ *  that decided it, or, with no `sha`, why no source gave one: the build provenance of the image's
+ *  digest, then the OCI config labels of the image itself (`labelCommit`), then the comment lines
+ *  above its line. Throws when a GitHub read fails other than with a 404 of the project file, of
+ *  the config file or of a provenance. */
 async function imageCommit(
   github: GithubReads,
   read: {
@@ -3490,6 +3695,13 @@ async function imageCommit(
     }
     without = `, whose digest has no build provenance that names a commit (${asked})`;
   }
+  // The image itself: the labels of its OCI config, read from the registry by digest, name the
+  // commit it was built from, or the release it is.
+  const labelled = await labelCommit(github, { image: entry.image, imageRepo, when });
+  if (labelled.sha !== undefined) {
+    return { sha: labelled.sha, how: `${named}${without}; ${labelled.how}` };
+  }
+  if (labelled.how !== "") without = `${without}, and ${labelled.how}`;
   if (entry.comment.length === 0) {
     return { how: `${named}${without}, and no comment line is right above its ${line}` };
   }
@@ -3545,7 +3757,13 @@ async function imageCommit(
 }
 
 /** A listing measure: `kind` says which listing the rebuilt one is set against (the session's own
- *  recorded prompt's, a subagent's of it, or none: `not measurable`); `recorded` the names that
+ *  recorded prompt's, a subagent's of it, or none: `not measurable`). It is `session listing`
+ *  exactly when the case's or task's profile holds the session's recorded system prompt
+ *  (`ListingInput.recorded`, taken from the profile's `systemPrompt`), which capture.ts sends
+ *  whole, so the kind also says what the capture shows the model: the recorded listing
+ *  (`session listing`), whatever the profile installs, or a listing built from the profile
+ *  (`subagent listing`); score.ts's `listingStanding` reads it so. A task that keeps an old
+ *  profile is `not measurable` whatever that profile holds. `recorded` the names that
  *  listing holds, `listed` those the rebuilt profile lists (its skills less those Oh My Pi hides),
  *  `missing` the recorded names the profile does not list, `added` the names it lists that the
  *  recording lacks, `missingShare` missing ÷ recorded (null with no recorded name);
@@ -3570,9 +3788,9 @@ export const ListingMeasure = z.strictObject({
     })
     .nullable(),
   why: z.string(),
-  /** The listed names the profile installed only because the recorded listing names one of their
-   *  pool's skills (POOL_AT_START_RULE): the measure cannot see a miss of them. Absent where none
-   *  is, and in a measure written before the mark. */
+  /** The listed names of each pool the profile installed because the recorded listing names a
+   *  skill of it that no installed unit outside the pools ships (POOL_LISTING_RULE): the measure
+   *  cannot see a miss of them. Absent where none is, and in a measure written before the mark. */
   fromRecorded: z.array(z.string()).optional(),
 });
 export type ListingMeasure = z.infer<typeof ListingMeasure>;
@@ -3668,10 +3886,14 @@ async function subagentListings(
   return found;
 }
 
+/** What of a session's listing input says which listing its measure sets its profile against:
+ *  its own recorded prompt, and the window of the build its profile is read at. */
+type ListingBase = Pick<ListingInput, "recorded" | "build">;
+
 /** The times a session's subagents.sql query takes from its listing input: its build's window, or
  *  undefined when the session needs no query (it recorded its own listing, or no build of it is
  *  known). */
-function betweenOf(input: ListingInput): Between | undefined {
+function betweenOf(input: ListingBase): Between | undefined {
   if (input.recorded !== undefined || input.build === undefined || "unknown" in input.build) {
     return undefined;
   }
@@ -3679,7 +3901,7 @@ function betweenOf(input: ListingInput): Between | undefined {
 }
 
 /** Why the store is not asked for a session's subagents when `betweenOf` gives no times. */
-function unasked(input: ListingInput): SubagentRead {
+function unasked(input: ListingBase): SubagentRead {
   return {
     unread:
       input.recorded !== undefined
@@ -3690,46 +3912,24 @@ function unasked(input: ListingInput): SubagentRead {
   };
 }
 
-/** What subagents.sql finds of each session of `measured` (its store, path hash and query times,
- *  `betweenOf`), by `<store>\0<betweenKey>`: one `subagentListings` query a store, in the order
- *  the sessions first name the stores; and how many queries that took. */
-async function subagentsByStore(
+/** What the store gives of the subagents of the session `pathHash` of `store`, whose listing input
+ *  is `input`: one subagents.sql query for its build's times (`betweenOf`), sent through
+ *  `readStore` where a build reads its stores one query at a time, before its profile is built,
+ *  since the listing it finds decides the profile's pools (POOL_LISTING_RULE); or why it was not
+ *  asked (`unasked`). Throws when the query fails. */
+async function readSubagents(
   command: string,
-  measured: readonly {
-    readonly store: string;
-    readonly pathHash: string;
-    readonly between: Between;
-  }[]
-): Promise<{ readonly found: Map<string, SubagentsFound>; readonly queries: number }> {
-  const found = new Map<string, SubagentsFound>();
-  let queries = 0;
-  for (const store of new Set(measured.map((each) => each.store))) {
-    const listings = await subagentListings(
-      command,
-      store,
-      measured
-        .filter((each) => each.store === store)
-        .map((each) => ({ hash: each.pathHash, ...each.between }))
-    );
-    queries += 1;
-    for (const [key, each] of listings) found.set(`${store}\0${key}`, each);
-  }
-  return { found, queries };
-}
-
-/** What the store gave of the subagents of the session `pathHash` of `store`, whose listing input
- *  is `listing`: what `subagentsByStore` found (`found`) for its query's times, or why it was not
- *  asked (`unasked`). */
-function subagentRead(
-  found: ReadonlyMap<string, SubagentsFound>,
   store: string,
   pathHash: string,
-  listing: ListingInput
-): SubagentRead {
-  const between = betweenOf(listing);
-  return between === undefined
-    ? unasked(listing)
-    : { found: found.get(`${store}\0${betweenKey(pathHash, between)}`) };
+  input: ListingBase,
+  readStore: <T>(read: () => Promise<T>) => Promise<T> = (read) => read()
+): Promise<SubagentRead> {
+  const between = betweenOf(input);
+  if (between === undefined) return unasked(input);
+  const found = await readStore(() =>
+    subagentListings(command, store, [{ hash: pathHash, ...between }])
+  );
+  return { found: found.get(betweenKey(pathHash, between)) };
 }
 
 /** When a subagent's skills were loaded, and where Oh My Pi's source says so. */
@@ -3743,6 +3943,8 @@ const PARENT_LOAD_RULE =
  *  which times and why. */
 interface ReadTime {
   readonly at: string | undefined;
+  /** The first digest's time, when the older repository rule uses session start instead. */
+  readonly firstPromptAt?: string | undefined;
   readonly words: string;
   readonly poolsAtStart: boolean;
   readonly line: Evidence;
@@ -3885,13 +4087,16 @@ function topBuild(
   if (index < 1 || line === undefined) {
     const second = lines[1];
     return {
-      read: first(
-        `${how}; so it is the session's first build (${
-          lines[0] === undefined
-            ? "the session holds no system-prompt-digest line"
-            : `its line is the first of ${count}, at ${lines[0].at}, digest ${lines[0].digest}`
-        }), and each repository, a pool's too, is read at the session's start ${start}`
-      ),
+      read: {
+        ...first(
+          `${how}; so it is the session's first build (${
+            lines[0] === undefined
+              ? "the session holds no system-prompt-digest line"
+              : `its line is the first of ${count}, at ${lines[0].at}, digest ${lines[0].digest}`
+          }), and each repository, a pool's too, is read at the session's start ${start}`
+        ),
+        firstPromptAt: lines[0]?.at,
+      },
       window: {
         from: null,
         to: second?.at ?? null,
@@ -3978,7 +4183,7 @@ type SubagentRead = { readonly found: SubagentsFound | undefined } | { readonly 
  *  the build its profile is read at (`subagent`); undefined where neither is, and where that
  *  build is not known. */
 function measuredAgainst(
-  input: ListingInput,
+  input: ListingBase,
   read: SubagentRead
 ):
   | { readonly blocks: readonly string[]; readonly subagent?: SubagentsFound["listing"] }
@@ -3987,6 +4192,21 @@ function measuredAgainst(
   if (input.build !== undefined && "unknown" in input.build) return undefined;
   const subagent = "found" in read ? read.found?.listing : undefined;
   return subagent === undefined ? undefined : { blocks: subagent.blocks, subagent };
+}
+
+/** The recorded listing that decides a profile's pools (POOL_LISTING_RULE): the one its listing
+ *  measure sets it against (`measuredAgainst`), the session's own or its measured subagent's, by
+ *  its names (`listingNames`) and where it was recorded; undefined where there is none. */
+function decidingListing(input: ListingBase, read: SubagentRead): DecidingListing | undefined {
+  const against = measuredAgainst(input, read);
+  if (against === undefined) return undefined;
+  return {
+    names: listingNames(against.blocks),
+    from:
+      against.subagent === undefined
+        ? "the session's recorded listing"
+        : `the recorded listing of its subagent ${against.subagent.pathHash}, the one its listing measure uses,`,
+  };
 }
 
 /** The listing measure of one session (score.ts's LISTING_MEASURE_ITEM): against its own recorded
@@ -4090,7 +4310,7 @@ function withRecordedListing(built: SessionProfile, read: SubagentRead): Session
 }
 
 /** The names `evidence`'s listing measure says the profile took from the recorded listing
- *  (POOL_AT_START_RULE); none where it holds no measure or no mark. */
+ *  (POOL_LISTING_RULE); none where it holds no measure or no mark. */
 export function fromRecordedIn(
   evidence: readonly { readonly item: string; readonly source: string }[] | undefined
 ): readonly string[] {
@@ -4281,7 +4501,7 @@ function sessionRepository(
  *  its own priority). Each scan takes a directory entry or a symbolic link of each skill
  *  (discovery/helpers.ts, scanSkillsFromDir, lines 579-580 and 594-596), so a link a skills
  *  directory holds is followed. */
-const PROJECT_SKILLS = [
+export const PROJECT_SKILLS = [
   {
     dirs: [".omp/skills"],
     at: "each",
@@ -4443,14 +4663,6 @@ const PROJECT_LEVEL_DIRS = [
 /** What every profile of one build reads. */
 type ProfileRun = Pick<CaseRun, "config" | "copies" | "github" | "placer">;
 
-/** The installers.tsv actions by which a unit's own manifest ships a skill. */
-const MEMBER_ACTIONS: Readonly<Record<string, true>> = {
-  ships: true,
-  stages: true,
-  links: true,
-  installs: true,
-};
-
 /** Whether the resolved installer row `row` (copies.ts's `resolveInstallers`) ships a copy as a
  *  member of its unit: it names the copy, by one of MEMBER_ACTIONS. */
 function shipsMember(row: { readonly copyPath?: string | undefined; readonly action: string }) {
@@ -4469,8 +4681,9 @@ interface ProfileResult {
    *  under when its text there differs (NAMESPACE_RULE): the profile reads each repository at one
    *  commit, so it holds the copy once. */
   readonly again: readonly InstallPath[];
-  /** The listed names the profile installs only because the recorded listing names one of their
-   *  pool's skills (POOL_AT_START_RULE), sorted; empty for most profiles. */
+  /** The listed names of each pool the profile installs because the recorded listing names a skill
+   *  of it that no installed unit outside the pools ships (POOL_LISTING_RULE), sorted; empty where
+   *  no listing decided a pool. */
   readonly fromRecorded: readonly string[];
 }
 
@@ -4485,17 +4698,48 @@ interface InstallPath {
 const notInstalled = (run: Pick<CaseRun, "skill" | "cut">, when = "the session's start") =>
   `the profile installs no ${run.skill} of ${run.cut.repo} at ${when}`;
 
+const OMP_PROFILE_ITEM = "Oh My Pi profile";
+
 /** The profile of a case, with the evidence for each part. Throws when a GitHub read fails. */
 async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<ProfileResult> {
   const { copies, github } = run;
   const evidence: Evidence[] = [];
   const commits = new Map<string, string>();
-  const legion = input.context.startsWith("legion:");
+  const { ompProfile } = input;
+  const legionStore = input.context.startsWith("legion:");
+  // The Legion worker sets OMP_PROFILE=legion (packages/daemon/docker/worker.Dockerfile).
+  const legion = legionStore && ompProfile === "legion";
+  const devbox = input.context === "devbox" && ompProfile === "default";
+  const named = ompProfile !== "default" && ompProfile !== "unknown";
+  const isolated = !devbox && !legion;
+  const inferReadUnits = !isolated || ompProfile === "unknown";
+  let pod: PodImage | undefined;
+  if (ompProfile !== "unknown") evidence.push({ item: OMP_PROFILE_ITEM, source: ompProfile });
+  if (input.context === "devbox" && named) {
+    if (run.config.sessionPod === undefined)
+      throw new PodNotMeasurable(`profile ${ompProfile} needs sessionPod in the configuration`);
+    const at =
+      input.readTime?.at ??
+      input.readTime?.firstPromptAt ??
+      (input.recordedPrompt ? undefined : input.sessionStart);
+    if (at === undefined)
+      throw new PodNotMeasurable(
+        `the time of the root's prompt build for profile ${ompProfile} is unknown`
+      );
+    pod = await sessionPodImage(github, run.config.sessionPod, ompProfile, at);
+    evidence.push({ item: `session pod profile ${ompProfile}`, source: pod.why });
+  } else if (legionStore && ompProfile !== "unknown" && isolated) {
+    evidence.push({
+      item: `Legion pod profile ${ompProfile}`,
+      source:
+        "Inference: the worker image links plugins into its legion profile, not this profile. No explicit extension or image-installed user skill is known for this profile, so the rebuild includes its project skills.",
+    });
+  }
   // A dev box's own repository (DEVBOX_INSTALLERS_RULE) is the checkout whose .claude/ the
   // configuration names as its CLAUDE_CONFIG_DIR (DEVBOX_CHECKOUT_RULE); devboxHome's evidence is
   // pushed where it is below.
   const homeEvidence: Evidence[] = [];
-  const home = legion ? undefined : devboxHome(copies, homeEvidence);
+  const home = devbox ? devboxHome(copies, homeEvidence) : undefined;
   const claudeDir = run.config.devboxClaudeConfigDir;
   let checkout =
     input.checkout ??
@@ -4611,9 +4855,13 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // session that copy of the name, so it is the profile's copy of it when a unit ships it then.
   const readCopies = new Map<string, { repo: string; path: string; index: number }>();
   const shown = new Set<string>();
-  for (const read of input.reads) {
+  // The first `[Skill file: …]` read that places each unit, by its key: it shows Oh My Pi loaded
+  // that unit's skills, which a pool's version rule takes over the pinned build (POOL_VERSION_RULE).
+  const shownBy = new Map<string, ShownRead>();
+  // Pod links, not reads of arbitrary files, decide which complete units the pod ships.
+  for (const read of inferReadUnits ? input.reads : []) {
     if (read.skill !== undefined && !readCopies.has(read.skill)) {
-      const copy = run.placer.place(input.store, read.header, read.skill).copy;
+      const copy = run.placer.place(input.store, read.header, read.skill, ompProfile).copy;
       if (copy !== undefined) {
         const [repo = "", dir = ""] = copy.split("\t");
         readCopies.set(read.skill, { repo, path: repoPath(dir), index: read.index });
@@ -4634,7 +4882,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       const placed =
         read.skill === undefined
           ? undefined
-          : run.placer.place(input.store, read.header, read.skill);
+          : run.placer.place(input.store, read.header, read.skill, ompProfile);
       if (placed?.copy === undefined) {
         evidence.push({
           item: `left out: the copy read at ${read.header}`,
@@ -4654,6 +4902,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     }
     for (const row of rows) {
       for (const via of vias(row.via ?? "")) {
+        if (read.byPath !== true && !shownBy.has(viaKey(via))) shownBy.set(viaKey(via), read);
         if (units.has(viaKey(via))) continue;
         units.set(viaKey(via), { via, why: under(row) });
       }
@@ -4767,9 +5016,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   for (const copy of alone.values()) repositories.add(copy.repo);
   if (deployment !== undefined) repositories.add(deployment);
+  if (pod?.directories.some((dir) => dir.startsWith(IMAGE_ROOT))) repositories.add(pod.repo);
   // A dev-box session repository whose Claude Code settings enable plugins (CLAUDE_PLUGIN_RULE)
   // is read whole with the repositories of the marketplaces that ship them.
-  if (checkout.repo !== undefined && !legion) {
+  if (checkout.repo !== undefined && devbox) {
     const repo = checkout.repo.toLowerCase();
     const enabled = new Set(
       copies.installers
@@ -4815,7 +5065,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // sorted order, as reading them one after another gives them.
   const reads = await Promise.allSettled(
     [...toRead].sort().map(async (repo) => {
-      const { sha, line } = await readCommit(repo);
+      const { sha, line } =
+        repo === pod?.repo && repo !== checkout.repo
+          ? { sha: pod.sha, line: { item: `commit ${pod.sha} of ${repo}`, source: pod.why } }
+          : await readCommit(repo);
       if (sha === undefined) return { repo, none: line };
       const { excludePaths } = run.config;
       const project =
@@ -4857,10 +5110,12 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // `github:` dependency of an Oh My Pi plugins package.json, an `ensure_vendor` clone) is held at
   // the ref that installer names at the session's start, as the session's machine held it then;
   // repositories.tsv's branch names the ref the copies output read, later.
-  const pins = installerPins(
-    values.flatMap((value) => (repositories.has(value.repo) ? value.at.manifests : [])),
-    run.config.clones
-  );
+  const pins = isolated
+    ? []
+    : installerPins(
+        values.flatMap((value) => (repositories.has(value.repo) ? value.at.manifests : [])),
+        run.config.clones
+      );
   for (const [index, value] of values.entries()) {
     const pin = pins.find((each) => each.repository.toLowerCase() === value.repo.toLowerCase());
     if (pin === undefined || pin.ref === "" || !repositories.has(value.repo)) continue;
@@ -5061,23 +5316,20 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // (LEGION_DAEMON_RULE).
   const [imageRepo, ...moreImageRepos] = [...imageRepositories].sort();
   let image: { readonly repo: string; readonly sha: string; readonly at: RepositoryAt } | undefined;
+  if (pod !== undefined && repositories.has(pod.repo)) {
+    const at = await github.at(pod.repo, pod.sha, run.config.excludePaths);
+    image = { repo: pod.repo, sha: pod.sha, at };
+    trees.set(`${pod.repo}@${pod.sha}`, at);
+  }
   if (deployment !== undefined && imageRepo !== undefined) {
     const depSha = commits.get(deployment);
     if (moreImageRepos.length > 0 || depSha === undefined) {
-      const why =
-        moreImageRepos.length > 0
-          ? `the worker image's packages come from ${imageRepositories.size} repositories (the prefix-table.tsv rows under ${IMAGE_ROOT}), so which one the image's commit is of is not known`
-          : `${deployment} has no commit at the session's start`;
-      const repos = [...imageRepositories].sort().join(", ");
-      evidence.push(
-        {
-          item: `the worker image's commit of ${repos}`,
-          source: `${why}, so each is read at its default branch's commit at the session's start: ${LEGION_IMAGE_RULE}`,
-        },
-        {
-          item: `${DAEMON_IMAGE_ITEM}${repos}`,
-          source: `${why}, so the role prompt is composed at the commit the profile reads each repository's plugins at: ${LEGION_DAEMON_RULE}`,
-        }
+      throw new PodNotMeasurable(
+        `${
+          moreImageRepos.length > 0
+            ? `the worker image's packages come from ${imageRepositories.size} repositories (the prefix-table.tsv rows under ${IMAGE_ROOT}), so which one the image's commit is of is not known`
+            : `${deployment} has no commit at the session's start, so it names no image`
+        }, and a repository's default branch is a guess, so the profile is not built: ${LEGION_IMAGE_RULE}`
       );
     } else {
       const read = {
@@ -5090,13 +5342,15 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       };
       const worker = await imageCommit(github, { ...read, key: "image" });
       const daemon = await imageCommit(github, { ...read, key: "daemonImage" });
+      if (worker.sha === undefined) {
+        throw new PodNotMeasurable(
+          `the worker image's commit of ${imageRepo} is not known, and the repository's default branch is a guess, so the profile is not built: ${worker.how}: ${LEGION_IMAGE_RULE}`
+        );
+      }
       evidence.push(
         {
           item: `the worker image's commit of ${imageRepo}`,
-          source:
-            worker.sha === undefined
-              ? `${worker.how}, so ${imageRepo} is read at its default branch's commit at the session's start: ${LEGION_IMAGE_RULE}`
-              : `${worker.how}, so the image's units of ${imageRepo} are read at ${worker.sha}: ${LEGION_IMAGE_RULE}`,
+          source: `${worker.how}, so the image's units of ${imageRepo} are read at ${worker.sha}: ${LEGION_IMAGE_RULE}`,
         },
         {
           item: `${DAEMON_IMAGE_ITEM}${imageRepo}`,
@@ -5148,7 +5402,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const lists = heldManifests.toSorted(
     (a, b) => Number(b.repository === home) - Number(a.repository === home)
   );
-  for (const pin of npmPins(lists)) {
+  for (const pin of isolated ? [] : npmPins(lists)) {
     const id = `package:${pin.package}`;
     if (versions.has(id)) continue;
     const pkg = heldManifests.find(
@@ -5224,6 +5478,20 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
           ),
           run.config.clones
         );
+  if (pod !== undefined) {
+    for (const row of resolved.rows) {
+      if (row.manifestRepository !== pod.repo || row.kind !== "omp-package" || !shipsMember(row))
+        continue;
+      const directory = `${IMAGE_ROOT}${path.posix.basename(path.posix.dirname(row.manifestPath))}`;
+      if (!pod.directories.includes(directory)) continue;
+      const via = {
+        unit: row.unit,
+        repository: row.manifestRepository,
+        manifest: row.manifestPath,
+      };
+      units.set(viaKey(via), { via, why: `${directory} is linked into ${ompProfile}: ${pod.why}` });
+    }
+  }
   /** The rows by which `via`'s unit ships a skill at the session's start (copies.ts's rules): a
    *  pool's from its host's tree at the subagent's start. */
   const shipsAtStart = (via: Via) =>
@@ -5234,6 +5502,18 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         row.manifestPath === via.manifest &&
         shipsMember(row)
     );
+  /** What the profile installs of a unit that ships at the session's start: `shipsAtStart`'s rows,
+   *  narrowed to those its pinned npm version ships (`version`, NPM_PIN_RULE) where it has one. */
+  const installedFrom = (via: Via, version: PinnedVersion | undefined) => {
+    const rows = shipsAtStart(via);
+    if (version === undefined) return rows;
+    return (
+      version.rows ??
+      (version.names === undefined
+        ? []
+        : rows.filter((row) => version.names?.has(row.skill) === true))
+    );
+  };
   // A read whose skill no unit ships at the session's start, though the repository its unit comes
   // from was read at that commit: the copies output names the unit as the manifests name it at
   // the later commit it read, and a marketplace or a plugin renamed since leaves that unit empty
@@ -5242,7 +5522,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // The prefix rows the same manifests give at the session's start (copies.ts's rules,
   // `resolved.prefixes`) place the read at the unit that installed it then, and at its copy.
   const placedAtStart = new Set<string>();
-  for (const read of input.reads) {
+  for (const read of inferReadUnits ? input.reads : []) {
     const name = read.skill;
     if (name === undefined || placedAtStart.has(read.header)) continue;
     placedAtStart.add(read.header);
@@ -5253,6 +5533,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     );
     for (const row of rows) {
       for (const via of vias(row.via)) {
+        if (read.byPath !== true && !shownBy.has(viaKey(via))) shownBy.set(viaKey(via), read);
         if (units.has(viaKey(via))) continue;
         units.set(viaKey(via), {
           via,
@@ -5269,10 +5550,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 
   // The dev box's own installers at the session's start: each unit they install into Oh My Pi,
   // after the units the reads come from, so a read's unit keeps its place among those of a name.
-  // A pool's rows are its host's at the subagent's start (`poolResolved`); a pool that host names
-  // then and not at the root's build is admitted only where the recorded listing names one of
-  // its skills (POOL_AT_START_RULE), and its names are marked as taken from that listing.
-  const fromListing = new Set<string>();
+  // A pool's rows are its host's at the subagent's start (`poolResolved`), a pool that host names
+  // then and not at the root's build among them; each pool is decided below.
   if (home !== undefined) {
     const atBuild = new Set(resolved.rows.map((row) => `${row.unit}\0${row.manifestPath}`));
     const rows = [
@@ -5285,34 +5564,18 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       }
       const via = { unit: row.unit, repository: home, manifest: row.manifestPath };
       if (units.has(viaKey(via))) continue;
-      if (!atBuild.has(`${row.unit}\0${row.manifestPath}`)) {
-        const ships = shipsAtStart(via).map((each) => each.skill);
-        const named = ships.filter((name) => input.recordedListing?.includes(name) === true);
-        const pool = `${home}:${row.manifestPath} names ${row.unit.slice("pool:".length)} at ${poolAt.get(home)} (the subagent's start ${input.sessionStart}) and not at ${commits.get(home)} (the root's last prompt build)`;
-        if (named.length === 0) {
-          evidence.push({
-            item: `left out: ${row.unit}, a pool at the subagent's start`,
-            source: `${pool}, and the subagent's recorded listing names none of its skills (${ships.join(", ")}), so its host had not cloned it then: ${POOL_AT_START_RULE}`,
-          });
-          continue;
-        }
-        fromListing.add(viaKey(via));
-        units.set(viaKey(via), {
-          via,
-          why: `pool at the subagent's start: ${pool}; the subagent's recorded listing names ${named.join(", ")} of its skills, so its host had cloned it then (installed from the recorded listing): ${POOL_AT_START_RULE}`,
-        });
-        continue;
-      }
       units.set(viaKey(via), {
         via,
-        why: `${DEVBOX_INSTALLERS_RULE}: ${home}:${row.manifestPath} at ${commits.get(home)} ${row.action} it into Oh My Pi`,
+        why: atBuild.has(`${row.unit}\0${row.manifestPath}`)
+          ? `${DEVBOX_INSTALLERS_RULE}: ${home}:${row.manifestPath} at ${commits.get(home)} ${row.action} it into Oh My Pi`
+          : `pool at the subagent's start: ${home}:${row.manifestPath} names ${row.unit.slice("pool:".length)} at ${poolAt.get(home)} (the subagent's start ${input.sessionStart}) and not at ${commits.get(home)} (the root's last prompt build)`,
       });
     }
   }
   // The Claude Code plugins the session repository's own Claude Code settings enable, which
   // Claude Code installs for that project and Oh My Pi lists for a session in it
   // (CLAUDE_PLUGIN_RULE): each from the marketplace rows that ship its skills.
-  if (checkout.repo !== undefined && !legion && !notCheckout) {
+  if (checkout.repo !== undefined && devbox && !notCheckout) {
     const repo = checkout.repo.toLowerCase();
     const enabled = new Set(
       resolved.rows
@@ -5382,6 +5645,110 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     }
   }
 
+  // Each pool an extension's resources_discover gives: decided by the recorded listing where the
+  // session has one (POOL_LISTING_RULE), else by the Oh My Pi build its dev box pinned at its start
+  // (POOL_VERSION_RULE), and kept as it came where neither decides or the caller asks for every
+  // pool (`poolsUndecided`). The names of a pool the listing decides are marked as taken from it.
+  // A name an installed unit outside the pools also ships is no evidence for a pool (the session
+  // lists it with or without the pool): a pool needs a named skill that no such unit ships, or a
+  // `[Skill file: …]` read of the session that shows Oh My Pi loaded it.
+  const fromListing = new Set<string>();
+  const pools =
+    input.poolsUndecided === true
+      ? []
+      : [...units].filter(([, { via }]) => via.unit.startsWith("pool:"));
+  const listing = input.recordedListing;
+  const { ompPin } = run.config;
+  if (listing !== undefined) {
+    const inference =
+      "this is an inference from the listing, since no file records why some sessions of one Oh My Pi build list such a pool and others do not";
+    const nonPoolNames = new Set<string>();
+    for (const { via } of units.values()) {
+      if (via.unit.startsWith("pool:")) continue;
+      for (const row of installedFrom(via, versions.get(via.unit))) nonPoolNames.add(row.skill);
+    }
+    for (const copy of alone.values()) {
+      const found = held.get(copy.repo)?.copies.find((each) => each.path === copy.path);
+      if (found !== undefined) nonPoolNames.add(found.name);
+    }
+    for (const [key, { via, why }] of pools) {
+      const skills = [...new Set(shipsAtStart(via).map((row) => row.skill))];
+      const named = skills.filter((name) => listing.names.includes(name));
+      const unnamed = skills.filter((name) => !named.includes(name));
+      const unique = named.filter((name) => !nonPoolNames.has(name));
+      const shared = named.filter((name) => nonPoolNames.has(name));
+      const counted = `${listing.from} names ${named.length === 0 ? "none" : named.length} of the ${skills.length} skills it holds at the session's start`;
+      const split = `named: ${named.join(", ") || "none"}; unnamed: ${unnamed.join(", ") || "none"}`;
+      const sharedNote =
+        shared.length === 0
+          ? ""
+          : `; named skills that an installed unit outside the pools also ships give no evidence for this pool (${shared.join(", ")})`;
+      if (unique.length > 0) {
+        fromListing.add(key);
+        units.set(key, {
+          via,
+          why: `${why}; ${counted} (${split})${sharedNote}, so it is installed${shared.length === 0 ? "" : ` on ${unique.join(", ")}`}; ${inference}${unnamed.length === 0 ? "" : ", and the listing measure counts its unnamed skills as added names"}: ${POOL_LISTING_RULE}`,
+        });
+        continue;
+      }
+      const read = shownBy.get(key);
+      if (read === undefined) {
+        units.delete(key);
+        evidence.push({
+          item: `left out: the pool ${key}`,
+          source: `${why}; ${counted} (${skills.join(", ") || "none"})${sharedNote}, so it is not installed; ${inference}: ${POOL_LISTING_RULE}`,
+        });
+        continue;
+      }
+      units.set(key, {
+        via,
+        why: `${why}; ${counted} (${split})${sharedNote}; message ${read.index} reads [Skill file: ${read.header}] of it, so Oh My Pi loaded it, which is direct proof and no inference from the listing, so it is installed and none of its names is marked fromRecorded: ${POOL_LISTING_RULE}`,
+      });
+    }
+  } else if (home !== undefined && ompPin !== undefined && pools.length > 0) {
+    const pinned = await pinnedOmp(github, home, ompPin, input.sessionStart);
+    const first = ompPin.firstPoolVersion;
+    if (pinned.version === undefined) {
+      evidence.push({
+        item: `${OMP_PIN_ITEM}${home}`,
+        source: `${pinned.read}, so no pinned build decides the pools, and each is installed as the dev box's installers install it: ${POOL_VERSION_RULE}`,
+      });
+    } else {
+      const loads = Bun.semver.order(pinned.version, first) >= 0;
+      const order = `${loads ? "at or after" : "before"} ${first}`;
+      const release = releaseOf(pinned.version);
+      const { runtime } = input;
+      const cross =
+        runtime === undefined
+          ? "the session's file records no Oh My Pi version, so nothing checks the pin"
+          : `the session's file records Oh My Pi ${runtime} (the runtime.version of its first model_change line), which ${releaseOf(runtime) === release ? "agrees with" : "differs from"} the pin's release ${release}`;
+      evidence.push({
+        item: `${OMP_PIN_ITEM}${home}`,
+        source: `${pinned.read}, which is ${order}, the first build the configuration's ompPin names as loading resources_discover pools on a fresh start; ${cross}: ${POOL_VERSION_RULE}`,
+      });
+      const pinWords = `the pinned Oh My Pi ${pinned.version} is ${order}`;
+      for (const [key, { via, why }] of pools) {
+        const read = shownBy.get(key);
+        if (loads || read !== undefined) {
+          units.set(key, {
+            via,
+            why: `${why}; ${pinWords}, ${
+              loads
+                ? "which loads it on a fresh start"
+                : `but message ${read?.index} reads [Skill file: ${read?.header}] of it, so Oh My Pi loaded it`
+            }: ${POOL_VERSION_RULE}`,
+          });
+          continue;
+        }
+        units.delete(key);
+        evidence.push({
+          item: `left out: the pool ${key}`,
+          source: `${why}; ${pinWords}, so the session listed none of its skills on a fresh start; an inference from the pinned build: ${POOL_VERSION_RULE}`,
+        });
+      }
+    }
+  }
+
   const plugins = new Map<string, { repo: string; path: string; name: string; why: string }>();
   /** Each copy a unit ships at the session's start, in the order of the units, with how it ships,
    *  the evidence of it and its rank among the copies of its name (`unitRank`); then each copy
@@ -5393,7 +5760,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     rank: number | undefined;
     /** The namespace Oh My Pi lists a second copy of the name under (`unitNamespace`). */
     namespace?: string | undefined;
-    /** Whether its unit was admitted on the recorded listing (POOL_AT_START_RULE). */
+    /** Whether its unit is a pool the recorded listing decided (POOL_LISTING_RULE). */
     fromRecorded?: boolean;
   }[] = [];
   for (const [key, { via, why }] of units) {
@@ -5403,15 +5770,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         ? `${image.repo} at ${image.sha} (the worker image's commit)`
         : atCommit(via.repository);
     const version = id.startsWith("package:") ? versions.get(id) : undefined;
-    let members = shipsAtStart(via);
-    if (version !== undefined) {
-      evidence.push({ item: `version of ${key}`, source: version.why });
-      members =
-        version.rows ??
-        (version.names === undefined
-          ? []
-          : members.filter((row) => version.names?.has(row.skill) === true));
-    }
+    const members = installedFrom(via, version);
+    if (version !== undefined) evidence.push({ item: `version of ${key}`, source: version.why });
     const later = listed(via);
     evidence.push({ item: `unit ${key}`, source: why });
     if (members.length === 0) {
@@ -5721,7 +6081,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     } else {
       contextFiles.push({ repo: project.repository ?? "", path: `project:${project.path ?? ""}` });
     }
-  } else {
+  } else if (devbox || ompProfile === "unknown") {
     // Oh My Pi's one user-level context file (discovery/claude.ts at the pinned tag) is CLAUDE.md
     // in Claude Code's config directory, which a dev box's CLAUDE_CONFIG_DIR names: the `.claude/`
     // of the repository that installs its units, which holds Claude Code's settings there.
@@ -5746,6 +6106,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     }
     if (checkout.repo !== undefined) contextFiles.push({ repo: checkout.repo, path: "levels:" });
   }
+  if (isolated && ompProfile !== "unknown" && !input.recordedPrompt && checkout.repo !== undefined)
+    contextFiles.push({ repo: checkout.repo, path: "levels:" });
 
   const profileSkills: ProfileSkill[] = [];
   for (const skill of [...skills.values()].sort((a, b) =>
@@ -6073,9 +6435,15 @@ function readCandidates(file: string, config: SkillCutsConfig): Candidate[] {
   return candidates;
 }
 
-/** What one session gave: a case, or a drop with its reason. */
+/** What one session gave: a case, with what its listing measure is made from and what the store
+ *  gave of its subagents for it (read before its profile was built); or a drop with its reason. */
 type Outcome =
-  | { readonly case: Case; readonly step: number; readonly listing: ListingInput }
+  | {
+      readonly case: Case;
+      readonly step: number;
+      readonly listing: ListingInput;
+      readonly read: SubagentRead;
+    }
   | { readonly drop: DropReason; readonly detail: string };
 
 /** What one session's build reads beside the session. */
@@ -6308,6 +6676,14 @@ function sessionHeader(
   return { sessionStart, cwd: typeof header?.cwd === "string" ? header.cwd : undefined };
 }
 
+/** The Oh My Pi version a session's file records it ran: the `runtime.version` of its first
+ *  `model_change` line, as session-head.sql reads it (POOL_VERSION_RULE); undefined where that
+ *  line records none, or the file holds no such line. */
+function runtimeOf(t: Transcript): string | undefined {
+  const runtime = t.entries.find((entry) => entry.type === "model_change")?.runtime;
+  return isObject(runtime) && typeof runtime.version === "string" ? runtime.version : undefined;
+}
+
 /** The schema a written task profile must pass: the one load reads it with (cases.ts's Profile
  *  and the context of a case). */
 const WrittenProfile = Profile.extend({ context: Case.shape.context });
@@ -6335,6 +6711,9 @@ export interface SessionProfile {
   readonly secretsRemoved: number;
   /** What its listing measure is made from (`listingMeasure`). */
   readonly listing: ListingInput;
+  /** What the store gave of its subagents for that measure, read before its profile was built,
+   *  whose listing decided its pools (POOL_LISTING_RULE). */
+  readonly read: SubagentRead;
   readonly listed: boolean;
   readonly store: string;
   readonly pathHash: string;
@@ -6362,13 +6741,15 @@ function listsSkill(
 }
 
 /** How `sessionProfile` rebuilds a session's profile: as a context session (`asContext`, see
- *  there), and, for a subagent, with its digest-times.sql row read by `digestRow` (by its path
- *  hash; undefined when the store holds no file of it) where a caller reads the rows of many
- *  sessions in one query, else by one query of its own. */
+ *  there), with what its caller read of its subagents (`read`: a context session's, read first to
+ *  find the build it is read at); and, for a subagent, with its digest-times.sql row read by
+ *  `digestRow` (by its path hash; undefined when the store holds no file of it) where a caller
+ *  reads the rows of many sessions in one query, else by one query of its own. */
 interface SessionProfileOptions {
   readonly asContext?:
     | { readonly spawned: { readonly pathHash: string; readonly at: string } }
     | { readonly unspawned: string };
+  readonly read?: SubagentRead;
   readonly digestRow?: (pathHash: string) => Promise<DigestRow | undefined>;
 }
 
@@ -6406,8 +6787,8 @@ async function sessionProfile(
   const anyTime = { from: null, to: null, words: "at any time" };
   let readTime: ReadTime;
   let build: BuildWindow | undefined;
+  const hash = pathHash(transcriptPath);
   if (init !== undefined) {
-    const hash = pathHash(transcriptPath);
     const row =
       options.digestRow === undefined
         ? (await digestRows(run.config.psqlCommand, store.name, [hash])).get(hash)
@@ -6445,15 +6826,27 @@ async function sessionProfile(
         "at any time, the profile being read at the build the earliest of them was spawned under",
     };
   }
+  // The listing its measure sets it against decides its pools (POOL_LISTING_RULE): a top-level
+  // session's subagent is read from the store first, one subagents.sql query, unless its caller
+  // read it already.
+  const base: ListingBase = {
+    recorded: init?.systemPrompt,
+    ...(build === undefined ? {} : { build }),
+  };
+  const read =
+    options.read ?? (await readSubagents(run.config.psqlCommand, store.name, hash, base));
+  const recordedListing = decidingListing(base, read);
   const messages = t.items.map((item) => item.slim);
   const profiled = await caseProfile(run, {
     store: store.name,
     context: store.context,
+    ompProfile: sessionProfileName(transcriptPath),
     project,
     sessionStart: header.sessionStart,
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
-    ...(init === undefined ? {} : { recordedListing: listingNames(init.systemPrompt) }),
+    ...(recordedListing === undefined ? {} : { recordedListing }),
+    runtime: runtimeOf(t),
     reads: shownReads(messages),
     absoluteReads: absoluteReads(messages),
     readTime,
@@ -6496,7 +6889,7 @@ async function sessionProfile(
         })),
     ],
     store: store.name,
-    pathHash: pathHash(transcriptPath),
+    pathHash: hash,
     secretsRemoved: secrets.removed,
     listed: listsSkill(recorded, profiled.profile.skills, skill),
     listing: {
@@ -6506,22 +6899,23 @@ async function sessionProfile(
       sessionDigest: t.branch.map(promptDigest).find((digest) => digest !== undefined) ?? null,
       ...(build === undefined ? {} : { build }),
     },
+    read,
     // The copy listed under the tested skill's name: the recorded listing's line of it stands for
     // that copy's text (`withRecordedListing`).
     ...(source === undefined ? {} : { testedCopy: source }),
   };
 }
 
-/** Why the first read `first` of a session in the store `store` gives no case (a session case, or
- *  written cases' context), when it is a `skill://` read: attribute.ts's rules (`run.placer`) place
- *  it at no copy, or at a copy of another repository than the cut's; undefined when they place it
- *  at the cut repository's. */
+/** Why the first read `first` of a session gives no case (a session case, or written cases'
+ *  context), when it is a `skill://` read: attribute.ts's rules (`placeRead`, the session's
+ *  `run.placer` by its profile) place it at no copy, or at a copy of another repository than the
+ *  cut's; undefined when they place it at the cut repository's. */
 function placementDrop(
   run: CaseRun,
-  store: string,
+  placeRead: (copyPath: string) => Placement,
   first: SkillRead
 ): { readonly drop: DropReason; readonly detail: string } | undefined {
-  const placed = run.placer.place(store, first.header ?? "", run.skill);
+  const placed = placeRead(first.header ?? "");
   const [placedRepository = "", placedPath = ""] = (placed.copy ?? "").split("\t");
   if (placed.copy === undefined) {
     return {
@@ -6634,7 +7028,9 @@ async function caseOf(
   // attribute.ts's rules place at the cut's copy (a source); the step comes after the first of
   // them (`firstSkillRead`).
   const reads = skillReads(allMessages, run.skill);
-  const placeRead = (copyPath: string) => run.placer.place(store.name, copyPath, run.skill);
+  const ompProfile = sessionProfileName(transcriptPath);
+  const placeRead = (copyPath: string) =>
+    run.placer.place(store.name, copyPath, run.skill, ompProfile);
   // A read by path relative to the session's working directory, or under `~`, resolves against
   // its header's cwd and the home its transcript's path names.
   const dirs = sessionDirs(header.cwd, transcriptPath);
@@ -6653,7 +7049,7 @@ async function caseOf(
   // table maps (`placementDrop`). A read by path is a source only when they place it at the cut's
   // copy.
   if ("url" in chosen) {
-    const misplaced = placementDrop(run, store.name, chosen.url);
+    const misplaced = placementDrop(run, placeRead, chosen.url);
     if (misplaced !== undefined) return misplaced;
   }
 
@@ -6767,12 +7163,25 @@ async function caseOf(
   const profileInput = {
     store: store.name,
     context: store.context,
+    ompProfile,
     project,
     sessionStart,
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
-    ...(init === undefined ? {} : { recordedListing: listingNames(init.systemPrompt) }),
+    runtime: runtimeOf(t),
   };
+  // A subagent's pools are decided by its own recorded listing (POOL_LISTING_RULE); a top-level
+  // session's by the listing of a subagent spawned under its step's build, not known yet, so this
+  // check installs every pool, which is at least what any step's profile installs.
+  const reachPools =
+    init === undefined
+      ? { poolsUndecided: true as const }
+      : {
+          recordedListing: decidingListing(
+            { recorded: init.systemPrompt },
+            unasked({ recorded: init.systemPrompt })
+          ),
+        };
   const reachableMessages = readable.map((item) => item.slim);
   const reachableReads = profileReads(reachableMessages, run.skill, sourceCopies);
   const reachableAbsolute = absoluteReads(reachableMessages);
@@ -6781,6 +7190,7 @@ async function caseOf(
     try {
       const reachable = await caseProfile(run, {
         ...profileInput,
+        ...reachPools,
         readTime,
         reads: reachableReads,
         absoluteReads: reachableAbsolute,
@@ -7070,10 +7480,27 @@ async function caseOf(
       ? stepBuild(lines, sessionStart, messageTime(t.message(stepIndex)), digest ?? null)
       : undefined;
   const readTime = step?.read ?? reach[0];
+  // The listing its measure sets it against decides its pools (POOL_LISTING_RULE): a top-level
+  // session's is that of its earliest subagent spawned under its step's build, read from the store
+  // now, one query at a time with the pulls; the measure takes this read too.
+  const base: ListingBase = {
+    recorded: init?.systemPrompt,
+    ...(step === undefined ? {} : { build: step.window }),
+  };
+  let read: SubagentRead;
   let profiled: ProfileResult;
   try {
+    read = await readSubagents(
+      run.config.psqlCommand,
+      store.name,
+      pathHash(transcriptPath),
+      base,
+      run.readStore
+    );
+    const recordedListing = decidingListing(base, read);
     profiled = await caseProfile(run, {
       ...profileInput,
+      ...(recordedListing === undefined ? {} : { recordedListing }),
       readTime,
       reads: profileReads(messages, run.skill, pathCopy === undefined ? [] : [pathCopy]),
       absoluteReads: absoluteReads(messages),
@@ -7226,6 +7653,7 @@ async function caseOf(
       sessionDigest: digest ?? null,
       ...(step === undefined ? {} : { build: step.window }),
     },
+    read,
   };
 }
 
@@ -7331,7 +7759,14 @@ function readCopiesAndPlacer(
       config.stores.map((store) => store.name)
     );
     outputs = count.outputs.length;
-    placing = placer(count.outputs, r4);
+    placing = placer(
+      count.outputs,
+      r4,
+      count.profiles,
+      new Set(
+        config.stores.filter((store) => store.context === "devbox").map((store) => store.name)
+      )
+    );
   } catch (error) {
     throw new Refused(
       `--count ${countDir} and --copies ${copiesDir} do not place reads as attribute.ts does: ${messageFor(error)}`
@@ -7470,10 +7905,13 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
   };
   // Each case's session head, for its working directory.
   const heads = new Map<string, Map<string, SavedHead>>();
+  const transcriptPaths = new Map<string, Map<string, string>>();
   for (const name of new Set(cases.map((c) => c.source.store))) {
     if (!config.stores.some((each) => each.name === name)) continue;
     const hashes = cases.filter((c) => c.source.store === name).map((c) => c.source.pathHash);
     heads.set(name, await sessionHeads(config.psqlCommand, name, hashes, `${given.out}.sessions`));
+    const resolved = await resolvePaths(config.psqlCommand, name, hashes, sessionPathsSql);
+    transcriptPaths.set(name, resolved.paths);
   }
   // When each case's repositories are read: a subagent's at its root's last prompt build before
   // its start (PARENT_LOAD_RULE), a top-level session's at the build its step ran under
@@ -7574,9 +8012,33 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
           },
         ];
     const reading = reads.get(c.id);
+    const transcriptPath = transcriptPaths.get(store.name)?.get(c.source.pathHash);
+    const savedProfile = old.find((each) => each.item === OMP_PROFILE_ITEM)?.source;
+    // The listing its measure sets it against, which decides its pools (POOL_LISTING_RULE): its
+    // own recorded prompt's, else that of its subagent the store's query above found. Every case
+    // of a store the configuration names has its reading, a window with no recorded prompt and
+    // none with one.
+    const base: ListingBase = {
+      recorded: c.profile.systemPrompt,
+      ...(reading?.window === undefined ? {} : { build: reading.window }),
+    };
+    const between = betweenOf(base);
+    const read: SubagentRead = !held
+      ? {
+          unread:
+            "the store holds the session no longer (session-head.sql), so no subagent of it is read",
+        }
+      : between === undefined
+        ? unasked(base)
+        : { found: subagents.get(store.name)?.get(betweenKey(c.source.pathHash, between)) };
+    const recordedListing = decidingListing(base, read);
     const input: ProfileInput = {
       store: store.name,
       context: store.context,
+      ompProfile:
+        transcriptPath === undefined && savedProfile !== undefined
+          ? savedProfile
+          : sessionProfileName(transcriptPath),
       project: legion ? store.context.slice("legion:".length) : undefined,
       reads:
         contextReads(old) ??
@@ -7589,9 +8051,8 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
           ? undefined
           : `/legion/workspaces/${agents.repo}/`,
       recordedPrompt: c.profile.systemPrompt !== undefined,
-      ...(c.profile.systemPrompt === undefined
-        ? {}
-        : { recordedListing: listingNames(c.profile.systemPrompt) }),
+      ...(recordedListing === undefined ? {} : { recordedListing }),
+      runtime: head?.runtime ?? undefined,
       readTime: reading?.read,
       checkout:
         held || decided === undefined
@@ -7632,23 +8093,11 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
     const why =
       !held && agents === undefined ? old.filter((each) => /AGENTS\.md$/.test(each.item)) : [];
     const listing: ListingInput = {
+      ...base,
       listed: listedNames(profiled),
       fromRecorded: profiled.fromRecorded,
-      recorded: c.profile.systemPrompt,
       sessionDigest: c.sessionDigest,
-      ...(reading?.window === undefined ? {} : { build: reading.window }),
     };
-    // Every case of a store the configuration names has its reading, a window with no recorded
-    // prompt and none with one.
-    const between = betweenOf(listing);
-    const read: SubagentRead = !held
-      ? {
-          unread:
-            "the store holds the session no longer (session-head.sql), so no subagent of it is read",
-        }
-      : between === undefined
-        ? unasked(listing)
-        : { found: subagents.get(store.name)?.get(betweenKey(c.source.pathHash, between)) };
     const evidence = [
       ...old.slice(0, profileStart < 0 ? old.length : profileStart),
       ...headless,
@@ -7747,6 +8196,9 @@ interface WrittenContext {
   readonly profiled: ProfileResult;
   /** The session's last system-prompt digest before the first read. */
   readonly digest: string | undefined;
+  /** What the store gave of its subagents (`readSubagents`), read before its profile was built,
+   *  since the listing its measure sets it against decides its pools (POOL_LISTING_RULE). */
+  readonly read: SubagentRead;
   /** What its listing measure is made from, the window of the build its profile is read at
    *  among it for a top-level session. */
   readonly listing: ListingInput;
@@ -7761,16 +8213,17 @@ interface WrittenContext {
  * repository's copy (`placementDrop`), or a whole read by path that they place at the cut's copy;
  * a session whose only successful reads of the skill by path are of a kind no case is built from
  * is dropped by that kind, as a session case's is. The model and thinking level in effect at that
- * read are the ones a written case takes; its context is `sessionContext`'s; and its profile is
- * built from its reads up to and including that read (`profileReads`, a read by path of the copy
- * among them), as a session case's is from the reads before its step, at the time `--reprofile`
- * reads a written case's, which records no time of its step: a subagent's at its root's last
- * prompt build before its start (PARENT_LOAD_RULE), a top-level session's at its first build, the
- * session's start (TOP_BUILD_RULE, `stepBuild`); it must install the cut repository's copy of the
- * skill, and its working directory must be in a checkout the build knows (`writtenCheckout`, else
- * `no-checkout`): a written case's run answers its read-only calls from that checkout alone. Its
- * first user message must hold text (else `no-user-text`), since the written tasks take their kind
- * of work from it.
+ * read are the ones a written case takes; its context is `sessionContext`'s; and its profile, of
+ * the Oh My Pi profile its file's path names (`sessionProfileName`), is built from its reads up
+ * to and including that read (`profileReads`, a read by path of the copy among them), as a
+ * session case's is from the reads before its step, at the time `--reprofile` reads a written
+ * case's, which records no time of its step: a subagent's at its root's last prompt build before
+ * its start (PARENT_LOAD_RULE), a top-level session's at its first build, the session's start
+ * (TOP_BUILD_RULE, `stepBuild`), its pools decided as a session case's are (`caseOf`); it must
+ * install the cut repository's copy of the skill, and its working directory must be in a checkout
+ * the build knows (`writtenCheckout`, else `no-checkout`): a written case's run answers its
+ * read-only calls from that checkout alone. Its first user message must hold text (else
+ * `no-user-text`), since the written tasks take their kind of work from it.
  */
 async function writtenContext(
   run: CaseRun,
@@ -7804,7 +8257,9 @@ async function writtenContext(
   }
   const all = t.items.map((item) => item.slim);
   const reads = skillReads(all, run.skill);
-  const placeRead = (copyPath: string) => run.placer.place(store.name, copyPath, run.skill);
+  const ompProfile = sessionProfileName(filePath);
+  const placeRead = (copyPath: string) =>
+    run.placer.place(store.name, copyPath, run.skill, ompProfile);
   const dirs = sessionDirs(header.cwd, filePath);
   const chosen = firstSkillRead(
     run.skill,
@@ -7817,7 +8272,7 @@ async function writtenContext(
   let installedDir: string;
   let pathCopy: CopyPlace | undefined;
   if ("url" in chosen) {
-    const misplaced = placementDrop(run, store.name, chosen.url);
+    const misplaced = placementDrop(run, placeRead, chosen.url);
     if (misplaced !== undefined) return misplaced;
     const headerPath = chosen.url.header ?? "";
     installedDir = installedDirOf(headerPath, chosen.url.file) ?? path.posix.dirname(headerPath);
@@ -7838,12 +8293,13 @@ async function writtenContext(
   const before = all.slice(0, first.index + 1);
   const shown = profileReads(before, run.skill, pathCopy === undefined ? [] : [pathCopy]);
   const digest = lastBefore(t.branch, firstAt, promptDigest);
+  const own = pathHash(filePath);
   let readTime: ReadTime;
   let build: BuildWindow | undefined;
+  let read: SubagentRead;
   let profiled: ProfileResult;
   try {
     if (rebuilt.init !== undefined) {
-      const own = pathHash(filePath);
       const rows = await digestRows(run.config.psqlCommand, store.name, [own]);
       readTime = parentLoad(rows.get(own), header.sessionStart, store.name);
     } else {
@@ -7851,13 +8307,25 @@ async function writtenContext(
       readTime = step.read;
       build = step.window;
     }
+    // The listing its measure sets it against decides its pools (POOL_LISTING_RULE), as a session
+    // case's does: a top-level session's is that of its earliest subagent spawned under its build,
+    // read from the store now, through the build's store queue; the measure takes this read too.
+    const base: ListingBase = {
+      recorded: rebuilt.init?.systemPrompt,
+      ...(build === undefined ? {} : { build }),
+    };
+    read = await readSubagents(run.config.psqlCommand, store.name, own, base, run.readStore);
+    const recordedListing = decidingListing(base, read);
     profiled = await caseProfile(run, {
       store: store.name,
       context: store.context,
+      ompProfile,
       project: rebuilt.project,
       sessionStart: header.sessionStart,
       cwd: header.cwd,
       recordedPrompt: rebuilt.init !== undefined,
+      ...(recordedListing === undefined ? {} : { recordedListing }),
+      runtime: runtimeOf(t),
       readTime,
       reads: shown,
       absoluteReads: absoluteReads(before),
@@ -7895,6 +8363,7 @@ async function writtenContext(
     reads: shown,
     profiled,
     digest,
+    read,
     checkout: { ...checkout, jj },
     listing: {
       listed: listedNames(profiled),
@@ -7982,29 +8451,6 @@ function outsideMaterial(made: WrittenContext): string | undefined {
   return undefined;
 }
 
-/** The listing measure (score.ts's LISTING_MEASURE_ITEM) for a session's cases. When the measure
- *  needs a recorded subagent listing, read it through the build's store queue (subagents.sql);
- *  a failed read leaves the measure not measurable, with why. */
-async function sessionMeasure(
-  run: CaseRun,
-  store: string,
-  hash: string,
-  listing: ListingInput
-): Promise<Evidence> {
-  const between = betweenOf(listing);
-  if (between === undefined) return listingMeasure(listing, unasked(listing));
-  let read: SubagentRead;
-  try {
-    const found = await run.readStore(() =>
-      subagentListings(run.config.psqlCommand, store, [{ hash, ...between }])
-    );
-    read = { found: found.get(betweenKey(hash, between)) };
-  } catch (error) {
-    read = { unread: `subagents.sql failed: ${messageFor(error)}` };
-  }
-  return listingMeasure(listing, read);
-}
-
 /** A session passed over as the context of written cases, and why. */
 interface PassedSession {
   readonly store: string;
@@ -8018,7 +8464,7 @@ interface ChosenContext {
   readonly chosen: WrittenContext;
   readonly tasks: WrittenCaseAnswer["tasks"];
   readonly how: string;
-  /** The listing measure its written cases carry (`sessionMeasure`). */
+  /** The listing measure its written cases carry (`listingMeasure` of its `read`). */
   readonly measure: Evidence;
   readonly passed: PassedSession[];
 }
@@ -8044,7 +8490,7 @@ const STOPPED_AT_REFUSAL = "(the reply stopped at refusal)";
  * names (`--context-session`), refused (thrown, naming why) where it gives no written cases
  * (`writtenContext`: one in no checkout the build knows among them, `no-checkout`, and one whose
  * first user message holds no text, `no-user-text`), reads material outside its checkout
- * (`outsideMaterial`), has a listing measure the screen's rule drops (`sessionMeasure`, score.ts's
+ * (`outsideMaterial`), has a listing measure the screen's rule drops (`listingMeasure`, score.ts's
  * `listingStanding`: its rebuilt listing misses more than MAX_LISTING_MISSING_PERCENT of its
  * recorded names), or `ask` says its work is on the skill's own text or its answer was refused on
  * each try; else the first session of `order` (the build's seeded order of `--sessions`) that
@@ -8083,12 +8529,7 @@ async function chooseContext(
   > => {
     const reads = outsideMaterial(made);
     if (reads !== undefined) return { why: `${outside}: ${reads}` };
-    const measure = await sessionMeasure(
-      run,
-      made.store.name,
-      pathHash(made.filePath),
-      made.listing
-    );
+    const measure = listingMeasure(made.listing, made.read);
     const standing = listingStanding([measure]);
     if (standing.state === "dropped") return { why: standing.reason };
     const answer = await ask(made);
@@ -8742,7 +9183,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     };
 
     // What every case takes from the context session: its profile, the listing measure chosen
-    // with it (`sessionMeasure`), the read calls' message and the directory its first read of the
+    // with it (`listingMeasure`), the read calls' message and the directory its first read of the
     // skill showed (of a read by path, the directory of the copy it read).
     const { first, installedDir, init, profiled } = chosen;
     const target = `skill://${given.skill}`;
@@ -9109,6 +9550,7 @@ type CasesInputs = z.infer<typeof CasesInputs>;
 /** The files of the copies output that build-cases reads (readCopiesAndPlacer, and attribute.ts's
  *  readR4). */
 const COPIES_READ = [
+  "former-stages.tsv",
   "installers.tsv",
   "loaders.tsv",
   "manifests.tsv",
@@ -9125,7 +9567,8 @@ function countFiles(countDir: string, stores: readonly string[]): string[] {
     const dir = path.join(countDir, store);
     if (!existsSync(dir)) continue;
     for (const file of readdirSync(dir).sort()) {
-      if (/^\d{4}-\d{2}-\d{2}(T\d{2})?\.txt$/.test(file)) files.push(`${store}/${file}`);
+      if (file === "roots.txt" || /^\d{4}-\d{2}-\d{2}(T\d{2})?\.txt$/.test(file))
+        files.push(`${store}/${file}`);
     }
   }
   return [...files, "run.log"];
@@ -9585,12 +10028,10 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       if (pulled.bytes === 0) return { drop: "pull-failed", detail: "the pull returned no row" };
       const made = await caseOf(run, store, transcriptPath, spool, record, wanted);
       if (!("case" in made)) return made;
-      const measure = await sessionMeasure(
-        run,
-        store.name,
-        made.case.source.pathHash,
-        made.listing
-      );
+      // The listing measure: a top-level session's is against the earliest subagent of it spawned
+      // under the build its profile is read at, which caseOf read from the store before it built
+      // the profile, whose pools that listing decided.
+      const measure = listingMeasure(made.listing, made.read);
       return {
         ...made,
         case: { ...made.case, evidence: withMeasure(made.case.evidence ?? [], measure) },
@@ -10071,6 +10512,7 @@ async function rebuiltContext(
                 ? "the store holds no subagent of it (subagents.sql, asked for those spawned at any time)"
                 : `none of its ${found.subagents} subagents records a skill listing (subagents.sql, asked for those spawned at any time)`),
           },
+      read: unplaced === undefined ? { found } : { unread: unplaced },
     });
   } catch (error) {
     throw new Error(`${named}: ${messageFor(error)}`);
@@ -10082,9 +10524,8 @@ async function rebuiltContext(
       `${named}: its rebuilt context (${built.profile.context}) does not list ${skill}, so a written task in it would test nothing; give a session whose context lists it`
     );
   }
-  const read: SubagentRead = unplaced === undefined ? { found } : { unread: unplaced };
-  built.evidence.push(listingMeasure(built.listing, read));
-  return { store, hash, built: withRecordedListing(built, read) };
+  built.evidence.push(listingMeasure(built.listing, built.read));
+  return { store, hash, built: withRecordedListing(built, built.read) };
 }
 
 /** A task line as build-tasks writes it, with the profile `--profiles-out` gives it. */
@@ -10116,8 +10557,8 @@ const OTHER_MODEL = "other-model";
  * profile cannot be rebuilt keeps no `profile`, and the record of it says why. A session task
  * whose profile does not list the skill (`listsSkill`) is dropped (`skill-not-listed`): it would
  * test nothing. Returns the tasks kept, the record of each task, the store queries it made
- * (sessions.sql for the paths, and subagents.sql for the listing measures, one a store) and the
- * counts of the measures.
+ * (sessions.sql for the paths) and those each session task's profile made (subagents.sql for its
+ * listing, one a session, read as the profile was rebuilt), and the counts of the measures.
  */
 async function writeProfiles<T extends TaskLine>(
   plan: ProfilesPlan,
@@ -10176,17 +10617,12 @@ async function writeProfiles<T extends TaskLine>(
   }
   // A session that records no prompt is measured against the earliest subagent of it spawned
   // under the build its profile is read at whose recorded prompt holds a listing
-  // (`listingMeasure`): one subagents.sql query a store, for the session of each session task,
-  // found by the store and path hash its profile was rebuilt from.
-  const measured = tasks.flatMap((task) => {
+  // (`listingMeasure`), which its profile read from the store as it was rebuilt, since that
+  // listing decides its pools: one subagents.sql query a session.
+  for (const task of tasks) {
     const built = task.source === "session" ? profiles.get(task.id)?.built : undefined;
-    const between = built === undefined || !built.listed ? undefined : betweenOf(built.listing);
-    return built === undefined || between === undefined
-      ? []
-      : [{ store: built.store, pathHash: built.pathHash, between }];
-  });
-  const subagents = await subagentsByStore(plan.run.config.psqlCommand, measured);
-  queries += subagents.queries;
+    if (built !== undefined && "found" in built.read) queries += 1;
+  }
   const measures: (ListingMeasure | undefined)[] = [];
   const notes: Record<string, unknown>[] = [];
   const out: T[] = [];
@@ -10211,15 +10647,14 @@ async function writeProfiles<T extends TaskLine>(
       );
       continue;
     }
-    const read = subagentRead(subagents.found, built.store, built.pathHash, built.listing);
     // A written task's profile is the context session's, which keeps its listing already.
-    const listed = task.source === "written" ? built : withRecordedListing(built, read);
+    const listed = task.source === "written" ? built : withRecordedListing(built, built.read);
     const file = path.resolve(plan.dir, `${task.id}.json`);
     writeWhole(file, json(listed.profile));
     const evidence =
       task.source === "written"
         ? built.evidence
-        : withMeasure(built.evidence, listingMeasure(built.listing, read));
+        : withMeasure(built.evidence, listingMeasure(built.listing, built.read));
     measures.push(measureIn(evidence));
     notes.push({
       task: task.id,
@@ -10879,7 +11314,11 @@ async function reprofileTasks(
     return (await rows).get(hash);
   };
   // Each session task's profile built again (`pulledProfile`), or why the task is left out: a
-  // profile load would refuse is not written, nor one whose context no longer lists the skill.
+  // profile load would refuse is not written, nor one whose context no longer lists the skill. A
+  // session that records no prompt is measured against the earliest subagent of it spawned under
+  // the build its profile is read at whose recorded prompt holds a listing (`listingMeasure`),
+  // which its profile reads from the store as it is rebuilt, since that listing decides its
+  // pools: one subagents.sql query a session.
   const pulled = new Map<string, SessionProfile | { readonly leftOut: string }>();
   for (const task of sessionTasks) {
     const filePath = paths.get(`${task.store}\0${task.pathHash}`);
@@ -10890,7 +11329,7 @@ async function reprofileTasks(
         digestRow: digestRowOf(task.store),
       });
     } catch (error) {
-      if (error instanceof ProfileRefused) {
+      if (error instanceof ProfileRefused || error instanceof PodNotMeasurable) {
         pulled.set(task.id, { leftOut: error.message });
         continue;
       }
@@ -10898,6 +11337,7 @@ async function reprofileTasks(
         `task ${task.id} (${task.store} ${task.pathHash.slice(0, 12)}): ${messageFor(error)}`
       );
     }
+    if ("found" in built.read) sessionQueries += 1;
     pulled.set(
       task.id,
       built.listed
@@ -10907,18 +11347,6 @@ async function reprofileTasks(
           }
     );
   }
-  // A session that records no prompt is measured against the earliest subagent of it spawned
-  // under the build its profile is read at whose recorded prompt holds a listing
-  // (`listingMeasure`): one subagents.sql query a store, for the session of each session task the
-  // store holds.
-  const measured = sessionTasks.flatMap((task) => {
-    const built = pulled.get(task.id);
-    const between =
-      built === undefined || "leftOut" in built ? undefined : betweenOf(built.listing);
-    return between === undefined ? [] : [{ store: task.store, pathHash: task.pathHash, between }];
-  });
-  const subagents = await subagentsByStore(config.psqlCommand, measured);
-  sessionQueries += subagents.queries;
   /** The measure of a task that keeps its old profile `text`: not measurable, for `why`, listing
    *  the profile's skills (KeptSkills), each under the name Oh My Pi lists it by (`listedName`). */
   const keptMeasure = (text: string | undefined, why: string) => {
@@ -10966,10 +11394,9 @@ async function reprofileTasks(
           io.err(`build-tasks: ${task.id}: left out: ${why}`);
           continue;
         }
-        const read = subagentRead(subagents.found, task.store, task.pathHash, built.listing);
         rebuilt = {
-          text: json(withRecordedListing(built, read).profile),
-          evidence: withMeasure(built.evidence, listingMeasure(built.listing, read)),
+          text: json(withRecordedListing(built, built.read).profile),
+          evidence: withMeasure(built.evidence, listingMeasure(built.listing, built.read)),
         };
       }
     }

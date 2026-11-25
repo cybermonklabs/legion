@@ -21,12 +21,15 @@
  * the one hour of that day, which is how a day whose query times out is split), count.sql with the
  * window of the configuration. A store the configuration does not name is refused. Exit 0 prints
  * the query; exit 2 is a refusal before anything is printed.
+ * With `--query roots`, omit `--day` and `--hour`. The query reads only the paths in the
+ * store's file table and emits each file's count hash and Oh My Pi profile, never its path.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { loadConfig, type SkillCutsConfig, storeNamed } from "./config";
 import type { PullKey } from "./psql-rows";
+import { DEFAULT_ROOT, NAMED_ROOT } from "./session-root";
 
 /** The SQL files of the runner, beside this file. */
 type Template =
@@ -38,6 +41,7 @@ type Template =
   | "session-head.sql"
   | "session-paths.sql"
   | "subagents.sql"
+  | "roots.sql"
   | "digest-times.sql";
 
 /** The text of one of the runner's SQL files. */
@@ -253,8 +257,16 @@ export function digestTimesSql(pathHashes: readonly string[]): string {
   return fillTemplate(readTemplate("digest-times.sql"), { hashes: pathHashArray(pathHashes) });
 }
 
+export function rootsSql(config: SkillCutsConfig, store: string): string {
+  storeNamed(config, store);
+  return fillTemplate(readTemplate("roots.sql"), {
+    named_root: sqlString(NAMED_ROOT),
+    default_root: sqlString(DEFAULT_ROOT),
+  });
+}
+
 const USAGE =
-  "usage: countsql.ts --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]";
+  "usage: countsql.ts --config <skill-cuts.json> --store <db> (--day <YYYY-MM-DD> [--hour <0-23>] [--query count|models] | --query roots)";
 
 /** What `main` writes to. */
 export interface Output {
@@ -284,6 +296,20 @@ export function main(argv: readonly string[], io: Output): number {
     }));
   } catch (error) {
     return refuse(`${(error as Error).message}. ${USAGE}`);
+  }
+  if (values.query === "roots") {
+    if (values.config === undefined || values.store === undefined)
+      return refuse("--query roots requires --config and --store");
+    if (values.day !== undefined || values.hour !== undefined)
+      return refuse(
+        "--query roots reads all paths in the store and takes neither --day nor --hour"
+      );
+    try {
+      io.out(rootsSql(loadConfig(values.config), values.store));
+      return 0;
+    } catch (error) {
+      return refuse((error as Error).message);
+    }
   }
   if (values.config === undefined || values.store === undefined || values.day === undefined) {
     return refuse(`--config, --store and --day are required. ${USAGE}`);

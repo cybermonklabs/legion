@@ -15,13 +15,17 @@
  *              configuration and each UTC day, or `<store>/<YYYY-MM-DD>T<HH>.txt` for each hour of
  *              a day whose query timed out: each is the psql output of one count.sql query
  *              (`psqlRows`), its count rows and then one summary row, as count.sql's header says. A
- *              query that has no `.txt` has no output: it failed, or it has not run yet. `run.log`
- *              lists every query run, `<time>\t<store>\t<day or hour>\trc=<status>\tseconds=<n>\t
+ *              query that has no `.txt` has no output: it failed, or it has not run yet.
+ *              Each store with count output needs `<store>/roots.txt` from `count-sql --query
+ *              roots`. It names each session's Oh My Pi profile by hash, without paths.
+ *              `run.log` lists every query run, `<time>\t<store>\t<day or hour>\trc=<status>\tseconds=<n>\t
  *              <its stderr>`, a `FAILED ...` line for each query given up, and `END <time>` when
  *              the run ended.
- *   --copies   The copies output (copies.ts): skill-copies.tsv, prefix-table.tsv, installers.tsv,
- *              loaders.tsv, manifests.tsv and repositories.tsv, each with the columns copies.ts
- *              exports for it.
+ *   --copies   The copies output (copies.ts): skill-copies.tsv, prefix-table.tsv,
+ *              former-stages.tsv, installers.tsv, loaders.tsv, manifests.tsv and
+ *              repositories.tsv, each with the columns copies.ts exports for it. An output with
+ *              no former-stages.tsv (made before copies.ts wrote it) is refused (exit 1), naming
+ *              the file: copies must run again.
  *   --spans    One JSON line per store: `{store, earliest_mtime_ms, files}`, the store's earliest
  *              file mtime (epoch milliseconds) and its number of files.
  *   --models   The models query's raw output (models.sql), in `--count`'s layout and with its own
@@ -48,8 +52,15 @@
  *   The copy of a count row is decided in this order:
  *   1. The prefix table. When every prefix-table.tsv row whose pattern matches the row's copy path
  *      maps to the same copy, the row goes to that copy. The match is `prefixRegExp`, the one
- *      matcher that `prefixMatches` uses, compiled once for each row.
- *   2. A checkout (`checkoutRule`). When the row's copy-path prefix ends with a copy's
+ *      matcher that `prefixMatches` uses, compiled once for each row. Only the prefix table can
+ *      place reads under the worker image's install location (copies.ts's IMAGE_ROOT,
+ *      `/opt/legion/`). A miss or tie leaves an image read unattributed, with any former-stage
+ *      note for its path. A prefix row for a Git rename (recorded in former-stages.tsv) maps
+ *      the old path to the renamed copy under the name the script staged. The read counts in
+ *      the copy's `sessions` and in its `former_name_sessions`, when every row that maps the
+ *      path is such a row.
+ *   2. A checkout (`checkoutRule`), for a path not under the worker image's install location.
+ *      When the row's copy-path prefix ends with a copy's
  *      repository-relative skill directory, at a path boundary, the row goes to that copy: a read
  *      in a checkout of its repository (a dotfiles checkout, a Legion workspace, a relative path
  *      from the session's working directory). The longest such directory wins; copies of several
@@ -61,16 +72,28 @@
  *      writes (`<dir>/vendor/<name>/`, a package under `node_modules/`, a plugin under
  *      `plugins/cache/`) is a checkout only of a repository that the path from that copy's own
  *      directory on names; when it names none, step 3 decides.
- *   3. The store's context. The units (packages, plugins, a host's user skills, each named with its
- *      manifest in prefix-table.tsv's `via`) that the store's own step-1 reads come from are the
- *      units its context installs. Their copies are the installers.tsv rows of those units and the
- *      prefix rows' own copies. When they hold exactly one copy of the row's skill name, the row
- *      goes to that copy; after a step-2 tie, exactly one of the tied copies, since the path
- *      already says the read is of one of them. A store with no step-1 read installs no unit. A
- *      row whose path is inside an `ensure_vendor` clone (`<dir>/vendor/<name>/`) goes to no copy
+ *   3. The session's profile. For each store and Oh My Pi profile, infer the installed units
+ *      from that group's step-1 reads. Their copies are the installers.tsv rows of those units
+ *      and the prefix rows' own copies. For the default profile of a devbox store, the units
+ *      are also each unit that the dev box's own installers install into Oh My Pi (installers.tsv
+ *      rows of the one repository of manifests.tsv that holds an installer script and
+ *      `.claude/settings.json`, host `omp`, action ships, stages, links or installs), whether or
+ *      not the session read from it: `/home/<user>/.agents/skills/gh/` ties cli/cli with another
+ *      repository's gh, and the dev box installs cli/cli's. Place the read only when these units
+ *      have one copy of the name, or one of the copies in a checkout tie. A matching former-name
+ *      row can also name the copy if one of its units is in the group. With no known profile, this
+ *      step cannot place the read. A read under a former name counts in `former_name_sessions`.
+ *      A row whose path is inside an `ensure_vendor` clone (`<dir>/vendor/<name>/`) goes to no copy
  *      by this step: no prefix row maps that clone, so the copies output's end time holds no
  *      installer that makes it, and the copies the context installs then are other copies than
  *      the clone the read came from.
+ *      A project skill is read inside a project skills directory (`PROJECT_SKILL_DIRS`: `.omp/skills`,
+ *      `.claude/skills`, `.agent/skills`, `.agents/skills`, `.codex/skills`, `.opencode/skills`,
+ *      `.github/skills`) of a checkout, not of a home directory: an absolute path, or one
+ *      relative to the session's working directory. Step 2 places it only at a copy that is in
+ *      such a directory too, and this step never places it (apart from a step-2 tie among such
+ *      copies): no plugin or other unit that holds a skill of the same name is the project's
+ *      skill. With no such copy in the copies output it is unattributed, with that reason.
  *   4. Otherwise the row is unattributed for its skill name: a step-2 tie with the reason of the
  *      tie and of the context.
  *   `placer` is these four steps, and the one place a read's copy is decided: `attribute` counts
@@ -102,17 +125,20 @@
  *
  * Outputs under --out.
  *   skill-read-count.tsv   READ_COUNT_COLUMNS, one row per copy of skill-copies.tsv, in its order:
- *                          repository, path, name, sessions, reference_sessions,
- *                          unattributed_sessions (of the name), tie (each copy of the name it ties
- *                          with, `<repository> <path>`, joined by `; `), loaded (yes or no),
- *                          status.
+ *                          repository, path, name, sessions, former_name_sessions (of `sessions`,
+ *                          those that read it under a former name, step 1 and 3),
+ *                          reference_sessions, unattributed_sessions (of the name), tie (each copy
+ *                          of the name it ties with, `<repository> <path>`, joined by `; `), loaded
+ *                          (yes or no), status.
  *   skill-read-count.md    The end time and the window; the stores with their spans, earliest
  *                          record and earliest read, and the call keys two files hold (in one
  *                          query, and across queries with the pairs of files that hold them);
  *                          each failed, split or missing query; the attribution rule with the
  *                          units each store's context installs; the unmapped prefixes with their
  *                          sessions and the rule that placed them;
- *                          the mapped prefixes with their copies; the ties; the loaded list; per
+ *                          the mapped prefixes with their copies; each copy read under a former
+ *                          name, with its sessions and those under that name; the ties; the
+ *                          loaded list; per
  *                          repository, the skills with no read; the two Claude Code lists; per
  *                          repository, the bytes of its skill names and descriptions at the commit
  *                          the copies output read; the rankings; and, with --models, the models
@@ -150,6 +176,8 @@ import { z } from "zod";
 import { Refused, schemaFaults, sha256 } from "./common";
 import { cutOrSet, loadConfig, type SkillCutsConfig } from "./config";
 import {
+  FORMER_STAGES_COLUMNS,
+  IMAGE_ROOT,
   INSTALLERS_COLUMNS,
   LOADERS_COLUMNS,
   MANIFESTS_COLUMNS,
@@ -360,7 +388,13 @@ export interface QueryDir<O> {
    *  by its path in the directory, `<store>/<file>`. */
   readonly digests: ReadonlyMap<string, string>;
 }
-export type CountRead = QueryDir<QueryOutput>;
+export type SessionProfiles = ReadonlyMap<string, string>;
+export type CountRead = QueryDir<QueryOutput> & { readonly profiles: SessionProfiles };
+
+const RootRow = z.strictObject({
+  hash: Hash,
+  profile: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
+});
 
 /** Reads the query directory `dir` for the stores `stores`, each `.txt` read once and parsed by
  *  `parse`. A `.txt` that `parse` throws on is listed as unreadable, but for an EarlierCount,
@@ -401,7 +435,25 @@ export function readQueryDir<O>(
 
 /** Reads the count directory `dir` for the stores `stores`. */
 export function readCount(dir: string, stores: readonly string[]): CountRead {
-  return readQueryDir(dir, stores, parseQueryOutput);
+  const count = readQueryDir(dir, stores, parseQueryOutput);
+  const profiles = new Map<string, string>();
+  for (const store of new Set(count.outputs.map((output) => output.store))) {
+    const file = path.join(dir, store, "roots.txt");
+    if (!existsSync(file))
+      throw new Error(
+        `${file} does not exist: run count-sql --query roots --config <file> --store ${store} and save the store's query output there`
+      );
+    for (const value of psqlRows(readFileSync(file, "utf8"))) {
+      const parsed = RootRow.safeParse(value);
+      if (!parsed.success)
+        throw new Error(`${file}: not a roots.sql row: ${schemaFaults(parsed.error)}`);
+      const { hash, profile } = parsed.data;
+      const key = sessionKey(store, hash);
+      if (profiles.has(key)) throw new Error(`${file}: duplicate file hash ${hash}`);
+      profiles.set(key, profile);
+    }
+  }
+  return { ...count, profiles };
 }
 
 /** A file that lists a key in a count row: its hash, and the name of its query. */
@@ -782,22 +834,27 @@ export function parseSpans(text: string, source = "the spans file"): Span[] {
 type Columns<C extends readonly string[]> = { readonly [K in C[number]]: string };
 export type SkillCopiesRow = Columns<typeof SKILL_COPIES_COLUMNS>;
 export type PrefixTableRow = Columns<typeof PREFIX_TABLE_COLUMNS>;
+export type FormerStagesRow = Columns<typeof FORMER_STAGES_COLUMNS>;
 export type InstallersRow = Columns<typeof INSTALLERS_COLUMNS>;
 export type LoadersRow = Columns<typeof LOADERS_COLUMNS>;
 export type RepositoriesRow = Columns<typeof REPOSITORIES_COLUMNS>;
 export type ManifestsRow = Columns<typeof MANIFESTS_COLUMNS>;
 
-/** The tables of the copies output (copies.ts) this file reads. */
+/** The tables of the copies output (copies.ts) this file reads. `manifests` (manifests.tsv) is
+ *  what the dev box's own repository is found from (`devboxRepository`); without it no dev box is
+ *  known. */
 export interface R4Tables {
   readonly copies: readonly SkillCopiesRow[];
   readonly prefixes: readonly PrefixTableRow[];
+  readonly formerStages: readonly FormerStagesRow[];
   readonly installers: readonly InstallersRow[];
   readonly loaders: readonly LoadersRow[];
   readonly repositories: readonly RepositoriesRow[];
+  readonly manifests?: readonly ManifestsRow[];
 }
 
 /** The copies output as `readR4` reads it: the tables the attribution reads, and manifests.tsv,
- *  which build.ts's profiles read. */
+ *  which build.ts's profiles read too. */
 export interface R4Output extends R4Tables {
   readonly manifests: readonly ManifestsRow[];
 }
@@ -824,11 +881,20 @@ function readTable<C extends readonly string[]>(
   return parseTsv(text) as Columns<C>[];
 }
 
-/** The copies output in its directory `dir`. */
+/** The copies output in its directory `dir`. Throws, naming the file, on an output made before
+ *  copies.ts wrote former-stages.tsv: its reads would be placed without the rows of a skill git
+ *  renamed, so that copies output must be made again. */
 export function readR4(dir: string): R4Output {
+  const formerStages = path.join(dir, "former-stages.tsv");
+  if (!existsSync(formerStages)) {
+    throw new Error(
+      `${formerStages} does not exist: the copies output was made before copies.ts wrote former-stages.tsv, so run copies again`
+    );
+  }
   return {
     copies: readTable(dir, "skill-copies.tsv", SKILL_COPIES_COLUMNS),
     prefixes: readTable(dir, "prefix-table.tsv", PREFIX_TABLE_COLUMNS),
+    formerStages: readTable(dir, "former-stages.tsv", FORMER_STAGES_COLUMNS),
     installers: readTable(dir, "installers.tsv", INSTALLERS_COLUMNS),
     loaders: readTable(dir, "loaders.tsv", LOADERS_COLUMNS),
     manifests: readTable(dir, "manifests.tsv", MANIFESTS_COLUMNS),
@@ -847,6 +913,70 @@ export const INSTALL_ACTIONS: Readonly<Record<string, true>> = {
   links: true,
   enables: true,
 };
+
+/** The installers.tsv actions by which a unit's own manifest ships a skill (INSTALL_ACTIONS but
+ *  `enables`, which turns on a plugin another manifest ships). */
+export const MEMBER_ACTIONS: Readonly<Record<string, true>> = {
+  ships: true,
+  stages: true,
+  links: true,
+  installs: true,
+};
+
+/** Claude Code's settings file in a repository, which with an installer script marks the dev
+ *  box's own repository. */
+export const CLAUDE_SETTINGS = ".claude/settings.json";
+
+/** The repositories of manifests.tsv that hold both an installer script (`installers/*.sh`) and
+ *  Claude Code's settings (`.claude/settings.json`), sorted: the dev box's own repository is the
+ *  one of them when there is one alone (DEVBOX_INSTALLERS_RULE in build.ts). */
+export function devboxRepositories(
+  manifests: readonly Pick<ManifestsRow, "repository" | "path" | "kind">[]
+): string[] {
+  const holding = (kind: string, file?: string) =>
+    new Set(
+      manifests
+        .filter((row) => row.kind === kind && (file === undefined || row.path === file))
+        .map((row) => row.repository)
+    );
+  const settings = holding("claude-settings", CLAUDE_SETTINGS);
+  return [...holding("installer-script")].filter((repo) => settings.has(repo)).sort();
+}
+
+/** The skills directories in which Oh My Pi 18.18.6 lists the skills of a project (a checkout's
+ *  own, build.ts's PROJECT_SKILLS with the source of each): the ones a home directory holds are a
+ *  user's, which a plugin or an installer may fill (`~/.claude/skills`, `~/.agents/skills`). */
+export const PROJECT_SKILL_DIRS = [
+  ".omp/skills",
+  ".claude/skills",
+  ".agent/skills",
+  ".agents/skills",
+  ".codex/skills",
+  ".opencode/skills",
+  ".github/skills",
+] as const;
+
+/** A home directory: where a user's own skills directories sit (`/home/<user>`, `/root`,
+ *  `/Users/<user>`, `~`). */
+const HOME_DIRECTORY = /^(?:~|\/root|\/home\/[^/]+|\/Users\/[^/]+)$/;
+
+/**
+ * The project skills directory (`PROJECT_SKILL_DIRS`) that the copy-path prefix `prefix`
+ * (`copyPrefix`, ending with the skill's own directory) is directly inside, when the directory
+ * above it is no home directory: the read is of a project's own skill, in a checkout (an absolute
+ * path, or one relative to the session's working directory). Undefined for a user's skills
+ * directory, a path in none, and a `skill://` prefix.
+ */
+export function projectSkillDir(prefix: string): string | undefined {
+  if (prefix.startsWith("skill://")) return undefined;
+  const skills = path.posix.dirname(prefix.replace(/\/+$/, ""));
+  for (const dir of PROJECT_SKILL_DIRS) {
+    if (skills !== dir && !skills.endsWith(`/${dir}`)) continue;
+    const above = skills.slice(0, skills.length - dir.length).replace(/\/+$/, "");
+    return HOME_DIRECTORY.test(above) ? undefined : dir;
+  }
+  return undefined;
+}
 
 /** Skills that code puts into every session, by name, with what does it. */
 export const INJECTED_SKILLS: Readonly<Record<string, string>> = {
@@ -867,6 +997,7 @@ export const READ_COUNT_COLUMNS = [
   "path",
   "name",
   "sessions",
+  "former_name_sessions",
   "reference_sessions",
   "unattributed_sessions",
   "tie",
@@ -955,6 +1086,10 @@ export interface CopyCount {
   readonly sessions: number;
   /** The read sessions (`sessionKey`) that `sessions` counts. */
   readonly readSessions: ReadonlySet<string>;
+  /** Of `sessions`, those that read it under a former name (`Placement.formerName`). */
+  readonly formerNameSessions: number;
+  /** The former names it was read under, sorted. */
+  readonly formerNames: readonly string[];
   readonly referenceSessions: number;
   /** The read sessions of the copy's name that no copy got. */
   readonly unattributed: number;
@@ -1026,17 +1161,30 @@ export interface Attribution {
   readonly unattributedSessions: number;
 }
 
+/** What the prefix table says of a copy path: the one copy its matching rows map it to, with
+ *  their units and, when each of them is a row of a skill git renamed (former-stages.tsv), the
+ *  name it had there; or the copies they map it to and the matched former-name rows. */
 type TableDecision =
-  | { readonly copy: string; readonly units: readonly string[] }
-  | { readonly copy: undefined; readonly copies: readonly string[] };
+  | {
+      readonly copy: string;
+      readonly units: readonly string[];
+      readonly formerName: string | undefined;
+    }
+  | {
+      readonly copy: undefined;
+      readonly copies: readonly string[];
+      readonly formerRows: readonly PrefixMatcher[];
+    };
 
 /** A prefix-table.tsv row as the attribution reads it: its pattern, the last directory name of its
- *  prefix, its copy and the units of its `via`. */
+ *  prefix, its copy, the units of its `via`, and the name the copy had at its prefix when a
+ *  former-stages.tsv row of a skill git renamed gives the row (its `skill`), else undefined. */
 interface PrefixMatcher {
   readonly pattern: RegExp;
   readonly last: string;
   readonly copy: string;
   readonly units: readonly string[];
+  readonly formerName: string | undefined;
 }
 
 /** The copy prefix-table.tsv's rows map a copy path to. Only the rows whose prefix's last
@@ -1060,8 +1208,18 @@ function prefixTable(rows: readonly PrefixMatcher[]) {
     const [only] = found;
     const decision: TableDecision =
       found.length === 1 && only !== undefined
-        ? { copy: only, units: [...new Set(matched.flatMap((row) => row.units))] }
-        : { copy: undefined, copies: found };
+        ? {
+            copy: only,
+            units: [...new Set(matched.flatMap((row) => row.units))],
+            formerName: matched.every((row) => row.formerName !== undefined)
+              ? matched[0]?.formerName
+              : undefined,
+          }
+        : {
+            copy: undefined,
+            copies: found,
+            formerRows: matched.filter((row) => row.formerName !== undefined),
+          };
     decisions.set(copyPath, decision);
     return decision;
   };
@@ -1227,18 +1385,22 @@ export type PlacementRule = "prefix table" | "checkout" | "context";
  *  `prefix` is the copy-path prefix of its path (`copyPrefix`).
  *  `outcome`, for a read the prefix table does not place, says where it went and why, as the
  *  report writes it after the store's name (`checkout: to …`, `context: to …`,
- *  `unattributed: …`). */
+ *  `unattributed: …`).
+ *  `formerName`, for a read placed under a name its copy had before git renamed it: that name,
+ *  when every prefix row that maps its path is a former-stages.tsv row of the rename (step 1), or
+ *  when its context places it through a matching former-name row (step 3); else undefined. */
 export interface Placement {
   readonly prefix: string;
   readonly copy: string | undefined;
   readonly rule: PlacementRule | undefined;
   readonly outcome: string | undefined;
+  readonly formerName: string | undefined;
 }
 
 /** The placing of reads by the rules of this file's header, for one count and one copies output. */
 export interface Placer {
-  /** Where a read of the copy path `copyPath` of the skill `skill` in the store `store` goes. */
-  place(store: string, copyPath: string, skill: string): Placement;
+  /** Where the read goes, using the session's profile if the path does not decide. */
+  place(store: string, copyPath: string, skill: string, profile: string): Placement;
   /** Step 3's units: for each store, each unit its prefix-table reads come from, with their
    *  sessions (file hashes). */
   readonly storeUnits: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>>;
@@ -1256,7 +1418,12 @@ export interface Placer {
  *  this puts it, and build.ts keeps a session only when this puts its read at the cut's copy.
  *  Throws when a prefix-table.tsv row, or an installers.tsv row that installs a copy, names a copy
  *  that skill-copies.tsv does not hold. */
-export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
+export function placer(
+  outputs: readonly QueryOutput[],
+  r4: R4Tables,
+  profiles: SessionProfiles,
+  devboxStores: ReadonlySet<string> = new Set()
+): Placer {
   const counted = countOnce(outputs);
   const copies = new Map<string, SkillCopiesRow>();
   for (const row of r4.copies) copies.set(copyKey(row.repository, row.path), row);
@@ -1266,7 +1433,18 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
     return key;
   };
 
-  // The copies of each unit: its installer rows, and the copies its prefix rows map to.
+  // The former-stages.tsv rows of a skill git renamed, by prefix and copy, each with the name the
+  // prepack script staged it under; and the rows no prefix row maps, with their patterns.
+  const renamed = new Map<string, string>();
+  const unmappedStages: { pattern: RegExp; row: FormerStagesRow }[] = [];
+  for (const row of r4.formerStages) {
+    if (row.prefix === "") continue;
+    if (row.repository === "") unmappedStages.push({ pattern: prefixRegExp(row.prefix), row });
+    else if (row.renamed_to !== "")
+      renamed.set(`${row.prefix}\t${copyKey(row.repository, row.path)}`, row.skill);
+  }
+
+  // The copies of each unit: its installer rows and the copies its prefix rows map to.
   const members = new Map<string, Set<string>>();
   for (const [index, row] of r4.installers.entries()) {
     if (!Object.hasOwn(INSTALL_ACTIONS, row.action) || row.copy_path === "") continue;
@@ -1284,6 +1462,7 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
     r4.prefixes.map((row, index) => {
       const key = known(copyKey(row.repository, row.path), `prefix-table.tsv row ${index + 2}`);
       const units = viaUnits(row.via);
+      const formerName = renamed.get(`${row.prefix}\t${key}`);
       for (const unit of units) entry(members, unit, () => new Set<string>()).add(key);
       const parts = row.prefix.split("/").filter((part) => part !== "");
       return {
@@ -1291,13 +1470,20 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
         last: parts[parts.length - 1] ?? "",
         copy: key,
         units,
+        formerName,
       };
     })
   );
   const checkout = checkoutRule(r4.copies);
+  // A project skill is of the checkout it is read in, so only a copy in a project skills directory
+  // can be it (a read of `.claude/skills/x` is no read of another repository's `skills/x`).
+  const checkoutProjects = checkoutRule(
+    r4.copies.filter((row) => projectSkillDir(row.path) !== undefined)
+  );
 
   // Step 3's units: those each store's own mapped reads come from, with their sessions.
   const storeUnits = new Map<string, Map<string, Set<string>>>();
+  const profileUnits = new Map<string, Set<string>>();
   for (const output of counted.outputs) {
     for (const row of output.rows) {
       if (row.hashes.length === 0) continue;
@@ -1306,41 +1492,95 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
       const units = entry(storeUnits, row.store, () => new Map<string, Set<string>>());
       for (const unit of decision.units) {
         const sessions = entry(units, unit, () => new Set<string>());
-        for (const hash of row.hashes) sessions.add(hash);
+        for (const hash of row.hashes) {
+          sessions.add(hash);
+          const profile = profiles.get(sessionKey(row.store, hash));
+          if (profile !== undefined && profile !== "unknown")
+            entry(profileUnits, sessionKey(row.store, profile), () => new Set<string>()).add(unit);
+        }
       }
+    }
+  }
+  // The dev box's own installers (DEVBOX_INSTALLERS_RULE): a default-profile session of a devbox
+  // store has each unit they install into Oh My Pi, whether or not it read from it.
+  const [home, ...otherHomes] = devboxRepositories(r4.manifests ?? []);
+  if (home !== undefined && otherHomes.length === 0) {
+    const installed = new Set<string>();
+    for (const row of r4.installers) {
+      if (
+        row.manifest_repository === home &&
+        row.host === "omp" &&
+        Object.hasOwn(MEMBER_ACTIONS, row.action) &&
+        row.copy_path !== ""
+      )
+        installed.add(unitKey(row.unit, row.manifest_repository, row.manifest_path));
+    }
+    for (const store of devboxStores) {
+      const units = entry(profileUnits, sessionKey(store, "default"), () => new Set<string>());
+      for (const unit of installed) units.add(unit);
     }
   }
   const contextCopies = new Map<string, Map<string, Set<string>>>();
   const installedInContext = new Set<string>();
-  for (const [store, units] of storeUnits) {
+  for (const [group, units] of profileUnits) {
     const byName = new Map<string, Set<string>>();
-    for (const unit of units.keys()) {
+    for (const unit of units) {
       for (const key of members.get(unit) ?? []) {
-        entry(byName, copies.get(key)?.name ?? "", () => new Set()).add(key);
+        entry(byName, copies.get(key)?.name ?? "", () => new Set<string>()).add(key);
         installedInContext.add(key);
       }
     }
-    contextCopies.set(store, byName);
+    contextCopies.set(group, byName);
   }
 
-  const place = (store: string, copyPath: string, skill: string): Placement => {
+  /** What a former-stages.tsv row that no prefix row maps says of a path it names: a prepack
+   *  script staged the skill there, or a marketplace named a plugin as holding it there. */
+  const formerSaid = (row: FormerStagesRow) =>
+    row.package.startsWith("plugin:")
+      ? `${row.script_repository}'s ${row.script_path} named ${row.package} as holding ${row.skill} here until ${row.until.slice(0, 8)}, and holds it there no longer; ${row.note}`
+      : `${row.script_repository}'s ${row.script_path} staged ${row.skill} for ${row.package} here until ${row.until.slice(0, 8)}, and stages it there no longer; ${row.note}`;
+
+  const place = (store: string, copyPath: string, skill: string, profile: string): Placement => {
     const prefix = copyPrefix(copyPath, skill);
     const decision = decide(copyPath);
     if (decision.copy !== undefined) {
-      return { prefix, copy: decision.copy, rule: "prefix table", outcome: undefined };
+      return {
+        prefix,
+        copy: decision.copy,
+        rule: "prefix table",
+        outcome: undefined,
+        formerName: decision.formerName,
+      };
     }
-    const byCheckout = checkout(prefix);
-    const context = [...(contextCopies.get(store)?.get(skill) ?? [])];
-    const table =
+    const prefixTie =
       decision.copies.length > 1
-        ? `prefix rows match ${decision.copies.length} copies (${decision.copies.map(shown).join(", ")}), and `
+        ? `prefix rows match ${decision.copies.length} copies (${decision.copies.map(shown).join(", ")})`
         : "";
+    if (copyPath.startsWith(IMAGE_ROOT)) {
+      const reasons: string[] = [];
+      if (prefixTie !== "") reasons.push(prefixTie);
+      for (const { pattern, row } of unmappedStages) {
+        if (pattern.test(copyPath)) reasons.push(formerSaid(row));
+      }
+      if (reasons.length === 0) reasons.push("no prefix row maps the path");
+      return {
+        prefix,
+        copy: undefined,
+        rule: undefined,
+        outcome: `unattributed: ${reasons.join("; ")}; only the prefix table places reads under the worker image's install location ${IMAGE_ROOT}`,
+        formerName: undefined,
+      };
+    }
+    const table = prefixTie === "" ? "" : `${prefixTie}, and `;
+    const project = projectSkillDir(prefix);
+    const byCheckout = (project === undefined ? checkout : checkoutProjects)(prefix);
     if (byCheckout?.copy !== undefined) {
       return {
         prefix,
         copy: byCheckout.copy,
         rule: "checkout",
         outcome: `checkout: ${byCheckout.why}`,
+        formerName: undefined,
       };
     }
     // A read inside an `ensure_vendor` clone that no prefix row maps is of the clone, which the
@@ -1353,8 +1593,28 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
         copy: undefined,
         rule: undefined,
         outcome: `unattributed: ${table}${byCheckout?.why ?? `no copy's skill directory ends the path, which is inside ${clone}/, a clone an installer makes`}; no prefix row maps it, and the context rule claims no copy for a read inside a clone`,
+        formerName: undefined,
       };
     }
+    // A project's own skill is placed by a copy in a project skills directory alone (the checkout
+    // rule above, or the context among such copies a checkout tie leaves): never by a unit the
+    // profile installs, a plugin that holds a skill of the same name least of all.
+    if (project !== undefined && byCheckout?.tied === undefined) {
+      return {
+        prefix,
+        copy: undefined,
+        rule: undefined,
+        outcome: `unattributed: ${table}${byCheckout?.why ?? "no copy in a project skills directory ends the path"}; the path is of a project skill (${project} of a checkout, not of a home directory), which only a copy in such a directory places, so no unit's copy of ${skill} is it`,
+        formerName: undefined,
+      };
+    }
+    const group = sessionKey(store, profile);
+    const context = [...(contextCopies.get(group)?.get(skill) ?? [])];
+    const units = profileUnits.get(group);
+    const formerRows = decision.formerRows.filter(
+      (row) => row.formerName === skill && row.units.some((unit) => units?.has(unit))
+    );
+    for (const row of formerRows) if (!context.includes(row.copy)) context.push(row.copy);
     // After a checkout tie, the path already says the read is of one of the tied copies, so the
     // context decides among them alone.
     const tied = byCheckout?.tied;
@@ -1362,14 +1622,16 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
     const installed = tied === undefined ? context : context.filter((copy) => tied.includes(copy));
     const [only] = installed;
     if (installed.length === 1 && only !== undefined) {
+      const formerName = formerRows.find((row) => row.copy === only)?.formerName;
       return {
         prefix,
         copy: only,
         rule: "context",
         outcome:
           tied === undefined
-            ? `context: to ${shown(only)}, the one copy of ${skill} its context installs`
+            ? `context: to ${shown(only)}, the one copy of ${skill} its context installs${formerName === undefined ? "" : `, ${skill} being its former name (former-stages.tsv)`}`
             : `context: to ${shown(only)}: ${why}, and its context installs that one of them`,
+        formerName,
       };
     }
     const contextSaid =
@@ -1380,11 +1642,19 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
         : installed.length === 0
           ? "none of them"
           : `${installed.length} of them (${installed.map(shown).join(", ")})`;
+    const formerNote = unmappedStages
+      .filter(({ pattern }) => pattern.test(copyPath))
+      .map(({ row }) => `; ${formerSaid(row)}`)
+      .join("");
     return {
       prefix,
       copy: undefined,
       rule: undefined,
-      outcome: `unattributed: ${why}, and its context installs ${contextSaid}`,
+      outcome:
+        profile === "unknown"
+          ? `unattributed: ${why}; the session's Oh My Pi profile is unknown${formerNote}`
+          : `unattributed: ${why}, and its context installs ${contextSaid}${formerNote}`,
+      formerName: undefined,
     };
   };
   return { place, storeUnits, members, installedInContext, counted };
@@ -1396,9 +1666,18 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
 export function attribute(
   config: SkillCutsConfig,
   outputs: readonly QueryOutput[],
-  r4: R4Tables
+  r4: R4Tables,
+  profiles: SessionProfiles
 ): Attribution {
-  const { place, storeUnits, members, installedInContext, counted } = placer(outputs, r4);
+  const devboxStores = new Set(
+    config.stores.filter((store) => store.context === "devbox").map((store) => store.name)
+  );
+  const { place, storeUnits, members, installedInContext, counted } = placer(
+    outputs,
+    r4,
+    profiles,
+    devboxStores
+  );
 
   // Each copy's sessions, and each skill name's sessions no copy got, by the row's kind.
   const copySessions = {
@@ -1409,6 +1688,9 @@ export function attribute(
     read: new Map<string, Set<string>>(),
     reference: new Map<string, Set<string>>(),
   };
+  // Each copy's read sessions placed under a former name, and those names.
+  const formerSessions = new Map<string, Set<string>>();
+  const formerNames = new Map<string, Set<string>>();
   const unmapped = new Map<
     string,
     {
@@ -1457,33 +1739,45 @@ export function attribute(
         for (const session of sessions) allReads.add(session);
         if (store.earliest === undefined || row.day < store.earliest) store.earliest = row.day;
       }
-      const placed = place(row.store, row.copy, row.skill);
-      const copy = placed.copy;
-      if (placed.outcome === undefined) {
-        if (copy !== undefined)
-          entry(mappedPrefixes, placed.prefix, () => new Set()).add(shown(copy));
-      } else {
-        const item = entry(unmapped, placed.prefix, () => ({
-          skills: new Set<string>(),
-          sessions: { read: new Set<string>(), reference: new Set<string>() },
-          outcomes: new Map<string, Set<string>>(),
-        }));
-        item.skills.add(row.skill);
-        const went = entry(
-          item.outcomes,
-          `${row.store}: ${placed.outcome}`,
-          () => new Set<string>()
-        );
-        for (const session of sessions) {
-          item.sessions[row.kind].add(session);
-          went.add(session);
+      const groups = new Map<string, string[]>();
+      for (const hash of row.hashes) {
+        const key = sessionKey(row.store, hash);
+        entry(groups, profiles.get(key) ?? "unknown", (): string[] => []).push(key);
+      }
+      for (const [profile, sessions] of groups) {
+        const placed = place(row.store, row.copy, row.skill, profile);
+        const copy = placed.copy;
+        if (placed.outcome === undefined) {
+          if (copy !== undefined)
+            entry(mappedPrefixes, placed.prefix, () => new Set()).add(shown(copy));
+        } else {
+          const item = entry(unmapped, placed.prefix, () => ({
+            skills: new Set<string>(),
+            sessions: { read: new Set<string>(), reference: new Set<string>() },
+            outcomes: new Map<string, Set<string>>(),
+          }));
+          item.skills.add(row.skill);
+          const went = entry(
+            item.outcomes,
+            `${row.store}: ${placed.outcome}`,
+            () => new Set<string>()
+          );
+          for (const session of sessions) {
+            item.sessions[row.kind].add(session);
+            went.add(session);
+          }
+        }
+        const counted =
+          copy === undefined
+            ? entry(unplaced[row.kind], row.skill, () => new Set<string>())
+            : entry(copySessions[row.kind], copy, () => new Set<string>());
+        for (const session of sessions) counted.add(session);
+        if (row.kind === "read" && copy !== undefined && placed.formerName !== undefined) {
+          entry(formerNames, copy, () => new Set<string>()).add(placed.formerName);
+          const former = entry(formerSessions, copy, () => new Set<string>());
+          for (const session of sessions) former.add(session);
         }
       }
-      const counted =
-        copy === undefined
-          ? entry(unplaced[row.kind], row.skill, () => new Set<string>())
-          : entry(copySessions[row.kind], copy, () => new Set<string>());
-      for (const session of sessions) counted.add(session);
     }
   }
 
@@ -1539,6 +1833,8 @@ export function attribute(
       name: row.name,
       sessions,
       readSessions,
+      formerNameSessions: formerSessions.get(key)?.size ?? 0,
+      formerNames: [...(formerNames.get(key) ?? [])].sort(),
       referenceSessions,
       unattributed: free,
       ties,
@@ -1927,6 +2223,7 @@ export function readCountTsv(attribution: Attribution): string {
       count.path,
       count.name,
       count.sessions,
+      count.formerNameSessions,
       count.referenceSessions,
       count.unattributed,
       count.ties.join("; "),
@@ -2129,14 +2426,14 @@ export function readCountMarkdown(report: Report): string {
     "",
     "## How a read is attributed",
     "",
-    "1. The prefix table (prefix-table.tsv): a read goes to the copy that every row whose prefix matches its copy path maps to, when they map to one copy.",
-    "2. A checkout: a read whose path ends with a copy's skill directory in its repository (with a path boundary before it) is a read of that copy in a checkout of its repository; the longest such directory wins. Copies of several repositories at that directory are told apart by the path before it, in this order: the one whose owner and name are two directories of it in a row; else the one whose name is a directory of it; else the one whose owner is a directory followed by one that holds its name; else the one whose name a directory holds (`.dotfiles` holds `dotfiles`). An exact name always wins over a directory that only holds it. A tie left goes to step 3, among the tied copies alone. A skill directory of one segment (a skill at its repository's root) counts only when the path names its repository. A path inside a copy of another repository that an installer writes (`<dir>/vendor/<name>/`, an `ensure_vendor` clone; a package under `node_modules/`; a plugin under `plugins/cache/`) is a checkout only of a repository that the path from that copy's own directory on names; when it names none, step 3 decides.",
-    "3. The store's context: the units (packages, plugins, a host's user skills) that the store's own reads of step 1 come from are the units its context installs. Their copies are the copies their installers.tsv rows ship, stage, install, link or enable, and the copies of their prefix rows. When those hold exactly one copy of the read's skill name, the read goes to that copy; after a tie of step 2, exactly one of the tied copies, since the path already says the read is of one of them. A read inside an `ensure_vendor` clone (`<dir>/vendor/<name>/`) that no prefix row maps goes to no copy by this step: the copies the context installs at the copies output's end time are other copies than that clone.",
+    `1. The prefix table (prefix-table.tsv): a read goes to the copy that all matching rows agree on. Only the prefix table places reads under the worker image's install location (${code(IMAGE_ROOT)}). A miss or tie leaves an image read unattributed, with its former-stage note if there is one. Neither checkout nor context can substitute a copy. A former-stage row for a Git rename maps the old path to the renamed copy. Its reads count in both the copy's total sessions and its sessions under a former name (former_name_sessions).`,
+    "2. A checkout, for a path not under the worker image's install location: a read whose path ends with a copy's skill directory in its repository (with a path boundary before it) is a read of that copy in a checkout of its repository; the longest such directory wins. Copies of several repositories at that directory are told apart by the path before it, in this order: the one whose owner and name are two directories of it in a row; else the one whose name is a directory of it; else the one whose owner is a directory followed by one that holds its name; else the one whose name a directory holds (`.dotfiles` holds `dotfiles`). An exact name always wins over a directory that only holds it. A tie left goes to step 3, among the tied copies alone. A skill directory of one segment (a skill at its repository's root) counts only when the path names its repository. A path inside a copy of another repository that an installer writes (`<dir>/vendor/<name>/`, an `ensure_vendor` clone; a package under `node_modules/`; a plugin under `plugins/cache/`) is a checkout only of a repository that the path from that copy's own directory on names; when it names none, step 3 decides.",
+    "3. The session's profile: use its profile from roots.txt. For each store and profile, infer installed units from the prefix-table reads of that group; the default profile of a devbox store also has each unit the dev box's own installers install into Oh My Pi (installers.tsv). Use the copies of those units alone, including former names from matching prefix rows. A profile must supply exactly one copy of the name (or one of the tied copies). An unknown profile does not place the read. A read inside a project skills directory of a checkout (not of a home directory) is a project skill: only a copy in such a directory places it (step 2), never this step, so no plugin's copy of its name is it.",
     "4. Otherwise the read is unattributed for its skill name.",
     "",
     "Two copies of one name are a tie when their sessions differ by at most that name's unattributed sessions.",
     "",
-    "### The units each store's context installs",
+    "### Units read from in each store, across profiles",
     ""
   );
   for (const store of attribution.stores) {
@@ -2189,6 +2486,26 @@ export function readCountMarkdown(report: Report): string {
     a.localeCompare(b)
   )) {
     say(`| ${cell(code(prefix))} | ${cell([...mapped].sort().join(", "))} |`);
+  }
+
+  say(
+    "",
+    "### Reads under a former name",
+    "",
+    "Each copy read under a name it had before git renamed it (former-stages.tsv): its sessions, and of them those under the former name (skill-read-count.tsv's former_name_sessions).",
+    ""
+  );
+  const renamedRead = attribution.copies.filter((copy) => copy.formerNameSessions > 0);
+  if (renamedRead.length === 0) say("None.");
+  else
+    say(
+      "| Skill | Copy | Sessions | Under its former name | Former name |",
+      "| --- | --- | ---: | ---: | --- |"
+    );
+  for (const copy of renamedRead) {
+    say(
+      `| ${cell(copy.name)} | ${cell(`${copy.repository} ${copy.path}`)} | ${copy.sessions} | ${copy.formerNameSessions} | ${cell(copy.formerNames.join(", "))} |`
+    );
   }
 
   say("", "### Ties", "");
@@ -2418,7 +2735,7 @@ export function main(argv: readonly string[], io: Output): number {
     const count = readCount(countDir, stores);
     const r4 = readR4(copiesDir);
     const spans = parseSpans(readFileSync(spansFile, "utf8"), spansFile);
-    const attribution = attribute(config, count.outputs, r4);
+    const attribution = attribute(config, count.outputs, r4, count.profiles);
     const issues = queryIssues(config, count);
     let models: ModelsRead | undefined;
     if (modelsDir !== undefined) {

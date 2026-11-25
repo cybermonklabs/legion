@@ -20,6 +20,8 @@ import {
   type MadeConfirm,
   meanDifference,
   NO_CONTROL_LOSS,
+  outsideListing,
+  outsideListingWords,
   poorName,
   RunRecord,
   rankSkills,
@@ -108,11 +110,13 @@ const confirmOn = (runner: string, old: number, cut: number): MadeConfirm => ({
 const onOneRunner = (...cuts: number[]): MadeConfirm[] =>
   cuts.map((cut) => confirmOn("r1", 40, cut));
 /** A case's evidence holding one listing measure as build.ts writes it: of `kind`, its recorded
- *  listing holding `recorded` names, of which the rebuilt one misses `missing`. */
+ *  listing holding `recorded` names, of which the rebuilt one misses `missing`, and to which it
+ *  adds `added`. */
 const measured = (
   kind: "session listing" | "subagent listing" | "not measurable",
   recorded: number | null,
-  missing: string[]
+  missing: string[],
+  added: string[] = []
 ) => [
   {
     item: LISTING_MEASURE_ITEM,
@@ -121,7 +125,7 @@ const measured = (
       recorded,
       listed: 9,
       missing,
-      added: [],
+      added,
       missingShare: recorded === null || recorded === 0 ? null : missing.length / recorded,
       sessionDigest: null,
       rebuiltDigest: null,
@@ -640,11 +644,15 @@ const rows: [string, () => unknown, unknown][] = [
   ],
 
   // listing: a case or a load task whose rebuilt listing misses more than 10% of its session's
-  // recorded names is dropped (the architect, 2026-11-22T03:04Z).
+  // recorded names is dropped (the architect, 2026-11-22T03:04Z). One whose capture builds its
+  // listing from the rebuilt profile (a measure of kind `subagent listing`) is dropped for adding
+  // more than 10% of them too (the architect, 2026-11-24T23:52Z); one whose capture sends its
+  // session's recorded system prompt whole (kind `session listing`) is not, since the model sees
+  // the recorded listing whatever the profile installs (the architect, 2026-11-25T00:52:35Z).
   [
     "a listing that misses 2 of 20 recorded names (10%) is measured, and the case stays",
     () => listingStanding(measured("session listing", 20, ["a1", "a2"])),
-    { state: "measured", recorded: 20, missing: 2 },
+    { state: "measured", recorded: 20, missing: 2, added: 0 },
   ],
   [
     "a listing that misses 3 of 20 recorded names (15%) drops the case, the reason naming them",
@@ -669,6 +677,151 @@ const rows: [string, () => unknown, unknown][] = [
     "evidence that holds no listing measure is not measurable",
     () => listingStanding([{ item: "role", source: "made up" }]),
     { state: "not measurable", why: "its evidence holds no listing measure" },
+  ],
+  [
+    "a profile-built measure that adds 3 names to 20 recorded names (15%) is still dropped as listing-adds, the reason naming them",
+    () => listingStanding(measured("subagent listing", 20, [], ["b1", "b2", "b3"])),
+    {
+      state: "dropped",
+      reason:
+        "listing-adds: its rebuilt listing adds 3 to the 20 names of the recorded subagent listing (15.0%), more than 10%: b1, b2, b3",
+    },
+  ],
+  [
+    "a profile-built listing that adds 2 names to 20 recorded names (10%) is measured, and the case stays",
+    () => listingStanding(measured("subagent listing", 20, [], ["b1", "b2"])),
+    { state: "measured", recorded: 20, missing: 0, added: 2 },
+  ],
+  [
+    "a listing that misses 3 and adds 3 of 20 recorded names drops the case as listing-misses, the reason naming the adds too",
+    () => listingStanding(measured("subagent listing", 20, ["a1", "a2", "a3"], ["b1", "b2", "b3"])),
+    {
+      state: "dropped",
+      reason:
+        "listing-misses: its rebuilt listing misses 3 of the 20 names of the recorded subagent listing (15.0%), more than 10%: a1, a2, a3; listing-adds: its rebuilt listing adds 3 to the 20 names of the recorded subagent listing (15.0%), more than 10%: b1, b2, b3",
+    },
+  ],
+  [
+    "a measure with no added names array reads as adding none",
+    () => {
+      const [item] = measured("session listing", 20, ["a1"]);
+      const { added: _, ...rest } = JSON.parse(item?.source ?? "{}");
+      return listingStanding([{ item: LISTING_MEASURE_ITEM, source: JSON.stringify(rest) }]);
+    },
+    { state: "measured", recorded: 20, missing: 1, added: 0 },
+  ],
+  [
+    "a recorded-prompt measure that adds 205 to 9 recorded names and misses none is measured (kept)",
+    () =>
+      listingStanding(
+        measured(
+          "session listing",
+          9,
+          [],
+          Array.from({ length: 205 }, (_, n) => `extra-${n + 1}`)
+        )
+      ),
+    { state: "measured", recorded: 9, missing: 0, added: 205 },
+  ],
+  [
+    "a recorded-prompt measure that misses 2 of 9 recorded names (22.2%) and adds 205 is dropped as listing-misses alone",
+    () =>
+      listingStanding(
+        measured(
+          "session listing",
+          9,
+          ["a1", "a2"],
+          Array.from({ length: 205 }, (_, n) => `extra-${n + 1}`)
+        )
+      ),
+    {
+      state: "dropped",
+      reason:
+        "listing-misses: its rebuilt listing misses 2 of the 9 names of the recorded session listing (22.2%), more than 10%: a1, a2",
+    },
+  ],
+  [
+    "a measure of kind session listing is dropped for the names it adds where the capture sends no recorded prompt (Claude Code's), as a profile-built one is",
+    () =>
+      listingStanding(measured("session listing", 20, [], ["b1", "b2", "b3"]), {
+        recordedPromptSent: false,
+      }),
+    {
+      state: "dropped",
+      reason:
+        "listing-adds: its rebuilt listing adds 3 to the 20 names of the recorded session listing (15.0%), more than 10%: b1, b2, b3",
+    },
+  ],
+
+  // outsideListing: the runs of the cases or tasks whose capture sends the recorded prompt whole
+  // that read a skill the recorded listing lacks, by skill and answer kind (the architect,
+  // 2026-11-25T00:52:35Z).
+  [
+    "a read of a skill the recorded listing lacks counts its run once per skill and answer kind; a read the listing holds, one answered from the arm's own text, and a run that records no reads are no count; a run with no read is examined",
+    () =>
+      outsideListing([
+        {
+          recorded: new Set(["alpha", "beta"]),
+          runs: [
+            [
+              { skill: "gamma", from: "copy" },
+              { skill: "alpha", from: "arm" },
+            ],
+            [
+              { skill: "gamma", from: "copy" },
+              { skill: "gamma", from: "copy" },
+            ],
+            [
+              { skill: "delta", from: "absent" },
+              { skill: "gamma", from: "copy" },
+            ],
+            undefined,
+            [],
+            [{ skill: "beta", from: "copy" }],
+          ],
+        },
+        { recorded: new Set(["alpha"]), runs: [[{ skill: "beta", from: "absent" }]] },
+      ]),
+    {
+      groups: 2,
+      runs: 7,
+      examined: 6,
+      outside: 4,
+      bySkill: {
+        beta: { copy: 0, absent: 1 },
+        delta: { copy: 0, absent: 1 },
+        gamma: { copy: 3, absent: 0 },
+      },
+    },
+  ],
+  [
+    "a skill read answered from the arm's own text outside the listing is no count",
+    () =>
+      outsideListing([{ recorded: new Set(["beta"]), runs: [[{ skill: "alpha", from: "arm" }]] }]),
+    { groups: 1, runs: 1, examined: 1, outside: 0, bySkill: {} },
+  ],
+  [
+    "the outside-listing line counts the examined runs, the runs with no recorded reads, and each skill by answer kind",
+    () =>
+      outsideListingWords(
+        outsideListing([
+          {
+            recorded: new Set(["alpha"]),
+            runs: [
+              [{ skill: "gamma", from: "copy" }],
+              [{ skill: "gamma", from: "absent" }],
+              undefined,
+            ],
+          },
+        ]),
+        "task"
+      ),
+    "outside recorded listing: 2 of 2 runs of 1 recorded-prompt task (the capture sends the session's recorded system prompt whole) read a skill the recorded listing lacks, not counting 1 run with no recorded reads; by skill and answer (copy: an installed copy; absent: the unknown-skill reply): gamma (1 copy, 1 absent)",
+  ],
+  [
+    "the outside-listing line of no recorded-prompt case says none",
+    () => outsideListingWords(outsideListing([]), "case"),
+    "outside recorded listing: 0 of 0 runs of 0 recorded-prompt cases (the capture sends the session's recorded system prompt whole) read a skill the recorded listing lacks; by skill and answer (copy: an installed copy; absent: the unknown-skill reply): none",
   ],
 
   // skills tested: the walk of the ranking.

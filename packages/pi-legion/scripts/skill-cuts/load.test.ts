@@ -995,14 +995,22 @@ interface EvidenceItem {
 
 /** A listing measure as build.ts writes it into a task profile's evidence (ListingMeasure): its
  *  session's recorded listing holding `recorded` names, `missing` of them not in the rebuilt
- *  listing; with `recorded` null, not measurable. */
-function measureItem(recorded: number | null, missing: string[] = []): EvidenceItem {
+ *  listing, which adds `added` to them; `kind` says whose listing it is (`session listing`: the
+ *  session's own recorded system prompt, which the task's capture sends whole; `subagent
+ *  listing`: a subagent's, the capture's listing built from the rebuilt profile); with `recorded`
+ *  null, not measurable. */
+function measureItem(
+  recorded: number | null,
+  missing: string[] = [],
+  added: string[] = [],
+  kind: "session listing" | "subagent listing" = "session listing"
+): EvidenceItem {
   const measure = ListingMeasure.parse({
-    kind: recorded === null ? "not measurable" : "session listing",
+    kind: recorded === null ? "not measurable" : kind,
     recorded,
     listed: 2,
     missing,
-    added: [],
+    added,
     missingShare: recorded === null || recorded === 0 ? null : missing.length / recorded,
     sessionDigest: null,
     rebuiltDigest: null,
@@ -1817,8 +1825,9 @@ describe("skill-cuts load answers skill reads as the behaviour replay does", () 
   });
 });
 
-// The listing rule (the architect, 2026-11-22T03:04Z): every load applies it, from the listing
-// measure of each task's profile in the tasks file's build-tasks summary.
+// The listing rule (the architect, 2026-11-22T03:04Z; on added names too, 2026-11-24T23:52Z):
+// every load applies it, from the listing measure of each task's profile in the tasks file's
+// build-tasks summary.
 describe("skill-cuts load applies the listing rule", () => {
   const NEED_2 = "List the alpha steps of the made-up project.";
   /** A load test under `scratch/<name>`: alpha against `lines` (session tasks of store_a unless
@@ -1912,7 +1921,7 @@ describe("skill-cuts load applies the listing rule", () => {
       "listing-misses: its rebuilt listing misses 2 of the 10 names of the recorded session listing (20.0%), more than 10%: beta, gamma";
     expect(ran.stdout).toContain(`task need-2 (need, from a session): dropped, not run: ${misses}`);
     expect(ran.stdout).toContain(
-      `the listing rule (${tasks}.summary.json): 2 tasks' listings measured, 0 not measurable, 1 tasks dropped, each missing more than 10% of the names its session's recorded listing holds, 1 installed names their recorded listing gave them (fromRecorded); `
+      `the listing rule (${tasks}.summary.json): 2 tasks' listings measured, 0 not measurable, 1 tasks dropped (1 listing-misses, 0 listing-adds), each missing more than 10% of the names its session's recorded listing holds or, where its capture builds its listing from the rebuilt profile, adding more names than 10% of them, 1 installed names their recorded listing gave them (fromRecorded); `
     );
     expect(sentWith(from, NEED_2)).toBe(0);
     expect(sentWith(from, NEED)).toBe(3);
@@ -1927,12 +1936,229 @@ describe("skill-cuts load applies the listing rule", () => {
       measured: 2,
       notMeasurable: 0,
       dropped: 1,
+      droppedBy: { "listing-misses": 1, "listing-adds": 0 },
       fromRecorded: 1,
     });
     expect(summary.verdict).toEqual({
       descriptionFault: true,
       reason: "a description fault: tasks near-1",
     });
+  });
+
+  // The architect, 2026-11-24T23:52Z: the listing rule drops on added names too, for a task whose
+  // capture builds its listing from the rebuilt profile (a measure of kind `subagent listing`).
+  test("a task whose profile-built listing adds more names than 10% of its session's recorded names is dropped with the listing-adds reason: in the summary's tasks, not run, and counted by its reason; one that adds 10% runs", async () => {
+    const { tasks, out, args } = listingTest(
+      "listing-adds",
+      [
+        { id: "need-1", text: NEED, label: "need" },
+        { id: "near-1", text: NEAR, label: "near-miss", written: true },
+        { id: "need-2", text: NEED_2, label: "need" },
+      ],
+      new Map([
+        [NEED, 2],
+        [NEAR, 0],
+        [NEED_2, 0],
+      ])
+    );
+    writeTasksSummary(
+      tasks,
+      {
+        "need-1": measureItem(10, [], ["cw-one"], "subagent listing"),
+        "need-2": measureItem(10, [], ["cw-one", "cw-two"], "subagent listing"),
+      },
+      measureItem(10)
+    );
+    const from = recorder.requests.length;
+    const ran = await cli(args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const adds =
+      "listing-adds: its rebuilt listing adds 2 to the 10 names of the recorded subagent listing (20.0%), more than 10%: cw-one, cw-two";
+    expect(ran.stdout).toContain(`task need-2 (need, from a session): dropped, not run: ${adds}`);
+    expect(ran.stdout).toContain(
+      `the listing rule (${tasks}.summary.json): 2 tasks' listings measured, 0 not measurable, 1 tasks dropped (0 listing-misses, 1 listing-adds), each missing more than 10% of the names its session's recorded listing holds or, where its capture builds its listing from the rebuilt profile, adding more names than 10% of them, 0 installed names their recorded listing gave them (fromRecorded); `
+    );
+    expect(sentWith(from, NEED_2)).toBe(0);
+    expect(sentWith(from, NEED)).toBe(3);
+    const summary = summaryOf(out);
+    expect(summary.tasks.map((task) => [task.id, task.made, task.dropped])).toEqual([
+      ["need-1", 3, null],
+      ["near-1", 3, null],
+      ["need-2", 0, adds],
+    ]);
+    expect(summary.listing).toEqual({
+      summary: `${tasks}.summary.json`,
+      measured: 2,
+      notMeasurable: 0,
+      dropped: 1,
+      droppedBy: { "listing-misses": 0, "listing-adds": 1 },
+      fromRecorded: 0,
+    });
+  });
+
+  // The architect, 2026-11-25T00:52:35Z: a task whose capture sends its session's recorded system
+  // prompt whole (a measure of kind `session listing`) shows the model the recorded listing
+  // whatever its profile installs, so names its profile adds drop nothing; load counts the runs of
+  // such tasks that read a skill outside that listing, by skill and answer kind.
+  test("a recorded-prompt task whose rebuilt listing adds over 10% runs (is not dropped), and load records and prints the runs that read a skill outside the recorded listing, by skill and answer kind", async () => {
+    const dir = path.join(scratch, "listing-recorded-prompt-adds");
+    const made = setup(dir);
+    const skill = path.join(dir, "alpha");
+    writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
+    const cache = path.join(dir, "cache");
+    writeTree(path.join(cache, "skills", "gamma-copy"), {
+      "SKILL.md": "---\nname: gamma\ndescription: Gamma skill.\n---\n# Gamma\nNo mention here.\n",
+    });
+    // need-1's session recorded its system prompt (which lists alpha and beta); its profile adds
+    // gamma and two more names to them. need-2 and near-1 hold no recorded prompt.
+    writeTree(dir, {
+      "subagent.json": JSON.stringify({
+        ...BETA_PROFILE,
+        skills: [
+          ...BETA_PROFILE.skills,
+          { repo: "acme/skills", commit: COMMIT, path: "skills/gamma", name: "gamma" },
+        ],
+        context: "subagent:task",
+        systemPrompt: SUBAGENT.systemPrompt,
+        tools: SUBAGENT.tools,
+      }),
+      "plain.json": JSON.stringify(BETA_PROFILE),
+    });
+    const lines = [
+      {
+        id: "need-1",
+        text: NEED,
+        label: "need",
+        source: "session",
+        store: "store_a",
+        pathHash: pathHash("need-1"),
+        profile: "subagent.json",
+      },
+      {
+        id: "need-2",
+        text: NEED_2,
+        label: "need",
+        source: "session",
+        store: "store_a",
+        pathHash: pathHash("need-2"),
+        profile: "plain.json",
+      },
+      { id: "near-1", text: NEAR, label: "near-miss", source: "written", profile: "plain.json" },
+    ];
+    const tasks = path.join(dir, "tasks.jsonl");
+    writeFileSync(tasks, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+    writeTasksSummary(
+      tasks,
+      {
+        "need-1": measureItem(9, [], ["gamma", "cw-one", "cw-two"]),
+        "need-2": measureItem(10),
+      },
+      measureItem(10)
+    );
+    const out = path.join(dir, "out");
+    saveCaptures(out, [lines[0] as { id: string; text: string }], {
+      context: {
+        skills: [
+          {
+            name: "gamma",
+            from: { repo: "acme/skills", commit: COMMIT, path: "skills/gamma", key: "gamma-copy" },
+          },
+          { name: "alpha", from: "arm" },
+        ],
+      },
+    });
+    saveCaptures(out, lines.slice(1) as { id: string; text: string }[]);
+    // need-1's first run reads gamma (installed), its second delta (not installed), its third
+    // loads alpha at once; each run that read another skill then loads alpha. need-2 loads alpha;
+    // near-1 does not.
+    const readOf = (target: string, id: string): ReplyBlock[] => [
+      { type: "tool_use", id, name: "read", input: { path: target } },
+    ];
+    let first = 0;
+    answer = (body) => {
+      const sent = JSON.stringify(body.messages);
+      if (sent.includes(NEED_2)) return READ_ALPHA;
+      if (!sent.includes(NEED)) return TEXT;
+      if (sent.includes("# Gamma") || sent.includes("Unknown skill: delta")) return READ_ALPHA;
+      first += 1;
+      return first === 1
+        ? readOf("skill://gamma", "toolu_gamma")
+        : first === 2
+          ? readOf("skill://delta", "toolu_delta")
+          : READ_ALPHA;
+    };
+    const from = recorder.requests.length;
+    const ran = await cli([
+      ...["load", "--config", made.config, "--key-file", made.keyFile, "--skill", skill],
+      ...["--tasks", tasks, "--host", "omp", "--out", out],
+      ...["--omp", path.join(dir, "no-omp-runs-here"), "--scratch", path.join(dir, "scratch")],
+      ...["--cache-dir", cache],
+    ]);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const summary = z
+      .looseObject({
+        tasks: z.array(z.looseObject({ id: z.string(), made: z.number(), dropped: z.unknown() })),
+        outsideRecordedListing: z.unknown(),
+      })
+      .parse(JSON.parse(readFileSync(path.join(out, "summary.json"), "utf8")));
+    expect(summary.tasks.map((task) => [task.id, task.made, task.dropped])).toEqual([
+      ["need-1", 3, null],
+      ["need-2", 3, null],
+      ["near-1", 3, null],
+    ]);
+    expect(sentWith(from, NEED)).toBeGreaterThanOrEqual(3);
+    expect(summary.outsideRecordedListing).toEqual({
+      tasks: 1,
+      runs: 3,
+      examined: 3,
+      outside: 2,
+      bySkill: { delta: { copy: 0, absent: 1 }, gamma: { copy: 1, absent: 0 } },
+    });
+    expect(ran.stdout).toContain(
+      "outside recorded listing: 2 of 3 runs of 1 recorded-prompt task (the capture sends the session's recorded system prompt whole) read a skill the recorded listing lacks; by skill and answer (copy: an installed copy; absent: the unknown-skill reply): delta (0 copy, 1 absent), gamma (1 copy, 0 absent)"
+    );
+  });
+
+  // Claude Code's capture lists the skills its plugins hold and sends no recorded prompt, so a
+  // task whose measure says `session listing` is still a task whose listing is built from its
+  // profile: both drops apply.
+  test("a Claude Code task whose measure says session listing is dropped for adding over 10%, as a profile-built listing is", async () => {
+    const dir = path.join(scratch, "listing-claude-adds");
+    const made = setup(dir);
+    const skill = path.join(dir, "alpha");
+    writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
+    const tasks = path.join(dir, "tasks.jsonl");
+    writeFileSync(
+      tasks,
+      `${JSON.stringify({ id: "need-1", text: NEED, label: "need", source: "session", store: "store_a", pathHash: pathHash("need-1") })}\n`
+    );
+    writeTree(dir, { "profile.json": JSON.stringify(BETA_CLAUDE_PROFILE) });
+    writeTasksSummary(
+      tasks,
+      { "need-1": measureItem(10, [], ["cw-one", "cw-two"]) },
+      measureItem(10)
+    );
+    const out = path.join(dir, "out");
+    const from = recorder.requests.length;
+    const ran = await cli([
+      ...["load", "--config", made.config, "--key-file", made.keyFile, "--skill", skill],
+      ...["--tasks", tasks, "--host", "claude", "--profile", path.join(dir, "profile.json")],
+      ...[
+        "--out",
+        out,
+        "--scratch",
+        path.join(dir, "scratch"),
+        "--cache-dir",
+        path.join(dir, "cache"),
+      ],
+    ]);
+    expect(ran.code).toBe(3);
+    expect(ran.stderr).toContain("the listing rule drops 1 of the 1 tasks");
+    expect(recorder.requests.length).toBe(from);
+    const [task] = summaryOf(out).tasks;
+    expect(task?.dropped).toBe(
+      "listing-adds: its rebuilt listing adds 2 to the 10 names of the recorded session listing (20.0%), more than 10%: cw-one, cw-two"
+    );
   });
 
   test("the verdict is made with and without the tasks whose listing could not be measured; where the two agree it stands, with their count", async () => {
@@ -2006,7 +2232,7 @@ describe("skill-cuts load applies the listing rule", () => {
     const ran = await cli(args);
     expect(ran.code).toBe(3);
     expect(ran.stderr).toContain(
-      `skill-cuts: stopped: the listing rule drops 2 of the 3 tasks of ${tasks}, more than half (need-1, near-1): the rebuilt listing of each misses more than 10% of the names its session's recorded listing holds, so the test stops before any run, and the architect decides such a load; 1 tasks' listings were measured and 0 could not be`
+      `skill-cuts: stopped: the listing rule drops 2 of the 3 tasks of ${tasks}, more than half (need-1, near-1): the rebuilt listing of each misses more than 10% of the names its session's recorded listing holds or, where its capture builds its listing from the rebuilt profile, adds more names than 10% of them, so the test stops before any run, and the architect decides such a load; 1 tasks' listings were measured and 0 could not be`
     );
     expect(recorder.requests.length).toBe(from);
     const tasksOf = summaryOf(out).tasks;
@@ -2051,7 +2277,7 @@ describe("skill-cuts load applies the listing rule", () => {
     ]);
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     expect(ran.stdout).toContain(
-      "tasks dropped, each missing more than 10% of the names its session's recorded listing holds, 0 installed names their recorded listing gave them (fromRecorded); 2 tasks carry the Envoy plugin's block of the skill, 1 of them on the assumption that their session had Dispatch"
+      "tasks dropped (0 listing-misses, 0 listing-adds), each missing more than 10% of the names its session's recorded listing holds or, where its capture builds its listing from the rebuilt profile, adding more names than 10% of them, 0 installed names their recorded listing gave them (fromRecorded); 2 tasks carry the Envoy plugin's block of the skill, 1 of them on the assumption that their session had Dispatch"
     );
     const summary = z
       .looseObject({ listing: z.unknown(), dispatch: z.unknown() })

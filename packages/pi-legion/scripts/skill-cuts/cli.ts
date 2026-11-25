@@ -51,6 +51,7 @@
  *       --list <text>...
  *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --store <db> --day <YYYY-MM-DD>
  *       [--hour <0-23>] [--query count|models]
+ *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --store <db> --query roots
  *   bun scripts/skill-cuts/cli.ts load --config <file> --key-file <file> --skill <dir>
  *       [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir>
  *       [--runs <n>] [--model <model>] [--thinking <level>] [--budget-usd <n>]
@@ -115,8 +116,12 @@
  *   (none of the configuration's `servedModels` has its id, its text after the last `/`) is
  *   dropped as `model-not-served`, and a case on a served model runs as that served
  *   `provider/model`, on the gateway route of its capture's body (gateway.ts); a case whose
- *   listing measure misses more than MAX_LISTING_MISSING_PERCENT of its session's recorded names
- *   (score.ts's `listingStanding`) is dropped as `listing-misses`, before any call too; the three
+ *   listing measure misses more than MAX_LISTING_CHANGE_PERCENT of its session's recorded names
+ *   is dropped as `listing-misses`, before any call too, and so is a case whose capture builds
+ *   its listing from the rebuilt profile and whose measure adds more names than that share of
+ *   them, as `listing-adds` (score.ts's `listingStanding`); a case whose capture sends its
+ *   session's recorded system prompt whole is not dropped for added names, since the model sees
+ *   the recorded listing whatever the profile installs; the three
  *   judge controls (judge.ts's CONTROLS) run, and a case that fails any is dropped, its drop
  *   naming each control it failed; then a capture
  *   per arm (old, the compared arm unless it is none, and none; capture.ts, read back when saved
@@ -197,14 +202,14 @@
  *   each stage it ran; each confirm of a case with more than one, and the pooled passes of a case
  *   whose three confirms are pooled; the cases of each kind and the informative cases of each;
  *   the drops by the judge controls (and by each control), by `model-not-served`, by
- *   `unreadable-directory`, by `listing-misses`, by `injection-unrebuildable` (with the cases of
- *   each of its kinds), by `path-form` (by the arm its reason names: old and new, and ours where
- *   it is the compared arm), by `reads-past-last-round` and by `provider-refused`; the control
- *   case, and each dropped case it replaced; with ours compared, ours against old over all
- *   screened cases and over those with no removed read; each model of the cases; the skill's
- *   verdict and its reason (score.ts; `keeps` is printed "no loss detected by the registered
- *   rule", or "no loss of no skill …" with no skill compared), with how many of its screened
- *   cases have a listing that could not be
+ *   `unreadable-directory`, by `listing-misses`, by `listing-adds`, by `injection-unrebuildable`
+ *   (with the cases of each of its kinds), by `path-form` (by the arm its reason names: old and
+ *   new, and ours where it is the compared arm), by `reads-past-last-round` and by
+ *   `provider-refused`; the control case, and each dropped case it replaced; with ours compared,
+ *   ours against old over all screened cases and over those with no removed read; each model of
+ *   the cases; the skill's verdict and its reason (score.ts; `keeps` is printed "no loss detected
+ *   by the registered rule", or "no loss of no skill …" with no skill compared), with how many of
+ *   its screened cases have a listing that could not be
  *   measured, how many installed names their recorded listing gave them (`fromRecorded`), and how
  *   many rest on the assumption that their session had Dispatch; the rule's
  *   sensitivity (`lossChance` at an old pass rate of 0.9 and 0.7 and drops of 0.1 to 0.4), each
@@ -215,8 +220,12 @@
  *   the peak memory, how many captures' system-prompt digests differ from their session's, how
  *   many cases carry the Envoy plugin's block of the skill, by where the answer that their session
  *   had Dispatch comes from (arms.ts's `dispatchOf`: a Legion role, the transcript, or the
- *   assumption; each capture that carries the block records it in its stage's `captures`), and
- *   the `--limits` text as it is.
+ *   assumption; each capture that carries the block records it in its stage's `captures`), for the
+ *   cases whose capture sends their session's recorded system prompt whole (a profile with a
+ *   `systemPrompt`), how many of their runs read a skill outside the recorded listing, by skill and
+ *   by how the read was answered (score.ts's `outsideListing`: `copy`, an installed copy; `absent`,
+ *   the unknown-skill reply), a count that drops no case and changes no verdict, and the `--limits`
+ *   text as it is.
  *   Beside the verdict, as descriptions: each kind's screened cases with each arm's screen passes
  *   and the informative ones, the mean of old's screen pass rate less the compared arm's over the
  *   screened cases, all and each kind's, with its 95% t interval over the cases (score.ts's
@@ -403,6 +412,7 @@ import {
   captureBody,
   capturePaths,
   gatewayHints,
+  listingOf,
   restoredCapture,
   type SessionFacts,
   sessionFacts,
@@ -554,6 +564,7 @@ import {
   isFlagged,
   isInformative,
   isLoss,
+  LISTING_ADDS,
   LISTING_MISSES,
   LOAD_RUNS,
   LOSS_GAP,
@@ -567,6 +578,8 @@ import {
   NO_CONTROL_LOSS,
   type NoVerdict,
   noControlLoss,
+  outsideListing,
+  outsideListingWords,
   type Passes,
   POOLED_CONFIRMS,
   RunRecord,
@@ -4118,7 +4131,7 @@ function listingWords(
   ).length;
   const answers = dispatchAnswers(results);
   const assumed = screened.filter((each) => answers.get(each.caseId) === "assumed").length;
-  // A case whose profile took names from its recorded listing (build.ts's POOL_AT_START_RULE):
+  // A case whose profile took names from its recorded listing (build.ts's POOL_LISTING_RULE):
   // its listing measure cannot see a miss of them.
   const taken = evidence.filter((each) => fromRecordedIn(each).length > 0).length;
   return `; the listing of ${unmeasured} of its ${screened.length} screened cases could not be measured, ${taken} of the ${screened.length} installed names their recorded listing gave them (fromRecorded), and ${assumed} of the ${screened.length} rest on the assumption that their session had Dispatch`;
@@ -4892,7 +4905,10 @@ function requestLogLines(
  *  `requestLog`), `old` being the old text's directory (`--old`), and beside the verdict the lines
  *  of `navigation`, what it read of `--build-summary` (`untestedNavigationLine` and
  *  `replacementLine`; none without the flag). A dropped case's line gives the stage that dropped
- *  it, why, and each stage it ran. */
+ *  it, why, and each stage it ran. Its `outside recorded listing` line counts the runs of the
+ *  cases whose capture sends their session's recorded system prompt whole that read a skill
+ *  outside that listing (`outsideListing`): a count only, which drops no case and changes no
+ *  verdict. */
 function reportCommand(
   given: Behaviour,
   old: string,
@@ -4931,6 +4947,8 @@ function reportCommand(
   // A case dropped after its judge controls held (its context could not be read) is no drop by
   // them.
   const byControls = dropped.filter((result) => result.controls?.hold === false).length;
+  // A drop counts under the kind its reason begins with: one whose listing both misses and adds
+  // too many names counts as listing-misses (score.ts's `listingStanding`).
   const droppedAs = (kind: string) =>
     `${drops.filter((reason) => reason.startsWith(kind)).length} ${kind}`;
   const unscreened = score.cases.filter(
@@ -4961,7 +4979,7 @@ function reportCommand(
     )
     .join(", ");
   lines.push(
-    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}, ${droppedAs(PROVIDER_REFUSED)}), ${unscreened} unscreened, ${notRun} not run`
+    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${droppedAs(LISTING_ADDS)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}, ${droppedAs(PROVIDER_REFUSED)}), ${unscreened} unscreened, ${notRun} not run`
   );
   // Each arm's runs of each stage, the earlier confirms too, whose reply after the last answered
   // round still only read: an arm that keeps the agent reading acts differently.
@@ -5107,6 +5125,32 @@ function reportCommand(
   const from = (answer: DispatchFrom) => answers.filter((each) => each === answer).length;
   lines.push(
     `dispatch: ${answers.length} cases carry the Envoy plugin's block of the skill: ${from("assumed")} rest on the assumption that their session had Dispatch, ${from("legion-role")} take it from a Legion role, ${from("transcript")} from their transcript (arms.ts's dispatchOf)`
+  );
+  // The runs of each case whose capture sends its session's recorded system prompt whole (its
+  // profile holds the prompt, capture.ts's `systemPrompt` choice) that read a skill outside the
+  // recorded listing, from the skill reads each run records (a written case's checkout reads
+  // aside): a count only, which drops no case and changes no verdict.
+  lines.push(
+    outsideListingWords(
+      outsideListing(
+        b.cases.flatMap((c) => {
+          const prompt = c.profile.systemPrompt;
+          const result = results.get(c.id);
+          if (prompt === undefined) return [];
+          return [
+            {
+              recorded: new Set(listingOf(prompt).keys()),
+              runs: (result === undefined ? [] : eachStage(result)).flatMap(([, stage]) =>
+                stage.runs.map((run) =>
+                  run.skillReads?.flat().filter((read) => read.from !== "checkout")
+                )
+              ),
+            },
+          ];
+        })
+      ),
+      "case"
+    )
   );
   const spend = recordedSpend(results.values());
   lines.push(...spendLines(b, spend), ...requestLogLines(requestLog, b, results, spend));
@@ -5571,6 +5615,7 @@ const USAGE = [
   `  proposals ${PROPOSALS_FLAGS} ...`,
   `  proposals ${PROPOSALS_DRY_RUN}`,
   "  count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]",
+  "  count-sql --config <skill-cuts.json> --store <db> --query roots",
   "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir> ...",
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",
   "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut or set id>=<file>]... [--models <dir>]",

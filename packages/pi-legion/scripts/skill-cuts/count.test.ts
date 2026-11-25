@@ -18,6 +18,7 @@ import {
   mtimeRange,
   PULL_PAGE,
   pullSql,
+  rootsSql,
   sessionHeadSql,
   sessionPathsSql,
   sessionsSql,
@@ -599,6 +600,7 @@ describe.skipIf(serverDsn === undefined)(
     const NO_COPIES: R4Tables = {
       copies: [],
       prefixes: [],
+      formerStages: [],
       installers: [],
       loaders: [],
       repositories: [],
@@ -720,6 +722,17 @@ describe.skipIf(serverDsn === undefined)(
       } finally {
         await server.close();
         rmSync(scratch, { recursive: true, force: true });
+      }
+    });
+
+    test("roots.sql reports only the count hash and profile of each stored path", () => {
+      const rows = run(names.first, rootsSql(CONFIG, "store_a"));
+      expect(rows).toHaveLength(3);
+      for (const row of rows) {
+        expect(row).toEqual({
+          hash: expect.stringMatching(/^[0-9a-f]{16}$/),
+          profile: expect.stringMatching(/^(fixture|unknown)$/),
+        });
       }
     });
 
@@ -916,13 +929,14 @@ describe.skipIf(serverDsn === undefined)(
       return read;
     };
     /** attribute.ts's count of the fork database's queries of the mtime days `days`. */
-    const forkCount = (...days: string[]) => attribute(CONFIG, days.map(forkQuery), NO_COPIES);
+    const forkCount = (...days: string[]) =>
+      attribute(CONFIG, days.map(forkQuery), NO_COPIES, new Map());
 
     test("a fork written on another mtime day than its parent, whose only read is a copy of the parent's, counts once across the two days' queries", () => {
       // The fork's day query holds the fork and not its parent, so it counts the fork.
       const copyDay = forkQuery("2026-11-21");
       expect(copyDay.rows.map((row) => row.hashes)).toEqual([[fileHash(FORK.copy)]]);
-      const count = attribute(CONFIG, [forkQuery("2026-11-20"), copyDay], NO_COPIES);
+      const count = attribute(CONFIG, [forkQuery("2026-11-20"), copyDay], NO_COPIES, new Map());
       expect(count.readSessions).toBe(1);
       expect(count.stores[0]?.readSessions).toBe(1);
     });
@@ -1044,7 +1058,8 @@ describe.skipIf(serverDsn === undefined)(
     const hashOf = (file: string) => pathHash(storedPath(file));
 
     /** What session-head.sql must give for `file`: its header's cwd and start, its first user
-     *  message's timestamp and attribution, and its journaled reminders, read from the fixture. */
+     *  message's timestamp and attribution, its journaled reminders and the runtime version of its
+     *  first model_change line, read from the fixture. */
     const headOf = (file: string) => {
       const text = readFileSync(file, "utf8");
       const lines = text
@@ -1068,12 +1083,13 @@ describe.skipIf(serverDsn === undefined)(
             reminder: data.reminder,
             placement: data.placement,
           })),
+        runtime: lines.find((line) => line.type === "model_change")?.runtime?.version ?? null,
         bytes: Buffer.byteLength(Array.from(text).slice(0, 262_144).join("")),
         bad_lines: 0,
       };
     };
 
-    test("session-head.sql: each file of a hash, its header's cwd and start, its first user turn and its journaled reminders; no row for a hash the store does not hold", () => {
+    test("session-head.sql: each file of a hash, its header's cwd and start, its first user turn, its journaled reminders and its first model_change line's runtime version; no row for a hash the store does not hold", () => {
       const session = headOf(F1_SESSION);
       const subagent = headOf(F1_SUBAGENT);
       // F1's session and its subagent each journaled the reminder of their first user turn.
@@ -1082,6 +1098,8 @@ describe.skipIf(serverDsn === undefined)(
         `user:${session.first_user.timestamp}:${session.first_user.attribution}`
       );
       expect(subagent.first_user.attribution).toBe("agent");
+      // F1 ran Oh My Pi 18.18.6, which its model_change line records.
+      expect(session.runtime).toBe("18.18.6");
       const missing = pathHash("made-up/missing.jsonl");
       const rows = run(names.first, sessionHeadSql([session.hash, subagent.hash, missing]));
       expect(rows).toEqual([session, subagent].toSorted((a, b) => (a.hash < b.hash ? -1 : 1)));

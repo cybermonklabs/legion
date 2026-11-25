@@ -16,9 +16,9 @@ SET LOCAL statement_timeout = '15min';
 -- in start_offset order, each piece cut to its first 262144 characters and the head too (256 Ki).
 -- Each head is built, read and dropped inside one LATERAL, one file at a time. The head's lines
 -- that hold `"type":"session"` (the header; not `"type":"session_init"`, whose closing quote comes
--- later), `"customType":"date-cwd-reminder"` (a reminder Oh My Pi 18.18.6 journaled as it sent
--- it) or `"role":"user"` are parsed as jsonb; one that is not one JSON value (the head's last
--- line, cut where the head ends) is counted in bad_lines and read no further.
+-- later), `"type":"model_change"`, `"customType":"date-cwd-reminder"` (a reminder Oh My Pi 18.18.6
+-- journaled as it sent it) or `"role":"user"` are parsed as jsonb; one that is not one JSON value
+-- (the head's last line, cut where the head ends) is counted in bad_lines and read no further.
 --
 -- Rows, one JSON value per file of a hash (psql prints each on one line), in hash order; a hash of
 -- a file the store does not hold has no row:
@@ -30,6 +30,8 @@ SET LOCAL statement_timeout = '15min';
 --    "reminders": [{"turn", "reminder", "placement"}, …] of each `date-cwd-reminder` entry's
 --      `data`, in file order (`turn` is the key of the turn it went on, `user:<timestamp>:
 --      <attribution>`; `placement` is `prefix` for a reminder put first in that user turn),
+--    "runtime": the `runtime.version` of the first `model_change` line, the Oh My Pi version the
+--      session ran (build.ts's pool version rule sets it beside the dev box's pin), or null,
 --    "bytes": the head's bytes, "bad_lines": the lines that did not parse}
 -- The path never leaves the database; the header's working directory and the reminders' text do,
 -- since a capture shows them.
@@ -47,6 +49,7 @@ SELECT json_build_object(
   'start', ph.start,
   'first_user', ph.first_user,
   'reminders', ph.reminders,
+  'runtime', ph.runtime,
   'bytes', octet_length(hd.head),
   'bad_lines', ph.bad_lines
 )::text AS head
@@ -87,11 +90,14 @@ CROSS JOIN LATERAL (
       ) FILTER (WHERE p.j ->> 'type' = 'custom' AND p.j ->> 'customType' = 'date-cwd-reminder'),
       '[]'::json
     ) AS reminders,
+    (array_agg(p.j -> 'runtime' ->> 'version' ORDER BY p.n)
+      FILTER (WHERE p.j ->> 'type' = 'model_change'))[1] AS runtime,
     count(*) FILTER (WHERE p.j IS NULL) AS bad_lines
   FROM (
     SELECT t.n, CASE WHEN pg_input_is_valid(t.ln, 'jsonb') THEN t.ln::jsonb END AS j
     FROM string_to_table(hd.head, E'\n') WITH ORDINALITY AS t(ln, n)
     WHERE strpos(t.ln, '"type":"session"') > 0
+      OR strpos(t.ln, '"type":"model_change"') > 0
       OR strpos(t.ln, '"customType":"date-cwd-reminder"') > 0
       OR strpos(t.ln, '"role":"user"') > 0
   ) p

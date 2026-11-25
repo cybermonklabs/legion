@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { GithubReads } from "./build";
 import {
   GH_CONCURRENCY,
@@ -25,6 +26,7 @@ import {
 import { parseConfig } from "./config";
 import {
   CopyIndex,
+  FORMER_STAGES_COLUMNS,
   formerStagePrefixes,
   type Gh,
   type GhResult,
@@ -384,6 +386,14 @@ class World {
   /** `<fork> <base>...<head>`: a compare answer (`merge_base_commit` and `files`), or an error
    *  line. */
   readonly compares = new Map<string, unknown>();
+  /** `<repository> <path>`: the commits of the default branch that changed the file, newest
+   *  first, each with its committer date, which `repos/<r>/commits?sha=…&path=…&since=…` answers
+   *  from (those at or after `since`, as GitHub lists them); a file none names has none. */
+  readonly pathCommits = new Map<string, { sha: string; date: string }[]>();
+  /** `<repository> <sha>`: a commit's files (`filename`, `status`, a renamed file's
+   *  `previous_filename`), which `repos/<r>/commits/<sha>` answers through copies.ts's jq, or an
+   *  error line. */
+  readonly commitFiles = new Map<string, CompareAnswer["files"] | string>();
   /** Each GraphQL blob batch: the repository its `owner` and `name` fields name, and its blobs. */
   readonly batches: { repository: string; blobs: number }[] = [];
   search: (q: string, page: number, call: number) => SearchReply = () => ({ body: EMPTY_SEARCH });
@@ -672,6 +682,37 @@ class World {
       return found === undefined
         ? fail(`gh: No commit found for SHA: ${ref} (HTTP 422)`)
         : answer(found);
+    }
+    const pathCommits =
+      /^repos\/([^/]+\/[^/]+)\/commits\?sha=[0-9a-f]+&path=([^&]+)&since=([^&]+)&per_page=1$/.exec(
+        endpoint
+      );
+    if (pathCommits !== null) {
+      const since = decodeURIComponent(pathCommits[3] ?? "");
+      const listed = (
+        this.pathCommits.get(`${pathCommits[1]} ${decodeURIComponent(pathCommits[2] ?? "")}`) ?? []
+      ).filter((commit) => commit.date >= since);
+      return ok(
+        listed.slice(0, 1).map((commit) => ({
+          sha: commit.sha,
+          commit: { committer: { date: commit.date } },
+        }))
+      );
+    }
+    const commitFiles = /^repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})$/.exec(endpoint);
+    if (commitFiles !== null) {
+      const found = this.commitFiles.get(`${commitFiles[1]} ${commitFiles[2]}`);
+      if (found === undefined) return fail("gh: Not Found (HTTP 404)");
+      if (typeof found === "string") return fail(found);
+      if (!args.includes("--jq")) return fail("stand-in gh: a commit read without --jq");
+      // gh's jq of copies.ts's COMMIT_FILES_JQ: how many files, then one array per file.
+      const lines = [
+        String(found.length),
+        ...found.map((file) =>
+          JSON.stringify([file.filename, file.status, file.previous_filename ?? ""])
+        ),
+      ];
+      return { code: 0, stdout: `${lines.join("\n")}\n`, stderr: "" };
     }
     const info = /^repos\/([^/]+\/[^/]+)$/.exec(endpoint);
     if (info !== null) {
@@ -1718,13 +1759,14 @@ describe("the prepack and build scripts of a fork that stage its parent's packag
     ]);
   });
 
-  test("a path the fork's prepack script staged at and stages no longer gets no row of its parent's package", () => {
+  test("a path the fork's prepack script staged at and stages no longer gets no row of its parent's package", async () => {
     const copies = index();
     const resolved = resolveInstallers(manifests(), copies);
     const read = ["dispatch", "envoy", "brainstorm"];
     const older = sha1("an older fork script");
     const current = sha1("the fork script read");
-    const former = formerStagePrefixes(
+    const asked: string[] = [];
+    const former = await formerStagePrefixes(
       [
         {
           manifest: prepack(FORK, read),
@@ -1736,15 +1778,38 @@ describe("the prepack and build scripts of a fork that stage its parent's packag
             },
             { commit: current, date: "2026-11-10T00:00:00Z", text: prepackText(read) },
           ],
+          sourceOf: async (from) => {
+            asked.push(from);
+            return { kind: "unchanged", since: "2026-10-23T00:00:00Z" };
+          },
         },
       ],
       resolved,
       copies
     );
     expect(former.prefixes).toEqual([]);
+    const why =
+      "no prefix row maps that path: @acme/pi-envoy is no package unit of acme-fork/legion";
     expect(former.notes.map((note) => note.note)).toEqual([
-      `staged retired for @acme/pi-envoy at dist/skills/retired/ from ${older} (2026-10-30T00:00:00Z) until ${current} (2026-11-10T00:00:00Z), and stages it there no longer; no prefix row maps that path: @acme/pi-envoy is no package unit of acme-fork/legion`,
+      `staged retired for @acme/pi-envoy at dist/skills/retired/ from ${older} (2026-10-30T00:00:00Z) until ${current} (2026-11-10T00:00:00Z), and stages it there no longer; ${why}`,
     ]);
+    // Its one former-stages.tsv row has no prefix (the package is no unit of the fork) and no
+    // copy, and git is not asked about a path no row could map.
+    expect(former.stages).toEqual([
+      {
+        prefix: "",
+        scriptRepository: FORK,
+        scriptPath: "scripts/pi-plugin-prepack.sh",
+        package: "@acme/pi-envoy",
+        skill: "retired",
+        until: current,
+        renamedTo: "",
+        repository: "",
+        path: "",
+        note: why,
+      },
+    ]);
+    expect(asked).toEqual([]);
   });
 });
 
@@ -2156,14 +2221,18 @@ describe("a pool clone made by hand that the configuration's clones states", () 
 // staged thermonuclear-deep-review and ce-simplify-code (a skill the tree read no longer holds) for
 // @acme/pi-legion instead, as cybermonklabs/legion's did before 4c2dc60c.
 describe("the paths a prepack script staged a skill at during the window and stages no longer", () => {
+  const newCache = temporaryDirectories("copies-cache-");
   const SCRIPT = "scripts/pi-plugin-prepack.sh";
   const OLD = sha1("an older prepack script");
   const MOVED = sha1("the commit that moved the thermonuclear skills");
+  const REMOVED = sha1("the commit that removed leading-a-work-stream");
   const current = () => {
     const contents = fixtureJson("F6-contents-pi-plugin-prepack.json") as { content: string };
     return Buffer.from(contents.content.replace(/\n/g, ""), "base64").toString("utf8");
   };
-  const older = (text: string) => {
+  /** The made-up older version of `text`, staging `more` (each after a space) beside
+   *  ce-simplify-code for @acme/pi-legion. */
+  const older = (text: string, more = "") => {
     const changed = text
       .replace(
         "plain-words thermonuclear-code-quality thermonuclear-deep-review\n",
@@ -2171,7 +2240,7 @@ describe("the paths a prepack script staged a skill at during the window and sta
       )
       .replace(
         "legion-worker\n      simplify-settled-diff\n",
-        "legion-worker\n      ce-simplify-code thermonuclear-deep-review\n"
+        `legion-worker\n      ce-simplify-code${more} thermonuclear-deep-review\n`
       );
     if (changed === text) throw new Error("the made-up older script is the fixture's own");
     return changed;
@@ -2215,8 +2284,9 @@ describe("the paths a prepack script staged a skill at during the window and sta
     expect(notes).toContain(
       `  - staged thermonuclear-deep-review for @acme/pi-legion at dist/skills/thermonuclear-deep-review/ from ${OLD} (2026-10-09T11:26:34Z) until ${MOVED} (2026-11-07T01:36:22Z), and stages it there no longer; the prefix rows **/node_modules/@acme/pi-legion/dist/skills/thermonuclear-deep-review/, /opt/legion/pi-legion/dist/skills/thermonuclear-deep-review/ map it to cybermonklabs/legion skills/thermonuclear-deep-review\n`
     );
+    // GitHub names no commit since the window's start that changed its SKILL.md, so no row.
     expect(notes).toContain(
-      `  - staged ce-simplify-code for @acme/pi-legion at dist/skills/ce-simplify-code/ from ${OLD} (2026-10-09T11:26:34Z) until ${MOVED} (2026-11-07T01:36:22Z), and stages it there no longer; no prefix row maps that path: the tree read holds no SKILL.md at skills/ce-simplify-code\n`
+      `  - staged ce-simplify-code for @acme/pi-legion at dist/skills/ce-simplify-code/ from ${OLD} (2026-10-09T11:26:34Z) until ${MOVED} (2026-11-07T01:36:22Z), and stages it there no longer; no prefix row maps that path: the tree read holds no SKILL.md at skills/ce-simplify-code, and no commit since 2026-10-23T00:00:00Z changed skills/ce-simplify-code/SKILL.md\n`
     );
     expect(r.text("prefix-table.tsv")).not.toContain("ce-simplify-code");
     // A run with no earlier version holds none of those rows.
@@ -2224,6 +2294,264 @@ describe("the paths a prepack script staged a skill at during the window and sta
     expect(plain.text("prefix-table.tsv")).not.toContain(
       "/opt/legion/pi-legion/dist/skills/thermonuclear-deep-review/"
     );
+  }, 60_000);
+
+  // Catches: R1 on R4's list main13, where the 1,084 read sessions of
+  // /opt/legion/pi-legion/dist/skills/ce-simplify-code/ (cybermonklabs/legion's prepack staged its
+  // skill there until #2896 renamed it simplify-settled-diff at 4c2dc60c) had no prefix row, the
+  // tree read holding no copy of that name.
+  test("a path of a skill git renamed since gets rows to the renamed copy under its former name, a removed skill's path is a note alone, and a run started again reads neither from GitHub", async () => {
+    const cacheDir = newCache();
+    const args = [...only, "--cache-dir", cacheDir];
+    const histories = (w: World) =>
+      w.histories.set(`cybermonklabs/legion ${SCRIPT}`, [
+        { oid: MOVED, date: "2026-11-07T01:36:22Z", text: current() },
+        {
+          oid: OLD,
+          date: "2026-10-09T11:26:34Z",
+          text: older(current(), " leading-a-work-stream"),
+        },
+      ]);
+    const w = world();
+    histories(w);
+    w.pathCommits.set("cybermonklabs/legion skills/ce-simplify-code/SKILL.md", [
+      { sha: MOVED, date: "2026-11-07T01:36:22Z" },
+    ]);
+    w.pathCommits.set("cybermonklabs/legion skills/leading-a-work-stream/SKILL.md", [
+      { sha: REMOVED, date: "2026-11-10T01:48:50Z" },
+    ]);
+    // In the shape of GitHub's answer for cybermonklabs/legion's 4c2dc60c and cd4874e0 (gh api
+    // repos/cybermonklabs/legion/commits/<sha>), each cut to two of its files.
+    w.commitFiles.set(`cybermonklabs/legion ${MOVED}`, [
+      { filename: "skills/legion-worker/SKILL.md", status: "modified" },
+      {
+        filename: "skills/simplify-settled-diff/SKILL.md",
+        status: "renamed",
+        previous_filename: "skills/ce-simplify-code/SKILL.md",
+      },
+    ]);
+    w.commitFiles.set(`cybermonklabs/legion ${REMOVED}`, [
+      { filename: "skills/leading-a-work-stream/SKILL.md", status: "removed" },
+      { filename: "skills/leading-a-work-stream/references/daily-plan.md", status: "removed" },
+    ]);
+    const r = await run(w, args);
+    expect(r.code).toBe(0);
+    const via = "package:@acme/pi-legion (cybermonklabs/legion:packages/pi-legion/package.json)";
+    const locations = ["**/node_modules/@acme/pi-legion/", "/opt/legion/pi-legion/"];
+    expect(r.table("prefix-table.tsv").filter((row) => row.name === "ce-simplify-code")).toEqual(
+      locations.map((location) => ({
+        prefix: `${location}dist/skills/ce-simplify-code/`,
+        repository: "cybermonklabs/legion",
+        path: "skills/simplify-settled-diff",
+        name: "ce-simplify-code",
+        via,
+      }))
+    );
+    expect(r.text("prefix-table.tsv")).not.toContain("leading-a-work-stream");
+    const renamed = `git renamed skills/ce-simplify-code/SKILL.md to skills/simplify-settled-diff/SKILL.md at ${MOVED} (2026-11-07T01:36:22Z), so the prefix rows ${locations.map((location) => `${location}dist/skills/ce-simplify-code/`).join(", ")} map it to cybermonklabs/legion skills/simplify-settled-diff under its former name ce-simplify-code`;
+    const removed = `no prefix row maps that path: the tree read holds no SKILL.md at skills/leading-a-work-stream, and git removed skills/leading-a-work-stream/SKILL.md at ${REMOVED} (2026-11-10T01:48:50Z)`;
+    const stage = (skill: string, copy: string, renamedTo: string, note: string) =>
+      locations.map((location) => ({
+        prefix: `${location}dist/skills/${skill}/`,
+        script_repository: "cybermonklabs/legion",
+        script_path: SCRIPT,
+        package: "@acme/pi-legion",
+        skill,
+        until: MOVED,
+        renamed_to: renamedTo,
+        repository: copy === "" ? "" : "cybermonklabs/legion",
+        path: copy,
+        note,
+      }));
+    expect(r.text("former-stages.tsv").split("\n")[0]).toBe(FORMER_STAGES_COLUMNS.join("\t"));
+    expect(
+      r
+        .table("former-stages.tsv")
+        .filter((row) => row.skill !== "thermonuclear-deep-review")
+        .sort((a, b) => (a.skill ?? "").localeCompare(b.skill ?? ""))
+    ).toEqual([
+      ...stage(
+        "ce-simplify-code",
+        "skills/simplify-settled-diff",
+        "skills/simplify-settled-diff",
+        renamed
+      ),
+      ...stage("leading-a-work-stream", "", "", removed),
+    ]);
+    const said = (skill: string) =>
+      `  - staged ${skill} for @acme/pi-legion at dist/skills/${skill}/ from ${OLD} (2026-10-09T11:26:34Z) until ${MOVED} (2026-11-07T01:36:22Z), and stages it there no longer; `;
+    const notes = r.text("skill-copies.md");
+    expect(notes).toContain(`${said("ce-simplify-code")}${renamed}\n`);
+    expect(notes).toContain(`${said("leading-a-work-stream")}${removed}\n`);
+    // Started again on the same cache, with a GitHub that names no such commit: each read comes
+    // from the cache, so the tables are the same and neither read is made.
+    const again = world();
+    histories(again);
+    const second = await run(again, args);
+    expect(
+      again.calls.filter((call) =>
+        /\/commits(\?sha=[^&]+&path=|\/[0-9a-f]{40}$)/.test(call[1] ?? "")
+      )
+    ).toEqual([]);
+    for (const name of ["prefix-table.tsv", "former-stages.tsv"])
+      expect(second.text(name)).toBe(r.text(name));
+  }, 60_000);
+});
+
+// Catches: R1 on a list made from the sources at 4eea3c9f, where the dev-box sessions' reads of a
+// marketplace repository's plugin cache at its older layout (the skills of running-heavy-jobs at
+// `<marketplace>___dev-infra___*/skills/`, 719 paths under `<marketplace>___<plugin>___*` of a
+// plugin the repository dropped) had no prefix row, the skills now at other plugins' directories:
+// running-heavy-jobs fell from 2,218 read sessions to 494, 1,724 of them unattributed.
+describe("the cache locations a marketplace gave a skill of its repository during the window and gives no more", () => {
+  const MANIFEST = ".claude-plugin/marketplace.json";
+  const BEFORE = sha1("the manifest before the window");
+  const MOVED = sha1("the commit that renamed the marketplace and moved the skills");
+  const LATER = sha1("the commit that moved alpha again");
+  const newCache = temporaryDirectories("copies-cache-");
+  const CURRENT = ACME_FILES.find((file) => file.path === MANIFEST)?.text ?? "";
+  const KIT = "plugin:acme-kit@acme-old-market";
+  const GAMMA = "plugin:plugin-gamma@acme-old-market";
+  const via = (unit: string) => `${unit} (acme/skills:${MANIFEST})`;
+  /** The two cache locations of a plugin, as Oh My Pi's cache and Claude Code's name them. */
+  const locations = (marketplace: string, plugin: string) => [
+    `**/plugins/cache/plugins/${marketplace}___${plugin}___*/`,
+    `**/plugins/cache/${marketplace}/${plugin}/*/`,
+  ];
+  const only = ["--only", "acme/skills", "--max-search-calls", "0"];
+
+  /** The world with the manifest's three versions: the one before the window (an older
+   *  marketplace name, a plugin acme-kit that held tool-loop-alpha, alpha and gone, and
+   *  plugin-gamma), that of the commit that renamed the marketplace, moved tool-loop-alpha,
+   *  removed gone and moved alpha to a directory of no plugin, and that of a later commit that
+   *  moved alpha again, to where it is now. */
+  const moved = () => {
+    const w = world();
+    const old = JSON.stringify({
+      name: "acme-old-market",
+      plugins: ["acme-kit", "plugin-gamma"].map((name) => ({ name, source: `./plugins/${name}` })),
+    });
+    w.histories.set(`acme/skills ${MANIFEST}`, [
+      { oid: LATER, date: "2026-11-09T05:00:00Z", text: `${CURRENT}\n` },
+      { oid: MOVED, date: "2026-11-07T00:46:53Z", text: CURRENT },
+      { oid: BEFORE, date: "2026-10-09T11:26:34Z", text: old },
+    ]);
+    w.commitFiles.set(`acme/skills ${MOVED}`, [
+      { filename: MANIFEST, status: "modified" },
+      {
+        filename: "plugins/acme-tools/skills/tool-loop-alpha/SKILL.md",
+        status: "renamed",
+        previous_filename: "plugins/acme-kit/skills/tool-loop-alpha/SKILL.md",
+      },
+      {
+        filename: "plugins/acme-mid/skills/alpha/SKILL.md",
+        status: "renamed",
+        previous_filename: "plugins/acme-kit/skills/alpha/SKILL.md",
+      },
+      { filename: "plugins/acme-kit/skills/gone/SKILL.md", status: "removed" },
+      // A file of a skill other than its SKILL.md is no skill directory's move.
+      {
+        filename: "plugins/acme-tools/skills/tool-loop-alpha/references/x.md",
+        status: "renamed",
+        previous_filename: "plugins/acme-kit/skills/tool-loop-alpha/references/x.md",
+      },
+    ]);
+    w.commitFiles.set(`acme/skills ${LATER}`, [
+      { filename: MANIFEST, status: "modified" },
+      {
+        filename: "plugins/acme-tools/skills/alpha/SKILL.md",
+        status: "renamed",
+        previous_filename: "plugins/acme-mid/skills/alpha/SKILL.md",
+      },
+    ]);
+    return w;
+  };
+
+  test("a skill git moved gets the old plugin's cache locations mapped to the copy it went to, a skill still in a renamed marketplace's plugin directory the same, a removed one a note alone, and each former-stages.tsv row says which", async () => {
+    const r = await run(moved(), only);
+    expect(r.code).toBe(0);
+    const rows = (unit: string) =>
+      r
+        .table("prefix-table.tsv")
+        .filter((row) => row.via === via(unit))
+        .map((row) => `${row.prefix} -> ${row.repository} ${row.path} (${row.name})`)
+        .sort();
+    expect(rows(KIT)).toEqual(
+      ["alpha", "tool-loop-alpha"]
+        .flatMap((skill) =>
+          locations("acme-old-market", "acme-kit").map(
+            (location) =>
+              `${location}skills/${skill}/ -> acme/skills plugins/acme-tools/skills/${skill} (${skill})`
+          )
+        )
+        .sort()
+    );
+    expect(rows(GAMMA)).toEqual(
+      locations("acme-old-market", "plugin-gamma")
+        .map(
+          (location) =>
+            `${location}skills/gamma-one/ -> acme/skills plugins/plugin-gamma/skills/gamma-one (gamma-one)`
+        )
+        .sort()
+    );
+    expect(r.text("prefix-table.tsv")).not.toContain("/skills/gone/");
+    const stage = (row: Record<string, string>) =>
+      [
+        row.prefix,
+        row.package,
+        row.skill,
+        row.until,
+        row.renamed_to,
+        row.repository,
+        row.path,
+      ].join(" | ");
+    expect(
+      r
+        .table("former-stages.tsv")
+        .filter((row) => row.script_repository === "acme/skills" && row.script_path === MANIFEST)
+        .map(stage)
+        .sort()
+    ).toEqual(
+      [
+        ...locations("acme-old-market", "acme-kit").flatMap((location) => [
+          `${location}skills/alpha/ | ${KIT} | alpha | ${MOVED} | plugins/acme-tools/skills/alpha | acme/skills | plugins/acme-tools/skills/alpha`,
+          `${location}skills/gone/ | ${KIT} | gone | ${MOVED} |  |  | `,
+          `${location}skills/tool-loop-alpha/ | ${KIT} | tool-loop-alpha | ${MOVED} | plugins/acme-tools/skills/tool-loop-alpha | acme/skills | plugins/acme-tools/skills/tool-loop-alpha`,
+        ]),
+        ...locations("acme-old-market", "plugin-gamma").map(
+          (location) =>
+            `${location}skills/gamma-one/ | ${GAMMA} | gamma-one | ${MOVED} |  | acme/skills | plugins/plugin-gamma/skills/gamma-one`
+        ),
+      ].sort()
+    );
+    const said = (skill: string) =>
+      r
+        .table("former-stages.tsv")
+        .find((row) => row.package === KIT && row.skill === skill && row.prefix.includes("___"))
+        ?.note;
+    expect(said("alpha")).toBe(
+      `${KIT} (plugins/acme-kit) held plugins/acme-kit/skills/alpha/SKILL.md, and git renamed it to plugins/acme-mid/skills/alpha/SKILL.md at ${MOVED} (2026-11-07T00:46:53Z), and then renamed it to plugins/acme-tools/skills/alpha/SKILL.md at ${LATER} (2026-11-09T05:00:00Z); the prefix rows map it to acme/skills plugins/acme-tools/skills/alpha`
+    );
+    expect(said("gone")).toBe(
+      `${KIT} (plugins/acme-kit) held plugins/acme-kit/skills/gone/SKILL.md, and git removed it at ${MOVED} (2026-11-07T00:46:53Z); no prefix row maps that path`
+    );
+    expect(r.text("skill-copies.md")).toContain(
+      `${KIT} (plugins/acme-kit) is named so from ${BEFORE} (2026-10-09T11:26:34Z) to ${BEFORE}, and no more from ${MOVED} (2026-11-07T00:46:53Z); its former-path prefix rows map 2 skills git moved out of plugins/acme-kit/skills/ to their copies, and 0 skills still there, and 1 skills that git removed or moved to no copy of the tree read have none`
+    );
+  }, 60_000);
+
+  test("a run started again on the same cache reads neither the manifest's versions nor a commit's files from GitHub", async () => {
+    const cacheDir = newCache();
+    const args = [...only, "--cache-dir", cacheDir];
+    const first = await run(moved(), args);
+    expect(first.table("former-stages.tsv").some((row) => row.script_path === MANIFEST)).toBe(true);
+    const again = world();
+    const second = await run(again, args);
+    expect(
+      again.calls.filter((call) => /history\(path:|\/commits\/[0-9a-f]{40}$/.test(call.join(" ")))
+    ).toEqual([]);
+    for (const name of ["prefix-table.tsv", "former-stages.tsv"])
+      expect(second.text(name)).toBe(first.text(name));
   }, 60_000);
 });
 
@@ -2247,6 +2575,7 @@ describe("the full run over the owners", () => {
         "queries.jsonl",
         "skills.jsonl",
         "skill-copies.md",
+        "former-stages.tsv",
       ].sort()
     );
     // Each table holds a row below its header, and each other file holds text.

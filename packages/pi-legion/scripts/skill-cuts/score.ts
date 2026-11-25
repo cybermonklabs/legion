@@ -34,8 +34,12 @@
  * cannot be confirmed leaves its skill no `keeps` (the architect's rule of 2026-11-22), and a
  * dropped control case gives its place to the next case the control rule chooses. A case's
  * confirms on one runner at one set of texts pool when two disagree (confirmScore). A case or a
- * load task whose rebuilt listing misses more than MAX_LISTING_MISSING_PERCENT of its session's
- * recorded names is dropped (listingStanding).
+ * load task whose rebuilt listing misses more than MAX_LISTING_CHANGE_PERCENT of its session's
+ * recorded names is dropped, and so is one whose capture builds its listing from the rebuilt
+ * profile and whose listing adds more names than that share of them (listingStanding); one whose
+ * capture sends its session's recorded system prompt whole shows the model the recorded listing
+ * whatever the profile installs, so it is not dropped for added names, and the runs that read a
+ * skill outside that listing are counted, never scored (outsideListing).
  */
 import { z } from "zod";
 import { parseJson } from "./common";
@@ -77,15 +81,25 @@ export const LOAD_RUNS = 3;
 export const NEED_MIN_LOADS = 2;
 /** A near-miss task is a fault when it loads on more of its runs than this. */
 export const NEAR_MISS_MAX_LOADS = 1;
-/** The most a case's or a load task's rebuilt skill listing may miss, in percent of the names its
- *  session's recorded listing holds (the architect, 2026-11-22T03:04Z): one that misses more is
- *  dropped (listingStanding). */
-export const MAX_LISTING_MISSING_PERCENT = 10;
+/** The most a case's or a load task's rebuilt skill listing may miss of the names its session's
+ *  recorded listing holds, and, where its capture builds its listing from the rebuilt profile,
+ *  the most names it may add to them, each counted alone, in percent of the recorded names (the
+ *  architect, 2026-11-24T23:52Z; the rule of 2026-11-22T03:04Z counted only the missing names;
+ *  2026-11-25T00:52:35Z: a case or task whose capture sends the session's recorded system prompt
+ *  whole is not counted for added names): one that misses more, or adds more, is dropped
+ *  (listingStanding). */
+export const MAX_LISTING_CHANGE_PERCENT = 10;
 /** The evidence item of a case or a load task that holds its listing measure as JSON, under which
  *  build.ts writes its ListingMeasure. */
 export const LISTING_MEASURE_ITEM = "listing measure";
-/** How the drop of a case or a task whose listing misses too many names begins. */
+/** How the drop of a case or a task whose listing misses too many names begins, also where it
+ *  adds too many names as well. */
 export const LISTING_MISSES = "listing-misses";
+/** How the drop of a case or a task whose capture builds its listing from the rebuilt profile
+ *  (a measure of kind `subagent listing`), and whose listing adds too many names and misses no
+ *  more than MAX_LISTING_CHANGE_PERCENT of them, begins. A case or task whose capture sends its
+ *  session's recorded system prompt whole is never dropped for added names. */
+export const LISTING_ADDS = "listing-adds";
 
 /** The texts a case runs under: the cut's base, the cut text, a skill of ours (`--ours`), no
  *  skill, the base without the case's line (the planted-loss control), and the base again under
@@ -900,29 +914,74 @@ export function dropFigures(
   };
 }
 
-/** What the listing rule reads of a listing measure: build.ts's ListingMeasure, which writes it. */
+/** What the listing rule reads of a listing measure: build.ts's ListingMeasure, which writes it.
+ *  build.ts always writes `added`; a measure with no `added` (this schema is loose) reads as one
+ *  whose rebuilt listing adds no name. Its `kind` says whose listing the recorded one is: the
+ *  session's own recorded system prompt (`session listing`), which the capture sends whole, or a
+ *  subagent's (`subagent listing`), where the capture builds its listing from the profile. */
 const ListingRead = z.looseObject({
   kind: z.enum(["session listing", "subagent listing", "not measurable"]),
   recorded: z.number().nullable(),
   missing: z.array(z.string()),
+  added: z.array(z.string()).default([]),
   why: z.string(),
 });
 
 /** Where a case or a load task stands by the listing measure of its evidence: measured, with the
- *  names its session's recorded listing holds and how many of them its rebuilt listing misses; not
- *  measurable, and why; or dropped, with the drop's reason. */
+ *  names its session's recorded listing holds, how many of them its rebuilt listing misses and how
+ *  many names it adds to them; not measurable, and why; or dropped, with the drop's reason. */
 export type ListingStanding =
-  | { readonly state: "measured"; readonly recorded: number; readonly missing: number }
+  | {
+      readonly state: "measured";
+      readonly recorded: number;
+      readonly missing: number;
+      readonly added: number;
+    }
   | { readonly state: "not measurable"; readonly why: string }
   | { readonly state: "dropped"; readonly reason: string };
 
-/** Where a case or a load task stands by the listing measure its `evidence` holds (the item
- *  LISTING_MEASURE_ITEM): dropped when its rebuilt listing misses more than
- *  MAX_LISTING_MISSING_PERCENT of the names its session's recorded listing holds, the reason
- *  naming them; not measurable when the measure says so, or when the evidence holds none or one
- *  this rule cannot read; else measured. */
+/** What a caller knows of a case's or task's capture beyond its listing measure. Claude Code's
+ *  capture (a load test's `claude` host) lists the skills its plugins hold and sends no recorded
+ *  system prompt, so for it `recordedPromptSent` is false whatever the measure's kind says; it is
+ *  true, as an Oh My Pi capture's, when left out. */
+export interface ListingCapture {
+  readonly recordedPromptSent?: boolean;
+}
+
+/**
+ * Where a case or a load task stands by the listing measure its `evidence` holds (the item
+ * LISTING_MEASURE_ITEM). The rule counts each side of the listing alone, as a share of the names
+ * its session's recorded listing holds, and keeps a share of exactly MAX_LISTING_CHANGE_PERCENT:
+ *
+ * - Missing names count for every case and task. A recorded name the rebuilt profile does not
+ *   install is answered with Oh My Pi's unknown-skill reply when a run reads it, where the session
+ *   got the skill's text. Over the share, the drop begins LISTING_MISSES.
+ * - Added names count only where the capture builds its listing from the rebuilt profile: a
+ *   measure of kind `subagent listing` (a top-level session, set against a subagent's recorded
+ *   listing), or any measure when `capture.recordedPromptSent` is false. Over the share, the drop
+ *   begins LISTING_ADDS; where the case or task is over the share on both sides, the reason
+ *   begins LISTING_MISSES and goes on with the LISTING_ADDS part, so the names of both are on
+ *   record.
+ *
+ * A measure of kind `session listing` is of a session that recorded its system prompt, and its
+ * capture sends that prompt whole: the model in every arm sees exactly the recorded listing,
+ * whatever the rebuilt profile installs, since the capture changes only the tested skill's line
+ * of it per arm, however many names the profile lists. What the profile changes there is only how
+ * a read of a skill is answered, from an installed copy or with the unknown-skill reply (replay.ts's
+ * AnsweredRead `from`), which `outsideListing` counts and which drops nothing. The kind is the
+ * capture's own choice, read from the measure: build.ts's `listingMeasure` writes `session
+ * listing` exactly when it was given the session's recorded prompt (`input.recorded`, which each
+ * caller that measures a listing takes from the profile's `systemPrompt`), and capture.ts's
+ * `captureBody` sends the recorded blocks exactly when the profile holds a `systemPrompt`;
+ * build.test.ts checks that over the cases a build writes. A task that keeps an old profile is
+ * `not measurable` whatever the profile holds, and drops nothing.
+ *
+ * Not measurable when the measure says so, or when the evidence holds none or one this rule
+ * cannot read; else measured.
+ */
 export function listingStanding(
-  evidence: readonly { readonly item: string; readonly source: string }[] | undefined
+  evidence: readonly { readonly item: string; readonly source: string }[] | undefined,
+  capture: ListingCapture = {}
 ): ListingStanding {
   const item = evidence?.find((each) => each.item === LISTING_MEASURE_ITEM);
   if (item === undefined) {
@@ -932,19 +991,111 @@ export function listingStanding(
   if (!measure.success) {
     return { state: "not measurable", why: "its listing measure is not one build.ts writes" };
   }
-  if (measure.data.kind === "not measurable") {
+  const { kind, missing, added } = measure.data;
+  if (kind === "not measurable") {
     return { state: "not measurable", why: measure.data.why };
   }
   const recorded = measure.data.recorded ?? 0;
-  const missing = measure.data.missing;
-  if (missing.length * 100 <= MAX_LISTING_MISSING_PERCENT * recorded) {
-    return { state: "measured", recorded, missing: missing.length };
+  // Each side counted alone, in one form; the share is of the recorded names, 100% where the
+  // recording holds none. The added names count only where the listing is built from the profile.
+  const sendsRecordedPrompt = kind === "session listing" && capture.recordedPromptSent !== false;
+  const sides: (readonly [string, readonly string[], string])[] = [
+    [LISTING_MISSES, missing, `misses ${missing.length} of`],
+  ];
+  if (!sendsRecordedPrompt) sides.push([LISTING_ADDS, added, `adds ${added.length} to`]);
+  const parts = sides.flatMap(([start, names, says]) =>
+    names.length * 100 <= MAX_LISTING_CHANGE_PERCENT * recorded
+      ? []
+      : [
+          `${start}: its rebuilt listing ${says} the ${recorded} names of the recorded ${kind} (${(recorded === 0 ? 100 : (100 * names.length) / recorded).toFixed(1)}%), more than ${MAX_LISTING_CHANGE_PERCENT}%: ${names.join(", ")}`,
+        ]
+  );
+  if (parts.length === 0) {
+    return { state: "measured", recorded, missing: missing.length, added: added.length };
   }
-  const share = ((100 * missing.length) / Math.max(recorded, missing.length)).toFixed(1);
+  return { state: "dropped", reason: parts.join("; ") };
+}
+
+/** One read a run's answered rounds made, as `outsideListing` reads it: the skill (the name its
+ *  profile lists it under, or the name a `skill://` URL gave) and where the answer came from
+ *  (replay.ts's AnsweredRead: `arm` the arm's own text, `copy` an installed copy, `absent` Oh My
+ *  Pi's unknown-skill reply). */
+export interface AnsweredSkill {
+  readonly skill: string;
+  readonly from: "arm" | "copy" | "absent";
+}
+
+/** The runs of the cases or tasks whose capture sends their session's recorded system prompt
+ *  whole, by what they read outside that prompt's listing (`outsideListing`): how many such cases
+ *  or tasks (`groups`), their runs, those of them that record their reads (`examined`), those
+ *  that read a skill the recorded listing lacks (`outside`), and for each such skill, by name,
+ *  the runs that read it and were answered from an installed copy (`copy`) and with the
+ *  unknown-skill reply (`absent`). A run that reads a skill in several rounds counts once for it. */
+export interface OutsideListing {
+  readonly groups: number;
+  readonly runs: number;
+  readonly examined: number;
+  readonly outside: number;
+  readonly bySkill: Readonly<Record<string, { readonly copy: number; readonly absent: number }>>;
+}
+
+/**
+ * Counts, for `groups`, each a case or task whose capture sends its session's recorded system
+ * prompt whole, the names `recorded` its listing holds and its `runs` (each run's reads, or
+ * undefined for a run that records none: one saved before runs recorded their reads, or whose
+ * replay failed), the runs that read a skill outside `recorded`. A read answered from the arm's
+ * own text (`arm`: the tested skill) is no count, since the profile does not change its answer.
+ * The count drops no case and changes no verdict (README.md, "behaviour"): it shows how far the
+ * rebuilt profile's installed skills decided what the runs read, which the model's listing, the
+ * recorded one, does not.
+ */
+export function outsideListing(
+  groups: readonly {
+    readonly recorded: ReadonlySet<string>;
+    readonly runs: readonly (readonly AnsweredSkill[] | undefined)[];
+  }[]
+): OutsideListing {
+  const bySkill = new Map<string, { copy: number; absent: number }>();
+  let runs = 0;
+  let examined = 0;
+  let outside = 0;
+  for (const group of groups) {
+    for (const reads of group.runs) {
+      runs += 1;
+      if (reads === undefined) continue;
+      examined += 1;
+      const kinds = new Map<string, Set<"copy" | "absent">>();
+      for (const { skill, from } of reads) {
+        if (from === "arm" || group.recorded.has(skill)) continue;
+        kinds.set(skill, (kinds.get(skill) ?? new Set<"copy" | "absent">()).add(from));
+      }
+      if (kinds.size > 0) outside += 1;
+      for (const [skill, answers] of kinds) {
+        const count = bySkill.get(skill) ?? { copy: 0, absent: 0 };
+        for (const answer of answers) count[answer] += 1;
+        bySkill.set(skill, count);
+      }
+    }
+  }
   return {
-    state: "dropped",
-    reason: `${LISTING_MISSES}: its rebuilt listing misses ${missing.length} of the ${recorded} names of the recorded ${measure.data.kind} (${share}%), more than ${MAX_LISTING_MISSING_PERCENT}%: ${missing.join(", ")}`,
+    groups: groups.length,
+    runs,
+    examined,
+    outside,
+    bySkill: Object.fromEntries([...bySkill].toSorted(([a], [b]) => (a < b ? -1 : 1))),
   };
+}
+
+/** The line that reports an OutsideListing for `unit`s (`case` or `task`): how many of the runs
+ *  that record their reads read a skill the recorded listing lacks, how many runs record none,
+ *  and each such skill with its runs by answer kind. */
+export function outsideListingWords(found: OutsideListing, unit: "case" | "task"): string {
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const skills = Object.entries(found.bySkill).map(
+    ([skill, { copy, absent }]) => `${skill} (${copy} copy, ${absent} absent)`
+  );
+  const unread = found.runs - found.examined;
+  return `outside recorded listing: ${found.outside} of ${found.examined} runs of ${plural(found.groups, `recorded-prompt ${unit}`)} (the capture sends the session's recorded system prompt whole) read a skill the recorded listing lacks${unread === 0 ? "" : `, not counting ${plural(unread, "run")} with no recorded reads`}; by skill and answer (copy: an installed copy; absent: the unknown-skill reply): ${skills.join(", ") || "none"}`;
 }
 
 /** A cut's changed skills, loaded skills included, most read first by the counted sessions of the

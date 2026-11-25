@@ -1159,9 +1159,11 @@ const REMINDER_CWD = /current working directory: '([^']*)'\. Do not repeat/;
  *  (`<store>-<pathHash>.json`, `sessionHeadFile`): whether the store holds a file of the hash; the
  *  header's `cwd` and `timestamp` (`start`); the first user message's `timestamp` and
  *  `attribution`; each `date-cwd-reminder` entry Oh My Pi journaled, in file order, its `turn` the
- *  key of the turn it went on (`user:<timestamp>:<attribution>`); the bytes read (of the file's
- *  first 262144 characters at most) and the lines of them that did not parse (the last, cut where
- *  the head ends); and when it was read. */
+ *  key of the turn it went on (`user:<timestamp>:<attribution>`); the Oh My Pi version the file
+ *  records it ran (`runtime`: the `runtime.version` of its first `model_change` line, null for none;
+ *  absent from a head saved before it was read, which stays readable); the bytes read (of the
+ *  file's first 262144 characters at most) and the lines of them that did not parse (the last, cut
+ *  where the head ends); and when it was read. */
 export const SessionHead = z.strictObject({
   store: z.string().min(1),
   pathHash: z.string().regex(/^[0-9a-f]{64}$/),
@@ -1174,6 +1176,7 @@ export const SessionHead = z.strictObject({
   reminders: z.array(
     z.strictObject({ turn: z.string(), reminder: z.string(), placement: z.string() })
   ),
+  runtime: z.string().nullable().optional(),
   bytes: z.int().nonnegative(),
   badLines: z.int().nonnegative(),
   readAt: z.string(),
@@ -1203,6 +1206,7 @@ const HeadRow = z.strictObject({
   ),
   bytes: z.number().int().nonnegative(),
   bad_lines: z.number().int().nonnegative(),
+  runtime: z.string().nullable().optional(),
 });
 
 /** The file `dir` keeps the head of the session `pathHash` of the store `store` in, named by both:
@@ -1288,6 +1292,7 @@ export async function sessionHeads(
           ? []
           : [{ turn, reminder, placement }]
       ),
+      ...(row?.runtime === undefined ? {} : { runtime: row.runtime }),
       bytes: row?.bytes ?? 0,
       badLines: row?.bad_lines ?? 0,
       readAt,
