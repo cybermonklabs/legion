@@ -1,11 +1,11 @@
 import { primarySpec } from "../../../api/issue-cache";
-import type { Decision, DecisionLink, DisplayTree, IssueDetails } from "../../../api/types";
+import type { Actor, Decision, DecisionLink, DisplayTree, IssueDetails } from "../../../api/types";
 import { buildDispatchReference, parseDispatchReference } from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
 import { blockIdOfNode, firstOfEachId } from "../decision-review";
 import type { IssueTreeReads, TreeAsk } from "../issue-tree";
 import { storedReading } from "../stored-reading";
-import { blockNodeId } from "../tree-drafts";
+import { blockNodeId, deciderOf } from "../tree-drafts";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 
 /**
@@ -41,6 +41,10 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-re
 
 /** One decision of the answer, as the decisions read answers a decision. */
 export interface DecisionNode extends Decision {
+  /** Who decided it: the person or the session its `decided_by` tuple names, which the read
+   *  answers as context (`tree-drafts.ts`' `deciderOf`, the outline's one rule); absent where
+   *  the read holds no such tuple. */
+  readonly decidedBy?: Actor;
   /** The id of the document the node is a block of (its `document` member), which Keep and a
    *  Change's anchor are written against; undefined for an ask of the conversation, which is a
    *  block of no document. */
@@ -198,6 +202,7 @@ function fromDecision(node: TreeAnswerNode, lookup: Lookup): DecisionNode | unde
   return {
     ...blockAndWords(node),
     ...modelMembers(decision),
+    ...deciderMember(node, lookup),
     document: node.document.artifact_id,
     ref,
   };
@@ -245,10 +250,20 @@ function fromAnsweredAsk(node: TreeAnswerNode, lookup: Lookup): DecisionNode | u
       : modelMembers(node.decision);
   return {
     ...blockAndWords(node),
+    ...deciderMember(node, lookup),
     ...members,
     document: node.document?.artifact_id,
     ref,
   };
+}
+
+/** Who decided `node` (`DecisionNode.decidedBy`): the far end of its `decided_by` tuple, read by
+ *  the outline's one rule (`deciderOf`); none where the read answers no such tuple, or one that
+ *  names neither a person nor a session. */
+function deciderMember(node: TreeAnswerNode, lookup: Lookup): Pick<DecisionNode, "decidedBy"> {
+  const decidedBy = lookup.tuplesFrom(node.id).find((tuple) => tuple.kind === "decided_by");
+  const decider = deciderOf(decidedBy?.to ?? null);
+  return decider === undefined ? {} : { decidedBy: decider };
 }
 
 /** The members every decision reads from its node alike: its block, its words and the heading
