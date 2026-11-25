@@ -364,20 +364,25 @@ func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod
 	if err != nil {
 		return
 	}
-	s.endTakenRounds(ctx, taken.Issue, taken.Operation, finish.Took)
+	s.endTakenRounds(ctx, taken.Issue, taken.Operation, "", finish.Took)
 }
 
-// endTakenRounds ends the round of each round's record of the issue that the finish of the launch's
-// record of operation took with it (took, store.PodReplacementFinish.Took), as the act that took its
-// pod (endTakenRound), over the issue's claims as their machines hold them now, unmasked
-// (machinesGroup), which no failed read of the store can keep from it. A record this daemon cannot
-// read ends nothing.
-func (s *supervision) endTakenRounds(ctx context.Context, issue, operation string, took []store.PodReplacement) {
+// endTakenRounds is the one end of the rounds a finish took: right after each finish of a record
+// whose act is made, of operation, a record of round ("" for a launch's own record), it ends the
+// round of each round's record of the issue that the finish took with it (took,
+// store.PodReplacementFinish.Took) whose round is not round, as the act that took its pod
+// (endTakenRound). A launch's finish, its own (tellLaunchTook) or the sweep's, and the sweep's
+// finish of a round's record that took the record of another round, end those rounds here alike,
+// so one rule says which taken records belong to another round (the Legion reviewer's finding on
+// podreplace.go:351 on #5285 at 18d81dad). The group is the issue's claims as their machines hold
+// them now, unmasked (machinesGroup), which no failed read of the store can keep from it. A record
+// this daemon cannot read ends nothing.
+func (s *supervision) endTakenRounds(ctx context.Context, issue, operation, round string, took []store.PodReplacement) {
 	var group []supervise.Claim
 	read := false
 	for _, r := range took {
 		var rec replacementRecord
-		if r.Operation == operation || json.Unmarshal(r.Record, &rec) != nil || rec.Round == "" {
+		if r.Operation == operation || json.Unmarshal(r.Record, &rec) != nil || rec.Round == "" || rec.Round == round {
 			continue
 		}
 		if !read {
@@ -473,10 +478,11 @@ func (s *supervision) endTakenRound(ctx context.Context, group []supervise.Claim
 // decided by what that deciding record did:
 //
 //   - Gone: the deciding record's finish took it. A launch's record, or a record of the round that
-//     ended, went with it. A record of another round, which a launch's finish took, ends that
-//     round as the act that took its pod, with no notice of its own (endTakenRound, which a
-//     launch's own finish outside a sweep reaches too): the launch's notice is the one notice of
-//     the act. A round that is over already is ended no second time.
+//     ended, went with it. A record of another round, which the deciding finish took, ends that
+//     round as the act that took its pod, with no notice of its own, right after that finish
+//     (endTakenRounds, which a launch's own finish outside a sweep calls too): the deciding
+//     record's notice is the one notice of the act. A round that is over already is ended no
+//     second time, and the later record is only logged when the sweep reaches it.
 //   - Stands: the deciding record stands (its turn is held, its read failed, the runtime cannot say
 //     whether its act was made, or the store refused its finish), so the later record stands with
 //     it, and holds its round while that round is not over.
@@ -494,9 +500,9 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 	}
 	held := map[string]bool{}
 	decided := map[actKey]targetDecided{}
-	// went is every record a finish at this sweep took, by operation, with what the sweep decided
-	// of the record whose finish took it.
-	went := map[string]targetDecided{}
+	// went is every record a finish at this sweep took, by operation; the finish's own call ended
+	// the round of each that is another round's (endTakenRounds).
+	went := map[string]bool{}
 	for _, r := range sweepOrder(standing) {
 		if ctx.Err() != nil {
 			return held, ctx.Err()
@@ -512,12 +518,8 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 		// record whose round is over holds nothing, since no round is left to decide (roundOver).
 		holds := ofRound && !s.roundOver(r.Issue, claimsOf(claims, r.Issue), rec.Round)
 		attrs := []any{"issue", r.Issue, "pod", r.PodUID, "operation", r.Operation, "round", rec.Round}
-		if by, took := went[r.Operation]; took {
-			if !ofRound || rec.Round == by.round {
-				s.log.Info("supervise: the finish of a record decided at this sweep took this record of a replacement of the issue's pod with it", attrs...)
-				continue
-			}
-			s.endTakenRound(ctx, s.noticeGroup(claimsOf(claims, r.Issue)), r, rec)
+		if went[r.Operation] {
+			s.log.Info("supervise: the finish of a record decided at this sweep took this record of a replacement of the issue's pod with it", attrs...)
 			continue
 		}
 		keys := targetKeys(r)
@@ -561,6 +563,7 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 			taken := rec.taken(r)
 			finish, err := s.finishReplacement(ctx, r.Operation, r.Issue, r.PodUID, false, launchMessage(taken), "claim", taken.Claim, "why", taken.Why)
 			decideFinish(decided, went, keys, targetDecided{finished: err == nil && finish.Found}, finish)
+			s.endTakenRounds(ctx, r.Issue, r.Operation, "", finish.Took)
 		default:
 			s.log.Info("supervise: a recorded replacement of the issue's pod took it: its call did not answer so, its daemon stopped, or the store refused the architect's workspace-taken notice; its round, where it is not over, ends as that replacement, from the read made before it",
 				attrs...)
@@ -568,7 +571,8 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 			if !ended {
 				held[r.Issue] = held[r.Issue] || holds
 			}
-			decideFinish(decided, went, keys, targetDecided{round: rec.Round, finished: ended}, finish)
+			decideFinish(decided, went, keys, targetDecided{finished: ended}, finish)
+			s.endTakenRounds(ctx, r.Issue, r.Operation, rec.Round, finish.Took)
 		}
 	}
 	return held, nil
@@ -600,11 +604,9 @@ type actKey struct {
 }
 
 // targetDecided is what a sweep decided of a target from the record that decided it
-// (finishReplacements): the round that record ended, "" for a launch's own record; whether its
-// finish committed, which is false for a record that stands; and whether the walk ends the round
-// as a launch's replacement (walk).
+// (finishReplacements): whether its finish committed, which is false for a record that stands, and
+// whether the walk ends the round as a launch's replacement (walk).
 type targetDecided struct {
-	round    string
 	finished bool
 	walk     bool
 }
@@ -642,10 +644,10 @@ func decide(decided map[actKey]targetDecided, keys []actKey, was targetDecided) 
 
 // decideFinish records was, the finish of a record, as what the sweep decided of each of keys
 // (decide), and each record the finish took as one that went with it (went).
-func decideFinish(decided map[actKey]targetDecided, went map[string]targetDecided, keys []actKey, was targetDecided, finish store.PodReplacementFinish) {
+func decideFinish(decided map[actKey]targetDecided, went map[string]bool, keys []actKey, was targetDecided, finish store.PodReplacementFinish) {
 	decide(decided, keys, was)
 	for _, r := range finish.Took {
-		went[r.Operation] = was
+		went[r.Operation] = true
 	}
 }
 
