@@ -3617,12 +3617,14 @@ type StepRecord struct {
 // steps, in the order they ran. Needs are the tasks of that plan this task needs, each by its id,
 // as the plan node records them, [] for a task that needs none; null where the node did not record
 // them (a daemon of the release before wrote the plan, or a Dispatch of the release before took the
-// write and dropped its needs) and for a task the plan does not hold. Planned are the steps that
-// plan gives the task, in order, each with where it stands; absent for a task the plan does not
-// hold, which only its runs show. Steps are [] for a task of the plan none of whose steps ran.
+// write and dropped its needs) and for a task the plan does not hold. It is a pointer, as
+// PlanTask.Needs is, so null and [] are two values of the type and not a nil and an empty slice.
+// Planned are the steps that plan gives the task, in order, each with where it stands; absent for
+// a task the plan does not hold, which only its runs show. Steps are [] for a task of the plan
+// none of whose steps ran.
 type StepTask struct {
 	Task    string        `json:"task"`
-	Needs   []string      `json:"needs"`
+	Needs   *[]string     `json:"needs"`
 	Planned []PlannedStep `json:"planned,omitempty"`
 	Steps   []StepRecord  `json:"steps"`
 }
@@ -3631,11 +3633,13 @@ type StepTask struct {
 // from 1, the plan's word for it (a role or `role:key`), and where it stands in the run of the
 // issue the plan is of, read from that run's records alone: `not started` where none of them is a
 // run of the step, `running` while the newest such run has no end, and that run's result
-// (`passed`, `failed` or `stopped`) once it has one.
+// (`passed`, `failed` or `stopped`) once it has one. The enum tag is contracts'
+// PLANNED_STEP_STATES, which a tag cannot name; TestTheStepRouteNamesContractsWords holds it to
+// them.
 type PlannedStep struct {
 	Step  int    `json:"step"`
 	Name  string `json:"name"`
-	State string `json:"state"`
+	State string `json:"state" enum:"not started,running,passed,failed,stopped"`
 }
 
 // IssueSteps is GET /api/v1/issues/{key}/steps: the tasks of the issue's newest plan, in the
