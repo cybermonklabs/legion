@@ -10377,3 +10377,38 @@ test("k-comment-focus: on today's issue page an Escape held down in the margin's
   await expect(box.getByLabel("Comment"), step("the draft is kept")).toHaveValue(body);
   expect(writes, step("nothing is written")).toEqual([]);
 });
+
+// The tester's red row of round 19 (R12; the architect's ruling of 2026-11-25T13:35Z): on today's
+// issue page one Escape in the header's title editor ends the edit with the focus back on Edit
+// title, as the new issue page puts it back on its title. At c6dc939c IssueHeader.tsx's Escape
+// ends the edit and leaves the focus on the page's body, so the keyboard reader's next Tab starts
+// from the top of the page. Measured in Chromium, Firefox and WebKit (infra-2160-t-ph19-b-8k7zf).
+// @firefox: where the engine puts the focus when the element that held it is taken away
+// (playwright.config.ts names the clause).
+test("k-keyboard-reach: on today's issue page an Escape in the header's title editor ends the edit with the focus on Edit title @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-keyboard-reach: Escape in today's title editor: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  await page.setViewportSize(WIDE);
+  await page.goto(`/issues/${issue.key}`);
+  const header = page.getByTestId("issue-header");
+  const editTitle = header.getByRole("button", { name: "Edit title" });
+  const editor = page.getByRole("textbox", { name: "Issue title" });
+  await expect(
+    header.getByRole("heading", { level: 1, name: "Ledger rollout" }),
+    step("the header draws the title")
+  ).toBeVisible();
+  await editTitle.focus();
+  await page.keyboard.press("Enter");
+  await expect(editor, step("Enter on Edit title opens the editor")).toBeFocused();
+  await page.keyboard.type(" draft");
+  await page.keyboard.press("Escape");
+  await expect(editor, step("Escape ends the edit")).toHaveCount(0);
+  await expect(
+    header.getByRole("heading", { level: 1, name: "Ledger rollout" }),
+    step("Escape puts the title back")
+  ).toBeVisible();
+  await expect(editTitle, step("Escape gives the focus back to Edit title")).toBeFocused();
+});
