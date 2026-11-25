@@ -48,7 +48,7 @@ func TestAGiveOfTheVersionInForceAppliesNothingWhateverItsID(t *testing.T) {
 
 	for _, id := range []string{planID("LEGION-208", 1, 1), planID("LEGION-208", 1, 1) + ":" + string(given.GivenBy)} {
 		if result := applyFacts(t, pool, engine)(id, given); !reflect.DeepEqual(result, intake.Result{}) {
-			t.Errorf("version 1 given again as %s = %+v, want it answered with no refusal", id, result)
+			t.Errorf("version 1 given again as %s = %+v, refusal %+v, want it answered with no refusal", id, result, result.Refusal)
 		}
 		if !processed(t, pool, id) {
 			t.Errorf("the give %s is not marked, want it marked for a release before", id)
