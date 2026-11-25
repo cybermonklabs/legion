@@ -135,7 +135,7 @@ on:
       - 'packages/envoy/cmd/cipher/**'
       - 'packages/envoy/cmd/cipher-helper/**'
       - 'packages/envoy/cmd/cipher-refgen/**'
-      - 'packages/envoy/cmd/cipherd/**'
+      - 'packages/envoy/cmd/cipherd/*'
       - 'packages/envoy/cmd/dispatch/*'
       - 'packages/envoy/dispatchbody/**'
       - 'packages/envoy/going/*'

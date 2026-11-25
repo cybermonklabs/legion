@@ -178,11 +178,13 @@ func TestDeploymentMainMovedToKindsServesEveryProxiedName(t *testing.T) {
 	}
 
 	t.Run("the control: the anthropic kind allows GET alone", func(t *testing.T) {
-		getOnly := readDeploymentFile(t, [2]string{`"max_grant": "1h", "allow": [
-      {"method": "GET", "pathPrefix": "/v1/organizations/"},
-      {"method": "POST", "pathPrefix": "/v1/organizations/"},
-      {"method": "DELETE", "pathPrefix": "/v1/organizations/"}
-    ]}`, `"max_grant": "1h", "allow": [{"method": "GET", "pathPrefix": "/v1/organizations/"}]}`})
+		getOnly := readDeploymentFile(t, [2]string{`      "max_grant": "1h",
+      "allow": [
+        { "method": "GET", "pathPrefix": "/v1/organizations/" },
+        { "method": "POST", "pathPrefix": "/v1/organizations/" },
+        { "method": "DELETE", "pathPrefix": "/v1/organizations/" }
+      ]`, `      "max_grant": "1h",
+      "allow": [{ "method": "GET", "pathPrefix": "/v1/organizations/" }]`})
 		set := policytest.ProfiledCurrent(t, secrets.NewLocal(agentInfraSecrets(true)...), getOnly, daemonService).Get()
 		for _, name := range []string{"ANTHROPIC_ADMIN_HDO", "ANTHROPIC_ADMIN_HDO_V2", "ANTHROPIC_ADMIN_PBC"} {
 			refusal := refusedProfile(t, set, name, policy.ReasonProfileAllowOutsideKind)
