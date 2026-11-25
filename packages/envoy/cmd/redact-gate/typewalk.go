@@ -3,10 +3,10 @@ package main
 import "go/types"
 
 // edges are the edges the one walk of a type's structure (reaches) follows, each from a type to a
-// type a value of it holds. Every walk follows a named type to its underlying type, a pointer, a
-// slice and an array to its element, a map to its key and its value, and a struct to each of its
-// fields, and no walk follows an interface's methods. A walk whose question needs other edges
-// sets them here; its caller's doc says why.
+// type a value of it holds. With no field set, a walk follows a named type to its underlying
+// type, a pointer, a slice and an array to its element, a map to its key and its value, and a
+// struct to each of its fields, and no walk follows an interface's methods. A walk whose question
+// needs other edges, or fewer, sets them here; its caller's doc says why.
 type edges struct {
 	chans       bool                              // a channel to its element
 	signatures  bool                              // a function type to its parameters' and results' types
