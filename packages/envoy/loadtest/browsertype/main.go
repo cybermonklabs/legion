@@ -84,12 +84,11 @@ func run(args []string) int {
 	results := make([]result, len(cfg.artifacts)*cfg.peers)
 	var wg sync.WaitGroup
 	for a, artifact := range cfg.artifacts {
+		room, roomErr := roomURL(cfg.baseURL, artifact)
 		for p := range cfg.peers {
 			index := a*cfg.peers + p
-			results[index] = result{artifact: artifact, peer: p}
-			room, err := roomURL(cfg.baseURL, artifact)
-			if err != nil {
-				results[index].err = err
+			results[index] = result{artifact: artifact, peer: p, err: roomErr}
+			if roomErr != nil {
 				continue
 			}
 			wg.Go(func() {
