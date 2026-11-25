@@ -1557,6 +1557,10 @@ list, so the audience is the whole of the bound. Pick one no other workload of t
 kubelet for, and leave `oidcAudience` unset where no caller needs it, which is how Dispatch
 behaves today: neither variable renders and no token is verified.
 
+`projectOwnerFallback` (plain) renders `DISPATCH_PROJECT_OWNER_FALLBACK`: the lowercase email of a
+full member, whom Dispatch makes, at boot, the owner of every project the migration left without
+one. Unset, nothing renders.
+
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the
 component's namespace holding the App's PEM private key, as GKE SecretSync copies it from Secret
