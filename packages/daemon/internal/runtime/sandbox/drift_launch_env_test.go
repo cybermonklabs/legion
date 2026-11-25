@@ -23,6 +23,7 @@ import (
 // own failure as a missing grant and reports a secrets problem. The two variables belong with the
 // flags: a launch that enrols its role sets them, and one that does not, does not.
 func TestAKeptPodWithoutTheEnrollmentTellsItsRoleOfNoBroker(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
@@ -78,6 +79,7 @@ func enrolledWith(url string) func(*Options) {
 // it would describe a process that does not exist, and the variable left out of the record
 // entirely reads as moved ("(unrecorded)") the first time anything is compared.
 func TestAKeptPodWithoutTheEnrollmentRecordsNoBrokerForItsGeneration(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, enrolledWith(keptBrokerURL))
@@ -115,6 +117,7 @@ func TestAKeptPodWithoutTheEnrollmentRecordsNoBrokerForItsGeneration(t *testing.
 // still owes its report and no claim's activity report holds it (internal/daemon's
 // roundEnd.holding), or at the round's bound.
 func TestAKeptPodsGenerationIsNotStaleWhenTheBrokerItNeverHeldMoves(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, enrolledWith(keptBrokerURL))

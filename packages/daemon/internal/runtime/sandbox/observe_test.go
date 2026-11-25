@@ -46,6 +46,7 @@ func unscheduledFor(age time.Duration) corev1.PodStatus {
 // The mapping, row by row and in the order the rows apply, against the synced stores. Every
 // observation carries the recorded locator whatever it saw; the uid it saw goes in the detail.
 func TestTheMappingRowByRowInPrecedence(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	withPod := func(mode string, conditions []metav1.Condition, uid, owner string, status corev1.PodStatus, edit ...func(*corev1.Pod)) []k8sruntime.Object {
@@ -631,6 +632,7 @@ func (b *breakablePods) fail() {
 // list or watch request failed, the runtime answers Uncertain from it (row 1), never the Alive it
 // last saw, and answers from the store again once a request succeeds.
 func TestAFailingWatchMakesTheStoreUncertainUntilItRecovers(t *testing.T) {
+	t.Parallel()
 	pods := &breakablePods{}
 	g := newRig(t, nil, withBreakablePods(pods))
 	loc := g.spawn(workerSpec(t))
