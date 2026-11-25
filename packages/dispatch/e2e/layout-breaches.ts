@@ -795,8 +795,8 @@ export const inboxBreaches: readonly KnownLayoutBreach[] = [
   { route: "inbox", width: 360, kind: "clipped", element: '[data-testid="inbox-list"]', count: 2 },
   { route: "inbox", width: 900, kind: "clipped", element: '[data-testid="inbox-list"]', count: 2 },
   { route: "answers", width: 360, kind: "page-scroll", element: '[aria-label="Answered by you"]' },
-  { route: "answers", width: 900, kind: "page-scroll", element: '[aria-label="Answered by you"]' },
-  { route: "answers", width: 1280, kind: "page-scroll", element: '[aria-label="Answered by you"]' },
+  { route: "answers", width: 900, kind: "page-scroll", element: "html" },
+  { route: "answers", width: 1280, kind: "page-scroll", element: "html" },
   {
     route: "agents",
     state: "peek-drawer",

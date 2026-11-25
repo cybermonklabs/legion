@@ -378,8 +378,8 @@ function checkGithubRead(entry: Har["log"]["entries"][number], url: URL, where: 
  *  tab's `was:` line draws, and not those of the current answer, whose options the payload's
  *  own option trees draw; the Go rows hold which (`api/chosen_label_trees_test.go`).
  *
- *  One field is read as a word and not a text: an issue claim event's `reason`, while it holds
- *  one of the words `claimReasons` lists. */
+ *  Two fields are read as words and not texts: an issue claim event's `reason`, while it holds
+ *  one of the words `claimReasons` lists, and an artifact event's `name`. */
 const storedTextFields = new Set(demandedPairs.map(({ field }) => field));
 
 const claimReasons = new Set<string>(issueClaimEventPayloadFields.reason.options);
@@ -390,6 +390,20 @@ function isClaimReason(event: RecordedEvent, at: string): boolean {
   const payload = event.payload;
   if (payload === null || typeof payload !== "object" || !("reason" in payload)) return false;
   return typeof payload.reason === "string" && claimReasons.has(payload.reason);
+}
+
+/** Whether `at` is an artifact event's name: `payload.name` (a version's) or
+ *  `payload.artifact.name` (a created, renamed or removed one's), the artifact's file name, which
+ *  the app writes into a line as a string (`features/activity/activity-model.ts`'s
+ *  `added ${event.payload.artifact.name}` and `saved ${event.payload.name} v…`, and
+ *  `features/issue/event-description.ts` likewise) and the server reads no tree for, since
+ *  `eventPayloadTexts` reads the comment, message, suggestion and ask families alone. `name` is a
+ *  stored text where a schema pairs it with a tree (a reference link's), so the field name alone
+ *  demands one here; a recording whose issue holds a saved document has such events. */
+function isArtifactName(event: RecordedEvent, at: string): boolean {
+  return (
+    (at === "payload.name" || at === "payload.artifact.name") && event.type.startsWith("artifact.")
+  );
 }
 
 /** Whether this schema is an event's: one that declares a `payload` beside the `trees` map
@@ -495,7 +509,7 @@ function checkTrees(file: string): number {
     for (const event of answered as RecordedEvent[]) {
       events += 1;
       for (const at of eventTextPaths(event.payload, "payload", [])) {
-        if (isClaimReason(event, at)) continue;
+        if (isClaimReason(event, at) || isArtifactName(event, at)) continue;
         expect(
           holdsContent(event.trees?.[at]),
           `${where}: event ${event.id} (${event.type}) answers ${at} without a display tree ` +
