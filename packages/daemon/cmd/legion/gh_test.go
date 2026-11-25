@@ -1562,7 +1562,7 @@ func TestLegionGhHandsGhThePrePushHooksVariables(t *testing.T) {
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := ghStandInPrefix(help) + "printf '%s|%s|%s\\n' " +
 		"\"${" + leakguard.CheckVar + "-unset}\" \"${" + leakguard.RulesFileVar + "-unset}\" \"${" + wrappedGitAt + "-unset}\"\n"
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	check := leakguardtest.Write(t, t.TempDir(), ghCheckPasses)
@@ -3469,7 +3469,7 @@ func ghHelpStandIn(t *testing.T) string {
 		"fi\n" +
 		"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"echo 'the help gh prints'\n"
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return stub
