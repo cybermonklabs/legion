@@ -41,6 +41,20 @@ const theMove = "the move at boot (storesmove), which reads, copies and drops th
 // release before wrote them, before the move it holds to what it must do.
 const beforeTheMove = "a test of the move, or its helper, which writes the old tables in the release before's shapes before the move"
 
+// storesMovedCheck is the reason of the check c-stores-moved's driver, its parser test and their
+// fixtures: the driver boots the release before, which writes the four tables, and reads the
+// tables, their locks and the census's plans of them while this head moves them.
+const storesMovedCheck = "c-stores-moved's driver (stores-moved.sh), which boots the release before over the four tables and reads them, their locks and the census's plans of them while this head moves them"
+
+// storesMovedFixture is the reason of a fixture of that driver's parsers: a log or an output the
+// real systems wrote during the move, captured as it was, which names the tables as it wrote them.
+const storesMovedFixture = storesMovedCheck + ": a fixture of its parsers (stores-moved.test.sh), captured as the real systems wrote it"
+
+// movedReadCostCheck is the reason of the check c-moved-read-cost's test and its corpus: the corpus
+// writes the four tables in the release before's shapes, and the test times that release's reads
+// of them beside this head's reads of the graph store.
+const movedReadCostCheck = "c-moved-read-cost's test (TestNoMovedReadGetsSlower), which writes the four tables in the release before's shapes and times that release's reads of them beside this head's reads of the graph store"
+
 // movedTablesNamers is every file of the checkout that may name a moved table, each with why. A
 // file joins it in the commit that writes what it names a table for, and leaves it in the commit
 // that takes that out, so it holds only files that stand and name a table.
@@ -67,6 +81,19 @@ var movedTablesNamers = []movedTablesNamer{
 	{"packages/envoy/internal/dispatch/api/stores_moved_drop_test.go", "a test that reads that the boot step left none of the four names before every writer of the three kinds writes (TestTheMovedStoresWriteAfterTheDropStep)"},
 	{"packages/envoy/internal/dispatch/graphcensus/one_writer_test.go", "c-one-writer, which names the four views, with the two triggers, as the one write of the store outside graphstore while they stand (TestEveryGraphKindHasOneWriter)"},
 	{"packages/dispatch/e2e/acceptance/root-deletes.txt", "the list of what this change keeps for one release, the four views among them"},
+	{"packages/dispatch/e2e/acceptance/stores-moved.sh", storesMovedCheck},
+	{"packages/dispatch/e2e/acceptance/stores-moved.test.sh", storesMovedCheck + ": the test of its parsers"},
+	{"packages/dispatch/e2e/acceptance/testdata/stores-moved/base-handler-failure.txt", storesMovedFixture + " (the release before's log of the seventh control, which reads priority_tuples after the drop)"},
+	{"packages/dispatch/e2e/acceptance/testdata/stores-moved/census-explain.out", storesMovedFixture + " (the rehearsal's plans of the move's census statements, with DISPATCH_TEST_STORES_MOVE_EXPLAIN=1)"},
+	{"packages/dispatch/e2e/acceptance/testdata/stores-moved/census-pending-search-text.out", storesMovedFixture + " (the census's rehearsal, which skips a pending migration of another tree that touches none of the six tables)"},
+	{"packages/dispatch/e2e/acceptance/testdata/stores-moved/head-first.txt", storesMovedFixture + " (the first runner's boot log, whose swap waits on priority_nodes)"},
+	{"packages/dispatch/e2e/acceptance/testdata/stores-moved/head-last.txt", storesMovedFixture + " (a boot log whose one swap attempt gives up on priority_nodes)"},
+	{"packages/dispatch/e2e/acceptance/testdata/stores-moved/head-roll.txt", storesMovedFixture + " (this head's boot log over the roll)"},
+	{"packages/dispatch/e2e/acceptance/testdata/stores-moved/head-second.txt", storesMovedFixture + " (the second runner's boot log, which finds priority_nodes a view and moves nothing)"},
+	{"packages/dispatch/e2e/acceptance/testdata/stores-moved/locks-wait-on-priority-nodes.csv", storesMovedFixture + " (the swap's locks while it waits on priority_nodes)"},
+	{"packages/envoy/internal/dispatch/api/moved_read_cost_test.go", movedReadCostCheck},
+	{"packages/envoy/internal/dispatch/api/testdata/moved-read-cost-corpus.sql", movedReadCostCheck + ": its corpus"},
+	{"packages/envoy/internal/dispatch/store/stores_moved_production_test.go", "c-moved-recorded's test (TestNoMigrationProductionLacksTouchesTheStores), which names the six tables the rehearsal reads and writes (storesMoveTables) and fails on each migration production lacks that touches one"},
 }
 
 // TestNoFileAtTheHeadNamesTheMovedTablesOutsideItsList is the inventory of the move of the priority
