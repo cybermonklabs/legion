@@ -278,6 +278,12 @@ func (e *Engine) StartCarriedRun(ctx context.Context, tx pgx.Tx, root record.Iss
 // (resumeTaskOn), and no claim of it starts, since no role of a parent that waits on its children
 // works (R11 of dispatch://INFRA-3320). The return starts that phase once no open child is left
 // (ReturnFromChildren). It says whether it held the start.
+//
+// It holds the start whatever entry the phase's role stands on, one a move out of retro or merging
+// raised among them (acceptedEntry), which the release of a hold leaves to start
+// (childrenHoldingSamePhaseStart): the promotion raises a new entry of no move
+// (StartPromotedWorker), so the admission pass after it would stop that worker as any started
+// parent's (StopForChildren), and the promotion holds the start that pass would hold instead.
 func (e *Engine) carriedStartHeld(ctx context.Context, tx pgx.Tx, root record.Issue) (bool, error) {
 	pr, err := e.store.PullRequestRow(ctx, tx, root.Key)
 	if err != nil {

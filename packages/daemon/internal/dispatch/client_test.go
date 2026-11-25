@@ -1196,6 +1196,49 @@ func TestHandoffReadsTheRecordAndItsAuthor(t *testing.T) {
 	}
 }
 
+// An ask reads back with its state and the actor its resolution names, as GET /api/v1/asks/{id}
+// answers it beside the ask's thread, which is not the daemon's to read: a resolved ask names its
+// resolver, and an open one, which has no resolution, names nobody. An answer that names no state
+// is an error, and an ask Dispatch does not have is Missing.
+func TestAskReadsTheStateAndTheResolver(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.Method != http.MethodGet {
+			t.Fatalf("request = %s %s, want GET", r.Method, r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/api/v1/asks/ask-resolved":
+			writeJSON(t, w, map[string]any{"ask": map[string]any{"id": "ask-resolved", "kind": "approval", "state": "resolved",
+				"resolution": map[string]any{"kind": "resolved", "reason": "The request is withdrawn.",
+					"actor": map[string]any{"kind": "session", "id": "ses_architect", "origin": map[string]any{"title": "architect"}}, "at": "2026-11-24T18:00:00Z"}},
+				"replies": []any{}, "followers": []any{}, "claimant": nil, "route": nil})
+		case "/api/v1/asks/ask-open":
+			writeJSON(t, w, map[string]any{"ask": map[string]any{"id": "ask-open", "kind": "approval", "state": "open"}})
+		case "/api/v1/asks/ask-stateless":
+			writeJSON(t, w, map[string]any{"ask": map[string]any{"id": "ask-stateless"}})
+		default:
+			writeJSONStatus(t, w, http.StatusNotFound, map[string]string{"code": "NOT_FOUND", "error": "ask not found"})
+		}
+	}))
+	defer server.Close()
+
+	client := New(server.URL, dispatchToken)
+	resolved, err := client.Ask(context.Background(), "ask-resolved")
+	if want := (Ask{State: "resolved", ResolvedBy: Actor{Kind: "session", ID: "ses_architect"}}); err != nil || resolved != want {
+		t.Fatalf("the resolved ask = %#v, %v; want %#v", resolved, err, want)
+	}
+	open, err := client.Ask(context.Background(), "ask-open")
+	if want := (Ask{State: "open"}); err != nil || open != want {
+		t.Fatalf("the open ask = %#v, %v; want %#v", open, err, want)
+	}
+	if stateless, err := client.Ask(context.Background(), "ask-stateless"); err == nil {
+		t.Fatalf("an ask answered with no state = %#v, want an error", stateless)
+	}
+	if _, err := client.Ask(context.Background(), "ask-unknown"); !Missing(err) {
+		t.Fatalf("an unknown ask = %v, want Dispatch's 404", err)
+	}
+}
+
 func TestClientReturnsDispatchErrorForCoded4xx(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSONStatus(t, w, http.StatusConflict, map[string]string{"code": "ISSUE_CLOSED", "error": "issue is closed"})

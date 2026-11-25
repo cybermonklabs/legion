@@ -215,9 +215,10 @@ func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.Desi
 // noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
 // artifacts answers none, a document's reviews none, a version of a document Dispatch's 404, an
 // upload answers the slug Dispatch files the name under, which for a message's document is its
-// name (record.MessageArtifact), and a read of a plan document at a version finds none, since no
-// executor of the outbox reads one. It also takes every role-holder publication and keeps none.
-// Every fake of the client that no test drives through a message's document or a role-holder
+// name (record.MessageArtifact), a read of a plan document at a version finds none, since no
+// executor of the outbox reads one, and a read of an ask by its id Dispatch's 404, since it keeps
+// no ask either. It also takes every role-holder publication and keeps none. Every fake of the
+// client that no test drives through a message's document, an ask's read or a role-holder
 // publication embeds it.
 type noArtifacts struct{}
 
@@ -233,6 +234,9 @@ func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string,
 }
 func (noArtifacts) PlanDocument(context.Context, string, int) (dispatch.DocumentVersion, error) {
 	return dispatch.DocumentVersion{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "artifact not found"}
+}
+func (noArtifacts) Ask(context.Context, string) (dispatch.Ask, error) {
+	return dispatch.Ask{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "ask not found"}
 }
 func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
 

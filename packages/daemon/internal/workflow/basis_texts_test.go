@@ -105,12 +105,16 @@ func TestAGateOpeningOnAnAncestorsApprovalNamesItAndNoPersonsApprovalOfTheRoot(t
 // person's changes request on the root's document. A person's approval of the root's own document
 // while the step waited names that approval and then the end of the wait.
 func TestTheResumeOfARootWaitingOnAPersonNamesWhatItsBasisDid(t *testing.T) {
+	changes := ancestorReview(intake.DispatchArtifactChangesRequested, 4, 61, "name the rollback path")
 	for _, tc := range []struct {
 		name  string
 		basis *record.GateBasis
 		act   intake.Fact
-		want  []string
-		not   []string
+		// read is the read of Dispatch the pending-basis seed act queues makes, nil for an act
+		// that queues none.
+		read *intake.PendingBasisRead
+		want []string
+		not  []string
 	}{
 		{
 			name:  "a registration on an approved basis",
@@ -122,7 +126,8 @@ func TestTheResumeOfARootWaitingOnAPersonNamesWhatItsBasisDid(t *testing.T) {
 		{
 			name:  "the ancestor's changes request on the version the step waited on",
 			basis: pendingBasis(),
-			act:   current(ancestorReview(intake.DispatchArtifactChangesRequested, 4, 61, "name the rollback path")),
+			act:   changes,
+			read:  new(currentRead(changes)),
 			want: []string{"The wait of your spec step on an ancestor's approval request ended: user:alice requested changes on version 4 of the primary document of LEGION-100",
 				"no longer waits on approval request ask-100", "Read that document before you register the spec step again."},
 			not: []string{"A person requested changes to your", "revise the primary document as they ask"},
@@ -151,6 +156,9 @@ func TestTheResumeOfARootWaitingOnAPersonNamesWhatItsBasisDid(t *testing.T) {
 			apply("register", onBasis(tc.basis, 6))
 			if tc.act != nil {
 				apply("act", tc.act)
+			}
+			if tc.read != nil {
+				apply("act-read", *tc.read)
 			}
 
 			root := recordedRoot(t, pool)

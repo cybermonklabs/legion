@@ -70,7 +70,7 @@ func TestGatedStepsAnswerAStepOnAnAncestorsBasisInItsOwnWords(t *testing.T) {
 // status words and each root's `treeRuns`, and this daemon's own contract is never below it: a
 // caller at this contract is served them.
 func TestTheGateBasisContractIsTheContractThatAddedTheBasis(t *testing.T) {
-	const addedGateBasis = 249
+	const addedGateBasis = 276
 	if gateBasisContract != addedGateBasis {
 		t.Fatalf("gateBasisContract = %d, want %d, the contract whose entry in version.go added the gated steps' basis and the roots' treeRuns",
 			gateBasisContract, addedGateBasis)

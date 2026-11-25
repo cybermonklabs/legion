@@ -293,9 +293,13 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
+	// gateBasisContract's band and chainContract's, the rows of stateNarrowings above this one,
+	// stand above a caller one contract below causeTimesContract too, so the log holds this band's
+	// line and then theirs.
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	wantNarrowings(t, narrowings, causeTimesContract-1, []string{
 		"the claim views' lastDeathAt and lastStartFailureAt",
+		"the issues' treeRuns and the gatedSteps of every issue a step of which stands on an ancestor's basis",
 		"daemon.convertedAt",
 	})
 }

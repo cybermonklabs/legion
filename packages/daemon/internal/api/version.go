@@ -3586,7 +3586,52 @@ package api
 // 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
 // again at every forward merge rather than from this line.)
 //
-// 249: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// 250: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
+// and `GET /legion/v1/issues/{key}/record` gain two keys: each recorded issue's own `priority`
+// and the effective `waitingLine.priority`. Both are numbers from 0 for P0 to 3 for P3, or null
+// for none. A caller below 250 gets neither key. Waiting line `partPlace` and `partLength`
+// count within the member's priority band and part. `admission.waiting` and `place` follow
+// the new order at every contract.
+//
+// 256: #5349 -- each claim view of `GET /legion/v1/state` and of `GET
+// /legion/v1/issues/{key}/record` gains two keys: `lastDeathAt` beside `lastDeathCause` and
+// `lastStartFailureAt` beside `lastStartFailure`, the time the daemon recorded that cause, in RFC
+// 3339. Each is absent when its cause is absent, and beside a cause an earlier release recorded,
+// which wrote no time, except after a rollback (the migration's header; `api.ClaimView`). The
+// claim keeps both in the store's `claims` table (`20261124073512_claim_cause_times`), so a
+// daemon restart keeps them, and each is set and cleared only together with its cause, so a
+// cause recorded again with the same text carries its new time (the rule
+// `supervise.Claim.LastDeathAt` states). The store writes each time with a digest of the cause it
+// dates, which no key serves, and reads the time back only beside that cause (the claim store's
+// causeTime). The records of 256
+// hold the two keys on every claim view, and no record below 256 does: a caller whose contract
+// (the one it states, else its pod's lowest) is below 256 is served every claim view without
+// them (the band of shaping.go's stateNarrowings, `withoutCauseTimes`), so a plugin from 250 to
+// 255 is served 250's keys. The operator's claim view
+// (`api.OperatorClaim`, which `legion claims list --json` prints) carries the same two keys; the
+// operator routes are not served down, since their reader is the `legion` built with this daemon.
+// No value of an enumerated field moves, and no request a plugin sends changes.
+// (This entry took 243 at first, above each number another open pull request declared. A reading
+// of `const DaemonAPIVersion` at the head of each of the 138 of the 513 open pull requests of this
+// repository that change version.go, made at 2026-11-24T07:23:50Z, found every number from 221
+// to 242 declared and nothing above 242, so 243 was the lowest number above main's 220 that no
+// open pull request declared at that reading. The forward merge of 2026-11-24 that brought in
+// e14345bfc8 brought main's 228 (#4590), below 243, so this entry kept 243, and the forward
+// merge of 2026-11-24 that brought in d27405712c brought main's 232 (#5271), below it too, so it
+// kept 243 again. The forward merge of 2026-11-24 that brought in 7e75126fae brought main's 246
+// (#4960), above 243. A reading of version.go at the head of each of the 473
+// open pull requests of this repository, between 2026-11-24T15:34:44Z and 15:48:04Z, found 55
+// that add an entry, and above main's 246 they declare 247 (#4580 and #5384), 250 (#5365), 251
+// (#5307), 252 (#4540), 254 (#4432) and 255 (#5164), and 247 to 249 had been named for other
+// changes, so this entry moved to 256, above every number an open pull request
+// declares or a change had been named for. From this entry the last number of answers.go's
+// SupportedContracts is `api.causeTimesContract`, after podHoldContract's 246. The forward merge
+// of 2026-11-24 that brought in 5df00e2f13 brought main's 250 (#5365, the entry above), below
+// 256, so this entry kept 256, and the list ends priorityContract, causeTimesContract. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 276: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
 // `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
@@ -3624,7 +3669,7 @@ package api
 // whose step rests on the issue's approval is still in the workflow, and `SIGNOFF_CHILD_OPEN`,
 // while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
 // hold it; the refusal's shape is the one every refusal has.
-// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve a caller below 249 — one
+// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve a caller below 276 — one
 // that states a contract below it in `Legion-Plugin-Contract`, or else one from a pod whose
 // claims record one — the shape its own contract describes, by 193's serving rule, and this
 // entry adds one band and two value strips to that serving, and a word to a third strip, 219's
@@ -3636,21 +3681,25 @@ package api
 // `lastPause` as well, the entry of 178 above (`withoutPause`), a caller below 146 the issues
 // without both entry times and `architectStalls`, the entry of 146 (`withoutEntryTimes`), and so
 // on down `stateNarrowings`. 178's band and this one touch no key of each other's, and the bands
-// of 193, 202, 220, 228 and 246 stand between them (232 adds none), so a caller at 202 through 248
-// is served the pause, the keys 193 added and the repositories block 202 writes, and none of this
-// entry's keys and words (a caller that states 203 or 204 is served 202's records, the nearest
-// recorded contract at or below it, one that states 205 to 212 is served 205's, which are 202's
-// under its own number, as 205's entry says, one that states 213 to 216 is served 213's, which
-// are 205's with `caches` among the words of a capability row's `source`, as 213's entry says,
-// one that states 217 or 218 is served 217's, which are 213's under its own number, as 217's
-// entry says, one that states 219 is served 219's, which are 217's with the owner's plan's
+// of 193, 202, 220, 228, 246, 250 and 256 stand between them (232 adds none), so a caller at 202
+// through 275 is served the pause, the keys 193 added and the repositories block 202 writes, and
+// none of this entry's keys and words (a caller that states 203 or 204 is served 202's records,
+// the nearest recorded contract at or below it, one that states 205 to 212 is served 205's, which
+// are 202's under its own number, as 205's entry says, one that states 213 to 216 is served 213's,
+// which are 205's with `caches` among the words of a capability row's `source`, as 213's entry
+// says, one that states 217 or 218 is served 217's, which are 213's under its own number, as
+// 217's entry says, one that states 219 is served 219's, which are 217's with the owner's plan's
 // routes, fields and words, as 219's entry says, one that states 220 to 227 is served 220's,
 // which are 219's with each assignment's `plan`, as 220's entry says, one that states 228 to 231
 // is served 228's, which are 220's with `intakeGiveUps` and the two give-up answers, as 228's
 // entry says, one that states 232 to 245 is served 232's, whose answer records are 228's under
-// its own number, since 232 adds two fields to a request and moves no answer's shape, and one
-// that states 246 to 248 is served 246's, which are 232's with each issue's `podHold`, as 246's
-// entry says, so a caller below 246 is served no `podHold`, one below 228 no `intakeGiveUps`
+// its own number, since 232 adds two fields to a request and moves no answer's shape, one that
+// states 246 to 249 is served 246's, which are 232's with each issue's `podHold`, as 246's entry
+// says, one that states 250 to 255 is served 250's, which are 246's with each issue's `priority`
+// and its waitingLine's `priority`, as 250's entry says, and one that states 256 to 275 is served
+// 256's, which are 250's with each claim view's `lastDeathAt` and `lastStartFailureAt`, as 256's
+// entry says, so a caller below 256 is served no `lastDeathAt` or `lastStartFailureAt`, one below
+// 250 no `priority` either, one below 246 no `podHold` either, one below 228 no `intakeGiveUps`
 // either, one below 220 no assignment's `plan` either, and one below 219 none of 219's additions
 // either), a
 // caller at 193 through 201 the pause, 193's keys and the block in 152's shape (one that states
@@ -3667,7 +3716,7 @@ package api
 // (`gatedStepStatuses`), so a value strip holds them back too, following the contract the caller
 // states, else its pod's lowest: `withoutUnadmittedStepStatuses`, a row of shaping.go's
 // `valueStrips`, serves an issue any step of which reads a word the caller does not admit with no
-// `gatedSteps`. Every reader from 249 on takes `treeRuns` and `basis` as optional and reads the
+// `gatedSteps`. Every reader from 276 on takes `treeRuns` and `basis` as optional and reads the
 // six words (`packages/contracts/src/legion-api.ts`).
 // The change ships store migrations `20261114064234_design_gate_basis` and
 // `20261122154643_outbox_kinds_with_the_basis_seeds`, which keep the basis on the gate row and
@@ -3678,7 +3727,7 @@ package api
 // `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
 // it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
 // `admission.held` entry for such a parent with `reason: awaiting_children`, which
-// `LEGION_HELD_REASONS` names. A caller below 249 knows neither word — its phase enum and its held
+// `LEGION_HELD_REASONS` names. A caller below 276 knows neither word — its phase enum and its held
 // words are the ones before this change — so the daemon serves it that issue's `phase` as
 // `admitted`, the status that names no worker's phase, and that held entry's `reason` as
 // `children_first`, the word a started parent's wait took over. Both are value strips, rows of
@@ -3687,7 +3736,7 @@ package api
 // `withoutUnadmittedPhases` and `withoutUnadmittedHeldWords`. `heldFrom` and
 // `pendingTask.phase` read `LEGION_WORKFLOW_PHASES` too, so the table declares the word for them
 // as well (`workflowPhases`), and `withoutUnadmittedPhases` leaves either key off where it names
-// the word for a caller below 249; the daemon writes the word in neither, since `heldFrom` is null
+// the word for a caller below 276; the daemon writes the word in neither, since `heldFrom` is null
 // in the phase and a hold never comes from it, and no task is queued for a phase no role works.
 // The change ships store migration `20261114232555_awaiting_children`, which adds the phase value
 // and the parent's held start to the issues table; it moves the daemon's own record and is no part
@@ -3855,54 +3904,14 @@ package api
 // declared by other pull requests and 249 by none, so this change moved 239 → 249, the lowest
 // number above main's 246 that no other open head declares
 // (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-g-md). From this entry answers.go's
-// SupportedContracts names `gateBasisContract` after `podHoldContract`, 246's constant. Read the
-// base's own number and every open head again, by a REST raw read of each head's file, at the next
-// forward merge rather than from this line.)
-//
-// 250: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
-// and `GET /legion/v1/issues/{key}/record` gain two keys: each recorded issue's own `priority`
-// and the effective `waitingLine.priority`. Both are numbers from 0 for P0 to 3 for P3, or null
-// for none. A caller below 250 gets neither key. Waiting line `partPlace` and `partLength`
-// count within the member's priority band and part. `admission.waiting` and `place` follow
-// the new order at every contract.
-//
-// 256: #5349 -- each claim view of `GET /legion/v1/state` and of `GET
-// /legion/v1/issues/{key}/record` gains two keys: `lastDeathAt` beside `lastDeathCause` and
-// `lastStartFailureAt` beside `lastStartFailure`, the time the daemon recorded that cause, in RFC
-// 3339. Each is absent when its cause is absent, and beside a cause an earlier release recorded,
-// which wrote no time, except after a rollback (the migration's header; `api.ClaimView`). The
-// claim keeps both in the store's `claims` table (`20261124073512_claim_cause_times`), so a
-// daemon restart keeps them, and each is set and cleared only together with its cause, so a
-// cause recorded again with the same text carries its new time (the rule
-// `supervise.Claim.LastDeathAt` states). The store writes each time with a digest of the cause it
-// dates, which no key serves, and reads the time back only beside that cause (the claim store's
-// causeTime). The records of 256
-// hold the two keys on every claim view, and no record below 256 does: a caller whose contract
-// (the one it states, else its pod's lowest) is below 256 is served every claim view without
-// them (the band of shaping.go's stateNarrowings, `withoutCauseTimes`), so a plugin from 250 to
-// 255 is served 250's keys. The operator's claim view
-// (`api.OperatorClaim`, which `legion claims list --json` prints) carries the same two keys; the
-// operator routes are not served down, since their reader is the `legion` built with this daemon.
-// No value of an enumerated field moves, and no request a plugin sends changes.
-// (This entry took 243 at first, above each number another open pull request declared. A reading
-// of `const DaemonAPIVersion` at the head of each of the 138 of the 513 open pull requests of this
-// repository that change version.go, made at 2026-11-24T07:23:50Z, found every number from 221
-// to 242 declared and nothing above 242, so 243 was the lowest number above main's 220 that no
-// open pull request declared at that reading. The forward merge of 2026-11-24 that brought in
-// e14345bfc8 brought main's 228 (#4590), below 243, so this entry kept 243, and the forward
-// merge of 2026-11-24 that brought in d27405712c brought main's 232 (#5271), below it too, so it
-// kept 243 again. The forward merge of 2026-11-24 that brought in 7e75126fae brought main's 246
-// (#4960), above 243. A reading of version.go at the head of each of the 473
-// open pull requests of this repository, between 2026-11-24T15:34:44Z and 15:48:04Z, found 55
-// that add an entry, and above main's 246 they declare 247 (#4580 and #5384), 250 (#5365), 251
-// (#5307), 252 (#4540), 254 (#4432) and 255 (#5164), and 247 to 249 had been named for other
-// changes, so this entry moved to 256, above every number an open pull request
-// declares or a change had been named for. From this entry the last number of answers.go's
-// SupportedContracts is `api.causeTimesContract`, after podHoldContract's 246. The forward merge
-// of 2026-11-24 that brought in 5df00e2f13 brought main's 250 (#5365, the entry above), below
-// 256, so this entry kept 256, and the list ends priorityContract, causeTimesContract. Read the
-// base's own number and every open pull request again at the next merge rather than from this
-// line.)
+// SupportedContracts names `gateBasisContract` after `podHoldContract`, 246's constant. At the
+// merge of main 1af8002b42b5, which carries 250 (#5365's waiting-line priority) and 256 (#5349's
+// claim cause times, the entry above), above this change's 249, this change moved 249 → 276, the
+// number INFRA-3118's architect allocated to it under INFRA's controller's ruling of
+// 2026-11-24T18:27Z, by which that architect allocates the numbers until INFRA-1569's #5399
+// merges. From this entry answers.go's SupportedContracts names `gateBasisContract` after
+// `causeTimesContract`, 256's constant. Read the base's own number at the next forward merge, and
+// take this change's number from whoever allocates the numbers then, rather than from this line.)
 //
 // 278: dispatch://INFRA-4730 -- the daemon stores no tree: it reads every parent and child question
 // from its copy of Dispatch's links (dispatch://INFRA-3320, R15 to R26), and three surfaces move.

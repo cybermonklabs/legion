@@ -1146,7 +1146,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// same fact, each at the slot that phase needs (record.Waiting's LineFirstPhase).
 	}
 	if gate.PendingOnBasis() && !updated.PendingOnBasis() && !carried {
-		return e.tellPendingEnded(ctx, tx, key, gate.Step.OrSpec(), *gate.Basis, ownDocumentEnded(key, gate, fact), fact.Actor.Name(), true)
+		return e.tellPendingEnded(ctx, tx, key, gate.Step.OrSpec(), *gate.Basis, ownDocumentEnded(key, gate, fact), fact.Actor.Name(), endedByOwnDocument)
 	}
 	if gate.OnBasis() && !updated.OnBasis() {
 		e.logOnCommit(ctx, "workflow: an act on the root's own document ended the basis its step stood open on", "issue", key,

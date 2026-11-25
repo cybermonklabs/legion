@@ -1249,9 +1249,12 @@ func TestStateGolden(t *testing.T) {
 // assignmentPlanContract's row), no `intakeGiveUps` (withoutIntakeGiveUps,
 // intakeGiveUpsContract's row), no issue's `podHold` (withoutPodHold, podHoldContract's row), no
 // root's `treeRuns` and no gated steps of a root a step of which stands on an ancestor's basis
-// (withoutGateBasis, gateBasisContract's row), the four other rows of stateNarrowings above that
-// contract, and every other key as a caller at shapedAnswersContract is served it, since no other
-// row of stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract.
+// (withoutGateBasis, gateBasisContract's row), no issue's `priority` (withoutPriority,
+// priorityContract's row), no claim view's `lastDeathAt` or `lastStartFailureAt`
+// (withoutCauseTimes, causeTimesContract's row) and no `daemon.convertedAt` (withoutConvertedAt,
+// chainContract's row), and every other key as a caller at shapedAnswersContract is served it,
+// since no other row of stateNarrowings stands between shapedAnswersContract and
+// repositoriesLiveContract.
 // shapedAnswersContract's row and pauseContract's stand at or below the contract it is served at,
 // which is why the golden carries `lowestPluginContract`, each claim view's `updateState` and
 // `paused`.

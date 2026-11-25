@@ -3,13 +3,33 @@
 // own — a delivery, the transaction that answers it — and the wait is bounded by the test
 // binary's own deadline rather than a fixed span: on a loaded machine a step that is merely slow
 // is not a failure, and a condition that never holds still fails, naming what it waited for.
-// Eventually is the wait a test usually wants; WithinPolling takes a bound and a pace of its
-// own; Holds answers rather than fails, for a caller whose failure text is its own; Bounded
-// is the clamp alone, for a wait that holds the rest itself; and Receive waits for a channel
-// with no bound but the test binary's deadline.
+// Eventually is the wait a test usually wants, and Until is Eventually for a condition that can
+// say what it read; Context gives a call that takes a context the same bound. The three give up
+// 30 s (margin) before the test binary's deadline and at no other moment, with no cap of their
+// own, and under -timeout 0 they have no end. WithinPolling takes a bound and a pace of its own;
+// Holds answers rather than fails, for a caller whose failure text is its own; Bounded is the
+// clamp alone, for a wait that holds the rest itself; and Receive waits for a channel with no
+// bound but the test binary's deadline.
+//
+// A wait of Eventually or Until that gives up writes "testwait: <test>: gave up waiting for
+// <what> 30s before the test binary's deadline; last read: <reading>" to stderr at once, then
+// fails the test with the same text; "last read" is there only for Until. The direct write is
+// there because Go's alarm panics without printing a running test's log, so a cleanup that
+// outlasted the margin would otherwise take the message with it. The text is one line: a newline
+// in what or in the reading is written as \n.
+//
+// The cost of no cap: a wait whose fact never comes holds its test binary until 30 s before the
+// deadline (in CI's race step, -timeout 30m, about 29.5 minutes), and every later wait of
+// Eventually or Until in that binary begins with the margin already passed, asks its question
+// once and fails. Such a give-up adds ", a moment that had passed before this wait began: the
+// first give-up line in time order is the cause" before its reading, so the first give-up line in
+// time order names the wait that never held, and the later ones are its side effects. A wait in a
+// cleanup after its test's wait gave up is one of those, so the cleanups keep the margin to run in;
+// under a -timeout of 30 s or less every such wait is.
 package testwait
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -19,25 +39,63 @@ import (
 	"time"
 )
 
-// Poll is how often a condition is asked. It is short enough that a test which passes in
-// milliseconds still does, and long enough that a waiting test costs a loaded machine little.
-const Poll = 10 * time.Millisecond
+// Poll is pace, the package's own, for a caller that asks a condition in a loop of its own. One
+// value, so the package's waits and those loops cannot come to ask at two paces.
+const Poll = pace
 
-// Eventually waits for condition, failing the test with what it waited for when the deadline
-// passes. The deadline is a minute, or the test binary's own less a second when that is sooner,
-// so a `-timeout` smaller than a minute still reports the wait rather than the binary's panic.
-func Eventually(t *testing.T, what string, condition func() bool) {
+// margin is how long before the test binary's deadline a wait gives up: the time the failing
+// test's cleanups and the failure itself have to run in before Go's alarm panics the binary.
+const margin = 30 * time.Second
+
+// pace is how often a condition is asked. It is short enough that a test which passes in
+// milliseconds still does, and long enough that a waiting test costs a loaded machine little.
+const pace = 10 * time.Millisecond
+
+// started is when this process began, for a testing.TB that cannot name its deadline: testing
+// arms its alarm at the -timeout flag's span from a moment later than this one, so the deadline
+// read from here is a little early and never late.
+var started = time.Now()
+
+// Eventually waits until holds reports true.
+func Eventually(t testing.TB, what string, holds func() bool) {
 	t.Helper()
-	WithinPolling(t, Bounded(t, time.Minute, time.Second), Poll, what, condition)
+	poll(t, what, holds, nil)
 }
 
-// Bounded is bound, or what is left of the test binary's own deadline less margin when that is
+// Until waits until read reports true, and returns what it read then. The failure prints the last
+// value read.
+func Until[T any](t testing.TB, what string, read func() (T, bool)) T {
+	t.Helper()
+	var value T
+	poll(t, what, func() bool {
+		var holds bool
+		value, holds = read()
+		return holds
+	}, func() string { return fmt.Sprintf("%+v", value) })
+	return value
+}
+
+// Context gives a context whose deadline is the binary's deadline less the margin, cancelled when
+// t ends. Under -timeout 0 it has no deadline.
+func Context(t testing.TB) context.Context {
+	end, bounded := giveUpAt(t)
+	if !bounded {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		return ctx
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), end)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// Bounded is bound, or what is left of the test binary's own deadline less spare when that is
 // sooner, so a -timeout smaller than bound still reports the wait rather than the binary's panic.
-// Eventually is Bounded of a minute and a second; a wait with a span or a margin of its own takes
-// those.
-func Bounded(t *testing.T, bound, margin time.Duration) time.Duration {
+// A wait with a span or a spare of its own takes those; Eventually and Receive have none. spare is
+// the caller's, not this package's margin.
+func Bounded(t *testing.T, bound, spare time.Duration) time.Duration {
 	if testDeadline, ok := t.Deadline(); ok {
-		if left := time.Until(testDeadline) - margin; left < bound {
+		if left := time.Until(testDeadline) - spare; left < bound {
 			bound = left
 		}
 	}
@@ -46,8 +104,7 @@ func Bounded(t *testing.T, bound, margin time.Duration) time.Duration {
 
 // WithinPolling waits for condition under the caller's own bound and its own pace, with no
 // clamp to the test binary's deadline, failing the test with what it waited for when the bound
-// passes: a wait whose span is the thing under test, or one that must outlast a minute, says
-// how long it means to wait.
+// passes: a wait whose span is the thing under test says how long it means to wait.
 func WithinPolling(t *testing.T, bound, poll time.Duration, what string, condition func() bool) {
 	t.Helper()
 	if waitUntil(time.Now().Add(bound), poll, condition) {
@@ -79,13 +136,14 @@ func waitUntil(deadline time.Time, poll time.Duration, condition func() bool) bo
 	return condition()
 }
 
-// marginCap is the most Receive gives up before the test binary's deadline: the time the failing
-// test's cleanups have to stop what it ran (a launcher, its connections) before Go's alarm panics
-// the binary. Under a -test.timeout shorter than marginShare times marginCap, the margin is that
-// timeout divided by marginShare instead, so a wait under a -timeout of 30 s or less still waits
-// (a quarter of a 25 s -timeout is 6.25 s, and its waits give up 18.75 s after the binary began).
+// marginCap is the most Receive gives up before the test binary's deadline: margin, the time the
+// failing test's cleanups have to stop what it ran (a launcher, its connections) before Go's alarm
+// panics the binary. Under a -test.timeout shorter than marginShare times marginCap, the margin is
+// that timeout divided by marginShare instead, so a wait under a -timeout of 30 s or less still
+// waits (a quarter of a 25 s -timeout is 6.25 s, and its waits give up 18.75 s after the binary
+// began).
 const (
-	marginCap   = 30 * time.Second
+	marginCap   = margin
 	marginShare = 4
 )
 
@@ -94,9 +152,9 @@ func marginOf(timeout time.Duration) time.Duration {
 	return min(marginCap, timeout/marginShare)
 }
 
-// clock is the time Receive reads and the timer it waits on. Receive's is the real one; this
-// package's own tests hand receive one they move, so the moment a wait gives up is read as an
-// event rather than measured.
+// clock is the time Receive, poll and asked read and the timer they wait on: waitClock, the real
+// one but in this package's own tests, which hand them one they move, so the moment a wait gives
+// up is read as an event rather than measured.
 type clock interface {
 	Now() time.Time
 	After(d time.Duration) <-chan time.Time
@@ -123,16 +181,16 @@ func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) 
 // is written as \n.
 func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	t.Helper()
-	start := time.Now()
-	deadline, bounded := t.Deadline()
+	start := waitClock.Now()
+	deadline, bounded := deadlineOf(t)
 	timeout := timeoutFlag()
-	value, gaveUp, ok := receive(realClock{}, deadline, bounded, timeout, ch)
+	value, ended, ok := receive(waitClock, deadline, bounded, timeout, ch)
 	if ok {
 		return value
 	}
-	text := strings.NewReplacer("\n", `\n`, "\r", `\r`).Replace(fmt.Sprintf(
+	text := oneLine.Replace(fmt.Sprintf(
 		"testwait: %s: gave up waiting for %s after %s at %s, %s before the test binary's deadline %s (-test.timeout %s)",
-		t.Name(), what, gaveUp.Sub(start).Round(time.Millisecond), gaveUp.UTC().Format(time.RFC3339Nano), marginOf(timeout),
+		t.Name(), what, ended.Sub(start).Round(time.Millisecond), ended.UTC().Format(time.RFC3339Nano), marginOf(timeout),
 		deadline.UTC().Format(time.RFC3339Nano), timeout))
 	_, _ = os.Stderr.WriteString(text + "\n")
 	t.Fatalf("%s", text)
@@ -182,18 +240,14 @@ func ReceiveWithin[T any](t *testing.T, bound time.Duration, what, why string, c
 	return zero
 }
 
-// timeoutFlag is the test binary's -test.timeout, and 0 when it has none.
+// timeoutFlag is the test binary's -test.timeout, and 0 when it has none: the span flagDeadline,
+// the package's one reader of that flag, adds to the process's start.
 func timeoutFlag() time.Duration {
-	timeout := flag.Lookup("test.timeout")
-	if timeout == nil {
-		return 0
-	}
-	getter, ok := timeout.Value.(flag.Getter)
+	deadline, ok := flagDeadline()
 	if !ok {
 		return 0
 	}
-	span, _ := getter.Get().(time.Duration)
-	return span
+	return deadline.Sub(started)
 }
 
 // giveUpText matches Receive's failure: the test, what it waited for, the time waited (not
@@ -212,7 +266,7 @@ func RequireGaveUp(t testing.TB, output, what string, timeout time.Duration) {
 	if len(found) != 2 || found[0][0] != found[1][0] {
 		t.Fatalf("the child's output holds Receive's give-up text %d times, want the same text twice (stderr at once, then the failure); its output:\n%s", len(found), output)
 	}
-	parts, margin := found[0], marginOf(timeout)
+	parts, receiveMargin := found[0], marginOf(timeout)
 	gaveUp, err := time.Parse(time.RFC3339Nano, parts[3])
 	if err != nil {
 		t.Fatalf("the give-up moment %q: %v", parts[3], err)
@@ -224,12 +278,109 @@ func RequireGaveUp(t testing.TB, output, what string, timeout time.Duration) {
 	switch {
 	case parts[2] != what:
 		t.Fatalf("the wait gave up waiting for %q, want %q", parts[2], what)
-	case parts[6] != timeout.String() || parts[4] != margin.String():
-		t.Fatalf("the wait names the -timeout %s and the margin %s, want %s and %s", parts[6], parts[4], timeout, margin)
-	case gaveUp.Before(deadline.Add(-margin)):
+	case parts[6] != timeout.String() || parts[4] != receiveMargin.String():
+		t.Fatalf("the wait names the -timeout %s and the margin %s, want %s and %s", parts[6], parts[4], timeout, receiveMargin)
+	case gaveUp.Before(deadline.Add(-receiveMargin)):
 		t.Fatalf("the wait gave up at %s, before its give-up moment %s, the margin %s before the deadline %s",
-			gaveUp.Format(time.RFC3339Nano), deadline.Add(-margin).Format(time.RFC3339Nano), margin, deadline.Format(time.RFC3339Nano))
+			gaveUp.Format(time.RFC3339Nano), deadline.Add(-receiveMargin).Format(time.RFC3339Nano), receiveMargin, deadline.Format(time.RFC3339Nano))
 	case gaveUp.After(deadline):
 		t.Fatalf("the wait gave up at %s, past the deadline %s", gaveUp.Format(time.RFC3339Nano), deadline.Format(time.RFC3339Nano))
 	}
+}
+
+// poll asks holds at the package's pace until it reports true. Once the moment giveUpAt names has
+// passed and holds still reports false, gaveUp fails t, with reading's text when the wait has one.
+// A wait that begins with that moment already passed (spent) asks once, and its failure says so:
+// the deadline was spent before this wait began, by an earlier wait that never held or by the run
+// itself, so the first give-up line in time order is the cause and this one its side effect.
+func poll(t testing.TB, what string, holds func() bool, reading func() string) {
+	t.Helper()
+	end, bounded := giveUpAt(t)
+	spent := bounded && !waitClock.Now().Before(end)
+	if !asked(end, bounded, holds) {
+		gaveUp(t, what, spent, reading)
+	}
+}
+
+// waitClock is the time Receive, poll and asked read and the timer they wait on: the real one.
+// Only this package's own tests replace it (TestEventuallyHasNoCapOfItsOwn, and the children of
+// TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure and TestReceiveFailsNamingWhenItGaveUp),
+// with a clock that moves only as a wait waits, so a wait's span is read without that span of
+// real time. No test of this package runs in parallel.
+var waitClock clock = realClock{}
+
+// asked asks holds at the package's pace until it reports true, and reports whether it did. Once
+// end has passed a false answer ends the asking, so the question is asked once after end; with no
+// end (bounded false) it asks until holds reports true.
+func asked(end time.Time, bounded bool, holds func() bool) bool {
+	for !holds() {
+		if bounded && !waitClock.Now().Before(end) {
+			return false
+		}
+		<-waitClock.After(pace)
+	}
+	return true
+}
+
+// giveUpAt is the moment a wait in t gives up: the test binary's deadline less margin, and false
+// when the binary has no deadline (-timeout 0). A *testing.T, or any testing.TB with a Deadline
+// method, names the deadline; for another (a benchmark) it is the -timeout flag's span from the
+// process's start, which is how testing arms its own alarm.
+func giveUpAt(t testing.TB) (time.Time, bool) {
+	if named, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		return lessMargin(named.Deadline())
+	}
+	return lessMargin(flagDeadline())
+}
+
+// lessMargin is deadline less margin, and false when there is no deadline.
+func lessMargin(deadline time.Time, bounded bool) (time.Time, bool) {
+	if !bounded {
+		return time.Time{}, false
+	}
+	return deadline.Add(-margin), true
+}
+
+// flagDeadline is the -timeout flag's span from the process's start, and false when the flag is
+// absent or 0.
+func flagDeadline() (time.Time, bool) {
+	timeout := flag.Lookup("test.timeout")
+	if timeout == nil {
+		return time.Time{}, false
+	}
+	getter, ok := timeout.Value.(flag.Getter)
+	if !ok {
+		return time.Time{}, false
+	}
+	span, ok := getter.Get().(time.Duration)
+	if !ok || span <= 0 {
+		return time.Time{}, false
+	}
+	return started.Add(span), true
+}
+
+// oneLine writes a newline or a carriage return as its escape, so a failure text is one line.
+var oneLine = strings.NewReplacer("\n", `\n`, "\r", `\r`)
+
+// announce is the text of a wait the margin ended, in the test named name: it writes the text to
+// stderr at once, in one write, and returns it. spent says the margin had passed before the wait
+// began. reading is the wait's last reading, or nil for a wait that has none.
+func announce(name, what string, spent bool, reading func() string) string {
+	text := fmt.Sprintf("testwait: %s: gave up waiting for %s %s before the test binary's deadline", name, what, margin)
+	if spent {
+		text += ", a moment that had passed before this wait began: the first give-up line in time order is the cause"
+	}
+	if reading != nil {
+		text += "; last read: " + reading()
+	}
+	text = oneLine.Replace(text)
+	_, _ = os.Stderr.WriteString(text + "\n")
+	return text
+}
+
+// gaveUp ends a wait in t that the margin ended: it announces the failure, then fails t with the
+// same text.
+func gaveUp(t testing.TB, what string, spent bool, reading func() string) {
+	t.Helper()
+	t.Fatalf("%s", announce(t.Name(), what, spent, reading))
 }

@@ -1284,7 +1284,7 @@ func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored reco
 // Shown except from a boot listing no newer than the record, which keeps the record's own.
 type observed struct {
 	Title, Parent, Rank, Status, Shown string
-	Priority                         record.Priority
+	Priority                           record.Priority
 	HandedOver                         bool
 	Seq                                int64
 }

@@ -774,7 +774,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// phaseEntriesContract, heldContract, quietTimeContract, mergeWaitContract,
 		// assignmentsContract, entryTimesContract, repositoryAppsContract, pauseContract,
 		// shapedAnswersContract, repositoriesLiveContract, assignmentPlanContract,
-		// intakeGiveUpsContract, podHoldContract, gateBasisContract and priorityContract.
+		// intakeGiveUpsContract, podHoldContract, priorityContract and gateBasisContract.
 		// These rows check the keys available to a pod whose plugin does not state its contract.
 		// At and above shapedAnswersContract, the caller must state its contract to narrow.
 		// Otherwise it gets the current state.

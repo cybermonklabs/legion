@@ -45,8 +45,7 @@ const (
 // at AckWait. A review makes three — whether its pull request is recorded (recordedPullRequest),
 // its truncated body (resolveReviewBody) and its author's repository permission
 // (resolveReviewPermission) — and handleMessage makes them one after another, so they add up
-// rather than overlap. Every other fact makes two reads or fewer: a Dispatch document or issue
-// event its own preparation and the basis read (PrepareBasis). The operator's sentence for the
+// rather than overlap. Every other fact makes one read or none. The operator's sentence for the
 // limit names those three reads in its own words (daemon.IntakeHandlerLimitLine), written by
 // hand there, so a read added here has to be named there by hand too.
 const boundedReadsPerFact = 3
@@ -229,18 +228,6 @@ type ConsumerSpec struct {
 	// nak delay (nakDelay) rather than applied without it. No preparer (a test) applies the fact
 	// as decoded, with no view, which queues nothing.
 	PrepareArtifact func(ctx context.Context, artifact DispatchArtifact) (DispatchArtifact, error)
-	// PrepareBasis reads Dispatch's state now for an event of an ancestor's document, of its
-	// approval request or of its issue (DispatchArtifact, DispatchAskClosed, DispatchIssue) that is
-	// a cue for a step of another root waiting, closed, on that request (workflow's
-	// PendingBasisCue), before the fact is applied, within AckWait, which bounds this one
-	// preparation rather than the delivery (ReviewPermission), and returns the fact to apply with
-	// the read on it (DispatchArtifact.BasisRead, DispatchAskClosed.BasisRead,
-	// DispatchIssue.AncestorRead): the workflow performs no I/O, and opens or ends such a wait
-	// from that read alone, so an event a replay applies late opens and ends nothing that Dispatch
-	// no longer shows. A failed preparation is retried after the nak delay (nakDelay) rather than
-	// applied without it. No preparer (a test) applies the fact as decoded, with no read, which
-	// has the workflow queue the step's pending-basis seed to read Dispatch instead.
-	PrepareBasis func(ctx context.Context, fact Fact) (Fact, error)
 }
 
 // RetryLater is an error ConsumerSpec.ReviewPermission returns when its read must not be made again
@@ -1235,11 +1222,6 @@ func handleMessage(work context.Context, log messageLog, position *streamPositio
 		return nakOutcome("prepare the review's issue", "nak the review's issue preparation", err)
 	}
 	decoded.Fact = prepared
-	prepared, err = prepareBasis(work, spec, decoded.Fact)
-	if err != nil {
-		return nakOutcome("read Dispatch for a step waiting on an ancestor's request", "nak the ancestor's read preparation", err)
-	}
-	decoded.Fact = prepared
 	withBody, err := resolveReviewBody(work, spec, decoded.Fact)
 	if err != nil {
 		return nakOutcome("restore the review's truncated body", "nak the review body restore", err)
@@ -1369,20 +1351,6 @@ func prepareArtifact(ctx context.Context, spec ConsumerSpec, fact Fact) (Fact, e
 	read, cancel := context.WithTimeout(ctx, spec.AckWait)
 	defer cancel()
 	return spec.PrepareArtifact(read, artifact)
-}
-
-// prepareBasis runs ConsumerSpec.PrepareBasis for an event of a document, of an ask's close or of
-// an issue, within AckWait, and is the fact to apply. Every other fact passes through untouched.
-func prepareBasis(ctx context.Context, spec ConsumerSpec, fact Fact) (Fact, error) {
-	switch fact.(type) {
-	case DispatchArtifact, DispatchAskClosed, DispatchIssue:
-		if spec.PrepareBasis != nil {
-			read, cancel := context.WithTimeout(ctx, spec.AckWait)
-			defer cancel()
-			return spec.PrepareBasis(read, fact)
-		}
-	}
-	return fact, nil
 }
 
 // resolveReviewPermission fills a review's AuthorCanWrite from ConsumerSpec.ReviewPermission

@@ -4525,22 +4525,27 @@ func basisReview(review dispatch.Review, approval dispatch.Approval) intake.Basi
 
 // seedPendingBasis reads, for the row's issue, a root whose step waits, closed, on an ancestor's
 // approval request (record.PendingBasisSeed), Dispatch's state of the ancestor's document and
-// issue as a cue's preparation reads it (readBasis), and applies the read as a fact of its own
-// (intake.PendingBasisRead), never the gate seed's, so the read reaches the root's step alone and
-// not the ancestor's own gate. The workflow judges it by the one verdict it judges a cue's read by
-// (workflow's judgeBasisRead): the person's approval of the version, as the document's latest
-// review of its latest version, opens the step on an ancestor that still meets R1's first
-// condition, and a changes request on that version, a newer version of the document, the request
-// no longer open, or the ancestor's leave ends the wait. The workflow applies the fact only while
-// the step still waits on that request in that generation, so a read of a wait that has opened or
-// ended since changes nothing. The fact's id is the step, the request and what the read found
-// (basisReadFound), so the same read again is a duplicate, and a read that finds anything else is
-// a fact of its own.
+// issue, and of the request's close where the document's approval shows it closed (readBasis),
+// and applies the read as a fact of its own (intake.PendingBasisRead), never the gate seed's, so
+// the read reaches the root's step alone and not the ancestor's own gate. It is the one read that
+// opens or ends such a wait: the registration queues it, the boot queues it for every such step,
+// and every event that is a cue for the step queues it (workflow's PendingBasisCue). The workflow
+// judges it by its one verdict (workflow's judgeBasisRead): the person's approval of the version,
+// as the document's latest review of its latest version, opens the step on an ancestor that still
+// meets R1's first condition, and a changes request on that version, a newer version of the
+// document, the request no longer open, which the end names with whoever closed it, or the
+// ancestor's leave ends the wait. The workflow applies the fact only while the step still waits on
+// that request in that generation, so a read of a wait that has opened or ended since changes
+// nothing. The fact's id is the step, the request and what the read found (basisReadFound), so
+// the same read again is a duplicate, and a read that finds anything else, another closer
+// included, is a fact of its own. A failed read, of any of the three, is the row's error, and the
+// row is retried on its backoff (permanentRefusal names no pending-basis seed): no event waits on
+// it.
 func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, payload record.PendingBasisSeed) error {
 	if r.dispatch == nil {
 		return errors.New("pending-basis seed executor has no Dispatch client")
 	}
-	read, err := readBasis(ctx, r.dispatch, payload.BasisArtifactID, nil)
+	read, err := readBasis(ctx, r.dispatch, payload)
 	if err != nil {
 		return err
 	}
@@ -4554,18 +4559,58 @@ func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, pay
 	return nil
 }
 
+// readBasis is Dispatch's state now of what seed's step waits on, closed (intake.BasisRead): the
+// approval of the ancestor's document the seed names, and the issue Dispatch names the document
+// on, read as register_gate reads it. Where that approval shows the request the step waits on no
+// longer open with no approval of the version (workflow.RequestClosed), and there alone, it reads
+// that request by its id as well (dispatch.Client.Ask), for who closed it and how
+// (intake.BasisRead.Closed): every other read makes two calls of Dispatch and this one three. A
+// request the third call shows still open is no close Dispatch shows: its approval and its ask
+// were read either side of a reopen that restored it, so that read is an error, and the seed's
+// next run reads all three again.
+func readBasis(ctx context.Context, client dispatch.Client, seed record.PendingBasisSeed) (intake.BasisRead, error) {
+	approval, err := client.Approval(ctx, seed.BasisArtifactID)
+	if err != nil {
+		return intake.BasisRead{}, fmt.Errorf("read Dispatch approval %s: %w", seed.BasisArtifactID, err)
+	}
+	ancestor, err := client.GetIssue(ctx, approval.IssueKey)
+	if err != nil {
+		return intake.BasisRead{}, fmt.Errorf("read Dispatch issue %s, the ancestor whose document %s is: %w", approval.IssueKey, seed.BasisArtifactID, err)
+	}
+	read := intake.BasisRead{Approval: approval, Ancestor: intake.AncestorRead{Status: ancestor.Status, HandedOver: ancestor.HandedOver}}
+	if !workflow.RequestClosed(approval, seed.BasisVersion, seed.Ask) {
+		return read, nil
+	}
+	ask, err := client.Ask(ctx, seed.Ask)
+	if err != nil {
+		return intake.BasisRead{}, fmt.Errorf("read Dispatch ask %s, the approval request of version %d of %s that its approval shows closed: %w",
+			seed.Ask, seed.BasisVersion, seed.BasisArtifactID, err)
+	}
+	if ask.State == "open" {
+		return intake.BasisRead{}, fmt.Errorf("Dispatch shows approval request %s of version %d of %s open, though the document's approval shows it closed",
+			seed.Ask, seed.BasisVersion, seed.BasisArtifactID)
+	}
+	read.Closed = &intake.BasisClose{Actor: ask.ResolvedBy, State: ask.State}
+	return read, nil
+}
+
 // basisReadFound names what read found, for the id of the fact that carries it: the document's
 // approval state, its latest version, the version and the place of its latest review and who gave
-// it, the request open on it, and the ancestor's status and label. Two reads that name the same
-// found the same, which the workflow judges alike.
+// it, the request open on it, the ancestor's status and label, and, for a read of the request's
+// close, who closed it and its state. Two reads that name the same found the same, which the
+// workflow judges alike.
 func basisReadFound(read intake.BasisRead) string {
 	approval := read.Approval
 	version := 0
 	if approval.Version != nil {
 		version = *approval.Version
 	}
-	return fmt.Sprintf("%s:%d:%d:%d:%s:%s:%s:%t", approval.State, approval.LatestVersion, version, record.EventMark{Seq: approval.Seq, At: approval.At}.ID(),
-		approval.By.Name(), approval.AskID, read.Ancestor.Status, read.Ancestor.HandedOver)
+	closer, closed := "", ""
+	if read.Closed != nil {
+		closer, closed = read.Closed.Actor.Name(), read.Closed.State
+	}
+	return fmt.Sprintf("%s:%d:%d:%d:%s:%s:%s:%t:%s:%s", approval.State, approval.LatestVersion, version, record.EventMark{Seq: approval.Seq, At: approval.At}.ID(),
+		approval.By.Name(), approval.AskID, read.Ancestor.Status, read.Ancestor.HandedOver, closer, closed)
 }
 
 // seedReparent reads, for the row's issue, an issue in Legion's work whose Dispatch parent changed

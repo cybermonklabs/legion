@@ -3020,7 +3020,7 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 });
 
 // A spec step open on an ancestor's approval holds in `designGate.approvedVersion` the version its
-// root registered, which no person approved (contract 249): the summary names it as its entry in
+// root registered, which no person approved (contract 276): the summary names it as its entry in
 // `gatedSteps` does, by its status word and the ancestor's version, and so the step that waits on
 // the ancestor's request; a step on no basis keeps its approved line.
 test("read_state's summary names a step on an ancestor's basis by its gatedSteps entry, not as approved", async () => {

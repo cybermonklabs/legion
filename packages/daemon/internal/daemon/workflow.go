@@ -910,14 +910,15 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 // (record.DesignGate.PendingOnBasis), whatever phase its root stands in, since the boot's catch-up
 // reads no root in a phase of its tree (catchesUp) and the ancestor's events may have come while
 // the daemon was down or been dropped: each seed reads Dispatch's state of the ancestor's document
-// and issue (readBasis), which the workflow judges as it judges a cue's read, so the person's
-// approval of the version opens the step and a changes request, a newer version, the request's
-// close or the ancestor's leave ends its wait (dispatch://INFRA-3320, R1). The seeds carry their
-// roots' generations, read in one query (IssuesOf) where any step waits so and in none otherwise,
-// and run on each root's lifecycle lane once the outbox attaches. An issue Dispatch shows done is
-// left out by the read (record.GatedIssues), as its gates are left out of the publication. A
-// restart loop that queues a second seed beside one still waiting costs one more read of Dispatch:
-// the seed's fact is the step, the request and what the read found, so it applies once.
+// and issue (readBasis), which the workflow judges by its one verdict (workflow's judgeBasisRead),
+// so the person's approval of the version opens the step and a changes request, a newer version,
+// the request's close or the ancestor's leave ends its wait (dispatch://INFRA-3320, R1). The seeds
+// carry their roots' generations, read in one query (IssuesOf) where any step waits so and in none
+// otherwise, and run on each root's lifecycle lane once the outbox attaches. An issue Dispatch
+// shows done is left out by the read (record.GatedIssues), as its gates are left out of the
+// publication. A restart loop that queues a second seed beside one still waiting costs one more
+// read of Dispatch: the seed's fact is the step, the request and what the read found, so it
+// applies once.
 func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 	now := time.Now().UTC()
 	queued := 0
@@ -1254,7 +1255,7 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		Project: cfg.Project, Repositories: heard, Renames: cfg.RepositoryRenames,
 		AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
 		ReviewPermission: w.reviewerCanWrite, ReviewBody: w.reviewBody,
-		PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact, PrepareBasis: w.prepareBasis,
+		PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 		WakeOutbox: w.wakeOutbox,
 	})
 	if err != nil {

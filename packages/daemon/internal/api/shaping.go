@@ -602,10 +602,10 @@ var stateNarrowings = []stateNarrowing{
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
 	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
-	{contract: gateBasisContract, issue: withoutGateBasis,
-		dropped: "the issues' treeRuns and the gatedSteps of every issue a step of which stands on an ancestor's basis"},
 	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
+	{contract: gateBasisContract, issue: withoutGateBasis,
+		dropped: "the issues' treeRuns and the gatedSteps of every issue a step of which stands on an ancestor's basis"},
 	{contract: chainContract, state: withoutConvertedAt, dropped: "daemon.convertedAt"},
 }
 
@@ -1111,8 +1111,42 @@ func withoutPodHold(issue Issue) (Issue, bool) {
 	return issue, moved
 }
 
+// priorityContract added each issue's own Dispatch priority and the effective priority
+// of each waitingLine. Earlier callers get neither key.
+const priorityContract = 250
+
+func withoutPriority(issue Issue) (Issue, bool) {
+	moved := issue.Priority != nil
+	issue.Priority = nil
+	if issue.WaitingLine != nil && issue.WaitingLine.Priority != nil {
+		line := *issue.WaitingLine
+		line.Priority = nil
+		issue.WaitingLine, moved = &line, true
+	}
+	return issue, moved
+}
+
+// causeTimesContract is the daemon contract that added each claim view's `lastDeathAt` and
+// `lastStartFailureAt`, the time the daemon recorded the claim's `lastDeathCause` and its
+// `lastStartFailure` (version.go's 256). A plugin before it is served
+// every claim view without the two keys (withoutCauseTimes): its reader strips a key it does not
+// name, so the band is what keeps the times from a caller that did not ask for them rather than
+// what keeps such a caller reading. The two are one band because each dates the cause beside it
+// and both arrive at this one number. The causes themselves stay as stateMachineContract serves
+// them. The contract removed no key and added no value to an enumeration: the two are times. It
+// put the same keys on the operator claim too, and the operator routes are not served down,
+// because their reader is the `legion` built with this daemon. priorityContract stands below it
+// with no row of stateNarrowings between the two, so a caller from that contract to 255 is served
+// 250's keys.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the keys arrived at stays where it is. It moves only with this
+// change's own number, and answers.go's SupportedContracts names the constant rather than its
+// number for that reason.
+const causeTimesContract = 256
+
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
-// ancestor's approval or wait on an ancestor's approval request (version.go's 249,
+// ancestor's approval or wait on an ancestor's approval request (version.go's 276,
 // dispatch://INFRA-3320, R1 and R2), served each root whether its tree runs, and added the phase
 // awaiting_children and the held word of that name (R11 to R13). It added two keys to an issue:
 // the gated step's `basis`, which rides only on a step of the two status words it added, and each
@@ -1136,32 +1170,39 @@ func withoutPodHold(issue Issue) (Issue, bool) {
 // (heldReasons), served as `children_first`, the word a started parent's wait took over
 // (withoutUnadmittedHeldWords, heldReasonStandIn).
 //
-// Of the bands of stateNarrowings, podHoldContract's stands right below this one,
-// intakeGiveUpsContract's below that, assignmentPlanContract's below that,
-// repositoriesLiveContract's below that and shapedAnswersContract's below that, and this band
-// touches no key of any of theirs: shapedAnswersContract's takes `lowestPluginContract` and the
-// claim views' `updateState` and `wake`, repositoriesLiveContract's writes the `repositories`
-// block in contract 152's shape, assignmentPlanContract's takes each assignment's `plan`,
-// intakeGiveUpsContract's takes the state's `intakeGiveUps`, podHoldContract's takes the issues'
-// `podHold`, and this one takes `treeRuns` and some `gatedSteps`. So a caller from 202 up to the
-// number below this contract is served the keys 193 added and the block 202 writes and none of
-// this contract's keys and words. One that states a number between 202 and this contract is
-// served the nearest recorded contract at or below it (recordedContractAtOrBelow): one at 203 or
-// 204 is served 202's, one at 205 to 212 is served 205's, whose records are 202's under its own
-// number, as version.go's 205 entry says, one at 213 to 216 is served 213's, which are 205's with
-// `caches` among the words of a capability row's `source` (cachesSourceContract), one at 217 or
-// 218 is served 217's, which are 213's under its own number, as version.go's 217 entry says, one
-// at 219 is served OwnerPlanContract's, which are 217's with the owner's plan's routes, fields and
-// words, one at 220 to 227 is served assignmentPlanContract's, which are OwnerPlanContract's with
-// each assignment's `plan`, one at 228 to 231 is served intakeGiveUpsContract's, which are
-// assignmentPlanContract's with `intakeGiveUps` and the two give-up answers, one at 232 to 245 is
-// served 232's, which are intakeGiveUpsContract's under its own number, since 232 moves no shape
-// of an answer a plugin parses, and one at 246 up to the number below this contract is served
-// podHoldContract's, which are 232's with each issue's `podHold`. So a caller below
-// podHoldContract is served no `podHold`, one below intakeGiveUpsContract no `intakeGiveUps`
-// either, one below assignmentPlanContract no assignment's `plan` either, and one below
-// OwnerPlanContract neither the owner's plan's additions nor this contract's. A caller from 193
-// to 201 is served the keys 193 added, the block in contract 152's shape and none of this
+// Of the bands of stateNarrowings, causeTimesContract's stands right below this one,
+// priorityContract's below that, podHoldContract's below that, intakeGiveUpsContract's below that,
+// assignmentPlanContract's below that, repositoriesLiveContract's below that and
+// shapedAnswersContract's below that, and this band touches no key of any of theirs:
+// shapedAnswersContract's takes `lowestPluginContract` and the claim views' `updateState` and
+// `wake`, repositoriesLiveContract's writes the `repositories` block in contract 152's shape,
+// assignmentPlanContract's takes each assignment's `plan`, intakeGiveUpsContract's takes the
+// state's `intakeGiveUps`, podHoldContract's takes the issues' `podHold`, priorityContract's takes
+// the issues' `priority` and their waitingLine's `priority`, causeTimesContract's takes the claim
+// views' `lastDeathAt` and `lastStartFailureAt`, and this one takes `treeRuns` and some
+// `gatedSteps`. So a caller from 202 up to the number below this contract is served the keys 193
+// added and the block 202 writes and none of this contract's keys and words. One that states a
+// number between 202 and this contract is served the nearest recorded contract at or below it
+// (recordedContractAtOrBelow): one at 203 or 204 is served 202's, one at 205 to 212 is served
+// 205's, whose records are 202's under its own number, as version.go's 205 entry says, one at 213
+// to 216 is served 213's, which are 205's with `caches` among the words of a capability row's
+// `source` (cachesSourceContract), one at 217 or 218 is served 217's, which are 213's under its own
+// number, as version.go's 217 entry says, one at 219 is served OwnerPlanContract's, which are
+// 217's with the owner's plan's routes, fields and words, one at 220 to 227 is served
+// assignmentPlanContract's, which are OwnerPlanContract's with each assignment's `plan`, one at
+// 228 to 231 is served intakeGiveUpsContract's, which are assignmentPlanContract's with
+// `intakeGiveUps` and the two give-up answers, one at 232 to 245 is served 232's, which are
+// intakeGiveUpsContract's under its own number, since 232 moves no shape of an answer a plugin
+// parses, one at 246 to 249 is served podHoldContract's,
+// which are 232's with each issue's `podHold`, one at 250 to 255 is served priorityContract's,
+// which are podHoldContract's with each issue's `priority` and its waitingLine's `priority`, and
+// one at 256 up to the number below this contract is served causeTimesContract's, which are
+// priorityContract's with each claim view's `lastDeathAt` and `lastStartFailureAt`. So a caller
+// below causeTimesContract is served no cause times, one below priorityContract no `priority`
+// either, one below podHoldContract no `podHold` either, one below intakeGiveUpsContract no
+// `intakeGiveUps` either, one below assignmentPlanContract no assignment's `plan` either, and one
+// below OwnerPlanContract neither the owner's plan's additions nor this contract's. A caller from
+// 193 to 201 is served the keys 193 added, the block in contract 152's shape and none of this
 // contract's: one that states a number from 194 to 198 is served 193's shape, and one that states
 // 199, 200 or 201 is served 199's, which is 193's, since 199 moves no shape of an answer a plugin
 // parses.
@@ -1170,7 +1211,7 @@ func withoutPodHold(issue Issue) (Issue, bool) {
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is.
-const gateBasisContract = 249
+const gateBasisContract = 276
 
 // chainContract is the daemon contract at which the daemon stores no tree and reads every parent
 // and child question from its copy of Dispatch's links (version.go's 278, dispatch://INFRA-4730).
@@ -1283,40 +1324,6 @@ func heldReasonStandIn(reason record.HeldReason) (record.HeldReason, bool) {
 	}
 	return "", false
 }
-
-// priorityContract added each issue's own Dispatch priority and the effective priority
-// of each waitingLine. Earlier callers get neither key.
-const priorityContract = 250
-
-func withoutPriority(issue Issue) (Issue, bool) {
-	moved := issue.Priority != nil
-	issue.Priority = nil
-	if issue.WaitingLine != nil && issue.WaitingLine.Priority != nil {
-		line := *issue.WaitingLine
-		line.Priority = nil
-		issue.WaitingLine, moved = &line, true
-	}
-	return issue, moved
-}
-
-// causeTimesContract is the daemon contract that added each claim view's `lastDeathAt` and
-// `lastStartFailureAt`, the time the daemon recorded the claim's `lastDeathCause` and its
-// `lastStartFailure` (version.go's 256). A plugin before it is served
-// every claim view without the two keys (withoutCauseTimes): its reader strips a key it does not
-// name, so the band is what keeps the times from a caller that did not ask for them rather than
-// what keeps such a caller reading. The two are one band because each dates the cause beside it
-// and both arrive at this one number. The causes themselves stay as stateMachineContract serves
-// them. The contract removed no key and added no value to an enumeration: the two are times. It
-// put the same keys on the operator claim too, and the operator routes are not served down,
-// because their reader is the `legion` built with this daemon. priorityContract stands below it
-// with no row of stateNarrowings between the two, so a caller from that contract to 255 is served
-// 250's keys.
-//
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract the keys arrived at stays where it is. It moves only with this
-// change's own number, and it is the last number of answers.go's SupportedContracts, which names
-// the constant rather than its number for that reason.
-const causeTimesContract = 256
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a

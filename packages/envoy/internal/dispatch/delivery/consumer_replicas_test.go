@@ -25,7 +25,7 @@ func TestDispatchDurablesMoveToThreeCopiesWhenAStartRaisesTheStream(t *testing.T
 		return client
 	}
 	js := start(1).JS()
-	for _, config := range []natsgo.ConsumerConfig{deliveryConsumerConfig(), jobConsumerConfig()} {
+	for _, config := range []natsgo.ConsumerConfig{deliveryConsumerConfig(tuningFor(t)), jobConsumerConfig(tuningFor(t))} {
 		if _, err := js.AddConsumer(bus.Stream, &config); err != nil {
 			t.Fatalf("create durable %s: %v", config.Durable, err)
 		}

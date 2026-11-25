@@ -216,7 +216,9 @@ func (e *Engine) childrenHolding(ctx context.Context, tx pgx.Tx, issue record.Is
 // pull request has merged. The guard of a move between phases reads it after the phase the issue
 // leaves (childrenHolding); the restart of a stopped task at its first step reads it alone
 // (restartTask), since that start is raised from held whatever place the stop stood at, and so does
-// the promotion of a carried run (carriedStartHeld), whose start is of the phase it stands in.
+// the promotion of a carried run (carriedStartHeld), whose start is of the phase it stands in. The
+// release of a hold reads it through the guard that adds the exemption of an entry a move out of
+// retro or merging raised (childrenHoldingSamePhaseStart).
 func (e *Engine) childrenHoldingStart(ctx context.Context, tx pgx.Tx, issue record.Issue, to phase.Phase, pr *record.PullRequest) ([]record.OpenChild, error) {
 	if !record.OpenChildHolds(to) || (pr != nil && pr.State == record.PullRequestMerged) {
 		return nil, nil
@@ -446,7 +448,8 @@ func undeliveredStart(issue record.Issue, owed []record.OwedStart) bool {
 // past the daemon's acceptance of the issue (record.PhaseRow.EntryFrom): a role's move back out of
 // one of them, whose start R9 does not hold. It is the one statement of that exemption, read by the
 // admission pass (StopForChildren) and by the release of a hold, which restarts the held phase on
-// that same entry (retryPhase).
+// that same entry (retryPhase, through childrenHoldingSamePhaseStart). The promotion of a carried
+// run does not read it (carriedStartHeld): the entry it raises is of no move.
 func acceptedEntry(row record.PhaseRow) bool {
 	return record.AcceptedPhase(row.EntryFrom)
 }

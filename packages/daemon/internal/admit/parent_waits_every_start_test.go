@@ -1850,6 +1850,51 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		}
 	})
 
+	// No phase a carried root brings is exempt from R9 at its promotion (INFRA-3320 item 46): in
+	// every worker phase, a root a hand-over of the release before carried in starts the phase it
+	// carries where no open child stands under it, and waits in awaiting_children at the promotion
+	// itself where one does. No case gives the root a slot first: its promotion takes its row, and
+	// a root that holds one is no queued root (record.AwaitsPromotion).
+	for _, carries := range []phase.Phase{phase.Testing, phase.Planning, phase.Reviewing, phase.Implementing} {
+		t.Run("a root handed over in "+string(carries)+" starts with no open child", func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := pwAdmission(t, 2)
+			carriedRoot(t, pool, spParent, carries, "A")
+
+			spPass(t, pool, admission)
+
+			if got := issue(t, pool, spParent); got.Phase != carries || got.ChildrenWait != nil || !issueOpen(t, pool, spParent) {
+				t.Fatalf("the promoted root = phase %s, held start %+v, started %t; want %s, started, nothing held",
+					got.Phase, got.ChildrenWait, issueOpen(t, pool, spParent), carries)
+			}
+			if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != phase.RoleFor(carries) || starts[0].task == "" {
+				t.Fatalf("worker starts = %+v, want the %s's start of the phase the root carries", starts, phase.RoleFor(carries))
+			}
+		})
+		if carries == phase.Implementing {
+			continue // The row above holds implementing's start and follows it back once the child is done.
+		}
+		t.Run("a root handed over in "+string(carries)+" waits at promotion for its open child", func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := pwAdmission(t, 2)
+			carriedRoot(t, pool, spParent, carries, "A")
+			seedMirrorChild(t, pool, spChild, "todo", spParent)
+
+			spPass(t, pool, admission)
+
+			got := issue(t, pool, spParent)
+			if got.Phase != phase.AwaitingChildren || got.ChildrenWait == nil || got.ChildrenWait.Start != carries {
+				t.Fatalf("the promoted root = phase %s, held start %+v; want awaiting_children holding %s",
+					got.Phase, got.ChildrenWait, carries)
+			}
+			if !reflect.DeepEqual(got.ChildrenWait.Children, []string{spChild}) || !issueOpen(t, pool, spParent) {
+				t.Fatalf("the promoted root's wait names %v, started %t; want %s alone, started",
+					got.ChildrenWait.Children, issueOpen(t, pool, spParent), spChild)
+			}
+			noWorkerLaunch(t, pool, spParent, phase.RoleFor(carries))
+		})
+	}
+
 	// A parent in retro, with a child filed and not released, that the implementer moves back to
 	// implementing starts implementing as today: the daemon has accepted it, so the rule does not
 	// reach that start. k12 names this case as a head that then conflicts with its base, which
