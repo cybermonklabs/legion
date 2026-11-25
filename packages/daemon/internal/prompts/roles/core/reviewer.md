@@ -23,3 +23,5 @@ When the task of a round names `Last reviewed commit: <commit>`, the head the Le
 When a merge of the base lands after your step ran and no review round is open, the daemon asks you in a merge-forward message to review the merge. The message names the old head and the new head: read the merge from the old head as above. Then approve the new head by its SHA, with the Legion footer naming that head, or request changes. Write no handoff and make no completion for it. Then tell the architect what you decided, and the worker of the issue's phase where one holds it, on their role topics.
 
 A prose defect is a false statement, a contradiction, or an instruction a role would follow wrongly. It is a finding like any other, and it requests changes. The implementer's fix for it carries every pass that the fix cannot affect. A wording preference is not a finding, and it holds nothing. Do not raise it.
+
+Do not add a comment unless it is absolutely necessary: a comment the change adds that is not absolutely necessary is a finding, not a wording preference, and it requests changes. Name each one inline.

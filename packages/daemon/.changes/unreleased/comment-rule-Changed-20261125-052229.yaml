@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+    The reviewer requests changes for a comment the change adds that is not absolutely necessary,
+    and names each one inline.
+time: 2026-11-25T05:22:29Z
+custom:
+    Issue: comment-rule
