@@ -5,12 +5,18 @@
 // PATH it inherits. Its gh runs that legion's `legion gh`, which runs the real gh (LEGION_GH_PATH)
 // with the gh directory of the owner the command names (internal/ghconfig's bundle). Its git runs
 // that legion's `legion git --after <bin>`, which adds a commit's Omp-Session and Legion-Role
-// trailers and runs the next git on PATH after bin, a host's own git wrapper included. Install
-// writes no git where the first git on the inherited PATH is the image's own git wrapper, which
-// hands a commit to `legion git` itself. An agent's jj is the first jj on its PATH. A pod installs
-// nothing: the image carries its own gh and git wrappers in /opt/legion/bin, which its PATH names
-// first (packages/daemon/docker/gh, the script Install writes for the image's legion, and
-// packages/daemon/docker/git).
+// trailers and runs the next git on PATH after bin, a host's own git wrapper included. An agent's
+// jj is bin's jj, which runs that legion's `legion jj --after <bin>`: it expands a command as jj
+// does, through jj's aliases and ui.default-command, and before a `jj git push`, or a command that
+// jj expands into one, it runs the push step, which sets the author of a commit the push sends from
+// the commit's Legion-Role trailer, where its rules let it; then it runs the next jj on PATH after
+// bin, a host's own jj wrapper included. Install writes no git where the first git on the inherited
+// PATH is the image's own git wrapper, which hands a commit to `legion git` itself, and no jj where
+// the next jj is the image's own jj wrapper, which expands each command itself and hands a push to
+// `legion jj`.
+// A pod installs nothing: the image carries its own gh, git and jj wrappers in /opt/legion/bin,
+// which its PATH names first (packages/daemon/docker/gh, the script Install writes for the image's
+// legion, packages/daemon/docker/git and packages/daemon/docker/jj).
 package workerbin
 
 import (
@@ -32,20 +38,29 @@ const ImageGit = "/opt/legion/bin/git"
 // imageGit is ImageGit, or the stand-in a test points it at.
 var imageGit = ImageGit
 
-// LauncherDir is root's bin: the directory of the legion launcher, the gh wrapper and the git
-// wrapper that Install writes.
+// ImageJJ is the image's jj wrapper, packages/daemon/docker/jj, the first jj on a pod's PATH.
+const ImageJJ = "/opt/legion/bin/jj"
+
+// imageJJ is ImageJJ, or the stand-in a test points it at.
+var imageJJ = ImageJJ
+
+// LauncherDir is root's bin: the directory of the legion launcher and of the gh, git and jj
+// wrappers that Install writes.
 func LauncherDir(root string) string { return filepath.Join(root, "bin") }
 
 // Install installs bin's scripts. Each execs legionExecutable, its path absolute and single-quoted
-// (shellprefix.Literal): the legion launcher runs it as it is, gh runs its `legion gh`, and git
-// runs its `legion git --after <bin>`, with bin's absolute path quoted the same way. path is the
-// PATH that the agents under root inherit. Install writes git unless the first executable git on
-// path, leaving out bin itself, is the image's git wrapper (imageGit). That wrapper already hands
-// a commit to `legion git`, and the image's jj wrapper refuses a push whose git is not it. Where
-// the image's wrapper is first, Install removes a git that an earlier run wrote. Where path holds
-// no git at all, Install writes git still, and that git then fails when it runs, naming the git it
-// lacks (exit 127). Its two callers pass their own executable and their own PATH: a tmux daemon's
-// boot (internal/daemon) and `legion controller start` on the operator's machine (cmd/legion).
+// (shellprefix.Literal): the legion launcher runs it as it is, gh runs its `legion gh`, git runs
+// its `legion git --after <bin>` and jj its `legion jj --after <bin>`, with bin's absolute path
+// quoted the same way. path is the PATH that the agents under root inherit. Install writes git
+// unless the first executable git on path, leaving out bin itself, is the image's git wrapper
+// (imageGit). That wrapper already hands a commit to `legion git`, and the image's jj wrapper
+// refuses a push whose git is not it. Install writes jj unless the first executable jj on path,
+// leaving out bin itself, is the image's jj wrapper (imageJJ), which already hands a push to
+// `legion jj`, so the push step runs once. Where the image's wrapper is first, Install removes
+// the script of that name an earlier run wrote. Where path holds no git, or no jj, at all, Install
+// writes that script still, and it then fails when it runs, naming the program it lacks (exit
+// 127). Its two callers pass their own executable and their own PATH: a tmux daemon's boot
+// (internal/daemon) and `legion controller start` on the operator's machine (cmd/legion).
 func Install(root, legionExecutable, path string) error {
 	if !filepath.IsAbs(legionExecutable) {
 		return fmt.Errorf("legion launcher target %q is not an absolute path", legionExecutable)
@@ -61,37 +76,54 @@ func Install(root, legionExecutable, path string) error {
 	if err := installScript(bin, "gh", "#!/bin/sh\nexec "+legion+" gh \"$@\"\n"); err != nil {
 		return err
 	}
-	if isImageGit(firstGit(path, bin)) {
-		if err := os.Remove(filepath.Join(bin, "git")); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("remove the git script of an earlier install: %w", err)
-		}
-		return nil
+	if err := installWrapper(bin, legion, path, "git", imageGit); err != nil {
+		return err
 	}
-	return installScript(bin, "git", "#!/bin/sh\nexec "+legion+" git --after "+shellprefix.Literal(bin)+" -- \"$@\"\n")
+	return installWrapper(bin, legion, path, "jj", imageJJ)
 }
 
-// firstGit is the first executable git on path, leaving out each entry that is bin, or "" when
-// there is none. It is the first of the gits that `legion git --after <bin>` chooses among
-// (lookpath.Others), so Install reads the git that a pane's git wrapper would run.
-func firstGit(path, bin string) string {
-	if found, _ := lookpath.Others(path, "git", bin); len(found) > 0 {
+// installWrapper writes bin's script name (git, jj), which execs legion, quoted, as
+// `legion <name> --after <bin>`, unless the first executable program of that name on path,
+// leaving out bin itself, is the image's wrapper at image (imageGit, imageJJ): it then removes the
+// script of that name an earlier Install wrote.
+func installWrapper(bin, legion, path, name, image string) error {
+	if isImage(firstOnPath(path, name, bin), image) {
+		return removeScript(bin, name)
+	}
+	return installScript(bin, name, "#!/bin/sh\nexec "+legion+" "+name+" --after "+shellprefix.Literal(bin)+" -- \"$@\"\n")
+}
+
+// firstOnPath is the first executable program named name (git, jj) on path, leaving out each
+// entry that is bin, or "" when there is none. It is the first of the programs that
+// `legion <name> --after <bin>` chooses among (lookpath.Others), so Install reads the program
+// that a pane's wrapper of that name would run.
+func firstOnPath(path, name, bin string) string {
+	if found, _ := lookpath.Others(path, name, bin); len(found) > 0 {
 		return found[0].Path
 	}
 	return ""
 }
 
-// isImageGit is whether git is the image's git wrapper (imageGit), by os.SameFile, so a link to
-// it counts too.
-func isImageGit(git string) bool {
-	if git == "" {
+// isImage is whether program is the image's wrapper at image (imageGit, imageJJ), by
+// os.SameFile, so a link to it counts too.
+func isImage(program, image string) bool {
+	if program == "" {
 		return false
 	}
-	found, err := os.Stat(git)
+	found, err := os.Stat(program)
 	if err != nil {
 		return false
 	}
-	image, err := os.Stat(imageGit)
-	return err == nil && os.SameFile(found, image)
+	wrapper, err := os.Stat(image)
+	return err == nil && os.SameFile(found, wrapper)
+}
+
+// removeScript removes bin's script name that an earlier Install wrote, where there is one.
+func removeScript(bin, name string) error {
+	if err := os.Remove(filepath.Join(bin, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove the %s script of an earlier install: %w", name, err)
+	}
+	return nil
 }
 
 // Path makes root's bin the first entry of path, exactly once. A daemon started from an agent's
@@ -99,9 +131,9 @@ func isImageGit(git string) bool {
 // while keeping every other entry verbatim.
 func Path(path, root string) string {
 	launcher := LauncherDir(root)
-	entries := make([]string, 0, len(filepath.SplitList(path))+1)
-	entries = append(entries, launcher)
-	for _, entry := range filepath.SplitList(path) {
+	parts := filepath.SplitList(path)
+	entries := []string{launcher}
+	for _, entry := range parts {
 		if entry != "" && entry != launcher {
 			entries = append(entries, entry)
 		}

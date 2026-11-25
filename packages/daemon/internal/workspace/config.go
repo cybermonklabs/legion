@@ -60,11 +60,11 @@ const (
 
 // CloneTimeout is the one bound ensureRepoClone gives its size-following steps, together, as the
 // fetch's share FetchTimeout: from GitHub, a `jj git clone` that copies and imports every object;
-// from a pod's feed, a local `git clone` that hard-links objects where possible, then jj's import
-// of every commit. A 3.4 GB repository (816k objects, 421 refs) cloned from a local feed by `jj git
-// clone` in 253 s with four cores and 281 s with two on a 64-core devbox, using no more than about
-// two cores either way, so CommandTimeout's fixed 5 minutes is no bound for it once a sandbox slows
-// it at all.
+// from a pod's feed, a shared local `git clone` that copies no object (feedClone), then jj's
+// import of every commit. A 3.4 GB repository (816k objects, 421 refs) cloned from a local feed by
+// `jj git clone` in 253 s with four cores and 281 s with two on a 64-core devbox, using no more
+// than about two cores either way, so CommandTimeout's fixed 5 minutes is no bound for it once a
+// sandbox slows it at all.
 const CloneTimeout = 30 * time.Minute
 
 // CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
@@ -313,7 +313,7 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 		if !ok {
 			return Result{}, errors.New("workspace command jj needs the git the daemon resolved at boot")
 		}
-		args = append([]string{"--config=git.executable-path=" + tomlString(git)}, args...)
+		args = append([]string{"--config=git.executable-path=" + TOMLString(git)}, args...)
 	}
 	child := exec.CommandContext(bounded, executable, args...)
 	child.Dir = command.Dir
@@ -698,9 +698,27 @@ func environmentKey(entry string) string {
 	return key
 }
 
-// tomlString is value as one TOML basic string, the form jj reads a --config value in.
-func tomlString(value string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`
+// TOMLString is value as one TOML basic string, the form jj reads a --config value in: jj
+// refuses a bare value such as legion-implementer[bot]. A `"` and a `\` are escaped, and each
+// control character, which a TOML basic string may not hold bare, is written as \uXXXX. Every
+// other byte is value's own.
+func TOMLString(value string) string {
+	var quoted strings.Builder
+	quoted.Grow(len(value) + 2)
+	quoted.WriteByte('"')
+	for i := range len(value) {
+		switch b := value[i]; {
+		case b == '"' || b == '\\':
+			quoted.WriteByte('\\')
+			quoted.WriteByte(b)
+		case b < 0x20 || b == 0x7f:
+			fmt.Fprintf(&quoted, `\u%04X`, b)
+		default:
+			quoted.WriteByte(b)
+		}
+	}
+	quoted.WriteByte('"')
+	return quoted.String()
 }
 
 // jjString is name as a jj string literal, the form every jj argument here takes a bookmark name
@@ -708,8 +726,10 @@ func tomlString(value string) string {
 // selects how a pattern matches, not that its text is literal) and a revset symbol as expressions,
 // so a bare `release#stable` fails to parse and a bare `release|stable` matches `release` or
 // `stable`. Quoted, every name git accepts is the one name it is. jj's string literal escapes `\`
-// and `"` as a TOML basic string does.
-func jjString(name string) string { return tomlString(name) }
+// and `"` as a TOML basic string does. It reads no \uXXXX, which TOMLString writes for a control
+// character, but no name here holds one: git refuses a control character in a ref name
+// (git check-ref-format).
+func jjString(name string) string { return TOMLString(name) }
 
 // runCommand runs argv with the runner's own slow-command budget: run is nil-checked before
 // run.Timeout() is ever read, so a nil Runner always returns the error below rather than a panic.
@@ -867,9 +887,9 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 	// The fetch takes no snapshot of the clone's working copy: a snapshot runs the working-copy
 	// filter, fsmonitor, and signing programs jj's configuration names, which a tree agent can set,
 	// and on the tmux runtime this fetch holds the one-shot credential. A failed fetch returns its
-	// own error: no clone this code makes borrows objects from the feed (clone.go makes a plain
-	// local clone), so the connectivity scan that once diagnosed a clone whose borrowed history had
-	// gone had no case left and was deleted with the disk that carried such a clone (INFRA-80).
+	// own error. A pod's clone borrows the feed's objects through its alternates (feedClone), and no
+	// connectivity scan stands here to diagnose a clone whose borrowed history went: Fetch never
+	// removes or replaces a feed it finds present (ownFeedRepository), so that history does not go.
 	fetch := []string{"git", "fetch"}
 	for _, branch := range source.branches {
 		fetch = append(fetch, "--branch", exactName(branch))
