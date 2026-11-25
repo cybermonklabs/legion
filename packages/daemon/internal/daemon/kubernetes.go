@@ -73,18 +73,20 @@ type sandboxReads struct {
 
 // readSandbox is Agent Sandbox's share of readBoot (C1's translation, C3): the cluster's client from
 // runtime.kubernetes' kubeconfig, and the Options every value of the configuration becomes, with
+// credential, the launch's Dispatch credential readBoot read (sandbox.DispatchCredential), and
 // paneNatsUser, the public key of the pane NATS nkey seed's user ("" with none), which the image
-// probe holds the providers Secret's seed to. None of the host's own agent machinery is read: no Oh
-// My Pi invocation or plugin gate (the image probe proves the image's), no Dispatch token file (a
-// pod reads its bearer from its claim's Secret), no secretsd provider keys (a pod mounts its keys
-// from the providers Secret), and no host gh, git, or jj (a pod runs the image's).
-func readSandbox(cfg config.Config, project, dispatchToken, paneNatsUser string, lookup func(string) (string, bool), log *slog.Logger) (sandboxReads, error) {
+// probe holds the providers Secret's seed to. None of the host's own agent machinery is read: no
+// Oh My Pi invocation or plugin gate (the image probe proves the image's), no Dispatch token file
+// (a launch carries its Dispatch token in its start command's Files), no secretsd provider keys
+// (a pod mounts its keys from the providers Secret), and no host gh, git, or jj (a pod runs the
+// image's).
+func readSandbox(cfg config.Config, project string, credential sandbox.DispatchCredential, paneNatsUser string, lookup func(string) (string, bool), log *slog.Logger) (sandboxReads, error) {
 	k := *cfg.Runtime.Kubernetes
 	rc, err := kubeClient(k)
 	if err != nil {
 		return sandboxReads{}, err
 	}
-	opts, err := sandboxOptions(cfg, k, project, dispatchToken, lookup, log)
+	opts, err := sandboxOptions(cfg, k, project, credential, lookup, log)
 	if err != nil {
 		return sandboxReads{}, err
 	}
@@ -343,7 +345,10 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 // experiment of its own still declares the memory experiment and hands over its two arms, which
 // name no file where the project writes no `memory` block and so add nothing to a launch.
 // lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
-func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchToken string, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
+// credential is the launch's Dispatch credential (readBoot): the bearer dispatch_token_file holds,
+// or under dispatch_token_broker the role's own trade (sandbox.DispatchCredential.Broker) and the
+// transition token.
+func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, credential sandbox.DispatchCredential, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
 	issueVolume, err := resource.ParseQuantity(k.IssueVolume)
 	if err != nil {
 		return sandbox.Options{}, fmt.Errorf("runtime.kubernetes.issue_volume: %w", err)
@@ -387,7 +392,8 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		Scheduling: sandbox.Scheduling{NodeSelector: k.Scheduling.NodeSelector, Tolerations: tolerations, PriorityClass: k.Scheduling.PriorityClass},
 		Sandbox:    sandboxConfig(k.Sandbox),
 		Resources:  sandbox.PodResources{Issue: issue, Controller: controller},
-		DaemonURL:  cfg.DaemonURL, EnvoyURL: cfg.EnvoyURL, DispatchURL: cfg.DispatchURL, DispatchToken: dispatchToken,
+		DaemonURL:  cfg.DaemonURL, EnvoyURL: cfg.EnvoyURL, DispatchURL: cfg.DispatchURL,
+		Dispatch: credential,
 		NATSURLs: cfg.NatsURLs,
 		// The controller this runtime launches is told the project's channels, and is relaunched
 		// when they change (sandbox's address record).
@@ -624,6 +630,10 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
+		// Each role's start in a pod whose Sandbox owns the issue's kept volume records that pod
+		// with its volume, which the issue's update round reads, and no role starts there until
+		// it is recorded.
+		opts.KeptPodStart = keptPodStart(st, opts.Project)
 		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
 		// left the volume above its low mark, or of the trimmer switching itself off — reaches
 		// the daemon through this, and the daemon turns it into the one fact that can tell the
@@ -663,6 +673,19 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 		}
 		listener.SetLauncherResolver(rt.LauncherResolver())
 		return rt, nil
+	}
+}
+
+// keptPodStart is st's record of a role's start in a pod of project whose Sandbox owns the
+// issue's kept volume, in the shape the runtime calls it (runtime.KeptPodStart). project is the
+// runtime's project token (sandbox.Options.Project). A pod is project's to record only where
+// project records its issue (store.Store.StartKeptPod): on a database shared with another
+// project's daemon, a pod of that project's issue is that daemon's. Each call for an issue that
+// project records records the pod with its kept volume, which the issue's update round reads
+// (store.Store.PodHoldsEarlierWork).
+func keptPodStart(st *store.Store, project string) runtime.KeptPodStart {
+	return func(ctx context.Context, issue, podUID string, keptSince time.Time) error {
+		return st.StartKeptPod(ctx, project, issue, podUID, keptSince)
 	}
 }
 

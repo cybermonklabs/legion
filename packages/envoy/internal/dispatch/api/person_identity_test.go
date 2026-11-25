@@ -320,7 +320,7 @@ func newIdentityRigOn(t *testing.T, envoyURL string) *identityRig {
 			verifier, err := ciphertoken.New(ciphertoken.Options{
 				BrokerURL: broker.Server.URL,
 				Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, credentialTestAccountToken)),
-				Origin:    testServerURL,
+				Origins:   []string{testServerURL},
 				Replay:    store.NewDPoPProofs(database.Pool),
 				Address:   auth.ForwardedAddress,
 			})

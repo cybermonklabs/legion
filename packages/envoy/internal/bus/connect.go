@@ -275,15 +275,17 @@ func handshakeReadFailed(err error) bool {
 // watcher never ends on its own and only this callback says its cache stopped following the
 // bucket. ClosedCB fires on Close or Drain, and also when nats.go gives up
 // on the connection itself: the same authorization error twice in a row, or a server -ERR it does
-// not classify. Those two are why onClosed still starts a recovery that dials a replacement. The
+// not classify. Those two are why onClosed still starts a recovery that dials a replacement. It
+// logs the close and then hands closedCB the connection that closed, so the client can tell which
+// of its connections' closes it has handled (closeHandled). The
 // reconnect buffer is off, so nothing is held and sent after its caller saw an error: a publish
 // while reconnecting waits for the reconnect instead (ensureConnWithContext), and a publish that
 // fails was not sent. AsyncErrorCB logs each error the connection reports on its own and then
 // hands it to asyncErrCB, where the client reads the server's refusal of its core subscription
 // (onAsyncError).
-func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) nats.Options {
+func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(*nats.Conn), asyncErrCB func(*nats.Conn, error), now func() time.Time) nats.Options {
 	// The throttle is built here, one per call, so it is per connection and has its own mutex:
-	// options is rebuilt for every dial attempt in connectWithContext's loop and only the attempt
+	// options is rebuilt for every dial attempt in connectTrying's loop and only the attempt
 	// that connects leaves its closures on the *nats.Conn, so one live connection has exactly one
 	// throttle and a second client's first failure is never swallowed by this one's minute.
 	throttle := newReconnectErrThrottle(now)
@@ -317,7 +319,7 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	// the package-level slog, like every other bus line, because a listener process test fails if a
 	// bus line stops being Go's text format (cmd/listener/startup_test.go:598-612 names the deployed
 	// metric filters). The NATS credential never reaches a line: options never sees it, since
-	// credential is applied to the options value afterwards (connect.go, connectWithContext) and
+	// credential is applied to the options value afterwards (connect.go, connectTrying) and
 	// holds a public key and a signer, or a token reader, only.
 	reconnectAttemptFailed := func(err error) {
 		if !throttle.allow() {
@@ -344,10 +346,10 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	// A connection that connects only after failing to (connectInBackground) reports its first
 	// connection here rather than as a reconnect, and that ends its outage as a reconnect does.
 	opts.ConnectedCB = func(*nats.Conn) { throttle.reset() }
-	opts.ClosedCB = func(_ *nats.Conn) {
+	opts.ClosedCB = func(nc *nats.Conn) {
 		slog.Info("envoy nats connection closed", slog.String("name", name))
 		if closedCB != nil {
-			closedCB()
+			closedCB(nc)
 		}
 	}
 	opts.AsyncErrorCB = func(nc *nats.Conn, sub *nats.Subscription, err error) {
@@ -398,7 +400,17 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 // for the handshake (options). A connect with a deadline cuts each to what remains of it.
 const connectTimeout = 5 * time.Second
 
-func connect(name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
+// connectTries is how many times a connect dials before it ends with the last dial's error, and
+// connectRetryWait the wait between two of its dials: a server that is restarting, or a network
+// that dropped a dial, answers within them, and a start that ends after them is restarted by
+// whatever runs the process. A start with WithCredentialWait holds the tries of its own that fail
+// other than by a refusal of the credential to the same two (waitOutCredentialRefusals).
+const (
+	connectTries     = 10
+	connectRetryWait = time.Second
+)
+
+func connect(name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(*nats.Conn), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
 	return connectWithContext(context.Background(), name, urls, settings, dialer, reconnectCB, disconnectedCB, closedCB, asyncErrCB, now)
 }
 
@@ -407,7 +419,10 @@ func connect(name string, urls []string, settings nats.Option, dialer *socks5Dia
 // connectInBackground). Every connection dials through a severableDialer of its own, so Sever can
 // end it. When dialer is not nil it dials through the SOCKS5 proxy it names (socks5Proxy): every
 // connection then, the first and each one nats.go dials to reconnect, goes through the proxy,
-// handed the server's host name as the URL spells it.
+// handed the server's host name as the URL spells it. It dials up to connectTries times, waiting
+// connectRetryWait after each dial that fails, the last one included, whatever each dial failed
+// on, a refusal of the credential included, and returns the first connection that connects
+// (connectTrying).
 //
 // A connect through a proxy that fails names the setting and the proxy, whatever failed: its ten
 // attempts ran out, the credential was refused, or ctx ended first (a publish's own deadline). A
@@ -417,7 +432,17 @@ func connect(name string, urls []string, settings nats.Option, dialer *socks5Dia
 // or a DNS name. A failed connect prints as its class alone (natsconn.ConnectionError): a
 // dial's error names the server by the host its URL spells, the proxy's among them, and that host
 // can be a piece of a credential (refuseRemoteNATS).
-func connectWithContext(ctx context.Context, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (_ *nats.Conn, err error) {
+func connectWithContext(ctx context.Context, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(*nats.Conn), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
+	return connectTrying(ctx, connectTries, connectRetryWait, name, urls, settings, dialer, reconnectCB, disconnectedCB, closedCB, asyncErrCB, now)
+}
+
+// connectTrying is connectWithContext dialling up to tries times in place of connectTries, and
+// waiting wait after each dial that fails, the last one included, in place of connectRetryWait:
+// every connect but one dials connectTries times connectRetryWait apart and ends that long after
+// its last failed dial, as it always has. The one is a try of a start that waits out refusals of
+// its credential, which dials once with no wait (tries 1, wait 0) and waits between its tries
+// itself (waitOutCredentialRefusals).
+func connectTrying(ctx context.Context, tries int, wait time.Duration, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(*nats.Conn), asyncErrCB func(*nats.Conn, error), now func() time.Time) (_ *nats.Conn, err error) {
 	if dialer != nil {
 		defer func() {
 			if err != nil {
@@ -426,7 +451,7 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 		}()
 	}
 	var lastErr error
-	for range 10 {
+	for range tries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -487,12 +512,14 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 			}()
 			return nil, ctx.Err()
 		}
-		timer := time.NewTimer(time.Second)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-timer.C:
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
 		}
 	}
 	if dialer != nil && errors.Is(lastErr, nats.ErrNoServers) {

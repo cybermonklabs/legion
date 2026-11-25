@@ -144,7 +144,7 @@ func newDispatchStandIn(t *testing.T, key *ecdsa.PrivateKey) *dispatchStandIn {
 	verifier, err := ciphertoken.New(ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
 		Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountFile),
-		Origin:    "https://" + privateHost,
+		Origins:   []string{"https://" + privateHost},
 		Replay:    &spentProofs{spent: map[string]bool{}},
 		Address:   func(r *http.Request) string { return r.RemoteAddr },
 	})

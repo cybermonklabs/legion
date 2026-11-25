@@ -242,7 +242,7 @@ func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...fun
 		opts := ciphertoken.Options{
 			BrokerURL: broker.Server.URL,
 			Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, credentialTestAccountToken)),
-			Origin:    testServerURL,
+			Origins:   []string{testServerURL},
 			Replay:    store.NewDPoPProofs(database.Pool),
 			// What Dispatch itself passes: the check keys its bucket on the address
 			// Dispatch's own proxy-trust rule reads, never one of its own, and serves a

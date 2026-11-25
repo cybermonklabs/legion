@@ -26,7 +26,7 @@ func TestTheDispatchClientsErrorHoldsNoTailOfThePassword(t *testing.T) {
 		"a head of digits before a slash": {"http://legion:48213579" + "/madeuptail@dispatch.invalid", "48213579"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := New(tc.route, "dispatch-token").Handoff(context.Background(), "handoff-1")
+			_, err := New(tc.route, BearerTransport("dispatch-token", nil)).Handoff(context.Background(), "handoff-1")
 			if err == nil {
 				t.Fatal("Handoff = nil, want the failed dial")
 			}

@@ -435,15 +435,16 @@ are registered for one pod, so this is what keeps one role from trading for anot
 session; the Legion daemon names each role's key. A later write by the same registrar that names
 no key keeps the one the registration names, unless that registrar released the registration
 (below), and a registration that names none, as a session pod's is, admits any key of that pod.
-Set no `exchange_audience` until your daemon, its pods and its broker carry three more changes:
-each role trading with a key of its own, since until then a role's own trade is refused; each
-session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the daemon that
-registered it, not only each registrar to the pods of its own daemon, since until then any
+A Legion daemon's `exchange_audience` waits for three changes of plan E, and this release holds all
+three. In the daemon and its worker image, t-e-53 makes a role trade with its own key, and t-e-39
+has the daemon choose each Oh My Pi role's session id rather than take its agent's report. Before
+t-e-53, a role's own trade is refused. In this broker, t-e-41 (dispatch://INFRA-4424) is the
+registrar list above, and the session-name binding and the release below. Before t-e-41, any
 `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another
-claim's session; and the daemon choosing each role's session id rather than taking its agent's
-report. A broker of this release carries the second of them, the session-name binding (below). The
-daemon already holds each session id to the claim of its project that first recorded it and
-registers no session another of its claims holds.
+claim's session. So a deployment sets `exchange_audience` only once its daemon, the daemon's worker
+image and this broker run this release or a later one, and only once `BROKER_POD_REGISTRARS` is
+set. The daemon already holds each session id to the claim of its project that first recorded it
+(t-e-54) and registers no session another of its claims holds.
 
 A registration may also name its `generation` (0 or more, 0 when absent; a negative one is
 `400 GENERATION_INVALID`), the registrar's own order of its writes for that pod and session. The
@@ -507,9 +508,13 @@ what it registered, unless `BROKER_POD_OPERATORS` then maps its account to a per
 refuses that account `403 PERSON_ACCOUNT`, so a registrar that is to be mapped releases its
 registrations before it is mapped. A release is that account's, not the caller's pod's. So every pod
 of an account paired with itself can release every registration that account wrote, by session name
-alone (above). Today's Legion daemon does not call this route yet, so the exchange honours each of
-its registrations until it lapses, unless another caller that logs in as the daemon's account
-releases it.
+alone (above). The Legion daemon calls this route from an operator's `legion claims release-names`
+when its `exchange_audience` is set: before it frees any of a claim's names, it sends the session
+ids among them in one call, tries it up to three times, a second and then two apart, and frees them
+only after a `200` whose `sessions` counts the distinct names it sent. Any other answer frees
+nothing: the daemon refuses the release `503`, which a run again can change, or `502` for a `4xx`
+other than `404`, `405` and `429`, which a run again answers the same. A daemon with no
+`exchange_audience` registers no pod session and makes no release call.
 
 The body is `{"sessions": ["<name>", ...]}`. A list that is missing, `null` or empty, or that holds
 more than 4096 entries counted as sent, is `400 SESSIONS_INVALID`, and a body over 1 MiB is
@@ -582,7 +587,6 @@ only once no broker replica of an older build takes registrations, because such 
 neither checks the binding nor sets the registrar, and another daemon's write through it can
 extend a lapsed registration that the daemon a name is bound to wrote, which the newer replicas'
 exchange then honours.
-
 Rolling the broker back past the release in which each key says who decides its requests leaves
 the column `requests.judge_until` in place, which an older broker never reads, so a request the
 newer broker held for the judge is an ordinary card on the older one. An older broker also refuses
@@ -942,7 +946,8 @@ is the exception: it never asks, makes, moves or extends a credential, and it is
 decline: a sign-in holds its credential, so a trade of a person's that declined one is refused
 `400 invalid_request`. The clients that
 want a Dispatch token and read no secret — the `dispatch` command, the Oh My Pi and Claude Code
-plugins, `envoy-send` — decline it, since each of them makes a key per process and per session
+plugins, `envoy-send` — decline it, since each of them proves a key of one process, or a pod
+role's own agent-secrets key,
 and a machine-logins list with a row per command run is a list nobody can read. So the machines
 on that list are the boxes that enrol sessions, not every process that ever traded.
 

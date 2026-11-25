@@ -170,7 +170,7 @@ func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) 
 	verifier, err := ciphertoken.New(ciphertoken.Options{
 		BrokerURL: b.config.BrokerURL,
 		Account:   b.config.account(),
-		Origin:    strings.TrimSuffix(b.config.Origin, "/"),
+		Origins:   []string{strings.TrimSuffix(b.config.Origin, "/")},
 		Replay:    spentProofs{kv: kv},
 		// The listener trusts a forwarding header for this only where it is the edge behind
 		// Google's load balancer, and only from that balancer's own proxies (edgeCallerAddress,
