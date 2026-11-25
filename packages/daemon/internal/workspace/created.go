@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
 // The workspace's creation record lives in its own .jj directory, on the issue's volume, which
@@ -34,29 +36,33 @@ var errLinkedJJ = errors.New("the workspace's .jj is a symbolic link")
 // O_DIRECTORY). O_NOFOLLOW alone is refused at a link under each of them (ELOOP on Linux and gVisor; the
 // Lstat names the refusal on a kernel that answers otherwise), and the fstat of what was opened, not
 // of the path, is what says it is a directory (CERT FIO01-C). O_NONBLOCK keeps a .jj that is a FIFO
-// from holding the open. Every read and write of the record goes through the open directory
-// (openat), so nothing after this open reads .jj by its path again. held, when set, runs once the
-// directory is open and before the record is read or written: a test's seam for a .jj swapped in
-// that window.
+// from holding the open, and O_NOCTTY keeps a .jj that is a terminal from becoming the controlling
+// terminal of the process that opens it. The open is asked again where a signal interrupts it, as
+// os.OpenFile asks (rolefile.Openat), and the descriptor is an *os.File from the moment it is open,
+// so its fstat (File.Stat) is asked again on an interrupt too, and every refusal closes it through
+// File.Close (the Legion reviewer's Minor on #5285 at 69e00593). Every read and write of the record
+// goes through the open directory (openat), so nothing after this open reads .jj by its path again.
+// held, when set, runs once the directory is open and before the record is read or written: a
+// test's seam for a .jj swapped in that window.
 func openJJ(dir string, held func()) (*os.File, error) {
 	path := filepath.Join(dir, ".jj")
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	fd, err := rolefile.Openat(unix.AT_FDCWD, path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		if info, statErr := os.Lstat(path); errors.Is(err, unix.ELOOP) || (statErr == nil && info.Mode()&fs.ModeSymlink != 0) {
 			return nil, fmt.Errorf("%w: %s: %w", errLinkedJJ, path, err)
 		}
 		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
 	}
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
-		unix.Close(fd)
-		return nil, &fs.PathError{Op: "fstat", Path: path, Err: err}
+	jj := os.NewFile(uintptr(fd), path)
+	info, err := jj.Stat()
+	if err != nil {
+		jj.Close()
+		return nil, err
 	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
-		unix.Close(fd)
+	if !info.IsDir() {
+		jj.Close()
 		return nil, &fs.PathError{Op: "open", Path: path, Err: unix.ENOTDIR}
 	}
-	jj := os.NewFile(uintptr(fd), path)
 	if held != nil {
 		held()
 	}
