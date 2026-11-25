@@ -102,7 +102,7 @@ jobs:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-shard-job-its-stacks-and-its-container
     container:
-      image: ghcr.io/cybermonklabs/legion/ci@sha256:cdf02b4c77c5b25825922f77ce9134d07975120b9ca141405fadc2f35dbb863c
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:e475d0857d21d66782c40ef0c153d56626ffcfa9d36ad213c216818bdfe153ce
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
     # 1,080 + 120 + 120 + 565 = 1,885 s, 31 min 25 s, rounded up to 32 minutes, 1920 s, the first
@@ -231,7 +231,7 @@ jobs:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-alone-job-and-what-it-keeps-the-same-as-the-shard-job
     container:
-      image: ghcr.io/cybermonklabs/legion/ci@sha256:cdf02b4c77c5b25825922f77ce9134d07975120b9ca141405fadc2f35dbb863c
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:e475d0857d21d66782c40ef0c153d56626ffcfa9d36ad213c216818bdfe153ce
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-alone-jobs-measured-steps-and-its-budget
     # 900 + 3416 = 4316 s -> 72 min.
