@@ -28,7 +28,7 @@ import (
 // read before it. The two differ: the release's rows run on the issue's lifecycle lane, and a
 // notice or a hook prompt runs on a lane of its own, so the wake one of those makes can
 // resume a role in between. A teardown that took the first answer and ignored the second
-// recorded a release of a pod that still stands and forgot its wake marks, and left the other
+// would record a release of a pod that still stands and forget its wake marks, and leave the other
 // roles released in a running pod with nothing to bring them back.
 func TestATeardownTheRuntimeFindsUnauthorizedCancelsTheRelease(t *testing.T) {
 	t.Parallel()
@@ -510,7 +510,7 @@ func TestATeardownWhoseRecordFailsEveryTimeGivesUpAtTheBound(t *testing.T) {
 }
 
 // idleRigRecordGivenUp is the start of the ERROR line a teardown logs when it gives up on a record
-// of its release that could not be written (outbox.recordGivenUp).
+// of its release that could not be written (outbox.settleGivenUp).
 const idleRigRecordGivenUp = "outbox: the record of a release could not be written within 15 minutes of its mark"
 
 // podReleasesRefused is the error the trigger of refusePodReleaseRecords raises.

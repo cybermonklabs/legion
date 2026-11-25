@@ -1144,9 +1144,9 @@ func (s *SessionConsumers) reportNarrowedAs(sessionID string, passedOver map[str
 }
 
 // deleteReadBackTimeout bounds the read of a consumer whose delete went unanswered
-// (reportUnansweredDelete). It runs on a context of its own, since the caller's may have ended
-// with the delete: the read decides whether a loss is named, and costs that bound only on that
-// error.
+// (reportUnansweredDelete), within the caller's own ctx: a read whose ctx has ended sends no
+// request (publishConfirmed) and fails, so the loss is then reported unconfirmed rather than read
+// past the caller's bound.
 const deleteReadBackTimeout = 2 * time.Second
 
 // reportUnansweredDelete reports the loss passedOver counted for a restart of consumer name whose
@@ -1160,7 +1160,7 @@ func (s *SessionConsumers) reportUnansweredDelete(ctx context.Context, sessionID
 	if s.narrowed == nil || len(passedOver) == 0 {
 		return
 	}
-	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deleteReadBackTimeout)
+	readCtx, cancel := context.WithTimeout(ctx, deleteReadBackTimeout)
 	defer cancel()
 	_, err := s.info(readCtx, name)
 	switch {

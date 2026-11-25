@@ -1091,9 +1091,10 @@ const STOP_GATE: { readonly [Call in EnvoyCall]: "refused" | "sent" } = {
 
 /**
  * A call the stop gate refused (`STOP_GATE`) before any attempt of it was sent: the host's stop
- * had begun (`EnvoyClientConfig.stopping`), so the call reached no listener. An attempt that
- * reached no route of the listener (`RequestOptions.onNotSent`) counts as not sent, and so does
- * one the listener answered that it sent nothing (`EnvoyApiError.notSent`). A call an
+ * had begun (`EnvoyClientConfig.stopping`), so the listener acted on no attempt of the call. An
+ * attempt that reached no route of the listener (`RequestOptions.onNotSent`) counts as not sent,
+ * and so does one the listener answered with the `503` that says it sent nothing
+ * (`EnvoyApiError.notSent`), which reached the listener and stored nothing. A call an
  * earlier attempt of which was sent never throws this: when the gate refuses its retry, it throws
  * that attempt's own error, as a call whose retries ran out does, since that attempt may have
  * landed. A caller tells this refusal apart by its class (`instanceof EnvoyStoppingError`);

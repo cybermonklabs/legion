@@ -1467,7 +1467,8 @@ const fanoutLeftOutLogWindow = 10 * time.Minute
 // or fifth kind would log a line every 90 s for as long as the session runs; and no heartbeat
 // path reads the answer's warnings (pi-envoy's subscribe tool alone shows them, when a caller
 // names a topic by hand), so the line tells the operator and the answer tells nobody more by
-// being repeated. The answer itself names the topic on every registration.
+// being repeated. Each registration answered 200 names the topic in its warnings, and one answered
+// a 503 names none (subscribeHandler).
 const registrationLeftOutLogWindow = time.Hour
 
 // leftOutLogPruneAt is the size at which a limiter drops the entries older than its window, which

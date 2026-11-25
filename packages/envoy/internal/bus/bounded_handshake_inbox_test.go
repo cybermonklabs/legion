@@ -34,8 +34,9 @@ import (
 // request with the responder's answer, the forward nil. Every inbox is gone once the hold is
 // released.
 //
-// The controls: the lock is still held, and no later attempt has reached the hold, when the three
-// have answered. The negative controls make the waits count every reply as one over a live link:
+// The controls: the three inboxes are subscribed before the hold; the lock is still held, and no
+// later attempt has reached the hold, when the three have answered. The negative controls make the
+// waits count every reply as one over a live link:
 // with stored.go's waits so changed, the probe and the consumer request answer only when the
 // attempt ends; with nats.go's, the forward does.
 func TestAClientsRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t *testing.T) {
@@ -117,6 +118,9 @@ func TestAClientsRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t 
 			pending, _, _ := forward.replies.Pending()
 			return pending > 0
 		})
+	if subscribed := conn.NumSubscriptions() - before; subscribed < 3 {
+		t.Fatalf("control: the requests hold %d subscriptions on the connection, want their three inboxes", subscribed)
+	}
 
 	hold.HoldReconnect(t, conn)
 	attempt := hold.Attempts()

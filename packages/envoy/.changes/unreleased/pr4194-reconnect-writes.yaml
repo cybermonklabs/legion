@@ -17,9 +17,10 @@ body: |-
   that 503 inside the client's attempt, not `503 consumer_error` after it, and an unsubscribe is
   answered that 503, not a 200 after the client's attempt. The envoy-client, pi-envoy and
   claude-envoy of this release retry that 503, hold it for two minutes from the first such answer,
-  and then tell the session that its registration is not recorded for certain. A released pi-envoy
-  (17.8.0 to 19.15.0) or claude-envoy (up to 4.15.0) tells it at once as a session that receives
-  nothing, so the pod images take the new plugins before a listener of this release serves them.
+  and then tell the session that its registration is not recorded for certain. A pi-envoy from
+  17.8.0, or a claude-envoy, of a release before this one tells it at once as a session that
+  receives nothing, so the pod images take the new plugins before a listener of this release
+  serves them.
   A window's request whose read of the connection before its send meets a reconnect's handshake
   sends nothing. It answers at its own deadline, `bus: NATS is reconnecting`, or at the window's
   deadline when that comes first, `bus: the window's deadline has passed`; either answer can come
@@ -37,6 +38,9 @@ body: |-
   names it too, where it carried nats.go's own
   `nats: key-value requires at least server version 2.6.2`, and so does every request of the
   session bucket's maximum-age write.
+  A consumer restart whose delete's answer was lost reads the consumer back within the restart's
+  own bound, for at most 2 s: a read that bound leaves unsent is not sent, and the narrowing line
+  is written with `delete_confirmed` false.
 time: 2026-11-16T18:39:53Z
 custom:
     Issue: pr4194

@@ -13,11 +13,16 @@ body: |-
   The pi-envoy and claude-envoy releases that carry this change hold that `503`: they tell the
   session nothing for two minutes from the first one, and a registration accepted in that time
   ends the hold. After the two minutes they tell the session once that its registration is not
-  recorded for certain, and that Envoy messages may still reach it. Released plugins, pi-envoy
-  17.8.0 through 19.15.0 and claude-envoy through 4.15.0, tell that `503` at once as a session
+  recorded for certain, and that Envoy messages may still reach it. Plugins of a release before
+  this one, pi-envoy from 17.8.0 and every claude-envoy, tell that `503` at once as a session
   with no durable consumer that receives nothing. That is false: the registration may have made
   its consumer, and messages may still reach the session. So the pod images take those plugin
   releases before the listener moves to this release.
+
+  A registration answered a `503` names no topic that its session's consumer filter leaves out.
+  One that fails after its plan, on its session entry's write or on its known-session record's,
+  logs the listener's WARN line for each such topic all the same, so a topic that only an earlier
+  build's row held does not leave the row without a word.
 time: 2026-11-19T10:30:35Z
 custom:
     Issue: pr4194

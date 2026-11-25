@@ -2659,7 +2659,7 @@ func (c *Client) PublishEachWithin(ctx context.Context, item contracts.Envelope,
 // this way: their sender limit charges nothing for a copy the stream already held, and one for a
 // copy this call may have stored (cmd/listener's senderCharge.published).
 //
-// The path is publishPathOf's, the one the other four publish functions take through this one. A
+// The path is publishPathOf's, the one the other five publish functions take through this one. A
 // topic this build stores goes through JetStream while the deployed stream captures it and is
 // never sent over core NATS: while the deployed stream does not capture it, this returns the zero
 // StoredAck and an error wrapping ErrSubjectNotDeployed before anything is sent, so no core

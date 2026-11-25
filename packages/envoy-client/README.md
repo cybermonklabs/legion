@@ -450,7 +450,8 @@ model asked for before or as the stop began, and losing it is worse than sending
 already sent when the stop begins is not cancelled, and its answer is read as any answer is. A
 retry the gate refuses after an earlier attempt was sent ends the call with that attempt's own
 error, as a call whose retries ran out ends: that attempt may have landed. Only a call none of
-whose attempts was sent throws `EnvoyStoppingError`.
+whose attempts was sent throws `EnvoyStoppingError`, and an attempt the listener answered with
+the `503` that says nothing was sent (`EnvoyApiError.notSent`, above) counts as not sent.
 
 `subscribe` sends the host's `plugin` (`{name, version}`, required) as `plugin` and
 `plugin_version` on every registration, and exposes listener warnings, including a topic that has

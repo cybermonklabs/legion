@@ -625,8 +625,8 @@ func (r *outbox) recordGivenUp(decision store.ReleaseDecision, failed error) (bo
 // wake takes no second one, and no wake is taken between the settle and the clear. Once that
 // transaction commits, this logs one ERROR line naming the issue, the release and failed, and
 // answers nil, so the row finishes. Only the attempt whose settle commits logs the line: an
-// attempt whose step before the settle failed runs the row again, and the next attempt, still at
-// or past the bound, gives up again.
+// attempt whose step before the settle failed runs the row again, and the next attempt writes the
+// record, or, where that write fails again, gives up again.
 //
 // Where a record names the mark after all, the store writes nothing and leaves the mark, and this
 // answers failed: the next attempt reads that record (store.ReleaseDecision.PodTaken). A settle

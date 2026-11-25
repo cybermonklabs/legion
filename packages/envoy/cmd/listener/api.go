@@ -347,8 +347,9 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // its wait. Neither was sent, so the retry is safe, unless the error also says that the stream did
 // not acknowledge the publish, so it may hold the message (bus.ErrUnacknowledged): a first send
 // went out before the connection closed, and the message may have reached the stream, as
-// envoy-client assumes of every 5xx. No body holds nats.go's own `nats: outbound buffer limit
-// exceeded`, which internal/bus names away (bus.Reconnecting).
+// envoy-client assumes of every 5xx but the not-sent 503 (EnvoyApiError.notSent). No body holds
+// nats.go's own `nats: outbound buffer limit exceeded`, which internal/bus names away
+// (bus.Reconnecting).
 //
 // A message the stream already held whose stored copy could not be read (errStoredCopyUnread) is
 // answered first of all, a 503 with Retry-After under storedCopyUnreadablePrefix, whatever the
@@ -1247,13 +1248,15 @@ var publisherLanes = []struct{ prefix, publisher string }{
 }
 
 // publishHandler rejects agent-targeted topics (must use /v1/messages/send
-// instead), Dispatch's lane and GitHub's lane (publisherLanes), and the listener's own lanes, the
-// kept one and the session resume one, and sends the envelope. A role
+// instead), Dispatch's lane and GitHub's lane (publisherLanes), the Legion wake subject and the
+// listener's own lanes, the kept, resume and takeover ones, and sends the envelope. A role
 // topic is forwarded to its holder, answered once confirmed or when
 // publishDeliveryWindow from the request's arrival has passed (sendToRole in
 // confirmed.go); a topic the stream captures is answered once the stream
-// stored it, with the counts of the sessions it is for (recipientCounts), and any other
-// notifications. topic is refused by name, since nothing would store it for a session to read. An
+// stored it, with the counts of the sessions it is for (recipientCounts). A notifications. topic
+// no stream subject captures is refused by name, since nothing would store it for a session to
+// read (bus.Client.ReachesNoSession), and a topic this build stores that the deployed stream does
+// not capture is answered the not-sent 503 (notSentPrefix). An
 // explicit dedupe_key is used verbatim (a re-send a receiver's own dedupe
 // recognises); it is mutually exclusive with idempotency_key, may not begin
 // with roleForwardDedupePrefix, the mark the role arbiter drops on sight, and
@@ -3248,6 +3251,13 @@ func (d *listenerDeps) registerSession(
 			logger.Warn("listener plans the session's interest again: another writer stored the row",
 				slog.String("session_id", body.SessionID), slog.Int("plans", attempt))
 		default:
+			// The pass may have stored the row without the topics it left out: the session entry's
+			// write failed after the row's (sessionEntryWriteError), or the row's own answer was
+			// lost. The 503 this error becomes names none of them, and the retry plans from that
+			// row, so a topic only an earlier build's row held is in no later plan. The line is
+			// logged here, under the registration's own limiter, so no such topic leaves the row
+			// without a word.
+			logFilterLeftOutLimited(logger, &registrationLeftOutLogs, body.SessionID, leftOut, leftOutByRegistration)
 			return registeredSession{}, nil, err
 		}
 	}
@@ -3644,7 +3654,12 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			warnings = append(warnings, left.warning(body.SessionID))
 		}
 		// The line is logged once per session and topic an hour (registrationLeftOutLogs): a
-		// followed topic comes back on every heartbeat, and the answer names it each time.
+		// followed topic comes back on every heartbeat, and each answer of 200 names it again. A
+		// registration whose known-session record then fails logs the line here all the same, and
+		// its 503 (answerRegistration) names nothing; its client's retry names again only the
+		// topics the retry's body names, since the row this registration stored holds no topic it
+		// left out. A registration whose pass fails with an error after its plan (registerSession)
+		// logs the line there and names nothing, and a refusal logs no line and names nothing.
 		logFilterLeftOutLimited(logger, &registrationLeftOutLogs, body.SessionID, registered.leftOut, leftOutByRegistration)
 		// A topic the registration stored in the old form of its name, an issue's without its
 		// project or a role's or an agent's without one, is stored as the caller wrote it and
