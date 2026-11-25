@@ -61,6 +61,7 @@ import {
 } from "./issue-layout-seed";
 import { asPlanner, PROJECT } from "./issue-layout-seed-support";
 import {
+  ANSWERED_QUESTION_BLOCK_ID,
   decisionClosingWords,
   OPEN_QUESTION_BLOCK_ID,
   planTaskBlockId,
@@ -803,7 +804,8 @@ test("with no filter the page is the conversation, each node edited once, every 
     const stored = (await getAsk(seeded.answeredAskId)).ask.answer;
     const words = stored?.text ?? "";
     expect(words, "the seed's answered ask holds no answer").not.toBe("");
-    const asked = rowOf(whole, seeded.answeredAskId);
+    const answered = blockNodeId(specSlug, ANSWERED_QUESTION_BLOCK_ID);
+    const asked = rowOf(whole, answered);
     expect(asked?.answerLine ?? "", "the answered ask's row draws no answer").toContain(
       firstLineOf(words).line
     );
@@ -812,7 +814,7 @@ test("with no filter the page is the conversation, each node edited once, every 
     );
     expect(
       whole
-        .filter((row) => row.id !== seeded.answeredAskId && (row.words ?? row.firstLine) === words)
+        .filter((row) => row.id !== answered && (row.words ?? row.firstLine) === words)
         .map((row) => row.id),
       "the answer is drawn as a row of its own"
     ).toEqual([]);
@@ -1349,7 +1351,7 @@ test("each node sits under the parent the model stores, and a decision stands un
     expect(
       await parentOfRow(page, blockNodeId(specSlug, decision)),
       "the decision that answers the ask is not drawn under it"
-    ).toBe(seeded.answeredAskId);
+    ).toBe(blockNodeId(specSlug, ANSWERED_QUESTION_BLOCK_ID));
   });
 });
 
@@ -4667,7 +4669,7 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
     const words = requirementText(2);
     const heading = "Keep every address the old page answered";
     // The decision's last words, which end its block, the spec's `## Decisions` part's second.
-    const closing = decisionClosingWords(seeded.key, 2);
+    const closing = decisionClosingWords(seeded.key, 2, seeded.answeredAskId);
     const decision = seeded.decisions[1] ?? "";
 
     /** Enter on the focused row, the caret in its node's block `blockId`, and the editor's own
@@ -4796,17 +4798,13 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
       },
     });
 
-    // A decision's heading, reached by `w` from the third requirement, which that decision
-    // shapes.
+    // Edit the agent's decision under the answered question, not the question that shaped a statement.
     const inHeading = {
       artifactId: seeded.specArtifactId,
       blockId: decision,
       focus: async () => {
-        await focusRow(page, blockNodeId(specSlug, requirementBlockId(3)));
-        await page.keyboard.press("w");
-        expect(await focusedRow(page), "w did not move into the decision behind r3").toBe(
-          blockNodeId(specSlug, decision)
-        );
+        await unfoldEveryBranch(page);
+        await focusRow(page, blockNodeId(specSlug, decision));
       },
       undo: async () => {
         await page.keyboard.press("ArrowRight");

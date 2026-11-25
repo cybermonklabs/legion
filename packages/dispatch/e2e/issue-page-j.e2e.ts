@@ -271,17 +271,22 @@ test("a Contents entry draws a node's first line, cut at a word", async ({ brows
   test.setTimeout(120_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const asks = await listIssueAsks(seeded.key);
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const words = new Map<string, string>([
       ...(await listComments(seeded.key)).map((one) => [one.id, one.body] as const),
-      ...asks.map((one) => [one.id, one.question] as const),
+      ...asks.map(
+        (ask) =>
+          [
+            ask.block_id == null ? ask.id : blockNodeId(specSlug, ask.block_id),
+            ask.question,
+          ] as const
+      ),
     ]);
-    // The open question is the spec's `ask` block, so its entry is the block's node, whose words
-    // the server indexed into the ask.
-    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    // The spec's ask entries are drawn by block id, with the words the server indexed.
     const openQuestion = blockNodeId(specSlug, OPEN_QUESTION_BLOCK_ID);
-    const indexed = asks.find((one) => one.id === seeded.openQuestion.askId)?.question;
-    expect(indexed, "the seed's open question is none of the issue's asks").toBeDefined();
-    words.set(openQuestion, indexed ?? "");
+    expect(words.has(openQuestion), "the seed's open question is none of the issue's asks").toBe(
+      true
+    );
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
     const entries = contentsEntries(contentsPane(page));
@@ -651,8 +656,8 @@ test("a spec node shows the decisions that shaped it at every version", async ({
     const agent = stored.find(
       (one) => one.kind === "agent" && one.text.includes("Chosen so the page makes no request")
     );
-    const opening = (agent?.text ?? "").trimStart().split(/\n\s*\n/u)[0] ?? "";
-    const agentQuote = firstLineOf(/^#{1,6} +(.*)/u.exec(opening)?.[1] ?? opening).line;
+    // The decisions read gives the heading its own field and puts the whole typed block in text.
+    const agentQuote = firstLineOf(agent?.heading ?? "").line;
     expect(agentQuote, "the seed holds no agent's decision to quote").not.toBe("");
 
     const traffic = watchApiRequests(page);
