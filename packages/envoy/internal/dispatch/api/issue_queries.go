@@ -52,12 +52,23 @@ var (
 	listIssuesPageQueryAtCut  = issueSummaryQuery(false, true, true, true)
 )
 
-// issueSummaryQuery writes one listing statement. `filtered` applies every filter to `issues i`
-// alone, so `total` is a count over it with no join and the paged text orders and cuts it before
-// anything else is resolved: the six joins then run for the page's rows alone, and a listing of
-// twenty rows costs twenty issues' blockers, specs, open asks, children, components and
-// repository rather than every matching issue's. Both counts come from the one statement, since
-// two statements read two snapshots and can disagree about a table a write is moving.
+// issueSummaryQuery writes one listing statement. `matched` applies every filter to `issues i`
+// alone, so `total` is a count over `filtered`, which runs none of the six joins that resolve a
+// row's values, and the paged text orders and cuts it before anything else is resolved: the six
+// joins then run for the page's rows alone, and a listing of twenty rows costs twenty issues'
+// blockers, specs, open asks, children, components and repository rather than every matching
+// issue's. Both counts come from the one statement, since two statements read two snapshots and
+// can disagree about a table a write is moving.
+//
+// `filtered` is the matched issues read back by their places in one array (generate_subscripts)
+// rather than straight from the scan that matches them, so every plan sizes it at the 1,000 rows
+// generate_subscripts plans, as priorityMemberTerms sizes its seed, rather than at the one issue
+// the generic plan estimates through issueListFilters' arms: each join that attaches a value to
+// the matched issues then reads its grouped term once rather than once for each issue. The array
+// holds each matched row's address (ctid), which the read takes back in the same statement and so
+// under the same snapshot. It holds addresses rather than keys because Postgres finds an element
+// of fixed width at its place at once, and the n-th key of an array of text only by reading the
+// n-1 before it.
 //
 // An empty page still carries the count the caller asked for, so `listed` answers one issue of
 // the filtered set marked `in_page` false when the page holds nothing, and scanIssuePage drops
@@ -91,13 +102,27 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 		filterTerms = prioritiesLiveAtCutTerm + `, ` + issueAdvancesFilterTermsAtCut
 		advancesTerms, componentsTerms = issueAdvancesTermsAtCut, issueComponentsTermsAtCut
 	}
-	query := `with recursive ` + filterTerms + `, filtered as (
+	filteredTerms := `matched as (
+		select i.ctid as address
+		from issues i` + pinnedJoin + `
+		` + issueListFilters + `
+	), filtered as (
+		select i.key, i.status, i.rank, i.created_at
+		from (select array_agg(address) as addresses from matched) m
+		cross join generate_subscripts(m.addresses, 1) as place(n)
+		join issues i on i.ctid = m.addresses[place.n]
+	)`
+	if atCut {
+		// At a cut `issues` names the issues shadow, a WITH member, which has no ctid to read the
+		// matched issues back by. So the text for a cut filters in one term, as the listing did
+		// before it read the matched issues back by their addresses.
+		filteredTerms = `filtered as (
 		select i.key, i.status, i.rank, i.created_at
 		from issues i` + pinnedJoin + `
-		left join advancing on advancing.key = i.key
-		left join advances_originating originating on originating.key = i.key
 		` + issueListFilters + `
 	)`
+	}
+	query := `with recursive ` + filterTerms + `, ` + filteredTerms
 	advancesColumns := issueAdvancesColumns
 	terms := componentsTerms + `, ` + refs.IssueRepoTerms
 	if readAdvances {
@@ -132,18 +157,28 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 // issueListFilters are the eleven filters a listing request carries, written as fourteen
 // parameters (the priority filter takes a list and a flag for the unset, and the `advances`
 // filter a list and a flag for each of its two keywords), every one but the last written against
-// `issues i` alone, so the filtered term joins nothing. The status filter ($2) is a list of the
+// `issues i` alone, so the matched term joins nothing. The status filter ($2) is a list of the
 // statuses named, an issue standing in any of them, and the empty list is every status. The
 // closed window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no time,
 // is outside every window. The last is the `advances` filter, which no column of an issue holds
 // and whose answer a relation of an issue above it can decide: it reads two terms computed once
-// per request (issueAdvancesFilterTerms), joined to the issue by its key, so the filtered term
-// still resolves nothing per row and the page and the count both read it. Its arms are a union:
-// the ids named ($11), the work under none ($12), and the work under any ($13), which is every
-// issue `advancing` holds and so exactly the issues the arm for none leaves out. `?own=true`
-// ($15) reads the arms over `originating` instead: the ids named and any, each over the issues
-// that state a matched priority no issue above them carries, and none, which matches no
-// priority, over nothing.
+// per request (issueAdvancesFilterTerms) and tests each issue's key for membership in them, so
+// the matched term still resolves nothing per row and the page and the count both read it. Its
+// arms are a union: the ids named ($11) and the work under any ($13), which is every issue
+// `advancing` holds, are one test of membership, and the work under none ($12) is every issue it
+// does not hold. `?own=true` ($15) reads the arms over `advances_originating` instead: the ids
+// named and any, one test of membership over the issues that state a matched priority no issue
+// above them carries, and none, which matches no priority, over nothing.
+//
+// Each test is an `in` or a `not in` over a term, never a join to it. Postgres plans an
+// uncorrelated `in` as a hashed subplan whenever the term's estimated rows fit in hash_mem: the
+// term is hashed once per execution and each issue costs one probe, whatever the plan expects of
+// the issues. A join leaves that choice to the estimate. pgx prepares every statement, and from a
+// connection's sixth run Postgres may run the generic plan, made with no argument known
+// (speedCustomPlans); every arm above that a parameter can switch off is a guess to that plan,
+// and together they estimate one issue, where a join loops every issue over the whole term. The
+// arms are disjunctions, as the request's union needs, so the planner cannot make a semi-join of
+// them either.
 //
 // $14, `?moved=true`, is no filter: it is the gate on the move read the joins make
 // (issueSummaryJoins), and the parameters after $15 are the pinned login and the page.
@@ -159,11 +194,9 @@ const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and ($9::timestamptz is null or i.closed_at >= $9)
 		  and ($10::timestamptz is null or i.closed_at < $10)
 		  and ((cardinality($11::text[]) = 0 and not $12::boolean and not $13::boolean)
-		       or (not $15::boolean and (coalesce(advancing.named, false)
-		           or ($12::boolean and advancing.key is null)
-		           or ($13::boolean and advancing.key is not null)))
-		       or ($15::boolean and (coalesce(originating.named, false)
-		           or ($13::boolean and originating.key is not null))))`
+		       or (not $15::boolean and (i.key in (select key from advancing where named or $13::boolean)
+		           or ($12::boolean and i.key not in (select key from advancing))))
+		       or ($15::boolean and i.key in (select key from advances_originating where named or $13::boolean)))`
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
 // rank, the creation time, then the key. The paged text orders the filtered keys by it and the
@@ -302,8 +335,8 @@ const issueAdvancesJoin = `left join advances on advances.issue_key = i.key`
 // advances any, and $15 whether it asked for `own`. `advancing` holds one row per issue that
 // advances a live priority by either route, `named` saying whether one of them is an id the
 // request asked for, and `advances_originating` the same of the issues that state a priority no
-// issue above them carries, so `filtered` decides every key by one join on the issue's key
-// (issueListFilters) and still resolves nothing per row.
+// issue above them carries, so `matched` decides every key by a test of its membership in these
+// terms (issueListFilters says why it is not a join) and still resolves nothing per row.
 //
 // `advances_relations` is the relations the issues' own rows state now, one row per (issue,
 // priority), by the reading of the log issueAdvancesTerms makes for a page. A priority whose

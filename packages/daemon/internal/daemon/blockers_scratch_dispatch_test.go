@@ -953,7 +953,7 @@ func registerLaunch(t *testing.T, d *daemon, launch runtime.SpawnSpec) (string, 
 	session := "ses_" + string(launch.Claim)
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the session of %s = %d; body %s", launch.Claim, status, body)

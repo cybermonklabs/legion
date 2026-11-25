@@ -61,12 +61,14 @@ matching plugin release was installed, the daemon required the new shape while t
 spoke the old one: at 00:02Z on 2026-09-15 every `spawn_worker` it issued was refused
 `400 requestId: Invalid input: expected string, received undefined` and its tree stalled, with
 nothing on the pane saying why, until the daemon owner retired the pane at 00:10Z and the daemon
-resumed the session under the installed plugin. Two consequences for a worker: a branch that
-*does* bump the contract owns the operator's install-then-restart step in its README, because
-the panes already running will not pick it up; and "contract stays N" in a pull-request body is
+resumed the session under the installed plugin. Two consequences for a worker then: a branch that
+*did* bump the contract owned the operator's install-then-restart step in its README, because
+the panes already running would not pick it up; and "contract stays N" in a pull-request body was
 a claim about `main` at the last rebase, re-read every time — this branch bumped nothing, and
 the number it did not bump moved from 4 to 5 under it (LEGION-16), which is how the body's
-"contract stays 4" went stale by review time.
+"contract stays 4" went stale by review time. Since dispatch://INFRA-1569 a body says which
+contract entry the branch adds, if any, and names no number, and since LEGION-164 the daemon's
+first boot on a new contract relaunches every claim onto the release's plugin.
 
 ## The pane is a surface: check the commit identity before the first split (LEGION-170)
 
