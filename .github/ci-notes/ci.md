@@ -497,6 +497,15 @@ lives outside it. A spawn carries no import, so no derivation of this repository
 sees the reach: both patterns are hand-kept, with their declared reads in
 ci_job_reads.py.
 
+## pi_legion_build: the skills' guard and what it reads
+
+pi-legion-build runs src/skills-guard.test.ts too, so its gate (.github/ci-gates/pi-legion-build.py)
+declares what pi_legion's declares for it: the builder above, and the roots of the guard's sweep
+over every file a Legion agent reads (packages/daemon/internal, AGENTS.md, README.md,
+docs/kubernetes.md, docs/site's docs and the controller's example manifest). A change to any of
+them selects the job, so a skill or prompt change that breaks the guard fails on the pull request,
+not first in the merge queue.
+
 ## pi_legion: The Dispatch e2e client that scripts/skill-scenarios/seed.ts imports
 
 The Dispatch e2e client that scripts/skill-scenarios/seed.ts imports from
@@ -1984,9 +1993,12 @@ restore for daemon-pane's `go run`, and the NATS service controller-start-omp.te
 claim needs - on ubuntu-24.04, since the Oh My Pi release ships linux-x64 alone. It is a slow
 suite (14.8 minutes at the 90th percentile as the one job it was), held back behind its
 `pi_legion` output (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request).
-pi-legion-build builds contracts, typechecks the plugin and packs it as the release does,
-uploading the tarball as `pi-legion-pr`: a build and a typecheck, which a pull request runs
-(0.8 minutes), on ubuntu-24.04-arm, since it installs no Oh My Pi.
+pi-legion-build builds contracts, typechecks the plugin, runs the skills' guard
+(src/skills-guard.test.ts: every skill within its budget, every link resolving, every pinned
+sentence present) and packs the plugin as the release does, uploading the tarball as
+`pi-legion-pr`: a build, a typecheck and a text check, which a pull request runs (0.8 minutes),
+on ubuntu-24.04-arm, since it installs no Oh My Pi. The guard also runs in pi-legion's suite in
+the merge queue, where it costs under a second.
 
 ## The dashboard's and the proof editor's lint, typecheck, unit tests, build and
 

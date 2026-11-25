@@ -19,6 +19,17 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
     ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion-build', 'Pack pi-legion')})"),
     ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:100 writes dist/THIRD_PARTY_NOTICES with it"),
     ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:19 imports scripts/e2e/lib/script-functions, and the typecheck includes scripts/skill-scenarios/*.ts"),
+    # What the skills' guard reads beside the skills and the package, run by
+    # "Check the skills against their guard": the Claude plugin builder it spawns, and the
+    # roots of its sweep over every file a Legion agent reads.
+    ("packages/claude-envoy/**", f"{at('pi-legion-build', 'Check the skills against their guard')}: src/skills-guard.test.ts:319 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :30) and asserts an exact file list over the tree it writes"),
+    ("packages/envoy-client/bin/dispatch.ts", "the fourth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:47), outside the package it builds"),
+    (f"{DAEMON}/internal/**", f"{at('pi-legion-build', 'Check the skills against their guard')}: src/skills-guard.test.ts:205 sweeps every file under packages/daemon/internal, a root of the list at :198, and :138 reads internal/supervise"),
+    ("docs/kubernetes.md", "packages/pi-legion/src/skills-guard.test.ts:205, a root of the list at :197"),
+    ("docs/site/src/content/docs/**", "packages/pi-legion/src/skills-guard.test.ts:205, a root of the list at :199, and :771 reads the legion guides under it"),
+    ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:205, a root of the list at :200"),
+    ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:205, a root of the list at :201"),
+    ("README.md", "packages/pi-legion/src/skills-guard.test.ts:205, a root of the list at :202"),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")
   + bun_job("pi-legion-build"))

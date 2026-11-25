@@ -158,6 +158,7 @@ func (r *roleClaimHandBackRig) decodeLookup(status int, answer any) {
 // the very same route: without it a case that proved nothing - a route that renewed no claim at
 // all - would read as this defect fixed.
 func TestARegistrationAfterAHandBackThatFreedNoClaimRenewsTheRoleNoFurther(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_handing_role_back"
@@ -210,6 +211,7 @@ func TestARegistrationAfterAHandBackThatFreedNoClaimRenewsTheRoleNoFurther(t *te
 // about the lanes its session follows. What says a role was given up is the mark a hand-back
 // leaves on the claim, and nothing here has handed anything back.
 func TestARegistrationRenewsTheRoleItHoldsWhateverTopicsItCarries(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_registering_any_topics"
@@ -244,6 +246,7 @@ func TestARegistrationRenewsTheRoleItHoldsWhateverTopicsItCarries(t *testing.T) 
 // written on, and the heartbeats that follow renew the new claim. It is how a holder takes back
 // a role it gave up without waiting out the role claim reaper.
 func TestAClaimGrantedAgainToTheProcessThatHandedTheRoleBackClearsTheMark(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_reclaiming_its_role"
@@ -274,6 +277,7 @@ func TestAClaimGrantedAgainToTheProcessThatHandedTheRoleBackClearsTheMark(t *tes
 // left out where the claim carries no mark, as client_instance_id is left out where the claim
 // names no process, so an absent field reads as "this claim is still its holder's".
 func TestTheRoleLookupReportsTheHandBackMark(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_looked_up_after_handback"
