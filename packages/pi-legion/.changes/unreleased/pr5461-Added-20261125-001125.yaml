@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  The skill-scenario rig runs an owner from its label's own texts, through the label's one entry
+  `label-texts.sh`, and scores the first scored scenario, `owner-walk`. `rig.sh` gains
+  `label-tree`, `unpatch-holds`, `plans-capture`, `batch-scored`, `rows`, `cell` and `evidence`;
+  `scored-job.sh` runs one build-cluster Job of a scored scenario; and `SKILL_SCENARIOS_MODEL=standin`
+  runs a whole world on a model stand-in (`model-standin.ts`), with no model.
+time: 2026-11-25T00:11:25Z
+custom:
+    Issue: pr5461
