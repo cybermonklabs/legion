@@ -4025,6 +4025,10 @@ type AbandonedSession struct {
 	// zero while the table holds them: the boot holds no name of a released session again (store's
 	// recordedNames), and the record of where the session went stays.
 	Released time.Time `json:"released,omitzero"`
+	// ReadyNamed is whether the line that names the project controller's fresh session beside
+	// this one has been written, at that session's first ready (the table's ready,
+	// dispatch://INFRA-2045 R4), so the line is written once for each replacement.
+	ReadyNamed bool `json:"readyNamed,omitempty"`
 }
 
 // Tells is whether a prompt to this claim's agent must still name the session the claim

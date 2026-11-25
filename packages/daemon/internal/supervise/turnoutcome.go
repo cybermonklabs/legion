@@ -196,12 +196,15 @@ func (m *Machine) newestTurnOutcome(o TurnOutcome) bool {
 // --fresh-session` or the controller's fresh_session, since a new session is an operator's or the
 // controller's choice (dispatch://INFRA-956's Design). Every other retry — its architect's
 // retry_or_escalate, the next start of its role, an operator's retry that asks for nothing —
-// resumes the recorded session with fresh budgets, whatever the claim's run of refused turns
-// (dispatch://INFRA-4508's R5). That run is no sign that the session is bad: a refusal that cannot
-// clear fails the claim on the turn it ends, and holds the issue, so a run is mostly refusals that
-// can clear or carry no status, such as a team limit's 429, which refuses every session of the
-// team alike. A claim failed on a refusal that cannot clear resumes too; if its session is refused
-// again, it fails again at once.
+// resumes the recorded session with fresh budgets, but for the one case below, whatever the
+// claim's run of refused turns (dispatch://INFRA-4508's R5). That run is no sign that the session
+// is bad: a refusal that cannot clear fails the claim on the turn it ends, and holds the issue, so
+// a run is mostly refusals that can clear or carry no status, such as a team limit's 429, which
+// refuses every session of the team alike. A claim failed on a refusal that cannot clear resumes
+// too; if its session is refused again, it fails again at once. The one case is the project
+// controller's launch after its session's second end in a row since a finished turn: whatever this
+// answers, that launch forgets the session and spawns a fresh agent (launchNow's
+// replaceEndedSession, dispatch://INFRA-2045 R1).
 func freshSession(ev Event) (bool, string) {
 	asked := false
 	switch ev := ev.(type) {

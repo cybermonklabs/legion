@@ -158,8 +158,18 @@ func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error 
 	}
 	m.log.Warn("supervise: the controller's turn stayed open past its bound; the daemon ends the launch, and the task it was serving stays owed",
 		"turnStartedAt", start, "bound", ev.Bound, "open", now.Sub(start).Round(time.Second))
+	// The end is counted before the replacement, because the launch the replacement makes is the
+	// one that reads the count (launchNow, replaceEndedSession), and a second end in a row must make
+	// that launch fresh. A replacement that ended nothing — a take-back the store refused, a launch
+	// the lifecycle refused (EndNotMade) — leaves the same turn open with the process it found, and
+	// the keeper's next look posts it again, so its count is taken back: one turn is one end.
+	counted := m.claim.SessionRun
+	counted.Endings = slices.Clone(counted.Endings)
 	m.sessionEnded(fmt.Sprintf("its turn stayed open longer than %s, from %s", ev.Bound, start.UTC().Format(time.RFC3339)))
 	end, err := m.replaceProcess(ctx, "the daemon ended a controller turn that stayed open past its bound", ordinaryEnd, endTurnPastBound(ev.Bound))
+	if end == EndNotMade {
+		m.claim.SessionRun = counted
+	}
 	m.log.Info("supervise: the end of the controller turn open past its bound", "end", end)
 	return err
 }

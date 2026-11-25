@@ -297,4 +297,12 @@ func TestAControllerSessionReplacementIsLoggedAndTold(t *testing.T) {
 	if !strings.HasSuffix(first, "\n\n"+controllerStart) {
 		t.Errorf("the fresh session's first prompt is %q, want the replacement told before the start message", first)
 	}
+
+	// The fresh session dies before its first prompt's turn, and comes back: the ready line is
+	// written once for the replacement, not at each ready until the replacement is told.
+	h.dies()
+	h.registerFresh()
+	if ready := h.records.of(freshSessionReadyLine); len(ready) != 1 {
+		t.Fatalf("the fresh session's ready lines after its relaunch are %d, want the one", len(ready))
+	}
 }

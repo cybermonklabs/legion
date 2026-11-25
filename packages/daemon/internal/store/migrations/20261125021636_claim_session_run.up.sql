@@ -20,7 +20,17 @@
 -- There is no down file: migrations here are forward-only. The release before this one names each
 -- column of claims it reads and writes (the claim store's claimSelect and upsertClaim), so it
 -- boots with the column standing, reads none of it, and leaves it as it is on every write. What a
--- rollback costs is the count: that release neither counts nor resets it, so after a roll forward a
--- row reads the run it held at the rollback, which a finished turn under this release resets.
+-- rollback costs is the run: that release neither counts nor resets it, and its forget of a session
+-- leaves it standing, so a session that release starts after a rollback inherits the run the row
+-- held, `turnFinished` included. After the roll forward this release reads that run as the new
+-- session's: for the controller, a session that has not finished a turn can read as one that has,
+-- and the ends counted against the session before it count against it, so its next end can be the
+-- second in a row and replace it. A finished turn under this release starts the run again.
+--
+-- The release before this one refuses the two `legion.yaml` keys this one adds,
+-- `controller_turn_bound_minutes` and `controller_session_max_age_hours` (`unknown key`, its
+-- config's classify), so its daemon does not start while the file names either: an operator who
+-- set one takes it out of `legion.yaml` before rolling back, with the daemon stopped and before the
+-- earlier image is pinned. The database needs nothing taken off.
 alter table claims add column session_run jsonb not null default '{}';
 update claims set session_run = '{"turnFinished": true}' where session <> '';

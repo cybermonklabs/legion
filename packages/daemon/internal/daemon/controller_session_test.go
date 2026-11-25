@@ -141,12 +141,19 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 		}
 	})
 
-	t.Run("c: a turn one minute inside the bound changes nothing", func(t *testing.T) {
+	t.Run("c: a turn that ends one minute before the bound changes nothing", func(t *testing.T) {
 		k, sup, rt, _ := keptController(t, working(now.Add(-89*time.Minute), supervise.SessionRun{TurnFinished: true}))
 		keepOnce(t, k)
-		wantUntouched(t, sup, rt, supervise.StateWorking, "ses_controller")
-		if c := controllerOf(t, sup); c.SessionRun.Ends != 0 {
-			t.Fatalf("the controller's run is %+v, want no end counted", c.SessionRun)
+		m, _ := sup.Machine(claim.ControllerToken("legion"))
+		if err := m.Handle(context.Background(), supervise.StreamTurnEnd{Claim: m.Claim().Token}); err != nil {
+			t.Fatalf("end the turn: %v", err)
+		}
+		// The keeper's clock moves past the moment the turn would have passed its bound.
+		k.now = func() time.Time { return now.Add(2 * time.Minute) }
+		keepOnce(t, k)
+		wantUntouched(t, sup, rt, supervise.StateIdle, "ses_controller")
+		if c := controllerOf(t, sup); c.SessionRun.Ends != 0 || !c.SessionRun.TurnFinished {
+			t.Fatalf("the controller's run is %+v, want no end counted and the turn finished", c.SessionRun)
 		}
 	})
 
@@ -301,4 +308,53 @@ func TestAControllerSessionReplacementIsLoggedAndTold(t *testing.T) {
 	if !strings.HasSuffix(first, "\n\n"+ControllerStartMessage) {
 		t.Errorf("the fresh session's first prompt is %q, want the replacement told before the start message", first)
 	}
+}
+
+// Row (f) of dispatch://INFRA-2045's c-fresh-after-two-ends, through the keeper: a fresh
+// controller session that has never finished a turn ends two launches in a row, is not replaced
+// again, and one Error line says that a fresh session also failed; the claim fails at its launch
+// budget (two in this supervisor), and the keeper retries it only after its first wait, on the
+// same session. internal/supervise's test of the same name holds rows (a) to (g) on the machine.
+// The control: on main no Error line is written.
+func TestAControllerSessionIsReplacedAfterTwoLaunchesEndBeforeAFinishedTurn(t *testing.T) {
+	t.Run("f: a fresh session that never finished a turn is retried with the keeper's waits, not replaced", func(t *testing.T) {
+		k, sup, rt, logs := keptController(t, supervise.Claim{State: supervise.StateReady, Session: "ses_fresh"})
+		m, _ := sup.Machine(claim.ControllerToken("legion"))
+		dies := func() {
+			t.Helper()
+			c := m.Claim()
+			if err := m.Handle(context.Background(), supervise.RuntimeObservation{Observation: runtime.Observation{
+				Locator: *c.Locator, Kind: runtime.Gone, At: time.Now()}}); err != nil {
+				t.Fatalf("report the controller's process gone: %v", err)
+			}
+		}
+		dies()
+		dies()
+		if c := m.Claim(); c.State != supervise.StateFailed || c.Session != "ses_fresh" {
+			t.Fatalf("the controller is %s on %q after two ends, want failed on ses_fresh kept", c.State, c.Session)
+		}
+		if lines := linesOf(t, logs, "supervise: the controller's session ended two launches in a row and has never finished a turn, so it is not replaced: a fresh session also failed, and the keeper retries it with its waits"); len(lines) != 1 || lines[0]["level"] != "ERROR" {
+			t.Fatalf("the lines that say a fresh session also failed are %+v, want one at Error", lines)
+		}
+		resumes := len(rt.CallsOf("Resume"))
+
+		start := time.Now()
+		k.now = func() time.Time { return start }
+		keepOnce(t, k)
+		k.now = func() time.Time { return start.Add(30 * time.Second) }
+		keepOnce(t, k)
+		if got := len(rt.CallsOf("Resume")); got != resumes {
+			t.Fatalf("the keeper relaunched the failed controller %d times inside its first wait, want none", got-resumes)
+		}
+		k.now = func() time.Time { return start.Add(61 * time.Second) }
+		keepOnce(t, k)
+
+		got := rt.CallsOf("Resume")
+		if len(got) != resumes+1 || len(rt.CallsOf("Spawn")) != 0 || got[len(got)-1].Spec.ResumeSessionFile != controllerSessionFile {
+			t.Fatalf("after its wait the keeper started %d resumes and %d spawns, want one resume of the same session", len(got)-resumes, len(rt.CallsOf("Spawn")))
+		}
+		if lines := linesOf(t, logs, "controller: retrying the daemon's controller"); len(lines) != 1 {
+			t.Fatalf("the keeper's retry lines are %+v, want one, after its first wait", lines)
+		}
+	})
 }
