@@ -8,6 +8,7 @@ import {
   LegionPlanRegisterRequest,
   type LegionState,
 } from "@legion/contracts/legion-api";
+import { oneLineJson } from "@legion/envoy-client/excerpt";
 import {
   type DaemonRestartRetry,
   type LegionDaemonClient,
@@ -142,18 +143,12 @@ type SummaryClaim = NonNullable<LegionIssue["architect"]>;
 const pauseActorWords = (session: string | undefined): string =>
   session === undefined ? "the operator" : `the controller (session ${session})`;
 
-/** A person's words as the summary quotes them: JSON's quoting, with U+0085, U+2028 and U+2029
- * escaped too, which JSON leaves raw and Go's `%q` in `legion state` escapes. A newline or an
- * instruction in the words reads as the text it is and cannot pose as a line of the summary. */
-const quotedWords = (words: string): string =>
-  JSON.stringify(words).replace(/[\u0085\u2028\u2029]/g, (separator) =>
-    separator === "\u0085" ? "\\u0085" : separator === "\u2028" ? "\\u2028" : "\\u2029"
-  );
-
-/** A pause as the summary's line names it: its id, since when, who paused and why, quoted
- * (`pauseWords` in `packages/daemon/cmd/legion/project.go`). */
+/** A pause as the summary's line names it: its id, since when, who paused and why. The reason is
+ * quoted as one line of JSON (`oneLineJson`), as `legion state` quotes it with Go's `%q`
+ * (`pauseWords` in `packages/daemon/cmd/legion/project.go`): a newline or an instruction in a
+ * person's words reads as the text it is and cannot pose as a line of the summary. */
 const pauseWords = (id: number, since: string, by: string, reason: string): string =>
-  `pause ${id} since ${since} by ${by}: ${quotedWords(reason)}`;
+  `pause ${id} since ${since} by ${by}: ${oneLineJson(reason)}`;
 
 /**
  * The summary's line on the project's pause, in the words `legion state` prints for an operator
@@ -299,7 +294,7 @@ function stateSummary(state: LegionState): string {
         override.setBy.kind === "controller" ? override.setBy.session : undefined
       );
       lines.push(
-        `cap set ${override.cap} by ${by} at ${override.setAt}: ${quotedWords(override.reason)}`
+        `cap set ${override.cap} by ${by} at ${override.setAt}: ${oneLineJson(override.reason)}`
       );
     }
     lines.push(

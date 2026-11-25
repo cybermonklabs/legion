@@ -222,9 +222,9 @@ export interface LegionDaemonClient {
   readonly admissionCap: (
     input: z.input<typeof LegionProjectAdmissionCapRequest>
   ) => Promise<z.output<typeof LegionAdmissionCapResponse>>;
-  /** The controller's `clear_admission_cap`: the daemon admits under its deployment's cap again,
-   * and records who cleared the cap, when and why. The answer is the cap in
-   * force and the ceiling. */
+  /** The controller's `clear_admission_cap`: the cap in force returns to the deployment's
+   * starting cap, `admission_cap`, and the daemon records who cleared the cap, when and why. The
+   * answer is the cap in force and the ceiling. */
   readonly admissionCapClear: (
     input: z.input<typeof LegionProjectAdmissionCapClearRequest>
   ) => Promise<z.output<typeof LegionAdmissionCapResponse>>;

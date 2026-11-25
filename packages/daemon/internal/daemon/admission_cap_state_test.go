@@ -3,7 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +27,8 @@ import (
 // project's Evals tab reads (dispatch://INFRA-979/spec#b-r39). The control is the state before any
 // change: the cap is the starting cap, the ceiling is apart from it, no override stands, and the
 // list is empty rather than absent. The boot line reads the same cap the same way
-// (bootAdmissionCap), the controller's session included.
+// (bootAdmissionCap), the controller's session included, and on a budget of its own, so a boot
+// whose replay used up its own budget still writes the cap.
 func TestTheStateNamesTheCapInForceTheCeilingAndEveryChange(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
@@ -132,12 +133,21 @@ func TestTheStateNamesTheCapInForceTheCeilingAndEveryChange(t *testing.T) {
 		}
 	}
 
-	boot := fmt.Sprint(bootAdmissionCap(ctx, st, cfg)...)
-	want := fmt.Sprint("admissionStart", 2, "admissionCeiling", 4, "admissionCap", 1, "admissionCapSet", 1,
+	want := []any{"admissionStart", 2, "admissionCeiling", 4, "admissionCap", 1, "admissionCapSet", 1,
 		"admissionCapSetBy", "controller", "admissionCapSetBySession", "ses_controller",
-		"admissionCapSetAt", "2026-11-24T07:00:00Z", "admissionCapReason", "the merge queue waits 52 minutes")
-	if boot != want {
-		t.Errorf("the boot line's cap words = %s, want %s", boot, want)
+		"admissionCapSetAt", "2026-11-24T07:00:00Z", "admissionCapReason", "the merge queue waits 52 minutes"}
+	if boot := bootAdmissionCap(ctx, st, cfg); !reflect.DeepEqual(boot, want) {
+		t.Errorf("the boot line's cap words = %#v, want %#v", boot, want)
+	}
+	// The boot writes its line after the replay of terminal claims, which runs on start's
+	// goroutine (supervision.start) and can use up the budget the boot's starting context carries.
+	// The line's read takes a budget of its own, so the context it is handed may have no time
+	// left: here one whose deadline has passed, as starting's has after a replay that took its
+	// budget. A read under that context would write admissionCapReadError for a cap that reads.
+	spent, cancelSpent := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+	defer cancelSpent()
+	if boot := bootAdmissionCap(spent, st, cfg); !reflect.DeepEqual(boot, want) {
+		t.Errorf("the boot line's cap words after a replay used up the boot's budget = %#v, want %#v", boot, want)
 	}
 }
 

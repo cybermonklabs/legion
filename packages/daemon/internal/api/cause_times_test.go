@@ -291,17 +291,14 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	}
 
 	// A caller below causeTimesContract is below the rows above it too, dispatchCredentialContract's
-	// and admissionCapContract's, so it is told of the cause times' row among theirs and no other.
-	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
+	// and each entry's band, so it is told of the cause times' row first and of those rows after it,
+	// in the table's order. The row's line is named here as a literal, so a strip applied beside
+	// the table, which writes no line, fails here though the table's expectation still names it.
+	_, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	causeLines := 0
-	for _, line := range narrowings {
-		if line.Dropped == dropped {
-			causeLines++
-		}
+	want := narrowingsExpected(state, causeTimesContract-1)
+	if len(want) == 0 || want[0] != dropped {
+		t.Fatalf("a caller stating %d expects the lines %v, want the cause times' row's, %q, first", causeTimesContract-1, want, dropped)
 	}
-	if want := narrowingsExpected(populatedState(t), causeTimesContract-1); causeLines != 1 || len(narrowings) != len(want) {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q among the lines %v",
-			narrowings, causeTimesContract-1, dropped, want)
-	}
+	wantNarrowings(t, narrowings, causeTimesContract-1, want)
 }

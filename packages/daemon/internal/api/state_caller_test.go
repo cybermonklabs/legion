@@ -419,10 +419,7 @@ func withoutAdmissionCapKeys(t *testing.T, body []byte) []byte {
 	if err := json.Unmarshal(body, &served); err != nil {
 		t.Fatalf("decode state %s: %v", body, err)
 	}
-	admission := served["admission"].(map[string]any)
-	delete(admission, "ceiling")
-	delete(admission, "override")
-	delete(admission, "capChanges")
+	withoutAdmissionCapKeysOf(served["admission"].(map[string]any))
 	encoded, err := json.Marshal(served)
 	if err != nil {
 		t.Fatalf("encode the state %s without its cap keys: %v", body, err)
@@ -1042,9 +1039,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			delete(want, "paused")
 			delete(want, "dispatchCredential")
 			// Every row that reaches here is below admissionCapContract too.
-			for _, key := range []string{"ceiling", "override", "capChanges"} {
-				delete(want["admission"].(map[string]any), key)
-			}
+			withoutAdmissionCapKeysOf(want["admission"].(map[string]any))
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])

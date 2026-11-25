@@ -7,6 +7,19 @@ import (
 	"time"
 )
 
+// admissionCapKeys is the three keys the entry adds under the state's `admission`, the keys its
+// band (`withoutAdmissionCap`) takes off a caller below the entry's number: every test that
+// strips or looks for them reads this list.
+var admissionCapKeys = []string{"ceiling", "override", "capChanges"}
+
+// withoutAdmissionCapKeysOf takes the entry's keys off admission, a state's `admission` block as
+// a test decodes it, as the band takes them off a caller below the entry.
+func withoutAdmissionCapKeysOf(admission map[string]any) {
+	for _, key := range admissionCapKeys {
+		delete(admission, key)
+	}
+}
+
 // The entry's rows of this package's test tables: the controller's two routes of the cap, whose
 // bodies a plugin sends, and the answer they share, a set of the cap by the controller on a
 // person's word, which carries every key the answer can: the cap in force, the ceiling, and the
@@ -47,7 +60,7 @@ func TestTheAdmissionCapsBandWritesItsOwnLine(t *testing.T) {
 	if err := json.Unmarshal(body, &served); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"ceiling", "override", "capChanges"} {
+	for _, key := range admissionCapKeys {
 		if _, carried := served.Admission[key]; carried {
 			t.Errorf("the body served to a caller at %d carries `admission.%s`, a key the entry admission-cap added at %d",
 				below, key, entryNumber(admissionCapContract))
@@ -71,7 +84,7 @@ func TestTheAdmissionCapsBandWritesItsOwnLine(t *testing.T) {
 	if err := json.Unmarshal(at, &served); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"ceiling", "override", "capChanges"} {
+	for _, key := range admissionCapKeys {
 		if _, carried := served.Admission[key]; !carried {
 			t.Errorf("the body served to a caller at the entry's own number %d carries no `admission.%s`", entryNumber(admissionCapContract), key)
 		}

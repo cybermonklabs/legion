@@ -499,14 +499,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if !tc.pause {
 				delete(want, "paused")
 			}
-			// A caller below admissionCapContract is served the admission without the three keys
-			// that contract added, `ceiling`, `override` and `capChanges` (withoutAdmissionCap),
-			// which is every pod this table places below this daemon's own contract.
+			// A caller below the entry admission-cap is served the admission without the keys the
+			// entry added (admissionCapKeys, withoutAdmissionCap), which is every pod this table
+			// places below this daemon's own contract.
 			if tc.contract < entryNumber(admissionCapContract) {
-				admission := want["admission"].(map[string]any)
-				delete(admission, "ceiling")
-				delete(admission, "override")
-				delete(admission, "capChanges")
+				withoutAdmissionCapKeysOf(want["admission"].(map[string]any))
 			}
 			// A pod below cachesSourceContract is served the repository caches' capability row
 			// without its `source` (api's withoutUnadmittedCapabilitySources), which is every pod

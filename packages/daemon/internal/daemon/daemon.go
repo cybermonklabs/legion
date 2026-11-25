@@ -783,7 +783,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 				"workerStream", s.stream.Addr(),
 				"runtime", cfg.Runtime.Name,
 			}
-			words = append(words, bootAdmissionCap(starting, st, cfg)...)
+			// The cap's read takes a budget of its own (bootAdmissionCap), since the replay above,
+			// on start's goroutine, can use up the one starting carries.
+			words = append(words, bootAdmissionCap(ctx, st, cfg)...)
 			words = append(words, "migrationsApplied", applied, "claims", s.supervisor.count(), "boot", bootID)
 			log.Info("legion daemon started", words...)
 			if workflow != nil {
@@ -2940,13 +2942,18 @@ func (l *servingLatch) serving() bool { return l.served.Load() }
 // bootAdmissionCap is the boot line's words for the admission cap (dispatch://INFRA-5616): the
 // deployment's starting cap and ceiling, the cap in force, and the cap that stands, with who set
 // it, when and why. A change of admission_cap leaves a standing cap in force, and this line shows
-// why. It reads read-only under ctx, the boot's budget, through api.AdmissionCapStateTx, the
-// reading every pass makes. A failed read logs its error and never stops the boot.
+// why. It reads read-only through api.AdmissionCapStateTx, the reading every pass makes, under a
+// bootBudget of its own on ctx's values: the boot's starting context, which the replay of
+// terminal claims runs before this line on (supervision.start), may have no time left, and a
+// read under it would write a read error for a cap that reads fine. A failed read logs its error
+// and never stops the boot.
 func bootAdmissionCap(ctx context.Context, st *store.Store, cfg config.Config) []any {
+	read, cancelRead := bootBudget(ctx)
+	defer cancelRead()
 	words := []any{"admissionStart", cfg.AdmissionCap, "admissionCeiling", cfg.AdmissionCeiling}
 	var inForce int
 	var standing *api.AdmissionCapOverride
-	if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+	if err := store.TransactWith(read, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		inForce, standing, err = api.AdmissionCapStateTx(ctx, tx, cfg.Project, cfg.AdmissionCap, cfg.AdmissionCeiling)
 		return err

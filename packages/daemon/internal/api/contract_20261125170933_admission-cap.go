@@ -30,7 +30,7 @@ package api
 // stops nothing that runs: it starts nothing new until fewer issues than it hold a slot. A set of
 // the cap that stands, and a clear where none stands, change nothing: they append no row, and the
 // daemon logs one Debug line for each. The controller's two routes answer `{cap, ceiling,
-// override?}` (`api.AdmissionCapResponse`, answers.go's AnswerAdmissionCap, whose routes arrive
+// override?}` (`api.AdmissionCapResponse`, the entry's own AnswerAdmissionCap, whose routes arrive
 // with it, so no contract below this entry records either); the operator's answer the same body to
 // the `legion` command, which no plugin parses. `cap` is the cap the passes admit under, `ceiling`
 // the deployment's `admission_ceiling`, and `override`, `{cap, setBy, setAt, reason}` with `setBy`
