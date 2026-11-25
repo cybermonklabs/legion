@@ -1560,7 +1560,7 @@ type daemonRefs struct {
 // internal/dispatch's HTTPClient, its fourteen writes and every read, Whoami among them, on the
 // daemon's issue of P. The step record PutStep writes is a fresh one at each run of the script,
 // the first write of its run, so it names the run's whole identity; PutStepRating rates that same
-// record, a retro's, PutStepExperiment names the experiment and the variant of that same record,
+// record, a retro's, PutStepExperiment writes on it the experiment and the variant of its issue,
 // and PutPlan writes a fresh default plan of the run. ChangeStatus posts to the keyed
 // status-change route under a request key of its own run, fenced at the sequence the read just
 // before it answered, so the write is the one the outbox makes and is never a replay.
@@ -1622,7 +1622,8 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 			dispatch.PlanRating{Rating: 4, Reason: "The rig's retro rates the plan its issue ran."})
 	})
 	call("PutStepExperiment", false, func() error {
-		return client.PutStepExperiment(ctx, issueKey, stepID, step, dispatch.StepExperiment{Experiment: "memory", Variant: "memory"})
+		return client.PutStepExperiment(ctx, issueKey, stepID, step,
+			dispatch.StepExperiment{Experiment: "planning", Variant: "b"})
 	})
 	call("PutPlan", false, func() error {
 		return client.PutPlan(ctx, issueKey, uuid.NewString(), dispatch.PlanWrite{Generation: 1, Source: "default",

@@ -24,6 +24,7 @@ import (
 // issue Sandbox stays Running, so every sibling role in the pod keeps running, and the role's
 // Secret and session stay for a Resume.
 func TestSuspendStopsOnlyTheRecordedRoleProcess(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	root := g.spawn(rootSpec(t))
 	loc := g.spawn(workerSpec(t))
@@ -62,6 +63,7 @@ func TestSuspendStopsOnlyTheRecordedRoleProcess(t *testing.T) {
 // newer generation of the same role in the same pod, a pod the controller replaced, or no pod.
 // Nothing is written and no stop is sent.
 func TestSuspendWithAStaleLocator(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	stopsOf := func(g *rig) int {
 		n := 0
@@ -131,6 +133,7 @@ func TestSuspendWithAStaleLocator(t *testing.T) {
 // close (SuspendIssue) and its reserved cleanup (store.CleanupReservedIssue, then CleanupIssue)
 // alone delete issue Sandboxes.
 func TestReleaseNeverDeletesTheIssueSandbox(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	for label, locate := range map[string]func(runtime.Locator) *runtime.Locator{
 		"current": func(loc runtime.Locator) *runtime.Locator { return &loc },
@@ -171,6 +174,7 @@ func TestReleaseNeverDeletesTheIssueSandbox(t *testing.T) {
 // Release takes the claim once. A claim paired with another claim's locator is refused before
 // anything is sent or deleted: releasing one claim never ends another's Sandbox or process.
 func TestReleaseRefusesALocatorOfAnotherClaim(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(workerSpec(t))
 	other := g.spawn(testSpec(t, otherToken, claim.RoleReviewer, testTree))
@@ -198,6 +202,7 @@ func TestReleaseRefusesALocatorOfAnotherClaim(t *testing.T) {
 // issue's own lifecycle is open, as its launch's own lifecycle check required: the sweep keeps its
 // Sandbox, whether the launch has finished or is still waiting for its pod.
 func TestTheOrphanSweepKeepsTheSandboxesOfALiveTreeUnknownClaimsLaunched(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	var known []runtime.Known // read before either launch
 	g.spawn(workerSpec(t))
@@ -231,6 +236,7 @@ func TestTheOrphanSweepKeepsTheSandboxesOfALiveTreeUnknownClaimsLaunched(t *test
 // name waits for that delete, then launches into a Sandbox of its own: it never takes up the
 // leftover the delete then takes from under it, which would cost the claim a launch.
 func TestALaunchBegunDuringAnOrphansDeleteWaitsForIt(t *testing.T) {
+	t.Parallel()
 	leftover := SandboxName(workerToken)
 	var armed atomic.Bool
 	got := make(chan struct{}, 1)
@@ -290,6 +296,7 @@ func TestALaunchBegunDuringAnOrphansDeleteWaitsForIt(t *testing.T) {
 // claim's and is the probe's own to delete (#1266), and one whose labels name no issue is kept and
 // reported: what cannot be told apart from a live issue's is never deleted.
 func TestTheOrphanSweepDeletesOnlySandboxesOfClosedIssuesPastTheGrace(t *testing.T) {
+	t.Parallel()
 	orphan := claim.Token("legion-legion-legion-9-planner")
 	probe := "legion-probe-legion-1d10089a0000"
 	unlabelled := "legion-legion-legion-77"
@@ -344,6 +351,7 @@ func TestTheOrphanSweepDeletesOnlySandboxesOfClosedIssuesPastTheGrace(t *testing
 // Its Sandbox owns no volume claim template, the shape this runtime makes for an issue, so the
 // launch keeps it rather than replacing it (TestALaunchReplacesTheIssueSandboxOfTheSupersededDiskShape).
 func TestAnIssueSandboxReadmittedSinceItsDeleteWasDecidedStays(t *testing.T) {
+	t.Parallel()
 	orphan := claim.Token("legion-legion-legion-209-architect")
 	name := SandboxName(orphan)
 	created := map[string]string{labelProject: testProject, labelTree: labelValue(testTree), labelIssue: labelValue("LEGION-209")}
@@ -419,6 +427,7 @@ func (t *versionedTracker) Patch(gvr schema.GroupVersionResource, obj k8sruntime
 
 // Adoption goes over the claim's connection, to the recorded process only.
 func TestAdoptWorkingCopyAsksTheRecordedProcess(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	conn := fake.NewConn()
 	g.conns.Register(workerToken, conn)

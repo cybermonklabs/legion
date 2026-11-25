@@ -534,15 +534,17 @@ describe("the arguments check's jj", () => {
 const transactSeam =
   "packages/daemon/internal/daemon/approved_version_news_control_transact_live_test.go";
 const taskSeam = "packages/daemon/internal/daemon/approved_version_news_control_task_live_test.go";
-const seedFile = assignment("seed_file").slice("seed_file=".length);
+const contractSeam =
+  "packages/daemon/internal/daemon/approved_version_news_control_contract_live_test.go";
 // The checkout the script's own root names, whose scripts/e2e/lib holds the Go of each seam that
 // control_compat copies.
 const checkout = join(import.meta.dir, "../../..");
 
-/** Runs control_compat over a scratch base tree whose package daemon holds two Go files, the
- * first defining seedTransact where TRANSACT says so and the second defining recordTaskAt where
- * TASK says so, and answers the tree, the run's output and its exit. */
-function controlCompat(transact: boolean, task: boolean) {
+/** Runs control_compat over a scratch base tree whose package daemon holds three Go files, the
+ * first defining seedTransact where TRANSACT says so, the second recordTaskAt where TASK says so
+ * and the third versionNewsPluginContract where CONTRACT says so, and answers the tree, the run's
+ * output and its exit. */
+function controlCompat(transact: boolean, task: boolean, contract: boolean) {
   const tree = scratch();
   const daemonDir = join(tree, "packages/daemon/internal/daemon");
   mkdirSync(daemonDir, { recursive: true });
@@ -554,12 +556,16 @@ function controlCompat(transact: boolean, task: boolean) {
     join(daemonDir, "seed_test.go"),
     `package daemon\n\n${task ? "func recordTaskAt() error { return nil }\n" : "func startRoles() {}\n"}`
   );
+  writeFileSync(
+    join(daemonDir, "claims_test.go"),
+    `package daemon\n\n${contract ? "func versionNewsPluginContract() int { return 0 }\n" : "func registerClaims() {}\n"}`
+  );
   const result = Bun.spawnSync([
     Bun.which("bash") ?? "bash",
     "-c",
     `set -euo pipefail
 ${helperGuard}
-check=base-tree root=${JSON.stringify(checkout)} ${assignment("seed_file")}
+check=base-tree root=${JSON.stringify(checkout)}
 ${note}
 ${fail}
 ${fn("control_compat")}
@@ -572,14 +578,15 @@ control_compat ${JSON.stringify(tree)}`,
 }
 
 // Part one's control builds this checkout's part-one driver in a scratch copy of the base, and
-// the driver's seed calls two seams an older base lacks, seedTransact and recordTaskAt. The
-// control copies the base's version of each, a test file of package daemon under //go:build e2e
-// that scripts/e2e/lib holds as a .go.txt file, where the base tree defines no such function, and
+// the driver calls three seams an older base lacks: seedTransact and recordTaskAt, which its seed
+// calls, and versionNewsPluginContract, the contract its claims register with. The control copies
+// the base's version of each, a test file of package daemon under //go:build e2e that
+// scripts/e2e/lib holds as a .go.txt file, where the base tree defines no such function, and
 // writes no file where it does; its transcript names each file it writes and each seam the base
 // already defines.
 describe("the control's seam files", () => {
-  test("are written where the base defines neither seam", () => {
-    const run = controlCompat(false, false);
+  test("are written where the base defines no seam", () => {
+    const run = controlCompat(false, false, false);
     expect(run.code).toBe(0);
     expect(run.err).toBe("");
     const transact = readFileSync(join(run.tree, transactSeam), "utf8");
@@ -602,33 +609,45 @@ describe("the control's seam files", () => {
     expect(task).toContain(
       "\nfunc recordTaskAt(context.Context, pgx.Tx, record.Store, record.Issue) error { return nil }\n"
     );
+    const contract = readFileSync(join(run.tree, contractSeam), "utf8");
+    expect(contract).toBe(
+      readFileSync(join(import.meta.dir, "approved-version-news-control-contract.go.txt"), "utf8")
+    );
+    expect(contract.startsWith("//go:build e2e\n")).toBe(true);
+    expect(contract).toContain("\npackage daemon\n");
+    expect(contract).toContain(
+      "\nfunc versionNewsPluginContract() int { return api.DaemonAPIVersion }\n"
+    );
     expect(run.out).toBe(
-      `   wrote ${join(run.tree, transactSeam)}: the base's package daemon defines no seedTransact, which ${seedFile} takes its transaction through\n` +
-        `   wrote ${join(run.tree, taskSeam)}: the base's package daemon defines no recordTaskAt, which ${seedFile} calls\n`
+      `   wrote ${join(run.tree, transactSeam)}: the base's package daemon defines no seedTransact, which part one's driver takes its transaction through\n` +
+        `   wrote ${join(run.tree, taskSeam)}: the base's package daemon defines no recordTaskAt, which part one's driver calls\n` +
+        `   wrote ${join(run.tree, contractSeam)}: the base's package daemon defines no versionNewsPluginContract, which part one's driver registers its claims' contract through\n`
     );
   });
 
-  test("are not written where the base defines both seams", () => {
-    const run = controlCompat(true, true);
+  test("are not written where the base defines all three seams", () => {
+    const run = controlCompat(true, true, true);
     expect(run.code).toBe(0);
     expect(run.err).toBe("");
     expect(existsSync(join(run.tree, transactSeam))).toBe(false);
     expect(existsSync(join(run.tree, taskSeam))).toBe(false);
+    expect(existsSync(join(run.tree, contractSeam))).toBe(false);
     expect(run.out).toBe(
       "   the base's package daemon defines seedTransact, so the control writes no file for it\n" +
-        "   the base's package daemon defines recordTaskAt, so the control writes no file for it\n"
+        "   the base's package daemon defines recordTaskAt, so the control writes no file for it\n" +
+        "   the base's package daemon defines versionNewsPluginContract, so the control writes no file for it\n"
     );
   });
 
   test("are written for the one seam the base lacks", () => {
-    const transactOnly = controlCompat(false, true);
-    expect(transactOnly.code).toBe(0);
-    expect(existsSync(join(transactOnly.tree, transactSeam))).toBe(true);
-    expect(existsSync(join(transactOnly.tree, taskSeam))).toBe(false);
-    const taskOnly = controlCompat(true, false);
-    expect(taskOnly.code).toBe(0);
-    expect(existsSync(join(taskOnly.tree, transactSeam))).toBe(false);
-    expect(existsSync(join(taskOnly.tree, taskSeam))).toBe(true);
+    const seams = [transactSeam, taskSeam, contractSeam];
+    for (const lacking of seams.keys()) {
+      const run = controlCompat(lacking !== 0, lacking !== 1, lacking !== 2);
+      expect(run.code).toBe(0);
+      for (const [place, seam] of seams.entries()) {
+        expect(existsSync(join(run.tree, seam))).toBe(place === lacking);
+      }
+    }
   });
 });
 

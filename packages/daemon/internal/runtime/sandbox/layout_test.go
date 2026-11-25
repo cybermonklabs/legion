@@ -16,6 +16,7 @@ import (
 // The boot census passes a project whose only Sandbox is an issue pod this runtime launched, and
 // refuses one that still holds a per-claim Sandbox of the layout before issue pods, naming it.
 func TestTheBootCensusRefusesLegacyIssueSandboxesOnly(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(rootSpec(t))
 	sandboxes := g.dyn.Resource(sandboxGVR).Namespace(testNamespace)
@@ -39,6 +40,7 @@ func TestTheBootCensusRefusesLegacyIssueSandboxesOnly(t *testing.T) {
 // missing a launcher or running one more, and a Sandbox whose labels name no kind are each refused,
 // by name, before the daemon adopts, suspends or deletes any of them.
 func TestTheBootCensusHoldsEverySandboxToTheLaunchersItsLabelsName(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(controllerSpec(t))
 	g.spawn(rootSpec(t))
@@ -77,6 +79,7 @@ func TestTheBootCensusHoldsEverySandboxToTheLaunchersItsLabelsName(t *testing.T)
 // The census's one refusal names every Sandbox it refuses, each with its reason, and how many, and
 // none of the pods this runtime builds, so the operator clears them all before the next boot.
 func TestTheBootCensusNamesEveryRefusedSandboxAndHowMany(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(rootSpec(t))
 	built := SandboxName(rootToken)
@@ -127,6 +130,7 @@ func TestTheBootCensusNamesEveryRefusedSandboxAndHowMany(t *testing.T) {
 // tree-volume layout and pointed at docs/kubernetes.md's upgrade section — before the daemon
 // adopts, suspends or recreates any of them.
 func TestTheBootCensusRefusesEverySandboxOfTheTreeVolumeLayout(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(controllerSpec(t))
 	g.spawn(rootSpec(t))
@@ -180,6 +184,7 @@ func TestTheBootCensusRefusesEverySandboxOfTheTreeVolumeLayout(t *testing.T) {
 // sandbox comes from the Sandbox's issue label, matched to the canary list as a launch matches
 // its issue.
 func TestTheBootCensusPassesAnIssueSandboxOfEitherDiskShape(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(controllerSpec(t))
 	g.spawn(rootSpec(t))
@@ -254,6 +259,7 @@ func TestTheBootCensusPassesAnIssueSandboxOfEitherDiskShape(t *testing.T) {
 // Sandbox whose next launch replaces its disk: the operator clears them all before the next boot
 // rather than one per refused boot.
 func TestTheBootCensusNamesEveryTreeVolumeLayoutSandboxInOneRefusal(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(controllerSpec(t))
 	g.spawn(rootSpec(t))

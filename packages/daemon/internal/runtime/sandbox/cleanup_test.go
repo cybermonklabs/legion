@@ -116,6 +116,7 @@ func (c *cleanupRig) disk(sandbox string) *corev1.PersistentVolumeClaim {
 // cannot delete a replacement. The child's Sandbox, though labelled with the same tree, another
 // issue's and the image probe's are left alone (R17 of dispatch://INFRA-3320).
 func TestAnIssueCleanupForegroundDeletesOnlyItsOwnSandboxAndItsVolume(t *testing.T) {
+	t.Parallel()
 	c := newCleanupRig(t)
 	if err := c.r.CleanupIssue(c.ctx, testTree); err != nil {
 		t.Fatalf("cleanup: %v", err)
@@ -151,6 +152,7 @@ func TestAnIssueCleanupForegroundDeletesOnlyItsOwnSandboxAndItsVolume(t *testing
 // resourceVersion) is no failure: the Sandbox is read again and the delete fenced to what it holds
 // now.
 func TestAnIssueCleanupReadsAgainAfterAConflict(t *testing.T) {
+	t.Parallel()
 	c := newCleanupRig(t)
 	conflicted := false
 	c.dyn.PrependReactor("delete", "sandboxes", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
@@ -171,6 +173,7 @@ func TestAnIssueCleanupReadsAgainAfterAConflict(t *testing.T) {
 // A failed delete fails the cleanup, leaving the Sandbox and its pod's disk, and the same cleanup
 // run again finishes it.
 func TestAnIssueCleanupThatFailedFinishesOnItsRetry(t *testing.T) {
+	t.Parallel()
 	c := newCleanupRig(t)
 	failed := false
 	c.dyn.PrependReactor("delete", "sandboxes", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
@@ -201,6 +204,7 @@ func TestAnIssueCleanupThatFailedFinishesOnItsRetry(t *testing.T) {
 // An issue the API holds no Sandbox of, as one whose close deleted it already, is released at
 // once: nothing is written.
 func TestAnIssueCleanupOfAnIssueWithNoSandboxWritesNothing(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withoutController())
 	g.clearActions()
 	if err := g.r.CleanupIssue(g.ctx, testTree); err != nil {
@@ -214,6 +218,7 @@ func TestAnIssueCleanupOfAnIssueWithNoSandboxWritesNothing(t *testing.T) {
 // A Sandbox by the issue's name that is labelled with another issue is not this issue's: the
 // cleanup deletes nothing and says so.
 func TestAnIssueCleanupLeavesASandboxLabelledForAnotherIssue(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(rootToken)
 	g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, "uid-foreign", modeSuspended,
 		map[string]string{labelProject: testProject, labelTree: testTree, labelIssue: childIssue})}, withoutController())
@@ -231,6 +236,7 @@ func TestAnIssueCleanupLeavesASandboxLabelledForAnotherIssue(t *testing.T) {
 // now keeps its pod (R17 of dispatch://INFRA-3320) — and deletes it once the issue's own cleanup
 // confirmed, as every other orphan is deleted.
 func TestTheSweepKeepsAnIssuesSandboxWhileItsOwnLifecycleIsLive(t *testing.T) {
+	t.Parallel()
 	name := "legion-legion-legion-209"
 	g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, "uid-sandbox-child", modeSuspended,
 		map[string]string{labelProject: testProject, labelTree: testTree, labelIssue: childIssue})}, withoutController())
