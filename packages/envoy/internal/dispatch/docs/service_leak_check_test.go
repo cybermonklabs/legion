@@ -37,17 +37,21 @@ const leakCheckHoldEnded = "docs: the leak check's child lets its shut-down serv
 // on a loaded runner a shut-down service has stayed reachable past the 30 s the check once gave
 // every service (formerLeakBound), with no goroutine, finalizer or cleanup holding it, and the run
 // failed for a test that had shut its service down. Each case runs this binary again with one test
-// (TestLeakCheckChild) and reads the check's exit code and its lines, each after the one before
+// (TestLeakCheckChild), once, under -timeout 0 (testwait.RunChild with no hang guard), where the
+// shared wait has no end, and reads the check's exit code and its lines, each after the one before
 // it:
 //   - one service shut down and then held past formerLeakBound, counted from the check's own
 //     start (leakCheckStarted) and not from the test's end, so the database drops storetest.Main
 //     waits for in between cannot shorten it: the child writes leakCheckHoldEnded as it lets the
 //     service go, and the check counts no service alive after that line, so it waited the hold
-//     out and passed;
-//   - one service never shut down, in a child under -timeout 0, where the shared wait has no end:
-//     the check fails it by the name of the test that built it, from its state, without waiting,
-//     so the child exits on its own. A check that waited for it would hold the child until this
-//     test's own wait gave up (testwait.Context), which fails the case by name.
+//     out and passed, however long a loaded machine took over the child's run;
+//   - one service never shut down: the check fails it by the name of the test that built it, from
+//     its state, without waiting, so the child exits on its own.
+//
+// A child whose check never ends is killed where this test's own wait gives up (testwait.RunChild),
+// which fails the case by name: the parent's binary keeps the one hang guard, and no case holds a
+// number of its own. Under a -timeout of 3 min, the shut-down child's check gave up 2 min 30 s after
+// the child's start, so a slow child run and a long hold could pass it.
 func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing.T) {
 	// Not parallel: it runs two more copies of this binary at once, each holding a service until its
 	// end-of-run check, one of them past formerLeakBound; beside the package's parallel tests those
@@ -57,16 +61,15 @@ func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing
 	}
 	for _, test := range []struct {
 		child    string
-		timeout  string
 		wantExit int
-		// want is the lines the child's output holds, each after the one before it.
+		// want is the lines the child writes to stderr, each after the one before it.
 		want []string
 	}{
-		{child: "shut-down-held", timeout: "3m", wantExit: 0, want: []string{
+		{child: "shut-down-held", wantExit: 0, want: []string{
 			leakCheckHoldEnded,
 			"docs: 1 services built, 0 still alive after",
 		}},
-		{child: "never-shut-down", timeout: "0", wantExit: 1, want: []string{
+		{child: "never-shut-down", wantExit: 1, want: []string{
 			"docs: 1 services built, 1 still alive after",
 			"docs: a service built by docs.TestLeakCheckChild is still alive: its Shutdown never started",
 			"docs: a service still alive fails this run",
@@ -74,29 +77,23 @@ func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing
 	} {
 		t.Run(test.child, func(t *testing.T) {
 			t.Parallel()
-			ctx := testwait.Context(t)
-			child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLeakCheckChild$", "-test.timeout="+test.timeout)
-			child.Env = append(os.Environ(), leakCheckChildEnv+"="+test.child)
-			output, err := child.CombinedOutput()
-			if ctx.Err() != nil {
-				t.Fatalf("the child was still running where this test's wait gave up (testwait.Context):\n%s", output)
-			}
+			stdout, stderr, err := testwait.RunChild(t, 0, "^TestLeakCheckChild$", leakCheckChildEnv+"="+test.child)
 			exit := 0
 			if err != nil {
 				exitErr, ok := err.(*exec.ExitError)
 				if !ok {
-					t.Fatalf("run the child: %v\n%s", err, output)
+					t.Fatalf("run the child: %v\n%s\nstderr:\n%s", err, stdout, stderr)
 				}
 				exit = exitErr.ExitCode()
 			}
 			if exit != test.wantExit {
-				t.Fatalf("the child exited %d, want %d:\n%s", exit, test.wantExit, output)
+				t.Fatalf("the child exited %d, want %d:\n%s\nstderr:\n%s", exit, test.wantExit, stdout, stderr)
 			}
-			rest := string(output)
+			rest := stderr
 			for _, line := range test.want {
 				at := strings.Index(rest, line)
 				if at < 0 {
-					t.Fatalf("the child's output lacks %q after the lines of %q before it:\n%s", line, test.want, output)
+					t.Fatalf("the child's stderr lacks %q after the lines of %q before it:\n%s\nstdout:\n%s", line, test.want, stderr, stdout)
 				}
 				rest = rest[at+len(line):]
 			}

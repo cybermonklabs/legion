@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -21,113 +20,6 @@ import (
 // run. Some give up on purpose and one reads the deadline and waits under -timeout 0, and the
 // parent names each flag, so each runs in a binary of its own.
 const childEnv = "TESTWAIT_CHILD"
-
-// stepClock is the clock a child of these tests gives the waits here (clock). Its time moves only
-// when the child sets now, or when a timer a wait armed fires, which moves it to the timer's moment
-// when that is later. A timer fires only once a wait is blocked waiting on it (fireOnceWaited), so
-// a wait that gives up without waiting never gets its tick. A wait's margin thus passes at a step
-// the child takes or at the wait's own step, never at a moment a loaded machine moves, and the
-// child reads which timers its waits armed and whether each wait took its timer's tick. Only one
-// wait of the child's runs at a time.
-type stepClock struct {
-	now    time.Time
-	timers []*stepTimer
-}
-
-// stepTimer is a timer a wait armed on a stepClock: the moment it was armed for, its channel, and
-// whether it fired. quit, closed by the timer's stop, ends the goroutine that would fire it.
-type stepTimer struct {
-	at    time.Time
-	fired chan time.Time
-	sent  bool
-	quit  chan struct{}
-}
-
-func (c *stepClock) Now() time.Time { return c.now }
-
-func (c *stepClock) Timer(at time.Time) (<-chan time.Time, func() bool) {
-	timer := &stepTimer{at: at, fired: make(chan time.Time, 1), quit: make(chan struct{})}
-	c.timers = append(c.timers, timer)
-	go c.fireOnceWaited(timer)
-	return timer.fired, func() bool { close(timer.quit); return false }
-}
-
-// fireOnceWaited fires timer, moving c's time to its moment when that is later, once a goroutine of
-// this binary is blocked in a wait's own select on its timer, which is the wait that armed it: the
-// child runs one wait at a time. It asks at the package's pace until then, and ends without firing
-// once the timer is stopped: a wait that returned without waiting has stopped it. It reads the stop
-// again after it found a wait blocked, so a timer whose wait returned while it read the stacks
-// does not fire for the next wait.
-func (c *stepClock) fireOnceWaited(timer *stepTimer) {
-	for {
-		select {
-		case <-timer.quit:
-			return
-		default:
-		}
-		if blockedInAWait() {
-			select {
-			case <-timer.quit:
-				return
-			default:
-			}
-			if timer.at.After(c.now) {
-				c.now = timer.at
-			}
-			timer.sent = true
-			timer.fired <- timer.at
-			return
-		}
-		time.Sleep(pace)
-	}
-}
-
-// waitFrames is how a goroutine's stack names the functions of this package that select on a
-// wait's timer (expiry): received, which Receive, ReceiveInHelper and so Returns wait in, then
-// Next, Span and Quiet, each after this package's path.
-var waitFrames = func() []string {
-	path := strings.TrimSuffix(runtime.FuncForPC(reflect.ValueOf(childGiveUpAt).Pointer()).Name(), "childGiveUpAt")
-	return []string{path + "received[", path + "Next[", path + "Span(", path + "Quiet["}
-}()
-
-// blockedInAWait reports whether a goroutine of this binary is blocked in a wait's select on its
-// timer: its state is a select, and one of waitFrames is a frame of its stack, the first or any
-// below it. runtime.Stack forces its own traceback level, so GOTRACEBACK cannot hide the frames; a
-// Go release that renamed a wait's frame or the select's state would, and then a child's timer
-// would never fire: the child's wait then runs into the child's alarm, which its parent gives at
-// childTimeout, and the parent fails naming it while the margin is left to it.
-func blockedInAWait() bool {
-	buffer := make([]byte, 1<<20)
-	for _, stack := range strings.Split(string(buffer[:runtime.Stack(buffer, true)]), "\n\n") {
-		header, frames, _ := strings.Cut(stack, "\n")
-		if !strings.Contains(header, " [select") {
-			continue
-		}
-		for _, frame := range waitFrames {
-			if strings.Contains(frames, frame) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// armed is the moment of each timer the waits armed on c, in the order they armed them.
-func (c *stepClock) armed() []time.Time {
-	moments := make([]time.Time, 0, len(c.timers))
-	for _, timer := range c.timers {
-		moments = append(moments, timer.at)
-	}
-	return moments
-}
-
-// useStepClock gives the waits of this test binary a stepClock whose time is now, until t ends.
-func useStepClock(t *testing.T, now time.Time) *stepClock {
-	stepped := &stepClock{now: now}
-	clock = stepped
-	t.Cleanup(func() { clock = wallClock{} })
-	return stepped
-}
 
 // childGiveUpAt is the moment the waits of a child give up (GiveUpAt), failing t when the child has
 // no deadline: a child's -timeout is the one its parent gives it.
@@ -584,10 +476,10 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 			case 1:
 				return "the first reading", false
 			case 2:
-				stepped.now = end.Add(-time.Nanosecond)
+				stepped.set(end.Add(-time.Nanosecond))
 				return "a reading a nanosecond before the margin", false
 			}
-			stepped.now = end
+			stepped.set(end)
 			return "a later\nreading", false
 		})
 	})
@@ -640,9 +532,9 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 		}
 	})
 	t.Run("past the margin armed only the margin", func(t *testing.T) {
-		for _, timer := range stepped.timers {
-			if timer.at.After(end) || !timer.sent || len(timer.fired) != 0 {
-				t.Errorf("a wait begun at the margin, %v, armed a timer for %v (fired %t, tick left untaken %t), want one for the margin or before it that fired once the wait waited on it and whose tick the wait took: past the margin a wait asks once", end, timer.at, timer.sent, len(timer.fired) != 0)
+		for _, timer := range stepped.armedTimers() {
+			if timer.at.After(end) || !timer.sent || timer.untaken {
+				t.Errorf("a wait begun at the margin, %v, armed a timer for %v (fired %t, tick left untaken %t), want one for the margin or before it that fired once the wait waited on it and whose tick the wait took: past the margin a wait asks once", end, timer.at, timer.sent, timer.untaken)
 			}
 		}
 	})
@@ -657,7 +549,7 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 		left := time.Until(end)
 		Bubble(t, func(t testing.TB) {
 			began := time.Now()
-			stepped.now = began
+			stepped.set(began)
 			asks := 0
 			Until(t, "a reading in a bubble that never holds", func() (string, bool) {
 				asks++
@@ -665,7 +557,7 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 				case 1:
 					return "the bubble's first reading", false
 				case 2:
-					stepped.now = began.Add(left)
+					stepped.set(began.Add(left))
 					return "the bubble's reading", false
 				}
 				t.Errorf("the wait in the bubble had not given up %v past the bubble's start, what was left of the child's give-up as the bubble began: it gives up at a moment past the bubble's", left)
@@ -702,25 +594,22 @@ func TestReceiveGivesUpAtTheMargin(t *testing.T) {
 	}
 }
 
-// runChildMeantToFail re-executes this binary to run only the test named child, under -timeout
-// childTimeout and with childEnv set, and returns what the child wrote to stdout and to stderr. It
-// fails t unless the child failed before its deadline and with no report of the race detector: a
-// child that passed, one whose waits ran into go test's alarm rather than giving up at the margin,
-// and one the detector failed, fail t at once.
+// runChildMeantToFail re-executes this binary to run only the test named child (RunChild), under
+// -timeout childTimeout and with childEnv set, and returns what the child wrote to stdout and to
+// stderr. It fails t unless the child failed before its deadline and with no report of the race
+// detector: a child that passed, one whose waits ran into go test's alarm rather than giving up at
+// the margin, and one the detector failed, fail t at once.
 func runChildMeantToFail(t *testing.T, child string) (stdout, stderr string) {
 	t.Helper()
-	run := exec.Command(os.Args[0], "-test.run=^"+child+"$", "-test.timeout="+childTimeout(t).String(), "-test.v")
-	run.Env = append(os.Environ(), childEnv+"=1")
-	var out, errOut bytes.Buffer
-	run.Stdout, run.Stderr = &out, &errOut
-	if err := run.Run(); err == nil {
-		t.Fatalf("the child was meant to fail; it passed:\n%s\nstderr:\n%s", &out, &errOut)
+	stdout, stderr, err := RunChild(t, childTimeout(t), "^"+child+"$", childEnv+"=1")
+	if err == nil {
+		t.Fatalf("the child was meant to fail; it passed:\n%s\nstderr:\n%s", stdout, stderr)
 	}
-	if strings.Contains(out.String(), "panic: test timed out") || strings.Contains(errOut.String(), "panic: test timed out") {
-		t.Fatalf("the child's waits ran into the binary's deadline rather than giving up at the margin:\n%s\nstderr:\n%s", &out, &errOut)
+	if strings.Contains(stdout, "panic: test timed out") || strings.Contains(stderr, "panic: test timed out") {
+		t.Fatalf("the child's waits ran into the binary's deadline rather than giving up at the margin:\n%s\nstderr:\n%s", stdout, stderr)
 	}
-	requireNoRace(t, out.String(), errOut.String())
-	return out.String(), errOut.String()
+	requireNoRace(t, stdout, stderr)
+	return stdout, stderr
 }
 
 // requireGaveUp fails t for each give-up line of want that the child did not write to stderr as a
@@ -768,11 +657,11 @@ func TestReceiveGivesUpAtTheMarginChild(t *testing.T) {
 		if armed := stepped.armed(); len(armed) != 1 || !armed[0].Equal(end) {
 			t.Fatalf("the Receive begun before the margin armed timers for %v, want one, for the margin at %v", armed, end)
 		}
-		if timer := stepped.timers[0]; !timer.sent || len(timer.fired) != 0 {
-			t.Errorf("the Receive begun before the margin gave up without waiting for its timer (fired %t, tick left untaken %t): it gave up before the margin at %v", timer.sent, len(timer.fired) != 0, end)
+		if timer := stepped.armedTimers()[0]; !timer.sent || timer.untaken {
+			t.Errorf("the Receive begun before the margin gave up without waiting for its timer (fired %t, tick left untaken %t): it gave up before the margin at %v", timer.sent, timer.untaken, end)
 		}
 	})
-	before := len(stepped.timers)
+	before := len(stepped.armed())
 	t.Run("a value past the margin", func(t *testing.T) {
 		ready := make(chan int, 1)
 		ready <- 7

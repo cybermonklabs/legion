@@ -1110,6 +1110,13 @@ func timedOut(err error) bool {
 // nats:// URL, and clears both before the connect returns (nats.go:2944-2945), and with
 // NoReconnect, which each such connect sets, no later dial is made. Under -timeout 0, where a wait
 // has no end, the connection carries no deadline.
+//
+// The deadline is read on the clock the waits read (testwait.Now): the wall clock, or, in a child
+// that took testwait.SetUpDone, its step clock, which stands at the give-up, so a dial there
+// carries nats.go's default timeout from the dial. The kernel keeps a socket's deadline on the wall
+// clock, so the connection carries that moment's wall time (testwait.WallTime), which on the wall
+// clock is the moment itself. The connection keeps the deadline its dial gave it, and the read
+// deadline it carries now (deadlineConn), for a row to read.
 func giveUpDial(t testing.TB) natsgo.Option {
 	return natsgo.SetCustomDialer(giveUpDialer{t: t})
 }
@@ -1122,18 +1129,54 @@ func (d giveUpDialer) Dial(network, address string) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	dialed := &deadlineConn{Conn: conn, dialedAt: testwait.Now()}
 	end, bounded := testwait.GiveUpAt(d.t)
 	if !bounded {
-		return conn, nil
+		return dialed, nil
 	}
-	if own := time.Now().Add(natsgo.DefaultTimeout); own.After(end) {
+	if own := dialed.dialedAt.Add(natsgo.DefaultTimeout); own.After(end) {
 		end = own
 	}
-	if err := conn.SetDeadline(end); err != nil {
+	dialed.deadline = end
+	if err := dialed.SetDeadline(testwait.WallTime(end)); err != nil {
 		conn.Close()
 		return nil, err
 	}
-	return conn, nil
+	return dialed, nil
+}
+
+// deadlineConn is a connection giveUpDialer dialed. It keeps the moment its dial was made and the
+// deadline the dial gave it, both on the waits' clock (testwait.Now), and the read deadline the
+// connection carries now, which nats.go sets and clears through it (SetDeadline, SetReadDeadline):
+// what a row reads of the deadline a connection a wait made is left with, as a value rather than as
+// a read that would fail on the wall clock. Everything else is the connection's own.
+type deadlineConn struct {
+	net.Conn
+	dialedAt, deadline time.Time
+
+	mu   sync.Mutex
+	read time.Time
+}
+
+func (c *deadlineConn) SetDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.read = t
+	c.mu.Unlock()
+	return c.Conn.SetDeadline(t)
+}
+
+func (c *deadlineConn) SetReadDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.read = t
+	c.mu.Unlock()
+	return c.Conn.SetReadDeadline(t)
+}
+
+// readDeadline is the read deadline c carries now, on the wall clock, or the zero time for none.
+func (c *deadlineConn) readDeadline() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.read
 }
 
 // dialAttempt is one dial of Connect's wait, so the failure of a wait that ran out prints the

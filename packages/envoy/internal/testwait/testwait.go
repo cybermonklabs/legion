@@ -63,6 +63,22 @@
 // test hold a span, through Span or Quiet, whose why says which of them does not reach it and why.
 // Idle's why names the timer its span outlasts. Idle, Span and Quiet refuse an empty why, and
 // none of them holds a span of its own: the caller passes it.
+//
+// # A child that gives up
+//
+// A row that reads how a wait gives up, or what a fixture does once it has, runs the test that
+// does it as a child of the test binary (RunChild), once, under a -timeout that is a hang guard
+// only. The child runs its setup on the wall clock, under the shared wait's own bound, and then
+// takes the give-up as a step of its own (SetUpDone): from then on its waits read a clock that
+// stands where they give up, so what the child reports follows from what its waits did, not from
+// how long a loaded machine took over the setup. This package's own child rows give their waits
+// such a clock from their start and move it themselves.
+//
+// A fixture that keeps a span or a deadline of its own, a hang guard on a request, a stand-in's
+// latency, a socket's deadline at the give-up, reads it on the same clock (Now, Within, Pause,
+// WallTime, Stepped): on the wall clock it is what it was, and in a child that took the step it
+// passes on the step clock, in its moment's order, and one that would end past the binary's
+// deadline there ends the binary as go test's alarm would. None of them is a wait of a test's own.
 package testwait
 
 import (

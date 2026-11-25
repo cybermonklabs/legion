@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -137,24 +136,29 @@ const holdChildEnv = "TESTNATS_HOLD_CHILD"
 // returned there.
 const hookWentOn = "the hook's goroutine went on after TakeWriteLock"
 
+// holdChildGuard is the -timeout of TestTakeWriteLockOnAHooksGoroutineChild (testwait.RunChild): a
+// hang guard only, which a child whose take never gives up runs into, and never what decides the
+// row. The child's whole run measured 0.15 s beside two busy loops and 0.36 s under -race beside two
+// (builds Jobs at the commit that made this form), and 0.30 s in an issue pod; two minutes is over
+// three hundred times the slowest of them, and a setup held 20 s still passes inside it.
+const holdChildGuard = 2 * time.Minute
+
 // TakeWriteLock, the take a hand-back row's hook makes on a goroutine other than the test's,
 // returns there with the shared wait's give-up as its error when another holder keeps the lock to
 // the moment the wait gives up, so the hook goes on and the test goroutine fails the row by name. A
 // t.Fatal there would end the hook's goroutine rather than the test, and the child would log that
-// TakeWriteLock never returned. The child runs under -timeout 45s, so its wait gives up about 15 s
-// in, and its setup (StartHandshakeHold, proxiedClient) has those 15 s, as main's had: main's child
-// ran under the same 45 s, and its first row's take of the lock (takeConnLock) failed that row with
-// testwait.Left's "deadline leaves" text, not the guard's text the parent wants, once the setup had
-// left the binary's deadline connLockSpare (30 s) or less away, 15 s in, though main's own waits of
-// that setup ended only halfway to the deadline, 22.5 s in. The parent starts the shared server
-// (URL) and passes its URL to the child, so a server whose start is slow on a loaded machine costs
-// the parent time and not the child's 15 s; main's child started it within them.
+// TakeWriteLock never returned. The child sets up the hold and a client through it on the wall
+// clock, under the shared wait's own bound, takes the connection's lock, and then takes the give-up
+// as a step of its own (testwait.SetUpDone), so the take's wait gives up at its first question
+// whenever a loaded machine lets the child get there. Under a fixed -timeout of 45 s the take gave
+// up 15 s in, and a setup still running then failed the child with the give-up of one of its own
+// waits rather than the take's text the parent wants. The parent starts the shared server (URL)
+// and passes its URL to the child, so a server whose start is slow costs the parent time and not
+// the child.
 func TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
 	uri := URL(t)
-	child := exec.Command(os.Args[0], "-test.run=^TestTakeWriteLockOnAHooksGoroutineChild$", "-test.timeout=45s", "-test.v")
-	child.Env = append(os.Environ(), holdChildEnv+"="+uri)
-	output, err := child.CombinedOutput()
-	text := string(output)
+	stdout, stderr, err := testwait.RunChild(t, holdChildGuard, "^TestTakeWriteLockOnAHooksGoroutineChild$", holdChildEnv+"="+uri)
+	text := stdout + stderr
 	if err == nil {
 		t.Fatalf("the child was meant to fail its row; it passed:\n%s", text)
 	}
@@ -175,9 +179,10 @@ func TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
 }
 
 // TestTakeWriteLockOnAHooksGoroutineChild is the child of
-// TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns. It holds the connection's lock itself, so
-// the TakeWriteLock its hook calls waits until the shared wait gives up. It runs only when the
-// parent re-executes this binary.
+// TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns. It holds the connection's lock itself,
+// and its setup ends there: the give-up is its next step (testwait.SetUpDone), so the TakeWriteLock
+// its hook calls gives up at its first question. It runs only when the parent re-executes this
+// binary.
 func TestTakeWriteLockOnAHooksGoroutineChild(t *testing.T) {
 	uri := os.Getenv(holdChildEnv)
 	if uri == "" {
@@ -188,6 +193,7 @@ func TestTakeWriteLockOnAHooksGoroutineChild(t *testing.T) {
 	lock := connLock(t, conn)
 	lock.Lock()
 	t.Cleanup(lock.Unlock)
+	testwait.SetUpDone(t)
 	taken, ended := make(chan error, 1), make(chan struct{})
 	go func() {
 		defer close(ended)

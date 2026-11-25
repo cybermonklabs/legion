@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"runtime"
 	"slices"
 	"strconv"
@@ -1149,6 +1148,13 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					}
 					committed <- ledger.Commit(ctx)
 				}()
+				if parked, named := parkedCommitTrial(); named && parked == trial {
+					// In the child of TestAWedgedCommitReportsRatherThanWedgingTheSuite the child's
+					// setup ends here, with the parked commit under way: the give-up is its next step
+					// (testwait.SetUpDone), so the wait below gives up by name whenever a loaded
+					// machine lets the child get here.
+					testwait.SetUpDone(t)
+				}
 				err = testwait.Receive(t, fmt.Sprintf("trial %d's commit, made as its issue closed while it published, to return", trial), committed)
 				committing = false
 				if err != nil {
@@ -1202,9 +1208,9 @@ func parkedCommitTrial() (int, bool) {
 // storetest.Open closes the pool in a cleanup Go runs before it prints the subtest's result, and
 // the pool's Close waits for every connection in use, so a transaction left open there costs the
 // whole run its deadline - the -timeout envoy-go-race-docs gives it - and prints no --- FAIL line
-// at all. This runs the case in a child process of this test binary with one trial's commit parked
-// for good and requires the child to print the case's own --- FAIL line inside a deadline of its
-// own.
+// at all. This runs the case in a child process of this test binary (testwait.RunChild) with one
+// trial's commit parked for good and requires the child to print the case's own --- FAIL line
+// before its hang guard.
 func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	t.Parallel()
 	if !storetest.Available() {
@@ -1213,40 +1219,26 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	if _, parked := parkedCommitTrial(); parked {
 		t.Skip("the child process runs the case, not this test")
 	}
-	// The child's waits give up 30 s before its own -test.timeout (testwait's margin), so the
-	// parked trial's wait for its commit fails there by name, and the margin is what the child's
+	// The child spends its storetest template migration and database clone, and the parked trial's
+	// setup, on the wall clock under the shared wait's own bound, and then takes its give-up as a
+	// step of its own once the parked commit is under way (testwait.SetUpDone): the parked trial's
+	// wait for its commit fails there by name, however long a loaded machine took to get there. Its
 	// cleanups and storetest's drop of its clone (which ends the parked commit's connection,
-	// `with (force)`, internal/testpg/testdb's Template) have to run in before the binary exits.
-	// The child spends its storetest template migration and database clone before the parked
-	// trial: about 25 s at worst in this package's issue pod under -race and six busy loops on two
-	// CPUs. The deadline is main's (092f3262cd), 180 s: there the child reported at the end of the
-	// parked trial's own 30 s guard, which left its setup 150 s before that guard; here the parked
-	// trial's wait gives up at the same 150 s from the child's start, six times that worst setup,
-	// so a slow runner cannot turn a reporting child into this row's red. The child runs until
-	// that wait gives up, so this row takes about 150 s, minutes inside the -timeout of the run
-	// named above.
-	const childDeadline = 180 * time.Second
-	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so
-	// the child's own deadline watches none of what it does after them: storetest.Main's wait for
-	// those drops, the admin Exec that drops the template, the leak report. A child stuck in one
-	// of those is killed where this test's own wait gives up (testwait.Context), which ends in
-	// this row's failure, by name, rather than in the parent run's panic.
-	killing := testwait.Context(t)
-	command := exec.CommandContext(killing, os.Args[0],
-		"-test.run=^TestAWriteSurvivesItsIssueClosingAsItPublishes$/^20_paragraphs$",
-		"-test.timeout="+childDeadline.String())
-	command.Env = append(os.Environ(), parkedCommitEnv+"=0")
-	// Killing the child closes its end of the pipe CombinedOutput reads, so Wait returns. A
-	// process the child started would keep that pipe open after the kill, and WaitDelay bounds
-	// that case: ten seconds after the kill, Wait closes the pipe itself and returns what was
-	// read.
-	command.WaitDelay = 10 * time.Second
+	// `with (force)`, internal/testpg/testdb's Template) then run on the wall clock again.
+	// wedgedCommitChildGuard, the child's -timeout, is a hang guard only, which a child whose wait
+	// for the commit never gives up runs into, and never what decides the row. The child's whole
+	// run measured 9.7 s beside two busy loops and 37 s under -race beside two (builds Jobs at the
+	// commit that made this form), and 11.5 s in an issue pod, where main's comment here recorded
+	// its setup at about 25 s at worst under -race and six busy loops on two CPUs; five minutes is
+	// eight times the slowest of them, and a setup held 160 s still passes inside it. A child stuck
+	// after its tests, where its -timeout no longer watches it (testing.go, M.Run's startAlarm and
+	// stopAlarm), is killed where this test's own wait gives up, which fails this row by name
+	// (testwait.RunChild).
+	const wedgedCommitChildGuard = 5 * time.Minute
 	started := time.Now()
-	output, err := command.CombinedOutput()
+	stdout, stderr, err := testwait.RunChild(t, wedgedCommitChildGuard, "^TestAWriteSurvivesItsIssueClosingAsItPublishes$/^20_paragraphs$", parkedCommitEnv+"=0")
+	output := stdout + stderr
 	took := time.Since(started).Round(time.Millisecond)
-	if killing.Err() != nil {
-		t.Fatalf("the child was still running %v in, where this test's wait gave up, so it wedged past the end of its tests, where its own -test.timeout of %v no longer watches it:\n%s", took, childDeadline, output)
-	}
 	if err == nil {
 		t.Fatalf("the case passed in %v with trial 0's commit parked, so the park reached no trial:\n%s", took, output)
 	}
@@ -1254,16 +1246,16 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// close cancelled while it waits on the owner lock, so a race in either is reported here or
 	// nowhere: the child fails for its parked commit either way, and the checks below, which ask
 	// only why it failed, would pass straight over the race.
-	if strings.Contains(string(output), "WARNING: DATA RACE") {
+	if strings.Contains(output, "WARNING: DATA RACE") {
 		t.Fatalf("the child reported a data race in %v:\n%s", took, output)
 	}
-	if strings.Contains(string(output), "panic: test timed out") {
-		t.Fatalf("the case held its package's cleanup to the child's %v deadline (%v) instead of reporting the wedged commit:\n%s", childDeadline, took, output)
+	if strings.Contains(output, "panic: test timed out") {
+		t.Fatalf("the case held its package's cleanup to the child's %v hang guard (%v) instead of reporting the wedged commit:\n%s", wedgedCommitChildGuard, took, output)
 	}
-	if !strings.Contains(string(output), "--- FAIL: TestAWriteSurvivesItsIssueClosingAsItPublishes") {
+	if !strings.Contains(output, "--- FAIL: TestAWriteSurvivesItsIssueClosingAsItPublishes") {
 		t.Fatalf("the child printed no --- FAIL line for the case in %v:\n%s", took, output)
 	}
-	if !strings.Contains(string(output), "never returned from its commit") {
+	if !strings.Contains(output, "never returned from its commit") {
 		t.Fatalf("the child failed in %v for something other than the parked commit:\n%s", took, output)
 	}
 }

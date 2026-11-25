@@ -54,7 +54,9 @@ const readWait = 10 * time.Second
 // stream's create is one request (nats.go v1.55.0 jsm.go:924), and a bucket's makes up to four,
 // each bounded by it: nats.go v1.55.0's CreateKeyValue reads the account's JetStream information,
 // then creates the bucket's stream, and on "stream name already in use" reads that stream and may
-// update it (kv.go:432, 525, 535 and 542).
+// update it (kv.go:432, 525, 535 and 542). nats.go keeps that bound on the wall clock; in a child
+// whose waits read a step clock (testwait.SetUpDone) the fixture keeps a send's bound on that clock
+// instead (sendOnTheWaitsClock).
 const createSendWait = 10 * time.Second
 
 // sendCreate sends a test fixture's own create of a stream or a bucket on conn until the cluster
@@ -86,7 +88,7 @@ func sendCreate(t testing.TB, conn *natsgo.Conn, what string, subjects []string,
 	testwait.Until(t, what+": an answer to one of its sends", func() (string, bool) {
 		sends++
 		before := conn.LastError()
-		err := send()
+		err := sendOnTheWaitsClock(send)
 		if errors.Is(err, natsgo.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			if refusal := refusalOf(conn, before, subjects); refusal != nil {
 				answer = refusal
@@ -98,6 +100,29 @@ func sendCreate(t testing.TB, conn *natsgo.Conn, what string, subjects []string,
 		return "", true
 	})
 	return answer
+}
+
+// sendOnTheWaitsClock makes one send of a create and returns its answer. On the wall clock it is
+// send itself, whose requests nats.go bounds by createSendWait (the JetStream context's MaxWait),
+// so no caller that never takes testwait.SetUpDone sends otherwise than it did. On a child's step
+// clock, which nats.go's bound cannot read and which nothing the machine does moves, the send is
+// held on that clock instead: it runs on a goroutine of its own, and one with no answer once
+// createSendWait has passed there ends as nats.go's bound ends it, with nats.go's timeout. A
+// stand-in's late answer (testwait.Pause) passes on the same clock, in its moment's order, so a send
+// under way at the give-up ends at a moment of that clock, and one that would end past the test
+// binary's deadline ends the binary there as go test's alarm would (testwait.Within). Such a send's
+// requests are bounded together on the step clock, not each, since on it only a stand-in's answer
+// comes late; the goroutine of one that drew no answer ends at nats.go's own bound.
+func sendOnTheWaitsClock(send func() error) error {
+	if !testwait.Stepped() {
+		return send()
+	}
+	answered := make(chan error, 1)
+	go func() { answered <- send() }()
+	if err, ok := testwait.Within(answered, createSendWait); ok {
+		return err
+	}
+	return fmt.Errorf("%w: no answer %s into the send on the step clock", natsgo.ErrTimeout, createSendWait)
 }
 
 // refusalOf is the server's refusal of a publish to one of subjects that conn recorded after
