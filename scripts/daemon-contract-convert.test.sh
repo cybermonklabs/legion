@@ -102,6 +102,88 @@ excerpt() {
   grep -E '^(---|FAIL|ok|panic)|_test.go:[0-9]+:' "$1" | head -"${2:-40}" || true
 }
 
+# The goldens a numbered entry wrote with `-update`, as the rule before the cutover said.
+goldens='^(TestDaemonAPIVersionGolden|TestStateGolden|TestStateNarrowedRepositoriesGolden|TestAnswersGolden|TestEnumeratedFieldsGolden|TestContractShapesFixture|TestRequestShapesFixture)$'
+
+# write_goldens WHAT writes them in the branch of the current directory, and fails naming WHAT
+# where they are not written.
+write_goldens() {
+  (cd packages/daemon && go test -count=1 ./internal/api/ -update -run "$goldens" >"$scratch/goldens.txt" 2>&1) ||
+    { cat "$scratch/goldens.txt"; fail "$1: the goldens were not written"; }
+}
+
+# numbered_entry NUMBER WORD [PAUSE_FIELD] adds numbered entry NUMBER to the branch of the current
+# directory as an author did before the cutover: its text, a `// NUMBER: ` paragraph above the
+# const line of version.go, and the const line raised to NUMBER; its constant
+# convert<Word>Contract after the last contract of shaping.go, appended to SupportedContracts;
+# where PAUSE_FIELD is given, that field of the body of `POST /legion/v1/project/pause`; its
+# manifests; and its goldens. The caller commits it.
+numbered_entry() {
+  python3 - "$@" <<'PY'
+import re, sys
+
+number, word = sys.argv[1:3]
+field = sys.argv[3] if len(sys.argv) > 3 else ""
+api = "packages/daemon/internal/api"
+const = "convert" + word.capitalize() + "Contract"
+
+
+def edit(path, change):
+    with open(path) as f:
+        text = f.read()
+    new = change(text)
+    if new == text:
+        sys.exit(f"{path}: the edit found nothing to change")
+    with open(path, "w") as f:
+        f.write(new)
+
+
+def once(pattern, replacement, text):
+    new, count = re.subn(pattern, replacement, text, count=1)
+    if count != 1:
+        sys.exit(f"no match of {pattern!r}")
+    return new
+
+
+# The entry's text, below the one before it, and the const line raised to it.
+change = f"the field `{field}` of the body of `POST /legion/v1/project/pause`." if field else \
+    "which changes nothing of the contract."
+edit(f"{api}/version.go", lambda t: once(
+    r"\nconst DaemonAPIVersion = \d+\n",
+    lambda m: f"\n//\n// {number}: dispatch://INFRA-1569 conversion test -- the entry `{word}` of the conversion test,\n"
+              f"// {change}\n"
+              f"const DaemonAPIVersion = {number}\n", t))
+
+
+# The constant, after the last contract of shaping.go, and in SupportedContracts.
+def shaping(text):
+    last = list(re.finditer(r"^const \w+Contract = \d+\n", text, re.M))[-1]
+    return (text[:last.end()] + f"\n// {const} is the daemon contract of version.go's {number}, the entry\n"
+            f"// `{word}` of the conversion test.\nconst {const} = {number}\n" + text[last.end():])
+edit(f"{api}/shaping.go", shaping)
+edit(f"{api}/answers.go", lambda t: once(r"(\nvar SupportedContracts = \[\]int\{[^}]*)\}", rf"\1, {const}}}", t))
+
+
+# The field, the last of the request's.
+def pause(text):
+    start = text.index("\ntype ProjectPauseRequest struct {\n")
+    close = text.index("\n}\n", start)
+    return text[:close + 1] + f'\t{field[0].upper() + field[1:]} string `json:"{field},omitempty"`' + text[close:]
+if field:
+    edit(f"{api}/pause.go", pause)
+
+for manifest in ("packages/pi-legion/package.json", "packages/claude-envoy/package.json"):
+    edit(manifest, lambda t: once(r'("daemonApiVersion": )\d+', r"\g<1>" + number, t))
+PY
+  gofmt -w "$api/version.go" "$api/shaping.go" "$api/answers.go" ${3:+"$api/pause.go"}
+  write_goldens "entry $1"
+}
+
+# fixture_of ENTRY_FILE prints the path of the entry's fixture.
+fixture_of() {
+  sed -E "s|.*/contract_([0-9]{14})_(.*)\\.go\$|$fixtures/contracts/\\1_\\2.json|" <<<"$1"
+}
+
 # git's identity is the test's own, so the test needs no configuration of the machine it runs on.
 export GIT_AUTHOR_NAME=convert-test GIT_AUTHOR_EMAIL=convert-test@localhost
 export GIT_COMMITTER_NAME=convert-test GIT_COMMITTER_EMAIL=convert-test@localhost
@@ -202,9 +284,7 @@ for manifest in ("packages/pi-legion/package.json", "packages/claude-envoy/packa
     edit(manifest, lambda t: once(r'("daemonApiVersion": )\d+', r"\g<1>" + k, t))
 PY
 gofmt -w "$api/version.go" "$api/shaping.go" "$api/answers.go" "$api/convert_probe_band.go" "$api/contract_shapes_test.go"
-(cd packages/daemon && go test -count=1 ./internal/api/ -update -run \
-  '^(TestDaemonAPIVersionGolden|TestStateGolden|TestStateNarrowedRepositoriesGolden|TestAnswersGolden|TestEnumeratedFieldsGolden|TestContractShapesFixture|TestRequestShapesFixture)$' \
-  >"$scratch/goldens.txt" 2>&1) || { cat "$scratch/goldens.txt"; fail "the branch: the goldens of entry $k were not written"; }
+write_goldens "the branch's entry $k"
 # The branch holds every copy the rule before the cutover asked of an entry.
 [ "$(jq '.daemonApiVersion' "$fixtures/version.json")" = "$k" ] || fail "the branch: version.json holds no $k"
 [ "$(jq -c '.contract' "$fixtures/state.json")" = "{\"daemon\":$k,\"caller\":$k}" ] || fail "the branch: state.json's marks are not $k"
@@ -262,7 +342,7 @@ grep -qF '{ID: AnswerConvertProbe, Routes: []string{}, Since: convertProbeContra
   fail "$entry does not hold the answer"
 # The row left in lineKinds is the entry's, and its fixture records it, so TestEntryFixtures
 # writes no fixture of the entry while that row is left: the test writes it after the move.
-fixture=$fixtures/contracts/${id}_${slug}.json
+fixture=$(fixture_of "$entry")
 
 step "no edit of a derived copy remains"
 for path in "$api/version.go" "$api/shaping.go" packages/pi-legion/package.json packages/claude-envoy/package.json \
@@ -344,54 +424,7 @@ step "the stacked branch: numbered entry $((k + 1)) on the first branch's commit
 cd "$root"
 git worktree add -q -b "$branch_stacked" "$repo_stacked" "$entry_commit"
 cd "$repo_stacked"
-python3 - "$((k + 1))" <<'PY'
-import re, sys
-
-number = sys.argv[1]
-api = "packages/daemon/internal/api"
-
-
-def edit(path, change):
-    with open(path) as f:
-        text = f.read()
-    new = change(text)
-    if new == text:
-        sys.exit(f"{path}: the edit found nothing to change")
-    with open(path, "w") as f:
-        f.write(new)
-
-
-def once(pattern, replacement, text):
-    new, count = re.subn(pattern, replacement, text, count=1)
-    if count != 1:
-        sys.exit(f"no match of {pattern!r}")
-    return new
-
-
-# The entry's text, below the first branch's, and the const line raised to it.
-edit(f"{api}/version.go", lambda t: once(
-    r"\nconst DaemonAPIVersion = \d+\n",
-    lambda m: f"\n//\n// {number}: the conversion test's stacked entry -- the entry of a branch stacked on the\n"
-              "// first branch, which changes nothing of the contract.\n"
-              f"const DaemonAPIVersion = {number}\n", t))
-
-
-# The constant, after the last contract of shaping.go, and in SupportedContracts.
-def shaping(text):
-    last = list(re.finditer(r"^const \w+Contract = \d+\n", text, re.M))[-1]
-    return (text[:last.end()] + f"\n// convertStackedContract is the daemon contract of version.go's {number}, the\n"
-            "// entry of the conversion test's stacked branch.\nconst convertStackedContract = " + number + "\n"
-            + text[last.end():])
-edit(f"{api}/shaping.go", shaping)
-edit(f"{api}/answers.go", lambda t: once(r"(\nvar SupportedContracts = \[\]int\{[^}]*)\}", r"\1, convertStackedContract}", t))
-
-for manifest in ("packages/pi-legion/package.json", "packages/claude-envoy/package.json"):
-    edit(manifest, lambda t: once(r'("daemonApiVersion": )\d+', r"\g<1>" + number, t))
-PY
-gofmt -w "$api/version.go" "$api/shaping.go" "$api/answers.go"
-(cd packages/daemon && go test -count=1 ./internal/api/ -update -run \
-  '^(TestDaemonAPIVersionGolden|TestStateGolden|TestStateNarrowedRepositoriesGolden|TestAnswersGolden|TestEnumeratedFieldsGolden|TestContractShapesFixture|TestRequestShapesFixture)$' \
-  >"$scratch/goldens-stacked.txt" 2>&1) || { cat "$scratch/goldens-stacked.txt"; fail "the stacked branch: the goldens of entry $((k + 1)) were not written"; }
+numbered_entry "$((k + 1))" stacked
 git add -A
 git commit -q -m "feat(daemon): the conversion test's entry $((k + 1)), stacked on entry $k"
 
@@ -409,7 +442,7 @@ mapfile -t stacked < <(git diff --no-renames --name-only --diff-filter=A "$branc
 git merge-base --is-ancestor "$branch" HEAD || fail "the stacked branch does not hold its base branch $branch after the conversion"
 [[ $(git log -1 --format=%s) == *", and merge $branch" ]] ||
   fail "the stacked branch's conversion commit names no merge of its base branch $branch: $(git log -1 --format=%s)"
-stacked_fixture=$(sed -E "s|.*/contract_([0-9]{14})_(.*)\\.go\$|$fixtures/contracts/\\1_\\2.json|" <<<"${stacked[0]}")
+stacked_fixture=$(fixture_of "${stacked[0]}")
 [ "$(git diff --no-renames --name-only "$branch" HEAD | sort)" = "$(printf '%s\n' "${stacked[0]}" "$stacked_fixture" | sort)" ] ||
   { git diff --stat "$branch" HEAD; fail "the stacked branch differs from its base branch $branch by more than ${stacked[0]} and $stacked_fixture"; }
 echo "PASS: the stacked branch converts entry $((k + 1)) alone to ${stacked[0]}, and differs from $branch by that entry's file and fixture"
@@ -421,62 +454,7 @@ cd "$repo_two"
 route='POST /legion/v1/project/pause'
 number=$k
 for word in first second; do
-  python3 - "$number" "$word" <<'PY'
-import re, sys
-
-number, word = sys.argv[1:3]
-api = "packages/daemon/internal/api"
-field = "convert" + word.capitalize()
-
-
-def edit(path, change):
-    with open(path) as f:
-        text = f.read()
-    new = change(text)
-    if new == text:
-        sys.exit(f"{path}: the edit found nothing to change")
-    with open(path, "w") as f:
-        f.write(new)
-
-
-def once(pattern, replacement, text):
-    new, count = re.subn(pattern, replacement, text, count=1)
-    if count != 1:
-        sys.exit(f"no match of {pattern!r}")
-    return new
-
-
-# The entry's text, below the one before it, and the const line raised to it.
-edit(f"{api}/version.go", lambda t: once(
-    r"\nconst DaemonAPIVersion = \d+\n",
-    lambda m: f"\n//\n// {number}: dispatch://INFRA-1569 conversion test -- the {word} of two entries the conversion test\n"
-              f"// adds, each in a commit of its own: the field `{field}` of the body of `POST /legion/v1/project/pause`.\n"
-              f"const DaemonAPIVersion = {number}\n", t))
-
-
-# The constant, after the last contract of shaping.go, and in SupportedContracts.
-def shaping(text):
-    last = list(re.finditer(r"^const \w+Contract = \d+\n", text, re.M))[-1]
-    return (text[:last.end()] + f"\n// {field}Contract is the daemon contract of version.go's {number}, the {word} of the\n"
-            f"// two entries the conversion test adds.\nconst {field}Contract = {number}\n" + text[last.end():])
-edit(f"{api}/shaping.go", shaping)
-edit(f"{api}/answers.go", lambda t: once(r"(\nvar SupportedContracts = \[\]int\{[^}]*)\}", rf"\1, {field}Contract}}", t))
-
-
-# The field, the last of the request's.
-def pause(text):
-    start = text.index("\ntype ProjectPauseRequest struct {\n")
-    close = text.index("\n}\n", start)
-    return text[:close + 1] + f'\t{field[0].upper() + field[1:]} string `json:"{field},omitempty"`' + text[close:]
-edit(f"{api}/pause.go", pause)
-
-for manifest in ("packages/pi-legion/package.json", "packages/claude-envoy/package.json"):
-    edit(manifest, lambda t: once(r'("daemonApiVersion": )\d+', r"\g<1>" + number, t))
-PY
-  gofmt -w "$api/version.go" "$api/shaping.go" "$api/answers.go" "$api/pause.go"
-  (cd packages/daemon && go test -count=1 ./internal/api/ -update -run \
-    '^(TestDaemonAPIVersionGolden|TestStateGolden|TestStateNarrowedRepositoriesGolden|TestAnswersGolden|TestEnumeratedFieldsGolden|TestContractShapesFixture|TestRequestShapesFixture)$' \
-    >"$scratch/goldens-$word.txt" 2>&1) || { cat "$scratch/goldens-$word.txt"; fail "the second branch: the goldens of entry $number were not written"; }
+  numbered_entry "$number" "$word" "convert${word^}"
   git add -A
   git commit -q -m "feat(daemon): the conversion test's entry $number, the $word of two"
   number=$((number + 1))
@@ -508,7 +486,7 @@ mapfile -t pair < <(git diff --name-only --diff-filter=A "$this" HEAD -- "$api" 
 # change: FIELD added to the route, the change of version.go's NUMBER.
 holds_alone() {
   local path
-  path=$(sed -E "s|.*/contract_([0-9]{14})_(.*)\\.go\$|$fixtures/contracts/\\1_\\2.json|" <<<"$1")
+  path=$(fixture_of "$1")
   [ -f "$path" ] || fail "no entry fixture $path after the conversion"
   jq -e --arg route "$route" --arg field "$2" '.routes == [{route: $route, addFieldPaths: [$field]}]' "$path" >/dev/null ||
     fail "$path records the request changes $(jq -c .routes "$path"), want entry $3's own alone: $2 added to $route"
