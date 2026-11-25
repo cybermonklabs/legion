@@ -42,9 +42,9 @@ import { ViewVerificationSlot } from "./view-verification";
  * (`useFollowing`: the location's key with the address) and none after it, so a view may say it
  * again on any render once its reads have settled. Where its tree draws no node - an item the
  * issue holds none of, an item of another issue, an id written short, an item whose read failed,
- * a turn of a thread only agents wrote in, a block no node carries - the stage draws the body in
- * the view's place for the rest of that following, which lands as the outline does; a new
- * following asks the view again.
+ * a turn of a thread the history holds (`agents-only.ts`), a block no node carries - the stage
+ * draws the body in the view's place for the rest of that following, which lands as the outline
+ * does; a new following asks the view again.
  *
  * `DocumentStages` stands around the chosen slot: a document has one editor on the page, which
  * the row being edited in takes onto its own stage (`document-stage.tsx`). The outline is drawn
@@ -110,7 +110,7 @@ export function StageSlot({
         </StageBox>
       ) : (
         <ViewStage box={viewBox} key={preset}>
-          <View {...props} onAddressDrawn={onAddressDrawn} />
+          <View {...props} acts={acts} onAddressDrawn={onAddressDrawn} />
         </ViewStage>
       )}
     </DocumentStages>
@@ -120,6 +120,9 @@ export function StageSlot({
 /** What the stage hands the view it draws in place of the outline: the slot's own props, and
  *  how the view tells the stage whether its tree draws the node the address names. */
 export interface ViewSlotProps extends SlotProps {
+  /** The reader's acts since the address was followed (`ReaderActsWatch`, keyed on the
+   *  following): a controller their first act aborts, which a view's landing reads. */
+  readonly acts?: RefObject<AbortController | undefined>;
   /**
    * Tells the stage whether the view's tree draws the node the address names (`drawn`). The
    * stage takes the first call of each following of the address (`useFollowing`) that names a
@@ -158,7 +161,7 @@ export const SLOT_FILLED: SlotsFilled = {
   conversation: true,
   decisions: true,
   plan: true,
-  spec: false,
+  spec: true,
   verification: true,
 };
 

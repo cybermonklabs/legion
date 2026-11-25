@@ -6,29 +6,27 @@ import { primarySpec } from "../../../api/issue-cache";
 import { whoAmIQuery } from "../../../api/queries";
 import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
-import { contentsEntries } from "../contents-entries";
 import { CONTENTS_PANE_QUERY, OutlineSheet, PAGE_INSET } from "../contents-frame";
 import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
 import { useOutlineReads } from "../outline-reads";
-import { filterSignals, isFilter, presetView } from "../presets";
+import { filterSignals, isFilter } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueKeymap } from "../useIssueKeymap";
 
 /**
- * The view row (R2, R11): the five view controls and Keys
- * (`IssuePresets.tsx`), each control's signal read off the issue's one tree, and below 1024 px,
- * with no view on, the Outline control beside the one control (`contents-frame.tsx`). It binds
- * the views' chords (`useIssueKeymap.ts`). The signals are drawn only once every read the tree
- * is built from holds its answer (`useOutlineReads`'s `readsHeld`) and the reader's login has
- * answered, which Conversation's count is read for: until then the tree lacks the nodes of a
- * read still out or failed, or Conversation counts no thread as the reader's, and a count read
- * then - a `0`, or a number short of the real one - would read as the real count, so the
- * controls draw none. Under a words filter (`?q=`) they wait on the names too (`namesHeld`): a
- * plan task's or a callout's words come from the names alone, so a count read before they are
- * held finds none of those nodes. With no filter on a count reads no words, and does not wait
- * on the names.
+ * The view row (R2, R11): Conversation with no count, the four filter controls with signals
+ * from the issue's tree, and Keys (`IssuePresets.tsx`). Below 1024 px, with no view on, the
+ * Outline control stands beside the one control (`contents-frame.tsx`). The row binds the
+ * views' chords (`useIssueKeymap.ts`).
+ *
+ * Signals wait for the tree's reads (`readsHeld`): a read still out or failed leaves nodes
+ * missing from the counts. They also wait for the reader's login: `tree-drafts.ts` marks no
+ * decision `waiting` until the login answers, so the Decisions flag would omit decisions that
+ * need review. Under a words filter (`?q=`) signals wait for the names (`namesHeld`), since
+ * the names supply the words of plan tasks and callouts. Without a words filter the counts
+ * do not depend on the names.
  *
  * The row's rule runs the column's whole width, as the prototype's `#tabs` does, and its
  * controls keep the page's inset. At 760 px and below it stays at the top of the screen as the
@@ -41,22 +39,13 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   const { namesHeld, readsHeld, root } = useOutlineReads(issue);
-  // Who the reader is, which Conversation's count is read for: a thread is counted where the
-  // reader began it.
+  // Decisions' flag counts the decisions marked `waiting` for the reader.
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  // What each control draws after its name: a view's count of its main kind and what of it asks
-  // something of the reader, and for Conversation how many entries the Contents list holds, as
-  // the prototype's signal counts its branches. Each follows `?q=`. None while the reads or the
-  // reader's login do not hold, nor under `?q=` while the names do not (above).
+  // The four filter signals follow `?q=` and stay hidden until their reads are ready.
   const signals = useMemo(
     () =>
       readsHeld && viewer !== undefined && (namesHeld || address.filter === "")
-        ? {
-            ...filterSignals(root, address.filter),
-            conversation: {
-              count: contentsEntries(presetView(root, "conversation", address.filter).root, viewer),
-            },
-          }
+        ? filterSignals(root, address.filter)
         : undefined,
     [address.filter, namesHeld, readsHeld, root, viewer]
   );

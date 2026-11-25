@@ -11,10 +11,9 @@ import { useDialog } from "../shell/useDialog";
 import { IssuePresets } from "./IssuePresets";
 import { presetPath } from "./issue-address";
 import { PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-words";
-import type { PresetSignal } from "./presets";
+import type { Filter, PresetSignal } from "./presets";
 
-const SIGNALS: Readonly<Record<Preset, PresetSignal>> = {
-  conversation: { count: 0 },
+const SIGNALS: Readonly<Record<Filter, PresetSignal>> = {
   decisions: { count: 0 },
   plan: { count: 0 },
   spec: { count: 2 },
@@ -347,6 +346,40 @@ test("with no signals the one control and its menu draw every view named alone, 
       missingReferences(view.container),
       "the one control or an item of its menu points at an element that is not drawn"
     ).toEqual([]);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+test.each([
+  DESKTOP_WIDTH,
+  PHONE_WIDTH,
+])("Conversation draws no count or missing ARIA reference even when filters have counts (width %i)", async (width) => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(width);
+  const view = render(
+    <MemoryRouter initialEntries={[presetPath("CORE-1", "conversation")]}>
+      <IssuePresets active="conversation" issueKey="CORE-1" signals={SIGNALS} />
+    </MemoryRouter>
+  );
+  try {
+    const conversation = screen.getByRole("button", { name: PRESET_NAMES.conversation });
+    if (width === PHONE_WIDTH) {
+      await user.click(conversation);
+      expect(
+        screen.getByRole("menuitemradio", { name: PRESET_NAMES.conversation, checked: true })
+      ).toBeInTheDocument();
+    }
+    expect(
+      view.container.querySelector('[data-preset-count="spec"]')?.textContent,
+      "Spec did not draw its count"
+    ).toBe(String(SIGNALS.spec.count));
+    expect(
+      view.container.querySelector('[data-preset-count="conversation"]'),
+      "Conversation drew a count"
+    ).toBeNull();
+    expect(missingReferences(view.container), "a control names a missing element").toEqual([]);
   } finally {
     view.unmount();
     restoreMatchMedia();

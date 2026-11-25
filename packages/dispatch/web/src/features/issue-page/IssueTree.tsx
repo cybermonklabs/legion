@@ -156,8 +156,8 @@ export function IssueTree({
   isClosed: boolean;
   /** What the row the address lands on says once it has the focus, as a key's report is said at
    *  the row it was pressed on, until the reader's next key or move: that the thread of the turn
-   *  the address names is the agents' alone, where the outline draws no row for that turn and
-   *  `reveal` is the chain to its nearest drawn ancestor (`slots/body.tsx`). */
+   *  the address names is in the history in Details, where the outline draws no row for that
+   *  turn and `reveal` is the chain to its nearest drawn ancestor (`slots/body.tsx`). */
   landingReport?: string;
   /** The document the reader is editing a node of here, so the page draws that document's one
    *  editor rather than leaving the row with nothing to put a caret in, and hands that editor to
@@ -744,11 +744,11 @@ export function IssueTree({
   // tree drawn again at the same following lands nowhere again. A tree drawn before the landing's
   // frame comes - a read answering - leaves that landing waiting (`landingAsked`): asked again, it
   // was put off by a frame at each render. The issue itself is no row: an address lands on it for
-  // a turn of a thread only agents wrote in whose nearest drawn ancestor is the issue
-  // (`slots/body.tsx`), and the row it lands on is then the tree's tab stop, where the tree says
-  // what has no row of its own. What the landing says (`landingReport`) is said at the row once it
-  // holds the focus: the focus moving there lets go of what was said before. The page's own
-  // opening on its first row or its question (below) keeps its own rule.
+  // a turn of a thread the history holds (`agents-only.ts`) whose nearest drawn ancestor is the
+  // issue (`slots/body.tsx`), and the row it lands on is then the tree's tab stop, where the tree
+  // says what has no row of its own. What the landing says (`landingReport`) is said at the row
+  // once it holds the focus: the focus moving there lets go of what was said before. The page's
+  // own opening on its first row or its question (below) keeps its own rule.
   const taken = useRef<{ readonly acts: AbortController; readonly key: string } | undefined>(
     undefined
   );
@@ -1136,6 +1136,7 @@ export function IssueTree({
               message={read.message}
               onRetry={read.retry}
               retrying={read.retrying}
+              speaks={read.speaks}
             />
           ))}
         </div>
@@ -1348,7 +1349,7 @@ export function holdOnScreen(row: HTMLElement): AbortController {
  * `landed` is called once the row holds the focus the frame gave it, and only then.
  *
  * It is exported for the Plan view's chart, which is to land on the row an address names as the
- * outline does.
+ * outline does, and for the Spec view's tree, which does the same.
  */
 export function landOnRow(
   row: HTMLElement,
@@ -1378,7 +1379,10 @@ export function landOnRow(
 
 /** Holds `row` on screen (`holdOnScreen`) and ends the hold of the row `held` held before, so
  *  one row is held at a time. */
-function holdInPlaceOf(row: HTMLElement, held: RefObject<AbortController | undefined>): void {
+export function holdInPlaceOf(
+  row: HTMLElement,
+  held: RefObject<AbortController | undefined>
+): void {
   held.current?.abort();
   held.current = holdOnScreen(row);
 }

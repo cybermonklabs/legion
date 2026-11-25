@@ -72,6 +72,16 @@ export function componentsControlName(
   return `${drawn} ${words.CONTROL_LABELS.control_name_of} ${issueKey}`;
 }
 
+/** The ids of the chips the components line draws, in its order: an explicit set's components
+ *  and then its retired ones, as one list, and none for any other attachment. */
+export function componentChipIds(
+  components: Pick<IssueComponents, "ids" | "mode" | "unknown">
+): readonly string[] {
+  return components.mode === "explicit"
+    ? [...(components.ids ?? []), ...(components.unknown ?? [])]
+    : [];
+}
+
 /**
  * The `Components:` line of the issue header's metadata rail: the issue's effective
  * attachment as chips. An explicit set lists its live component ids and marks each id a
@@ -94,16 +104,24 @@ export function componentsControlName(
 export function IssueComponentsLine({
   inRow = false,
   issue,
+  limit,
 }: {
   /** Whether the line is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
   inRow?: boolean;
   issue: Pick<Issue, "components" | "key" | "project" | "status" | "title">;
+  /** How many chips the line draws, the first of its components and then of its retired ones
+   *  as one list, for a host that draws the control that shows the next ones (the new issue
+   *  page's Details): each chip past them is hidden. With none, every chip is drawn. */
+  limit?: number;
 }): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
   const inDetails = page !== null && inRow;
   const { components } = issue;
+  // With `limit`, the ids whose chips are drawn: the first `limit` of `componentChipIds`.
+  const drawnChips =
+    limit === undefined ? undefined : new Set(componentChipIds(components).slice(0, limit));
   const sources = useQuery(projectArchitectureSourcesQuery(issue.project));
   const [pickerOpen, setPickerOpen] = useState(false);
   const namesComponents = components.mode === "explicit" && (components.ids ?? []).length > 0;
@@ -174,6 +192,7 @@ export function IssueComponentsLine({
           {(components.ids ?? []).map((id) => (
             <span
               className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${page === null ? `${badgePrimary.bg} ${badgePrimary.text}` : pageLabelChip}`}
+              hidden={drawnChips?.has(id) === false}
               key={id}
               {...page?.authorText}
             >
@@ -183,6 +202,7 @@ export function IssueComponentsLine({
           {(components.unknown ?? []).map((id) => (
             <span
               className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${page === null ? `${badgeHigh.bg} ${badgeHigh.text}` : pageWaitingChip}`}
+              hidden={drawnChips?.has(id) === false}
               key={id}
               title={
                 tooltips ? `${id} is no longer in the project's architecture model` : undefined

@@ -32,7 +32,7 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
 /**
  * The view row (R2, R11, R20, and the prototype's view tabs): five
  * controls, Conversation - the page with no view on - then Spec, Verification, Plan and
- * Decisions, each with its signal; and Keys at its right end.
+ * Decisions; the four filters draw signals and Conversation does not. Keys sits at the right end.
  *
  * The row is one line at every width (the architect's ruling 5, the 1440 and 390 px pictures).
  * At 760 px and below the row is the one control and Outline,
@@ -47,15 +47,15 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
  * the arrow keys, Home and End move between the five, and Enter and Space press.
  *
  * A toggle is the prototype's `.tab`: its name, which is the button, named by that word alone -
- * the word a voice user says - and beside it, outside the button and inside the same drawn box,
- * its signal, a `<label>` of the button, so a press on the count presses it too and the signal is
- * the button's description (`aria-describedby`), not a word drawn inside the button and missing
- * from its name (WCAG 2.5.3).
+ * the word a voice user says. Where a signal is drawn, it is beside the button in the same box,
+ * as a `<label>` so a press on the count presses the button too. The signal is the button's
+ * description (`aria-describedby`), not a word drawn inside the button and missing from its
+ * name (WCAG 2.5.3).
  *
  * The row has two shapes and no third. From 1280 px it is the row of five, which is where R2
  * says the views are one row; below it - R2's 1024 px and every width between, where the five
  * and the small controls measured up to 47 px wider than the row at 1025 px with a view on - it
- * is one control naming the one on, with its signal, which opens a menu of the five, each a
+ * is one control naming the one on, with its signal if drawn, which opens a menu of the five, each a
  * `menuitemradio` that says whether it is the one on; below 1024 px the Outline control stands
  * beside it (R2, R14). One query and its negation decide the two (`ONE_CONTROL_QUERY`), so no
  * width answers both shapes or neither, and the row is one line at every width. The one control
@@ -74,11 +74,10 @@ export function IssuePresets({
   /** The Outline control, beside the one control below 1024 px where the Contents pane is not
    *  drawn (R14), and undefined wherever no Outline control is drawn. */
   outline?: ReactNode;
-  /** What each control draws after its name (`presets.ts`'s `filterSignals`). Undefined while
-   *  the counts cannot be read yet (`slots/view-row.tsx` waits for the tree's reads and the
-   *  reader's login): then no control draws a signal - no count, no unit word, no flag - and no
-   *  control's description or name points at one, so none names an element that is not drawn. */
-  signals?: Readonly<Record<Preset, PresetSignal>>;
+  /** What each control draws after its name (`presets.ts`'s `filterSignals`). A control with no
+   *  signal, such as Conversation, draws just its name. The whole record is undefined until the
+   *  counts can be read (`slots/view-row.tsx`). */
+  signals?: Readonly<Partial<Record<Preset, PresetSignal>>>;
 }): ReactNode {
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -220,6 +219,7 @@ export function IssuePresets({
   const filterRow = { [FILTER_ROW_ATTRIBUTE]: "" };
 
   if (!row) {
+    const activeSignal = signals?.[active];
     return (
       // The prototype's `#viewbar`: the one control and Outline on one line, 8 px above and
       // below, and from 761 px the small controls at its right end.
@@ -251,41 +251,45 @@ export function IssuePresets({
               <span data-preset-name="" {...pageChrome}>
                 {PRESET_NAMES[active]}
               </span>
-              {signals === undefined ? null : <Signal preset={active} signal={signals[active]} />}
+              {activeSignal === undefined ? null : <Signal preset={active} signal={activeSignal} />}
             </span>
             <MenuMark />
           </button>
           {open === "presets" ? (
             <div className={`${pageMenu} left-0`} onKeyDown={walkMenu} role="menu">
-              {PRESET_ORDER.map((preset) => (
-                // Named by its name and its signal, which it draws inside it; and checked
-                // where it is the one on, which its dot draws.
-                <button
-                  aria-checked={preset === active}
-                  aria-labelledby={
-                    signals === undefined ? nameId(preset) : `${nameId(preset)} ${signalId(preset)}`
-                  }
-                  className={`${pageMenuItem} flex items-baseline gap-1.5`}
-                  key={preset}
-                  onClick={() => {
-                    setOpen(undefined);
-                    if (preset !== active || preset === "conversation") press(preset);
-                  }}
-                  role="menuitemradio"
-                  tabIndex={-1}
-                  type="button"
-                >
-                  <span aria-hidden="true" className={`w-3 shrink-0 ${pageInkText}`}>
-                    {preset === active ? "●" : ""}
-                  </span>
-                  <span id={nameId(preset)} {...pageChrome}>
-                    {PRESET_NAMES[preset]}
-                  </span>
-                  {signals === undefined ? null : (
-                    <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
-                  )}
-                </button>
-              ))}
+              {PRESET_ORDER.map((preset) => {
+                const signal = signals?.[preset];
+                return (
+                  // Named by its name and any signal it draws; checked where it is the one on.
+                  <button
+                    aria-checked={preset === active}
+                    aria-labelledby={
+                      signal === undefined
+                        ? nameId(preset)
+                        : `${nameId(preset)} ${signalId(preset)}`
+                    }
+                    className={`${pageMenuItem} flex items-baseline gap-1.5`}
+                    key={preset}
+                    onClick={() => {
+                      setOpen(undefined);
+                      if (preset !== active || preset === "conversation") press(preset);
+                    }}
+                    role="menuitemradio"
+                    tabIndex={-1}
+                    type="button"
+                  >
+                    <span aria-hidden="true" className={`w-3 shrink-0 ${pageInkText}`}>
+                      {preset === active ? "●" : ""}
+                    </span>
+                    <span id={nameId(preset)} {...pageChrome}>
+                      {PRESET_NAMES[preset]}
+                    </span>
+                    {signal === undefined ? null : (
+                      <Signal id={signalId(preset)} preset={preset} signal={signal} />
+                    )}
+                  </button>
+                );
+              })}
             </div>
           ) : null}
         </div>
@@ -311,8 +315,9 @@ export function IssuePresets({
       >
         {PRESET_ORDER.map((preset) => {
           const on = preset === active;
+          const signal = signals?.[preset];
           return (
-            // The prototype's `.tab`: the name and the signal on one baseline, the rule under
+            // The prototype's `.tab`: the name and any signal on one baseline, the rule under
             // both, ink and semibold for the one on.
             <span
               className={`-mb-px inline-flex shrink-0 items-baseline whitespace-nowrap border-b-2 text-sm leading-5 ${
@@ -323,7 +328,7 @@ export function IssuePresets({
               key={preset}
             >
               <button
-                aria-describedby={signals === undefined ? undefined : signalId(preset)}
+                aria-describedby={signal === undefined ? undefined : signalId(preset)}
                 aria-labelledby={nameId(preset)}
                 aria-pressed={on}
                 className="pt-[7px] pb-1.5 pl-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-page-ink"
@@ -362,8 +367,8 @@ export function IssuePresets({
                 }}
                 onMouseDown={(event) => event.preventDefault()}
               >
-                {signals === undefined ? null : (
-                  <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
+                {signal === undefined ? null : (
+                  <Signal id={signalId(preset)} preset={preset} signal={signal} />
                 )}
               </label>
             </span>
@@ -381,7 +386,7 @@ export function IssuePresets({
  *  ▾: as text, it is drawn in a face of the reader's own machine, at that face's width. The
  *  control's `aria-haspopup` says it opens a menu, so the shape is hidden from assistive
  *  technology. */
-function MenuMark(): ReactNode {
+export function MenuMark(): ReactNode {
   return (
     <svg
       aria-hidden="true"

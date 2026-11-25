@@ -616,7 +616,7 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
   addDecisions(drafts, reads, context, asks, changes);
   addRequirements(drafts, reads, context);
   addChecks(drafts, reads, context);
-  servePlacements(drafts, context);
+  servePlacements(drafts, reads, context);
   addDocumentChips(drafts, reads, context);
   return drafts;
 }
@@ -940,12 +940,12 @@ function deletedPostLine(deleted: PostDeletion): string {
 }
 
 /**
- * The conversation's own turns: each comment and each message a person wrote, or that sits in a
- * thread a person wrote in, a node of this tree, a root turn under the issue and a reply under
+ * The conversation's own turns: each comment and each message that is no turn of a thread the
+ * panel's history holds, a node of this tree, a root turn under the issue and a reply under
  * the entry it answers (R1, R16). A thread head a page never read is no node, so a reply whose
  * parent is missing falls back to the issue, as every node whose parent is absent does
- * (`assemble`). A thread no person wrote in is no node at all: it is the history's, in the panel
- * (`agents-only.ts`, R15), until a person replies in it.
+ * (`assemble`). A thread the history holds is no node at all (`agents-only.ts`): one the Legion
+ * daemon began, whoever wrote in it, and one tied to no text that no person wrote in.
  *
  * One conversation is one order, so the turns are drawn by the time they were made and not by
  * their place in the read that carried them: the comments and the messages are two lists, each
@@ -1429,39 +1429,89 @@ function newerFirst(first: CheckResult, second: CheckResult): number {
  * requirement of the issue's spec (`Draft.statement`), and the `requirement` block of any other
  * document is a block and nothing more, which nothing is placed under.
  *
- * Two of the chain's gaps are read here, from the pointers this pass already resolves (R10):
+ * Three of the chain's gaps are read here, from the pointers this pass already resolves (R10):
  *
- * - **A citation whose target is no statement.** `serves` points only at a requirement
- *   (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:81-84`), and the write that
- *   introduces one is refused where it does not (`pmdoc.CheckBlockPointers`); a target retyped
- *   after that write leaves the citation naming a node of another kind, which the drafts hold
- *   the type of, and a `requirement` block of a document other than the spec is a requirement
- *   and no statement. The gap's words say what both are: not a statement. A reference this
- *   issue does not address, or one no draft answers, is no such citation: the page cannot say
- *   what it is not holding, and a target nothing answers to at all is already drawn as a chip
- *   that says so.
- * - **A plan task nobody asked for.** A task naming no requirement it serves and no
- *   declaration it attempts is work no reason stands behind. `attempts` is the route of the
- *   planned declarations read, read from the same `block[]` attributes as every other pointer,
- *   so the day that read lands this pass reads it and nothing else changes. A check is held to
- *   neither: a check is there to prove a requirement, and it attempts no declaration at all.
+ * - **A check that names nothing it serves** (`serves_nothing`). A check is there to prove a
+ *   statement, so a check whose `serves` names no target at all stands under the issue with
+ *   nothing to prove. Only a check that draws a state carries it (`issue-tree.ts`'s `isCheck`),
+ *   one of the Verification document or of the results read: a `check` block of any other
+ *   document is a block and nothing more. The gap is read only where the page holds the check's
+ *   own block, whose attributes its pointers are: a check the results read answers for before
+ *   its block arrives holds no pointers yet, which is no `serves` left empty.
+ * - **A citation whose target is no statement** (`serves_not_requirement`). `serves` points
+ *   only at a requirement (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:81-84`),
+ *   and the write that introduces one is refused where it does not
+ *   (`pmdoc.CheckBlockPointers`). A target retyped after that write leaves the citation naming
+ *   a node of another kind, which the drafts hold the type of, and a `requirement` block of a
+ *   document other than the spec is a requirement and no statement. A target deleted after it,
+ *   such as a requirement taken out of the spec, leaves the citation naming nothing, which the
+ *   page can tell only of a document whose blocks it holds: the spec and the plan,
+ *   Verification and decisions documents (`useIssueTree.ts`'s `treeDocumentIds`), whose blocks
+ *   arrive in `IssueTreeReads.documents`. A target of this issue that no draft answers to is
+ *   therefore no statement once the blocks of the document it names are held, and no such
+ *   citation while they are out: `useIssueTree` hands each document in with no blocks until
+ *   its read answers, and a refused read too, so a document is held where it holds a block. A
+ *   target in any other document of this issue is no such citation either, since the page
+ *   reads no blocks of it, and nor is a reference this issue does not address (`nodeIdOf`):
+ *   the page cannot tell it from a statement of an issue above, which a check serves. The
+ *   gap's words say what each of these is: not a statement.
+ * - **A plan task nobody asked for** (`nobody_asked`). A task naming no requirement it serves
+ *   and no declaration it attempts is work no reason stands behind. `attempts` is the route of
+ *   the planned declarations read, read from the same `block[]` attributes as every other
+ *   pointer, so the day that read lands this pass reads it and nothing else changes. A check is
+ *   held to the first gap above and never to this one: it attempts no declaration at all.
+ *
+ * A check or a plan task whose every target is a statement carries none of these gaps.
  */
-function servePlacements(drafts: Map<string, Draft>, context: TreeContext): void {
+function servePlacements(
+  drafts: Map<string, Draft>,
+  reads: IssueTreeReads,
+  context: TreeContext
+): void {
+  // The slug of each document whose blocks the page holds, and the node id of each block it
+  // holds, a block of no node type included.
+  const heldDocuments = new Set<string>();
+  const heldBlocks = new Set<string>();
+  for (const document of reads.documents ?? []) {
+    const slug = context.slugOf(document.artifactId);
+    if (slug === undefined || document.blocks.length === 0) continue;
+    heldDocuments.add(slug);
+    for (const block of document.blocks) heldBlocks.add(blockNodeId(slug, block.id));
+  }
+  // Whether `reference`, which names the node `id` where this issue addresses it, names a target
+  // of this issue that is no statement: a node of another kind, or nothing at all in a document
+  // whose blocks the page holds.
+  const namesNoStatement = (reference: string, id: string | undefined): boolean => {
+    if (id === undefined) return false;
+    const target = drafts.get(id);
+    if (target !== undefined) return target.statement !== true;
+    const route = parseNodeReference(reference);
+    const slug =
+      route?.kind === "spec" ? context.specSlug : route?.kind === "artifact" ? route.slug : "";
+    return heldDocuments.has(slug);
+  };
   for (const draft of drafts.values()) {
     if (draft.type !== "check" && draft.type !== "plan_task") continue;
-    const named = (draft.pointers.serves ?? []).map(context.nodeIdOf);
+    const cited = draft.pointers.serves ?? [];
+    const named = cited.map(context.nodeIdOf);
     const serves = named.filter(
       (id): id is string => id !== undefined && drafts.get(id)?.statement === true
     );
     if (serves.length > 0) draft.parents = serves;
-    const elsewhere = named.some((id) => {
-      const target = id === undefined ? undefined : drafts.get(id);
-      return target !== undefined && target.statement !== true;
-    });
-    if (elsewhere) draft.gaps = [...draft.gaps, "serves_not_requirement"];
+    if (cited.some((reference, at) => namesNoStatement(reference, named[at]))) {
+      draft.gaps = [...draft.gaps, "serves_not_requirement"];
+    }
+    if (
+      draft.type === "check" &&
+      draft.state !== undefined &&
+      cited.length === 0 &&
+      heldBlocks.has(draft.id)
+    ) {
+      draft.gaps = [...draft.gaps, "serves_nothing"];
+    }
     if (
       draft.type === "plan_task" &&
-      (draft.pointers.serves ?? []).length === 0 &&
+      cited.length === 0 &&
       (draft.pointers.attempts ?? []).length === 0
     ) {
       draft.gaps = [...draft.gaps, "nobody_asked"];

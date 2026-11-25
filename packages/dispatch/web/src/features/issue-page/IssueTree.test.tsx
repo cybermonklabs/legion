@@ -9305,11 +9305,11 @@ test("an item's failed line stays drawn, with the focus on it and the same alert
   }
 });
 
-// A turn of a thread only agents wrote in is no node of the outline, on purpose (`agents-only.ts`):
+// A turn of a thread the history holds is no node of the outline, on purpose (`agents-only.ts`):
 // its address is no missing item. It lands on the turn's nearest drawn ancestor - the issue here,
-// which is no row, so the outline's tab stop - and says at that row that the thread is the agents'
-// alone. The item is not read as the old page reads one: it is named as a kind of its own.
-test("an address naming a turn only agents wrote in lands on its nearest drawn ancestor and says there the thread is the agents' alone", async () => {
+// which is no row, so the outline's tab stop - and says at that row that the thread is in the
+// history. The item is not read as the old page reads one: it is named as a kind of its own.
+test("an address naming a turn of a thread the history holds lands on its nearest drawn ancestor and says there the thread is in the history", async () => {
   setViewport(1440);
   const agent = { id: "session-1", kind: "session" } as const;
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
@@ -9321,7 +9321,7 @@ test("an address naming a turn only agents wrote in lands on its nearest drawn a
     );
     const { container } = body.view;
     await waitFor(() =>
-      expect(rowReport(container), "no row says the thread is the agents' alone").toBe(
+      expect(rowReport(container), "no row says the thread is in the history").toBe(
         KEY_REPORTS.agents_thread
       )
     );
@@ -9343,24 +9343,26 @@ test("an address naming a turn only agents wrote in lands on its nearest drawn a
 });
 
 // The class search of #4205's 6586a4be, on the class of the landing's line held while a document
-// is read: the landing on the nearest drawn ancestor of a turn only agents wrote in was dropped
-// while a document added to the issue had its blocks read, which holds the tree's reads out
-// again (`readsHeld`), since its following settles on no landing of the old page's. The tree was
-// drawn with no address to land on, and once the reads answered the landing's key came back as
-// a new landing's would: a zoom the reader had made after the landing was left, as a following
-// leaves a zoom its node is outside of. The landing stays while the reads are out, so the
-// reader's zoom stands, with the focus where they put it.
+// is read: the landing on the nearest drawn ancestor of a turn of a thread the history holds
+// (`agents-only.ts`) was dropped while a document added to the issue had its blocks read, which
+// holds the tree's reads out again (`readsHeld`), since its following settles on no landing of
+// the old page's. The tree was drawn with no address to land on, and once the reads answered the
+// landing's key came back as a new landing's would: a zoom the reader had made after the landing
+// was left, as a following leaves a zoom its node is outside of. The landing stays while the
+// reads are out, so the reader's zoom stands, with the focus where they put it.
 //
 // The ancestor is the issue, the outline's tab stop, as it is for every agents-only turn the
 // server stores (`agents-only.ts`'s `agentsOnlyIds`). A comment thread is agents-only only where
-// no turn of it is under a question (`underQuestion`) and none is a person's, and the tree draws
+// no turn of it is under a question (`underQuestion`), none is a person's and its head is tied to
+// no text, and the tree draws
 // an ask only where it is a question (`tree-drafts.ts`'s `addAsks`): no agents-only comment hangs
 // under a drawn ask, and the walk up from one (`address-target.ts`'s `agentsOnlyAncestor`) meets
 // turns of its own thread, then an approval request, which is no node, or nothing, and ends at
-// the issue. A message thread is agents-only only where no turn of it is a person's, and the
-// server lists each root - `in_reply_to` null - with every message transitively replying to it
-// (`api/messages.go`'s `listIssueRootMessagesQuery` and `hydrateMessageThreads`): a message
-// answering a drawn message is a turn of that message's thread, which a person wrote in.
+// the issue. A message thread is agents-only only where the Legion daemon wrote its root, and
+// then every message of it is, and the server lists each root - `in_reply_to` null - with every
+// message transitively replying to it (`api/messages.go`'s `listIssueRootMessagesQuery` and
+// `hydrateMessageThreads`): a message answering a drawn message is a turn of that message's
+// thread, which the daemon did not begin.
 test("an agents-only turn's landing on the issue, kept while a document added to the issue has its blocks read, leaves the reader's zoom after it standing", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -9375,7 +9377,7 @@ test("an agents-only turn's landing on the issue, kept while a document added to
     );
     const { container } = body.view;
     await waitFor(() =>
-      expect(rowReport(container), "no row says the thread is the agents' alone").toBe(
+      expect(rowReport(container), "no row says the thread is in the history").toBe(
         KEY_REPORTS.agents_thread
       )
     );
@@ -9939,6 +9941,43 @@ test("a failed names read draws its line over the tree with every row drawn, and
   } finally {
     names.mockRestore();
     messages.mockRestore();
+  }
+});
+
+// A names line that stands again for a failure it already counted has said it, and is drawn
+// without speaking. The names read of the tree's set is refused; a comment goes, the names read of
+// the smaller set answers, and the line leaves. The comment comes back: the names read is back on
+// the first set, which holds no answer and the refusal the line counted, and runs again, so the
+// line stands again, its words and its Retry drawn with no live role.
+test("a names line that stands again for a failure it counted is drawn without speaking", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  names.mockRejectedValueOnce(serverDown());
+  const out = Promise.withResolvers<never>();
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS);
+    const { container } = body.view;
+    await failedLines(container, 1, "names");
+    await act(async () => {
+      body.client.setQueryData(
+        ["comments", KEY],
+        TWO_THREADS.filter((comment) => comment.id !== "reply-b")
+      );
+    });
+    await failedLinesGone(container, "names");
+    names.mockReturnValueOnce(out.promise as never);
+    await act(async () => {
+      body.client.setQueryData(["comments", KEY], TWO_THREADS);
+    });
+    await failedLines(container, 1, "names");
+    expect(
+      body.view.getByText(STATE_LINES.names_unreadable),
+      "the names' line said again a failure it had counted"
+    ).not.toHaveAttribute("role");
+    expect(body.view.queryByRole("alert"), "a line standing again spoke").toBeNull();
+  } finally {
+    await act(async () => out.resolve({ targets: [] } as never));
+    names.mockRestore();
   }
 });
 

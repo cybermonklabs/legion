@@ -354,6 +354,45 @@ test("a names read that fails for a tree that grew keeps the names in hand, and 
   }
 });
 
+// A names read back on a set of addresses whose failure the names line has counted holds no
+// answer there, so the line stands on it, busy while it runs again, but that failure is one the
+// line has said, so its count stays (`useLineRefusals`).
+test("a names read back on a set of addresses whose failure the line counted stands busy with its failure unchanged", async () => {
+  // Where set, a names read stays out until it settles; every one of them fails.
+  let out: Promise<void> | undefined;
+  const stubs = stubTreeReads(async () => {
+    await out;
+    throw new Error("the names read failed");
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const held = Promise.withResolvers<void>();
+  try {
+    const view = renderHook(() => useIssueTree(issue).namesFailure, { wrapper });
+    await waitFor(() => expect(view.result.current?.failure).toBe(1));
+    expect(view.result.current?.speaks, "the line's first failure was not said").toBe(true);
+    // A comment arrives, and the names read of the tree's new set fails too.
+    await act(async () => client.setQueryData(["comments", KEY], [comment]));
+    await waitFor(() => expect(view.result.current?.failure).toBe(2));
+    // The new set's names read answers, the one active read holding none, and the line leaves.
+    await act(async () => client.setQueriesData({ type: "active" }, (d) => d ?? { targets: [] }));
+    await waitFor(() => expect(view.result.current).toBeUndefined());
+    // The comment goes: the read moves back to the first set, whose failure the line counted, and
+    // is out.
+    out = held.promise;
+    await act(async () => client.setQueryData(["comments", KEY], []));
+    await waitFor(() => expect(view.result.current?.retrying).toBe(true));
+    expect(view.result.current?.failure, "the first set's failure was said again").toBe(2);
+    expect(view.result.current?.speaks, "the line said again a failure it had said").toBe(false);
+    view.unmount();
+  } finally {
+    held.resolve();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 /** What the batched name read answers for `refs`: the plan task's words for its address, and
  *  words of their own for every other. */
 function namedTargets(refs: readonly string[]): { targets: ReferenceTarget[] } {

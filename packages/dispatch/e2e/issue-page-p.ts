@@ -16,6 +16,10 @@ import {
 import { filterRow } from "./issue-page";
 import { assertWhole } from "./unclipped";
 
+// The typeface's readers are `issue-page-typeface.ts`'s, the one copy every row reads; this
+// module passes them on to its own rows, which import them from here.
+export { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
+
 declare global {
   interface Window {
     /** `holdClipboard`'s clipboard: how many writes were made, and the resolve of each write
@@ -774,52 +778,6 @@ export function stickyReading(page: Page): Promise<StickyReading | null> {
       },
     };
   });
-}
-
-/** The family `web/src/styles.css` declares for the typeface the new page ships and draws in. */
-export const TYPEFACE = "Dispatch Inter";
-
-/** The address the page's stylesheet loads the typeface from, read from its own `@font-face`
- *  rule. Throws when no rule declares the family. */
-export async function typefaceAddress(page: Page): Promise<string> {
-  // Callers wait for the header drawn first, and the page's script runs only once its stylesheet
-  // has loaded, so the rule is there; a miss only throws.
-  const address = await page.evaluate((family) => {
-    const find = (rules: CSSRuleList, base: string): string | null => {
-      for (const rule of rules) {
-        if (rule instanceof CSSFontFaceRule) {
-          const named = rule.style.getPropertyValue("font-family").replace(/["']/g, "").trim();
-          const source = /url\(["']?([^"')]+)["']?\)/.exec(rule.style.getPropertyValue("src"));
-          if (named === family && source?.[1] !== undefined) return new URL(source[1], base).href;
-        } else if (rule instanceof CSSGroupingRule) {
-          const found = find(rule.cssRules, base);
-          if (found !== null) return found;
-        }
-      }
-      return null;
-    };
-    for (const sheet of document.styleSheets) {
-      const found = find(sheet.cssRules, sheet.href ?? document.baseURI);
-      if (found !== null) return found;
-    }
-    return null;
-  }, TYPEFACE);
-  if (address === null) {
-    throw new Error(`the page's stylesheet declares no @font-face for ${TYPEFACE}`);
-  }
-  return address;
-}
-
-/** How each face of the typeface's family stands in the document's font set: `loaded` once the
- *  file arrived, `error` once its request failed. */
-export function typefaceStatuses(page: Page): Promise<string[]> {
-  return page.evaluate(
-    (family) =>
-      [...document.fonts]
-        .filter((face) => face.family.replace(/["']/g, "") === family)
-        .map((face) => face.status),
-    TYPEFACE
-  );
 }
 
 /** The stack the header's band is drawn in, as its computed `font-family`, each family

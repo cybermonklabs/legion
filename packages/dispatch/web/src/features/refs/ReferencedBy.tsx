@@ -8,6 +8,11 @@ import {
   borderDefault,
   linkHoverText,
   linkText,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pageQuietText,
+  pageRowAct,
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
@@ -84,6 +89,61 @@ const MANIFEST_EDGE_KINDS = new Set(
       .map(([name]) => name)
   )
 );
+
+/** Whether a list of what references a node draws `edge`. During a release a newer Dispatch can
+ *  answer with an edge kind, or a node kind at the other end, that this page does not know; every
+ *  such list - this panel, and a focused row's in Details (`NodeReferences.tsx`) - leaves that
+ *  edge out rather than draw it under another edge's label. */
+export function drawsEdge(edge: GraphEdge): boolean {
+  return (
+    (Object.hasOwn(RENDERED_EDGE_KINDS, edge.kind) || MANIFEST_EDGE_KINDS.has(edge.kind)) &&
+    Object.hasOwn(NODE_LABELS, edge.node.kind)
+  );
+}
+
+/** The edges a list of what references `reference` shows of a read's `edges`: those it draws
+ *  (`drawsEdge`), and with `page` none whose citing item - the node, or the ask, comment or
+ *  message a block of one belongs to (`blockItem`) - is an ask, comment or message of the issue
+ *  `reference` names, since the new page's outline is that issue's conversation. One function, so
+ *  a control that counts the list counts the rows the list shows. Undefined while there is no
+ *  read. */
+export function listedEdges(
+  edges: readonly GraphEdge[] | null | undefined,
+  reference: string,
+  page: boolean
+): GraphEdge[] | undefined {
+  const drawn = edges?.filter(drawsEdge);
+  const route = page ? parseNodeReference(reference) : undefined;
+  const issueKey = route !== undefined && "key" in route ? route.key : undefined;
+  if (issueKey === undefined) {
+    return drawn;
+  }
+  return drawn?.filter(
+    (edge) =>
+      !isBlockItemKind((blockItem(edge.node) ?? edge.node).kind) || edge.node.issue_key !== issueKey
+  );
+}
+
+/** The colours of the list's heading, its lines, its rows, its excerpts and its links: the
+ *  application's, and with `page` the new page's own tokens (`PAGE_COLORS`), as every colour of
+ *  Details is - a link in the page's ink, underlined under the pointer as the page's row controls
+ *  are, and an excerpt in its muted grey. Its words are the application's on both. */
+const LIST_TOKENS = {
+  app: {
+    excerpt: textSecondaryOnSurface,
+    heading: textSecondaryOnSurface,
+    line: textMutedOnSurface,
+    link: `${linkText} ${linkHoverText}`,
+    row: borderDefault,
+  },
+  page: {
+    excerpt: pageMutedText,
+    heading: pageMutedText,
+    line: pageQuietText,
+    link: `${pageInkText} ${pageRowAct}`,
+    row: pageLineBorder,
+  },
+} as const;
 
 /** Beyond this the row clamps the excerpt and offers to expand it. The real clamp is CSS, so
  *  this is the text shape that makes a clamp likely rather than a measurement. */
@@ -177,21 +237,27 @@ function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
   });
 }
 
-function Excerpt({ text }: { text: string }): ReactNode {
+function Excerpt({
+  text,
+  tokens,
+}: {
+  text: string;
+  tokens: { readonly excerpt: string; readonly link: string };
+}): ReactNode {
   const [expanded, setExpanded] = useState(false);
   const clampable = text.split("\n").length > CLAMP_LINES || text.length > CLAMP_CHARACTERS;
 
   return (
     <>
       <p
-        className={`mt-1 whitespace-pre-wrap text-sm ${expanded || !clampable ? "" : "line-clamp-3"} ${textSecondaryOnSurface}`}
+        className={`mt-1 whitespace-pre-wrap text-sm ${expanded || !clampable ? "" : "line-clamp-3"} ${tokens.excerpt}`}
       >
         {text}
       </p>
       {clampable ? (
         <button
           aria-expanded={expanded}
-          className={`min-h-11 text-xs font-medium ${linkText} ${linkHoverText}`}
+          className={`min-h-11 text-xs font-medium ${tokens.link}`}
           onClick={() => setExpanded((open) => !open)}
           type="button"
         >
@@ -249,12 +315,29 @@ export function ReferencedByToggle({
  *  the list outright — so this component has one behaviour. */
 export function ReferencedBy({
   className,
+  page = false,
+  pages,
   reference,
   retried,
   retryRef,
   toggle,
 }: {
   className?: string;
+  /** Whether the list is drawn in the new page's Details: in the page's colours, and without the
+   *  issue's own asks, comments and messages, which that page's outline holds (`listedEdges`). */
+  page?: boolean;
+  /** With `page`, the pages its rows are drawn in, which Details holds (`useListPages`): how
+   *  many rows the list draws, and the control under them that draws the next ones, which says
+   *  the page's words. The control is handed how many rows the whole list holds and the element
+   *  of each row by its place, which its press moves the focus to. Without it every row is
+   *  drawn. */
+  pages?: {
+    readonly drawn: number;
+    readonly more: (
+      count: number,
+      entry: (index: number) => Element | null | undefined
+    ) => ReactNode;
+  };
   reference: string;
   /** Notes the reader's press of Retry for the hand-off of its host (`useFocusHandOff`'s
    *  `pressed`): set as Retry is pressed, and forgotten where the list still reads as failed once
@@ -278,15 +361,37 @@ export function ReferencedBy({
 }): ReactNode {
   const freshness = useNewIssuePageFreshness();
   const query = useQuery({ ...referencesQuery(reference), ...freshness });
-  // During a release a newer Dispatch can answer with an edge kind, or a node kind at the other
-  // end, that this page does not know; the page leaves such an edge out rather than draw it under
-  // another edge's label.
-  const edges = query.data?.edges?.filter(
-    (edge) =>
-      (Object.hasOwn(RENDERED_EDGE_KINDS, edge.kind) || MANIFEST_EDGE_KINDS.has(edge.kind)) &&
-      Object.hasOwn(NODE_LABELS, edge.node.kind)
-  );
+  const edges = listedEdges(query.data?.edges, reference, page);
   const groups = groupBySource(edges ?? []);
+  const tokens = LIST_TOKENS[page ? "page" : "app"];
+  // With `page` and `pages`, the list's rows are one sequence, each source's rows in the order
+  // its card draws them, of which the list draws the first `pages.drawn`. Each source draws
+  // those of its rows that fit in what is left of that number (`rowsLeft`), in its place in the
+  // sequence, and counts every one of its rows in the list's (`rowCount`), the count the
+  // control under the list is handed. Another source of rows drawn after these takes and counts
+  // its rows the same way, and shares the list's pages, its control and its count. A card the
+  // cut falls in draws the rows before the cut, and a card after the cut is not drawn.
+  const paged = page ? pages : undefined;
+  let rowsLeft = paged?.drawn ?? Number.POSITIVE_INFINITY;
+  let rowCount = 0;
+  if (paged !== undefined) {
+    const drawnGroups = groups.flatMap((group) => {
+      rowCount += group.edges.length;
+      const drawnEdges = group.edges.slice(0, rowsLeft);
+      rowsLeft -= drawnEdges.length;
+      return drawnEdges.length === 0 ? [] : [{ ...group, edges: drawnEdges }];
+    });
+    groups.splice(0, groups.length, ...drawnGroups);
+  }
+  // Each row drawn in pages carries the list's own mark, by which the press of the control finds
+  // the first row it drew, by its place in the sequence: the row's card where the row is its
+  // card's first, whose link names the source, and else the row itself.
+  const rowsMark = useId();
+  const rowAt = (index: number) => {
+    const marked = `[data-reference-rows="${CSS.escape(rowsMark)}"]`;
+    const row = document.querySelectorAll(marked)[index];
+    return row?.parentElement?.firstElementChild === row ? row.parentElement?.parentElement : row;
+  };
   // Retry's attributes where the host notes its press (`retried`), spread over the ones it has on
   // every page.
   const retryInDetails:
@@ -316,18 +421,18 @@ export function ReferencedBy({
   return (
     <section aria-label="Referenced by" className={`space-y-2 ${className ?? ""}`} id={toggle?.id}>
       {toggle === undefined ? (
-        <h3 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>
+        <h3 className={`text-sm font-semibold ${tokens.heading}`}>
           Referenced by{edges === undefined ? "" : ` (${edges.length})`}
         </h3>
       ) : null}
       {query.isPending && !failed ? (
-        <p className={`text-sm ${textMutedOnSurface}`}>Loading references…</p>
+        <p className={`text-sm ${tokens.line}`}>Loading references…</p>
       ) : null}
       {failed ? (
-        <p className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnSurface}`}>
+        <p className={`flex flex-wrap items-center gap-2 text-sm ${tokens.line}`}>
           <span>Referenced by unavailable.</span>
           <button
-            className={`font-medium underline ${linkText} ${linkHoverText}`}
+            className={`font-medium underline ${tokens.link}`}
             disabled={query.isFetching}
             onClick={() => void query.refetch()}
             {...retryInDetails}
@@ -339,19 +444,19 @@ export function ReferencedBy({
         </p>
       ) : null}
       {edges?.length === 0 ? (
-        <p className={`text-sm ${textMutedOnSurface}`}>Nothing references this yet.</p>
+        <p className={`text-sm ${tokens.line}`}>Nothing references this yet.</p>
       ) : null}
       {groups.length === 0 ? null : (
         <ul className="space-y-2">
           {groups.map((group) => (
-            <li className={`rounded-lg border p-3 ${borderDefault}`} key={group.key}>
-              <div className={`text-xs font-medium ${textMutedOnSurface}`}>
+            <li className={`rounded-lg border p-3 ${tokens.row}`} key={group.key}>
+              <div className={`text-xs font-medium ${tokens.line}`}>
                 {group.path === undefined ? (
                   <span>{group.label}</span>
                 ) : (
                   <Link
                     {...referenceTriggerProps(group.path.route)}
-                    className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
+                    className={`dispatch-inline-link underline ${tokens.link}`}
                     to={group.path.href}
                   >
                     {group.label}
@@ -372,11 +477,10 @@ export function ReferencedBy({
                   const deleted = postDeletion(edge.node);
                   return (
                     <li
+                      data-reference-rows={paged === undefined ? undefined : rowsMark}
                       key={`${edge.node.kind}:${edge.node.id}:${edge.kind}:${edge.direction}:${edge.block?.id ?? ""}`}
                     >
-                      <div
-                        className={`flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurface}`}
-                      >
+                      <div className={`flex flex-wrap items-center gap-x-1 text-xs ${tokens.line}`}>
                         {group.edges.length === 1 ? null : (
                           <>
                             <span>{edgeLabel(edge)}</span>
@@ -388,7 +492,7 @@ export function ReferencedBy({
                         ) : (
                           <Link
                             {...referenceTriggerProps(row.route)}
-                            className={`underline ${linkText} ${linkHoverText}`}
+                            className={`underline ${tokens.link}`}
                             to={row.href}
                           >
                             <Timestamp at={edge.created_at} />
@@ -400,7 +504,7 @@ export function ReferencedBy({
                             <span aria-hidden="true">·</span>
                             <Link
                               {...referenceTriggerProps(cited.route)}
-                              className={`underline ${linkText} ${linkHoverText}`}
+                              className={`underline ${tokens.link}`}
                               to={cited.href}
                             >
                               block {edge.block?.block_id}
@@ -410,8 +514,14 @@ export function ReferencedBy({
                       </div>
                       {deleted !== null ? (
                         <DeletedBody className="mt-1 block text-sm" deleted={deleted} />
+                      ) : page && edge.excerpt !== undefined ? (
+                        <p
+                          className={`mt-1 whitespace-pre-wrap text-sm [overflow-wrap:anywhere] ${tokens.excerpt}`}
+                        >
+                          {edge.excerpt.text}
+                        </p>
                       ) : edge.excerpt === undefined ? null : (
-                        <Excerpt text={edge.excerpt.text} />
+                        <Excerpt text={edge.excerpt.text} tokens={tokens} />
                       )}
                     </li>
                   );
@@ -421,6 +531,7 @@ export function ReferencedBy({
           ))}
         </ul>
       )}
+      {paged === undefined ? null : paged.more(rowCount, rowAt)}
     </section>
   );
 }

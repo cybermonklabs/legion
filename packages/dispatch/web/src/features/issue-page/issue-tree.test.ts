@@ -39,6 +39,7 @@ import {
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "./row-references";
+import { SENTENCE_TABLE } from "./sentence-table";
 import {
   addressesAsShortForms,
   blockNodeId,
@@ -1028,6 +1029,30 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
     line: "a".repeat(FIRST_LINE_LIMIT),
     sentence: false,
   });
+});
+
+// R1: a row's first line ends where the page's one sentence end falls (`firstSentenceLength`),
+// as the table of sentence ends (`SENTENCE_TABLE`) states it for each text. Every row's text is
+// under the line's limit, so the line is its first sentence and no cut of the limit's. A row
+// whose first sentence depends on the blocks its text is stored as gives the function no answer
+// to meet, and only its text's length is read here.
+test("a first line ends where every row of the sentence table ends its first sentence", () => {
+  for (const row of SENTENCE_TABLE) {
+    expect(row.text.length, `${row.id} is under the line's limit`).toBeLessThanOrEqual(
+      FIRST_LINE_LIMIT
+    );
+    if (row.first === undefined) continue;
+    expect(firstLineOf(row.text).line, row.id).toBe(row.first);
+  }
+});
+
+// R1: a node that opens with a list draws its one line from the list's first item, never from the
+// whole list run together (`firstBlockWordsRaw`). The sentence table's rows k3 and k4 pin the
+// same rule for an item that holds a nested list or a later paragraph; this case pins items with
+// no end mark.
+test("a node that opens with a list draws its first item's words, never the whole list's", () => {
+  expect(lineWordsRaw({ text: "- Keep the old page\n- Then drop it" })).toBe("Keep the old page");
+  expect(lineWordsRaw({ text: "1. Keep the old page\n2. Then drop it" })).toBe("Keep the old page");
 });
 
 // R1: a cut at the limit falls between two characters, never inside one. A character outside the
@@ -2795,9 +2820,10 @@ test("a reply to an ask is drawn under the ask, whatever state it is in", () => 
   ]);
 });
 
-// R1, R15: a comment or message an agent wrote outside every thread a person wrote in is no node
-// of the outline: the history in the panel draws it. A thread a person wrote in is the
-// conversation's, the agents' turns in it included, and a reply to an ask is in the ask's thread.
+// A comment thread tied to no text that no person wrote in, and a message thread the Legion
+// daemon began, are no node of the outline: the history in the panel draws them. A comment
+// thread a person wrote in is the conversation's, the agents' turns in it included, and a reply
+// to an ask is in the ask's thread.
 test("a thread no person wrote in is no node, and one a person replied in is drawn whole", () => {
   const agent = { id: "planner", kind: "session" as const };
   const status = { ...comment("status", "2026-11-04T09:00:00Z"), author: agent };
@@ -2824,7 +2850,12 @@ test("a thread no person wrote in is no node, and one a person replied in is dra
     asks: [question("ask-1")],
     comments: [status, among, answer, joined, person, underAsk],
     issue: issueDetails([]),
-    messages: [{ ...daemon, message: { ...daemon.message, author: agent } }],
+    messages: [
+      {
+        ...daemon,
+        message: { ...daemon.message, author: { id: "legion-daemon:CORE", kind: "session" } },
+      },
+    ],
   });
 
   for (const id of ["status", "among", "answer", "daemon"]) {
@@ -3012,13 +3043,96 @@ test("a check whose citation names no requirement draws the gap, and keeps its p
   ]);
 });
 
+// A check that serves no statement of the issue stands under it and carries a gap that says so.
+// One whose `serves` names nothing carries a gap of its own. One naming a block of this issue's
+// spec that the spec's blocks no longer hold, a requirement deleted from it, carries the gap a
+// retyped target does, but only once the spec's blocks are held: until then the page cannot tell
+// a deleted block from one it has not read. One naming another issue's block carries none, since
+// the page cannot tell it from a statement of an issue above, which a check serves.
+test("a check whose serves is empty, or names a block of this issue's spec that the spec no longer holds, carries its gap, and one that names another issue's block carries none", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const statement = blockNodeId(SPEC, "r1");
+  const empty = blockNodeId(VERIFICATION, "c-empty");
+  const deleted = blockNodeId(VERIFICATION, "c-deleted");
+  const elsewhere = blockNodeId(VERIFICATION, "c-elsewhere");
+  const serving = blockNodeId(VERIFICATION, "c-serving");
+  const specHeld = { artifactId: spec.id, blocks: [block("r1", "requirement")] };
+  const verificationHeld = {
+    artifactId: checks.id,
+    blocks: [
+      block("c-empty", "check"),
+      block("c-deleted", "check", { serves: `dispatch://${KEY}/spec#b-r-deleted` }),
+      // Another issue's block, whose id is this issue's statement's id too.
+      block("c-elsewhere", "check", { serves: "dispatch://CORE-2/spec#b-r1" }),
+      block("c-serving", "check", { serves: `dispatch://${KEY}/spec#b-r1` }),
+    ],
+  };
+  const treeOf = (
+    documents: readonly {
+      readonly artifactId: string;
+      readonly blocks: readonly ArtifactBlock[];
+    }[],
+    results?: IssueCheckResults
+  ): TreeNode =>
+    buildIssueTree({
+      coverage: coverage([requirement("r1", "The first.")]),
+      documents,
+      issue: { ...issueDetails([spec, checks]), verification_artifact_id: checks.id },
+      ...(results === undefined ? {} : { results }),
+    });
+
+  const held = treeOf([specHeld, verificationHeld]);
+  expect(nodeOf(held, empty)?.gaps).toEqual(["serves_nothing"]);
+  expect(nodeOf(held, deleted)?.gaps).toEqual(["serves_not_requirement"]);
+  expect(nodeOf(held, elsewhere)?.gaps).toEqual([]);
+  expect(nodeOf(held, serving)?.gaps).toEqual([]);
+  // Each check that serves no statement of the issue stands under the issue, and the one that
+  // names a statement sits under it.
+  for (const id of [empty, deleted, elsewhere]) {
+    expect(
+      placementsOf(held, id).map((one) => one.parent),
+      id
+    ).toEqual([KEY]);
+  }
+  expect(placementsOf(held, serving).map((one) => one.parent)).toEqual([statement]);
+
+  // While the spec's blocks are out, whether the reads hold no entry for the spec or one with no
+  // blocks, as `useIssueTree` hands in a read that has not answered, the deleted target carries
+  // no gap. The rest read as before: the empty `serves` is the check's own block's.
+  for (const [out, documents] of [
+    ["no entry for the spec", [verificationHeld]],
+    ["the spec's entry with no blocks", [{ artifactId: spec.id, blocks: [] }, verificationHeld]],
+  ] as const) {
+    const root = treeOf(documents);
+    expect(nodeOf(root, deleted)?.gaps, out).toEqual([]);
+    expect(nodeOf(root, empty)?.gaps, out).toEqual(["serves_nothing"]);
+    expect(nodeOf(root, elsewhere)?.gaps, out).toEqual([]);
+    expect(nodeOf(root, serving)?.gaps, out).toEqual([]);
+  }
+
+  // A check the results read answers for before its own block arrives holds no pointers yet,
+  // which is no empty `serves`, so it carries no gap.
+  const unread = treeOf([specHeld], checkedResults([{ blockId: "c-empty", results: [] }]));
+  expect(nodeOf(unread, empty)?.state).toBe("no-result");
+  expect(nodeOf(unread, empty)?.gaps).toEqual([]);
+});
+
 // R10: a check is held to no gap about its results. A result that records no negative control
 // is one the server is to refuse, so the lack names nothing the page could hold.
 test("a check whose latest result records no negative control draws no gap", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
   const root = buildIssueTree({
-    documents: [{ artifactId: checks.id, blocks: [block("c1", "check")] }],
+    coverage: coverage([requirement("r1", "The first.")]),
+    documents: [
+      { artifactId: spec.id, blocks: [block("r1", "requirement")] },
+      // The check serves a statement, so the only gap it could draw is one for the control.
+      {
+        artifactId: checks.id,
+        blocks: [block("c1", "check", { serves: `dispatch://${KEY}/spec#b-r1` })],
+      },
+    ],
     issue: issueDetails([spec, checks]),
     results: checkedResults([{ blockId: "c1", results: [recorded("result-latest", "")] }]),
   });

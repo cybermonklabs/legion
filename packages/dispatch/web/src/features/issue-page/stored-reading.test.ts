@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 
+import type { DisplayTree } from "../../api/types";
+import fixtures from "../refs/__fixtures__/display-trees.json";
 import { wordsOf } from "../refs/tree-fragment";
 import { lineWordsRaw } from "./issue-tree";
 import { isPlainText, parsedReading, plainReading, storedReading } from "./stored-reading";
@@ -347,4 +349,47 @@ test("the parse reads a bare URL, a www address and an email as the words they a
   expect(collapsed(wordsOf(withShortAddresses(reading)))).toBe(
     "See https://example.com/a?b=c, www.example.com and someone@example.com beside ACME-12."
   );
+});
+
+/** One text of the display-tree fixture `pmdoc`'s `TestWebDisplayFixture` writes: its name, the
+ *  markdown, and the server's reading of that markdown's latest version. */
+interface ServerReading {
+  readonly name: string;
+  readonly markdown: string;
+  readonly latest: DisplayTree;
+}
+
+/** The fixture's text named `name`, read by the server. */
+function serverReading(name: string): ServerReading {
+  const found = (fixtures as ServerReading[]).find((each) => each.name === name);
+  if (found === undefined) throw new Error(`no text named ${name} in the display-tree fixture`);
+  return found;
+}
+
+/** The first `ordered_list` among the blocks of `tree`. */
+function orderedListOf(tree: DisplayTree): DisplayTree | undefined {
+  return (tree.content as readonly DisplayTree[] | undefined)?.find(
+    (block) => block.type === "ordered_list"
+  );
+}
+
+/** The number `list` says it starts at, `undefined` where it says none. */
+function orderOf(list: DisplayTree | undefined): unknown {
+  return (list?.attrs as { readonly order?: unknown } | undefined)?.order;
+}
+
+// The server writes the number an ordered list starts at as the list's `order`, and leaves it
+// out where that is 1, so the page's own reading of a stored text must do the same: a list from
+// 3 read as a list from 1 draws the wrong numbers. The server's reading of the text from 3 is
+// the fixture's, written from the same text.
+test("an ordered list from 3 reads its start as the server's reading does, and one from 1 none", () => {
+  const fromThree = "3. Keep the old page.\n4. Then drop it.";
+  const server = serverReading("ordered-from-3");
+  expect(server.markdown).toBe(`${fromThree}\n`);
+  const list = orderedListOf(storedReading(fromThree));
+  expect(orderOf(list)).toBe(3);
+  expect(orderOf(list)).toBe(orderOf(orderedListOf(server.latest)));
+  const fromOne = orderedListOf(storedReading("1. one\n2. two"));
+  expect(fromOne?.type).toBe("ordered_list");
+  expect(orderOf(fromOne)).toBeUndefined();
 });

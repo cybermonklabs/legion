@@ -148,7 +148,9 @@ const EDGE_SPACE = /^[ \t]+|[ \t]+$/gu;
  * would hold (R21).
  *
  * The reading holds what decides the words and where they stand apart: the blocks, the text runs
- * and the marks on them, by the server's names, and no attribute, since no word lies in one. A
+ * and the marks on them, by the server's names. It holds no attribute, since no word lies in one,
+ * but the number a numbered list starts at where that is not 1 (`order`), which it holds as the
+ * server's reading does so that the two readings have one shape; nothing on the page reads it. A
  * block opens a space before its words and after them. A mark sits on the runs it covers, so a
  * marked run and the run beside it stay consecutive children of one block and read adjacent
  * (`a **b**c` reads `a bc`). A leaf that holds no text - a hard break, an image, a footnote
@@ -262,11 +264,15 @@ function blockOf(node: Parsed): DisplayTree | undefined {
       return withContent(node.type, runsOf(node.children));
     case "blockquote":
       return withContent("blockquote", blocksOf(node.children));
-    case "list":
-      return withContent(
-        node.ordered === true ? "ordered_list" : "bullet_list",
-        blocksOf(node.children)
-      );
+    case "list": {
+      if (node.ordered !== true) return withContent("bullet_list", blocksOf(node.children));
+      const list = withContent("ordered_list", blocksOf(node.children));
+      // The server's reading writes the number an ordered list starts at as the list's `order`,
+      // and leaves it out where that is 1, its schema's default, so a list from 3 reads apart
+      // from a list from 1 here as it does there.
+      if (node.start != null && node.start !== 1) return { attrs: { order: node.start }, ...list };
+      return list;
+    }
     case "listItem":
       return withContent("list_item", blocksOf(node.children));
     case "code": {

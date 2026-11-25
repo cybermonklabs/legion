@@ -410,20 +410,121 @@ export const FIRST_LINE_LIMIT = 100;
  */
 export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
 
+/** A closing quote or bracket, which belongs to the sentence whose end mark it follows. */
+const CLOSING_MARK = /[)\]"'\u201d\u2019]/u;
+
+/** A numbered label at the start of a word: digits and one full stop, before a space or where
+ *  the text stops. */
+const NUMBERED_LABEL = /^\d+\.(?=\s|$)/u;
+
 /**
- * The node's own text to the first sentence end or `FIRST_LINE_LIMIT` characters, whichever
- * comes first, cut at a word wherever the limit falls near one. A leading label - a first word
- * of at most five characters that ends in `.` and holds a digit, as `R1.`, `12.` or `1.2.` - is
- * part of the line and no sentence end, so a statement's line runs on to the first sentence end
- * after its label. A line held to the limit that holds no space past its label -
- * one unbroken token, a URL or an identifier - is cut at the limit itself, because there is no
- * word boundary to cut at and the limit is the row's whole budget, and one unit short of it
- * where the limit falls inside a surrogate pair, as `textHead` cuts. `cut` says whether the
- * text carries on past the line, and `sentence` whether the line ends at a sentence end, the
- * first one after any label: the two are what the row draws its ellipsis by (`drawnLine`). A
- * line the limit cut, at a word or at the limit itself, ends at none, whatever its last
- * character: a token cut at the limit may end on a `.`, `!` or `?` of its own, as `x.yyyy` cut
- * after its dot does.
+ * The abbreviations a number may follow inside a sentence, each written in lower case and read
+ * in any case (`firstSentenceLength`): a full stop after one of these words, before a word that
+ * opens with a digit, ends no sentence, as in `see p. 4`, `See Fig. 3` or `Keep v. 1.2`. A text
+ * that uses another abbreviation before a number becomes a new row of the table that pins the
+ * rule (`SENTENCE_TABLE` in `sentence-table.ts`), not a new rule.
+ */
+const NUMBER_ABBREVIATIONS: ReadonlySet<string> = new Set([
+  "art",
+  "cf",
+  "ch",
+  "eq",
+  "eqs",
+  "fig",
+  "figs",
+  "no",
+  "nos",
+  "p",
+  "para",
+  "pp",
+  "sec",
+  "v",
+  "vol",
+  "vs",
+]);
+
+/** A letter or a decimal digit: what a whole word is made of, so that the word before a full
+ *  stop starts where the text does or after a character that is neither. */
+const WORD_CHARACTER = /[\p{L}\p{Nd}]/u;
+
+/**
+ * How many characters of `text` its first sentence takes, its leading label included, or
+ * undefined where `text` holds no sentence end. Every place that splits words into sentences
+ * reads it: the one line drawn for a node (`firstLineOf`), the issue's three sentences
+ * (`IssueThreeThings.tsx`) and a person's quoted first sentence (`spec-decided-by.ts`'s
+ * `firstSentenceOf`), so the same words are split one way wherever the page draws them.
+ *
+ * A leading label (`LEADING_LABEL`) opens the first sentence and ends none, so the scan starts
+ * after it. A sentence end is a full stop, a question mark or an exclamation mark, with whatever
+ * closing quote or bracket the writer put after it, which belongs to the sentence it ends. A
+ * mark ends the sentence where the text stops after it, trailing whitespace aside, and ends none
+ * where no whitespace follows it, inside a token such as `x.yyyy`, `1.2` or `example.com`. A
+ * question or exclamation mark before a word ends the sentence whatever the word is, in lower
+ * case too. A full stop before a word in lower case ends an abbreviation (`e.g. in`), not the
+ * sentence. A full stop before a word that opens with a digit ends the sentence, unless the word
+ * before the full stop is one of the abbreviations a number follows (`NUMBER_ABBREVIATIONS`),
+ * read in any case and standing as a whole word, as in `(see p. 4)`: there the number is part
+ * of the sentence and opens no label, and the scan goes on. A full stop before any other word,
+ * one in upper case or one that opens with a symbol, ends the sentence. A colon ends no
+ * sentence, and a numbered label (`NUMBERED_LABEL`) right after a colon and whitespace is a
+ * label: its full stop ends nothing, and the scan goes on after it, so `Steps: 1. Open it. 2.`
+ * ends at `it.`.
+ *
+ * One table pins this rule: each row of `SENTENCE_TABLE` (`sentence-table.ts`) is one text and
+ * the first sentence the page must find in it, and every reader of the rule is tested over every
+ * row. The rule has two accepted misses. `The answer is no. 3 rows changed.` runs as one
+ * sentence, since `no.` before a number is far more often "number" than a sentence's last word.
+ * `Ask Dr. Smith. Then more.` ends at `Ask Dr.`, since the list holds abbreviations before a
+ * number only, and a full stop before a word in upper case ends the sentence whatever word
+ * stands before it.
+ */
+export function firstSentenceLength(text: string): number | undefined {
+  const label = LEADING_LABEL.exec(text)?.[0] ?? "";
+  for (let at = label.length; at < text.length; at += 1) {
+    const mark = text.charAt(at);
+    if (mark === ":") {
+      let word = at + 1;
+      while (/\s/u.test(text.charAt(word))) word += 1;
+      const numbered = word === at + 1 ? null : NUMBERED_LABEL.exec(text.slice(word));
+      if (numbered !== null) at = word + numbered[0].length - 1;
+      continue;
+    }
+    if (mark !== "." && mark !== "?" && mark !== "!") continue;
+    let end = at + 1;
+    while (CLOSING_MARK.test(text.charAt(end))) end += 1;
+    let word = end;
+    while (/\s/u.test(text.charAt(word))) word += 1;
+    if (word === text.length) return end;
+    if (word === end) continue;
+    if (mark !== ".") return end;
+    const next = text.slice(word);
+    if (/^\p{Ll}/u.test(next)) continue;
+    if (/^\d/u.test(next) && abbreviationEndsAt(text, at)) continue;
+    return end;
+  }
+  return undefined;
+}
+
+/** Whether the whole word that ends at `at` in `text`, before the full stop there, is one of the
+ *  abbreviations a number follows (`NUMBER_ABBREVIATIONS`), in any case. */
+function abbreviationEndsAt(text: string, at: number): boolean {
+  let start = at;
+  while (start > 0 && WORD_CHARACTER.test(text.charAt(start - 1))) start -= 1;
+  return NUMBER_ABBREVIATIONS.has(text.slice(start, at).toLowerCase());
+}
+
+/**
+ * The node's own text, its white space collapsed, to the end of its first sentence, which ends
+ * where `firstSentenceLength` says, or to `FIRST_LINE_LIMIT` characters, whichever comes first,
+ * cut at a word wherever the limit falls near one. A line held to the limit that holds no space
+ * past its leading label (`LEADING_LABEL`) - one unbroken token, a URL or an identifier - is cut
+ * at the limit itself, because there is no word boundary to cut at and the limit is the row's
+ * whole budget, and one unit short of it where the limit falls inside a surrogate pair, as
+ * `textHead` cuts. `cut` says whether the text carries on past the line, and `sentence` whether
+ * the line ends at its first sentence's end: the two are what the row draws its ellipsis by
+ * (`drawnLine`). A line the limit cut, at a word or at the limit itself, ends at none, whatever
+ * its last character: a token cut at the limit may end on a `.`, `!` or `?` of its own, as
+ * `x.yyyy` cut after its dot does.
  */
 export function firstLineOf(text: string): {
   readonly cut: boolean;
@@ -432,8 +533,8 @@ export function firstLineOf(text: string): {
 } {
   const whole = text.replace(/\s+/gu, " ").trim();
   const label = LEADING_LABEL.exec(whole)?.[0] ?? "";
-  const rest = /^.*?[.!?](?=\s|$)/u.exec(whole.slice(label.length))?.[0];
-  const first = rest === undefined ? undefined : `${label}${rest}`;
+  const sentenceLength = firstSentenceLength(whole);
+  const first = sentenceLength === undefined ? undefined : whole.slice(0, sentenceLength);
   if (first !== undefined && first.length <= FIRST_LINE_LIMIT) {
     return { cut: first.length < whole.length, line: first, sentence: true };
   }
@@ -484,16 +585,10 @@ export function nodeWords(node: TreeNode): string {
 }
 
 /**
- * The words a node's one line is cut from (R1's first-line rule, `firstLineOf`): the words of
- * the first top-level block of its reading that holds any, a heading or a paragraph, and where
- * the node has no reading the same of its stored text's reading (`storedReading`), in the shape
- * of the server's reading. A heading so ends at its own line and its marker is no word of it, so
- * `## # 1 rule` reads `# 1 rule`, and a list that follows a paragraph with no blank line ends
- * that paragraph, so the paragraph alone is the first block. A block that holds no words - a
- * horizontal rule, a paragraph that is only an image or a piece of HTML - is passed over, or the
- * line would be empty while the node has words. A decision's reading opens with its own `##`
- * heading, and `wordsOf` joins a heading and the paragraph after it with one space, so a line cut
- * from the whole reading ran the heading into its body: "Keep it Keep the model pure.".
+ * The words a node's one line is cut from (R1's first-line rule, `firstLineOf`): the words its
+ * reading opens with (`firstWords`), and where the node has no reading the same of its stored
+ * text's reading (`storedReading`), in the shape of the server's reading. A heading's marker is
+ * no word of it, so `## # 1 rule` reads `# 1 rule`.
  *
  * A stored text is markdown, and its marks are no word of it, so its first block reads as that
  * parse holds it: a plan task stored as `**1\. Stand the harness up.** Run it.` reads
@@ -532,7 +627,11 @@ export function nodeWords(node: TreeNode): string {
  * stays the whole reading, which is what a body draws and what a node's citations are read
  * from.
  */
-export function lineWords(node: TreeNode): string {
+export function lineWords(node: {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+  readonly type?: NodeType;
+}): string {
   return lineWordsBy(node, firstBlockWords);
 }
 
@@ -567,27 +666,55 @@ function lineWordsBy(
   return firstBlock(storedReading(node.text, node)).replace(/\s+/gu, " ").trim();
 }
 
-/** The words of the first top-level block of a reading that holds any (`lineWords`), each bare
- *  address outside code in them written as its target's short form (`withShortAddresses`); `""`
- *  for a reading none of whose blocks holds a word. */
+/** The words a reading opens with (`firstWords`), each bare address outside code in them written
+ *  as its target's short form (`withShortAddresses`): what a node's line (`lineWords`) and a
+ *  chip's name of a block (`chipLine`) are cut from. */
 function firstBlockWords(reading: DisplayTree): string {
-  return firstBlockRead(reading, (block) => wordsOf(withShortAddresses(block)));
+  return firstWords(reading, (block) => wordsOf(withShortAddresses(block)));
 }
 
-/** The words of the first top-level block of a reading that holds any, as `firstBlockWords`
- *  reads them but with no address written short (`wordsOf`): a bare address stays as written.
- *  A caller that names each reference itself reads these, since a short form leaves it no
- *  address to name. `""` for a reading none of whose blocks holds a word. */
+/** The words a reading opens with (`firstWords`), as `firstBlockWords` reads them but with no
+ *  address written short (`wordsOf`): a bare address stays as written. A caller that names each
+ *  reference itself reads these, since a short form leaves it no address to name: a node's line
+ *  (`lineWordsRaw`) and a person's quote (`spec-decided-by.ts`). */
 export function firstBlockWordsRaw(reading: DisplayTree): string {
-  return firstBlockRead(reading, wordsOf);
+  return firstWords(reading, wordsOf);
 }
 
-/** The words of the first top-level block of `reading` that holds any, each block read to words
- *  by `read`; `""` for a reading none of whose blocks holds a word. */
-function firstBlockRead(reading: DisplayTree, read: (block: DisplayTree) => string): string {
-  const content = reading.content;
-  for (const block of Array.isArray(content) ? (content as DisplayTree[]) : []) {
-    const words = read(block);
+/** The blocks `firstWords` walks into rather than reads whole. */
+const CONTAINER_BLOCKS: ReadonlySet<string> = new Set([
+  "blockquote",
+  "bullet_list",
+  "list_item",
+  "ordered_list",
+]);
+
+/**
+ * The words a reading opens with, by the page's one first-block rule: the words of the reading's
+ * first block that holds any, alone, each block read whole by `read`. A bulleted or a numbered
+ * list, a list item and a block quote are containers, each read as its own first block that
+ * holds words by this same walk, so a list's later items, an item's nested list or later
+ * paragraphs and a block quote's later paragraphs are no part of their words: `- one` over an
+ * indented `- inner` reads `one`, and a block quote of two paragraphs, `> Yes` over `>` and
+ * `> Keep the old page.`, reads `Yes`. A block that holds no words - a horizontal rule, a
+ * paragraph that is only an image or a piece of HTML - is passed over, or a line would be empty
+ * while its node has words. `""` for a reading none of whose blocks holds a word.
+ *
+ * So a first sentence never runs from one block into the next. A decision's reading opens with
+ * its own `##` heading, and `wordsOf` joins a heading and the paragraph after it with one space,
+ * so a line cut from the whole reading ran the heading into its body: "Keep it Keep the model
+ * pure.". Markdown reads a leading `1. ` or `- ` as a list's marker, which is no word, and a
+ * list's items are read as items before any sentence end is looked for: a text typed as a list
+ * on one line is one item, and one typed on two lines, `1. Keep the old page.` over `2. Then
+ * drop it.`, is two, and reads `Keep the old page.`. A list that follows a paragraph with no
+ * blank line ends that paragraph, so the paragraph alone is the first block. A node's one line,
+ * a chip's name of a block and a person's quote all read a reading by this one walk, through
+ * `firstBlockWords` and `firstBlockWordsRaw`.
+ */
+function firstWords(reading: DisplayTree, read: (block: DisplayTree) => string): string {
+  const blocks = Array.isArray(reading.content) ? (reading.content as DisplayTree[]) : [];
+  for (const block of blocks) {
+    const words = CONTAINER_BLOCKS.has(block.type) ? firstWords(block, read) : read(block);
     if (words.trim() !== "") return words;
   }
   return "";

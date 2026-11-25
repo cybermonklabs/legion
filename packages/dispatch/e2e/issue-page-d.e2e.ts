@@ -500,8 +500,8 @@ test("the five controls are toggles with an address each, one line at every widt
   await phase(browser, seedFrame, async (page, { key }) => {
     await gotoIssue(page, `/issues/${key}`);
 
-    // The toolbar Filters: five toggles in R7's order, each named by its view's word alone and
-    // described by its signal, whose count is the seed's.
+    // The toolbar Filters: five toggles in order, each named by its view's word alone. The four
+    // filters are described by their signals, with the seed's counts. Conversation has no count.
     await expect(presetToolbar(page), "no toolbar named Filters holds the five").toHaveCount(1);
     await expect(presetToggles(page)).toHaveCount(5);
     expect(
@@ -517,12 +517,15 @@ test("the five controls are toggles with an address each, one line at every widt
         "aria-pressed",
         preset === "conversation" ? "true" : "false"
       );
+      if (preset === "conversation") continue;
       await expect(presetCount(page, preset)).toHaveText(String(SEEDED_COUNTS[preset]));
       await expect(
         toggle,
         `${PRESET_NAMES[preset]} is not described by its count`
       ).toHaveAccessibleDescription(new RegExp(`^${SEEDED_COUNTS[preset]}\\b`));
     }
+    await expect(presetCount(page, "conversation"), "Conversation drew a count").toHaveCount(0);
+    await expect(presetToggle(page, "conversation")).toHaveAccessibleDescription("");
 
     // A press turns a view on and the others off, a second press turns it off, and each state
     // is its own address.
@@ -545,6 +548,9 @@ test("the five controls are toggles with an address each, one line at every widt
     }
     // Conversation turns every view off from an address of the issue that is no view's.
     await gotoIssue(page, `/issues/${key}/collaborators`);
+    // `/collaborators` opens Details, which then stands over the page until the reader closes it.
+    await expect(marginShell(page)).toBeVisible();
+    await closeDetails(page);
     await presetToggle(page, "conversation").click();
     await expect(page).toHaveURL(addressOf(key, "conversation"));
 
@@ -634,6 +640,8 @@ test("the five controls are toggles with an address each, one line at every widt
       await expect(presetChooser(page), "a chosen item left the focus nowhere").toBeFocused();
       // Conversation, chosen from an address of the issue that is no view's, goes to the issue's.
       await gotoIssue(page, `/issues/${key}/collaborators`);
+      await expect(marginShell(page)).toBeVisible();
+      await closeDetails(page);
       await presetChooser(page).click();
       await presetMenuItem(page, "conversation").click();
       await expect(page).toHaveURL(addressOf(key, "conversation"));

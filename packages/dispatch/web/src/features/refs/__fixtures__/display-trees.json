@@ -2014,5 +2014,103 @@
         }
       ]
     }
+  },
+  {
+    "name": "ordered-from-3",
+    "markdown": "3. Keep the old page.\n4. Then drop it.\n",
+    "latest": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "ordered_list",
+          "attrs": {
+            "order": 3
+          },
+          "content": [
+            {
+              "type": "list_item",
+              "attrs": {
+                "spread": false
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Keep the old page."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "list_item",
+              "attrs": {
+                "spread": false
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Then drop it."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "version": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "ordered_list",
+          "attrs": {
+            "order": 3
+          },
+          "content": [
+            {
+              "type": "list_item",
+              "attrs": {
+                "spread": false
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Keep the old page."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "list_item",
+              "attrs": {
+                "spread": false
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Then drop it."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
   }
 ]
