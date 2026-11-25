@@ -478,6 +478,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				{refs.BlockNodeKind, graphstore.TupleMovedTo}:    {"block_move"},
 				{graphstore.KindAsk, graphstore.TupleAnchoredTo}: {"ask_opened"},
 				{graphstore.KindAsk, graphstore.TuplePartOf}:     {"ask_opened"},
+				{graphstore.KindAsk, graphstore.TupleAskedOn}:    {"ask_opened"},
 			}),
 	}, {
 		// alice's delete of a trade-off lens of hers on the spec with one finding (DELETE

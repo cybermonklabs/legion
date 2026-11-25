@@ -11,10 +11,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// census is `envoy-dispatch census`, in three forms, each reading DATABASE_URL and each
+// census is `envoy-dispatch census`, in four forms, each reading DATABASE_URL and each
 // writing nothing:
 //
 //   - with no flag, the pre-deploy migration census (store.Census). A deployment runs it, as a
@@ -44,8 +45,10 @@ import (
 //     yet, where the census says so and passes on the growth pass alone; where the store exists
 //     it also reads the store's type nodes, so that it parses each version against the block
 //     schema the store declares.
+//   - `--block-ids`, the instance-wide count and list of block IDs shared by role documents
+//     of one issue. Shared IDs do not refuse a migration or this report.
 //
-// The first two forms print, before their own report, the dry run of R2's daemon-thread step
+// The migration and store censuses print, before their own report, the dry run of R2's daemon-thread step
 // (graphcensus.ReadDaemonThreadCensus, docs.DaemonThreadStep): one line holding
 // `daemon_thread_parent=<n>`, how many blocks stand under a message of a thread the Legion
 // daemon's session began or under a block of one, and one line for each naming the node the step
@@ -66,11 +69,16 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 		"with --store, add the growth pass: the write rate, each table's size, and a year's projection against the census limit")
 	verbose := flags.Bool("verbose", false,
 		"with --store, print one line for each citation the dangling-citation counter counted")
+	blockIDs := flags.Bool("block-ids", false, "report block IDs shared by documents that move into the same issue room")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() > 0 {
-		fmt.Fprintf(errOut, "census: unexpected argument %q; the flags are --store, --sizing and --verbose\n", flags.Arg(0))
+		fmt.Fprintf(errOut, "census: unexpected argument %q; the flags are --block-ids, --store, --sizing and --verbose\n", flags.Arg(0))
+		return 2
+	}
+	if *blockIDs && (*storeSide || *sizing || *verbose) {
+		fmt.Fprintln(errOut, "census: --block-ids runs separately from the store census")
 		return 2
 	}
 	if *sizing && !*storeSide {
@@ -84,6 +92,21 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 	if strings.TrimSpace(databaseURL) == "" {
 		fmt.Fprintln(errOut, "census: DATABASE_URL is required")
 		return 2
+	}
+	if *blockIDs {
+		var report refs.BlockIDCensus
+		if err := inCensusSnapshot(ctx, databaseURL, "the block ID census", func(tx pgx.Tx) (err error) {
+			report, err = refs.ReadBlockIDCensus(ctx, tx)
+			return err
+		}); err != nil {
+			writeCensusFailure(errOut, err)
+			return 2
+		}
+		if err := report.Write(out); err != nil {
+			writeCensusFailure(errOut, fmt.Errorf("write the block ID census: %w", err))
+			return 2
+		}
+		return 0
 	}
 	if *storeSide {
 		return storeCensus(ctx, databaseURL, *sizing, *verbose, out, errOut)

@@ -12,8 +12,8 @@
 # boots this head over the same database with the hold of R6's step, and waits for the backfill.
 #
 # Then, after the upgrade and before the conversion, it takes the count twice, printing each with
-# the database's time: once from the stored rows, keyed as document_blocks keys them on
-# (artifact_id, block_id), over the spec, the verification-md and the plan-md of every issue of the
+# the database's time: once through `envoy-dispatch census --block-ids`, over the stored rows
+# keyed on (artifact_id, block_id) for the spec, verification-md and plan-md of every issue of the
 # instance, and once from the blocks the server reads back, GET /api/v1/artifacts/{id}/blocks of
 # each of those documents. It prints each issue and each id behind a count above zero, with the
 # documents that hold it, and the source of every row it counted: the version that last changed
@@ -222,48 +222,46 @@ tree_wait_backfill "$section"
 # --- census: the count, from the stored rows and from the blocks the server reads back ------------
 
 section=census
-query "$section" "count the issues whose documents the census reads" \
-  "select clock_timestamp(), count(distinct issue_key) from ($role_documents_sql) d"
-IFS='|' read -r at issues <<<"$answer"
+tree_envoy_dispatch "$section" "read the published block ID census" census --block-ids
+summary="$(sed -n '/^census: block_ids /p' "$work/out")"
+[[ "$summary" =~ ^census:\ block_ids\ issues=([0-9]+)\ shared=([0-9]+)$ ]] ||
+  fail "$section" "the command prints the block ID census summary" "$(<"$work/out")"
+issues="${BASH_REMATCH[1]}" stored_count="${BASH_REMATCH[2]}"
+query "$section" "read the time of the published census" "select clock_timestamp()"
+at="$answer"
 issue_tree_census_count census_issues "$issues" "$at"
 ((issues > 0)) || fail "$section" "the census reads at least one issue" "it read $issues issues: a count taken over no issue is refused"
-readonly shared_sql="with role_documents as ($role_documents_sql)
-  select d.issue_key, b.block_id, string_agg(d.slug, ',' order by d.slug) as documents
-  from document_blocks b join role_documents d on d.id = b.artifact_id
-  group by d.issue_key, b.block_id
-  having count(distinct b.artifact_id) >= 2"
-query "$section" "count the block ids that stand in two or more of the three documents of one issue, from document_blocks" \
-  "select clock_timestamp(), count(*) from ($shared_sql) shared"
-IFS='|' read -r at stored_count <<<"$answer"
-query "$section" "list the block ids that stand in two or more of the three documents of one issue, from document_blocks" \
-  "select coalesce(string_agg(issue_key || ' ' || block_id || ' ' || documents, E'\n' order by issue_key, block_id), '') from ($shared_sql) shared"
-printf '%s\n' "$answer" | sed '/^$/d' | LC_ALL=C sort >"$work/shared.stored"
+sed -n 's/^census: shared_block_id //p' "$work/out" |
+  jq -cs 'sort_by(.issue, .block)' >"$work/shared.stored" ||
+  fail "$section" "the command prints the shared block records as JSON" "$(<"$work/out")"
+[[ "$(jq length "$work/shared.stored")" == "$stored_count" ]] ||
+  fail "$section" "the published count matches the number of records" "$(<"$work/out")"
 issue_tree_census_count shared_block_ids_stored "$stored_count" "$at"
-while IFS= read -r line; do
-  printf 'shared id (stored rows): issue %s block %s (#b-%s) in %s\n' "${line%% *}" "$(cut -d' ' -f2 <<<"$line")" \
-    "$(cut -d' ' -f2 <<<"$line")" "$(cut -d' ' -f3 <<<"$line")"
-done <"$work/shared.stored"
-grep -qx "$collision r1 [^ ]*" "$work/shared.stored" ||
-  fail "$section" "the published count holds $collision and b-r1" "the stored rows count $stored_count ids: $(tr '\n' ';' <"$work/shared.stored")"
+sed -n '/^census: shared_block_id /p' "$work/out"
+jq -e --arg issue "$collision" 'any(.[]; .issue == $issue and .block == "r1")' "$work/shared.stored" >/dev/null ||
+  fail "$section" "the published count holds $collision and b-r1" "$(<"$work/shared.stored")"
 pass "$section" "the published count, from the stored rows, holds $collision and b-r1 among its $stored_count ids"
 # The source of every row it counted: the version that last changed the block.
+shared_keys="$(jq -r '@base64' "$work/shared.stored")"
 query "$section" "read the source of every row the census counted" "
   with role_documents as ($role_documents_sql),
   shared as (
-    select d.issue_key, b.block_id from document_blocks b join role_documents d on d.id = b.artifact_id
-    group by d.issue_key, b.block_id having count(distinct b.artifact_id) >= 2
+    select s.issue as issue_key, s.block as block_id, slug
+    from jsonb_to_recordset(convert_from(decode('$shared_keys', 'base64'), 'UTF8')::jsonb)
+      as s(issue text, block text, documents jsonb)
+    cross join lateral jsonb_array_elements_text(s.documents) as docs(slug)
   )
   select coalesce(string_agg(
-    d.issue_key || ' ' || b.block_id || ' ' || d.slug || ' v' || b.changed_version || ' written ' ||
+    s.issue_key || ' ' || s.block_id || ' ' || s.slug || ' v' || coalesce(b.changed_version::text, '?') || ' written ' ||
       coalesce(v.created_at::text, 'by no version') ||
       case when v.created_at is null then ' NOT-THE-EARLIER-RELEASE'
            when v.created_at >= '$booted_after'::timestamptz then ' after this head booted NOT-THE-EARLIER-RELEASE'
            else ' by the earlier release, before this head booted' end ||
       case when r.artifact_id is null then '' else ' with a version_renders row NOT-THE-EARLIER-RELEASE' end,
-    E'\n' order by d.issue_key, b.block_id, d.slug), '')
+    E'\n' order by s.issue_key, s.block_id, s.slug), '')
   from shared s
-  join role_documents d on d.issue_key = s.issue_key
-  join document_blocks b on b.artifact_id = d.id and b.block_id = s.block_id
+  left join role_documents d on d.issue_key = s.issue_key and d.slug = s.slug
+  left join document_blocks b on b.artifact_id = d.id and b.block_id = s.block_id
   left join artifact_versions v on v.artifact_id = b.artifact_id and v.number = b.changed_version
   left join version_renders r on r.artifact_id = b.artifact_id and r.number = b.changed_version"
 printf '%s\n' "$answer" | sed '/^$/d; s/^/source: /'
@@ -280,16 +278,16 @@ while read -r issue slug id; do
   [[ -n "$id" ]] || continue
   tree_send GET "/api/v1/artifacts/$id/blocks"
   tree_want 200 "$section" "read the blocks of $slug of $issue"
-  jq -r --arg i "$issue" --arg s "$slug" '.[] | "\($i) \(.id) \($s)"' "$work/body" >>"$work/blocks.read" ||
+  jq -c --arg i "$issue" --arg s "$slug" '.[] | {issue: $i, block: .id, slug: $s}' "$work/body" >>"$work/blocks.read" ||
     fail "$section" "read the blocks of $slug of $issue" "no list of blocks: $(body)"
   documents=$((documents + 1))
 done <<<"$answer"
-LC_ALL=C sort -u "$work/blocks.read" |
-  jq -R -s -r 'split("\n") | map(select(. != "") | split(" ")) | group_by(.[0] + " " + .[1])
-    | map(select((map(.[2]) | unique | length) >= 2) | "\(.[0][0]) \(.[0][1]) \(map(.[2]) | unique | join(","))") | .[]' |
-  LC_ALL=C sort >"$work/shared.read"
+jq -cs 'group_by([.issue, .block]) |
+  map({issue: .[0].issue, block: .[0].block, documents: (map(.slug) | unique)}) |
+  map(select(.documents | length >= 2))' "$work/blocks.read" >"$work/shared.read" ||
+  fail "$section" "count the shared block IDs from the blocks read" "the API block records did not parse"
 query "$section" "read the time of the count from the blocks read" "select clock_timestamp()"
-issue_tree_census_count shared_block_ids_read_back "$(wc -l <"$work/shared.read")" "$answer"
+issue_tree_census_count shared_block_ids_read_back "$(jq length "$work/shared.read")" "$answer"
 printf 'the blocks read of %s documents\n' "$documents"
 differs="$(diff "$work/shared.stored" "$work/shared.read")" || true
 [[ -z "$differs" ]] ||

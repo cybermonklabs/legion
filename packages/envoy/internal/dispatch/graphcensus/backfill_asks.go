@@ -86,6 +86,7 @@ var askRowsLock = `
 var askRowsRead = `
 	select k.id::text, k.author, k.created_at, k.state, k.answer, k.resolution,
 	       coalesce(anchor.ref_key, ''), coalesce(owner.ref_key, ''), coalesce(document.ref_key, ''),
+	       coalesce(k.block_id, ''),
 	       coalesce((select e.id from events e
 	                 where e.payload->>'id' = k.id::text and e.type = 'ask.opened'
 	                 order by e.id limit 1), $2),
@@ -207,13 +208,13 @@ func writeAskBatch(ctx context.Context, database *store.Store, batch []askBatchR
 		}
 	}
 	for rows.Next() {
-		var id, state string
+		var id, state, blockID string
 		var authorJSON, answerJSON, resolutionJSON []byte
 		var createdAt time.Time
 		var places graphstore.AskPlaces
 		var opened, settled int64
 		if err := rows.Scan(&id, &authorJSON, &createdAt, &state, &answerJSON, &resolutionJSON,
-			&places.Anchor, &places.Owner, &places.Document, &opened, &settled); err != nil {
+			&places.Anchor, &places.Owner, &places.Document, &blockID, &opened, &settled); err != nil {
 			rows.Close()
 			return 0, 0, 0, fmt.Errorf("read an ask naming no node: %w", err)
 		}
@@ -239,7 +240,7 @@ func writeAskBatch(ctx context.Context, database *store.Store, batch []askBatchR
 			}
 		}
 		// The ask's node is the object pass's, written already; its facts are what this states.
-		askNodes, facts, _ := graphstore.AskFacts(id, "", nil, author, createdAt, opened, places)
+		askNodes, facts, _ := graphstore.AskFacts(id, "", nil, author, createdAt, opened, places.On(blockID))
 		addNodes(askNodes[1:])
 		tuples = append(tuples, facts...)
 		who, at := backfillActor, createdAt

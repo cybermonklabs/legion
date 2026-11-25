@@ -184,8 +184,9 @@ const issueDocumentColumns = `a.id::text, a.ref_key, a.issue_key, coalesce(a.pro
 // of a document of the issue it moves out of where that document still holds it (moved), for the
 // main shape the block as the spec's last version holding it held it (held, removalOf), the spec
 // blocks it shaped, the readings it holds, for the main shape what the restore read of the
-// version that left the block out (RestoredAsk.Read), and what the write of its block did to the
-// `shaped` pointers beside the block's own (shape: restoredPointers, movedBlockOf).
+// version that left the block out (RestoredAsk.Read), what the write of its block did to the
+// `shaped` pointers beside the block's own (shape: restoredPointers, movedBlockOf), and whether
+// moveRows pointed the ask's row at another block (rowMoved), whose relations writeFacts claims.
 //
 // kept for one release: decisions-step
 type restoredBlock struct {
@@ -201,6 +202,7 @@ type restoredBlock struct {
 	readings []*pmdoc.Node
 	read     string
 	shape    restoredShape
+	rowMoved bool
 }
 
 // declinedAsk is one answered ask the restore declines to write into the spec (removalOf,
@@ -1088,7 +1090,8 @@ func (r *issueRestore) freshBlockID(ctx context.Context) (string, error) {
 // moveRows points each restored ask's row at its block in the spec, before either document is
 // written, so the spec's write reads the ask it holds as the spec's own (refuseReadingsWithoutAnswers,
 // the typed-node pass) and the decisions document's no longer names it. A block no row names has
-// none to point.
+// none to point. Each row it points is marked rowMoved, so writeFacts claims the ask's relations
+// at the block the row now names in the same transaction.
 //
 // kept for one release: decisions-step
 func (r *issueRestore) moveRows(ctx context.Context) error {
@@ -1101,6 +1104,7 @@ func (r *issueRestore) moveRows(ctx context.Context) error {
 			return fmt.Errorf("point ask %s at its block in the spec of %s: %w", restore.row.ID, r.issue, err)
 		}
 		restore.row.BlockID, restore.row.BlockArtifactID = new(restore.id), new(r.spec.id)
+		restore.rowMoved = true
 		r.rows[restore.row.ID] = restore.row
 	}
 	return nil
@@ -2713,20 +2717,23 @@ func (r *issueRestore) stepCasesFor(document string) decisionStepCases {
 }
 
 // writeFacts appends, under cause, the facts of the pass the documents' versions state none of:
-// for each ask the restore moved from the decisions document, its node's relations to the
-// documents, now the spec's (graphstore.AskClaims), and one moved_to tuple from the block it left
-// to the block it stands at; for each section the conversion took out, one moved_to tuple from its
-// heading's address to the decision it became or the ask block it restates (R8), or, for a section
-// that cites an answered ask a person removed, to that ask's own node; and for each decision whose
-// section a person kept, the Keep on its node - a kept_by tuple, and a kept_text_sum value where
-// the Keep's sum is the section's as it stands (F3) - with the decision_keeps row that projects
-// it, as Keep writes one. A section a restore alone took out writes its moved_to too. For each
-// answered ask the restore declined (removalOf, nodeRemoval), it appends one removed_by from the
-// ask's node to the person who removed its block, with that person's node, under the event that
-// recorded the person's version and at its time, so the finder leaves a returning ask out from
-// then on; for a move it declined, that is the removal its node holds, which the append restates
-// under its own event and so leaves as it stands. It appends nothing for an ask of roomRemovals:
-// the version of the decisions document that the pass wrote states it (writeDecisionsDocument).
+// for each ask whose row moveRows pointed at another block - one the restore moved from the
+// decisions document, or a returning ask whose block took a fresh id in the spec - its node's
+// relations to the spec and its asked_on to the block the row now names (graphstore.AskClaims),
+// which retract the ones it held; for each block that moves from an address, one moved_to tuple
+// from that address to the block it stands at; for each section the conversion took out, one
+// moved_to tuple from its heading's address to the decision it became or the ask block it
+// restates (R8), or, for a section that cites an answered ask a person removed, to that ask's own
+// node; and for each decision whose section a person kept, the Keep on its node - a kept_by
+// tuple, and a kept_text_sum value where the Keep's sum is the section's as it stands (F3) - with
+// the decision_keeps row that projects it, as Keep writes one. A section a restore alone took out
+// writes its moved_to too. For each answered ask the restore declined (removalOf, nodeRemoval), it
+// appends one removed_by from the ask's node to the person who removed its block, with that
+// person's node, under the event that recorded the person's version and at its time, so the finder
+// leaves a returning ask out from then on; for a move it declined, that is the removal its node
+// holds, which the append restates under its own event and so leaves as it stands. It appends
+// nothing for an ask of roomRemovals: the version of the decisions document that the pass wrote
+// states it (writeDecisionsDocument).
 //
 // kept for one release: decisions-step
 func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
@@ -2756,18 +2763,22 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 			At: declined.at, Who: DecisionStepActor, SourceEvent: declined.event, Asserted: true,
 		})
 	}
+	var places *graphstore.AskPlaces
 	for _, restore := range r.restores {
-		if restore.from == "" {
+		if restore.from != "" {
+			moved(restore.from, restore.address(r.spec))
+		}
+		if !restore.rowMoved {
 			continue
 		}
-		moved(restore.from, restore.address(r.spec))
-		if restore.work.Shape == graphcensus.RestoreMoves && !restore.rowless {
-			places, err := graphstore.ReadAskPlaces(ctx, r.tx, &r.spec.id, nil, &r.spec.id)
+		if places == nil {
+			read, err := graphstore.ReadAskPlaces(ctx, r.tx, &r.spec.id, nil, &r.spec.id)
 			if err != nil {
 				return err
 			}
-			claims = append(claims, graphstore.AskClaims(restore.row.ID, places, DecisionStepActor, r.at, cause)...)
+			places = &read
 		}
+		claims = append(claims, graphstore.AskClaims(restore.row.ID, places.On(restore.id), DecisionStepActor, r.at, cause)...)
 	}
 	type keepRow struct {
 		block, sum, keptBy string
