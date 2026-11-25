@@ -8,7 +8,8 @@ import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { dangerText, textMutedOnSurface } from "../../theme/classes";
 import { ChangeView } from "../doc/ChangeView";
 import { cutDecisionBlocks } from "../doc/decision-blocks";
-import { AgentName } from "../refs/AgentName";
+import { AskAgent, type AskAgentNames } from "./ask-agent";
+import { ASK_APPROVAL_WORDS } from "./ask-body-words";
 
 /**
  * What changed between the version a human approved and the version the request names, with every
@@ -47,20 +48,28 @@ function ApprovedChangeView({
     [afterMarkdown, beforeMarkdown]
   );
   if (before.isError || after.isError) {
-    return <p className={`text-sm ${dangerText}`}>Could not load versions to compare.</p>;
+    return <p className={`text-sm ${dangerText}`}>{ASK_APPROVAL_WORDS.diff_failed}</p>;
   }
   if (cut !== undefined) {
     return <ChangeView after={cut.after} before={cut.before} />;
   }
-  return <p className={`text-sm ${textMutedOnSurface}`}>Loading versions to compare…</p>;
+  return <p className={`text-sm ${textMutedOnSurface}`}>{ASK_APPROVAL_WORDS.diff_loading}</p>;
 }
 
 /**
  * The approval an approval request follows, when the document has one: `Approved at version N
  * on <date> by <who>.` and a **Show diff** control that reveals `ApprovedChangeView`. Renders
- * nothing for a first request, whose `approval` carries no `approved`.
+ * nothing for a first request, whose `approval` carries no `approved`. `agentNames` is how the
+ * ask body names the approver (`ask-agent.tsx`); the reading pane's head, which draws it beside
+ * its own approval chip, names it as every surface of today's pages does.
  */
-export function EarlierApproval({ approval }: { approval: AskApproval }): ReactNode {
+export function EarlierApproval({
+  agentNames = "live",
+  approval,
+}: {
+  agentNames?: AskAgentNames;
+  approval: AskApproval;
+}): ReactNode {
   const [diffOpen, setDiffOpen] = useState(false);
   const { approved } = approval;
   if (approved === undefined) {
@@ -69,15 +78,18 @@ export function EarlierApproval({ approval }: { approval: AskApproval }): ReactN
   return (
     <div className={`mt-1 text-xs ${textMutedOnSurface}`}>
       <p>
-        Approved at version {approved.version} on{" "}
+        {`${ASK_APPROVAL_WORDS.approved.at_version} `}
+        {approved.version}
+        {` ${ASK_APPROVAL_WORDS.approved.on}`}{" "}
         <time dateTime={approved.at} title={approved.at}>
           {approved.at.slice(0, 10)}
         </time>{" "}
-        by <AgentName actor={approved.by} inline />.
+        {`${ASK_APPROVAL_WORDS.approved.by} `}
+        <AskAgent actor={approved.by} agentNames={agentNames} inline />.
       </p>
       <DisclosureToggle
         expanded={diffOpen}
-        label={diffOpen ? "Hide diff" : "Show diff"}
+        label={diffOpen ? ASK_APPROVAL_WORDS.hide_diff : ASK_APPROVAL_WORDS.show_diff}
         onToggle={() => setDiffOpen((open) => !open)}
         textClassName={textMutedOnSurface}
       />

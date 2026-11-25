@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import type { Ask } from "../../api/types";
 import { documentItemPath } from "../refs/routes";
+import { ASK_APPROVAL_WORDS } from "./ask-body-words";
 
 /**
  * The document an approval ask asks about, as a link naming both the document and the version it
@@ -31,7 +32,9 @@ export function AskApprovalLink({ ask }: { ask: Ask }): ReactNode {
   );
   return (
     <Link className="underline" to={route}>
-      {approval.name}, version {approval.version}
+      {approval.name}
+      {`, ${ASK_APPROVAL_WORDS.version} `}
+      {approval.version}
     </Link>
   );
 }

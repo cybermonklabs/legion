@@ -39,19 +39,23 @@ import { type Item, type TreeKind, type Walked, walkUp } from "./walk";
  *   drafts are the asks' replies (`reply-drafts.ts`): each element drawing one is a mount of the
  *   component it is drawn in, and its address props are the props of its own that its `homes`
  *   calls read. A `MentionComposer` mount is named by its send name.
- * - The answer field `AskCard` draws, a plain `<textarea>` under the handle the Inbox finds the
- *   box by (`data-ask-answer`), whose drafts are the asks' answers (`answer-drafts.ts`), held by
- *   the form hook its host calls (`useAskAnswerForm`): each element under the handle is a mount of
- *   the component it is drawn in, named by the handle, and its address props are what the host
- *   hands the hook where the hook's `homes` calls read it.
+ * - The answer field the ask body draws (`ask-body/AskBody.tsx`), a plain `<textarea>` under the
+ *   handle the Inbox finds the box by (`data-ask-answer`), whose drafts are the asks' answers
+ *   (`answer-drafts.ts`), held by the form hook (`useAskAnswerForm`): each element under the
+ *   handle is a mount of the component it is drawn in, named by the handle, and its address props
+ *   are what is handed the hook where the hook's `homes` calls read it - by the host, where it
+ *   calls the hook, else by each component that draws the host and hands it the hook's answer as
+ *   its `formProp` (the card hands the body its `form`).
  *
  * A composer's mounts are followed up to the routes. The two ask fields' are followed up to the
- * ask card (`ASK_CARD`) and not past it: every host draws an ask in one card, which holds both
- * fields, and their drafts are the ask's, by its id, in stores that outlive every card
- * (`answer-drafts.ts`, `reply-drafts.ts`). So a place above the card that hides, ends or keys it,
- * or draws it for another ask, does to both fields what the card's own conditionals do to them,
- * and the card drawn for that ask again holds the ask's drafts. A field drawn outside a card is
- * followed up to the routes.
+ * component that holds each and not past it: the answer field's to the ask body (`ASK_BODY`),
+ * the reply composer's to the ask card (`ASK_CARD`), whose thread holds it. Every host draws an
+ * ask in one card, which draws one body, and their drafts are the ask's, by its id, in stores
+ * that outlive every body and card (`answer-drafts.ts`, `reply-drafts.ts`). So a place above the
+ * body or the card that hides, ends or keys it, or draws it for another ask, does to its field
+ * what the body's or the card's own conditionals do to it, and the body or the card drawn for
+ * that ask again holds the ask's drafts. A field drawn outside them is followed up to the
+ * routes.
  */
 interface FieldBase {
   readonly homes: ReadonlySet<string>;
@@ -65,9 +69,18 @@ type DraftField =
       /** The prop a mount is named by among its host's. */
       readonly sendName?: string;
     })
-  | (FieldBase & { readonly handle: string; readonly hook: string });
+  | (FieldBase & {
+      readonly handle: string;
+      readonly hook: string;
+      /** The prop a host that calls `hook` nowhere takes the hook's answer by, from each
+       *  component that draws it. */
+      readonly formProp?: string;
+    });
 
-/** The ask card, which holds an ask's answer field and its reply composer. */
+/** The ask body, which holds an ask's answer field. */
+const ASK_BODY = "features/ask-body/AskBody.tsx#AskBody";
+
+/** The ask card, whose thread holds an ask's reply composer. */
 const ASK_CARD = "features/inbox/AskCard.tsx#AskCard";
 
 const DRAFT_FIELDS: readonly DraftField[] = [
@@ -82,10 +95,11 @@ const DRAFT_FIELDS: readonly DraftField[] = [
     upTo: ASK_CARD,
   },
   {
+    formProp: "form",
     handle: "data-ask-answer",
     homes: new Set(["useAnswerDraft"]),
     hook: "features/inbox/useAskAnswerForm.ts#useAskAnswerForm",
-    upTo: ASK_CARD,
+    upTo: ASK_BODY,
   },
 ];
 
@@ -284,6 +298,27 @@ function handedLines(host: Comp, hook: string, props: ReadonlySet<string>): Item
   return lines;
 }
 
+/** The lines of what is handed the hook `hook` where it reads where a field's draft lives
+ *  (`props`), for a mount drawn in `host`: what `host` hands it, or, where `host` calls it
+ *  nowhere, what each component hands it that draws `host` with the hook's answer as its
+ *  `formProp`. */
+function formLines(
+  program: Program,
+  host: Comp,
+  hook: string,
+  props: ReadonlySet<string>,
+  formProp: string | undefined
+): Item[] {
+  const own = handedLines(host, hook, props);
+  if (own.length > 0 || formProp === undefined) return own;
+  const callers = new Map<string, Comp>();
+  for (const { element } of program.usesById.get(host.id) ?? []) {
+    if (attribute(element, formProp) === undefined) continue;
+    for (const caller of drawnIn(program, element)) callers.set(caller.id, caller);
+  }
+  return [...callers.values()].flatMap((caller) => handedLines(caller, hook, props));
+}
+
 /** Whether a node sits outside every function and class: the app's root, as `main.tsx`
  *  renders it. */
 function atTopLevel(node: ts.Node): boolean {
@@ -470,7 +505,10 @@ export function readTrees(program: Program): Trees {
         unread.add(`${where(element)}: ${shown}, drawn by no component the census reads`);
       }
       for (const host of hosts) {
-        const address = [...passedLines(element, host, ["key"]), ...handedLines(host, hook, props)];
+        const address = [
+          ...passedLines(element, host, ["key"]),
+          ...formLines(program, host, hook, props, field.formProp),
+        ];
         if (address.every((line) => line.kind === "key")) {
           unread.add(
             `${where(element)}: ${shown} in ${host.name}, which hands ${hook} nowhere the census can see`

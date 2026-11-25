@@ -26,15 +26,17 @@ const REASONS = {
   9: "9. `AskThread` draws no composer where it is passed `showComposer={false}`, which only the collapsed thread passes, drawing `AskThread` for its replies alone: the collapsed thread's composer is the disclosure's own, the `Ask reply, collapsed` rows', and every other `AskThread` takes the default, `true`. So nothing that draws, ends or moves the collapsed thread's `AskThread` (its replies being there, its read, its order, its ask) draws, ends or moves a composer.",
 } as const;
 
-/** The answer field's mount, and the reply composer's in each thread. */
-const ANSWER_FIELD = 'AskCard | AskCard <textarea data-ask-answer="">';
+/** The answer field's mount, which the ask body draws, with the ask body's own items about it;
+ *  and the reply composer's in each thread. */
+const ANSWER_MOUNT = 'AskBody <textarea data-ask-answer="">';
+const ANSWER_FIELD = `AskBody | ${ANSWER_MOUNT}`;
 const INLINE_COMPOSER = "AskThread | AskThread <AskReplyComposer>";
 const COLLAPSED_COMPOSER = "AskThreadDisclosure | AskThreadDisclosure <AskReplyComposer>";
 
 export const coverage: readonly CoverageEntry[] = [
-  // The answer field, in its card.
+  // The answer field, in its body, whose form the card holds.
   ...answers(
-    `${ANSWER_FIELD} | address prop | useAskAnswerForm({ ask })`,
+    `AskCard | ${ANSWER_MOUNT} | address prop | useAskAnswerForm({ ask })`,
     cells(`${ANSWER} · the card drawn for another ask, then back`, TYPED)
   ),
   ...answers(
@@ -102,7 +104,7 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${COLLAPSED} · the page reloaded, then back`, TYPED)
   ),
 
-  // Where the card draws its inline thread.
+  // Where the card draws its inline thread, and where the ask body it hands it to places it.
   ...answers('AskCard | AskThread | conditional | !(thread === "collapsed") ? …', {
     reason: REASONS[2],
   }),
@@ -116,8 +118,18 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[7] },
     cells(`${REPLY} · the card ended, then drawn again`, TYPED)
   ),
-  ...answers("AskCard | AskThread | conditional | (answerFirst) ? …", { reason: REASONS[1] }),
-  ...answers("AskCard | AskThread | conditional | !(answerFirst) ? …", { reason: REASONS[1] }),
+  ...answers(
+    "AskBody | AskThread | conditional | if (completed !== null)",
+    { reason: REASONS[7] },
+    cells(`${REPLY} · the card ended, then drawn again`, TYPED)
+  ),
+  ...answers(
+    "AskBody | AskThread | early return | if (completed !== null) return …",
+    { reason: REASONS[7] },
+    cells(`${REPLY} · the card ended, then drawn again`, TYPED)
+  ),
+  ...answers("AskBody | AskThread | conditional | (answerFirst) ? …", { reason: REASONS[1] }),
+  ...answers("AskBody | AskThread | conditional | !(answerFirst) ? …", { reason: REASONS[1] }),
   ...answers(
     "AskCard | AskThread | address prop | ask={currentAsk}",
     cells(`${REPLY} · the card drawn for another ask, then back`, TYPED)
@@ -130,7 +142,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[8],
   }),
 
-  // Where the card draws its collapsed thread.
+  // Where the card draws its collapsed thread, and where the ask body it hands it to places it.
   ...answers('AskCard | AskThreadDisclosure | conditional | (thread === "collapsed") ? …', {
     reason: REASONS[2],
   }),
@@ -144,10 +156,20 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[7] },
     cells(`${COLLAPSED} · the card ended, then drawn again`, TYPED)
   ),
-  ...answers("AskCard | AskThreadDisclosure | conditional | (answerFirst) ? …", {
+  ...answers(
+    "AskBody | AskThreadDisclosure | conditional | if (completed !== null)",
+    { reason: REASONS[7] },
+    cells(`${COLLAPSED} · the card ended, then drawn again`, TYPED)
+  ),
+  ...answers(
+    "AskBody | AskThreadDisclosure | early return | if (completed !== null) return …",
+    { reason: REASONS[7] },
+    cells(`${COLLAPSED} · the card ended, then drawn again`, TYPED)
+  ),
+  ...answers("AskBody | AskThreadDisclosure | conditional | (answerFirst) ? …", {
     reason: REASONS[1],
   }),
-  ...answers("AskCard | AskThreadDisclosure | conditional | !(answerFirst) ? …", {
+  ...answers("AskBody | AskThreadDisclosure | conditional | !(answerFirst) ? …", {
     reason: REASONS[1],
   }),
   ...answers(

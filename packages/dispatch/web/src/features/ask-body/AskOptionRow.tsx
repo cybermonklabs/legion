@@ -10,27 +10,35 @@ import {
   textOptionDescription,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { ASK_RECORD_WORDS } from "./ask-body-words";
+import type { AskTextRenderer } from "./ask-text";
 
 const ROW_CLASS = `flex min-h-11 items-start gap-3 rounded-lg border px-3 py-2 text-sm ${borderDefault}`;
 
 /** The label/description column is a flex item; `min-w-0` overrides its `min-width: auto` so it
  *  shrinks to the row and `MarkdownBody`'s own `break-words` folds a long word. The row's parent
  *  `<fieldset>` needs `min-w-0` too: its UA default `min-inline-size: min-content` would let the
- *  longest unbroken word widen the fieldset past a narrow card before anything here applies. */
-function OptionText({ option }: { option: AskOptionWithTrees }): ReactNode {
+ *  longest unbroken word widen the fieldset past a narrow card before anything here applies. The
+ *  label and the description are drawn inline through the caller's renderer (R17). */
+function OptionText({
+  option,
+  renderText,
+}: {
+  option: AskOptionWithTrees;
+  renderText: AskTextRenderer;
+}): ReactNode {
   return (
     <span className="min-w-0">
       <span className={`font-medium ${textPrimaryOnSurface}`}>
-        <MarkdownBody markdown={option.label} tree={option.label_tree} variant="inline" />
+        {renderText({ markdown: option.label, tree: option.label_tree, variant: "inline" })}
       </span>
       {option.description === undefined ? null : (
         <span className={`mt-0.5 block text-sm ${textOptionDescription}`}>
-          <MarkdownBody
-            markdown={option.description}
-            tree={option.description_tree}
-            variant="inline"
-          />
+          {renderText({
+            markdown: option.description,
+            tree: option.description_tree,
+            variant: "inline",
+          })}
         </span>
       )}
     </span>
@@ -49,6 +57,7 @@ export function AskChoiceRow({
   name,
   onChange,
   option,
+  renderText,
 }: {
   checked: boolean;
   className?: string;
@@ -58,6 +67,7 @@ export function AskChoiceRow({
   name: string;
   onChange: () => void;
   option: AskOptionWithTrees;
+  renderText: AskTextRenderer;
 }): ReactNode {
   // A chosen option takes the same border and fill the recorded answer shows afterwards, so
   // choosing and having chosen read alike.
@@ -73,7 +83,7 @@ export function AskChoiceRow({
         onChange={onChange}
         type={multiple ? "checkbox" : "radio"}
       />
-      <OptionText option={option} />
+      <OptionText option={option} renderText={renderText} />
     </label>
   );
 }
@@ -82,10 +92,12 @@ export function AskChoiceRow({
 export function AskRecordRow({
   className = "",
   option,
+  renderText,
   selected,
 }: {
   className?: string;
   option: AskOptionWithTrees;
+  renderText: AskTextRenderer;
   selected: boolean;
 }): ReactNode {
   return (
@@ -94,13 +106,17 @@ export function AskRecordRow({
       data-selected={selected}
     >
       {selected ? (
-        <span aria-label="Selected" className={`font-semibold ${linkText}`} role="img">
+        <span
+          aria-label={ASK_RECORD_WORDS.selected}
+          className={`font-semibold ${linkText}`}
+          role="img"
+        >
           ✓
         </span>
       ) : (
         <span aria-hidden className="w-3" />
       )}
-      <OptionText option={option} />
+      <OptionText option={option} renderText={renderText} />
     </li>
   );
 }

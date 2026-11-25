@@ -23,9 +23,7 @@ import {
   textPrimaryOnSuccessCallout,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { AgentName, AskResolutionLine } from "../refs/AgentName";
 import { askResolutionBadge, askResolutionReason } from "../refs/actor";
-import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -33,36 +31,59 @@ import type { DwellRef } from "../shell/useDwell";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskOptionList } from "./AskOptionList";
+import { AskAgent, type AskAgentNames, AskResolutionActor } from "./ask-agent";
+import { ASK_LINK_WORDS, ASK_RECORD_WORDS } from "./ask-body-words";
+import { type AskTextRenderer, markdownText } from "./ask-text";
 
-export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTrees[] }): ReactNode {
+/** An ask's earlier wordings, under the ask: the card draws it for an open ask, and the record
+ *  for a settled one, which names the agent that reworded each as the ask body does
+ *  (`agentNames`, `ask-agent.tsx`) and draws each wording through the same renderer
+ *  (`renderText`). */
+export function AskEditHistory({
+  agentNames = "live",
+  ask,
+  edits,
+  renderText,
+}: {
+  agentNames?: AskAgentNames;
+  ask: Ask;
+  edits: AskEditWithTrees[];
+  renderText: AskTextRenderer;
+}): ReactNode {
   if (ask.edited_at === null) {
     return null;
   }
   return (
     <div className={`mt-2 text-xs ${textMutedOnSurface}`}>
       <p>
-        Edited <Timestamp at={ask.edited_at} />
+        {`${ASK_RECORD_WORDS.edited} `}
+        <Timestamp at={ask.edited_at} />
       </p>
       {edits.length === 0 ? null : (
         <details className="mt-1">
           <summary className={`cursor-pointer font-medium ${linkText} ${linkHoverText}`}>
             {edits.length === 1
-              ? "Show 1 previous version"
-              : `Show ${edits.length} previous versions`}
+              ? ASK_RECORD_WORDS.previous_version
+              : `${ASK_RECORD_WORDS.previous_versions.before} ${edits.length} ${ASK_RECORD_WORDS.previous_versions.after}`}
           </summary>
           <div className="mt-2 space-y-3">
             {edits.map((edit) => (
               <div key={edit.at}>
                 <div className={`font-medium ${textPrimaryOnSurface}`}>
-                  <MarkdownBody
-                    markdown={edit.previous.question}
-                    source={textSourceOf("ask", ask.id)}
-                    tree={edit.previous.question_tree}
-                  />
+                  {renderText({
+                    markdown: edit.previous.question,
+                    source: textSourceOf("ask", ask.id),
+                    tree: edit.previous.question_tree,
+                  })}
                 </div>
-                <AskOptionList options={edit.previous.options ?? []} selected={[]} />
+                <AskOptionList
+                  options={edit.previous.options ?? []}
+                  renderText={renderText}
+                  selected={[]}
+                />
                 <p className="mt-1">
-                  Reworded by <AgentName actor={edit.edited_by} inline /> ·{" "}
+                  {`${ASK_RECORD_WORDS.reworded_by} `}
+                  <AskAgent actor={edit.edited_by} agentNames={agentNames} inline /> ·{" "}
                   <Timestamp at={edit.at} />
                 </p>
               </div>
@@ -75,20 +96,27 @@ export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTre
 }
 
 /** Earlier answers to an ask whose answer was changed, oldest first. */
-export function AskAnswerHistory({ answers }: { answers: AskAnswerWithTrees[] }): ReactNode {
+export function AskAnswerHistory({
+  answers,
+  renderText,
+}: {
+  answers: AskAnswerWithTrees[];
+  renderText: AskTextRenderer;
+}): ReactNode {
   const earlier = answers.slice(0, -1);
   const latest = answers.at(-1);
   if (earlier.length === 0 || latest === undefined) return null;
   return (
     <div className={`mt-2 text-xs ${calloutSuccessTimestampText}`}>
       <p>
-        Changed <Timestamp at={latest.at} />
+        {`${ASK_RECORD_WORDS.changed} `}
+        <Timestamp at={latest.at} />
       </p>
       <details className="mt-1">
         <summary className={`cursor-pointer font-medium underline ${textPrimaryOnSuccessCallout}`}>
           {earlier.length === 1
-            ? "Show 1 earlier answer"
-            : `Show ${earlier.length} earlier answers`}
+            ? ASK_RECORD_WORDS.earlier_answer
+            : `${ASK_RECORD_WORDS.earlier_answers.before} ${earlier.length} ${ASK_RECORD_WORDS.earlier_answers.after}`}
         </summary>
         <div className="mt-2 space-y-3">
           {earlier.map((previous) => {
@@ -96,9 +124,9 @@ export function AskAnswerHistory({ answers }: { answers: AskAnswerWithTrees[] })
             return (
               <div key={previous.at}>
                 {selected.length === 0 ? null : <p>{selected.join(", ")}</p>}
-                {previous.text === null || previous.text === "" ? null : (
-                  <MarkdownBody markdown={previous.text} tree={previous.text_tree} />
-                )}
+                {previous.text === null || previous.text === ""
+                  ? null
+                  : renderText({ markdown: previous.text, tree: previous.text_tree })}
                 <p className="mt-1">
                   {actorActText(previous.user, previous.act)} · <Timestamp at={previous.at} />
                 </p>
@@ -124,7 +152,7 @@ export function OrphanedAnchorNotice({
   }
   return (
     <p className={`mb-2 text-xs font-medium ${inlineWarningText}`}>
-      Text changed.{" "}
+      {ASK_LINK_WORDS.text_changed}{" "}
       {ask.issue_key === null ? null : (
         <Link
           className="underline"
@@ -135,7 +163,7 @@ export function OrphanedAnchorNotice({
             version: anchor.version,
           })}&ask=${ask.id}`}
         >
-          View original text
+          {ASK_LINK_WORDS.view_original}
         </Link>
       )}
     </p>
@@ -143,6 +171,7 @@ export function OrphanedAnchorNotice({
 }
 
 function AnsweredAsk({
+  agentNames,
   answers,
   artifactSlug,
   ask,
@@ -151,7 +180,9 @@ function AnsweredAsk({
   frame,
   markRef,
   onChangeAnswer,
+  renderText,
 }: {
+  agentNames: AskAgentNames;
   answers: AskAnswerWithTrees[];
   artifactSlug: string | undefined;
   ask: AskWithTrees;
@@ -160,6 +191,7 @@ function AnsweredAsk({
   frame: AskFrame;
   markRef?: DwellRef;
   onChangeAnswer?: () => void;
+  renderText: AskTextRenderer;
 }): ReactNode {
   const { answer } = ask;
   // A chosen "Other" answer carries no real option (answer.selected is empty) but still has
@@ -180,62 +212,71 @@ function AnsweredAsk({
       <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={ask} />
       {frame === "block" ? null : (
         <div className={`font-medium ${textPrimaryOnSuccessCallout}`}>
-          <MarkdownBody
-            markdown={ask.question}
-            source={textSourceOf("ask", ask.id)}
-            tree={ask.question_tree}
-          />
+          {renderText({
+            markdown: ask.question,
+            source: textSourceOf("ask", ask.id),
+            tree: ask.question_tree,
+          })}
         </div>
       )}
       <p className={`mt-1 text-xs ${calloutSuccessTimestampText}`}>
-        <AgentName actor={ask.author} inline />
+        <AskAgent actor={ask.author} agentNames={agentNames} inline />
       </p>
       {ask.kind === "approval" && documentLink ? (
         <p className={`mt-1 text-sm font-medium ${textPrimaryOnSuccessCallout}`}>
           <AskApprovalLink ask={ask} />
         </p>
       ) : null}
-      <AskEditHistory ask={ask} edits={edits} />
-      <AskOptionList options={ask.options ?? []} selected={answer?.selected ?? []} />
+      <AskEditHistory agentNames={agentNames} ask={ask} edits={edits} renderText={renderText} />
+      <AskOptionList
+        options={ask.options ?? []}
+        renderText={renderText}
+        selected={answer?.selected ?? []}
+      />
       {otherText !== null && otherText !== "" ? (
         <div className="mt-2">
-          <p className={`text-sm font-medium ${textPrimaryOnSuccessCallout}`}>Other</p>
+          <p className={`text-sm font-medium ${textPrimaryOnSuccessCallout}`}>
+            {ASK_RECORD_WORDS.other}
+          </p>
           <div className="mt-1">
-            <MarkdownBody
-              markdown={otherText}
-              source={textSourceOf("ask", ask.id)}
-              tree={answer?.text_tree}
-            />
+            {renderText({
+              markdown: otherText,
+              source: textSourceOf("ask", ask.id),
+              tree: answer?.text_tree,
+            })}
           </div>
         </div>
       ) : answer === null || answer.text === null || answer.text === "" ? null : (
         <div className="mt-1">
-          <MarkdownBody
-            markdown={answer.text}
-            source={textSourceOf("ask", ask.id)}
-            tree={answer.text_tree}
-          />
+          {renderText({
+            markdown: answer.text,
+            source: textSourceOf("ask", ask.id),
+            tree: answer.text_tree,
+          })}
         </div>
       )}
       {answer === null ? (
         <p className={`mt-2 text-xs ${calloutSuccessTimestampText}`}>
-          Asked <Timestamp at={ask.created_at} />
+          {`${ASK_RECORD_WORDS.asked} `}
+          <Timestamp at={ask.created_at} />
         </p>
       ) : (
         <p className={`mt-2 text-xs ${calloutSuccessTimestampText}`}>
-          Asked <Timestamp at={ask.created_at} /> · Answered by{" "}
+          {`${ASK_RECORD_WORDS.asked} `}
+          <Timestamp at={ask.created_at} />
+          {` · ${ASK_RECORD_WORDS.answered_by}`}{" "}
           <span className="font-semibold">{actorActText(answer.user, answer.act)}</span>{" "}
           <Timestamp at={answer.at} />
         </p>
       )}
-      <AskAnswerHistory answers={answers} />
+      <AskAnswerHistory answers={answers} renderText={renderText} />
       {onChangeAnswer === undefined ? null : (
         <button
           className={`mt-2 min-h-11 text-sm font-semibold underline ${textPrimaryOnSuccessCallout}`}
           onClick={onChangeAnswer}
           type="button"
         >
-          Change answer
+          {ASK_RECORD_WORDS.change_answer}
         </button>
       )}
     </article>
@@ -243,15 +284,19 @@ function AnsweredAsk({
 }
 
 function ResolvedAsk({
+  agentNames,
   ask,
   documentLink,
   edits,
   frame,
+  renderText,
 }: {
+  agentNames: AskAgentNames;
   ask: AskWithTrees & { resolution: AskResolution };
   documentLink: boolean;
   edits: AskEditWithTrees[];
   frame: AskFrame;
+  renderText: AskTextRenderer;
 }): ReactNode {
   const { resolution } = ask;
   const reason = askResolutionReason(resolution);
@@ -263,11 +308,11 @@ function ResolvedAsk({
       <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="surface" />
       {frame === "block" ? null : (
         <div className={`font-medium ${textPrimaryOnSurface}`}>
-          <MarkdownBody
-            markdown={ask.question}
-            source={textSourceOf("ask", ask.id)}
-            tree={ask.question_tree}
-          />
+          {renderText({
+            markdown: ask.question,
+            source: textSourceOf("ask", ask.id),
+            tree: ask.question_tree,
+          })}
         </div>
       )}
       <span
@@ -277,27 +322,30 @@ function ResolvedAsk({
         {askResolutionBadge(resolution)}
       </span>
       <p className={`mt-1 text-xs ${textMutedOnSurface}`}>
-        <AgentName actor={ask.author} inline />
+        <AskAgent actor={ask.author} agentNames={agentNames} inline />
       </p>
       {ask.kind === "approval" && documentLink ? (
         <p className={`mt-1 text-sm ${linkText} ${linkHoverText}`}>
           <AskApprovalLink ask={ask} />
         </p>
       ) : null}
-      <AskOptionList options={ask.options ?? []} selected={[]} />
-      <AskEditHistory ask={ask} edits={edits} />
+      <AskOptionList options={ask.options ?? []} renderText={renderText} selected={[]} />
+      <AskEditHistory agentNames={agentNames} ask={ask} edits={edits} renderText={renderText} />
       <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
-        Asked <Timestamp at={ask.created_at} /> · <AskResolutionLine resolution={resolution} />
+        {`${ASK_RECORD_WORDS.asked} `}
+        <Timestamp at={ask.created_at} />
+        {" · "}
+        <AskResolutionActor agentNames={agentNames} resolution={resolution} />
         {reason === undefined ? null : (
           <>
             {" "}
             -{" "}
-            <MarkdownBody
-              markdown={reason}
-              source={textSourceOf("ask", ask.id)}
-              tree={ask.resolution.reason_tree}
-              variant="inline"
-            />
+            {renderText({
+              markdown: reason,
+              source: textSourceOf("ask", ask.id),
+              tree: ask.resolution.reason_tree,
+              variant: "inline",
+            })}
           </>
         )}
       </p>
@@ -309,6 +357,9 @@ function ResolvedAsk({
 export type AskFrame = "card" | "block";
 
 interface AskCompletionCardProps {
+  /** How the record names agents (`ask-agent.tsx`): as every surface of today's pages does,
+   *  unless the ask body it stands in says otherwise. */
+  agentNames?: AskAgentNames;
   /** Every real answer, oldest first, from the ask's thread read. */
   answers?: AskAnswerWithTrees[];
   artifactSlug: string | undefined;
@@ -323,9 +374,13 @@ interface AskCompletionCardProps {
   markRef?: DwellRef;
   /** Shown only to the person who gave the current, non-approval answer. */
   onChangeAnswer?: () => void;
+  /** The renderer of every text of the record (`AskBodyProps.renderText`): `MarkdownBody`, as
+   *  every surface of today's pages draws them, unless the ask body it stands in hands another. */
+  renderText?: AskTextRenderer;
 }
 
 export function AskCompletionCard({
+  agentNames = "live",
   answers = [],
   artifactSlug,
   ask,
@@ -334,6 +389,7 @@ export function AskCompletionCard({
   frame = "card",
   markRef,
   onChangeAnswer,
+  renderText = markdownText,
 }: AskCompletionCardProps): ReactNode {
   if (ask.state === "resolved") {
     if (ask.resolution === undefined) {
@@ -341,15 +397,18 @@ export function AskCompletionCard({
     }
     return (
       <ResolvedAsk
+        agentNames={agentNames}
         ask={{ ...ask, resolution: ask.resolution }}
         documentLink={documentLink}
         edits={edits}
         frame={frame}
+        renderText={renderText}
       />
     );
   }
   return (
     <AnsweredAsk
+      agentNames={agentNames}
       answers={answers}
       artifactSlug={artifactSlug}
       ask={{ ...ask, answer: ask.answer }}
@@ -358,6 +417,7 @@ export function AskCompletionCard({
       frame={frame}
       markRef={markRef}
       onChangeAnswer={onChangeAnswer}
+      renderText={renderText}
     />
   );
 }

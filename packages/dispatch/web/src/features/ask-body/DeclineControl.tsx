@@ -23,10 +23,11 @@ import {
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { type AskPress, useOutstandingAnswerWrite } from "../inbox/outstanding-answers";
+import { invalidateOwnerReads } from "../inbox/owner-reads";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
-import { invalidateOwnerReads } from "./owner-reads";
+import { ASK_DECLINE_WORDS } from "./ask-body-words";
 
 /**
  * What **Decline to answer** opens: the person's note, which is optional, and the two controls.
@@ -70,19 +71,18 @@ function DeclineDialog({
       <div aria-hidden="true" className={`fixed inset-0 z-40 ${backdrop40}`} onClick={close} />
       <div className="pointer-events-none fixed inset-0 z-40 flex items-start justify-center p-4 pt-20">
         <div
-          aria-label="Decline to answer"
+          aria-label={ASK_DECLINE_WORDS.decline}
           aria-modal="true"
           className={`pointer-events-auto w-full max-w-sm space-y-3 rounded-lg border p-4 shadow-xl ${card}`}
           ref={dialog.containerRef}
           role="dialog"
         >
-          <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>Decline to answer</h2>
-          <p className={`text-sm ${textMutedOnSurface}`}>
-            The question closes with no answer. Dispatch tells the agent that asked to decide
-            without one.
-          </p>
+          <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>
+            {ASK_DECLINE_WORDS.decline}
+          </h2>
+          <p className={`text-sm ${textMutedOnSurface}`}>{ASK_DECLINE_WORDS.explained}</p>
           <label className={`block text-sm font-medium ${textSecondaryOnSurface}`} htmlFor={noteId}>
-            Note (optional)
+            {ASK_DECLINE_WORDS.note}
             <textarea
               aria-describedby={countId}
               className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
@@ -102,7 +102,8 @@ function DeclineDialog({
             />
           </label>
           <p className={`text-xs ${textMutedOnSurface}`} id={countId}>
-            {left} {left === 1 ? "character" : "characters"} left
+            {left} {left === 1 ? ASK_DECLINE_WORDS.character : ASK_DECLINE_WORDS.characters}
+            {` ${ASK_DECLINE_WORDS.left}`}
           </p>
           {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">
@@ -111,10 +112,10 @@ function DeclineDialog({
                   decline the reader stopped may have been made, and the button below is a press
                   of its own, under a key of its own. */}
               {error instanceof SendStoppedError
-                ? stoppedWriteNote("your decline", "made", {
-                    anew: "Pressing Decline to answer again sends a new decline.",
+                ? stoppedWriteNote(ASK_DECLINE_WORDS.stopped.what, ASK_DECLINE_WORDS.stopped.done, {
+                    anew: ASK_DECLINE_WORDS.again,
                   })
-                : apiErrorMessage(error, "Could not decline this question. Try again.")}
+                : apiErrorMessage(error, ASK_DECLINE_WORDS.failed)}
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
@@ -124,7 +125,7 @@ function DeclineDialog({
               onClick={close}
               type="button"
             >
-              Cancel
+              {ASK_DECLINE_WORDS.cancel}
             </button>
             <button
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
@@ -132,7 +133,7 @@ function DeclineDialog({
               onClick={() => onSubmit(note.trim())}
               type="button"
             >
-              {saving ? "Declining…" : "Decline to answer"}
+              {saving ? ASK_DECLINE_WORDS.declining : ASK_DECLINE_WORDS.decline}
             </button>
           </div>
         </div>
@@ -207,7 +208,7 @@ export function DeclineControl({
         onClick={() => setOpen(true)}
         type="button"
       >
-        {write.isPending ? "Declining…" : "Decline to answer"}
+        {write.isPending ? ASK_DECLINE_WORDS.declining : ASK_DECLINE_WORDS.decline}
       </button>
       {open ? (
         <DeclineDialog

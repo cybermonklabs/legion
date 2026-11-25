@@ -13,6 +13,9 @@ import {
   pageQuietText,
   textMutedOnSurface,
 } from "../../theme/classes";
+import { AskHandOnLiveContext } from "../inbox/hand-on-live";
+import { askWaitingOnPerson } from "../inbox/list-row";
+import { useAskHandOn } from "../inbox/useAskHandOn";
 import {
   badgeSelectBadge,
   badgeSelectOverlay,
@@ -22,9 +25,7 @@ import {
 } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
 import { useLiveRegistration } from "../writes/useKeyedWrite";
-import { AskHandOnLiveContext } from "./hand-on-live";
-import { askWaitingOnPerson } from "./list-row";
-import { useAskHandOn } from "./useAskHandOn";
+import { ASK_HAND_ON_WORDS } from "./ask-body-words";
 
 /**
  * Who an open ask waits on, and the one control that hands it to somebody else. It sits in the
@@ -112,13 +113,13 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
           className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
         >
           {write.pending
-            ? "Handing on…"
+            ? ASK_HAND_ON_WORDS.handing_on
             : waitingOn === ""
-              ? "Asked of nobody"
-              : `Asked of ${waitingOn}`}
+              ? ASK_HAND_ON_WORDS.asked_of_nobody
+              : `${ASK_HAND_ON_WORDS.asked_of} ${waitingOn}`}
         </span>
         <select
-          aria-label="Hand this question to"
+          aria-label={ASK_HAND_ON_WORDS.hand_to}
           className={badgeSelectOverlay}
           data-ask-hand-on={ask.id}
           onChange={(event) => {
@@ -139,10 +140,13 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
               every project naming a default answers. Nobody is not a pick: the route takes a
               person's email and refuses anything else. */}
           <option disabled value="">
-            Nobody
+            {ASK_HAND_ON_WORDS.nobody}
           </option>
           {assignee === null ? null : (
-            <option value={assignee}>{assignee} (the issue's assignee)</option>
+            <option value={assignee}>
+              {assignee}
+              {` ${ASK_HAND_ON_WORDS.assignee}`}
+            </option>
           )}
           {others.map((login) => (
             <option key={login} value={login}>
@@ -153,13 +157,14 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
       </span>
       {handedOnBy === "" || handedOnAt === null ? null : (
         <span className={page === null ? undefined : "min-w-0 max-w-full [overflow-wrap:anywhere]"}>
-          handed on by {handedOnBy} <Timestamp at={handedOnAt} />
+          {`${ASK_HAND_ON_WORDS.handed_on_by} `}
+          {handedOnBy} <Timestamp at={handedOnAt} />
         </span>
       )}
       {write.failed ? (
         <span className="basis-full">
           <QueryError
-            message={write.error ?? "Could not hand this question on."}
+            message={write.error ?? ASK_HAND_ON_WORDS.failed}
             onRetry={write.retry}
             retrying={write.pending}
           />

@@ -2094,6 +2094,7 @@ function wrapOffences(mountName: string, value: Element, root: Element): string[
  */
 const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
+  "features/ask-body/AskBody.tsx",
   "features/doc/ApprovalChip.tsx",
   "features/inbox/AskCard.tsx",
   "features/inbox/AskThread.tsx",
