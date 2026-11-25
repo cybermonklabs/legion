@@ -480,12 +480,21 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	// it does of every other. Its reason opens on runtime.BreakingDrift, which is set here, where
 	// the account's drift is decided: no role can keep working in a pod on an account the operator
 	// replaced, so the round over it replaces the pod after the read of its workspace whatever the
-	// read finds (R7 of #5285, spec v23). No other reason carries the mark.
+	// read finds (R7 of #5285, spec v23).
 	if account, accountDrifted := accountDrift(pod, r.pod.ServiceAccount); accountDrifted {
 		drifted = append(drifted, runtime.BreakingDrift+"account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount))
 	}
+	// The exchange identity's reason (movedExchangeIdentity) opens on the mark too (spec v25): a
+	// launch into a live pod that lacks the identity is refused until the pod's round replaces it
+	// where no transition file is named (runtime.ErrAwaitingPodRound), so a round that kept such a
+	// pod for work on its disk would leave a claim that waits on the pod, where it is the issue's
+	// only claim, with no way to run again. No other reason carries the mark.
 	for _, moved := range r.driftedInPod(pod, role) {
-		drifted = append(drifted, moved.String())
+		reason := moved.String()
+		if moved.where == agentSecretsExchangeVolume {
+			reason = runtime.BreakingDrift + reason
+		}
+		drifted = append(drifted, reason)
 	}
 	return drifted, nil
 }

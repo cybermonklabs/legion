@@ -229,16 +229,18 @@ var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a s
 // can hold the mark's words without making the drift one that breaks the pod. The Sandbox
 // runtime's PodDrift marks a drift of the Kubernetes service account the pod runs as (spec v23:
 // a role must not be able to keep a pod on an account the operator replaced by leaving its
-// working copy dirty or its read failing). A later change declares which other kinds of
-// drift break a pod, and a pod below a declared contract floor breaks too, and it opens an update
-// round over such a pod at once, whatever its spec names as the cause. A round records its
-// reasons as one string at its open (RoundReasons, supervise.Claim.UpdateReasons), with every
-// marked reason first, so the string opens on the mark exactly where one of its reasons does
-// (Breaks). Such a round replaces its pod whatever the read of its workspace finds, and tells
-// the issue's architect what it took. Every other round is one the pod's roles can keep working
-// under, and a read that finds work, or that cannot be made, keeps that pod. The leak check
-// digest's drift is not marked: a later change declares that it drains, and a kept pod's roles are
-// told the checker they run.
+// working copy dirty or its read failing), and a drift of the pod's exchange identity (spec v25:
+// a launch into a pod that lacks the identity waits for the pod's round, so a keep of that pod
+// could leave an issue whose only claim waits on it unable to run). A later change declares which
+// other kinds of drift break a pod, and a pod below a declared contract floor breaks too, and it
+// opens an update round over such a pod at once, whatever its spec names as the cause. A round
+// records its reasons as one string at its open (RoundReasons, supervise.Claim.UpdateReasons),
+// with every marked reason first, so the string opens on the mark exactly where one of its
+// reasons does (Breaks). Such a round replaces its pod whatever the read of its workspace finds,
+// and tells the issue's architect what it took. Every other round is one the pod's roles can keep
+// working under, and a read that finds work, or that cannot be made, keeps that pod. The leak
+// check digest's drift is not marked: a later change declares that it drains, and a kept pod's
+// roles are told the checker they run.
 const BreakingDrift = "[breaks the pod] "
 
 // Breaks is whether reason is of a drift that breaks the pod: it opens on BreakingDrift. It reads

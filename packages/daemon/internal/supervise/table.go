@@ -344,8 +344,9 @@ type PodUpdateOpen struct {
 // holds (GPT-6.1 Sol's non-blocking point on #5285 at 0259f8af): a pod whose disk is a kept volume
 // that the issue's next pod mounts is replaced whatever the read finds, and the volume keeps the
 // work; and a round over a drift that breaks the pod (runtime.Breaks: its recorded reasons open
-// on runtime.BreakingDrift, today a drift of the pod's service account) replaces the pod whatever
-// the read finds and tells the issue's architect what it took, so its ask promises no keep.
+// on runtime.BreakingDrift, today a drift of the pod's service account or of its exchange
+// identity) replaces the pod whatever the read finds and tells the issue's architect what it took,
+// so its ask promises no keep.
 //
 // The text is built in pieces, and reasons goes in a piece of its own. A reason is the JSON the
 // daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can hold a quote

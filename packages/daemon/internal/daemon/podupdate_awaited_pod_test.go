@@ -35,8 +35,10 @@ import (
 
 // podUpdateExchangeDrift is what the Sandbox runtime's PodDrift reports of a pod built before the
 // exchange identity once the deployment names an exchange audience (movedExchangeIdentity): the
-// drift a round over such a pod is opened for.
-const podUpdateExchangeDrift = "agent-secrets-exchange (unset), now audience=legion-broker-exchange expiry=3600s path=token"
+// drift a round over such a pod is opened for, spelled as drift.go builds it. It opens on
+// runtime.BreakingDrift: a drift of the exchange identity breaks the pod (R7 of #5285, spec v25),
+// so a round over it replaces the pod after the read of its workspace whatever the read finds.
+const podUpdateExchangeDrift = runtime.BreakingDrift + "agent-secrets-exchange (unset), now audience=legion-broker-exchange expiry=3600s path=token"
 
 // podRoundRetry is how long a start refused for want of its pod's round waits before it is tried
 // again (supervise's podRoundRetry): the wait a test fires to run that retry.
