@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  `legion-api.ts`: each issue of the state has an optional `podHold` at daemon API contract 246, the standing hold of the issue's pod: `{reason, firstAt, at, detail}`, the idle rule's word for the hold, the first and the newest pass of its streak, and the hold's detail cut to its first 200 characters. `reason` is a string and not an enum, so a hold that a later daemon adds is read. No plugin code reads the key (`LEGION_ANSWER_READS`), so the schema reads each of its members as optional. The daemon API fixtures are at contract 246, and `state.json` has an issue with a `podHold`.
+time: 2026-11-22T04:45:00Z
+custom:
+    Issue: state-pod-hold

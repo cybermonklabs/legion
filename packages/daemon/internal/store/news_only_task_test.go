@@ -22,6 +22,7 @@ import (
 // (supervise.Delivery.StillWorked, supervise.HoldsWork), and a phase task carrying the same news
 // is that phase's task.
 func TestATaskOfNewsAloneIsReadBackMarkedSoByBothReadersOfAClaimsTask(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		newsOnly bool

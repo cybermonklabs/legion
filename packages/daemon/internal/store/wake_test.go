@@ -64,6 +64,7 @@ func reopenStore(t *testing.T, store *Store) *Store {
 // once another path has taken the claim over: a suspension of any other source is somebody
 // else's to resume.
 func TestAReleasedClaimIsReadByItsTokenAndItsSessionUntilAnotherPathTakesItOver(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	seedReleasedPod(t, store, "session-1")
@@ -109,6 +110,7 @@ func TestAReleasedClaimIsReadByItsTokenAndItsSessionUntilAnotherPathTakesItOver(
 // pod is taken, since a wake resumes one claim. A role whose resume has its first turn stamped
 // is free to be woken again, which is a pod that came back, ran and was released afresh.
 func TestARoleTakesOneWakeWhileItsPodIsComingBack(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	records := podRecords(t, store)
@@ -146,6 +148,7 @@ func TestARoleTakesOneWakeWhileItsPodIsComingBack(t *testing.T) {
 // decides it inside each transaction, where a read could be overtaken between its answer and the
 // insert, so the record holds one resume and the caller writes one start row.
 func TestTwoWakesOfOneRoleInSeparateTransactionsTakeOnce(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC().Truncate(time.Millisecond)
@@ -176,6 +179,7 @@ func TestTwoWakesOfOneRoleInSeparateTransactionsTakeOnce(t *testing.T) {
 // store opened again over the same database reads the same row due, and the conditional fire is
 // what makes a backstop two passes read wake its pod once.
 func TestABackstopSurvivesTheDaemonAndFiresOnce(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	armed := time.Now().UTC().Truncate(time.Millisecond)
@@ -226,6 +230,7 @@ func TestABackstopSurvivesTheDaemonAndFiresOnce(t *testing.T) {
 // A path that takes a released claim over forgets the pod's wake marks and its open backstops,
 // so no later backstop acts on it.
 func TestTakingAReleasedPodOverCancelsItsBackstops(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC()
@@ -245,6 +250,7 @@ func TestTakingAReleasedPodOverCancelsItsBackstops(t *testing.T) {
 // A daemon that has read none, and one whose newest report is older than the window, both answer
 // no; one inside the window answers yes.
 func TestTheListenerIsLiveOnlyWithAReportInsideTheWindow(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -286,10 +292,11 @@ func TestTheListenerIsLiveOnlyWithAReportInsideTheWindow(t *testing.T) {
 // TakePodWake is the outbox's wake: it records the resume against the pod's newest release and
 // cancels the open backstops, once, and the resume is what makes it once.
 func TestTakingAWakeRecordsItAgainstTheNewestReleaseOnce(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC().Truncate(time.Millisecond)
-	release, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
+	release, _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
 		Generation: 1, Roles: []string{"implementer"}, At: at.Add(-time.Hour)})
 	if err != nil {
 		t.Fatalf("record the release: %v", err)
@@ -337,10 +344,11 @@ func TestTakingAWakeRecordsItAgainstTheNewestReleaseOnce(t *testing.T) {
 // about. Writing first_turn_at to close a row, as this branch first did, reports a turn the daemon
 // never saw: the release records serve that field and the plugin measures each wake's wait by it.
 func TestClosingAResumeWritesNoFirstTurnAndFreesTheRole(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC().Truncate(time.Millisecond)
-	if _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
+	if _, _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
 		Generation: 1, Roles: []string{"implementer"}, At: at.Add(-time.Hour)}); err != nil {
 		t.Fatalf("record the release: %v", err)
 	}
@@ -390,6 +398,7 @@ func TestClosingAResumeWritesNoFirstTurnAndFreesTheRole(t *testing.T) {
 // woken for its architect may be held again — by an unanswered question to a person, by
 // background work — before it ever reaches the tester's work.
 func TestAWakeCancelsTheWokenRolesBackstopAlone(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC().Truncate(time.Millisecond)

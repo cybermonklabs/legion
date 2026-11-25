@@ -296,7 +296,7 @@ func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
 
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: "ses_architect", OmpSessionFile: "/sessions/architect.jsonl",
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register = %d; body %s", status, body)
@@ -368,7 +368,9 @@ func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
 // heldClock is the machines' and the outbox's time held still until the test fires the timers
 // armed for one wait, so a daemon test sees the deadline it fires and nothing else. Its time is the
 // wall clock, or at when set, so a deadline the daemon names as a time is armed as an exact wait
-// from at; advance moves at, so a lease or a backoff the daemon measured from it lapses.
+// from at; advance moves at, so a lease or a backoff the daemon measured from it lapses. A timer
+// armed for a moment (At) keeps that moment, which fireAt fires it by; fire matches it by the wait
+// from the clock's time at the arm.
 type heldClock struct {
 	mu     sync.Mutex
 	at     time.Time
@@ -378,13 +380,20 @@ type heldClock struct {
 type heldTimer struct {
 	clock *heldClock
 	after time.Duration
-	f     func()
-	done  bool
+	// moment is the time an At timer was armed for, zero for an AfterFunc one.
+	moment time.Time
+	f      func()
+	done   bool
 }
 
 func (c *heldClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.nowLocked()
+}
+
+// nowLocked is Now for a caller that holds mu.
+func (c *heldClock) nowLocked() time.Time {
 	if !c.at.IsZero() {
 		return c.at
 	}
@@ -428,6 +437,14 @@ func (c *heldClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
 	return timer
 }
 
+func (c *heldClock) At(at time.Time, f func()) supervise.Cancel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timer := &heldTimer{clock: c, after: max(0, at.Sub(c.nowLocked())), moment: at, f: f}
+	c.timers = append(c.timers, timer)
+	return timer
+}
+
 func (t *heldTimer) Stop() bool {
 	t.clock.mu.Lock()
 	defer t.clock.mu.Unlock()
@@ -441,19 +458,31 @@ func (t *heldTimer) Stop() bool {
 // fire runs, once each, every timer armed for after that has neither fired nor been stopped, and
 // reports how many it ran. A timer one of them arms waits for the next fire.
 func (c *heldClock) fire(after time.Duration) int {
+	return c.run(func(timer *heldTimer) bool { return timer.after == after })
+}
+
+// fireAt is fire for the timers armed for the moment at (At), whatever wait the clock's time at
+// the arm made of it.
+func (c *heldClock) fireAt(at time.Time) int {
+	return c.run(func(timer *heldTimer) bool { return !timer.moment.IsZero() && timer.moment.Equal(at) })
+}
+
+// run runs, once each, every timer due matches that has neither fired nor been stopped, and
+// reports how many it ran.
+func (c *heldClock) run(due func(*heldTimer) bool) int {
 	c.mu.Lock()
-	var due []*heldTimer
+	var ran []*heldTimer
 	for _, timer := range c.timers {
-		if !timer.done && timer.after == after {
+		if !timer.done && due(timer) {
 			timer.done = true
-			due = append(due, timer)
+			ran = append(ran, timer)
 		}
 	}
 	c.mu.Unlock()
-	for _, timer := range due {
+	for _, timer := range ran {
 		timer.f()
 	}
-	return len(due)
+	return len(ran)
 }
 
 // An agent registered over the API that never says it is ready is relaunched at the deadline as
@@ -478,7 +507,7 @@ func TestRunRelaunchesAClaimWhoseAgentRegisteredAndNeverSaidReady(t *testing.T) 
 		t.Helper()
 		status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 			BootToken: bootToken, SessionID: "ses_architect", OmpSessionFile: "/sessions/architect.jsonl",
-			AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+			AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 		}, false)
 		if status != http.StatusOK {
 			t.Fatalf("register = %d; body %s", status, body)
@@ -544,7 +573,7 @@ func TestRunReadoptsEveryClaimWithALiveLocatorOnRestart(t *testing.T) {
 	sh := dialShim(t, record.address, launch.BootToken)
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: "ses_architect", OmpSessionFile: "/sessions/architect.jsonl",
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register = %d; body %s", status, body)
@@ -727,7 +756,7 @@ func TestRunWaitsToRelaunchAnUnfinishedClaimUntilOrphanReconciliationSucceeds(t 
 	putClaim(t, cfg, supervise.Claim{
 		Token: token, Project: project, Tree: "LEGION-1", Issue: "LEGION-4", Role: claim.RoleReviewer,
 		Generation: 1, State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken(bootToken), CapabilityHash: oldCapability[:],
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 	})
 	writePrompt(t, cfg, token)
 	rt := fake.NewRuntime()
@@ -746,7 +775,7 @@ func TestRunWaitsToRelaunchAnUnfinishedClaimUntilOrphanReconciliationSucceeds(t 
 	}
 	oldShim := dialShim(t, record.address, bootToken)
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: bootToken, SessionID: "old-session", OmpSessionFile: "/sessions/old.jsonl", AgentID: "old-agent", PluginContract: api.DaemonAPIVersion,
+		BootToken: bootToken, SessionID: "old-session", OmpSessionFile: "/sessions/old.jsonl", AgentID: "old-agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusConflict || !strings.Contains(string(body), "previous launch") {
 		t.Fatalf("old shim register while the pane is uncertain = %d %s, want a named 409", status, body)
@@ -825,7 +854,7 @@ func TestRunBootRepairRevokesAStaleSecretBeforeItMintsAGrant(t *testing.T) {
 		Token: token, Project: project, Tree: "LEGION-1", Issue: "LEGION-4", Role: claim.RoleReviewer,
 		Generation: 1, State: supervise.StateReady, Session: "ses_reviewer", SessionFile: "/sessions/reviewer.jsonl",
 		CapabilityHash: capability[:], Enrollment: &supervise.Enrollment{ID: "enr-reviewer", Incarnation: "pane-1"},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 	})
 	rt := fake.NewRuntime()
 	rt.FailReconcileOrphans(errors.New("tmux list-panes timed out"))
@@ -945,7 +974,7 @@ func TestRunPrunesTheSecretFilesOfClaimsWithNoProcess(t *testing.T) {
 	// onto the current plugin first (refreshStalePlugins), which is not what this test is about.
 	putClaim(t, cfg, supervise.Claim{
 		Token: live, Project: project, Tree: "LEGION-1", Issue: "LEGION-1", Role: claim.RoleArchitect, Generation: 1,
-		State: supervise.StateReady, Session: "ses_live", SessionFile: "/sessions/live.jsonl", PluginContract: api.DaemonAPIVersion,
+		State: supervise.StateReady, Session: "ses_live", SessionFile: "/sessions/live.jsonl", PluginContract: api.DaemonAPIVersion(),
 		Locator: &runtime.Locator{
 			Runtime: runtime.RuntimeTmux, Claim: live, Incarnation: "4242:1", Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"},
 		},
@@ -1142,7 +1171,7 @@ func readyClaimReporting(t *testing.T, d *daemon, rt *fake.Runtime, token claim.
 	launch := lastLaunch(t, rt, token)
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: "ses_" + string(token), OmpSessionFile: "/sessions/" + string(token) + ".jsonl",
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d; body %s", token, status, body)

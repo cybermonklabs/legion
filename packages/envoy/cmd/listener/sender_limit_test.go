@@ -92,6 +92,7 @@ func requireOneSenderAccepted(t *testing.T, deps *listenerDeps, messages int) {
 }
 
 func TestSenderLimitSettings(t *testing.T) {
+	t.Parallel()
 	rate, burst := bus.SenderMessagesPerMinuteEnvVar, bus.SenderMessageBurstEnvVar
 
 	for _, tc := range []struct {
@@ -245,11 +246,12 @@ func newSenderLimitRig(t *testing.T) *senderLimitRig {
 }
 
 // newSenderLimitRigOnServer is a senderLimitRig on a server of its own, which the test can stop
-// answering under live connections (testnats.Server.Freeze).
-func newSenderLimitRigOnServer(t *testing.T) (*senderLimitRig, *testnats.Server) {
+// answering under live connections (testnats.Server.Freeze). options are added to the listener
+// connection's own (bus.WithReplicas(1)).
+func newSenderLimitRigOnServer(t *testing.T, options ...bus.ConnectOption) (*senderLimitRig, *testnats.Server) {
 	t.Helper()
 	server, url := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
+	client, err := bus.ConnectOwningStream([]string{url}, append([]bus.ConnectOption{bus.WithReplicas(1)}, options...)...)
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
 	}
@@ -543,6 +545,7 @@ func requireRoleSendLinesNameNoSender(t *testing.T, logs string) {
 // stream, a role's kept lane, a holder or the wake reports; and a send and a publish spend one
 // count.
 func TestSenderLimitRoutes(t *testing.T) {
+	t.Parallel()
 	rig := newSenderLimitRig(t)
 
 	t.Run("send after the burst: 429, Retry-After, body, sentence, line naming the sender, nothing stored", func(t *testing.T) {
@@ -705,6 +708,7 @@ func TestSenderLimitRoutes(t *testing.T) {
 // finds it a repeat or an echo. Each case reads what the message cost off the count with the
 // sender's next message, and off the field sender on the message's own line.
 func TestSenderLimitCost(t *testing.T) {
+	t.Parallel()
 	rig := newSenderLimitRig(t)
 	logs := rig.harness.logs.String
 	steer := map[string]any{"payload": `{"delivery":{"mode":"steer"}}`}
@@ -1200,6 +1204,7 @@ func TestSenderLimitCost(t *testing.T) {
 // absent. A message with no sender takes nothing, and so does one from Dispatch, a person (source
 // human) or Envoy itself, with a secrets-broker token or without one.
 func TestSenderLimitSenders(t *testing.T) {
+	t.Parallel()
 	t.Run("a sender a secrets-broker token proves is counted and named in the field sender", func(t *testing.T) {
 		rig := newBrokerRig(t)
 		const bound, token = "ses_senders_broker", "access-token-of-a-counted-session"

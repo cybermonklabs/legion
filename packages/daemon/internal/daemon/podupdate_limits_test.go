@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -130,7 +131,7 @@ func (r *fleetRig) sweepUntilRounds(what string, want ...string) {
 
 // sweepUntilReplaced sweeps until the pod of issue has been replaced, as the single-issue rig's
 // awaitReplacement does: a sweep that reads a machine mid-decision leaves the replacement to the
-// next one (roundGroup's mask), so which sweep makes it is no part of what these tests pin. Its
+// next one (masked), so which sweep makes it is no part of what these tests pin. Its
 // first poll sweeps nothing either, for the reason sweepUntilRounds's does not sweep.
 func (r *fleetRig) sweepUntilReplaced(issue string) {
 	r.t.Helper()
@@ -151,7 +152,7 @@ func (r *fleetRig) sweepUntilReplaced(issue string) {
 
 // answer is every worker of issue answering its round, as the `legion` tool's ready_for_update
 // posts it. Each waits for its own machine to have handled what it is owed first, so the sweep
-// that follows reads the answer rather than a machine still deciding (roundGroup's mask).
+// that follows reads the answer rather than a machine still deciding (masked).
 func (r *fleetRig) answer(issue string) {
 	r.t.Helper()
 	for _, role := range r.rolesOf(issue) {
@@ -346,9 +347,9 @@ func TestPodUpdateADeadRoundHoldsNoSlot(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		// The round's own replacement took its pod, and its end never reached this member,
 		// which records the pod built in its place.
-		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion(),
 			pod: podUpdateReplacementPod, round: podUpdateRound, reasons: podUpdateDrift, signalled: true, left: podUpdateRound},
-		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion(),
 			pod: podUpdateReplacementPod},
 	)
 	rig.drifts(podUpdateDrift)
@@ -563,9 +564,10 @@ func TestPodUpdateMaxOpenRoundsChargesNoSecondSlotForAnOpeningStillInFlight(t *t
 		<-release
 	})
 	defer releaseMachine()
+	relaunch := store.ForConcurrentWorker(rig.ctx)
 	go func() {
 		m, _ := rig.sup.Machine(architect)
-		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+		_ = m.Handle(relaunch, supervise.RuntimeObservation{
 			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
@@ -665,9 +667,10 @@ func podChangedUnderAnOpening(t *testing.T, changed, second string) *fleetRig {
 		<-release
 	})
 	defer releaseMachine()
+	relaunch := store.ForConcurrentWorker(rig.ctx)
 	go func() {
 		m, _ := rig.sup.Machine(architect)
-		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+		_ = m.Handle(relaunch, supervise.RuntimeObservation{
 			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()

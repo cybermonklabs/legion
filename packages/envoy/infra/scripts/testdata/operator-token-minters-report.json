@@ -1,0 +1,2201 @@
+{
+  "run_at": "1970-01-01T00:00:00Z",
+  "findings": [
+    {
+      "principal": "serviceAccount:ci-runner@example-project.iam.gserviceaccount.com",
+      "right": "container.serviceAccounts.createToken, container.clusters.impersonate, container.roles.escalate, container.roles.bind, container.clusterRoles.escalate, container.clusterRoles.bind, container.roleBindings.create, container.roleBindings.update, container.clusterRoleBindings.create, container.clusterRoleBindings.update, container.pods.exec, container.pods.attach, container.pods.portForward, container.pods.create, container.pods.update, container.replicationControllers.create, container.replicationControllers.update, container.nodes.proxy, container.deployments.create, container.deployments.update, container.replicaSets.create, container.replicaSets.update, container.statefulSets.create, container.statefulSets.update, container.daemonSets.create, container.daemonSets.update, container.jobs.create, container.jobs.update, container.cronJobs.create, container.cronJobs.update, container.secrets.get, container.secrets.list, container.namespaces.create, container.serviceAccounts.create, container.mutatingWebhookConfigurations.create, container.mutatingWebhookConfigurations.update, container.validatingWebhookConfigurations.create, container.validatingWebhookConfigurations.update, container.certificateSigningRequests.approve, container.clusters.update, container.secrets.create, container.secrets.update, container.namespaces.update, container.serviceAccounts.update on //cloudresourcemanager.googleapis.com/projects/example-project through roles/container.admin, granted at //cloudresourcemanager.googleapis.com/projects/example-project",
+      "role": "roles/container.admin",
+      "resource": "//cloudresourcemanager.googleapis.com/projects/example-project",
+      "permissions": [
+        "container.serviceAccounts.createToken",
+        "container.clusters.impersonate",
+        "container.roles.escalate",
+        "container.roles.bind",
+        "container.clusterRoles.escalate",
+        "container.clusterRoles.bind",
+        "container.roleBindings.create",
+        "container.roleBindings.update",
+        "container.clusterRoleBindings.create",
+        "container.clusterRoleBindings.update",
+        "container.pods.exec",
+        "container.pods.attach",
+        "container.pods.portForward",
+        "container.pods.create",
+        "container.pods.update",
+        "container.replicationControllers.create",
+        "container.replicationControllers.update",
+        "container.nodes.proxy",
+        "container.deployments.create",
+        "container.deployments.update",
+        "container.replicaSets.create",
+        "container.replicaSets.update",
+        "container.statefulSets.create",
+        "container.statefulSets.update",
+        "container.daemonSets.create",
+        "container.daemonSets.update",
+        "container.jobs.create",
+        "container.jobs.update",
+        "container.cronJobs.create",
+        "container.cronJobs.update",
+        "container.secrets.get",
+        "container.secrets.list",
+        "container.namespaces.create",
+        "container.serviceAccounts.create",
+        "container.mutatingWebhookConfigurations.create",
+        "container.mutatingWebhookConfigurations.update",
+        "container.validatingWebhookConfigurations.create",
+        "container.validatingWebhookConfigurations.update",
+        "container.certificateSigningRequests.approve",
+        "container.clusters.update",
+        "container.secrets.create",
+        "container.secrets.update",
+        "container.namespaces.update",
+        "container.serviceAccounts.update"
+      ],
+      "granted_at": "//cloudresourcemanager.googleapis.com/projects/example-project"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate users cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate users cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate users cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate groups cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate groups cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate groups cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate serviceaccounts cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate serviceaccounts cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate serviceaccounts cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate clusterroles.rbac.authorization.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate clusterroles.rbac.authorization.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate clusterroles.rbac.authorization.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind clusterroles.rbac.authorization.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind clusterroles.rbac.authorization.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind clusterroles.rbac.authorization.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create clusterrolebindings.rbac.authorization.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create clusterrolebindings.rbac.authorization.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch clusterrolebindings.rbac.authorization.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch clusterrolebindings.rbac.authorization.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update clusterrolebindings.rbac.authorization.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update clusterrolebindings.rbac.authorization.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch clusterroles.rbac.authorization.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch clusterroles.rbac.authorization.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch clusterroles.rbac.authorization.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update clusterroles.rbac.authorization.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update clusterroles.rbac.authorization.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update clusterroles.rbac.authorization.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create nodes/proxy cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create nodes/proxy cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create nodes/proxy cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "get nodes/proxy cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "get nodes/proxy cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "get nodes/proxy cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch pods in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch pods in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch pods in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch pods in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "update roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "create rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "update rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create serviceaccounts in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "create serviceaccounts in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create serviceaccounts in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch serviceaccounts in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch serviceaccounts in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch serviceaccounts in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch pods in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch pods in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "update roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "create rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "update rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create mutatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create mutatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create mutatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update mutatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update mutatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update mutatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch mutatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch mutatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch mutatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create validatingadmissionpolicybindings.admissionregistration.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create validatingadmissionpolicybindings.admissionregistration.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create validatingadmissionpolicybindings.admissionregistration.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update validatingadmissionpolicybindings.admissionregistration.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update validatingadmissionpolicybindings.admissionregistration.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update validatingadmissionpolicybindings.admissionregistration.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch validatingadmissionpolicybindings.admissionregistration.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch validatingadmissionpolicybindings.admissionregistration.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch validatingadmissionpolicybindings.admissionregistration.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create validatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create validatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create validatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update validatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update validatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update validatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch validatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch validatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch validatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind roles.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind roles.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind roles.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate roles.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate roles.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate roles.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind clusterroles.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind clusterroles.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind clusterroles.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch roles.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch roles.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch roles.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update roles.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "update roles.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update roles.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch rolebindings.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch rolebindings.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch rolebindings.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update rolebindings.rbac.authorization.k8s.io in kube-system on cluster example-grade/us-east1/grade-cluster",
+      "role": "update rolebindings.rbac.authorization.k8s.io in kube-system",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update rolebindings.rbac.authorization.k8s.io in kube-system"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create certificatesigningrequests, patch certificatesigningrequests/approval, update certificatesigningrequests/approval and approve signers of any name cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names on cluster example-grade/us-east1/grade-cluster",
+      "role": "create certificatesigningrequests, patch certificatesigningrequests/approval, update certificatesigningrequests/approval and approve signers of any name cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create certificatesigningrequests, patch certificatesigningrequests/approval, update certificatesigningrequests/approval and approve signers of any name cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind clusterroles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind clusterroles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind clusterroles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "get pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "get pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "get pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "get pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "get pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "get pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "get pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "get pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "get pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "get secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "get secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "get secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "list secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "list secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "list secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "watch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "watch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "watch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind clusterroles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind clusterroles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind clusterroles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create rolebindings.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create rolebindings.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create rolebindings.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch rolebindings.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch rolebindings.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch rolebindings.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update rolebindings.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update rolebindings.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update rolebindings.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods/exec in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods/exec in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods/exec in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods/attach in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods/attach in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods/attach in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods/portforward in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods/portforward in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods/portforward in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "get pods/exec in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "get pods/exec in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "get pods/exec in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "get pods/attach in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "get pods/attach in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "get pods/attach in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "get pods/portforward in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "get pods/portforward in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "get pods/portforward in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch pods in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch pods in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update pods in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update pods in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update pods in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create replicationcontrollers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create replicationcontrollers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create replicationcontrollers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch replicationcontrollers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch replicationcontrollers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch replicationcontrollers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update replicationcontrollers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update replicationcontrollers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update replicationcontrollers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch pods/ephemeralcontainers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods/ephemeralcontainers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch pods/ephemeralcontainers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update pods/ephemeralcontainers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update pods/ephemeralcontainers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update pods/ephemeralcontainers in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create deployments.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create deployments.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create deployments.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch deployments.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch deployments.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch deployments.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update deployments.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update deployments.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update deployments.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create replicasets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create replicasets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create replicasets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch replicasets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch replicasets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch replicasets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update replicasets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update replicasets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update replicasets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create statefulsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create statefulsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create statefulsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch statefulsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch statefulsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch statefulsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update statefulsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update statefulsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update statefulsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create daemonsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create daemonsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create daemonsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch daemonsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch daemonsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch daemonsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update daemonsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update daemonsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update daemonsets.apps in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create jobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create jobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create jobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch jobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch jobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch jobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update jobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update jobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update jobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create cronjobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create cronjobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create cronjobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch cronjobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch cronjobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch cronjobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update cronjobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update cronjobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update cronjobs.batch in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "get secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "get secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "get secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "list secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "list secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "list secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "watch secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "watch secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "watch secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate roles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate roles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate roles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind roles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind roles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind roles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind clusterroles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind clusterroles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind clusterroles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create rolebindings.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create rolebindings.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create rolebindings.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch rolebindings.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch rolebindings.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch rolebindings.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update rolebindings.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update rolebindings.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update rolebindings.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods/exec in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods/exec in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods/exec in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods/attach in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods/attach in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods/attach in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods/portforward in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods/portforward in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods/portforward in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "get pods/exec in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "get pods/exec in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "get pods/exec in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "get pods/attach in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "get pods/attach in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "get pods/attach in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "get pods/portforward in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "get pods/portforward in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "get pods/portforward in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create replicationcontrollers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create replicationcontrollers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create replicationcontrollers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch replicationcontrollers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch replicationcontrollers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch replicationcontrollers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update replicationcontrollers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update replicationcontrollers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update replicationcontrollers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch pods/ephemeralcontainers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods/ephemeralcontainers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch pods/ephemeralcontainers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update pods/ephemeralcontainers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update pods/ephemeralcontainers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update pods/ephemeralcontainers in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create deployments.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create deployments.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create deployments.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch deployments.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch deployments.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch deployments.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update deployments.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update deployments.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update deployments.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create replicasets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create replicasets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create replicasets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch replicasets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch replicasets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch replicasets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update replicasets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update replicasets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update replicasets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create statefulsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create statefulsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create statefulsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch statefulsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch statefulsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch statefulsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update statefulsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update statefulsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update statefulsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create daemonsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create daemonsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create daemonsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch daemonsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch daemonsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch daemonsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update daemonsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update daemonsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update daemonsets.apps in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create jobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create jobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create jobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch jobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch jobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch jobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update jobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update jobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update jobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create cronjobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create cronjobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create cronjobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch cronjobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch cronjobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch cronjobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update cronjobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update cronjobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update cronjobs.batch in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "get secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "get secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "get secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "list secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "list secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "list secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "watch secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "watch secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "watch secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create serviceaccounts/token addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create serviceaccounts/token addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create serviceaccounts/token addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate serviceaccounts addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate serviceaccounts addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate serviceaccounts addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create serviceaccounts/token collector in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create serviceaccounts/token collector in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create serviceaccounts/token collector in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate serviceaccounts collector in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate serviceaccounts collector in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate serviceaccounts collector in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create serviceaccounts/token namespace-controller in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create serviceaccounts/token namespace-controller in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create serviceaccounts/token namespace-controller in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate serviceaccounts namespace-controller in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate serviceaccounts namespace-controller in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate serviceaccounts namespace-controller in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:ci-runner@example-project.iam.gserviceaccount.com",
+      "right": "container.secrets.get on //cloudresourcemanager.googleapis.com/projects/example-project through roles/container.admin, granted at //cloudresourcemanager.googleapis.com/projects/example-project",
+      "role": "roles/container.admin",
+      "resource": "//cloudresourcemanager.googleapis.com/projects/example-project",
+      "permissions": [
+        "container.secrets.get"
+      ],
+      "granted_at": "//cloudresourcemanager.googleapis.com/projects/example-project"
+    }
+  ],
+  "credited": [
+    {
+      "principal": "system:serviceaccount:legion:worker",
+      "right": "create pods/portforward in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "policy": "broker-pod-connect",
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+    },
+    {
+      "principal": "system:serviceaccount:legion:dispatch-measure",
+      "right": "create pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "policy": "broker-pod-connect",
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "create pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "policy": "broker-pod-connect",
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "get pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "policy": "broker-pod-connect",
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "create pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RoleBinding dispatch/comment-delivery",
+      "policy": "broker-pod-connect",
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "get pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RoleBinding dispatch/comment-delivery",
+      "policy": "broker-pod-connect",
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+    }
+  ],
+  "residuals": [
+    {
+      "principal": "system:serviceaccount:legion:worker",
+      "right": "create pods/portforward in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "system:serviceaccount:legion:dispatch-measure",
+      "right": "create pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "create pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "get pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "create pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RoleBinding dispatch/comment-delivery",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "get pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RoleBinding dispatch/comment-delivery",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    }
+  ],
+  "unknown": [
+    {
+      "step": "admin tag of ENVOY_OPERATOR",
+      "reason": "agent-secrets secret show ENVOY_OPERATOR --json was refused: agent-secrets secret show: Secret Manager GetSecret answered PermissionDenied (missing permission: secretmanager.secrets.get; its message is not printed); looked in GCP Secret Manager project 123456789012"
+    }
+  ],
+  "allowances": []
+}

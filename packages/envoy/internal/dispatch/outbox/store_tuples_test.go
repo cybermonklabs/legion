@@ -112,9 +112,12 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 
 // requireBaseAttributes fails unless the store holds each node of written, and unless every node
 // it holds carries visibility and state, both as the node row's columns and as current tuples,
-// naming the node that lacks either. Every node the store holds is read rather than the named
-// ones alone, so a node the record wrote that this test does not name is held to the same rule;
-// written is what the run must have written for the loop to read anything of the publisher's.
+// naming the node that lacks either. A node whose row names a project or parties carries that
+// attribute as a current tuple too, and a node whose row names neither carries no tuple of it: a
+// role, a page, a person or an attribute belongs to no project. Every node the store holds is
+// read rather than the named ones alone, so a node the record wrote that this test does not name
+// is held to the same rule; written is what the run must have written for the loop to read
+// anything of the publisher's.
 func requireBaseAttributes(t *testing.T, database *store.Store, written []graphstore.Node) {
 	t.Helper()
 	ctx := context.Background()
@@ -143,13 +146,20 @@ func requireBaseAttributes(t *testing.T, database *store.Store, written []graphs
 			t.Errorf("%s %s carries visibility %q and state %q on its row, want both", node.Kind, node.ID,
 				read.Visibility, read.State)
 		}
+		carried := map[string]bool{
+			graphstore.AttributeVisibility: true, graphstore.AttributeState: true,
+			graphstore.AttributeProject: read.Project != "", graphstore.AttributeParties: len(read.Parties) > 0,
+		}
 		for _, attribute := range graphstoretest.BaseAttributes() {
 			value, ok, err := graphstore.CurrentValue(ctx, database.Pool, node.Kind, node.ID, attribute)
 			if err != nil {
 				t.Fatalf("read the %s of %s %s: %v", attribute, node.Kind, node.ID, err)
 			}
-			if !ok || value == "" {
+			switch {
+			case carried[attribute] && (!ok || value == ""):
 				t.Errorf("%s %s carries no %s tuple", node.Kind, node.ID, attribute)
+			case !carried[attribute] && ok:
+				t.Errorf("%s %s carries a %s tuple %q its row does not name", node.Kind, node.ID, attribute, value)
 			}
 		}
 	}

@@ -358,6 +358,7 @@ func TestACreateBeforeTheFirstConnectEndsAtOnceWithItsOwnError(t *testing.T) {
 // lost, which the call answers with its own silence, and once with the read held and then
 // answered over a consumer the server's admin made, which the call answers with that consumer.
 func TestAnAddConsumerTakesOnlyTheRefusalOfTheRequestItIsOn(t *testing.T) {
+	t.Parallel()
 	const stream, name = "ENVOY_ADD_CONSUMER_STEP", "step"
 	read := jsAPI("CONSUMER.INFO", stream, name)
 	create := jsAPI("CONSUMER.CREATE", stream, name)
@@ -413,6 +414,7 @@ func TestAnAddConsumerTakesOnlyTheRefusalOfTheRequestItIsOn(t *testing.T) {
 // lost its answer. The start sends its create again, as it sends any request the server left
 // unanswered, and goes on.
 func TestABucketCreateTakesOnlyTheRefusalOfTheStepItIsOn(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, bucket string
 		lost         func(bucket string) string

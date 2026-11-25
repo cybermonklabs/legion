@@ -89,7 +89,11 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		case "issued":
 			return 0
 		case "denied", "expired":
-			fmt.Fprintf(stderr, "agent-secrets machine login: %s\n", resp.LoginState)
+			said := resp.LoginState
+			if resp.LoginReason != "" {
+				said += "; " + resp.LoginReason
+			}
+			fmt.Fprintf(stderr, "agent-secrets machine login: %s\n", said)
 			return 1
 		}
 		time.Sleep(backoff)
@@ -154,13 +158,17 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 		case "denied":
 			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) was denied; %s\n", code, held)
 		case "expired":
-			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) expired before anyone approved it; %s\n", code, held)
+			expired := "expired before anyone approved it"
+			if resp.LoginReason != "" {
+				expired += " (" + resp.LoginReason + ")"
+			}
+			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) %s; %s\n", code, expired, held)
 		}
 		fmt.Fprintln(stderr, "agent-secrets machine login-status: "+credentialExpiry(resp.CredentialExpiresAt, time.Now(), resp.NoCredentialFailure()))
 		return 0
 	}
 	fmt.Fprintln(stdout, state)
-	reason := helper.NoCredentialReason(resp.LoginState, resp.LoginRefused, resp.CredentialDropped)
+	reason := helper.NoCredentialReason(resp.LoginState, resp.LoginReason, resp.LoginRefused, resp.CredentialDropped)
 	if state == "pending" {
 		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s (code %s)\n", reason, redact.OneLine(resp.Code))
 	} else {

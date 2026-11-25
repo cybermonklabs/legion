@@ -1,3 +1,5 @@
+//go:build !race
+
 package docs
 
 import (
@@ -20,6 +22,8 @@ import (
 // row's owner lock, the re-read of its anchor under that lock, and the document work that
 // resolves the quote - runs with no transaction id held, the lock because it is advisory and
 // the reads because a read takes none.
+//
+// The file builds without the race detector, as xid_window_test.go does and for its reason.
 func TestXidWindowAnchorBlockBackfill(t *testing.T) {
 	service, database, tracer := xidService(t)
 	spec, quotes := storetest.XidSpec("DOC", 1)

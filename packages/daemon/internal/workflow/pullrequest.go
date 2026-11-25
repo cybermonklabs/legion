@@ -131,6 +131,8 @@ func pullRequestNews(before, after record.PullRequest) bool {
 		before.ReviewSeen != after.ReviewSeen ||
 		before.Mergeability != after.Mergeability ||
 		before.MergeState != after.MergeState ||
+		!classify.SameCount(before.ReviewsRequested, after.ReviewsRequested) ||
+		before.HeadChecks != after.HeadChecks ||
 		before.ConflictingHead != after.ConflictingHead ||
 		before.MergeSHA != after.MergeSHA
 }
@@ -423,7 +425,7 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // issue to its task's next step (accepting, in the default steps), since a merged pull request
 // leaves the round nothing to wait on (reviewRound). Without this, an approval that came before
 // the merge would hold the issue in
-// reviewing: no read of the merged pull request ever comes (askMergeStateFor), and once the
+// reviewing: no read of the merged pull request ever comes (mergeStateOwed), and once the
 // reviewer has completed no other fact settles the round. An approval of a head other than the
 // one the merge names ends no round: once its reviewer has completed, the round is stuck on other
 // code (stuckApprovedOtherCode), and the architect is told once.

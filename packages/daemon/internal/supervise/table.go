@@ -443,14 +443,20 @@ type RequestSpawn struct {
 	// launches is the fault the pacing exists to fix, and a wake let through by default would
 	// put it back one caller at a time.
 	Exempt bool
-	// Turn is a moment the caller has already reserved for this launch in the wake pacing, which
-	// the gate takes in place of reserving one of its own (revive, launchAfter, reserveWake), and
-	// the zero time for every caller but one: the boot's relaunch of the launches the previous
-	// daemon left waiting (internal/daemon's launchUnfinished), which reserves their turns one by
-	// one in the order their claims' work was owed before it posts them all at once, so the queue
-	// a restart rebuilds keeps the order the previous daemon was draining (dispatch://INFRA-5482).
-	// A launch the gate does not reach — refused, or held by a project pause — leaves that moment
-	// spent, as a dropped wake leaves its token spent (wakepace.Limiter.Reserve).
+	// Turn is a moment the caller has already reserved for this launch in the wake pacing, and the
+	// zero time for every caller but one: the boot's relaunch of the launches the previous daemon
+	// left waiting (internal/daemon's launchUnfinished), which hands the turns out in the order its
+	// claims' work was owed before it posts every launch at once, so the queue a restart rebuilds
+	// keeps the order the previous daemon was draining (dispatch://INFRA-5482).
+	//
+	// The rule the gate holds a carried turn to (revive, launchAfter, reserveWake), stated here
+	// alone: a turn still to come is the launch's turn, and it parks for it; one the launch reached
+	// less than one interval late (WakePace.Interval) is its turn late, and it runs at once; one it
+	// reached one interval or more late is reserved a turn afresh, and the spent turn stays
+	// charged, as a dropped wake's does (wakepace.Limiter.Reserve), since every launch the caller
+	// posted together that reached its gate that late would otherwise run in one instant, outside
+	// the rate and the burst. The gate logs the last case. A launch the gate does not reach —
+	// refused, or held by a project pause — leaves its turn spent the same way.
 	Turn time.Time
 }
 
@@ -580,11 +586,17 @@ type RequestOperatorClose struct{ Claim claim.Token }
 // FreshSession asks for a new session in place of the recorded one. It is a field rather than an
 // event of its own, as the closes are, because both answers are the same decision made by the same
 // caller — the claim runs again — and neither skips a check the other makes: it says only which
-// session the retry starts. A retry that asks for none still starts one when the provider refused
-// the recorded session out of its budget (freshSession).
+// session the retry starts. A retry that asks for none resumes the recorded session, whatever the
+// claim's run of refused turns (freshSession).
+//
+// OneAttemptLeft is a production check look's retry of its checking role: the half-open trial of a
+// role that keeps failing, which gets one attempt of each budget its failure spent rather than a
+// fresh budget (Budgets.OneAttemptLeft), so a role that cannot start is launched once a look and
+// not a whole budget's worth of times. A failure that spent no budget runs again as any retry does.
 type RequestRetry struct {
-	Claim        claim.Token
-	FreshSession bool
+	Claim          claim.Token
+	FreshSession   bool
+	OneAttemptLeft bool
 }
 
 // RequestOperatorRetry is the operator relaunching a claim through the API: the retry RequestRetry
@@ -699,7 +711,9 @@ type RequestExit struct {
 // pi-legion agent_end hook for an Oh My Pi session, the Claude bridge for a Claude Code one, each
 // over the claim's own HTTP route. Sequence is that producer's own count of the turns it has
 // ended at Generation, from 1, and the pair is the key the claim keeps the report under
-// (recordTurnOutcome).
+// (recordTurnOutcome). HTTPStatus is the status the provider refused the turn with, 0 where the
+// producer could not read one, and Unprompted says the turn ran no prompt the daemon sent
+// (claim.TurnOutcomeRequest), which is the one kind of turn a report is judged for (turnOutcome).
 //
 // Neither is fenced. A report naming a generation the claim has left is not stale: it is a turn of
 // that generation, which belongs in its own place in the order the run is derived in, and the
@@ -710,6 +724,8 @@ type RequestTurnOutcome struct {
 	Sequence   uint64
 	Refused    bool
 	Message    string
+	HTTPStatus int
+	Unprompted bool
 }
 
 // RequestCompact takes the claim for a compaction of its Oh My Pi session, which is what a claim
@@ -1304,7 +1320,7 @@ func fillTable(t *builder) {
 	// backs: retiring is not a way past either.
 	t.row(onOperatorClose, "the tree is already closed", operatorCloseRetired, nil, StateRetired)
 
-	t.row(onRetry, "retry: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused it out of the launch budget, or no store holds it", retry, []ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
+	t.row(onRetry, "retry: fresh budgets, and the same session relaunched unless the retry asked for a new one or no store holds it", retry, []ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
 	t.ignore(onRetry, "a queued claim is spawned, not retried", StateQueued)
 	t.ignore(onRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
 	t.ignore(onRetry, "the claim has not failed", live...)
@@ -1313,7 +1329,7 @@ func fillTable(t *builder) {
 	// A retired claim is retried here as the workflow's own retry retries one: `legion claims stop`
 	// retires a claim, and while this row refused that state the only way to start a stopped worker
 	// again was an edit of the claims store with the daemon stopped (dispatch://INFRA-956 R3).
-	t.row(onOperatorRetry, "the operator's retry of an architect or a phase worker, failed or stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused it out of the launch budget, or no store holds it", operatorRetry,
+	t.row(onOperatorRetry, "the operator's retry of an architect or a phase worker, failed or stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one or no store holds it", operatorRetry,
 		[]ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
 	t.ignore(onOperatorRetry, "a queued claim is spawned, not retried", StateQueued)
 	t.ignore(onOperatorRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
@@ -1342,8 +1358,10 @@ func fillTable(t *builder) {
 	// The outcome of a turn, from the producer that ended it. Every live state takes one: the
 	// report is the producer's HTTP call, which races the turn's end on the worker stream and the
 	// relaunch of a process that is coming up, and a report is about the provider rather than
-	// about where the claim stands.
-	t.row(onTurnOutcome, "record the turn's outcome; the claim fails once the provider's refusals reach the launch failure limit",
+	// about where the claim stands. A run of refused turns fails no claim; the one report that
+	// fails it is that of a turn that ran no prompt of the daemon's, refused with a status that
+	// cannot clear (turnOutcome).
+	t.row(onTurnOutcome, "record the turn's outcome, and judge a turn that ran no prompt of the daemon's from it: a refusal that cannot clear fails the claim",
 		turnOutcome, []ClaimState{StateFailed}, live...)
 	t.ignore(onTurnOutcome, "no launch has minted a boot token", StateQueued)
 	t.ignore(onTurnOutcome, "the previous launch's pane is still uncertain", StateLaunchUncertain)
@@ -2410,10 +2428,8 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 		}
 		return m.stopAtResult(ctx)
 	}
-	if m.claim.ProviderErrorRun != 0 {
-		m.log.Info("supervise: a turn of this task ended with no provider error; the run of provider errors is over",
-			"delivery", r.DeliveryID, "providerErrorRun", m.claim.ProviderErrorRun)
-		m.claim.ProviderErrorRun = 0
+	if m.providerErrorRunOver("supervise: a turn of this task ended with no provider error; the run of provider errors is over",
+		"delivery", r.DeliveryID) {
 		if err := m.persist(ctx); err != nil {
 			return err
 		}
@@ -2616,6 +2632,10 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 // leaves a claim no ready will ever come for, and from here that looks exactly like an agent slow
 // to boot. A registration whose plugin still differs from the daemon's is relaunched at once and
 // refused (staleRegistration): the agent that just registered is not the one that relaunch starts.
+//
+// The registering process's pod is one an agent of the claim registered a session in, so it goes
+// in the claim's set (Claim.RegisteredPods) and stays there, whatever the claim does next. A
+// process in no pod (a tmux pane) adds nothing.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
 	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
@@ -2625,6 +2645,7 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 		return err
 	}
 	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
+	m.registeredPods.add(locatorPod(m.claim.Locator))
 	m.claim.AgentResumeGeneration = 0
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract = r.PluginContract
@@ -2674,8 +2695,8 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // ready is the agent saying it can be prompted. The time is kept on the claim (Claim.LastReady),
-// since it is what dates the death's cause beside it — a death older than this ready is one the
-// agent running now has survived (machine.go's Claim).
+// since a death recorded before this ready (Claim.LastDeathAt) is one the agent running now has
+// survived (machine.go's Claim).
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
 	// The cause of a forget is kept for the launches of the fresh agent until it comes up
@@ -2686,7 +2707,9 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 	// episode they measure ended when this agent came up (Claim.PendingCause,
 	// Claim.LastStartFailure). A start failure kept past it would read, on a claim launching
 	// again later, as the reason it is not running now (dispatch://INFRA-5463).
-	m.claim.Budgets.LaunchFailures, m.claim.PendingCause, m.claim.LastStartFailure = 0, "", ""
+	// The start failure's time goes with it (Claim.LastStartFailureAt).
+	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
+	m.claim.LastStartFailure, m.claim.LastStartFailureAt = "", time.Time{}
 	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)
@@ -2791,12 +2814,17 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
 // when it has one, is relaunched after the process the claim last ran is gone. A pending delivery
 // the claim kept goes once the agent is ready. Its event is the workflow's retry or the
-// operator's own (operatorRetry), and the pacing reads each its own way (exemptWake).
+// operator's own (operatorRetry), and the pacing reads each its own way (exemptWake). A production
+// check look's retry (RequestRetry.OneAttemptLeft) starts no budget over that the failure spent:
+// each is left one attempt short of its limit, and the rest stand as the failure left them
+// (Budgets.OneAttemptLeft).
 //
-// A retry that asks for a new session, and one of a claim whose provider refused the recorded
-// session out of its budget, forgets that session instead, so the launch spawns a fresh agent
-// (freshSession): relaunching a session every turn of which was refused would be refused again,
-// and the claim would fail its way through another budget having done nothing.
+// A retry that asks for a new session (`legion claims retry --fresh-session`, the controller's
+// fresh_session) forgets the recorded session instead, so the launch spawns a fresh agent
+// (freshSession). Every other retry, whoever makes it, resumes the recorded session with fresh
+// budgets, whatever the claim's run of refused turns: a run that reached launch_failure_limit is
+// the claim's own count of refusals, mostly ones that can clear, such as a team limit's 429 that
+// refuses every session alike, and no sign that its session is bad (dispatch://INFRA-4508's R5).
 //
 // The failure record goes with the counts it names, and both go once the claim is admitted. A
 // reader is served that record built from the counts the claim holds now (api.FailureViewOf),
@@ -2815,27 +2843,38 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // own, or a parked wake's recheck when its turn comes — finds the record already cleared on the
 // live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
 func retry(m *Machine, ctx context.Context, ev Event) error {
-	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh {
+	if fresh, why := freshSession(ev); fresh {
 		// A session the claim does not hold is left behind only once its role no longer leads
 		// to the process under it (mayForget); the retry is refused, and the claim left as it
 		// was, until then.
 		if err := m.mayForget(ctx, "retry"); err != nil {
 			return err
 		}
+		// lastRefusal is the provider's words for the newest refused turn, which the claim stores
+		// for the reason LastRefusal gives.
 		m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
-			"refusedRun", m.claim.RefusedRun())
-		// The failure the claim carries is the fuller answer where it has one — it names how many
-		// turns the provider refused and what it said about the newest of them — and the retry's
-		// own reason answers for a claim that failed nothing, an operator's retry of a worker it
-		// stopped.
+			"refusedRun", m.claim.RefusedRun(), "lastRefusal", m.claim.LastRefusal())
+		// The failure the claim carries is the fuller answer where it has one — a provider error
+		// that cannot clear names its status, a death its cause — and the retry's own reason
+		// answers for a claim that failed nothing, an operator's retry of a worker it stopped.
 		m.forgetSession(cmp.Or(m.claim.Failure, why))
 	} else if err := m.resumeRefusal(ctx, "retry"); err != nil {
 		// A retry that relaunches the recorded session is refused it the way a resume is
 		// (resumeRefusal), before the budgets start over.
 		return err
 	}
+	oneAttemptLeft := false
+	if r, ok := ev.(RequestRetry); ok {
+		oneAttemptLeft = r.OneAttemptLeft
+	}
 	return m.revive(ctx, exemptWake(ev), time.Time{}, func() {
-		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
+		budgets := Budgets{}
+		if oneAttemptLeft {
+			budgets = m.claim.Budgets.OneAttemptLeft(m.deps.Limits)
+			m.log.Info("supervise: retrying with one attempt left of each budget the failure spent",
+				"failed", m.claim.Budgets, "budgets", budgets, "cause", m.claim.FailureCause)
+		}
+		m.claim.Budgets, m.claim.PendingCause = budgets, ""
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
 		m.claim.LeakCheckCause = ""
 	})
@@ -2852,10 +2891,9 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 // role never changes, so the refusal cannot race the decision it guards.
 //
 // It relaunches the session the claim records, unless the retry asks for a new one
-// (RequestOperatorRetry.FreshSession) or the provider refused that session out of the claim's
-// launch budget: retry forgets the session in either case, so the launch spawns a fresh agent,
-// because resuming a session whose turns the provider refused would be refused again. A launch
-// whose session no session store holds any more starts a fresh agent too (startFresh).
+// (RequestOperatorRetry.FreshSession): retry then forgets the session, so the launch spawns a
+// fresh agent (freshSession). A launch whose session no session store holds any more starts a
+// fresh agent too (startFresh).
 func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 	if m.claim.Role == claim.RoleController {
 		return &RefusedError{State: m.claim.State, Request: "retry",

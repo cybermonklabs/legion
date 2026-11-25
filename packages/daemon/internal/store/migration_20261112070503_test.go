@@ -14,6 +14,7 @@ import (
 // upgraded row to the deploy and call a merge state read a day ago fresh. The daemon's next read of
 // the pull request fills it.
 func TestAPullRequestRecordedBefore20261112070503HasNoStateReadAt(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261111181500)

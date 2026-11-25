@@ -152,7 +152,8 @@ func TestABackedOffEventHoldsBackOnlyItsDestination(t *testing.T) {
 func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	t.Parallel()
 	_, url := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{url})
+	// The stream is narrowed by hand below, so the client holds its keeper off (keeperHeld).
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithKeepInterval(keeperHeld))
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
@@ -357,7 +358,8 @@ func TestASessionTakesAnOwnersEventsInOrderThroughAFailedTopicPublish(t *testing
 }
 
 // sessionOrderRig is an outbox's stream with a reader of it, the stream's configuration as it
-// started, which refuse narrows and captureAgain puts back, and issue T-1, whose route is S.
+// started, which refuse narrows and captureAgain puts back, and issue T-1, whose route is S. The
+// outbox's client holds its keeper off (keeperHeld), so a narrowed stream stays narrowed.
 type sessionOrderRig struct {
 	client    *bus.Client
 	reader    *natsgo.Conn
@@ -370,7 +372,7 @@ type sessionOrderRig struct {
 func newSessionOrderRig(t *testing.T) sessionOrderRig {
 	t.Helper()
 	_, url := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{url})
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithKeepInterval(keeperHeld))
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}

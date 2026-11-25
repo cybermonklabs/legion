@@ -72,7 +72,10 @@ import type {
   RelatedCheckInput,
   ResolveAskInput,
   SearchResponse,
+  SearchResultKind,
   SessionAnswersResponse,
+  StatusChangeAnswer,
+  StatusChangeInput,
   Suggestions,
   UpdateIssueInput,
   Version,
@@ -131,16 +134,36 @@ export class DispatchServiceError extends Error {
    * false for an answer something in Dispatch's place wrote (`DispatchGatewayError`).
    */
   readonly fromDispatch: boolean = true;
+  readonly candidates: DispatchServiceErrorShape["candidates"] | undefined;
+  readonly current: DispatchServiceErrorShape["current"] | undefined;
+  readonly mismatches: DispatchServiceErrorShape["mismatches"] | undefined;
+  /** A `409 PARENT_STATUS_CONFLICT`'s issues: each one the write would leave out of line. */
+  readonly issues: DispatchServiceErrorShape["issues"] | undefined;
+  /** A status change's refusal: the entry of each step that wrote before it. */
+  readonly changed: DispatchServiceErrorShape["changed"] | undefined;
+  /** Dispatch's `hint`, where to look next, which only its answer to a path no route serves
+   *  carries (`DispatchServiceErrorShape["hint"]`); `messageFor` prints it after the message. */
+  readonly hint: string | undefined;
 
   constructor(
     readonly code: string,
     readonly status: number,
     message: string,
-    readonly candidates?: DispatchServiceErrorShape["candidates"],
-    readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
+    /** The members of Dispatch's refusal beside its message that a caller reads off the error:
+     *  its answer's JSON, or another refusal whose members it keeps. */
+    details: {
+      readonly [Member in "candidates" | "changed" | "current" | "hint" | "issues" | "mismatches"]?:
+        | DispatchServiceErrorShape[Member]
+        | undefined;
+    } = {}
   ) {
     super(message);
+    this.candidates = details.candidates;
+    this.current = details.current;
+    this.mismatches = details.mismatches;
+    this.issues = details.issues;
+    this.changed = details.changed;
+    this.hint = details.hint;
   }
 }
 
@@ -417,6 +440,23 @@ function resultDryRunNoRouteRefusal(baseUrl: string, route: string): DispatchSer
   );
 }
 
+/**
+ * What `changeIssueStatus` throws once the Dispatch at `baseUrl` answered no route for `route` each
+ * time the write was sent: a build older than the status change route. The code and status are
+ * that answer's. The PATCH is never sent in its place, since a PATCH takes no option and would
+ * write the status without what the option asks for, so the message says that nothing changed.
+ */
+function statusChangeNoRouteRefusal(baseUrl: string, route: string): DispatchServiceError {
+  return new DispatchServiceError(
+    "NOT_FOUND",
+    404,
+    `Dispatch at ${urlForText(baseUrl, DISPATCH_URL_SETTING)} answered no route for ${route} each ` +
+      "time the status change was sent. This build is older than that route, so it takes no " +
+      "include_children, unlink_children or include_parent, and nothing changed. No PATCH was " +
+      "sent in its place, since a PATCH would write the status without the option."
+  );
+}
+
 export interface ListIssuesOptions {
   readonly project?: string;
   readonly status?: string;
@@ -444,6 +484,9 @@ export interface SearchOptions {
   readonly project?: string;
   readonly limit?: number;
   readonly offset?: number;
+  /** The kinds to rank, count and page (`SEARCH_KINDS`): `#url` writes one `kind=` per entry,
+   *  which is how the route reads it. With none named the search reads every kind it indexes. */
+  readonly kind?: readonly SearchResultKind[];
 }
 
 /** One node's edges: `to` reads what points at it, `from` what it points to; exactly one. */
@@ -1210,12 +1253,38 @@ export class DispatchClient {
     return this.#json("PATCH", ["api", "v1", "issues", await this.#resolveIssue(issue)], input);
   }
 
+  /**
+   * `POST /api/v1/issues/{key}/status-change`: writes the issue's status and, with an option, what
+   * happens to the open issues under it or to the issues above it, so each parent's status stays
+   * in line with its children's. The answer is the issue and one `changed` entry for each issue
+   * whose status or parent the call changed, in the order the steps ran. A refusal carries
+   * `changed` too: the entries of the steps that wrote before it (`DispatchServiceError`).
+   *
+   * A build without the route answers no route each time the write is sent (`#write` asks again
+   * as for every write), and this then throws `statusChangeNoRouteRefusal`'s refusal. No PATCH is
+   * sent in its place, since a PATCH would write the status without the option.
+   */
+  async changeIssueStatus(issue: string, input: StatusChangeInput): Promise<StatusChangeAnswer> {
+    const path = ["api", "v1", "issues", await this.#resolveIssue(issue), "status-change"];
+    try {
+      return await this.#json("POST", path, input);
+    } catch (error) {
+      throw this.#refusalOfNoRoute(error, path, (route) =>
+        statusChangeNoRouteRefusal(this.#baseUrl, route)
+      );
+    }
+  }
+
   /** `POST /api/v1/issues/{key}/claim`: this session takes the issue. 409 ISSUE_CLAIMED when a
    *  running session, or any human, holds it; 409 CLAIM_CONTENDED when the holder changed twice
    *  while the request ran, so nothing was applied. The answer's `legion_managed_status` says
    *  whether the Legion daemon owns this issue's status — true when the issue carries the
-   *  `legion` label in any case or sits under one that does, where a status anyone else writes
-   *  is undone. */
+   *  `legion` label in any case or sits under one of its own project that does. On such an
+   *  issue, where Dispatch runs with `DISPATCH_LEGION_STATUS_SCOPE` on, it refuses a status
+   *  write from a credential that holds neither the `person` nor the `legion-status` scope
+   *  (403 `LEGION_STATUS_SCOPE_REQUIRED`), but for `done`, `backlog`, `icebox` or `triage` from
+   *  an architect of an issue above with its own broker token. Otherwise the daemon undoes a
+   *  status anyone else writes. */
   async claimIssue(issue: string, input: { readonly actor?: Actor } = {}): Promise<ClaimedIssue> {
     return this.#json(
       "POST",
@@ -1354,6 +1423,22 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "limits"]);
   }
 
+  /** `GET <path>`, for `dispatch api`: one read of a route no method here names. `path` begins
+   *  `/api/v1` and may carry a query, and the contract's rule for it (`dispatch_api`) refuses a
+   *  scheme, a host and a dot segment, so it resolves under this client's server as every other
+   *  route does (`#url`). Answers Dispatch's JSON as `#response` reads it.
+   *
+   *  It sends the GET once (one `#send`) and throws a refusal as `#response` throws it, an answer
+   *  of no route (`404 NOT_FOUND`, "no route for …") included: unlike every other request this
+   *  client makes, it skips `#noRoute`, so it neither sends that request again nor turns the
+   *  answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written path
+   *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
+   *  so Dispatch's own refusal, which names the route, is printed as it came. */
+  async readRoute(path: string): Promise<unknown> {
+    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
+    return this.#response("GET", url, await this.#send("GET", url));
+  }
+
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
    *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
    *  which no reader re-sorts. `me` is the caller, and keeps the rows waiting on them — the asks
@@ -1394,6 +1479,24 @@ export class DispatchClient {
   /** `GET /api/v1/projects`: every project, ordered by key. */
   async listProjects(): Promise<Project[]> {
     return this.#json("GET", ["api", "v1", "projects"]);
+  }
+
+  /** `PUT /api/v1/projects/{key}/proven-sessions`: turn the project's proven-sessions setting on.
+   *  A bearer names its session in `actor`. It answers the project as `listProjects` lists it. A
+   *  token scoped to another project is 403 PROJECT_SCOPE. */
+  async turnOnProvenSessions(
+    project: string,
+    input: { readonly actor?: Actor } = {}
+  ): Promise<Project> {
+    return this.#json("PUT", ["api", "v1", "projects", project, "proven-sessions"], input);
+  }
+
+  /** `DELETE /api/v1/projects/{key}/proven-sessions`: turn the project's proven-sessions setting
+   *  off. The route needs the person scope, so a credential without it is 403
+   *  OAUTH_SCOPE_REQUIRED, and its writer is the person the credential acts for. It answers the
+   *  project as `listProjects` lists it. A token scoped to another project is 403 PROJECT_SCOPE. */
+  async turnOffProvenSessions(project: string): Promise<Project> {
+    return this.#json("DELETE", ["api", "v1", "projects", project, "proven-sessions"]);
   }
 
   /** `GET /api/v1/projects/{key}/architecture-sources`: the project's architecture sources, one
@@ -1560,9 +1663,9 @@ export class DispatchClient {
     try {
       return await this.#json("POST", path, body);
     } catch (error) {
-      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
-      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
-      throw reviewNoRouteRefusal(this.#baseUrl, route, version);
+      throw this.#refusalOfNoRoute(error, path, (route) =>
+        reviewNoRouteRefusal(this.#baseUrl, route, version)
+      );
     }
   }
 
@@ -1589,9 +1692,9 @@ export class DispatchClient {
     try {
       return await this.#writingNothing<CheckResultDryRun>(path, input, { writes: false });
     } catch (error) {
-      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
-      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
-      throw resultDryRunNoRouteRefusal(this.#baseUrl, route);
+      throw this.#refusalOfNoRoute(error, path, (route) =>
+        resultDryRunNoRouteRefusal(this.#baseUrl, route)
+      );
     }
   }
 
@@ -2061,8 +2164,9 @@ export class DispatchClient {
   }
 
   /** `GET /api/v1/projects/{key}/plans`: each finished issue of the project, newest close first,
-   *  with its plan, each retro's rating, its time and its count of failed steps. `since` and
-   *  `until` bound the close to `[since, until)`, and a bound left out is not sent. */
+   *  with its plan, each retro's rating, its time, its count of failed steps, and the experiment
+   *  and the variant the step records of its newest run name, null where they name none. `since`
+   *  and `until` bound the close to `[since, until)`, and a bound left out is not sent. */
   async listProjectPlans(
     project: string,
     window: { readonly since?: string | undefined; readonly until?: string | undefined } = {}
@@ -2165,6 +2269,18 @@ export class DispatchClient {
       signal: signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]),
       sleep: this.#sleep,
     });
+  }
+
+  /** What the catch of a `POST` of `path` throws: the refusal `refuse` writes for that route where
+   *  `error` is an answer of no route each time it was sent (a build older than the route), else
+   *  `error` as it came. It returns rather than throws, so the throw stays at the catch. */
+  #refusalOfNoRoute(
+    error: unknown,
+    path: readonly string[],
+    refuse: (route: string) => DispatchServiceError
+  ): unknown {
+    if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) return error;
+    return refuse(`POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`);
   }
 
   /**
@@ -2799,9 +2915,7 @@ export class DispatchClient {
           error.code ?? `HTTP_${response.status}`,
           response.status,
           error.error,
-          error.candidates,
-          error.current,
-          error.mismatches
+          { ...error, hint: typeof error.hint === "string" ? error.hint : undefined }
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

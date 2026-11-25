@@ -2686,11 +2686,12 @@ describe("executeDispatchTool", () => {
         fetchImpl: fetchImpl as typeof fetch,
       });
 
-    // The Legion daemon owns the status of an issue it runs: a status this session writes is
-    // undone, so neither answer may send it to issue-update.
+    // The Legion daemon owns the status of an issue it runs: Dispatch refuses a status this
+    // session writes where DISPATCH_LEGION_STATUS_SCOPE is on, and otherwise the daemon undoes
+    // it, so neither answer may send it to issue-update.
     const claimed = await run({ issue: "DSP-1" });
     expect(claimed.text).toContain(
-      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — a status written here is undone"
+      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), but for done, backlog, icebox or triage from an architect of an issue above with its own broker token, and otherwise the daemon undoes it"
     );
     expect(claimed.text).not.toContain("issue-update");
     expect(claimed.text).toContain(
@@ -2699,7 +2700,7 @@ describe("executeDispatchTool", () => {
 
     const released = await run({ issue: "DSP-1", release: true });
     expect(released.text).toContain(
-      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — a status written here is undone"
+      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), but for done, backlog, icebox or triage from an architect of an issue above with its own broker token, and otherwise the daemon undoes it"
     );
     expect(released.text).not.toContain("issue-update");
     expect(released.text).not.toContain("now reach you directly");
@@ -4831,7 +4832,9 @@ describe("executeDispatchTool", () => {
   // A token that names a service and no person is refused every Dispatch write with
   // SIGN_IN_REQUIRED, whose message names `agent-secrets login`. whoami is where a person asks
   // what their credential may do, so its sentence for that caller must not describe the issue
-  // creation the server refuses, and must name the command that gets them a write.
+  // creation the server refuses, and must name the command that gets them a write. This answer is
+  // an older Dispatch's, which omits sign_in_required, so the command reads the rule from the
+  // shape that Dispatch kept.
   test("dispatch_whoami tells a service-only caller its writes need a sign-in", async () => {
     const fetchImpl = async (): Promise<Response> =>
       response({
@@ -4856,6 +4859,152 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain("runs as service example-fleet");
     expect(result.text).not.toMatch(/issues? you create/);
     expect(result.text).toContain("agent-secrets login");
+  });
+
+  // A read-only credential is refused every write with READ_ONLY_TOKEN, before any other check,
+  // so whoami names it as one that reads only, and its cut, rather than describing the issues it
+  // would create or the sign-in it would need.
+  test("dispatch_whoami names a read-only credential and its cut", async () => {
+    const whoami = async (answer: Record<string, unknown>): Promise<string> => {
+      const result = await executeDispatchTool({
+        tool: "dispatch_whoami",
+        args: {},
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-1",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: (async () => response(answer)) as unknown as typeof fetch,
+      });
+      return result.text;
+    };
+    const cut = "2026-11-19T08:30:00.123456Z";
+
+    const person = await whoami({
+      kind: "agent",
+      owner: "alice",
+      service: null,
+      session: "session-1",
+      project: null,
+      scopes: ["person", "read"],
+      cut,
+    });
+    expect(person).toBe(
+      `Session session-1 acts for alice with a read-only credential: it may read, and Dispatch refuses every write it makes. Its cut is ${cut}, the past time it reads Dispatch at.`
+    );
+
+    // A service's read-only token with no cut: no sign-in to name, and no cut either.
+    const service = await whoami({
+      kind: "agent",
+      owner: null,
+      service: "example-fleet",
+      session: "session-1",
+      project: "INFRA",
+      scopes: ["read"],
+      cut: null,
+    });
+    expect(service).toBe(
+      "Session session-1 runs as service example-fleet with a read-only credential: it may read, and Dispatch refuses every write it makes."
+    );
+
+    // An exchange entry's account token narrowed to reading: Dispatch answers it
+    // sign_in_required false, and it is told it reads only, never sent to a sign-in.
+    const account = await whoami({
+      kind: "agent",
+      owner: null,
+      service: "system:serviceaccount:example-ns:example-public",
+      session: "session-1",
+      project: null,
+      scopes: ["read"],
+      cut: null,
+      sign_in_required: false,
+    });
+    expect(account).toBe(
+      "Session session-1 runs as service example-ns/example-public with a read-only credential: it may read, and Dispatch refuses every write it makes."
+    );
+
+    // A credential that writes is told what a writing credential is told, and nothing of reading.
+    const writer = await whoami({
+      kind: "agent",
+      owner: "alice",
+      service: null,
+      session: "session-1",
+      project: null,
+      scopes: ["person"],
+      cut: null,
+    });
+    expect(writer).toContain("issues you create without an assignee are assigned to alice");
+    expect(writer).not.toContain("read-only");
+  });
+
+  // A current Dispatch answers the decision itself (sign_in_required), and the command reads it.
+  test("dispatch_whoami tells a machine Dispatch says needs a sign-in that its writes are refused", async () => {
+    const fetchImpl = async (): Promise<Response> =>
+      response({
+        kind: "agent",
+        owner: null,
+        service: "example-fleet",
+        session: "session-1",
+        project: null,
+        scopes: [],
+        sign_in_required: true,
+      });
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_whoami",
+      args: {},
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(result.text).toContain("runs as service example-fleet");
+    expect(result.text).toContain("Dispatch refuses every write it makes");
+    expect(result.text).toContain("agent-secrets login");
+  });
+
+  // An exchange entry that names no person mints a token that names its Kubernetes account as
+  // the service and proves a session, the shape of a machine nobody signed in on, but Dispatch
+  // records its writes under the account and answers sign_in_required false. The command must
+  // not tell that session it may not write, nor send it to a sign-in a pod cannot make.
+  test("dispatch_whoami tells an exchange entry's account session that it writes", async () => {
+    const fetchImpl = async (): Promise<Response> =>
+      response({
+        kind: "agent",
+        owner: null,
+        service: "system:serviceaccount:example-ns:example-public",
+        session: "session-1",
+        project: null,
+        scopes: [],
+        sign_in_required: false,
+      });
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_whoami",
+      args: {},
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(result.text).toContain("runs as service example-ns/example-public");
+    expect(result.text).not.toContain("Dispatch refuses every write it makes");
+    expect(result.text).not.toContain("agent-secrets login");
+    expect(result.details).toEqual({
+      session: "session-1",
+      owner: null,
+      service: "system:serviceaccount:example-ns:example-public",
+      project: null,
+    });
   });
 
   test("dispatch_issue_update moves status and merges external links by URL as the session", async () => {
@@ -4934,6 +5083,82 @@ describe("executeDispatchTool", () => {
         },
       },
     ]);
+  });
+
+  // labels replaces every label the issue holds; labels_add adds to them inside Dispatch's write,
+  // so a label the call does not name stays. The command sends labels_add as given and prints the
+  // labels the issue holds after it, and refuses labels and labels_add together before any request.
+  test("dispatch_issue_update adds labels with labels_add and keeps the issue's others", async () => {
+    const requests: Array<{ method: string; pathname: string; body?: unknown }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const pathname = new URL(String(url)).pathname;
+      const method = init?.method ?? "GET";
+      requests.push({
+        method,
+        pathname,
+        ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) }),
+      });
+      const labels = method === "GET" ? ["board"] : ["board", "accessibility"];
+      return response({ key: "ACME-10", title: "Board", status: "triage", labels, route: null });
+    };
+    const run = (args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_issue_update",
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    const result = await run({ issue: "ACME-10", labels_add: ["accessibility"] });
+
+    expect(result.text).toBe("ACME-10: labels board, accessibility");
+    expect(requests.at(-1)).toEqual({
+      method: "PATCH",
+      pathname: "/api/v1/issues/ACME-10",
+      body: {
+        labels_add: ["accessibility"],
+        actor: {
+          kind: "session",
+          id: "session-42",
+          origin: expect.objectContaining({ host: "omp", cwd: "/workspace" }),
+        },
+      },
+    });
+    const sent = requests.length;
+    await expect(
+      run({ issue: "ACME-10", labels: ["board"], labels_add: ["accessibility"] })
+    ).rejects.toThrow(/labels_add goes without labels/);
+    expect(requests).toHaveLength(sent);
+  });
+
+  // An issue that holds no label after the write prints "labels none" for a labels_add, which
+  // removed nothing (a Dispatch that predates labels_add ignores it and answers the issue as it
+  // stood), and "labels cleared" only for a labels that emptied the set.
+  test("dispatch_issue_update says labels none after a labels_add that left none, and cleared after an empty labels", async () => {
+    const fetchImpl = async (_url: RequestInfo | URL): Promise<Response> =>
+      response({ key: "ACME-10", title: "Board", status: "triage", labels: [], route: null });
+    const run = (args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_issue_update",
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    expect((await run({ issue: "ACME-10", labels_add: ["accessibility"] })).text).toBe(
+      "ACME-10: labels none"
+    );
+    expect((await run({ issue: "ACME-10", labels: [] })).text).toBe("ACME-10: labels cleared");
   });
 
   test("dispatch_issue_update clears external links instead of re-sending the existing set", async () => {
@@ -6098,6 +6323,9 @@ describe("executeDispatchTool", () => {
       ]);
       expect(await problemsOf("dispatch_doc_read", { ref: "dispatch://DSP-42/children" })).toEqual([
         "ref dispatch://DSP-42/children names the children on DSP-42; dispatch doc-read would act on DSP-42 and drop the children: read it with dispatch read, or name DSP-42 with issue DSP-42",
+      ]);
+      expect(await problemsOf("dispatch_doc_read", { ref: "dispatch://DSP-42/comments" })).toEqual([
+        "ref dispatch://DSP-42/comments names the comments on DSP-42; dispatch doc-read would act on DSP-42 and drop the comments: read it with dispatch read, or name DSP-42 with issue DSP-42",
       ]);
       expect(
         await problemsOf("dispatch_doc_read", {
@@ -15697,9 +15925,10 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain("Status: open\nAssignee: alice\n");
     expect(result.text).toContain("Claimed by: Implementer since 2026-09-13T01:00:00Z");
     // The priorities the issue serves stand between what it touches and where it is routed,
-    // each marked own where the issue states it and inherited where an issue above it does.
+    // each marked own where the issue states it and inherited where an issue above it does, then
+    // the revision of the issue's own set, which a change of two or more priorities sends.
     expect(result.text).toContain(
-      "Labels: frontend, urgent\nComponents: web (inherited from DSP-40) (retired: legacy-ui)\nAdvances: ship-the-daemon (own), legion-first (inherited)\nRoute: none\nRepository: acme/widgets (inherited or project default)\nProgress: tasks 1/4\n"
+      "Labels: frontend, urgent\nComponents: web (inherited from DSP-40) (retired: legacy-ui)\nAdvances: ship-the-daemon (own), legion-first (inherited); revision 12\nRoute: none\nRepository: acme/widgets (inherited or project default)\nProgress: tasks 1/4\n"
     );
     // The pull request a person linked is on the read, as on the issue page; the reference graph
     // at the end carries none of it.
@@ -17420,6 +17649,133 @@ describe("executeDispatchTool", () => {
       text: ["Key: DSP-42", "Children:", "- DSP-43: A child issue (todo)"].join("\n"),
       details: { issue: "DSP-42" },
     });
+  });
+
+  // dispatch://KEY/comments names the issue's comments: dispatch read asks the route that lists
+  // them, GET /api/v1/issues/{key}/comments, beside the issue's own read, and prints them in the
+  // route's order, each with its id, author and time, its quote, the head of its thread, the
+  // comment it answers where that is another, the ask it replies to, and its body.
+  test("reads an issue's comments from a Dispatch comments reference", async () => {
+    const requested: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      requested.push(target.pathname);
+      if (target.pathname === "/api/v1/issues/ACME-10") {
+        return response({
+          key: "ACME-10",
+          title: "Export",
+          status: "todo",
+          route: null,
+          open_asks: [],
+          children: [],
+          last_seq: 0,
+        });
+      }
+      if (target.pathname === "/api/v1/issues/ACME-10/comments") {
+        const comment = (fields: Record<string, unknown>) => ({
+          issue_key: "ACME-10",
+          reply_to: null,
+          answers: null,
+          ask_id: null,
+          ...fields,
+        });
+        return response([
+          comment({
+            id: "c-1",
+            author: { kind: "user", id: "alice" },
+            body: "Split the export in two: CSV first.",
+            anchor: { quote: "CSV and PDF export" },
+            created_at: "2026-11-20T09:00:00Z",
+          }),
+          comment({
+            id: "c-2",
+            author: { kind: "session", id: "session-7" },
+            body: "Agreed.",
+            reply_to: "c-1",
+            answers: "c-1",
+            created_at: "2026-11-20T10:00:00Z",
+          }),
+          comment({
+            id: "c-3",
+            author: { kind: "user", id: "alice" },
+            body: "CSV ships first, then.",
+            reply_to: "c-1",
+            answers: "c-2",
+            created_at: "2026-11-20T11:00:00Z",
+          }),
+          comment({
+            id: "c-4",
+            author: { kind: "user", id: "bob" },
+            body: "Yes, split it.",
+            ask_id: "a-1",
+            created_at: "2026-11-20T12:00:00Z",
+          }),
+        ]);
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_read",
+      args: { ref: "dispatch://ACME-10/comments" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect([...requested].sort()).toEqual([
+      "/api/v1/issues/ACME-10",
+      "/api/v1/issues/ACME-10/comments",
+    ]);
+    expect(result).toEqual({
+      text: [
+        "Comments: ACME-10",
+        "c-1 · user alice · 2026-11-20T09:00:00Z",
+        "> CSV and PDF export",
+        "Body: Split the export in two: CSV first.",
+        "c-2 · session session-7 · 2026-11-20T10:00:00Z",
+        "Reply to: c-1",
+        "Body: Agreed.",
+        "c-3 · user alice · 2026-11-20T11:00:00Z",
+        "Reply to: c-1",
+        "Answers: c-2",
+        "Body: CSV ships first, then.",
+        "c-4 · user bob · 2026-11-20T12:00:00Z",
+        "Ask: a-1",
+        "Body: Yes, split it.",
+      ].join("\n"),
+      details: { issue: "ACME-10" },
+    });
+  });
+
+  // The comment route answers a key no issue carries with an empty list, so the read refuses that
+  // key through the issue's own read, 404, as the log and the children do, and never prints an
+  // issue with no comments.
+  test("refuses the comments reference of an issue Dispatch does not hold", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/ACME-404") {
+        return response({ code: "NOT_FOUND", error: "no issue ACME-404" }, 404);
+      }
+      if (target.pathname === "/api/v1/issues/ACME-404/comments") return response([]);
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    await expect(
+      executeDispatchTool({
+        tool: "dispatch_read",
+        args: { ref: "dispatch://ACME-404/comments" },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      })
+    ).rejects.toThrow("no issue ACME-404");
   });
 });
 

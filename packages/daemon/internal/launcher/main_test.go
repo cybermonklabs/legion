@@ -45,16 +45,15 @@ var mainHelpers = map[string]func(){}
 var guardKeep []string
 
 // TestMain takes out of the process every variable that could lead git or jj to a workspace,
-// remote or credential not the test's own (fixtureenv.Guard). The tests here run both: a released
-// workspace's bundle is restored by this package's own code, in process, with the real git and jj
-// (restoreWorkspace), and the launcher starts every generation under the process's own
-// environment merged with the start's (mergeEnv), which is where a restore reads the workspace it
-// is to work (envValue(env, "LEGION_WORKSPACE") in bundleRestore.apply). In a Legion issue pod
+// remote or credential not the test's own (fixtureenv.Guard). The tests here run both, and the
+// launcher starts every generation under the process's own environment merged with the start's
+// (mergeEnv), which is where the pod's git lock sweep reads the workspace whose clone it sweeps
+// (envValue(env, "LEGION_WORKSPACE") in manager.start, gitLockSweep.learn). In a Legion issue pod
 // that variable names the pod's live workspace, so without this a test whose start named no
-// workspace of its own would unbundle into it, move its bookmarks --allow-backwards and jj edit
-// the working copy back to a saved head, over the work the pod's own roles have done
-// (docs/testing.md, "A test that starts jj or git inherits no pod's environment"). It keeps
-// guardKeep, the gated live tests' own inputs.
+// workspace of its own would have the sweep remove git locks from the clone the pod's own roles
+// work in, under the first pass's rule, which removes every lock no process it can see holds,
+// whatever its age (docs/testing.md, "A test that starts jj or git inherits no pod's
+// environment"). It keeps guardKeep, the gated live tests' own inputs.
 //
 // It takes out the two variables that name a session store as well, which Guard leaves: Guard
 // takes out the LEGION_, GIT_, JJ_, GH_ and GITHUB_ variables and not these. A start's
@@ -165,33 +164,79 @@ func exitHelper(t *testing.T) {
 	os.Exit(0)
 }
 
+// runsAloneVariable is the variable requireRunsAlone sets for the rest of a test. Nothing reads
+// it: setting it through testing's Setenv is how a helper shows that no other test runs beside its
+// caller. Its name is outside the prefixes fixtureenv.Guard takes out, and no code a test starts
+// reads it.
+const runsAloneVariable = "LAUNCHER_TEST_RUNS_ALONE"
+
+// requireRunsAlone fails t, naming what reads the whole process (what), unless no other test can
+// run beside t. A helper whose reading another test's processes or descriptors would spoil calls
+// it first (expectHeldClosed, descriptorsKept): the race detector cannot see such a caller, since
+// no variable is shared, and its failure would be a late end of file or an extra descriptor.
+func requireRunsAlone(t *testing.T, what string) {
+	t.Helper()
+	if refused := runsBeside(t); refused != nil {
+		t.Fatalf("%s reads the whole process, so its caller must run beside no other test, and this test runs in parallel: %v", what, refused)
+	}
+}
+
+// runsBeside answers why other tests can run beside t, or nil when none can: when neither t nor a
+// test above it called t.Parallel. The check is testing's own for a test that changes the process:
+// Setenv panics in a test that is parallel or under a parallel one, and makes a later t.Parallel in
+// it panic, so the answer holds for the rest of the test.
+func runsBeside(t *testing.T) (refused any) {
+	defer func() { refused = recover() }()
+	t.Setenv(runsAloneVariable, "1")
+	return nil
+}
+
+// requireRunsAlone's control: runsBeside refuses a parallel subtest and lets a serial one through.
+func TestRunsBesideRefusesAParallelTestAndNoOther(t *testing.T) {
+	// Not parallel: it sets an environment variable of the whole process (runsBeside), which is the
+	// check itself.
+	t.Run("serial", func(t *testing.T) {
+		if refused := runsBeside(t); refused != nil {
+			t.Errorf("runsBeside refused a test that called no t.Parallel: %v", refused)
+		}
+	})
+	t.Run("parallel", func(t *testing.T) {
+		t.Parallel()
+		if runsBeside(t) == nil {
+			t.Error("runsBeside let a parallel test through, so requireRunsAlone checks nothing")
+		}
+	})
+}
+
 // No test of this package can reach the workspace of the pod it runs in. The first two cases fail
 // without a Guard in a Legion issue pod, where LEGION_WORKSPACE names the pod's live workspace,
-// and name the workspace a restore of this package's tests would have worked. The third holds
-// whether or not a Guard ran: it checks only that fixtureenv.Isolated, which the bundle fixture
-// builds its environment from, drops a workspace the process holds.
+// and name the workspace whose clone a git lock sweep of this package's tests would have swept.
+// The third holds whether or not a Guard ran: it checks only that fixtureenv.Isolated, which the
+// git and jj fixtures of the sweep's tests build their environment from (fixturegit.Isolated),
+// drops a workspace the process holds.
 func TestNoTestOfThisPackageCanReachThePodsWorkspace(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	// The test process: Guard ran, and nothing it takes out is left — no LEGION_, no GIT_ but
 	// GIT_ALLOW_PROTOCOL=file, no JJ_ (fixtureenv.RequireGuarded), so neither this package's code
 	// under test nor a child it starts with no environment of its own can read the pod's.
 	t.Run("the test process holds no workspace of the pod's", func(t *testing.T) {
 		fixtureenv.RequireGuarded(t)
 		if dir := os.Getenv("LEGION_WORKSPACE"); dir != "" {
-			t.Errorf("the test process holds LEGION_WORKSPACE=%s, the workspace a restore would work", dir)
+			t.Errorf("the test process holds LEGION_WORKSPACE=%s, the workspace a sweep would work", dir)
 		}
 	})
-	// The environment a generation is started under, which is where a restore reads the workspace
-	// it works (bundleRestore.apply): a start that names no workspace of its own must reach a
-	// restore that has none at all. RequireGuarded holds the process's variables; this holds the
+	// The environment a generation is started under, which is where the sweep reads the workspace
+	// it works (gitLockSweep.learn): a start that names no workspace of its own must reach a
+	// sweep that has none at all. RequireGuarded holds the process's variables; this holds the
 	// launcher's own merge of them with the start's.
 	t.Run("a generation a start names no workspace in reaches none", func(t *testing.T) {
 		started := mergeEnv(os.Environ(), []string{"TOLD=" + t.TempDir()})
 		if dir := envValue(started, "LEGION_WORKSPACE"); dir != "" {
-			t.Errorf("a generation started by a test here would restore into %s, the workspace of the process that runs the tests", dir)
+			t.Errorf("a generation started by a test here would have the sweep work %s, the workspace of the process that runs the tests", dir)
 		}
 	})
-	// fixtureenv.Isolated, which bundleFixture.env is built from, drops a workspace the process
-	// holds whether or not a Guard ran. This reads Isolated and not bundleFixture.env itself. The
+	// fixtureenv.Isolated, which fixturegit.Isolated builds its environment from, drops a
+	// workspace the process holds whether or not a Guard ran. This reads Isolated itself. The
 	// process is handed a workspace of this case's own to read back, so what passes is Isolated's
 	// doing and not an environment that held none anyway.
 	t.Run("a fixture's environment carries no workspace the process holds", func(t *testing.T) {
@@ -212,6 +257,7 @@ func TestNoTestOfThisPackageCanReachThePodsWorkspace(t *testing.T) {
 // resume of this package's tests would have queried. A test that wants a session database names
 // its own with testdb.DSNFile, in the start's own environment.
 func TestNoTestOfThisPackageCanReachThePodsSessionStore(t *testing.T) {
+	t.Parallel()
 	// The test process: TestMain unset both, so neither this package's code under test nor a
 	// child it starts with no environment of its own can read the pod's store.
 	t.Run("the test process holds no session store of the pod's", func(t *testing.T) {

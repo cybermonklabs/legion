@@ -136,7 +136,8 @@ export interface LegionDaemonClient {
   readonly exit: (input: ExitInput) => Promise<void>;
   /** `claim.TurnOutcomeRequest`: how one of the claim's turns ended, under the sequence the
    * reporting plugin counted itself (`packages/pi-legion/src/turn-outcome.ts`). The answer is the
-   * trailing run of refused turns the daemon derived and whether this report failed the claim. */
+   * trailing run of refused turns the daemon derived (`LegionTurnOutcomeResponse` says what its
+   * `failed` holds). */
   readonly turnOutcome: (
     input: z.input<typeof LegionTurnOutcomeRequest>
   ) => Promise<z.output<typeof LegionTurnOutcomeResponse>>;

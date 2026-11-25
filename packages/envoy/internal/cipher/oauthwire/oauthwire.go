@@ -1,10 +1,11 @@
 // Package oauthwire is the wire contract of the broker's OAuth endpoints that the broker and the
-// callers it answers share: the clients they present, the scope a machine login asks for and the
-// one a read entry's token holds, the names the token exchange knows a subject token by, the
-// fields the broker adds to a token answer, and the one grammar of a token's list of projects. It
-// imports nothing of the broker — only the standard library and the project-key rule
-// internal/contracts generates — so the agent-secrets helper reads it without the broker's
-// storage.
+// callers it answers share: the clients they present, the scope a machine login asks for, the one
+// a read token holds and the one a Legion daemon's token holds, the names the token exchange
+// knows a subject token by, the header of a read trade's holder proof, the fields the broker adds
+// to a token answer, the session prefix a Legion daemon's own entry fixes, and the one grammar of
+// a token's list of projects. It imports nothing of the broker — only the standard library and
+// the project-key rule internal/contracts generates — so the agent-secrets helper reads it without
+// the broker's storage.
 package oauthwire
 
 import (
@@ -26,13 +27,34 @@ const (
 	ClientID = "agent-secrets-helper"
 	// Scope is the one scope a machine login asks for and is granted.
 	Scope = "machine"
-	// ScopeRead is the one OAuth scope a token minted from a read entry
-	// (BROKER_EXCHANGE_READ_ACCOUNTS) holds, and the only scope the exchange grants: a token
-	// that writes nothing and reads only the routes a resource server lists for it, which
-	// Dispatch does in its read list and every other service refuses (ciphertoken). The entry
-	// decides it, never the request: the exchange client is registered for Scope alone, so the
-	// library refuses a request that names this one invalid_scope under every entry.
+	// ScopeRead is the OAuth scope of a token that only reads: one a read entry
+	// (BROKER_EXCHANGE_READ_ACCOUNTS) mints, and one any trade narrows to reading because it
+	// asked for this scope. Such a token writes nothing and reads only the routes a resource
+	// server classes as reads, which Dispatch does and every other service refuses
+	// (ciphertoken). The exchange client is registered for it, and a trade that names it keeps
+	// the identity it would have had and holds this scope beside one of the narrowed project
+	// scopes (ProjectScopeReadNamed, ProjectScopeReadPerson, ProjectScopeReadNone). A read
+	// entry's trade that names no scope holds it beside ProjectScopeNone, as before.
 	ScopeRead = "read"
+	// ScopePerson is the OAuth scope a token narrowed to reading holds beside ScopeRead when it
+	// acts for its person: a ProjectScopeReadPerson token that names a person, whose answer's
+	// scope is "read person". No other token holds it.
+	ScopePerson = "person"
+	// ScopeLegionStatus is the OAuth scope the exchange grants a Legion daemon's own token: the
+	// token of an account entry that names a project and fixes the session legion-daemon:<that
+	// project>, for a trade that does not ask for ScopeRead. Dispatch lets a credential that holds
+	// it write a Legion issue's status where DISPATCH_LEGION_STATUS_SCOPE refuses that write to
+	// others but the architect of an issue above. The entry decides it, never the request: the
+	// exchange client is not registered for it, so the library refuses a request that names it
+	// invalid_scope. A resource server that does not read the word accepts the token and ignores it.
+	ScopeLegionStatus = "legion-status"
+	// LegionDaemonSessionPrefix starts the session name a Legion daemon writes its project's
+	// issues under: legion-daemon:<PROJECT>. The broker marks an entry that fixes it for its own
+	// project as a Legion daemon's own (exchange.Claims.LegionStatus), and Dispatch reads it
+	// through ciphertoken.LegionDaemonSessionPrefix: one spelling for both ends of this module.
+	// The daemon's DaemonSession (packages/daemon/internal/dispatch/client.go), another Go module,
+	// writes the name and changes together with this one.
+	LegionDaemonSessionPrefix = "legion-daemon:"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.
 	ExtraCredentialID = "credential_id"
@@ -76,6 +98,19 @@ const (
 	// entry's one project or none, and a trade that names no person names none. Absent or blank
 	// is no projects.
 	FormProjects = "projects"
+	// FormAsOf is the exchange request's fourth broker-defined form parameter: the cut, the past
+	// time a narrowed token reads at, as an RFC 3339 time with at most six fractional digits. Only
+	// a trade that asks for ScopeRead may carry one, and it may be no later than the trade itself;
+	// the broker refuses any other cut invalid_request, naming this parameter. The token keeps the
+	// cut, and its introspection answer names it (Introspection.AsOf).
+	FormAsOf = "as_of"
+	// HeaderDPoPHolder is the request header of a read trade's second proof: a JWT of the DPoP
+	// shape (typ dpop+jwt, ES256, the P-256 key it is signed with embedded as jwk, htm, htu,
+	// iat and jti, and the server's nonce when it asks for one) over the same request as the
+	// DPoP proof, signed with a key made for the token's holder. The broker binds the narrowed
+	// token to that key rather than to the DPoP proof's, so a read token is never bound to a key
+	// that signs launcher proofs: a person's read trade must send it, and any read trade may.
+	HeaderDPoPHolder = "DPoP-Holder"
 	// SubjectTokenTypeKubernetes is the subject_token_type a pod presents its projected
 	// Kubernetes service-account token under. RFC 8693 registers no name for one, so the broker
 	// defines this one and the exchange client is the only client that may present it.
@@ -160,9 +195,10 @@ type AirlockName struct {
 // They are short and fixed so a reader of either reads one word rather than the prose
 // exchange.ProjectScope.String prints for an operator.
 const (
-	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person and
-	// its Projects holds the entry's one project, or none for an account entry naming none (the
-	// shared public-session account's). It never holds two.
+	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person, or
+	// as the account itself for an account entry naming no person, and its Projects holds the
+	// entry's one project, or none for an account entry naming none (the shared public-session
+	// account's, and every account entry naming no person). It never holds two.
 	ProjectScopeNamed = "named"
 	// ProjectScopePerson is a token that acts as its person: its Projects holds the 0 to
 	// MaxProjects projects the trade asked for, each one its person could see at the trade.
@@ -172,7 +208,56 @@ const (
 	// build that predates it refuses it, since it accepts only the two words above, and one of
 	// this build accepts it only where it asks to (ciphertoken).
 	ProjectScopeNone = "none"
+	// ProjectScopeReadNamed is a ProjectScopeNamed token narrowed to reading: its trade asked for
+	// ScopeRead, and it names the person and the projects the same trade would have named without
+	// it. It holds the OAuth scope ScopeRead alone. A resource server of a build that predates the
+	// three narrowed words refuses each of them, so no build reads a narrowed token as one that
+	// writes.
+	ProjectScopeReadNamed = "read-named"
+	// ProjectScopeReadPerson is a ProjectScopePerson token narrowed to reading the same way. It
+	// holds the OAuth scope ScopeRead, and the scope person beside it when it names a person
+	// ("read person"), since a person-scoped token that names its person is the one kind that acts
+	// for that person.
+	ProjectScopeReadPerson = "read-person"
+	// ProjectScopeReadNone is a ProjectScopeNone token whose trade asked for ScopeRead: a read
+	// entry's token, narrowed on request. It holds the OAuth scope ScopeRead alone, as the read
+	// entry's token does.
+	ProjectScopeReadNone = "read-none"
 )
+
+// BaseProjectScope is the word whose rules a project-scope word's projects are read under:
+// ProjectScopeNamed for ProjectScopeReadNamed, ProjectScopePerson for ProjectScopeReadPerson,
+// ProjectScopeNone for ProjectScopeReadNone, and any other word as it is. A narrowed token's
+// projects mean what its base word's do, so every reader that checks a token's projects reads
+// this word, and a narrowed trade is checked and answered as the same trade without ScopeRead.
+// A word is narrowed exactly when this answers another word.
+func BaseProjectScope(word string) string {
+	switch word {
+	case ProjectScopeReadNamed:
+		return ProjectScopeNamed
+	case ProjectScopeReadPerson:
+		return ProjectScopePerson
+	case ProjectScopeReadNone:
+		return ProjectScopeNone
+	}
+	return word
+}
+
+// AccountSubjectPrefix opens a Kubernetes service account's subject,
+// system:serviceaccount:<namespace>:<name>. It tells a Kubernetes subject from a Google account
+// address where a reader holds one string that may be either (exchange.Set.ProjectsForAccount);
+// whether a string is a whole subject is AccountSubject's to answer.
+const AccountSubjectPrefix = "system:serviceaccount:"
+
+// AccountSubject is a Kubernetes service account's whole subject, the one a pod's projected token
+// carries: system:serviceaccount:<namespace>:<name>, the namespace a DNS label and the name a DNS
+// subdomain. It is the one spelling of that grammar: the broker's configuration holds every
+// account its settings name to it (config), and the exchange every account entry and read entry
+// (exchange.NewSet), so it is also the service a ProjectScopeNamed token that names no person
+// carries: the one entry that mints that shape is an account entry naming no person, whose token
+// acts as the account (exchange.Set.Pod). A resource server reads a named token that names no
+// person and a service this does not match whole as no token the broker mints (ciphertoken).
+var AccountSubject = regexp.MustCompile(`^` + AccountSubjectPrefix + `[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
 
 // MaxProjects is the most projects one token names.
 const MaxProjects = 16
@@ -247,10 +332,12 @@ type Introspection struct {
 	// Person is the person the session acts for.
 	Person string `json:"person,omitempty"`
 	// Service is the service a token that names no person was minted for: the fleet its machine
-	// belongs to, as BROKER_VM_SERVICES names it, or the service a read entry names
-	// (BROKER_EXCHANGE_READ_ACCOUNTS). A token names a person or a service and never both, so a
-	// reader that records who is answerable for a write reads Person, and one that decides what a
-	// machine may reach reads this.
+	// belongs to, as BROKER_VM_SERVICES names it, the service a read entry names
+	// (BROKER_EXCHANGE_READ_ACCOUNTS), or the account of a BROKER_EXCHANGE_ACCOUNTS entry naming
+	// no person (system:serviceaccount:<namespace>:<name>), which that token acts as. A token
+	// names a person or a service and never both, so a reader that records who is answerable for
+	// a write reads Person, or this where Person is empty, and one that decides what a machine may
+	// reach reads this.
 	Service string `json:"service,omitempty"`
 	// Machine is the machine a person signed in on acted through: the Google account of the
 	// actor token the exchange was made with, as BROKER_VM_SERVICES lists it. It is set only
@@ -260,8 +347,10 @@ type Introspection struct {
 	// so this is the name a reader can act on.
 	Machine string `json:"machine,omitempty"`
 	// ProjectScope is what Projects means: ProjectScopeNamed, ProjectScopePerson or
-	// ProjectScopeNone. A machine login's own token, which no exchange decided for, carries
-	// neither this nor Projects.
+	// ProjectScopeNone, or one of them narrowed to reading (ProjectScopeReadNamed,
+	// ProjectScopeReadPerson, ProjectScopeReadNone), whose Projects mean what its base word's do.
+	// A machine login's own token, which no exchange decided for, carries neither this nor
+	// Projects.
 	ProjectScope string `json:"project_scope,omitempty"`
 	// Projects is the token's list of projects: for a ProjectScopeNamed token, the entry's one
 	// project, or none for an account entry naming none; for a ProjectScopePerson token, the 0 to
@@ -269,9 +358,16 @@ type Introspection struct {
 	// ProjectScopeNone token, none. Sorted, each once; absent for none.
 	Projects []string `json:"projects,omitempty"`
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
-	// exchanged token holds ScopeRead when a read entry minted it and no scope otherwise, and a
-	// machine login's own token holds Scope.
+	// exchanged token holds ScopeRead when a read entry minted it or its trade asked for it, and
+	// then ScopePerson beside it ("read person") for a ProjectScopeReadPerson token that names
+	// its person; ScopeLegionStatus when a Legion daemon's own entry minted it and its trade did
+	// not ask for ScopeRead; every other exchanged token holds no scope, and a machine login's own
+	// token holds Scope.
 	Scope string `json:"scope,omitempty"`
+	// AsOf is the token's cut: the past time a narrowed token reads at, which its trade asked for
+	// (FormAsOf), in UTC to the microsecond (2006-01-02T15:04:05.000000Z). Only a token of one of
+	// the three narrowed project scopes carries one, and it is absent with no cut.
+	AsOf string `json:"as_of,omitempty"`
 	// ExpiresAt is when the token expires, in seconds since the epoch (RFC 7662's 'exp'), so a
 	// caller that remembers an affirmative answer can keep it no longer than the token lives.
 	ExpiresAt int64 `json:"exp,omitempty"`

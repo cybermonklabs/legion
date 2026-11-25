@@ -95,26 +95,26 @@ func signedInBox(t *testing.T, tokenURL string) *cipherclient.SignInAuthority {
 // is in flight waits for the lock only while its own context lives (ctxlock), so the wait ends at
 // the bound (Server.brokerCall) before the op has sent the broker anything, and the op answers
 // what it knows: ENROLL_FAILED, timed out waiting for the person's sign-in. The row asserts that
-// code and that text, which brokerCall's timer (ENROLL_OUTCOME_UNKNOWN, a second later) never
-// gives, and that the fake received no enroll while the op waited. That count shows the failure
-// is known, since the broker made nothing, and that the wait that ended was Current's and not
-// Refused's, whose error carries the same text after a refused enroll.
+// code and that text, which brokerCall's timer (ENROLL_OUTCOME_UNKNOWN) never gives, and that the
+// fake received no enroll while the op waited. That count shows the failure is known, since the
+// broker made nothing, and that the wait that ended was Current's and not Refused's, whose error
+// carries the same text after a refused enroll.
 //
 // The trade waits at a gate the row opens once it has read its answer, so the trade lasts as long
-// as the row needs and no longer. The row runs under a bound of 1 s rather than the real 20 s.
+// as the row needs and no longer. The row runs under a bound of 1 s rather than the real 20 s,
+// with brokerCall's timer timerSlack after it (slowTimer), so the op's own answer at the bound
+// cannot lose to the timer under load. The answer must still come within answerMargin of the
+// bound: in production a later one loses to the 1 s timer.
 //
 // The named revert: put a sync.Mutex back as SignInAuthority.mu, as it was before ctxlock. The
 // op then waits out the trade with no context, and brokerCall's timer answers it
-// ENROLL_OUTCOME_UNKNOWN at the bound plus 1 s (21 s under the real 20 s bound), as
-// TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter reads, and not an empty reply:
-// the code, the text and the time fail, though the broker made nothing.
+// ENROLL_OUTCOME_UNKNOWN, as TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter
+// reads, and not an empty reply: the code, the text and the time fail, though the broker made
+// nothing.
 func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testing.T) {
-	// bound is the row's bound on the op, and timerAnswers when brokerCall's timer answers an op
-	// still running: the bound plus 1 s.
-	const (
-		bound        = time.Second
-		timerAnswers = bound + time.Second
-	)
+	t.Parallel()
+	// bound is the row's bound on the op.
+	const bound = time.Second
 	var trades atomic.Int64
 	tradeStarted := make(chan struct{})
 	tradeGate := make(chan struct{})
@@ -142,7 +142,7 @@ func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testi
 
 	r := startRig(t, "")
 	r.srv.Broker.SignIns = signedInBox(t, tokens.URL)
-	r.srv.BrokerCallBound = bound
+	slowTimer(r.srv, bound)
 	// Registered after the rig and the token server, so the trade is let go before their Close.
 	t.Cleanup(releaseTrade)
 
@@ -186,8 +186,8 @@ func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testi
 	if arrivals != 0 {
 		t.Errorf("the fake received %d POST /v1/enrollments while enroll-session-key waited for the sign-in; want none", arrivals)
 	}
-	if waited >= timerAnswers {
-		t.Errorf("enroll-session-key answered after %s, at or past brokerCall's timer (%s): the wait for the sign-in did not end with the op's context", waited, timerAnswers)
+	if waited >= bound+answerMargin {
+		t.Errorf("enroll-session-key answered after %s, past its %s bound plus %s: the wait for the sign-in did not end with the op's context", waited, bound, answerMargin)
 	}
 
 	// The trade the op stood behind goes on to its own answer, and the registered session enrols
