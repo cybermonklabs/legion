@@ -10174,7 +10174,7 @@ An issued token carries these claims and no others:
   Every other kind of subject token carries none.
 
 The subject token's own kind decides those claims (`packages/envoy/internal/cipher/exchange/exchange.go`).
-A pod's token needs an entry for its service account, which gives the person and the project, or no project for an entry that names none (`<service account>==<person>`), and may fix the session, and Kubernetes must have bound that token to a pod (`Set.Pod`).
+A pod's token needs an entry for its service account (`BROKER_EXCHANGE_ACCOUNTS`, `<service account>=<project>=<person>[=<session>]`, or `<service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…]` where it names its issuers), which gives the person and the project, or no project for an entry that names none (`<service account>==<person>`), and may fix the session, for a token of an issuer the entry names (the first issuer alone where it names none), and Kubernetes must have bound that token to a pod (`Set.Pod`).
 A read entry for the account (`BROKER_EXCHANGE_READ_ACCOUNTS`, `<service account>=<service>=<session>[=<issuer name>[,<issuer name>…]]`) gives a service and a fixed session in their place, for a token of an issuer the entry names (the first issuer alone where it names none).
 The token it mints for a trade that asks for no scope holds the scope `read` and the project scope `none`, names that service and that session, and names no person and no project.
 That token reads every read of Dispatch's read class that needs no OAuth scope, for every project: each issue, closed and iceboxed ones included, with its documents, comments and asks.

@@ -465,8 +465,8 @@ func TestTheReservationsAreTheNamesTheEntriesFix(t *testing.T) {
 // account writes under the configuration's name and is registered for nothing. An entry that
 // names two issuers answers a token of either. A read entry always fixes one, and answers a token
 // of the first issuer, the one it names, its service and session, the project scope that writes
-// nothing, and no person and no project. The daemon account's entry fixes legion-daemon:ACME, the daemon
-// session of its own project, so it answers LegionStatus too
+// nothing, and no person and no project. The daemon account's entry fixes legion-daemon:ACME, the
+// daemon session of its own project, so it answers LegionStatus too
 // (TestPodGivesLegionStatusToTheDaemonsEntryAlone).
 func TestPodAnswersTheListedAccount(t *testing.T) {
 	set := listed(t)

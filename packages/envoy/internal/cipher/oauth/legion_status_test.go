@@ -72,14 +72,14 @@ func TestTheBrokerGivesLegionStatusToTheDaemonAlone(t *testing.T) {
 	f := newSignInFixtureWith(t, func(c *oauth.Config) {
 		c.Exchange.Policy = newPolicyReading(t,
 			[]exchange.AccountEntry{
-				{Account: account, Project: project, Person: person},
-				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
-				{Account: otherProjectAccount, Project: "OTHERP", Person: person},
-				{Account: crossProjectAccount, Project: "P2", Person: person, Session: "legion-daemon:P3"},
-				{Account: noProjectAccount, Person: person, Session: "legion-daemon:"},
-				{Account: roleAccount, Project: project, Person: person, Session: roleSession},
+				{Account: account, Project: project, Person: person, Issuers: []string{clusterName}},
+				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession, Issuers: []string{clusterName}},
+				{Account: otherProjectAccount, Project: "OTHERP", Person: person, Issuers: []string{clusterName}},
+				{Account: crossProjectAccount, Project: "P2", Person: person, Session: "legion-daemon:P3", Issuers: []string{clusterName}},
+				{Account: noProjectAccount, Person: person, Session: "legion-daemon:", Issuers: []string{clusterName}},
+				{Account: roleAccount, Project: project, Person: person, Session: roleSession, Issuers: []string{clusterName}},
 			},
-			[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
+			[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession, Issuers: []string{clusterName}}},
 			[]exchange.WorkflowEntry{
 				{Repository: repository, Workflow: legionWorkflow, Ref: ref, Project: "WF", Person: person, Session: "legion-daemon:WF"},
 			},
