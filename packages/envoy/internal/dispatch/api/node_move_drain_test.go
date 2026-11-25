@@ -86,14 +86,6 @@ func TestAMoveMarksItsIssuesQueriesOwedAndTheDrainWritesThem(t *testing.T) {
 	}
 	probe.after = func(drainedKey string, appended []model.Event) {
 		drained = true
-		if rows, err := database.Pool.Query(t.Context(), `select a.name || ' ' || coalesce(n.attributes->>'query', '-') || ' v' || v.number || ' ' || length(coalesce(v.markdown, '')) from artifact_versions v join artifacts a on a.id = v.artifact_id left join graph_nodes n on n.kind = 'artifact' and n.id = a.ref_key where a.issue_key = $1 order by a.name, v.number`, key); err == nil {
-			for rows.Next() {
-				var line string
-				_ = rows.Scan(&line)
-				t.Logf("DEBUG version %s", line)
-			}
-			rows.Close()
-		}
 		if early := publishedSince(published); len(early) > 0 {
 			t.Errorf("%s published locally before the move's drain committed", early[0].Type)
 		}
@@ -114,16 +106,16 @@ func TestAMoveMarksItsIssuesQueriesOwedAndTheDrainWritesThem(t *testing.T) {
 			t.Errorf("the move's drain answers %+v for the route to publish, want its artifact.version among them", appended)
 		}
 	}
-	response := patchNode(t, handler, key, criterion, tag, map[string]any{"parent": paragraph}, "alice")
+	response := patchNode(t, handler, key, criterion, tag, map[string]any{"parent": lens}, "alice")
 	probe.before, probe.after = nil, nil
 	if response.Code != http.StatusOK {
-		t.Fatalf("the move of %s under %s answered %d %s, want 200", criterion, paragraph, response.Code, response.Body.String())
+		t.Fatalf("the move of %s under %s answered %d %s, want 200", criterion, lens, response.Code, response.Body.String())
 	}
 	if !committed || !drained {
 		t.Fatalf("the move ran no drain of %s once it committed (before %t, after %t)", key, committed, drained)
 	}
-	if moved, _ := placementOf(t, database, "block", criterion); moved.ToID != paragraph || moved.Seq == held.Seq {
-		t.Errorf("the move of %s left it under %s %s at placement_seq %d, want %s at a new one", criterion, moved.ToKind, moved.ToID, moved.Seq, paragraph)
+	if moved, _ := placementOf(t, database, "block", criterion); moved.ToID != lens || moved.Seq == held.Seq {
+		t.Errorf("the move of %s left it under %s %s at placement_seq %d, want %s at a new one", criterion, moved.ToKind, moved.ToID, moved.Seq, lens)
 	}
 	if blind := sent.Blind(); len(blind) > 0 {
 		t.Fatalf("the statement recorder could not read %q", blind)
@@ -131,15 +123,14 @@ func TestAMoveMarksItsIssuesQueriesOwedAndTheDrainWritesThem(t *testing.T) {
 	requireDrainTrace(t, "the move of "+criterion, sent.Statements()[from:])
 	requireRecordedDigest(t, database, "the drained version of the move", key, graphstore.QuerySpec, newestQueryVersion(t, database, specQuery))
 
-	unconverted := createDigestIssue(t, handler, database, "MVQ", "A move on an issue that has not converted",
-		moveDrainSpec("The unconverted issue's paragraph"), true)
+	unconverted := createDigestIssue(t, handler, database, "MVQ", "A move on an issue that has not converted", moveDrainSpec, true)
 	unconvertedCriterion := readDecisionDocument(t, database, unconverted.Key, "spec").address("qk1")
-	unconvertedParagraph := blockWithText(t, database, "The unconverted issue's paragraph")
+	unconvertedLens := moveDrainLens(t, handler, unconverted.Key)
 	versions := issueVersionCounts(t, database.Pool, unconverted.Key)
 	drains := probe.drains.Load()
 	_, unconvertedTag := placementOf(t, database, "block", unconvertedCriterion)
-	if moved := patchNode(t, handler, unconverted.Key, unconvertedCriterion, unconvertedTag, map[string]any{"parent": unconvertedParagraph}, "alice"); moved.Code != http.StatusOK {
-		t.Fatalf("the move of %s under %s answered %d %s, want 200", unconvertedCriterion, unconvertedParagraph, moved.Code, moved.Body.String())
+	if moved := patchNode(t, handler, unconverted.Key, unconvertedCriterion, unconvertedTag, map[string]any{"parent": unconvertedLens}, "alice"); moved.Code != http.StatusOK {
+		t.Fatalf("the move of %s under %s answered %d %s, want 200", unconvertedCriterion, unconvertedLens, moved.Code, moved.Body.String())
 	}
 	requireNoQueryMark(t, database, "after a move on an issue that has not converted", unconverted.Key)
 	if ran := probe.drains.Load(); ran != drains {
