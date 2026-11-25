@@ -194,6 +194,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/credentials/capabilities":                               {Writes: readWritesNothing},
 	// The test hooks' GET rows, which read this process's memory.
 	"GET /api/v1/artifacts/_test/rooms":                          {Writes: readWritesNothing},
+	"GET /api/v1/artifacts/{id}/_test/ask-attributes":            {Writes: readWritesNothing},
 	"GET /api/v1/artifacts/{id}/_test/room-counters":             {Writes: readWritesNothing},
 	"GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {Writes: readWritesNothing},
 	"GET /api/v1/messages/_test/queued":                          {Writes: readWritesNothing},

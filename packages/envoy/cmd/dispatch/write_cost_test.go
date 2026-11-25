@@ -4,19 +4,17 @@
 
 package main
 
-// This change's check c-write-cost: no write path this child changes gets slower.
-//
-// The test is TestNoWritePathThisChildChangesGetsSlower at the end of this file; everything
-// above it is the corpus it writes and the paths it measures (writeCostPaths). graph_cost_test.go
-// holds the two arms, the clock and the order statistic the two cost measurements share.
-// TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise, last in the file, holds the
-// 8,001-block path's allowance (writeCostOverAllowance) to its rule with no database and no arm.
+// The write corpus and paths a write cost tool of this tag uses: the corpus, the document
+// generator, and the paths measured (writeCostPaths). #3178's check c-write-cost, which drove
+// them, is gone from main; the INFRA-1098 tree's branches use writeCostNesting and
+// costStoreCounts. graph_cost_test.go holds the two arms, the clock and the order statistic.
+// cost_bounds_test.go, which carries no build tag, holds the 8,001-block path's allowance
+// (writeCostOverAllowance) to its rule with no database and no arm.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -26,7 +24,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The corpus, as c-write-cost states it. The two documents are a stated shape and not a guess:
@@ -59,9 +56,7 @@ const (
 	// rise (writeCostOverAllowance): IndexDocumentReferences already spends 347 ms on that
 	// version inside a request measured at 939 to 1,130 ms (docs/reference_excerpts.go), so a
 	// change inside the allowance this path is held to can still put that request over its own
-	// bound. The run asserts all three on the path's warm series, and the ratio and the rise
-	// alone on its cold one (writeCostSeriesOf): a cold reading decodes the document's whole
-	// stored history, which every version the series writes makes longer.
+	// bound. The run asserts all three.
 	//
 	// That reading was taken off gVisor. This pod runs syscall-heavy work 2.2 to 3.8 times
 	// slower, and the commit before this child measures this path at 1.9 to 4.4 seconds here,
@@ -321,7 +316,8 @@ func writeCostTick(t *testing.T, corpus *writeCostCorpus, run int) time.Duration
 // seconds a rise of hundreds of milliseconds, and at the 845.3 to 1,299.9 ms the commit before
 // this child read on this path in the three runs above, 1.25 alone would have allowed a rise of
 // 211 to 325 ms where the rise bound allows 100. Below a commit before of 400 ms the ratio is the
-// lower and decides; above it the rise does.
+// lower and decides; above it the rise does. Its ratio (writeCostOverRatio), its rise
+// (costBudget) and the rule that takes the lower are in cost_bounds_test.go.
 //
 // When a change moves a path, its bound is measured again the same way, over three clean runs,
 // and never edited by hand.
@@ -329,14 +325,13 @@ const (
 	writeCostCommentCreateRatio  = 1.75
 	writeCostDeliveryRecordRatio = 1.25
 	writeCostEditRatio           = 1.75
-	writeCostOverRatio           = 1.25
 )
 
 // writeCostPath is one of the paths writeCostPaths lists, as the run measures it on either arm.
 type writeCostPath struct {
 	name string
 	// absolute is the bound this path carries beyond its ratio, zero for a path that carries
-	// none. It holds a document path's warm series alone (writeCostSeriesOf).
+	// none.
 	absolute time.Duration
 	// ratio is the bound on this path's deciding statistic at this child over the same
 	// statistic at the commit before this child (the ratios above), and perStoreRow is the
@@ -354,515 +349,33 @@ type writeCostPath struct {
 	// path of seconds takes costWriteRuns, because two hundred readings of a 40-second tick is
 	// hours of wall time for nothing.
 	readings int
-	// document is the artifact id of the document a document version path writes, read off the
-	// arm's corpus, and nil for the comment paths and the tick. A path that names one is measured
-	// in two series, cold and then warm (writeCostSeriesOf); one that names none is measured once.
-	document func(corpus *writeCostCorpus) string
 	take     func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration
 }
 
 func writeCostPaths() []writeCostPath {
-	under := func(corpus *writeCostCorpus) string { return corpus.under }
-	over := func(corpus *writeCostCorpus) string { return corpus.over }
 	return []writeCostPath{
 		{name: "comment create", ratio: writeCostCommentCreateRatio, readings: costReadReadings, take: writeCostCommentCreate},
 		{name: "comment delivery record", ratio: writeCostDeliveryRecordRatio, readings: costReadReadings, take: writeCostDeliveryRecord},
 		// The edit a person makes: one block of a 1,999-block document moved, the rest carried
-		// across the version by their own ids. This is the shape Dispatch serves all day. Its
-		// ratio holds both its series.
-		{name: "document version, one changed block of 1,999", ratio: writeCostEditRatio, readings: costWriteRuns, document: under, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
+		// across the version by their own ids. This is the shape Dispatch serves all day.
+		{name: "document version, one changed block of 1,999", ratio: writeCostEditRatio, readings: costWriteRuns, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 			return writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, run, writeCostUnderBlocks/2)
 		}},
 		// The whole document rewritten, every block new to the index: a bulk action, rare and
 		// started by a person who asked for it, measured apart from the edit above because a
 		// path that writes four thousand node rows cannot be held to a ratio of one that writes
-		// none. Its budget a store row reads its warm series alone: a cold reading also decodes
-		// the document's whole stored history (docs' coldFork), which is no store row's cost and
-		// which every rewrite of the series makes longer, so a rise there would charge the rows
-		// with work they do not do. Its cold series is printed and decides nothing.
-		{name: "document version, 1,999 blocks rewritten", perStoreRow: writeCostRewriteRowBudget, readings: costWriteRuns, document: under, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
+		// none.
+		{name: "document version, 1,999 blocks rewritten", perStoreRow: writeCostRewriteRowBudget, readings: costWriteRuns, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 			return writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, run, -1)
 		}},
 		// The 8,001-block version is held to two allowances at once, its ratio and the 100 ms
 		// rise (costBudget) it was held to before it carried a ratio, and the lower of the two
 		// decides (writeCostOverAllowance), so no bound on it got weaker than Verification version
-		// 150's; both hold its warm series, beside the 1 s absolute bound (writeCostAbsolute). Its
-		// cold series is held to the ratio alone, prints its absolute times and carries no absolute
-		// bound: a cold reading decodes the document's whole stored history, which every version the
-		// series writes makes longer.
-		{name: writeCostOverPath, absolute: writeCostAbsolute, ratio: writeCostOverRatio, readings: costWriteRuns, document: over, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
+		// 150's. It carries the 1 s absolute bound beside them (writeCostAbsolute).
+		{name: writeCostOverPath, absolute: writeCostAbsolute, ratio: writeCostOverRatio, readings: costWriteRuns, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 			return writeCostVersion(t, corpus, "over.md", writeCostOverBlocks, run, -1)
 		}},
 		{name: writeCostTickPath, readings: costWriteRuns, take: writeCostTick},
-	}
-}
-
-// ───── the room each document version meets ──────────────────────────────
-
-// The run numbers each series takes, and the room state each sets before a reading.
-const (
-	// writeCostSeriesRuns is how many run numbers one series of a document version path takes:
-	// its warm-up (costWarmUp) and its costWriteRuns readings. A version's text carries its run
-	// number (writeCostVersion's revision), so the cold series takes [0, writeCostSeriesRuns) and
-	// the warm one the range after it. The two paths of the 1,999-block document share those
-	// ranges and differ in which items carry the number, one or every one, so no two writes of
-	// one document carry the same text.
-	writeCostSeriesRuns = costWarmUp + costWriteRuns
-	// writeCostLaterRun is the first run number past both series' ranges. The writes the run
-	// makes after the paths take it and the two after it (writeCostWhereTheTimeWent and
-	// writeCostWhatTheEditWrote), so none of them writes a text a series wrote.
-	writeCostLaterRun = 2 * writeCostSeriesRuns
-	// writeCostSettleDelay is the settle delay each arm's process runs: the document service's
-	// default, 2 s at both commits (docs.New), since startCostArm sets no
-	// DISPATCH_TEST_SETTLE_DELAY. A write arms its document's settlement this long after it, and
-	// that settlement's warm-up (settlement.take's Server.Apply) is what loads the room of a
-	// document no room held: a cold write's publish loads none (publishLiveWrite).
-	writeCostSettleDelay = 2 * time.Second
-	// writeCostSettleAttempts is how many times one arming's settlement runs at most before the
-	// room fails: docs' maxSettleFailures, 3 at both commits. One that stops short is armed again
-	// a settle delay later (retrySettleLocked), and the third to stop short fails the room, so the
-	// warm-up starts at most this many settle delays after the arm's last write.
-	writeCostSettleAttempts = 3
-	// writeCostRoomWait bounds each wait for a series' room state: three times the longest those
-	// two constants let the warm-up take to start, as docs/testing.md's horizon waits take three
-	// times what the server's own constants give. The rooms route lists a room from the moment its
-	// load starts (ygo publishes the room before it loads it), so the warm wait ends at the
-	// warm-up's start rather than at the end of its load. The cold wait follows a quiesce, which
-	// answers once its closes have ended, so there the bound is a hang guard.
-	writeCostRoomWait = 3 * writeCostSettleAttempts * writeCostSettleDelay
-	// writeCostRoomPoll is how often a wait reads the arm's rooms: each read is a request to the
-	// arm, so it is not asked a hundred times a second (testwait.Holds), and a fortieth of the
-	// settle delay the warm wait stands behind is resolution enough.
-	writeCostRoomPoll = 50 * time.Millisecond
-)
-
-// writeCostSeries is one room state a document version path is measured in, on both arms alike.
-type writeCostSeries struct {
-	// name is the series' name beside its path's in the printed table and in every verdict,
-	// "cold" or "warm", and empty for the one series of a path that writes no document.
-	name string
-	// warm is whether the arm holds a room of the document when the clock starts.
-	warm bool
-	// first is the run number of the series' first write, its warm-up: the series takes
-	// writeCostSeriesRuns run numbers from there.
-	first int
-}
-
-// writeCostCold and writeCostWarm are the two series of a document version path, measured in
-// that order: the room the warm series finds is the one the settlement of the cold series' last
-// write loads.
-var (
-	writeCostCold = writeCostSeries{name: "cold"}
-	writeCostWarm = writeCostSeries{name: "warm", warm: true, first: writeCostSeriesRuns}
-)
-
-// writeCostSeriesOf is the series path is measured in: cold and then warm for a document version
-// path, and one series of no room state of its own for every other.
-func writeCostSeriesOf(path writeCostPath) []writeCostSeries {
-	if path.document == nil {
-		return []writeCostSeries{{}}
-	}
-	return []writeCostSeries{writeCostCold, writeCostWarm}
-}
-
-// reading is the name the readings of path in this series are printed and judged under: the
-// path's own, with the series' beside it where it has one, as "document version, 8,001 blocks
-// (cold)".
-func (s writeCostSeries) reading(path string) string {
-	if s.name == "" {
-		return path
-	}
-	return path + " (" + s.name + ")"
-}
-
-// run is the run number of the series' reading that costInterleaved numbers run: its warm-up,
-// run -costWarmUp, takes first, and each reading after it the next.
-func (s writeCostSeries) run(run int) int {
-	return s.first + costWarmUp + run
-}
-
-// writeCostRoomState puts arm in series' room state for document before a reading of path, off
-// the clock. Before a cold reading the arm closes every room its process holds and finishes the
-// settlements in flight (POST /api/v1/artifacts/_test/quiesce: each arm serves a database of its
-// own, so every process it closes is the arm's own), and the run waits until the arm lists no
-// room of the document. Before a warm reading the run waits until the arm lists one: the
-// settlement the arm's write before it armed loads it once the arm's writes pause, and the other
-// arm's reading between the two is that pause. Both routes are served at both commits under
-// DISPATCH_TEST_HOOKS=1, which startDispatchProcessWith sets. The reading's body is read after
-// this (writeCostVersion's documentUpload), and that read leaves the room state as it is: the
-// document service reads a document without loading or writing its room (docs' readDocument).
-//
-// The listing names a room from the moment its load starts, so a warm series' first wait on each
-// arm can end while the settlement's warm-up still loads the room. That reading is the arm's
-// warm-up of the series, which costInterleaved does not count; every counted warm reading follows
-// a write of its own arm that published into the room. A wait that outlasts writeCostRoomWait
-// fails the run naming the arm, the series, the path and the document.
-func writeCostRoomState(t *testing.T, arm *costArm, path string, series writeCostSeries, document string) {
-	t.Helper()
-	if !series.warm {
-		if answer := arm.server.send(t, http.MethodPost, "/api/v1/artifacts/_test/quiesce", "", asUser(costLogin)); answer.status != http.StatusOK {
-			t.Fatalf("%s: the %s series of %s: close the arm's rooms before a reading of document %s: %s",
-				arm.name, series.name, path, document, answer)
-		}
-	}
-	var rooms []string
-	if testwait.Holds(writeCostRoomWait, writeCostRoomPoll, func() bool {
-		rooms = arm.rooms(t)
-		return slices.Contains(rooms, document) == series.warm
-	}) {
-		return
-	}
-	state := "still held a room of document " + document + " after closing its rooms"
-	if series.warm {
-		state = "held no room of document " + document + " after the settlement of its last write had had time to load one"
-	}
-	t.Fatalf("%s: the %s series of %s: the arm %s, %s on (writeCostRoomWait); the rooms it listed last: %v\n%s",
-		arm.name, series.name, path, state, writeCostRoomWait, rooms, arm.server.Output.String())
-}
-
-// rooms lists the documents this arm's process holds a room of now, resident or still loading
-// (GET /api/v1/artifacts/_test/rooms). It is multiprocess_test.go's residentRooms over a costArm,
-// which that file's build tag keeps out of this one's.
-func (a *costArm) rooms(t *testing.T) []string {
-	t.Helper()
-	answer := a.server.send(t, http.MethodGet, "/api/v1/artifacts/_test/rooms", "", asUser(costLogin))
-	if answer.status != http.StatusOK {
-		t.Fatalf("%s: list the rooms it holds: %s", a.name, answer)
-	}
-	var listed struct {
-		Rooms []string `json:"rooms"`
-	}
-	if err := json.Unmarshal(answer.body, &listed); err != nil {
-		t.Fatalf("%s: decode the rooms it holds: %v: %s", a.name, err, answer)
-	}
-	return listed.Rooms
-}
-
-// No write path this child changes gets slower.
-//
-// Every write path writeCostPaths lists is measured at this child's head and at the commit this
-// branch forked from, in one run, interleaved, over one corpus written to each arm by one seeding
-// pass: a comment create, a comment delivery record, a document version of 1,999 blocks with one
-// block changed, one of the same document with every block rewritten, one of 8,001 blocks and
-// one reconciliation tick. Every reading is printed, so a swinging one is visible rather than
-// hidden in a summary, and the statistic each path is held to is a real order statistic by
-// nearest rank. How many readings a path takes, and which statistic decides it, follows what
-// the path costs. The two comment paths cost tens of milliseconds, so they take 200 readings
-// and their p99, the 198th, decides: at twenty readings the p99 is the slowest of them, and one
-// scheduling hiccup of this pod would decide the cell - measured here, where eighteen quiet
-// readings of a comment create, 17.0 to 32.1 ms, were failed by two of 85.9 and 100.5. The
-// document versions and the tick cost seconds, so they keep the 20 readings R18 fixes, because
-// 200 readings of a 40-second tick is hours of wall time for nothing, and their p50 decides
-// with their p99 printed beside it.
-//
-// Each document version path takes those 20 readings on each arm twice, in two series, each
-// interleaved by arm, whose room state is set before every reading and off the clock
-// (writeCostRoomState). Cold, no room of the arm's process holds the document, as when an agent's
-// upload meets a document no browser has open: the write forks the stored document, which decodes
-// its whole stored history (docs' coldFork). Warm, a room holds it, as when a browser has it open:
-// the write forks the room. Both states are real, and the run sets them rather than leaving them
-// to chance, because left alone they were a race: a cold write's publish loads no room, and only
-// its settlement's warm-up does, once the arm's writes pause, so which arm stayed cold for all of
-// its readings changed from run to run - one run held this child's arm cold throughout and failed
-// it on the 1 s bound, another held the commit before it cold and passed. Each series is printed
-// under its own name, as "document version, 8,001 blocks (cold)".
-//
-// The tick is held to no relative budget at all: the deferral exists to move the index out of
-// the request, so the loop always spends on a document what the request did not, and holding it
-// to a commit that deferred nothing of the kind would refuse the design rather than test it.
-// e2e/acceptance/graph-sizing.sh holds it to one gate that measures it against the work it is
-// given - it drains no slower than deferred work arrives - and prints, as a reading that gates
-// nothing, the seconds it spends on a document beside those the request path spends indexing the
-// same document itself; this run prints its cost beside them.
-//
-// Each request path is held to a ratio: its deciding statistic at this child over the same
-// statistic at the commit before this child, against a bound of its own taken from three clean
-// runs (writeCostEditRatio and the three beside it), and a ratio above its bound fails; the
-// ratio of a document version path holds both its series. The rewrite of all 1,999 blocks is held
-// to what each store row it writes may cost instead (writeCostRewriteRowBudget), on its warm
-// series alone: a cold reading also decodes the stored history, which is no store row's cost.
-// The edit of one block is also held to the graph_tuples rows it appends on this child's arm,
-// which must be the tuples of the changed block alone (writeCostEditTuples). The 8,001-block path
-// keeps the rise of at most 100 ms it was held to before beside its ratio, on its warm series, and
-// the lower of the two allowances decides (writeCostOverAllowance), so no bound on it got weaker.
-// On its warm series it carries a third bound, 1 s absolute, because IndexDocumentReferences
-// already spends 347 ms on that version inside a request measured at 939 to 1,130 ms: a change
-// inside its allowance can still put that request over its own bound. Its cold series prints its
-// absolute times, is held to the ratio alone and carries no absolute bound, since a cold reading
-// decodes a stored history that every version the series writes makes longer. The failure says which of its bounds it
-// broke, and an absolute failure with the allowance passing says so in as many words, because
-// that case is the architect's to decide and not the implementer's to fix.
-//
-// A breakdown of one of these requests, part by part, is read the same way and never from two or
-// three readings. Go charges a collection to whichever goroutine is allocating while it runs, so
-// a part's wall time is its own work plus whatever the collector did inside it, and the part
-// that allocates most collects most. The parse of the 1,999-block upload
-// (upload.ReplaceText's startTree+markdown: the live tree read, rendered, and the upload parsed)
-// is that part: it allocates about 24 MB on either arm, of the 82.0 MB this child's whole
-// request allocates and the 48.2 MB the commit before it allocates. Measured inside both servers
-// over 20 interleaved readings of the edit shape, that parse read 109.5 ms here against 85.3 ms
-// there - but it carried a collection in 14 of the 20 readings here and in 1 of the 20 there,
-// and over the readings that carried none it read 82.0 ms here against 85.3 ms there. The parse
-// does the same work at both commits; what this child changed is that its request makes 1.7
-// times the garbage, almost all of it outside the parse, so the collector runs inside nearly
-// every request rather than one in five. A part read over three readings states where the
-// collector fell, not what the part does.
-func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
-	t.Log(costGVisorNote)
-	t.Log("how each arm is driven: both arms are server processes of their own build, each serving " +
-		"a database of its own which that build migrated at boot, and each is driven over its own " +
-		"HTTP API by this test, which encodes every request body before the clock starts and reads " +
-		"every answer to its end before it stops. The reconciliation tick is a request on neither " +
-		"arm: it is measured on each arm's own loop, from the first document that pass committed to " +
-		"the last, with the pass's own lease held while the batch was written so that no tick ran " +
-		"over a half-written batch.")
-	t.Log("how each document version is measured: in two series on each arm, cold and then warm. Before each " +
-		"cold reading the arm closes every room its process holds (POST /api/v1/artifacts/_test/quiesce) and the " +
-		"run waits until the arm lists no room of the document; before each warm reading the run waits until the " +
-		"arm lists one (GET /api/v1/artifacts/_test/rooms), which the settlement of the arm's write before it " +
-		"loads. Both waits, and the body's encoding, come before the clock starts.")
-	for _, recorded := range writeCostRecorded {
-		t.Logf("already recorded in the source tree: %s", recorded)
-	}
-
-	listener := costEnvoy(t)
-	listener.Accept(true)
-	head, base := startCostArms(t, listener.URL)
-	arms := []*costArm{head, base}
-	corpora := map[*costArm]*writeCostCorpus{}
-	for _, arm := range arms {
-		corpora[arm] = seedWriteCost(t, arm)
-	}
-	// This child's arm is measured in the state a deployment serves after the backfill: every
-	// projection row beside its node, which is the state in which graph_edges answers that row
-	// from the tuple arm.
-	costRunBackfill(t, head)
-	for _, arm := range arms {
-		costBlockIndexDrained(t, arm, 10*time.Minute)
-		requireWriteCostShapes(t, corpora[arm])
-		t.Logf("%s: the corpus holds %d comment(s), %d document block(s) and %d block reference(s)%s",
-			arm.name,
-			arm.count(t, `select count(*) from comments`),
-			arm.count(t, `select count(*) from document_blocks`),
-			arm.count(t, `select count(*) from block_refs`),
-			costStoreCounts(t, arm))
-	}
-	requireWriteCostReachesTheStore(t, head, corpora[head])
-	readings := map[string]map[*costArm]costReading{}
-	for _, path := range writeCostPaths() {
-		// The request paths are measured with the block-index pass held off on both arms,
-		// so no tick of either server's own runs inside a measured window: the versions these
-		// writes leave owed are indexed after the window, not inside it. The tick path takes
-		// that lease itself, for the window in which it writes its batch.
-		var held []func()
-		if path.name != writeCostTickPath {
-			for _, arm := range arms {
-				held = append(held, costHoldBlockIndex(t, arm))
-			}
-		}
-		// A document version path is measured cold and then warm (writeCostSeriesOf), both under
-		// this one hold of the lease and with no drain between them: the room the warm series
-		// finds is the one the settlement of the cold series' last write loads, and a wait as long
-		// as a drain can be would let the arm's idle sweep retire it (docs' roomIdleTimeout, a
-		// minute).
-		for _, series := range writeCostSeriesOf(path) {
-			reading := series.reading(path.name)
-			readings[reading] = costInterleaved(t, reading, "", path.readings, arms, func(arm *costArm, run int) time.Duration {
-				corpus := corpora[arm]
-				if path.document != nil {
-					writeCostRoomState(t, arm, path.name, series, path.document(corpus))
-					run = series.run(run)
-				}
-				return path.take(t, corpus, run)
-			})
-		}
-		for _, release := range held {
-			release()
-		}
-		if path.name != writeCostTickPath {
-			for _, arm := range arms {
-				costBlockIndexDrained(t, arm, 10*time.Minute)
-			}
-		}
-	}
-
-	ordered := []costReading{}
-	for _, path := range writeCostPaths() {
-		for _, series := range writeCostSeriesOf(path) {
-			reading := series.reading(path.name)
-			ordered = append(ordered, readings[reading][head], readings[reading][base])
-		}
-	}
-	costTableOf(t, ordered)
-	rewriteRows := writeCostWhereTheTimeWent(t, arms, corpora)
-	writeCostWhatTheEditWrote(t, arms, corpora)
-	// The 8,001-block path takes 20 readings in each series, so its verdict below is read from
-	// its p50, and this line is read from the same figure: two statements about one bound that
-	// disagreed would tell a reader nothing. The bound holds the path's warm series alone; the
-	// line after it prints the cold series' absolute times, which no absolute bound holds.
-	warmOver, coldOver := writeCostWarm.reading(writeCostOverPath), writeCostCold.reading(writeCostOverPath)
-	absolute := readings[warmOver][head]
-	bound, from := writeCostAbsoluteBound(readings[warmOver][base])
-	against, verdict := bound.String(), "passed"
-	switch {
-	case bound == 0:
-		against, verdict = "no bound here", "not bounded"
-	case absolute.p50() >= bound:
-		verdict = "FAILED"
-	}
-	t.Logf("the 8,001-block request's own absolute bound, on its warm series: p50 %.1f ms against %s - %s (p99 %.1f ms). The bound is %s. The readings already in the "+
-		"source tree, beside it: 234, 239 and 252 ms for 1,999 blocks indexed in its own write, 144, 145 and 157 ms for "+
-		"2,001 blocks whose index the write defers, and 347 ms inside IndexDocumentReferences for 8,001 blocks, of a "+
-		"request total of 939-1,130 ms (docs/reference_excerpts.go).",
-		costMilliseconds(absolute.p50()), against, verdict, costMilliseconds(absolute.p99()), from)
-	cold := readings[coldOver]
-	t.Logf("the 8,001-block request on its cold series: p50 %.1f ms at this child and %.1f ms at the commit before it (p99 %.1f ms here, %.1f ms there), "+
-		"held to no absolute bound: a cold write decodes the document's whole stored history, which every version the series writes makes longer, "+
-		"so these times are printed for the reader, and the series is held to its ratio alone.",
-		costMilliseconds(cold[head].p50()), costMilliseconds(cold[base].p50()), costMilliseconds(cold[head].p99()), costMilliseconds(cold[base].p99()))
-
-	for _, path := range writeCostPaths() {
-		for _, series := range writeCostSeriesOf(path) {
-			reading := series.reading(path.name)
-			writeCostJudge(t, path, series, readings[reading][head], readings[reading][base], rewriteRows)
-		}
-	}
-}
-
-// writeCostJudge holds the readings of path in series, here at this child and before at the
-// commit before it, to the bounds that series carries, and prints the line that says how they
-// were read. rewriteRows is the store rows the head arm's rewrite wrote (writeCostWhereTheTimeWent),
-// which the rewrite path's budget is read against.
-func writeCostJudge(t *testing.T, path writeCostPath, series writeCostSeries, here, before costReading, rewriteRows int64) {
-	t.Helper()
-	name := series.reading(path.name)
-	if path.name == writeCostTickPath {
-		// The tick is held to no relative budget, and the reason is the deferral itself.
-		// A document past the threshold leaves its index to the loop, so the loop spends
-		// on it what the request did not: measured on this pod, 0.33 s to write and defer
-		// against 1.44 s to drain. Holding that to the commit before this child, which
-		// deferred nothing of the kind, would refuse the design rather than test it. What
-		// the loop is held to instead is c-growth's one gate, which measures it against
-		// the work it is given rather than against a request that skipped the work: it
-		// drains no slower than deferred work arrives. The seconds it spends on a document
-		// beside those the request path spends indexing the same document are a reading
-		// there and gate nothing. Its cost is printed here so a reader sees what the
-		// design chose.
-		t.Logf("%s: p50 %.1f ms at this child against %.1f ms at the commit before it (p99 %.1f ms here, %.1f ms there, over %d reading(s) of each). "+
-			"This path carries no relative budget: the deferral exists to move the index out of the request, so the loop spends what the request did not, "+
-			"and e2e/acceptance/graph-sizing.sh holds it to the one gate that measures it against the work it is given.",
-			name, costMilliseconds(here.p50()), costMilliseconds(before.p50()),
-			costMilliseconds(here.p99()), costMilliseconds(before.p99()), path.readings)
-		return
-	}
-	// Which statistic decides, and why it is not the same for every path. A path of tens of
-	// milliseconds takes 200 readings, where the 99th is the 198th and so is a reading with
-	// others above it: its p99 decides. A path of seconds takes 20, where the 99th is the
-	// slowest of them, and the slowest of twenty readings of a 40-second tick is a statement
-	// about this pod's worst moment rather than about the path: its p50 decides, and its p99
-	// is printed beside it for the reader. The line below states the rule each path took and
-	// the reason, from the path's own count of readings and the rank its p99 falls at.
-	statistic, here99, before99 := "p99", here.p99(), before.p99()
-	rank := int(math.Ceil(0.99 * float64(path.readings)))
-	rule := fmt.Sprintf("p99 decides, because this path costs tens of milliseconds and takes %d readings, "+
-		"so its p99 by nearest rank is reading %d of them with %d slower beside it, and no one hiccup of this pod moves it",
-		path.readings, rank, path.readings-rank)
-	if path.readings < costReadReadings {
-		statistic, here99, before99 = "p50", here.p50(), before.p50()
-		rule = fmt.Sprintf("p50 decides, because this path costs seconds and takes %d readings, where its p99 by nearest rank "+
-			"is reading %d of them, the slowest, which one hiccup of this pod decides, and %d readings of a path of seconds "+
-			"would be hours of wall time; its p99 is printed beside the p50 so a reader sees the tail it carries",
-			path.readings, rank, costReadReadings)
-	}
-	if path.perStoreRow > 0 {
-		// The allowance this path carries. A rewrite is judged on the cost of one store row
-		// rather than on its total, because it writes about 14,000 rows the commit before this
-		// child writes none of: the rows are what the model requires, and what can regress is
-		// the cost of one of them. The rows come from the run's own instrumented rewrite above.
-		// The budget reads the warm series alone (writeCostPaths): a cold reading also decodes the
-		// document's whole stored history, which is no store row's cost, so the cold series'
-		// line prints its rise and decides nothing.
-		if !series.warm {
-			t.Logf("%s: %s %.1f ms at this child against %.1f ms at the commit before it, a rise of %.1f ms (p99 %.1f ms here, %.1f ms there, over %d reading(s) of each). "+
-				"This series carries no budget: the budget a store row reads the warm series, since a cold reading also decodes the document's whole stored history, "+
-				"which is no store row's cost. The rule this path is read by: %s.",
-				name, statistic, costMilliseconds(here99), costMilliseconds(before99), costMilliseconds(here99-before99),
-				costMilliseconds(here.p99()), costMilliseconds(before.p99()), path.readings, rule)
-			return
-		}
-		if rewriteRows <= 0 {
-			t.Errorf("%s: the run read no store rows for this path, so its cost a row cannot be measured", name)
-			return
-		}
-		rise := here99 - before99
-		allowance := path.perStoreRow * time.Duration(rewriteRows)
-		measured := fmt.Sprintf("the rise over the %d store row(s) it writes, %.3f ms a row against the %s a row this path allows",
-			rewriteRows, costMilliseconds(rise)/float64(rewriteRows), path.perStoreRow)
-		t.Logf("%s: %s %.1f ms at this child against %.1f ms at the commit before it, a rise of %.1f ms against the %s budget (%s) (p99 %.1f ms here, %.1f ms there, over %d reading(s) of each). The rule this path is read by: %s.",
-			name, statistic, costMilliseconds(here99), costMilliseconds(before99),
-			costMilliseconds(rise), allowance, measured,
-			costMilliseconds(here.p99()), costMilliseconds(before.p99()), path.readings, rule)
-		if rise > allowance {
-			t.Errorf("%s: %s %.1f ms at this child against %.1f ms at the commit before this child, a rise of %.1f ms, over the %s budget (%s) (this child's readings %s; the commit before's %s)",
-				name, statistic, costMilliseconds(here99), costMilliseconds(before99),
-				costMilliseconds(rise), allowance, measured, here.printed(), before.printed())
-		}
-		return
-	}
-	// The absolute bound this environment allows, on a path's warm series alone (writeCostPaths):
-	// the stated one where the commit before this child measures inside it, and none at all
-	// where it does not, since a bound a build this change has not touched already breaks is a
-	// statement about the pod and not about the change. The cold series carries none.
-	var limit time.Duration
-	if path.absolute > 0 && series.warm {
-		limit, _ = writeCostAbsoluteBound(before)
-	}
-	// Every other path is held to the ratio of its deciding statistic here over the same
-	// statistic there, which holds a path of tens of milliseconds and a path of seconds
-	// alike to how much slower it got. The 8,001-block path's warm series is held to the lower
-	// of that ratio's allowance and its 100 ms rise (writeCostOverAllowance), so its line prints
-	// both and names the one that decided. Its cold series is held to the ratio alone: the rise was
-	// set for the warm request, and a cold reading also decodes the document's whole stored
-	// history, which makes it about one and a half times as long, so a rise of 100 ms there says
-	// less about this child than the ratio does.
-	ratio := float64(here99) / float64(before99)
-	relative := ratio <= path.ratio
-	absolute := limit == 0 || here99 < limit
-	if path.name == writeCostOverPath && series.warm {
-		rise := here99 - before99
-		_, deciding, inside := writeCostOverAllowance(here99, before99)
-		relative = inside
-		t.Logf("%s: %s %.1f ms at this child against %.1f ms at the commit before it, a ratio of %.2f against the %.2f bound and a rise of %.1f ms against the %s bound, the %s deciding%s (p99 %.1f ms here, %.1f ms there, over %d reading(s) of each). The rule this path is read by: %s.",
-			name, statistic, costMilliseconds(here99), costMilliseconds(before99),
-			ratio, path.ratio, costMilliseconds(rise), costBudget, deciding, costAbsoluteNote(limit, here99),
-			costMilliseconds(here.p99()), costMilliseconds(before.p99()), path.readings, rule)
-		if !relative {
-			t.Errorf("%s: %s %.1f ms at this child against %.1f ms at the commit before this child, a ratio of %.2f and a rise of %.1f ms, over the %.2f bound or the %s bound (this child's readings %s; the commit before's %s)",
-				name, statistic, costMilliseconds(here99), costMilliseconds(before99),
-				ratio, costMilliseconds(rise), path.ratio, costBudget, here.printed(), before.printed())
-		}
-	} else {
-		t.Logf("%s: %s %.1f ms at this child against %.1f ms at the commit before it, a ratio of %.2f against the %.2f bound%s (p99 %.1f ms here, %.1f ms there, over %d reading(s) of each). The rule this path is read by: %s.",
-			name, statistic, costMilliseconds(here99), costMilliseconds(before99),
-			ratio, path.ratio, costAbsoluteNote(limit, here99),
-			costMilliseconds(here.p99()), costMilliseconds(before.p99()), path.readings, rule)
-		if !relative {
-			t.Errorf("%s: %s %.1f ms at this child against %.1f ms at the commit before this child, a ratio of %.2f, over the %.2f bound (this child's readings %s; the commit before's %s)",
-				name, statistic, costMilliseconds(here99), costMilliseconds(before99),
-				ratio, path.ratio, here.printed(), before.printed())
-		}
-	}
-	if !absolute {
-		t.Errorf("%s: %s %.1f ms at this child, at or above the %s this request is held to (this child's readings %s)",
-			name, statistic, costMilliseconds(here99), limit, here.printed())
-	}
-	if !absolute && relative {
-		t.Errorf("%s: the absolute bound failed while the ratio passed. This request costs %.1f ms at this child "+
-			"and %.1f ms at the commit before this child (%s), a ratio of %.2f, which is inside the %.2f bound, and "+
-			"what it broke is the request's own %s bound. This child did not make it slower, so the bound is the "+
-			"architect's call and not an implementer's to fix.",
-			name, costMilliseconds(here99), costMilliseconds(before99), statistic,
-			ratio, path.ratio, limit)
 	}
 }
 
@@ -904,7 +417,7 @@ func writeCostWhereTheTimeWent(t *testing.T, arms []*costArm, corpora map[*costA
 			before[index] = arm.count(t, count.statement)
 		}
 		release := costHoldBlockIndex(t, arm)
-		taken := writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, writeCostLaterRun, -1)
+		taken := writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, costWriteRuns+7, -1)
 		release()
 		written := []string{}
 		var nodes, tuples int64
@@ -954,12 +467,12 @@ func writeCostWhatTheEditWrote(t *testing.T, arms []*costArm, corpora map[*costA
 	for _, arm := range arms {
 		corpus := corpora[arm]
 		release := costHoldBlockIndex(t, arm)
-		writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, writeCostLaterRun+1, changed)
+		writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, costWriteRuns+8, changed)
 		release()
 		costBlockIndexDrained(t, arm, 10*time.Minute)
 		before := readWriteCostEditRows(t, arm, corpus.under, nil)
 		release = costHoldBlockIndex(t, arm)
-		taken := writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, writeCostLaterRun+2, changed)
+		taken := writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, costWriteRuns+9, changed)
 		release()
 		costBlockIndexDrained(t, arm, 10*time.Minute)
 		after := readWriteCostEditRows(t, arm, corpus.under, &before)
@@ -999,16 +512,13 @@ const writeCostPrintedRows = 20
 
 // writeCostEditTuples is how many graph_tuples rows one edit of one block of the 1,999-block
 // document appends on this child's arm: the tuples of the changed block alone. They are the
-// changed item's new block's in_document, part_of, visibility, project and state = live, and the
-// dropped block's state = gone. The node store measured 5 on 2026-11-22 in Job
-// infra-1149-i16-rows-clean-v5zz4 at 772fb8e06f40, where the stated control, a part_of tuple for
-// every block of the document (refs' planBlockParents), appended 2,003 in Job
-// infra-1149-i16-rows-control-qphjc. The sixth is the project tuple of the edited block, which the
-// nodes branch (every node names its project) states for each node it writes, and which this
-// change carries to main. The count is what decides that control, which a ratio of time may still
-// pass: a part_of stated again for every block appends thousands of rows where the changed block
-// alone appends 6.
-const writeCostEditTuples = 6
+// changed item's new block's in_document, part_of, visibility and state = live, and the dropped
+// block's state = gone. It was measured on 2026-11-22 in Job infra-1149-i16-rows-clean-v5zz4 at
+// 772fb8e06f40, where the stated control, a part_of tuple for every block of the document (refs'
+// planBlockParents), appended 2,003 in Job infra-1149-i16-rows-control-qphjc. The count is what
+// decides that control, which a ratio of time may still pass: a part_of stated again for every
+// block appends thousands of rows where the changed block alone appends 5.
+const writeCostEditTuples = 5
 
 // writeCostEditRows is what one document's version is read to have written. rows holds, by
 // table, every row of the document that a later version may change or delete, keyed by what
@@ -1280,7 +790,7 @@ func createCostIssue(t *testing.T, arm *costArm, project, title string) string {
 
 // costUploadDocument writes one version of a document by name and answers its artifact id. A
 // second write of the same name is the next version of that document, which is the document
-// version write path, and names the token of the version it replaces.
+// version write path.
 func costUploadDocument(t *testing.T, arm *costArm, issue, name, content string) string {
 	t.Helper()
 	body := arm.server.documentUpload(t, issue, name, content, dispatchTestLogin)
@@ -1494,62 +1004,4 @@ func writeCostAbsoluteBound(before costReading) (time.Duration, string) {
 		"change has not touched, already measures %.1f ms here, above the stated %s: this pod runs syscall-heavy work 2.2 to "+
 		"3.8 times slower than the machine the stated bound was read on",
 		costMilliseconds(before.p50()), writeCostAbsolute)
-}
-
-// writeCostOverAllowance holds the 8,001-block path's deciding statistic at this child, here, to
-// the allowance the same statistic at the commit before this child, before, gives it: the lower
-// of writeCostOverRatio times before and before plus costBudget, the rise of at most 100 ms this
-// path was held to before it carried a ratio. The lower decides so that neither bound is weaker
-// than it was alone: below a before of 400 ms the ratio allows less, above it the rise does. It
-// answers the allowance, which bound gave it ("ratio" or "rise"), and whether here is inside it,
-// at or below the allowance as the ratio paths are at or below their bound. Where the two allow
-// the same it names the ratio, since either names the same figure.
-func writeCostOverAllowance(here, before time.Duration) (allowance time.Duration, deciding string, inside bool) {
-	allowance, deciding = time.Duration(writeCostOverRatio*float64(before)), "ratio"
-	if rise := before + costBudget; rise < allowance {
-		allowance, deciding = rise, "rise"
-	}
-	return allowance, deciding, here <= allowance
-}
-
-// The 8,001-block version is held to the lower of its ratio and its rise, and a reading at its
-// allowance passes. Each row is one edge of writeCostOverAllowance's rule: a commit before of
-// 300 ms, where the ratio allows 375 ms and the rise 400; one of 600 ms, where the ratio allows
-// 750 ms and the rise 700; and one of 400 ms, where both allow 500. A here exactly at the
-// allowance passes and one a microsecond over fails, so the allowance is inclusive, as each
-// ratio bound is.
-//
-// It starts no arm, builds no commit and opens no database, so it needs no BASELINE_SHA and
-// takes milliseconds. It carries this file's basebuild tag because the helper and the bounds it
-// reads do, and is run by name as
-//
-//	go test -tags basebuild ./cmd/dispatch/ -run '^TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise$' -count=1 -v
-func TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise(t *testing.T) {
-	for _, row := range []struct {
-		name      string
-		before    time.Duration
-		allowance time.Duration
-		deciding  string
-	}{
-		{name: "the ratio decides below 400 ms", before: 300 * time.Millisecond, allowance: 375 * time.Millisecond, deciding: "ratio"},
-		{name: "the rise decides above 400 ms", before: 600 * time.Millisecond, allowance: 700 * time.Millisecond, deciding: "rise"},
-		{name: "both allow the same at 400 ms", before: 400 * time.Millisecond, allowance: 500 * time.Millisecond, deciding: "ratio"},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			allowance, deciding, inside := writeCostOverAllowance(row.allowance, row.before)
-			if allowance != row.allowance || deciding != row.deciding {
-				t.Errorf("a commit before of %s allows %s, the %s deciding; want %s, the %s deciding",
-					row.before, allowance, deciding, row.allowance, row.deciding)
-			}
-			if !inside {
-				t.Errorf("a commit before of %s: a reading of %s, exactly at its allowance, failed; want it to pass",
-					row.before, row.allowance)
-			}
-			over := row.allowance + time.Microsecond
-			if _, _, inside := writeCostOverAllowance(over, row.before); inside {
-				t.Errorf("a commit before of %s: a reading of %s, one microsecond over its %s allowance, passed; want it to fail",
-					row.before, over, row.allowance)
-			}
-		})
-	}
 }
