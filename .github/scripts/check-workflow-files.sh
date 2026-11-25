@@ -16,8 +16,9 @@
 #      named, because such a file starts no run whatever this check says;
 #   3. a file that is not valid YAML, which GitHub reads no further than either;
 #   4. two keys of one mapping that are equal after upper-casing. GitHub's parsers refuse both a
-#      repeated key and a key differing only in case (actions/languageservices
-#      workflow-parser/src/templates/template-reader.ts:212 and :359, actions/runner
+#      repeated key and a key differing only in case (actions/languageservices'
+#      `is already defined` errors, https://github.com/actions/languageservices/blob/00d83b8521a6a179cc55ce9c93f5564035de0c5c/workflow-parser/src/templates/template-reader.ts#L212
+#      and #L359, actions/runner
 #      TemplateReader.cs with StringComparer.OrdinalIgnoreCase), while the YAML layer passes them
 #      through on purpose (yaml-object-reader.ts parses with uniqueKeys: false). A load cannot find
 #      it — yaml.safe_load keeps the last of a repeated key and reports nothing — so this walks the

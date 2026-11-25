@@ -1,6 +1,7 @@
 name: CI job envoy-e2e-local
 
-# The steps of ci.yaml's `envoy-e2e-local` and `envoy-refill` jobs, in a file of their own.
+# The steps of two jobs, `.github/workflows/ci.yaml#envoy-e2e-local` and
+# `.github/workflows/ci.yaml#envoy-refill`, in a file of their own.
 # ci.yaml's job of each id calls this file and passes its own id as `job`, and the job of this
 # file named for it runs while the other is skipped. Each caller keeps `needs: changes` and the
 # whole `if:` that decides whether its job runs, so the `if:` here only picks which of the two
@@ -14,7 +15,7 @@ name: CI job envoy-e2e-local
 #
 # Each job's last step reports ci-ok for its caller: on a merge-group run the job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
@@ -26,7 +27,7 @@ on:
         required: true
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true

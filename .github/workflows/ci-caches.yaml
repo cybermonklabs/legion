@@ -19,7 +19,7 @@ name: CI caches
 # of its module files too, for the reason its job gives): go-notices (lint's notices step),
 # go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-build, envoy-go-checks,
 # envoy-go-race-docs, listener-server-change, envoy-e2e-local, envoy-session-stall and
-# envoy-refill, and the embedder job of .github/workflows/dispatch-browser.yaml),
+# envoy-refill, and the job `.github/workflows/dispatch-browser.yaml#embedder`),
 # go-envoy-test (envoy-go, envoy-go-claim-model, which builds the API's test binary of that set,
 # the binaries, multiprocess and visual jobs of
 # .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser and
