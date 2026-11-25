@@ -253,10 +253,11 @@ var storeWriteCallSites = map[string]string{
 	// sentinel in its own transaction: the owed index of a reply's parent (refs.ItemRepair.Queue),
 	// the re-index of old text and the rebuild (refs' reindexPlan.queue and replaceInTx), a
 	// restored wording, an approval ask's rewrite and the seed. api's
-	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds the comment and reply paths to the block
-	// steps, and TestEveryObjectNodeWriterTakesTheStoreLockOrder the ask and message paths. No
-	// lock-step test drives the rebuild, an edit or a restored wording: the test beside each runs its
-	// real code.
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds the comment and reply paths and an author's
+	// corrections of a post (listed below) to the block steps, and
+	// TestEveryObjectNodeWriterTakesTheStoreLockOrder the ask and message paths. No lock-step test
+	// drives the rebuild, an edit of a comment or an ask, or a restored wording: the test beside each
+	// runs its real code.
 	"refs/item_blocks.go#Queue":                        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"refs/reply_blocks.go#Queue":                       "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"refs/rebuild.go#queue":                            "refs#TestARebuildBesideAnEditKeepsTheEditsReferences",
@@ -266,6 +267,23 @@ var storeWriteCallSites = map[string]string{
 	"docs/approval_ask.go#rewriteApprovalAsk":          "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"docs/decided_wording.go#restoreWordings":          "docs#TestARestorationRefusesAnAskAnsweredSinceItsPlan",
 	"cmd/dispatch-seed/write_items.go#stateAtSentinel": "cmd/dispatch-seed#TestTheSeedsCommentWriteTakesTheStoreLockOrder",
+	// An author's correction of a post (main's #3512), each under its issue's owner lock: the edit
+	// of an issue message and the delete of a comment or an issue message. Each updates the post's
+	// row, whose body's trigger writes its block state row, then writes the index of the body it
+	// leaves: the block nodes it states, an edit's new block live and a delete's removed blocks gone,
+	// before the block rows that name them. A delete then settles each send of the post still
+	// pending, failed on its attempt's row, and appends each one's receipt and what the settle left on
+	// that row under it (graphstore.QueueAttempted), then its own event and what the cleared body
+	// takes out of the store under that (graphstore.QueueCaused). An edit appends its event, then what
+	// its index states under it (graphstore.QueueCaused), whose mention of a person writes that
+	// person's node `do nothing` with the mentions tuple (graphstore.QueueToPerson), and last the
+	// participation of each person it newly mentions in the post's thread
+	// (inboxwrite.MentionParticipation, graphstore.QueueToPerson). api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder drives each through its route, the deletes
+	// while a send is pending and the edit naming a person no write has recorded.
+	"api/comment_delete.go#deleteComment":      "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/message_corrections.go#deleteMessage": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/message_corrections.go#editMessage":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// The one writer of the threads a person takes part in (inboxwrite.Recording.Queue), which every
 	// comment, message, ask and answer write queues after its event: what an answer's ask still owes
 	// the store, its writer's participates_in, every user_threads row of the thread in one pass,
@@ -315,6 +333,6 @@ var storeWriteCallSites = map[string]string{
 	// mention arm, inboxwrite.MentionParticipation), which the writer that resolves the mention
 	// queues right after that write's record: the person nodes `do nothing` and the tuples, after
 	// every row the record locked. An edit queues the same after what its index states
-	// (editComment, listed above).
+	// (editComment and editMessage, listed above).
 	"api/comment_create.go#queueRecordAndMentions": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 }

@@ -345,6 +345,25 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 	`, comment, state)
 }
 
+// leaveSendPending puts the first attempt of the post id back to pending under a fresh claim, its
+// envelope and its error cleared, as its sender leaves it while its send is in flight: the attempt
+// a delete settles. table is the post's attempts table and owner the column naming the post in it.
+// The claim is the moment of this write, so no pass of the delivery sweep takes the attempt for one
+// a sender gave up on before the drive runs.
+func (r *writersRig) leaveSendPending(t *testing.T, table, owner, id string) {
+	t.Helper()
+	tag, err := r.database.Pool.Exec(context.Background(), `
+		update `+table+` set state = 'pending', envelope_id = null, error = null, claimed_at = now()
+		where `+owner+` = $1::uuid and attempt = 1
+	`, id)
+	if err != nil {
+		t.Fatalf("leave the first attempt of %s pending: %v", id, err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("leave the first attempt of %s pending: it moved %d rows of %s, want one", id, tag.RowsAffected(), table)
+	}
+}
+
 // importedDrives are the drives of every site the register of the store's writers lists in api,
 // docs and asks, each the real site reached as its own lock-step driver reaches it: the API's
 // through its HTTP routes, the settle of a delivery through the send the stand-in listener
@@ -354,10 +373,12 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 // document mentioning a session whose send is held, that send's settle, a reply to a mention whose
 // send was refused, a targeted message's delivery, an ask a session opens, a follow of it, the
 // spec's approval request renewed on a retry and handed back, a settlement opening an ask a
-// session wrote as a block, and the tick indexing a version a build without the block index
-// wrote. The comment path's drives name the sites the path runs in turn (comment): the path
-// itself, which writes the comment's node before its row (queueCommentRow) and its tuples under its
-// event (queueCommentCreated), and who wrote it.
+// session wrote as a block, the tick indexing a version a build without the block index wrote,
+// and, after the sends of the targeted message, an author's edit of an issue message and delete of
+// a comment and of an issue message, each of a post written for it. The comment path's drives
+// name the sites the path runs in turn (comment): the path itself, which writes the comment's node
+// before its row (queueCommentRow) and its tuples under its event (queueCommentCreated), and who
+// wrote it.
 func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	t.Helper()
 	r := newWritersRig(t)
@@ -371,6 +392,9 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	var overtaken string
 	// The token of the spec's version the drive that writes its next version replaces.
 	var specBase map[string]string
+	// The message alice edits, and the comment and the message she deletes while each one's send
+	// is pending, each written for its drive.
+	var edited, deletedComment, deletedMessage string
 	retried := make(chan *httptest.ResponseRecorder, 1)
 	var openLookups func()
 	replayedBody := map[string]any{
@@ -1097,6 +1121,53 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// The claim and the state the resumed attempt moves through, its envelope and its owed_to
 		// asserted again and retracted; its delivered_to stands from its first send.
 		Counts: attemptCounted(graphstore.AttemptClaimedAt, graphstore.AttemptState, graphstore.AttemptEnvelopeID, graphstore.TupleOwedTo),
+	}, {
+		// alice's edit of an issue message of her own, written for the drive, which adds a
+		// paragraph: its body's blocks indexed again, the new one a block of its own.
+		Name: "api/message_corrections.go#editMessage", Database: r.database,
+		Sites: []string{"api/message_corrections.go#editMessage", "refs/item_blocks.go#Queue"},
+		Ready: func(t *testing.T) {
+			edited = decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/messages",
+				map[string]any{"body": "A message the edit adds to."}, "alice", http.StatusCreated)).ID
+		},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodPatch, "/api/v1/messages/"+edited,
+				map[string]any{"body": "A message the edit adds to.\n\nThe paragraph it adds."}, "alice", http.StatusOK)
+		},
+		Counts: bodyBlockCounted,
+	}, {
+		// alice's delete of a comment of hers, written for the drive, whose mention's send the
+		// listener took and which is put back pending, as its sender leaves it while the send is in
+		// flight: the delete settles that send failed, and takes the comment's body block out.
+		Name: "api/comment_delete.go#deleteComment", Database: r.database,
+		Sites: []string{"api/comment_delete.go#deleteComment", "refs/item_blocks.go#Queue"},
+		Ready: func(t *testing.T) {
+			deletedComment = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments", map[string]any{
+				"body": "Can this go, @" + messageSession + "?", "mentions": []map[string]any{{"target": "session:" + messageSession}},
+			}, "alice", http.StatusCreated)).ID
+			r.settledAttempts(t, deletedComment, model.DeliveryStateSent)
+			r.leaveSendPending(t, "comment_deliveries", "comment_id", deletedComment)
+		},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodDelete, "/api/v1/comments/"+deletedComment, nil, "alice", http.StatusOK)
+		},
+		Counts: deletedPostCounted,
+	}, {
+		// alice's delete of an issue message of hers, written for the drive and targeted at the
+		// message's session, whose send the listener took within the create and which is put back
+		// pending, as the comment's is.
+		Name: "api/message_corrections.go#deleteMessage", Database: r.database,
+		Sites: []string{"api/message_corrections.go#deleteMessage", "refs/item_blocks.go#Queue"},
+		Ready: func(t *testing.T) {
+			deletedMessage = decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/messages", map[string]any{
+				"body": "Can this go?", "target": "session:" + messageSession, "delivery": "steer",
+			}, "alice", http.StatusCreated)).ID
+			r.leaveSendPending(t, "message_deliveries", "message_id", deletedMessage)
+		},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodDelete, "/api/v1/messages/"+deletedMessage, nil, "alice", http.StatusOK)
+		},
+		Counts: deletedPostCounted,
 	}}, askDrives(t, r)...)
 }
 
@@ -1240,6 +1311,13 @@ var (
 	// attributes, its number, its state, its duplicate flag and its owed_to.
 	openedAttempt = []string{graphstore.AttributeVisibility, graphstore.AttributeState, graphstore.AttemptNumber,
 		graphstore.AttemptState, graphstore.AttemptDuplicate, graphstore.TupleOwedTo}
+	// What a delete of a post states while one send of it is pending: the settle of that attempt,
+	// failed, its claim moved and the envelope the drive cleared retracted (delivery_attempt), and
+	// the post's body block stated gone (body_block_gone).
+	deletedPostCounted = merged(attemptCounted(graphstore.AttemptState, graphstore.AttemptError, graphstore.AttemptClaimedAt,
+		graphstore.AttemptEnvelopeID), map[graphcensus.StoredKind][]string{
+		{refs.BlockNodeKind, graphstore.AttributeState}: {"body_block_gone"},
+	})
 )
 
 // objectNodeCounted is what a create of an issue, a document, an ask or a message of a project
