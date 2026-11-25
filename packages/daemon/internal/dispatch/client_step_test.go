@@ -200,7 +200,7 @@ func putRecord(t *testing.T, path, id string, call func(client *HTTPClient) erro
 		writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
 	}))
 	defer server.Close()
-	if err := call(New(server.URL, dispatchToken)); err != nil {
+	if err := call(New(server.URL, BearerTransport(dispatchToken, nil))); err != nil {
 		t.Fatalf("write the record of LEG-1 to %s: %v", path, err)
 	}
 	return body
