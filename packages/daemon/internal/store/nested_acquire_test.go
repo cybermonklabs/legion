@@ -43,7 +43,7 @@ const refusalLine = "second pooled connection requested while one is held"
 func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 	store := storeWith(t, map[string]string{"pool_max_conns": "1"})
 	pool := store.Pool()
-	logged := captureLog(t)
+	logged := captureLog(t, pool)
 
 	// The negative control the incident's check names: the same requests, made by a caller that
 	// holds none of this pool's connections, are served.
@@ -156,18 +156,15 @@ func refusalsLogged(t *testing.T, logged *bytes.Buffer, want int) {
 	}
 }
 
-// captureLog sends the process's default logger into a buffer for the length of the test, which
-// is where logRefusal writes, and gives the test the buffer to read. It forgets the stacks logged
-// before the test, so a test the binary runs again (-count) logs its own stacks again.
-func captureLog(t *testing.T) *bytes.Buffer {
+// captureLog sends pool's log (Pool.log) into a buffer for the length of the test, which is where
+// the pool's refusals are written (logRefusal), and gives the test the buffer to read. The log and
+// the stacks already logged (Pool.refused) are the pool's own, so a test running beside this one
+// writes nothing here, and a test the binary runs again (-count) opens a pool of its own and logs
+// its own stacks again.
+func captureLog(t *testing.T, pool *Pool) *bytes.Buffer {
 	t.Helper()
 	var logged bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	loggedSites.Lock()
-	clear(loggedSites.seen)
-	loggedSites.Unlock()
+	pool.log = slog.New(slog.NewTextHandler(&logged, nil))
 	return &logged
 }
 

@@ -696,7 +696,7 @@ func TestAnOutcomeReadWhoseCommitReplyIsWithheldEndsAtItsBound(t *testing.T) {
 	})
 	t.Run("the settlement", func(t *testing.T) {
 		rig := newCommitRig(t)
-		log := captureCommitLog(t)
+		log := captureCommitLog(t, rig.pool)
 		parent := WithTransactionTracking(context.Background())
 		child, cancel := context.WithCancel(parent)
 		defer cancel()

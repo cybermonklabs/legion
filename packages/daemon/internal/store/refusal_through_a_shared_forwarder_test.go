@@ -33,7 +33,7 @@ func askThroughFromB(ctx context.Context, pool *Pool) error { return beginThroug
 func TestRefusalsThroughAForwarderTheCompilerKeepsWholeLogOneLineEach(t *testing.T) {
 	store := storeWith(t, map[string]string{"pool_max_conns": "1"})
 	pool := store.Pool()
-	logged := captureLog(t)
+	logged := captureLog(t, pool)
 
 	ctx := WithTransactionTracking(context.Background())
 	if err := Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
