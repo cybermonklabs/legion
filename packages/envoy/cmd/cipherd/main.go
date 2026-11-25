@@ -1412,7 +1412,20 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		// BROKER_SIGNIN=off: nobody signs in to approve, so a name that would wait for a
 		// person is denied at once.
 		SignInOff: cfg.SignInOff,
-		Groups:    groupReader,
+		// BROKER_GITHUB_APP_FIELD=off: the github_app field an agent-secrets of a release before
+		// --target sends is refused 400 GITHUB_APP_FIELD_REMOVED rather than answered. Unset, it
+		// is answered for the requesters and the secrets below, and for nothing else.
+		GitHubAppFieldOff: cfg.GitHubAppFieldOff,
+		// BROKER_GITHUB_APP_FIELD_REQUESTERS: the registered services and people that field is
+		// answered for, separated by commas or spaces. Unset, the broker answers no service at
+		// all, and a person asking for their own App is answered whatever it names, so a
+		// deployment's own value is what turns the answer on for its pods.
+		GitHubAppFieldRequesters: cfg.GitHubAppFieldRequesters,
+		// BROKER_GITHUB_APP_FIELD_SECRETS: the stored github-app secrets that field hands over
+		// outside the airlock, separated by commas or spaces. Unset, the broker names none, so
+		// it answers the field for no secret at all.
+		GitHubAppFieldSecrets: cfg.GitHubAppFieldSecrets,
+		Groups:                groupReader,
 	}
 	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
 	m.Chain.Groups = groupReader
