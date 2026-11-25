@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
@@ -19,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A file's or a picture's version carries a token, `sha256:` and the hash of its bytes, which an
@@ -166,23 +166,20 @@ func forEachFileUpload(t *testing.T, check func(t *testing.T, c fileUpload)) {
 }
 
 // takenAndRefused sorts two answers into the one taken (201) and the one refused (409), failing
-// on any other answer, or when the two are not one of each.
+// on any other answer, or when the two are not one of each. Each answer is waited for through the
+// shared wait (testwait.Receive), whose one bound is the test's give-up.
 func takenAndRefused(t *testing.T, answers <-chan *httptest.ResponseRecorder) (*httptest.ResponseRecorder, *httptest.ResponseRecorder) {
 	t.Helper()
 	var taken, refused []*httptest.ResponseRecorder
 	for range 2 {
-		select {
-		case answer := <-answers:
-			switch answer.Code {
-			case http.StatusCreated:
-				taken = append(taken, answer)
-			case http.StatusConflict:
-				refused = append(refused, answer)
-			default:
-				t.Fatalf("an upload answered %d, want 201 or 409: %s", answer.Code, answer.Body.String())
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("an upload never answered")
+		answer := testwait.Receive(t, "an upload to answer", answers)
+		switch answer.Code {
+		case http.StatusCreated:
+			taken = append(taken, answer)
+		case http.StatusConflict:
+			refused = append(refused, answer)
+		default:
+			t.Fatalf("an upload answered %d, want 201 or 409: %s", answer.Code, answer.Body.String())
 		}
 	}
 	if len(taken) != 1 || len(refused) != 1 {

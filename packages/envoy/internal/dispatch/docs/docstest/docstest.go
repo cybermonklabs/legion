@@ -108,23 +108,44 @@ type authReply struct {
 // schema_version, with header naming the caller, starts its reader, and asks the room for what doc
 // lacks. doc is the peer's copy of the document: a new one, or the copy a reconnecting browser
 // kept. The room's answer arrives on Answers. The connection closes when t ends. The handshake
-// carries no span of its own: its one bound is the test's give-up (testwait.GiveUpAt), so a room a
-// loaded machine answers late still opens the peer, and one that never answers fails the test by
-// name, as the deadline's error.
+// carries no span of its own: the dial runs on a goroutine of its own and the test waits for its
+// answer through the shared wait (testwait.Receive), so a room a loaded machine answers late still
+// opens the peer, and one that never answers fails the test at the give-up naming the room's answer
+// to the upgrade it waited for. The dial runs on a context t's cleanup cancels, which ends the
+// handshake (DialContext), and the cleanup waits for the dial to return and closes a peer it
+// opened that the test no longer waited for, so no dial outlives the test.
 func Dial(t testing.TB, url string, header http.Header, artifactID string, doc *crdt.Doc) *Peer {
 	t.Helper()
-	ctx := context.Background()
-	if giveUp, bounded := testwait.GiveUpAt(t); bounded {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, giveUp)
-		defer cancel()
+	type dialed struct {
+		peer *Peer
+		err  error
 	}
-	peer, err := DialContext(ctx, url, header, artifactID, doc)
-	if err != nil {
-		t.Fatal(err)
+	ctx, stop := context.WithCancel(context.Background())
+	answered := make(chan dialed, 1)
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		peer, err := DialContext(ctx, url, header, artifactID, doc)
+		answered <- dialed{peer: peer, err: err}
+	}()
+	testcleanup.Add(t, func() {
+		stop()
+		<-returned
+		// An answer the test never took, its wait having given up first.
+		select {
+		case late := <-answered:
+			if late.peer != nil {
+				late.peer.Close()
+			}
+		default:
+		}
+	})
+	got := testwait.Receive(t, fmt.Sprintf("document %s's room to answer the upgrade of %s", artifactID, url), answered)
+	if got.err != nil {
+		t.Fatal(got.err)
 	}
-	testcleanup.Add(t, peer.Close)
-	return peer
+	testcleanup.Add(t, got.peer.Close)
+	return got.peer
 }
 
 // DialContext is Dial for a caller that is not a test, such as a load driver: ctx alone bounds the

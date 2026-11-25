@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A human's approval is what a request to approve again follows. A request opened on a document
@@ -642,23 +641,19 @@ func settledDecisionBlocks(t *testing.T, handler http.Handler, documents *docs.S
 
 // settledWithoutVersion settles the document at once, for a document whose settlement is owed,
 // and waits until that settlement has committed: its pending-settlement row, which a live write
-// leaves and only a settlement's commit clears, is gone. It fails t when the document owes no
-// settlement, since then there would be nothing to wait for. The wait's one bound is the test
-// binary's deadline less testwait's margin.
+// leaves and only a settlement's commit clears, is gone (awaitSettled). It fails t when the
+// document owes no settlement, since then there would be nothing to wait for.
 func settledWithoutVersion(t *testing.T, database *store.Store, documents *docs.Service, artifactID string) {
 	t.Helper()
-	owed := func() bool {
-		var pending bool
-		if err := database.Pool.QueryRow(context.Background(), `select exists(select 1 from doc_settlements_pending where artifact_id = $1)`, artifactID).Scan(&pending); err != nil {
-			t.Fatalf("read the document's pending settlement: %v", err)
-		}
-		return pending
+	var owed bool
+	if err := database.Pool.QueryRow(context.Background(), `select exists(select 1 from doc_settlements_pending where artifact_id = $1)`, artifactID).Scan(&owed); err != nil {
+		t.Fatalf("read the document's pending settlement: %v", err)
 	}
-	if !owed() {
+	if !owed {
 		t.Fatal("the document owes no settlement, want the live write's settlement still owed")
 	}
 	documents.SettleNow(artifactID)
-	testwait.Eventually(t, "the document's settlement to commit (its pending-settlement row gone)", func() bool { return !owed() })
+	awaitSettled(t, database, artifactID)
 }
 
 // The human changes his answer. The block's answered_at moves, so the block is newly answered

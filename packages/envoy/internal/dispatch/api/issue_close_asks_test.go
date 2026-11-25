@@ -857,16 +857,22 @@ func requireLiveText(t *testing.T, handler http.Handler, document string, parts 
 	}
 }
 
-// awaitSettled waits until none of documents owes a settlement. Its one bound is the test binary's
-// deadline (testwait.Until): a settlement a loaded machine starts late still ends the wait,
-// and one that never runs fails it by name, with the count still owed.
+// awaitSettled waits until none of documents owes a settlement, and with no documents named until
+// no document of the database owes one, so a test that then holds an issue's row holds it against
+// the write it sends, not against a settlement. It is the package's one wait for that fact
+// (awaitSettledDocuments waits for a quiet spell of the database beside it). Its one bound is the
+// test binary's deadline (testwait.Until): a settlement a loaded machine starts late still ends
+// the wait, and one that never runs fails it by name, with the count still owed.
 func awaitSettled(t *testing.T, database *store.Store, documents ...string) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("documents %v to owe no settlement (the count of their pending settlements)", documents), func() (int, bool) {
+	which, query, args := fmt.Sprintf("documents %v", documents),
+		`select count(*) from doc_settlements_pending where artifact_id = any($1::uuid[])`, []any{documents}
+	if len(documents) == 0 {
+		which, query, args = "every document", `select count(*) from doc_settlements_pending`, nil
+	}
+	testwait.Until(t, which+" to owe no settlement (the count of their pending settlements)", func() (int, bool) {
 		var pending int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from doc_settlements_pending where artifact_id = any($1::uuid[])
-		`, documents).Scan(&pending); err != nil {
+		if err := database.Pool.QueryRow(context.Background(), query, args...).Scan(&pending); err != nil {
 			t.Fatalf("read pending settlements: %v", err)
 		}
 		return pending, pending == 0

@@ -181,6 +181,24 @@ func awaitIssueRoomsClosed(t *testing.T, f repairFixture, issue string) {
 	})
 }
 
+// stageClosesAhead moves the close of each of issues, once it has run, a day ahead (stagedAhead):
+// staged state for the append gate's clock, not a wait. The gate stores a browser's update on a
+// closed issue only when its room took the update within docs' closeMargin (2 s) of closed_at
+// (observedBeforeClose), a window a loaded machine can outlast between a close and the writes a
+// row makes after it in a room that never hears of the close. With closed_at a day ahead, every
+// update such a room takes during the run is one the gate takes as made before the close, as the
+// room took it inside the margin; the repair reads only whether closed_at is set. docs'
+// TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow stages its close the same way.
+func stageClosesAhead(t *testing.T, f repairFixture, issues ...string) {
+	t.Helper()
+	tag, err := f.database.Pool.Exec(context.Background(),
+		`update issues set closed_at = now() + make_interval(secs => $2) where key = any($1) and closed_at is not null`,
+		issues, stagedAhead.Seconds())
+	if err != nil || tag.RowsAffected() != int64(len(issues)) {
+		t.Fatalf("stage the closes of %v a day ahead: %v (%d rows)", issues, err, tag.RowsAffected())
+	}
+}
+
 // appendIssueEvent appends an eventType event of issue naming actor, its payload the issue's
 // key and status.
 func appendIssueEvent(t *testing.T, f repairFixture, issue, eventType, status string, actor model.Actor) {
@@ -508,7 +526,8 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 // document, which runs on the closed issue as on an open one and saves what the sweep wrote: the
 // block still has no ask, the latest version shows it resolved, and the one event the issue gains
 // is that version's artifact.version, which notifies nobody. A closed issue whose document owes no
-// settlement is not touched.
+// settlement is not touched. The closes are staged a day ahead once they have run
+// (stageClosesAhead), so the other room's writes are stored however long the run takes.
 func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) {
 	t.Parallel()
 	f := newRepairFixture(t)
@@ -526,11 +545,8 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 			t.Fatalf("close %s: status=%d body=%s", issue, closed.Code, closed.Body.String())
 		}
 	}
+	stageClosesAhead(t, f, swept.Key, untouched.Key)
 	block := `:::ask{#other-room urgency="low" multiple="false"}` + "\nWritten in the other room?\n:::\n"
-	// Both browsers write before either write is waited for. The append gate stores a browser's
-	// update on a closed issue only when its room took it within docs' closeMargin (2 s) of the
-	// close (observedBeforeClose): a second write made only once the first was stored, which a
-	// loaded machine can take longer than that to do, is refused, never stored and never owed.
 	for _, peer := range peers {
 		peer.appendParagraph(t, block)
 		peer.barrier(t)
@@ -576,7 +592,8 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 // TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass proves the interval pass
 // does not read every closed issue's documents again each interval: a document whose owed
 // settlement was marked before the pass's bound is left for a full pass, while one marked after
-// it is swept.
+// it is swept. The closes are staged a day ahead once they have run (stageClosesAhead), as in
+// TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess.
 func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing.T) {
 	t.Parallel()
 	f := newRepairFixture(t)
@@ -594,10 +611,8 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 			t.Fatalf("close %s: status=%d body=%s", issue, closed.Code, closed.Body.String())
 		}
 	}
+	stageClosesAhead(t, f, stale.Key, fresh.Key)
 	block := `:::ask{#other-room urgency="low" multiple="false"}` + "\nWritten in the other room?\n:::\n"
-	// Both browsers write before either write is waited for, as in
-	// TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess: a write made more than docs'
-	// closeMargin after the close is refused.
 	for _, peer := range peers {
 		peer.appendParagraph(t, block)
 		peer.barrier(t)

@@ -74,7 +74,7 @@ func (rig statusChangeRig) afterStep(t *testing.T, hook func(ctx context.Context
 // next fingerprint of the database reads only what the next request writes.
 func (rig statusChangeRig) quiet(t *testing.T) map[string]string {
 	t.Helper()
-	awaitNoSettlementOwed(t, rig.database)
+	awaitSettled(t, rig.database)
 	awaitBackgroundWrites(t, rig.served)
 	return databaseFingerprint(t, rig.database)
 }
@@ -1752,9 +1752,10 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 		}
 		settle("the issue's documents")
 		awaitSettled(t, database, spec, notes.ID)
-		// The settle delay is an hour, so no settlement runs between two steps of the call: the test
-		// runs each one itself. The browser's edit inside the close margin is settled into a version
-		// while the issue is closed, which the reopen's follow then moves the approval request to.
+		// The settle delay is a day (stagedAhead), so no settlement runs between two steps of the
+		// call: the test runs each one itself. The browser's edit inside the close margin is settled
+		// into a version while the issue is closed, which the reopen's follow then moves the approval
+		// request to.
 		peer := connectBrowserPeer(t, documents, spec)
 		closeIssueThroughPatch(t, handler, database, named)
 		stored := storedUpdateCount(t, database, spec)
@@ -1883,7 +1884,7 @@ func TestAStatusChangeChecksItsPlanUnderItsLocks(t *testing.T) {
 	rig := newStatusChangeRig(t, true)
 	named := rig.file(t, "Parent whose plan is read under its locks", "in_progress", "")
 	child := rig.file(t, "Child whose lock a writer holds", "todo", named)
-	awaitNoSettlementOwed(t, rig.database)
+	awaitSettled(t, rig.database)
 	var number int
 	if err := rig.database.Pool.QueryRow(ctx, `
 		update projects set next_number = next_number + 1 where key = $1 returning next_number - 1
@@ -1946,23 +1947,42 @@ func TestAStatusChangeChecksItsPlanUnderItsLocks(t *testing.T) {
 
 // repeatRig is a status change rig, the rule on, whose keyed calls a test stops as a process that
 // died leaves them: the lease of a stopped holder is never renewed, and the test lapses it itself
-// (lapse). The server's clock is a fake no row moves but for a run's bound (clock), so no renewal,
-// which a run arms a third of its lease on that clock, ever fires; and the lease is stagedAhead
-// (Deps.IdempotencyLease), so a repeat reads a live holder's lease live however long the row
-// takes. sweeps records each ask sweep of a closed issue.
+// (lapse). The lease is stagedAhead (Deps.IdempotencyLease), staged state and not a wait: a repeat
+// reads a live holder's lease live however long the row takes, and no renewal, which a run arms a
+// third of its lease on, fires within the run. sweeps records each ask sweep of a closed issue.
+//
+// The server runs on the real clock (newRepeatRig), since a drained repeat's server sets its
+// socket's read deadline on the server's clock (readFor: bodyDrainLimit, a minute, from its now):
+// on a fake no row moves, that deadline is a real minute after the rig was built, and every
+// drained repeat of a rig older than that would be cut off before its body arrived. Only the row
+// that moves a run to its bound (keyedHandlerLimit) has a fake (clock, newRepeatRigOnAFake), on a
+// rig of its own whose keyed calls go through a recorder, which takes no read deadline.
 type repeatRig struct {
 	statusChangeRig
 	sweeps *sweptAsks
-	clock  *clocktest.Fake
+	// clock is the server's fake clock, nil for a rig on the real clock.
+	clock *clocktest.Fake
 }
 
+// newRepeatRig is a repeatRig on the real clock.
 func newRepeatRig(t *testing.T) repeatRig {
 	t.Helper()
-	clock := clocktest.New(time.Now())
-	rig := newStatusChangeRigWith(t, testServerOptions{parentStatusRule: true, idempotencyLease: stagedAhead, clock: clock})
+	return newRepeatRigOn(t, testServerOptions{parentStatusRule: true, idempotencyLease: stagedAhead}, nil)
+}
+
+// newRepeatRigOnAFake is a repeatRig whose server runs on a fake clock that only its row moves.
+func newRepeatRigOnAFake(t *testing.T) repeatRig {
+	t.Helper()
+	fake := clocktest.New(time.Now())
+	return newRepeatRigOn(t, testServerOptions{parentStatusRule: true, idempotencyLease: stagedAhead, clock: fake}, fake)
+}
+
+func newRepeatRigOn(t *testing.T, options testServerOptions, fake *clocktest.Fake) repeatRig {
+	t.Helper()
+	rig := newStatusChangeRigWith(t, options)
 	sweeps := &sweptAsks{API: rig.served.deps.Docs, swept: map[string][][]string{}}
 	rig.served.deps.Docs = sweeps
-	return repeatRig{statusChangeRig: rig, sweeps: sweeps, clock: clock}
+	return repeatRig{statusChangeRig: rig, sweeps: sweeps, clock: fake}
 }
 
 // sweptAsks is the document service with each ask sweep of a closed issue recorded: every write of
@@ -2326,6 +2346,9 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 	})
 
 	t.Run("a run cut off at its time bound keeps its row with a released lease, and its repeat finishes", func(t *testing.T) {
+		// A rig of the row's own on a fake clock, which the row moves to the run's bound; the
+		// shared rig runs on the real clock (repeatRig).
+		rig := newRepeatRigOnAFake(t)
 		named := rig.file(t, "Issue whose run hit its bound", "in_progress", "")
 		first := rig.file(t, "Child closed before the bound", "todo", named)
 		second := rig.file(t, "Child closed by the repeat", "todo", named)

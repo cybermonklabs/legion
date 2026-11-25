@@ -498,7 +498,7 @@ func TestTheFixRunsBeforeAnyOtherWriteAndOnlyWithItsSetting(t *testing.T) {
 func TestASecondStartOfTheFixChangesNothing(t *testing.T) {
 	rig := newFixRig(t)
 	rig.fix(t)
-	awaitNoSettlementOwed(t, rig.database)
+	awaitSettled(t, rig.database)
 	fixed := databaseFingerprint(t, rig.database)
 
 	if sent := rig.leaseStatementsOfAFix(t); sent != 0 {

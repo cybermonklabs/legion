@@ -6,12 +6,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // queuedModes are the delivery modes the stopped session of these tests takes.
@@ -53,11 +53,10 @@ func TestAMentionQueuedForAStoppedSessionReachesItsPerson(t *testing.T) {
 		"body":     "For a session whose send is still on its way.",
 		"mentions": []map[string]any{{"target": "session:" + heldSession}},
 	}, "bob"))
-	select {
-	case <-hold.arrived:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the mention of %s never reached the listener, so no attempt stood pending", heldSession)
-	}
+	// The held mention's send at the listener; the wait is the shared wait's (testwait.Receive),
+	// whose one bound is the test's give-up, so no attempt stands pending only when the send never
+	// comes.
+	testwait.Receive(t, "the mention of "+heldSession+" to reach the listener, so that its attempt stands pending", hold.arrived)
 	requireAPendingAttemptEarnsNothing(t, rig.database, held.ID, heldSession)
 	hold.free()
 	settledCommentDeliveries(t, rig.database, held.ID)
