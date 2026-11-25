@@ -87,6 +87,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return "kept a decision";
     case "priority.updated":
       return `${event.payload.change} priority ${event.payload.id}`;
+    case "project.access_changed":
+      return `changed access: ${event.payload.change.replace("_", " ")}`;
     case "issue.created":
       return "created the issue";
     case "issue.updated":

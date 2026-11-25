@@ -97,8 +97,7 @@ export DISPATCH_E2E_LEG_ROWS_DIR="$RUNNER_TEMP/leg-report/rows"
 # capture of the merge job's readings nor its row accounting has to learn a new name.
 # They start no harness of their own either - this run starts one stack per worker
 # already, for the real-stack rows beside them - and the config starts their static
-# file server itself, for a run that names one of them (e2e/playwright.config.ts's
-# `webServer`).
+# file server itself, for a run that names one of them (`packages/dispatch/e2e/playwright.config.ts#webServer`).
 #
 # `--grep '@pr'` on the pull-request lane alone is what holds that lane to the rows a
 # pull request is answered by: every stubbed row carries the tag, and so do the
@@ -142,10 +141,10 @@ esac
 # projects stay out because this list does not name them, and for no other reason:
 # `filterProjects` reads `default` only where the command line named no project
 # (`projects.filter((project) => includeNonDefault || project.default)` at
-# node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2136,
-# under the `if (!projectNames)` at :2135), and both lanes above name theirs: four in
+# Playwright 1.64.1's runner, lib/runner/index.js in its package, under its
+# `if (!projectNames)`), and both lanes above name theirs: four in
 # the pull-request lane and ten in the full one. The `default: false` each `-alone`
-# project carries (the six entries of `aloneProjects` in e2e/playwright.config.ts) is
+# project carries (the six entries of `packages/dispatch/e2e/playwright.config.ts#aloneProjects`) is
 # what keeps them out of a run that names no project, which this is not. The alone job
 # names them, one machine each.
 #

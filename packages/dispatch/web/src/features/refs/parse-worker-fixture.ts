@@ -1,7 +1,9 @@
+import { onTestFinished } from "bun:test";
+
 import { createHeadlessProof, type HeadlessProofEditor } from "@legion/proof-editor/headless";
 
 import { compiledBlockSchema } from "../doc/schema";
-import { setParseWorkerFactory } from "./markdown-engine";
+import { setParseWorkerFactory, warmMarkdownRenderer } from "./markdown-engine";
 // The worker's own protocol, which this fake answers; a type import, so nothing of the worker's
 // module runs in the test's process.
 import type { DocumentJSON, ParseReply, ParseRequest } from "./markdown-parse.worker";
@@ -30,12 +32,25 @@ import type { DocumentJSON, ParseReply, ParseRequest } from "./markdown-parse.wo
  * Installing a factory leaves the engine holding no worker and no cached answer, so each row
  * starts from a page that has created none and has parsed no long body, a rerun of its own file
  * included; `restoreParseWorker` puts the page's own factory back, emptying the cache again.
+ *
+ * A file that installs the fake calls `restoreParseWorker` from an `afterEach` of its own, which
+ * is registered again on each `--rerun-each` run and which Bun 1.4.4 runs before the preload's
+ * cleanup: that is where a wait no body ended is ended (`unfinished`).
  */
 
 type Listener = (event: unknown) => void;
 
 /** The read-only engine the real worker builds, here on the test's own thread, built once. */
 let headless: Promise<HeadlessProofEditor> | undefined;
+
+/** Every wait no body has ended yet, over every fake a row installed. A row that ends while one
+ *  stands waited inside React's `act`, which that wait holds open, and React keeps one queue for
+ *  every surface: the preload's cleanup would unmount inside that act, the next row's render
+ *  paint nothing, and each row after it fail on a body that never appears. `restoreParseWorker`
+ *  ends each one, which closes the act, from the file's own `afterEach`, before that cleanup. A
+ *  hook this module registered itself would run on a file's first run only: a rerun keeps the
+ *  module loaded and registers nothing of it again. */
+const unfinished = new Set<{ giveUp: () => void }>();
 
 function tick(): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -107,7 +122,13 @@ export interface InstalledParseWorker {
   /** Fires `error` on the worker holding the `index`th body, as a worker that crashed mid-parse
    *  does, and answers nothing for it. */
   crash(index: number): Promise<void>;
-  /** Resolves once the engine has sent `count` bodies, and throws naming what it sent instead. */
+  /** Resolves on the post that brings the bodies the engine has sent to `count`, however long the
+   *  engine takes to load and send them: it waits for the post itself, not for a number of tasks,
+   *  so a lazy load that a slow or loaded machine, or the cold-load lane, holds back still ends in
+   *  the body. A wait for the first body also ends on the engine's load: with the load's own error
+   *  where the load fails, and once the worker's ready task has run where the engine loaded and
+   *  posted nothing. Any other wait ends at the row's own deadline, and the row then fails naming
+   *  the bodies it waited for and the bodies the engine sent. */
   waitForRequests(count: number): Promise<void>;
 }
 
@@ -120,6 +141,9 @@ export function installFakeParseWorker({
 } = {}): InstalledParseWorker {
   const workers: FakeParseWorker[] = [];
   const taken: { request: ParseRequest; worker: FakeParseWorker }[] = [];
+  /** The rows' waits for a count of bodies still to come, each ended by the post that reaches its
+   *  count, or by the end of the row that made it (`unfinished`). */
+  const waits: { count: number; bodyCame: () => void; giveUp: () => void }[] = [];
   let asked = 0;
 
   setParseWorkerFactory(() => {
@@ -129,21 +153,95 @@ export function installFakeParseWorker({
     }
     const worker = new FakeParseWorker((request, from) => {
       taken.push({ request, worker: from });
+      for (const wait of waits.filter(({ count }) => count <= taken.length)) {
+        waits.splice(waits.indexOf(wait), 1);
+        wait.bodyCame();
+      }
     });
     workers.push(worker);
     return worker as unknown as Worker;
   });
 
-  async function waitForRequests(count: number): Promise<void> {
-    for (let tries = 0; taken.length < count && tries < 500; tries += 1) {
-      await tick();
+  function waitForRequests(count: number): Promise<void> {
+    if (taken.length >= count) {
+      return Promise.resolve();
     }
-    if (taken.length < count) {
-      throw new Error(
-        `The engine sent the parse worker ${taken.length} bodies, not ${count}: a body longer ` +
-          "than markdownWorkerThreshold is still parsed on the page's own thread."
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    /** What the row waited for and what the worker had, read when the wait ends. */
+    const failure = (when: string) =>
+      new Error(
+        `The parse worker had ${taken.length} ${taken.length === 1 ? "body" : "bodies"} ${when}, ` +
+          `and the row waited for ${count}: a body longer than markdownWorkerThreshold is still ` +
+          "parsed on the page's own thread, or the Markdown engine never loaded."
       );
+    /** How the wait ended: a body came, the engine's load failed, no body came once the engine
+     *  had loaded, or the row ended first. */
+    let ended: "came" | "load failed" | "no body" | "row ended" | undefined;
+    const wait = {
+      count,
+      /** The post that brings the bodies to `count`. */
+      bodyCame: () => {
+        ended ??= "came";
+        unfinished.delete(wait);
+        resolve();
+      },
+      /** The end of the row that made the wait, from `restoreParseWorker` (`unfinished`). */
+      giveUp: () => {
+        ended ??= "row ended";
+        unfinished.delete(wait);
+        reject(failure("when the row ended"));
+      },
+    };
+    waits.push(wait);
+    unfinished.add(wait);
+    if (taken.length === 0) {
+      // The first body waits on one event, the engine's load, however long a loaded machine or the
+      // cold-load lane holds it. Once it has loaded the body is posted, if it ever will be, by the
+      // loaded engine's render, which ran on that same load before this, and the ready handshake
+      // of the worker that render created: `flushTasks` runs after that handshake's task. So a
+      // wait no body has ended by then never will be, and it fails at once rather than at the
+      // row's deadline. A load that fails posts nothing either, and the wait fails with the load's
+      // own error, which is the cause. Later bodies follow what the row itself does next, so only
+      // the first ends on the load.
+      void (async () => {
+        let loadFailure: { error: unknown } | undefined;
+        try {
+          await warmMarkdownRenderer();
+        } catch (error) {
+          loadFailure = { error };
+        }
+        if (loadFailure === undefined) {
+          await flushTasks();
+        }
+        if (taken.length > 0 || !unfinished.has(wait)) {
+          return;
+        }
+        unfinished.delete(wait);
+        waits.splice(waits.indexOf(wait), 1);
+        if (loadFailure !== undefined) {
+          ended ??= "load failed";
+          reject(loadFailure.error);
+        } else {
+          ended ??= "no body";
+          reject(failure("once the Markdown engine had loaded"));
+        }
+      })();
     }
+    // Bun 1.4.4 runs a row's `onTestFinished` after the row's `afterEach` hooks, the preload's
+    // included, for a row its deadline ended too and on every rerun, and reports what it throws
+    // against that row; a hook registered mid-row, after awaits, attaches to the row running. So a
+    // wait the row's end gave up fails its row naming what it waited for, beside Bun's own "timed
+    // out" line, with no bound of the fixture's own, and the throw skips none of the row's other
+    // hooks, which have already run. `restoreParseWorker`, from the file's `afterEach`, ended the
+    // wait itself first; Bun reports that rejection once more as an unhandled error between tests,
+    // with this same text, since the row it belonged to has ended. A wait that ended on the load
+    // has already failed the row from its own `await`.
+    onTestFinished(() => {
+      if (ended === undefined || ended === "row ended") {
+        throw failure("when the row ended");
+      }
+    });
+    return promise;
   }
 
   async function sent(index: number): Promise<{ request: ParseRequest; worker: FakeParseWorker }> {
@@ -186,13 +284,22 @@ export function installFakeParseWorker({
   };
 }
 
-/** Puts the page's own worker factory back, so the next page creates a real one. */
+/** Ends every wait no body ended (`unfinished`), then puts the page's own worker factory back, so
+ *  the next page creates a real one. A file that installs the fake calls it from an `afterEach` of
+ *  its own. */
 export function restoreParseWorker(): void {
+  for (const wait of [...unfinished]) {
+    wait.giveUp();
+  }
   setParseWorkerFactory(undefined);
 }
 
 /** Lets the tasks already queued run, so a body the engine was about to send has been sent by the
- *  time a row counts what it sent. */
+ *  time a row counts what it sent. A row calls it to prove a body was not sent, which no post can
+ *  resolve, and only once the engine has loaded: a loaded engine sends a body in the call that asks
+ *  for it, or on the one zero-delay task a new worker's ready handshake takes (`FakeParseWorker`),
+ *  and zero-delay tasks run in the order they were queued, so the five here run after it however
+ *  slow the machine. It counts tasks and races no load; a wait for a body is `waitForRequests`. */
 export async function flushTasks(): Promise<void> {
   for (let tries = 0; tries < 5; tries += 1) {
     await tick();

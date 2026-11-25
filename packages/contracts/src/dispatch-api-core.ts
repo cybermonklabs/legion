@@ -388,3 +388,26 @@ export const PriorityUpdatedEventPayloadSchema = z
   .readonly();
 
 export type PriorityUpdatedEventPayload = z.output<typeof PriorityUpdatedEventPayloadSchema>;
+
+/** `project.access_changed`: one write of a project's owner, visibility, access list or Slack
+ *  channels committed. It names the project and which change it was, and nothing else: no email,
+ *  group name or channel id, since every reader of the project's events reads it. It is owned by
+ *  the project and wakes nobody. */
+export const ProjectAccessChangedEventPayloadSchema = z
+  .strictObject({
+    project: z.string(),
+    change: z.enum([
+      "owner",
+      "visibility",
+      "person_added",
+      "person_removed",
+      "group_added",
+      "group_removed",
+      "slack_channels",
+    ]),
+  })
+  .readonly();
+
+export type ProjectAccessChangedEventPayload = z.output<
+  typeof ProjectAccessChangedEventPayloadSchema
+>;
