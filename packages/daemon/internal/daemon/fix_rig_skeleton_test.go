@@ -46,6 +46,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // fixRigPull is the number of the walk's pull request, and fixRigTitle the walk's issue's title,
@@ -70,8 +71,10 @@ const fixRigFactPrefix = "RIG FACT:"
 // fixRig is the walk's rig: the walk of an owner's plan over the real Dispatch (ownerStepsRig),
 // that Dispatch's events on the run's NATS server and its App on the fake GitHub of check runs
 // (checks), its own database open (dispatchDB), the daemon's GitHub stand-in (pulls), the daemon's
-// log (logs), the clock GitHub's events of the pull request are stamped with (clock), and the
-// watcher that logs each fact as it arrives (watch).
+// log (logs), the clock GitHub's events of the pull requests are stamped with (clock), the seam a
+// control sets on the daemon's engine at each boot (engine, nil for none), and the watcher that
+// logs each fact as it arrives (watch). Its steps act on one issue of the run at a time, as
+// ownerStepsRig's do (on).
 type fixRig struct {
 	*ownerStepsRig
 	natsURL    string
@@ -81,15 +84,26 @@ type fixRig struct {
 	logs       *syncBuffer
 	started    time.Time
 	clock      time.Time
+	engine     func(*workflow.Engine)
 	watch      *fixRigWatch
 }
 
+// fixRigIssue is one issue a fix rig files: its title, which no other issue of the run shares a
+// word that counts with (walkTitles says why), the number of its pull request, and its
+// Verification document.
+type fixRigIssue struct {
+	title        string
+	number       int
+	verification string
+}
+
 // newFixRig takes the run's NATS server, starts the fake GitHub of check runs and the scratch
-// Dispatch on it with its App and its delivery settings, files the walk's issue with its spec and
-// its Verification document, seeds it in the daemon's store at admitted with its architect's launch
-// begun (seedAdmitted), boots the daemon on a database of its own, registers the architect, and
-// starts the watcher.
-func newFixRig(t *testing.T) *fixRig {
+// Dispatch on it with its App and its delivery settings, files each of issues with its spec and
+// its Verification document, seeds each in the daemon's store at admitted with its architect's
+// launch begun (seedAdmitted), boots the daemon on a database of its own with engine set on its
+// engine (nil for no seam), registers each architect, and starts the watcher. Its steps act on the
+// first issue until on moves them.
+func newFixRig(t *testing.T, engine func(*workflow.Engine), issues ...fixRigIssue) *fixRig {
 	t.Helper()
 	ctx := context.Background()
 	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
@@ -109,6 +123,8 @@ func newFixRig(t *testing.T) *fixRig {
 	// Dispatch takes a project key of at most ten characters; testConfig's is longer.
 	cfg.Project = "FX" + randomSuffix(t)[:8]
 	cfg.Projects = map[string]config.Project{cfg.Project: {}}
+	// Each issue of the run holds a slot of its own.
+	cfg.AdmissionCap = max(4, len(issues))
 	// A clone of the package's template of its own: the scratch Dispatch numbers its events from
 	// one in a database of its own, so a daemon sharing a database with another test's would take
 	// this run's events for ones it had processed (blockersDatabase says the same).
@@ -141,12 +157,20 @@ func newFixRig(t *testing.T) *fixRig {
 	r := &fixRig{
 		ownerStepsRig: &ownerStepsRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: dispatch,
 			claims: map[claim.Token]*stepClaimant{}, waits: make(chan claim.Token, 16)}, specs: map[string]string{}},
-		natsURL: natsURL, checks: checks, dispatchDB: dispatchDB, logs: &syncBuffer{}, started: time.Now(),
+		natsURL: natsURL, checks: checks, dispatchDB: dispatchDB, logs: &syncBuffer{}, started: time.Now(), engine: engine,
+		pulls: newFixRigGitHub(t),
 	}
-	r.fileIssue()
-	r.pulls = newFixRigGitHub(t, fixRigPull, claim.IssueBranch(r.key), r.prTitle())
+	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Fix rig"}, http.StatusCreated, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
+	for _, issue := range issues {
+		r.fileIssue(issue)
+	}
 	r.boot()
-	r.worker(claim.RoleArchitect)
+	for _, issue := range r.issues {
+		r.on(issue.key)
+		r.worker(claim.RoleArchitect)
+	}
+	r.on(r.issues[0].key)
 	r.watch = r.startWatch()
 	return r
 }
@@ -171,39 +195,39 @@ func awaitDispatchStream(t *testing.T, natsURL string, dispatch *scratchDispatch
 	}
 }
 
-// fileIssue creates the walk's project, maps liveRepo to it as its default, files the issue with
-// its spec and the walk's Verification document, in progress and carrying the legion label, and
-// seeds it in the daemon's store at admitted at the sequence of Dispatch's last event of it, so
-// the daemon applies only what comes after.
-func (r *fixRig) fileIssue() {
+// fileIssue files issue in the run's project with its spec and its Verification document, in
+// progress and carrying the legion label, gives the daemon's GitHub stand-in its pull request,
+// unopened, and seeds it in the daemon's store at admitted at the sequence of Dispatch's last event
+// of it, so the daemon applies only what comes after. The rig's steps then act on it.
+func (r *fixRig) fileIssue(issue fixRigIssue) {
 	t := r.t
 	t.Helper()
-	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Fix rig"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	var spec struct {
 		createdIssue
 		PrimaryArtifactID string `json:"primary_artifact_id"`
 	}
-	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": fixRigTitle,
+	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": issue.title,
 		"spec": "The issue's change, as its owner states it.\n"}, http.StatusCreated, &spec)
 	if spec.PrimaryArtifactID == "" {
 		t.Fatalf("Dispatch created %s with no primary document", spec.Key)
 	}
-	r.person(http.MethodPost, "/api/v1/issues/"+spec.Key+"/artifacts", map[string]string{"name": "verification.md", "content": fixRigVerification},
+	r.person(http.MethodPost, "/api/v1/issues/"+spec.Key+"/artifacts", map[string]string{"name": "verification.md", "content": issue.verification},
 		http.StatusCreated, nil)
 	var filed createdIssue
 	r.person(http.MethodPatch, "/api/v1/issues/"+spec.Key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, &filed)
 	r.specs[spec.Key] = spec.PrimaryArtifactID
-	r.issues = append(r.issues, walkIssue{key: spec.Key, title: fixRigTitle, number: fixRigPull})
+	r.issues = append(r.issues, walkIssue{key: spec.Key, title: issue.title, number: issue.number})
 	r.on(spec.Key)
+	r.pulls.add(r.number, claim.IssueBranch(r.key), r.prTitle())
 	r.seedAdmitted(filed.Rank, filed.LastSeq)
-	r.fact("issue-filed", "%s in Dispatch with its spec and the Verification document of k1 and k-ci (ci_check unit); seeded in the daemon at admitted at Dispatch sequence %d",
-		r.key, filed.LastSeq)
+	r.fact("issue-filed", "%s in Dispatch with its spec and its Verification document, pull request #%d; seeded in the daemon at admitted at Dispatch sequence %d",
+		r.key, r.number, filed.LastSeq)
 }
 
 // boot starts the whole daemon on the store as it stands, over a fake runtime of its own that
-// provisions each claim's workspace itself, with GitHub the rig's stand-in and its log at debug in
-// logs. The boot's gh is this test binary, named through the environment the boot reads.
+// provisions each claim's workspace itself, with GitHub the rig's stand-in, its log at debug in
+// logs, and the rig's seam set on its engine before the engine serves a fact. The boot's gh is
+// this test binary, named through the environment the boot reads.
 func (r *fixRig) boot() {
 	t := r.t
 	t.Helper()
@@ -218,13 +242,28 @@ func (r *fixRig) boot() {
 	o.githubAPI = r.pulls.url
 	o.controllerFirstWake = time.Hour
 	o.environ = append(os.Environ(), "LEGION_GH_PATH="+executable)
+	o.engine = r.engine
 	r.d = startDaemonWithin(t, r.cfg, o, slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug})), stepRecordsWait)
 }
 
-// prTitle is the title of the walk's pull request: the issue's key, which Dispatch attributes the
-// pull request to the issue by, and the issue's title.
+// restart stops the daemon and boots it again on the same store, the same Dispatch and the same
+// ports (boot). Each pane outlives the daemon, as a tmux pane does: the new daemon re-observes each
+// live claim rather than launching it again, and each pane's shim connects to it with the boot
+// token it has held since its launch, its turn and its session as they were.
+func (r *fixRig) restart() {
+	r.t.Helper()
+	r.d.stop()
+	rebindHeldPorts(r.t, &r.cfg)
+	r.boot()
+	for _, c := range r.claims {
+		c.reconnect()
+	}
+}
+
+// prTitle is the title of the pull request of the issue the rig's steps act on: the issue's key,
+// which Dispatch attributes the pull request to the issue by, and the issue's title.
 func (r *fixRig) prTitle() string {
-	return r.key + " " + fixRigTitle
+	return r.key + " " + r.title()
 }
 
 // fact logs one fact of the walk on a line that starts fixRigFactPrefix, with the wall clock in UTC
@@ -314,13 +353,14 @@ func (r *fixRig) publishPush(from, to string) string {
 
 // publishReview publishes the review App's review of state of the walk's pull request at head,
 // its body ending with footer, as Envoy relays a GitHub review (intake's decodeReview), and
-// answers its event id.
+// answers its event id. Each review of the run takes an id of its own.
 func (r *fixRig) publishReview(state, head, footer string) string {
 	r.t.Helper()
+	r.reviews++
 	payload, err := json.Marshal(map[string]string{
 		"kind": "review", "repo": liveRepo, "number": strconv.Itoa(r.number), "action": "submitted", "state": state,
 		"commit_id": head, "head_sha": head, "author": reviewAppLogin, "body": "The reviewer's " + state + " of " + head + footer,
-		"body_truncated": "false", "review_id": "1001", "submitted_at": time.Now().UTC().Format(time.RFC3339),
+		"body_truncated": "false", "review_id": strconv.Itoa(1000 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
 		r.t.Fatalf("encode the review payload: %v", err)
@@ -600,37 +640,40 @@ func fixRigDaemonStates(ctx context.Context, pool *store.Pool, issue string) (ma
 }
 
 // fixRigWatch is the watcher of the walk: a goroutine that reads, every fixRigWatchPoll, what the
-// walk's facts are made of, and logs each fact as it first sees it (poll): the issue's phase in
-// the daemon; its pull request's record; its reviewer's row; each processed_events row of an event
-// the walk sent or of a read the daemon built of GitHub; each check state the daemon holds;
-// Dispatch's check_states_owed rows of the issue; each check.state_changed Dispatch appended; each
-// read of a commit's check runs the fake GitHub answered and each request the daemon's GitHub
-// stand-in answered; each step-record, status, plan-record and fix-job outbox row of the issue, as
-// it appears and as it finishes; the issue's status and closed_at in Dispatch; Dispatch's head row
-// of the pull request; each notice the daemon published to the Envoy listener's stand-in; and the
-// lines of the daemon's and Dispatch's logs that name a fact of the walk.
+// walk's facts are made of, and logs each fact as it first sees it (poll): of each issue of the
+// run, its phase in the daemon, its pull request's record, its reviewer's row, each check state the
+// daemon holds, each step-record, status, plan-record, fix-job and notice outbox row of it, as it
+// appears and as it finishes, Dispatch's check_states_owed rows of it, each check.state_changed
+// Dispatch appended, its status and closed_at in Dispatch, and Dispatch's head row of its pull
+// request; each processed_events row of an event the walk sent or of a read the daemon built of
+// GitHub; each read of a commit's check runs the fake GitHub answered and each request the daemon's
+// GitHub stand-in answered; each notice the daemon published to the Envoy listener's stand-in; and
+// the lines of the daemon's and Dispatch's logs that name a fact of the walk. The issues and the
+// project are taken once, as the watcher starts, since the walk's steps move between issues (on).
 type fixRigWatch struct {
 	r        *fixRig
+	project  string
+	issues   []walkIssue
 	stopping chan struct{}
 	done     chan struct{}
 	once     sync.Once
 
-	phase, pr, reviewer, owed, dispatchIssue, dispatchHead string
-	processed                                              map[string]bool
-	states                                                 map[string]string
-	eventSeq                                               int64
-	checkReads, githubRequests                             int
-	outbox                                                 map[int64]string
-	daemonLog, dispatchLog, notices                        int
-	failed                                                 map[string]bool
+	seen                            map[string]string
+	processed                       map[string]bool
+	states                          map[string]string
+	eventSeq                        map[string]int64
+	checkReads, githubRequests      int
+	outbox                          map[int64]string
+	daemonLog, dispatchLog, notices int
+	failed                          map[string]bool
 }
 
 // fixRigWatchPoll is how often the watcher reads.
 const fixRigWatchPoll = 50 * time.Millisecond
 
-// fixRigOutboxKinds are the outbox rows of the issue the watcher follows.
+// fixRigOutboxKinds are the outbox rows of each issue the watcher follows.
 var fixRigOutboxKinds = []string{string(record.OutboxKindStepRecord), string(record.OutboxKindDispatchStatus),
-	string(record.OutboxKindPlanRecord), string(record.OutboxKindFixJobRead)}
+	string(record.OutboxKindPlanRecord), string(record.OutboxKindFixJobRead), string(record.OutboxKindNotice)}
 
 // fixRigDaemonLines are the messages of the daemon's log whose lines are facts of the walk: the
 // supervise machine's hold of a phase task for another claim's turn (supervise/delivery.go,
@@ -656,11 +699,12 @@ func fixRigNotices(listener *noticeListener) []listenerPublish {
 	return slices.Clone(listener.accepted)
 }
 
-// startWatch starts the watcher, which stops when the test ends, before anything the rig opened
-// closes.
+// startWatch starts the watcher of the run's issues, which stops when the test ends, before
+// anything the rig opened closes.
 func (r *fixRig) startWatch() *fixRigWatch {
-	w := &fixRigWatch{r: r, stopping: make(chan struct{}), done: make(chan struct{}), processed: map[string]bool{},
-		states: map[string]string{}, outbox: map[int64]string{}, failed: map[string]bool{}}
+	w := &fixRigWatch{r: r, project: r.cfg.Project, issues: slices.Clone(r.issues), stopping: make(chan struct{}), done: make(chan struct{}),
+		seen: map[string]string{}, processed: map[string]bool{}, states: map[string]string{}, eventSeq: map[string]int64{},
+		outbox: map[int64]string{}, failed: map[string]bool{}}
 	go func() {
 		defer close(w.done)
 		for {
@@ -691,12 +735,12 @@ func (w *fixRigWatch) fail(read string, err error) {
 	}
 }
 
-// changed logs name with now when now is not was, and answers now.
-func (w *fixRigWatch) changed(name, was, now string) string {
-	if now != was {
+// changed logs name with now when now is not what the watcher last saw of name for issue.
+func (w *fixRigWatch) changed(issue, name, now string) {
+	if w.seen[issue+" "+name] != now {
+		w.seen[issue+" "+name] = now
 		w.r.fact(name, "%s", now)
 	}
-	return now
 }
 
 func (w *fixRigWatch) poll() {
@@ -730,49 +774,18 @@ func (w *fixRigWatch) poll() {
 	w.dispatchLog = w.logLines("dispatch-log", r.dispatch.output.String(), w.dispatchLog, []string{"check states", "check_states"})
 }
 
-// pollDaemon reads the daemon's store.
+// pollDaemon reads the daemon's store, for each issue of the run.
 func (w *fixRigWatch) pollDaemon(ctx context.Context) {
 	r := w.r
-	if err := store.TransactWith(ctx, r.st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		issue, err := r.records.Issue(ctx, tx, r.key)
-		if err != nil {
-			return err
-		}
-		if issue != nil {
-			hold := "none"
-			if issue.Hold != nil {
-				hold = fmt.Sprintf("%+v", *issue.Hold)
-			}
-			w.phase = w.changed("phase", w.phase, fmt.Sprintf("%s stands in %s, hold %s, status %s", issue.Key, issue.Phase, hold, issue.Status))
-		}
-		pr, err := r.records.PullRequest(ctx, tx, r.key)
-		if err != nil {
-			return err
-		}
-		if pr != nil {
-			w.pr = w.changed("pull-request-record", w.pr, fixRigPullRequest(pr))
-		}
-		rows, err := r.records.Phases(ctx, tx, r.key)
-		if err != nil {
-			return err
-		}
-		for _, row := range rows {
-			if row.Role != claim.RoleReviewer {
-				continue
-			}
-			decision := "none"
-			if row.Decision != nil {
-				decision = fmt.Sprintf("state %q head %q refused %q", row.Decision.State, row.Decision.Head, row.Decision.Refused)
-			}
-			w.reviewer = w.changed("review-decision", w.reviewer, fmt.Sprintf("the reviewer's row: entry %d, ReviewDecision %s, reviewed_head %q, completed %t",
-				row.Entry, decision, row.ReviewedHead, row.Completed()))
-		}
-		return nil
-	}); err != nil {
-		w.fail("the daemon's record", err)
+	numbers := make([]string, len(w.issues))
+	keys := make([]string, len(w.issues))
+	for i, walked := range w.issues {
+		numbers[i] = fmt.Sprintf("checks-acme-widgets-%d-%%", walked.number)
+		keys[i] = walked.key
+		w.pollIssue(ctx, walked.key)
 	}
 	rows, err := r.st.Pool().Query(ctx, `select event_id, processed_at from processed_events where source = 'github'
-		and (strpos(event_id, $1) > 0 or event_id like $2) order by processed_at, event_id`, r.cfg.Project, fmt.Sprintf("checks-acme-widgets-%d-%%", r.number))
+		and (strpos(event_id, $1) > 0 or event_id like any($2)) order by processed_at, event_id`, w.project, numbers)
 	if err != nil {
 		w.fail("processed_events", err)
 	} else {
@@ -788,17 +801,7 @@ func (w *fixRigWatch) pollDaemon(ctx context.Context) {
 			w.fail("processed_events", err)
 		}
 	}
-	if states, err := fixRigDaemonStates(ctx, r.st.Pool(), r.key); err != nil {
-		w.fail("the daemon's check_states", err)
-	} else {
-		for _, key := range slices.Sorted(maps.Keys(states)) {
-			if w.states[key] != states[key] {
-				w.states[key] = states[key]
-				r.fact("daemon-holds-state", "the daemon's check_states holds %s: %s", key, states[key])
-			}
-		}
-	}
-	outbox, err := r.st.Pool().Query(ctx, `select id, kind, payload::text from outbox where issue = $1 and kind = any($2) order by id`, r.key, fixRigOutboxKinds)
+	outbox, err := r.st.Pool().Query(ctx, `select id, kind, payload::text from outbox where issue = any($1) and kind = any($2) order by id`, keys, fixRigOutboxKinds)
 	if err != nil {
 		w.fail("the outbox", err)
 		return
@@ -825,56 +828,113 @@ func (w *fixRigWatch) pollDaemon(ctx context.Context) {
 	}
 }
 
-// pollDispatch reads Dispatch's own database.
+// pollIssue reads key's record, its pull request's record, its reviewer's row and the check
+// states the daemon holds of it.
+func (w *fixRigWatch) pollIssue(ctx context.Context, key string) {
+	r := w.r
+	if err := store.TransactWith(ctx, r.st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := r.records.Issue(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		if issue != nil {
+			hold := "none"
+			if issue.Hold != nil {
+				hold = fmt.Sprintf("%+v", *issue.Hold)
+			}
+			w.changed(key, "phase", fmt.Sprintf("%s stands in %s, hold %s, status %s, running fix %d", issue.Key, issue.Phase, hold, issue.Status, issue.RunningFix))
+		}
+		pr, err := r.records.PullRequest(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		if pr != nil {
+			w.changed(key, "pull-request-record", key+": "+fixRigPullRequest(pr))
+		}
+		rows, err := r.records.Phases(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.Role != claim.RoleReviewer {
+				continue
+			}
+			decision := "none"
+			if row.Decision != nil {
+				decision = fmt.Sprintf("state %q head %q refused %q", row.Decision.State, row.Decision.Head, row.Decision.Refused)
+			}
+			w.changed(key, "review-decision", fmt.Sprintf("%s's reviewer's row: entry %d, ReviewDecision %s, reviewed_head %q, completed %t",
+				key, row.Entry, decision, row.ReviewedHead, row.Completed()))
+		}
+		return nil
+	}); err != nil {
+		w.fail("the daemon's record of "+key, err)
+	}
+	if states, err := fixRigDaemonStates(ctx, r.st.Pool(), key); err != nil {
+		w.fail("the daemon's check_states of "+key, err)
+	} else {
+		for _, at := range slices.Sorted(maps.Keys(states)) {
+			if seen := key + ": " + at; w.states[seen] != states[at] {
+				w.states[seen] = states[at]
+				r.fact("daemon-holds-state", "the daemon's check_states of %s holds %s: %s", key, at, states[at])
+			}
+		}
+	}
+}
+
+// pollDispatch reads Dispatch's own database, for each issue of the run.
 func (w *fixRigWatch) pollDispatch(ctx context.Context) {
 	r := w.r
-	if owed, err := fixRigOwed(ctx, r.dispatchDB, r.key); err != nil {
-		w.fail("check_states_owed", err)
-	} else {
-		w.owed = w.changed("dispatch-owed", w.owed, "Dispatch's check_states_owed rows of "+r.key+": "+owed)
-	}
-	rows, err := r.dispatchDB.Query(ctx, `select seq, coalesce(payload->>'check', ''), coalesce(payload->>'head', ''), coalesce(payload->>'state', ''),
-		coalesce(payload->>'reason', ''), coalesce(payload->>'ci_case', ''), coalesce(payload->>'serial', ''), created_at
-		from events where issue_key = $1 and type = 'check.state_changed' and seq > $2 order by seq`, r.key, w.eventSeq)
-	if err != nil {
-		w.fail("Dispatch's events", err)
-	} else {
-		var seq int64
-		var check, head, state, reason, ciCase, serial string
-		var created time.Time
-		if _, err := pgx.ForEachRow(rows, []any{&seq, &check, &head, &state, &reason, &ciCase, &serial, &created}, func() error {
-			w.eventSeq = seq
-			if check == "" {
-				check = "the set row"
+	for _, walked := range w.issues {
+		key := walked.key
+		if owed, err := fixRigOwed(ctx, r.dispatchDB, key); err != nil {
+			w.fail("check_states_owed of "+key, err)
+		} else {
+			w.changed(key, "dispatch-owed", "Dispatch's check_states_owed rows of "+key+": "+owed)
+		}
+		rows, err := r.dispatchDB.Query(ctx, `select seq, coalesce(payload->>'check', ''), coalesce(payload->>'head', ''), coalesce(payload->>'state', ''),
+			coalesce(payload->>'reason', ''), coalesce(payload->>'ci_case', ''), coalesce(payload->>'serial', ''), created_at
+			from events where issue_key = $1 and type = 'check.state_changed' and seq > $2 order by seq`, key, w.eventSeq[key])
+		if err != nil {
+			w.fail("Dispatch's events of "+key, err)
+		} else {
+			var seq int64
+			var check, head, state, reason, ciCase, serial string
+			var created time.Time
+			if _, err := pgx.ForEachRow(rows, []any{&seq, &check, &head, &state, &reason, &ciCase, &serial, &created}, func() error {
+				w.eventSeq[key] = seq
+				if check == "" {
+					check = "the set row"
+				}
+				r.fact("dispatch-published-state", "Dispatch appended check.state_changed of %s seq %d at %s: %s at %s, state %q, reason %q, ci_case %q, serial %s",
+					key, seq, created.UTC().Format("15:04:05.000"), check, head, state, reason, ciCase, serial)
+				return nil
+			}); err != nil {
+				w.fail("Dispatch's events of "+key, err)
 			}
-			r.fact("dispatch-published-state", "Dispatch appended check.state_changed seq %d at %s: %s at %s, state %q, reason %q, ci_case %q, serial %s",
-				seq, created.UTC().Format("15:04:05.000"), check, head, state, reason, ciCase, serial)
-			return nil
-		}); err != nil {
-			w.fail("Dispatch's events", err)
 		}
-	}
-	var status string
-	var closed *time.Time
-	if err := r.dispatchDB.QueryRow(ctx, `select status, closed_at from issues where key = $1`, r.key).Scan(&status, &closed); err != nil {
-		w.fail("Dispatch's issue", err)
-	} else {
-		closedAt := "null"
-		if closed != nil {
-			closedAt = closed.UTC().Format("15:04:05.000")
+		var status string
+		var closed *time.Time
+		if err := r.dispatchDB.QueryRow(ctx, `select status, closed_at from issues where key = $1`, key).Scan(&status, &closed); err != nil {
+			w.fail("Dispatch's issue "+key, err)
+		} else {
+			closedAt := "null"
+			if closed != nil {
+				closedAt = closed.UTC().Format("15:04:05.000")
+			}
+			w.changed(key, "dispatch-issue", fmt.Sprintf("Dispatch's %s: status %s, closed_at %s", key, status, closedAt))
 		}
-		w.dispatchIssue = w.changed("dispatch-issue", w.dispatchIssue, fmt.Sprintf("Dispatch's %s: status %s, closed_at %s", r.key, status, closedAt))
-	}
-	var head, state, issue, source string
-	err = r.dispatchDB.QueryRow(ctx, `select head_sha, state, coalesce(issue_key, ''), coalesce(attribution_source, '') from pull_request_heads
-		where repo = $1 and number = $2`, liveRepo, r.number).Scan(&head, &state, &issue, &source)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-	case err != nil:
-		w.fail("Dispatch's pull_request_heads", err)
-	default:
-		w.dispatchHead = w.changed("dispatch-head", w.dispatchHead, fmt.Sprintf("Dispatch's pull_request_heads row of %s#%d: head %s, state %s, issue %q (by %s)",
-			liveRepo, r.number, head, state, issue, source))
+		var head, state, issue, source string
+		err = r.dispatchDB.QueryRow(ctx, `select head_sha, state, coalesce(issue_key, ''), coalesce(attribution_source, '') from pull_request_heads
+			where repo = $1 and number = $2`, liveRepo, walked.number).Scan(&head, &state, &issue, &source)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+		case err != nil:
+			w.fail("Dispatch's pull_request_heads of "+key, err)
+		default:
+			w.changed(key, "dispatch-head", fmt.Sprintf("Dispatch's pull_request_heads row of %s#%d: head %s, state %s, issue %q (by %s)",
+				liveRepo, walked.number, head, state, issue, source))
+		}
 	}
 }
 
@@ -912,7 +972,7 @@ func (w *fixRigWatch) logLines(name, text string, offset int, messages []string)
 // It asserts that each step happened, and nothing of any rule of a fix.
 func TestTheFixRigSkeleton(t *testing.T) {
 	t.Parallel()
-	r := newFixRig(t)
+	r := newFixRig(t, nil, fixRigIssue{title: fixRigTitle, number: fixRigPull, verification: fixRigVerification})
 	x, y := scratchCIHead(r.key, "x"), scratchCIHead(r.key, "y")
 	r.fact("heads", "X is %s and Y is %s, on pull request #%d of %s", x, y, r.number, liveRepo)
 
@@ -930,7 +990,7 @@ func TestTheFixRigSkeleton(t *testing.T) {
 		// reads X.
 		r.setRun(x, unitRun(9001, "in_progress", ""))
 		opened := r.tick()
-		r.pulls.open(x, opened)
+		r.pulls.open(r.number, x, opened)
 		id := r.publishPullRequest("opened", x, opened, nil)
 		r.awaitProcessed(id)
 		r.await("the daemon's pull request record at X", func() bool {
@@ -987,7 +1047,7 @@ func TestTheFixRigSkeleton(t *testing.T) {
 		// GitHub moves the pull request first, as it does on github.com, and CI starts on the push.
 		r.setRun(y, unitRun(9002, "in_progress", ""))
 		moved := r.tick()
-		r.pulls.move(y, moved)
+		r.pulls.move(r.number, y, moved)
 		push := r.publishPush(x, y)
 		synchronize := r.publishPullRequest("synchronize", y, moved, map[string]string{"before": x, "sender": implementerLogin})
 		r.awaitProcessed(push)
@@ -1067,7 +1127,7 @@ func TestTheFixRigSkeleton(t *testing.T) {
 		merged := r.tick()
 		mergeSHA := scratchCIHead(r.key, "merge")
 		// GitHub merges first, as it does on github.com, and then sends the event.
-		r.pulls.merge(mergeSHA, merged)
+		r.pulls.merge(r.number, mergeSHA, merged)
 		id := r.publishPullRequest("closed", y, merged, map[string]string{"merged": "true", "merge_commit_sha": mergeSHA})
 		r.awaitProcessed(id)
 		r.waitPhase(phase.Done)
