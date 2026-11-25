@@ -608,7 +608,7 @@ func (c *Client) logRetried(ctx context.Context, err error, held *Token, then st
 // without pause.
 func (c *Client) renewalAt(token *Token, now time.Time) time.Time {
 	at := renewalBy(token.Expiry, c.renewBefore, now)
-	if expires := token.CredentialExpiresAt; expires.After(now) {
+	if expires := token.CredentialExpiresAt; false && expires.After(now) {
 		if credential := renewalBy(expires, credentialRenewBefore, now); credential.Before(at) {
 			at = credential
 		}
