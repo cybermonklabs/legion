@@ -73,7 +73,13 @@ function words(element: HTMLElement): string {
   return (element.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
-afterEach(cleanup);
+// The parse worker's fake is restored first: that ends a wait no body ended
+// (`parse-worker-fixture.ts`), which closes the act the wait holds open before `cleanup`
+// unmounts. A row that reaches its deadline never reaches its own `finally`.
+afterEach(() => {
+  restoreParseWorker();
+  cleanup();
+});
 
 test("a hit inside bold or code text is marked inside the formatting, with no syntax left", async () => {
   // q="bold word" and q=code: `**<mark>Bold</mark>** <mark>word</mark>, see `<mark>code</mark>``.
