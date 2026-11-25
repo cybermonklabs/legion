@@ -561,7 +561,8 @@ export function DecisionsFilterBody({
   // the asks read answers, and then draw its questions. The focus the body put on the foot's
   // control was for a list with no row, the foot folded: once one is drawn it goes to the tab
   // stop, where the stage would have put it, unless the reader has taken the control as their
-  // own. Where the control leaves the page with the focus, its own leave places it (`footRef`).
+  // own. Where the control leaves the page with the focus, the focus stays on the page's body
+  // (`footRef`).
   useEffect(() => {
     if (!footPlaced.current || drawn.length === 0) return;
     footPlaced.current = false;
@@ -602,40 +603,53 @@ export function DecisionsFilterBody({
     event.preventDefault();
     footControl.current?.focus();
   };
-  // The foot leaves the page where its last decision moves up to another part, as when a read
-  // ties it to a statement, and the browser moves the focus its control held to the page's
-  // body, where nothing says where it was. So the control says it while it still holds it:
-  // React runs this cleanup before it takes the control off the page. The focus goes to the
-  // list's tab stop, else to the tree, once the render that took the control away is on the
-  // page, unless something else took it in that render, as a failed read's line does for its
-  // own leave (`slots/failed-read-line.tsx`). A focus the body put on the control goes with it.
-  // One function for every render, so React runs the cleanup only when the control leaves.
+  // The foot leaves the page where its last decision leaves it: a read ties the decision to a
+  // statement, which moves it up to the review list, or another session's write takes it away.
+  // A press of the foot's control folds or unfolds the foot and never takes the control off the
+  // page, so where the control leaves holding the focus, nothing the reader did took it away.
+  // Such a leave moves no focus: the browser leaves it on the page's body, where the page's keys
+  // work, and nothing scrolls and no element takes it, since the reader asked to go nowhere
+  // (decision 351, which decision 457 applies to this control). A focus the body put on the
+  // control goes with it. One function for every render, so React runs the cleanup only when the
+  // control leaves.
   const footRef = useCallback((control: HTMLButtonElement | null) => {
     footControl.current = control;
     if (control === null) return undefined;
     return () => {
       footControl.current = null;
       footPlaced.current = false;
-      if (document.activeElement !== control) return;
-      queueMicrotask(() => {
-        if (!focusOnDocument()) return;
-        (body.current?.querySelector<HTMLElement>(STOP_ROW) ?? tree.current)?.focus();
-      });
     };
   }, []);
-  // The control under a part goes once the part's last entries are drawn, and the browser moves
-  // the focus it held to the page's body, where nothing says where it was. So the control says
-  // it as it leaves (`NextEntries`), and the focus goes to the first entry the press that took
-  // it away drew, else to the list's tab stop, else to the tree, once that render is on the
-  // page. One function for every render, which the control reads as it leaves.
+  // The control under a part goes once the part has nothing left to draw, and the browser moves
+  // the focus it held to the page's body. It goes in one of two ways. The reader's press draws
+  // the part's last entries: the reader moved, so the focus goes on to the first entry that press
+  // drew, which the press marks (`pagedTo`), else to the list's tab stop, else to the tree, once
+  // that render is on the page. Or a read, or another session's write, leaves the part with no
+  // more than it draws, by no press of the reader's: that leave finds no mark and moves no focus,
+  // which stays on the page's body, where the page's keys work (decision 351, which decision 457
+  // applies to this control). The mark is one press's: `showNext` sets it, the leave in the
+  // commit that press causes reads it as the control leaves, since React runs a ref's cleanup in
+  // the commit's mutation phase, and the layout effect below clears it after that commit, before
+  // the focus moves, so a leave a later read causes never finds the mark of an earlier press. One
+  // function for every render, which the control reads as it leaves (`NextEntries`).
   const pagedTo = useRef<string | undefined>(undefined);
   const nextLeaves = useCallback(() => {
+    const drew = pagedTo.current;
+    if (drew === undefined) return;
     queueMicrotask(() => {
       if (!focusOnDocument()) return;
-      const drew = pagedTo.current === undefined ? null : rowOf(body.current, pagedTo.current);
-      (drew ?? body.current?.querySelector<HTMLElement>(STOP_ROW) ?? tree.current)?.focus();
+      (
+        rowOf(body.current, drew) ??
+        body.current?.querySelector<HTMLElement>(STOP_ROW) ??
+        tree.current
+      )?.focus();
     });
   }, []);
+  // React runs a commit's layout effects after its refs' cleanups, so by now a leave in this
+  // commit has read the mark of the press that caused it, and the mark goes with that commit.
+  useLayoutEffect(() => {
+    pagedTo.current = undefined;
+  });
 
   // An entry the reader is on can move to another part of the list, and its row is drawn
   // again there, which drops the focus to the page: a decision they kept or asked to change
@@ -814,8 +828,9 @@ export function DecisionsFilterBody({
       />
     );
   };
-  // A press of the control under `part` draws the part's next page, whose first entry it notes
-  // for the focus to go to should the control leave the page holding it (`nextLeaves`).
+  // A press of the control under `part` draws the part's next page, whose first entry it marks
+  // for the focus to go to should the control leave the page holding it in the commit that press
+  // causes (`nextLeaves`), which clears the mark.
   const showNext = (part: PagedPart): void => {
     const entries: readonly DecisionsEntry[] = parts[part];
     pagedTo.current = entries[shown[part].length]?.node.id;
@@ -1029,9 +1044,11 @@ function FoldMark({ open }: { open: boolean }): ReactNode {
  * says how many are left, the part's entries less those drawn, and draws the next of them, at
  * most `PAGE`, when pressed. It is a plain button in the tab order, as the foot's control is,
  * which Enter and Space press, and a press of it moves no focus until the click lands, for the
- * foot's control's reason. Its focus is off every row (`onFocus`). It goes once nothing is left,
- * and says so as it leaves holding the focus (`onLeave`), since the browser then moves the focus
- * to the page's body.
+ * foot's control's reason. Its focus is off every row (`onFocus`). It goes once nothing is left
+ * to draw, by the press that draws the last entries or by a read that leaves the part no more
+ * than it draws, and says so as it leaves holding the focus (`onLeave`), since the browser then
+ * moves the focus to the page's body: the body hands the focus on after the reader's press, and
+ * leaves it on the page's body after a read (`nextLeaves`).
  */
 function NextEntries({
   left,
@@ -1120,6 +1137,7 @@ const REFUSED_READ_WORDS: Readonly<Record<DecisionsRead, string>> = {
   decisions: STATE_LINES.issue_decisions_unreadable,
 };
 
-/** The row that holds the list's one tab stop, which `placeFoot` and the foot's leave look for
- *  in the whole list, and `passFocus` in the tree element: the foot's rows stand outside it. */
+/** The row that holds the list's one tab stop, which `placeFoot` and the leave of a part's
+ *  next-entries control look for in the whole list, and `passFocus` in the tree element: the
+ *  foot's rows stand outside it. */
 const STOP_ROW = '[data-node-row][tabindex="0"]';

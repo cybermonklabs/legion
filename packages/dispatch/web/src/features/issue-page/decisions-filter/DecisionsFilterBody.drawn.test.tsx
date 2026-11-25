@@ -2772,7 +2772,10 @@ test("a body drawn again does not act on a request the page already took", async
 // a focus on the tree, which is where `t d` puts it when the tree holds no tab stop
 // (`useIssueKeymap.ts`): the tree element keeps no focus while the list draws a row or the
 // foot. With the foot folded the list draws no row, and the focus goes to the foot's control.
-// The foot leaving the page with the focus in it leaves that focus in the list.
+// The foot leaving the page with the focus on its row leaves that focus in the list. With the
+// focus on its control, that leave moves no focus (decisions 351 and 457), which the case "a read
+// that takes the foot's control away while it holds the focus leaves the focus on the page's
+// body" reads.
 test("a list that holds only the foot gives the focus to its first row, and to the foot's control once folded", async () => {
   const user = userEvent.setup();
   expect(document.activeElement).toBe(document.body);
@@ -2813,34 +2816,34 @@ test("a list that holds only the foot gives the focus to its first row, and to t
   early.unmount();
 
   // A read ties the foot's one decision to a statement, which takes it up to the review list,
-  // and the foot leaves the page with the focus in it. The focus goes to the decision's row
-  // there, never to the page's body, whether it was on the foot's control, where the reader
-  // put it by Shift+Tab from the row, or on the foot's row, where the body put it on a page
-  // opened here.
+  // and the foot leaves the page with the focus on the foot's row, where the body put it on a
+  // page opened here. The focus goes to the decision's row there, never to the page's body: the
+  // reader is on that entry, and it keeps the focus where it now stands. Where the focus is on the
+  // foot's control instead, nothing the reader did takes the control away, and its leave moves
+  // no focus (decisions 351 and 457): the case "a read that takes the foot's control away while
+  // it holds the focus leaves the focus on the page's body" reads that.
   const tieable = { children: [statement("s1"), decisionNode("minor")], made: [decision("minor")] };
   const tied = treeAnswer([decision("minor", { decision: { links: [shaped(specRef("s1"))] } })]);
-  for (const placed of ["the control", "the row"] as const) {
-    const left = renderBody(tieable);
-    await waitFor(() =>
-      expect(document.activeElement, "the focus is not on the foot's first row").toBe(
-        rowOf(left, D("minor"))
-      )
-    );
-    if (placed === "the control") {
-      await user.tab({ shift: true });
-      expect(document.activeElement).toBe(footControlOf(left));
-    }
-    await act(async () => {
-      left.client.setQueryData(conversationTreeKey(KEY), tied);
-      left.client.setQueryData(viewKey(KEY, "decisions"), tied);
-    });
-    await waitFor(() => expect(rowsOfPart(left, "review")).toEqual([D("minor")]));
-    expect(footControlOf(left)).toBeNull();
-    await waitFor(() =>
-      expect({ placed, row: focusedRow(left) }).toEqual({ placed, row: D("minor") })
-    );
-    left.unmount();
-  }
+  const left = renderBody(tieable);
+  await waitFor(() =>
+    expect(document.activeElement, "the focus is not on the foot's first row").toBe(
+      rowOf(left, D("minor"))
+    )
+  );
+  await act(async () => {
+    left.client.setQueryData(conversationTreeKey(KEY), tied);
+    left.client.setQueryData(viewKey(KEY, "decisions"), tied);
+  });
+  await waitFor(() =>
+    expect(rowsOfPart(left, "review"), "the read did not take the decision up to review").toEqual([
+      D("minor"),
+    ])
+  );
+  expect(footControlOf(left), "the foot's control is still on the page").toBeNull();
+  await waitFor(() =>
+    expect(focusedRow(left), "the focus did not stay on the tied decision's row").toBe(D("minor"))
+  );
+  left.unmount();
 
   // A reader who presses the control keeps the focus on it, though the press folds the foot's
   // rows, and the next press draws them again.
@@ -3529,6 +3532,92 @@ test("each part draws 20 entries at a time, with the count left", async () => {
   );
   expect(drawnIn("open_questions")).toEqual({ count: "45", next: null, rows: questions(45) });
   expect(drawnIn("review")).toEqual({ count: "20", next: null, rows: ids.review.map(D) });
+  view.unmount();
+});
+
+// Decision 351, as decision 457 applies it to the foot's control: a press of the control folds or
+// unfolds the foot and never takes the control away, so where the control leaves the page holding
+// the focus, nothing the reader did took it, as where a read ties the foot's one decision to a
+// statement. That leave moves no focus: the focus stays on the page's body, where the page's keys
+// work, and no row of the list takes it, neither at once nor once the microtask and the frame
+// after the read have run.
+test("a read that takes the foot's control away while it holds the focus leaves the focus on the page's body", async () => {
+  const { issue } = longIssue({ foot: 1, questions: 0, review: 0 });
+  const view = renderBody(issue);
+  await waitFor(() =>
+    expect(document.activeElement, "the focus is not on the foot's first row").toBe(
+      rowOf(view, D("foot01"))
+    )
+  );
+  const control = footControlOf(view);
+  await act(async () => control?.focus());
+  expect(document.activeElement, "the focus is not on the foot's control").toBe(control);
+
+  // The read ties the foot's one decision to the statement, which takes it up to the review
+  // list, and the foot and its control leave the page.
+  const tied = treeAnswer([decision("foot01", { decision: { links: [shaped(specRef("s1"))] } })]);
+  await act(async () => {
+    view.client.setQueryData(conversationTreeKey(KEY), tied);
+    view.client.setQueryData(viewKey(KEY, "decisions"), tied);
+  });
+  await waitFor(() =>
+    expect(rowsOfPart(view, "review"), "the read did not take the decision up to review").toEqual([
+      D("foot01"),
+    ])
+  );
+  expect(footControlOf(view), "the foot's control is still on the page").toBeNull();
+  await act(async () => {});
+  await act(() => nextFrame());
+  expect(document.activeElement, "the control's leave moved the focus off the page's body").toBe(
+    document.body
+  );
+  expect(focusedRow(view), "a row of the list took the focus the control held").toBeUndefined();
+  view.unmount();
+});
+
+// Decision 351, as decision 457 applies it to the control under a part: the reader's press that
+// draws the part's last entries takes the control away and hands the focus on to the first entry
+// it drew, but a read, or another session's write, that leaves the part no more than it draws
+// takes the control away by no press. That leave moves no focus, whatever an earlier press drew:
+// the focus stays on the page's body, and neither the entry that press drew nor the list's tab
+// stop takes it.
+test("a read that takes a part's next-entries control away with no press leaves the focus on the page's body, even after an earlier press", async () => {
+  const user = userEvent.setup();
+  const { ids, issue } = longIssue({ foot: 0, questions: 45, review: 0 });
+  const view = renderBody(issue);
+  // One press by the pointer draws the next 20 questions, the first of them the 21st; five are
+  // left, so the control stays.
+  await user.click(nextControlOf(view, "open_questions") as HTMLElement);
+  expect(rowsOfPart(view, "open_questions"), "the press did not draw the next 20").toEqual(
+    ids.questions.slice(0, 40)
+  );
+  const control = nextControlOf(view, "open_questions");
+  expect(words(control), "the control does not say five questions are left").toBe(nextWords(5, 5));
+  // The reader goes up to the list's first question, which takes the tab stop, and back to the
+  // control.
+  await act(async () => rowOf(view, "q01").focus());
+  await act(async () => control?.focus());
+  expect(document.activeElement, "the focus is not back on the control").toBe(control);
+
+  // A read leaves the part 40 questions, every one drawn, as another session's write that took
+  // the last five away would, and the control leaves the page with no press.
+  view.again({
+    children: [statement("s1"), ...ids.questions.slice(0, 40).map((id) => openAsk(id))],
+  });
+  expect(rowsOfPart(view, "open_questions"), "the read did not leave 40 questions").toEqual(
+    ids.questions.slice(0, 40)
+  );
+  expect(nextControlOf(view, "open_questions"), "the control is still on the page").toBeNull();
+  await act(async () => {});
+  await act(() => nextFrame());
+  expect(
+    document.activeElement,
+    "the control's leave with no press moved the focus off the page's body"
+  ).toBe(document.body);
+  expect(
+    focusedRow(view),
+    "a row took the focus: the 21st question the earlier press drew, or q01, the list's tab stop"
+  ).toBeUndefined();
   view.unmount();
 });
 
