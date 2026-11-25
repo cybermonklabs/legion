@@ -86,16 +86,20 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // node Graph's address zooms to - reads the read's next pages until one brings it, or none is
   // left (R15), and lands on it then as on a node the first page held: until the reading ends,
   // the landing and the outline's first focus wait on it as on the reads the tree is built from.
+  // A next page refused is no last page: until a read of it answers - the control after the
+  // outline's last row reads it again - the landing waits on it still, so the address keeps its
+  // node and its zoom, while the outline takes its first focus as the reads settle.
   const unloaded =
     address.document === undefined &&
     ((address.target !== undefined && addressed.reveal === undefined) ||
       (address.zoom !== undefined && zoomed === undefined));
-  const readingPages = useReadUntilHeld(issue, unloaded);
+  const pages = useReadUntilHeld(issue, unloaded);
+  const pagesHeld = !pages.reading && !pages.refused;
   const fallback = useAddressFallback({
     address,
     issue,
     reads,
-    readsHeld: readsHeld && !readingPages,
+    readsHeld: readsHeld && pagesHeld,
     reveal: addressed.reveal,
     root,
     route,
@@ -122,23 +126,33 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   const more = useNextTreePage(issue);
   // `addressView` decides what opens in place of an address the outline cannot draw.
   // A load of Conversation sends no Graph read, so where Conversation's read holds no node of the
-  // address's and the page holds no Graph read, the body sends Graph's read here, once, and
-  // decides once it has answered: Graph's `?node=` where its answer holds the node, else the
-  // issue's own address without it, as where Graph's read is refused. Until then the body draws
-  // what it draws while its own reads are out for an address, and the outline takes no first
-  // focus. It is the read Graph's slot reads, under the same key, which going there reads from the
-  // cache; a page that holds it already sends nothing.
-  const unheldNode =
+  // address's and the page holds no Graph read, the body sends Graph's read here, once, reads its
+  // next pages until one brings the node or none is left, as Graph's own address does
+  // (`useReadUntilHeld`), and decides once that reading has ended: Graph's `?node=` where its
+  // pages hold the node, else the issue's own address without it, as where Graph's read, or a
+  // next page of it, is refused. Until then the body draws what it draws while its own reads are
+  // out for an address, and the outline takes no first focus. It is the read Graph's slot reads,
+  // under the same key, which going there reads from the cache; a page that holds it already
+  // sends nothing.
+  const unheldId =
     address.preset === "conversation" &&
     fallback?.kind === "absent" &&
-    fallback.target.kind === "node";
+    fallback.target.kind === "node"
+      ? fallback.target.id
+      : undefined;
+  const unheldNode = unheldId !== undefined;
   const graph = useQuery({
     ...outlineQuery(key, "graph"),
     enabled: (query) => unheldNode && query.state.status === "pending",
   });
-  const graphOut = unheldNode && graph.status === "pending";
-  const zoomUnheld =
-    address.zoom !== undefined && readsHeld && !readingPages && zoomed === undefined;
+  const graphHolds = graph.data?.nodes?.some((node) => node.id === unheldId) === true;
+  const graphPages = useReadUntilHeld(
+    issue,
+    unheldNode && graph.data !== undefined && !graphHolds,
+    "graph"
+  );
+  const graphOut = unheldNode && (graph.status === "pending" || graphPages.reading);
+  const zoomUnheld = address.zoom !== undefined && readsHeld && pagesHeld && zoomed === undefined;
   const undrawn: AddressView | undefined = graphOut
     ? undefined
     : (addressView(address, addressed.reveal, root, fallback, graph.data) ??
@@ -222,7 +236,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             older={older}
             onEditing={onEditing}
             readsHeld={readsHeld}
-            readsSettled={readsSettled && !readingPages && !graphOut}
+            readsSettled={readsSettled && !pages.reading && !graphOut}
             {...(request === undefined ? {} : { request })}
             // The children's own address lands on their section above the outline
             // (`children-section.tsx`), and on no row of the outline (R14).
@@ -242,7 +256,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
 
 /** Where an address opens in its own view's place (`addressView`): `preset`'s own address, with
  *  the address's search and fragment, less its `?node=` where `keepsNode` is false (`viewPath`). */
-export interface AddressView {
+interface AddressView {
   readonly keepsNode: boolean;
   readonly preset: Preset;
 }

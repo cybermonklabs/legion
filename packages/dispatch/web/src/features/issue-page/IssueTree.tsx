@@ -1012,7 +1012,7 @@ export function IssueTree({
   // reader's place in the outline was lost, and no row held the focus. So where a render no
   // longer draws the row that held the focus as the tree was last drawn, and nothing holds the
   // focus now (`focusIsLoose`), the nearest row still drawn takes it as a key's move gives it
-  // (`moveToRow`): the tab stop and the row's body go with it, and the row brings itself on screen
+  // (`moveToRow`): the tab stop and the row's look go with it, and the row brings itself on screen
   // clear of the band. Whatever holds the focus by then keeps it - a control, the editor, another
   // row - and so does the page's own placing of it, which runs first: the opening, which gives a
   // row it focused back where a read drew that row again (`opening`), and an address's landing
@@ -1463,9 +1463,9 @@ export function focusedNodeOf(node: TreeNode): FocusedNode {
  * The handler for a tree's `onBlur`, by the outline's rule for the focus leaving it.
  *
  * The focus leaving the tree with no press under way - by Tab, by a script's blur, by the tree's
- * own Escape - lets go of the row it left at once (`onLeave`): its body and acts, its focused
- * look, what a key reported at it and its own placing on screen go together, since nothing is
- * open at a row the reader has left, and a report lasts until the next key, which Tab is.
+ * own Escape - lets go of the row it left at once (`onLeave`): its focused look, what a key
+ * reported at it and its own placing on screen go together, since a report lasts until the next
+ * key, which Tab is.
  *
  * The focus leaving it for a press on something else of the page lets go of the row one task
  * after that press ends, once its click has landed. A press focuses what it lands on as it goes
@@ -1477,7 +1477,7 @@ export function focusedNodeOf(node: TreeNode): FocusedNode {
  * of the row at once while a press keeps it, and the focus back in the tree by the time the
  * press has ended keeps it.
  *
- * A row the reader is editing in keeps its body (`editing`): the document's editor moves into
+ * A row the reader is editing in is not let go of (`editing`): the document's editor moves into
  * it, which drops the focus for a frame as it leaves the page, and that is no reader leaving the
  * tree. The editing ending with the focus out of the tree all the same - the reader moved on by
  * Tab, or by a press once it is over (`useNodeEditing.ts`) - is them gone, and lets go of the row
@@ -1493,7 +1493,7 @@ export function useReleaseFocus({
 }: {
   /** Whether a row of the tree is being edited. */
   readonly editing: boolean;
-  /** Lets go of the row the focus left - its body, its look, what a key reported at it: as the
+  /** Lets go of the row the focus left - its look, what a key reported at it: as the
    *  focus leaves with no press under way, and once a press that took it elsewhere has ended. */
   readonly onLeave: () => void;
 }): (event: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => void {

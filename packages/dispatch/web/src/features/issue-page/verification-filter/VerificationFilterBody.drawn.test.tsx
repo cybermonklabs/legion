@@ -17,12 +17,19 @@ import { displayTree } from "../../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type { Actor, CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
+import type {
+  Actor,
+  CheckBlock,
+  IssueCheckResults,
+  IssueCoverage,
+  IssueDetails,
+} from "../../../api/types";
 import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { appKeymap } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
+import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import {
@@ -44,7 +51,10 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { ViewStage } from "../slots/stage";
+import { drawStage, REFUSED, stubReads } from "../slots/stage-fixtures";
 import { useVerificationReads } from "../slots/view-verification";
+import { treeAnswer } from "../tree-read/tree-fixtures";
+import type { TreeAnswer } from "../tree-read/tree-read";
 import { shortCommit } from "./statement-state";
 import {
   type FailedRead,
@@ -62,6 +72,7 @@ import {
   OTHER_COMMIT,
   result,
   statementNode,
+  VERIFICATION_SLUG,
   verificationView,
 } from "./verification-fixtures";
 
@@ -2083,6 +2094,55 @@ test("a refused read asked again reads as failed, with its Retry running, while 
     );
   } finally {
     restore();
+  }
+});
+
+// Under the Verification filter the Verification document's blocks are the view's own read
+// (`useTreeRead`'s `blocksOf`), and the blocks line runs by that read (`useBlocksRunning`), not by
+// Conversation's, which the page reads beside the view. On the page's own stage, with
+// Conversation's read out and the view read refused, the blocks line's Retry sends the view read
+// again, the line is busy while it runs, and it leaves once the view read answers.
+test("with Conversation's read out, the blocks line's Retry sends the refused Verification view read, and is busy while it runs", async () => {
+  const user = userEvent.setup();
+  const stubs = stubReads();
+  const base = issueDetails();
+  const issue: IssueDetails = {
+    ...base,
+    artifacts: [...(base.artifacts ?? []), artifact("artifact-verification", VERIFICATION_SLUG)],
+    verification_artifact_id: "artifact-verification",
+  };
+  // Conversation's read never answers; the Verification view read is refused, and then answers
+  // when the case says.
+  const again = Promise.withResolvers<TreeAnswer>();
+  let viewReads = 0;
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as { readonly view?: string };
+    if (asked.view !== "verification") return Promise.withResolvers<never>().promise;
+    viewReads += 1;
+    return viewReads === 1 ? Promise.reject(REFUSED) : again.promise;
+  });
+  const view = drawStage("", { issue, preset: "verification" });
+  try {
+    const line = await waitFor(() => {
+      const drawn = view.container.querySelector<HTMLElement>(
+        '[data-verification-unreadable="blocks"]'
+      );
+      expect(drawn, "the view drew no line for its refused blocks").not.toBeNull();
+      return drawn as HTMLElement;
+    });
+    const retry = within(line).getByRole("button", { name: "Retry" });
+    await user.click(retry);
+    await waitFor(() => expect(viewReads, "the Retry sent no Verification view read").toBe(2));
+    expect(retry.getAttribute("aria-busy"), "the line is not busy while the view read runs").toBe(
+      "true"
+    );
+    await act(async () => again.resolve(treeAnswer([])));
+    await waitFor(() =>
+      expect(view.container.querySelector('[data-verification-unreadable="blocks"]')).toBeNull()
+    );
+  } finally {
+    view.unmount();
+    for (const stub of stubs) stub.mockRestore();
   }
 });
 

@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
@@ -15,7 +14,7 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { type PlanFailedRead, PlanFilterBody, type PlanReads } from "../plan-filter/PlanFilterBody";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { useTreeReadRunning, viewQuery } from "../tree-read/tree-read";
+import { useBlocksRunning } from "../tree-read/tree-read";
 import { NextViewPage } from "../tree-read/view-read";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
@@ -69,11 +68,11 @@ export function ViewPlanSlot({
   // from the reader the press of "Steps", the focused row and its mark, a step being edited, or
   // the address's step having taken the focus, which it takes once.
   const planId = roleDocument(issue, "plan")?.id;
-  const planBlocks = blocksOf("plan");
+  // Each with whether the read that holds it runs (`useBlocksRunning`): the plan's own view read
+  // and the outline read, each from an observer of its own.
+  const planBlocks = { ...blocksOf("plan"), isFetching: useBlocksRunning(issue.key, "plan") };
   const specId = spec?.id;
-  const specBlocks = blocksOf("spec");
-  // Whether the tree read runs, from an observer of its own (`useTreeReadRunning`).
-  const running = useTreeReadRunning(issue.key);
+  const specBlocks = { ...blocksOf("spec"), isFetching: useBlocksRunning(issue.key, "spec") };
   const answered =
     (planId === undefined || planBlocks.data !== undefined) &&
     (specId === undefined || specBlocks.data !== undefined);
@@ -89,8 +88,7 @@ export function ViewPlanSlot({
     { id: specId, query: specBlocks, read: "statements" },
   ] as const;
   // The one line's Retry reads again each of the two reads that stands refused, and is busy while
-  // either runs, the view read's running from an observer of its own that sends nothing.
-  const viewRunning = useQuery({ ...viewQuery(issue.key, "plan"), enabled: false }).isFetching;
+  // either runs.
   const retry = (): void => {
     for (const query of [planBlocks, specBlocks]) if (standsFailed(query)) void query.refetch();
   };
@@ -101,7 +99,7 @@ export function ViewPlanSlot({
             failure: query.errorUpdateCount,
             read,
             retry,
-            retrying: running || viewRunning,
+            retrying: planBlocks.isFetching || specBlocks.isFetching,
           },
         ]
       : []
@@ -111,7 +109,7 @@ export function ViewPlanSlot({
   // the network (paused), is not out.
   const out = watched.some(
     ({ id, query }) =>
-      id !== undefined && query.data === undefined && (running || !standsFailed(query))
+      id !== undefined && query.data === undefined && (query.isFetching || !standsFailed(query))
   );
   const reads: PlanReads =
     failed.length > 0
@@ -121,7 +119,7 @@ export function ViewPlanSlot({
         : { state: "waiting" };
   // The address's own node, resolved against the whole tree as the outline resolves it
   // (`useAddressTarget`, `slots/body.tsx`): a step it names takes the focus.
-  const found = useAddressTarget(root.views?.treeOf?.("plan") ?? root, address).reveal;
+  const found = useAddressTarget(root.views?.trees?.plan ?? root, address).reveal;
   // Plan draws no node but a task, so the address's node is kept in the view, and given the
   // focus, only where it is a task. `presetView` keeps a named node of any kind (`presets.ts`'s
   // `filterView`), as `AddressedNode.named` names it: handed every node, `/plan?comment=<id>`

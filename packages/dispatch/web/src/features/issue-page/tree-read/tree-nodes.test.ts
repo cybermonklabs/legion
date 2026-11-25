@@ -1840,10 +1840,7 @@ test("Conversation's read names root R1's kinds and never block", async () => {
     KEY,
     { kind: [...CONVERSATION_KINDS] },
   ]);
-  expect(outlineQuery(KEY, "conversation").queryKey, "the key of another load").toEqual(
-    conversation.queryKey
-  );
-  expect(outlineQuery(KEY, "graph").queryKey).toEqual(issueTreeQuery(KEY).queryKey);
+  expect<unknown>(outlineQuery(KEY, "graph").queryKey).toEqual(["issue-tree", KEY]);
   const read = spyOn(api, "getIssueTree").mockResolvedValue(answer([]));
   try {
     const client = new QueryClient();

@@ -327,8 +327,11 @@ export interface TreeViews {
   readonly decisions?: IssueDecisions;
   readonly plan?: TreeAnswer;
   readonly spec?: TreeAnswer;
-  /** Builds a held view's tree on first use, with context from the outline (R4, R5). */
-  readonly treeOf?: (filter: TreeFilter) => TreeNode | undefined;
+  /** The tree each view answer held builds alone (`buildIssueTree` over the same reads, with that
+   *  answer as the tree read's), by filter: its filter draws a node of the view as this tree's
+   *  node where the outline's tree holds no node of that id - where the outline read is not sent,
+   *  as on Spec loaded cold below 1024 px (R13), or holds no such node (R4). */
+  readonly trees?: Readonly<Partial<Record<TreeFilter, TreeNode>>>;
   readonly verification?: TreeAnswer;
 }
 
@@ -351,8 +354,7 @@ export function isStatement(node: Pick<TreeNode, "statement">): boolean {
  * issue read names by `verification_artifact_id`, or a check the results read answers for. Each
  * draws a state - `no-result` until the results read answers (`tree-read/tree-nodes.ts`'
  * `draftServing`) - and a `check` block of any other document draws none and is a block and
- * nothing more: no row and no count of the Verification filter, no check of a statement, and no
- * open check of the fold's frontier (`tree-fold.ts`).
+ * nothing more: no row and no count of the Verification filter, and no check of a statement.
  */
 export function isCheck(node: Pick<TreeNode, "state" | "type">): boolean {
   return node.type === "check" && node.state !== undefined;

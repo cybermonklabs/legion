@@ -62,6 +62,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { plainWrite, writesOf } from "../writes/write-store";
 import { issueAddress, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
+import * as issueTreeModel from "./issue-tree";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import { presetView } from "./presets";
 import {
@@ -1669,6 +1670,43 @@ test("a held view answer reaches presetView through root.views", async () => {
     ).toBe(true);
     view.unmount();
   } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// Each held view's tree is built on its first read alone (`TreeViews.trees`): with Plan's and
+// Spec's view answers held, no view's tree is built until a reader asks for one, reading Plan's
+// builds Plan's and not Spec's, and a second read of it builds nothing and answers the same tree.
+test("a held view's tree is built on its first read, and no other view's", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const planView = { ...viewAnswer({ ...task, role: "query" }), view: "plan" };
+  const statement = answerNode("r9", "requirement", { role: "query", text: "A statement." });
+  const specView = { ...viewAnswer(statement), view: "spec" };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(viewKey(KEY, "plan"), planView);
+  client.setQueryData(viewKey(KEY, "spec"), specView);
+  const builds = spyOn(issueTreeModel, "buildIssueTree");
+  /** The view each tree built so far was built from, where it was built from a view's answer. */
+  const viewsBuilt = () =>
+    builds.mock.calls.flatMap(([reads]) => (reads.tree?.view ? [reads.tree.view] : []));
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <RoutedQueries client={client}>{children}</RoutedQueries>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+    await waitFor(() => expect(view.result.current.views?.spec).toBe(specView));
+    const trees = view.result.current.views?.trees;
+    expect(viewsBuilt(), "a view's tree was built before a reader asked for it").toEqual([]);
+    const planTree = trees?.plan;
+    expect(planTree, "Plan's held answer built no tree").toBeDefined();
+    expect(trees?.plan, "a second read answered another tree").toBe(planTree);
+    expect(viewsBuilt(), "reading Plan's tree built another view's, or built it twice").toEqual([
+      "plan",
+    ]);
+    view.unmount();
+  } finally {
+    builds.mockRestore();
     for (const stub of stubs) stub.mockRestore();
   }
 });

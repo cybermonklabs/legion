@@ -430,8 +430,8 @@ test("a deleted comment's row draws the deleted line, its actor named as the pag
 
 // R2 of dispatch://INFRA-1523: a message its author edited says ` · edited` after its time, as
 // its byline does on every surface (`EditedMark`). The row says it at its right, outside its
-// words, so no cut of the words takes it: an agent's words cut at six lines, or a folded
-// branch's one line. A message nobody edited says nothing of an edit.
+// words, so no cut of the words takes it: a folded branch's one line. A message nobody edited
+// says nothing of an edit.
 test("an edited message's row says edited after its time, whole or folded, outside its words", () => {
   const at = `${new Date().getFullYear()}-11-05T12:00:00Z`;
   const planner: Author = { kind: "agent", name: "Planner", reader: false };

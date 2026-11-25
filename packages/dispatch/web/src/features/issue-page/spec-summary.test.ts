@@ -50,22 +50,20 @@ test("the summary is the first callout of the spec in the outline's tree", () =>
 });
 
 test("where the outline's tree holds no memo, the summary is the Spec view's own tree's", () => {
-  const root = node("CORE-1", "issue", [], {
-    views: { treeOf: (filter) => (filter === "spec" ? SPEC_VIEW : undefined) },
-  });
+  const root = node("CORE-1", "issue", [], { views: { trees: { spec: SPEC_VIEW } } });
   expect(specSummary(root, "spec")?.id).toBe("spec#b-memo");
 });
 
 test("the outline's own memo is the summary where the Spec view's tree holds one too", () => {
   const root = node("CORE-1", "issue", [node("spec#b-summary", "callout")], {
-    views: { treeOf: (filter) => (filter === "spec" ? SPEC_VIEW : undefined) },
+    views: { trees: { spec: SPEC_VIEW } },
   });
   expect(specSummary(root, "spec")?.id).toBe("spec#b-summary");
 });
 
 test("an issue with no spec has no summary, whatever its trees hold", () => {
   const root = node("CORE-1", "issue", [node("spec#b-summary", "callout")], {
-    views: { treeOf: (filter) => (filter === "spec" ? SPEC_VIEW : undefined) },
+    views: { trees: { spec: SPEC_VIEW } },
   });
   expect(specSummary(root, "")).toBeUndefined();
 });

@@ -89,7 +89,7 @@ const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
   plan: "plan",
   spec: "spec",
   verification: "verification",
-};
+} satisfies Record<Exclude<Preset, "conversation">, Preset>;
 
 /** The preset a route opens, without reading its target or version. */
 export function presetOf(route: IssueRoute): Preset {

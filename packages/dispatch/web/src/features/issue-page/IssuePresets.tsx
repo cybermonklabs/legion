@@ -79,8 +79,8 @@ export function IssuePresets({
    *  the counts cannot be read yet (`slots/view-row.tsx` waits for the tree's reads and the
    *  reader's login): then no control draws a signal - no count, no unit word, no flag - and no
    *  control's description or name points at one, so none names an element that is not drawn.
-   *  A control it holds no signal for draws none either: Graph, which has no count (R10). */
-  signals?: Readonly<Partial<Record<Preset, PresetSignal>>>;
+   *  A control whose signal is undefined draws none either: Graph, which has no count (R10). */
+  signals?: Readonly<Record<Preset, PresetSignal | undefined>>;
 }): ReactNode {
   const navigate = useNavigate();
   const { pathname } = useLocation();

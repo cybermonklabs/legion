@@ -26,7 +26,7 @@ export const CHILD_PAGE = 50;
 
 /** How many levels a row's indent grows through: a row deeper than this stands at the indent of
  *  this level (R11, root R16's six levels). */
-export const INDENT_LEVELS = 6;
+const INDENT_LEVELS = 6;
 
 /** What the reader has done to the outline by hand: the nodes they folded, and the pages of
  *  children they drew. */

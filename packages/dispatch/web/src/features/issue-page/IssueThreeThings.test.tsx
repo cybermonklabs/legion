@@ -690,11 +690,6 @@ test("the Contents pane draws the three sentences though the plan's blocks could
     );
     try {
       await waitFor(() =>
-        expect(client.getQueryState(outlineQuery(KEY, "conversation").queryKey)?.status).toBe(
-          "success"
-        )
-      );
-      await waitFor(() =>
         expect(
           [
             ...view.container.querySelectorAll(

@@ -996,8 +996,8 @@ export interface CheckStanding {
 /**
  * How a check stands: the page's one reading of a check's state (R10, R17), and the only one -
  * `checkState` is its own fallback and nothing else reads it. The tree's check node holds it
- * (`tree-read/tree-nodes.ts`' `draftServing`), so the outline's row, the fold's frontier
- * (`tree-fold.ts`) and the Verification filter's failing count (`presets.ts`'s `filterSignals`)
+ * (`tree-read/tree-nodes.ts`' `draftServing`), so the outline's row and the Verification
+ * filter's failing count (`presets.ts`'s `filterSignals`)
  * read it, and so does the Verification filter's body (`statement-state.ts`'s `checkReading`):
  * one check never reads Passed on its row and Failed in the filter.
  *

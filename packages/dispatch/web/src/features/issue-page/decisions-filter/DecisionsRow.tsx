@@ -377,8 +377,8 @@ export function DecisionsRow({
               </Link>
             )}
           </div>
-          {/* What the focus adds to the row, as the outline's body adds it (`NodeRow.tsx`'s
-              `NodeBody`), for a decision as for an ask: who made the node where the margin does
+          {/* What the focus adds to the row, as the outline's face draws it (`NodeRow.tsx`'s
+              `NodeFace`), for a decision as for an ask: who made the node where the margin does
               not say it whole - "Author unknown", with its own shape, where the model holds no
               author, and an agent's whole session title where the margin names it by its role's
               word alone (ruling 5) - and the control that keeps the body open (R6). The open

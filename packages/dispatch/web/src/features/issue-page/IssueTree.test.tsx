@@ -199,7 +199,7 @@ function IssueScope(): ReactNode {
   return null;
 }
 
-/** Where the page's address stands, which the tree's own navigation moves (`t h`). */
+/** Where the page's address stands, as the router holds it. */
 function AddressProbe({ seen }: { seen: { path?: string } }): ReactNode {
   seen.path = useLocation().pathname;
   return null;
@@ -1391,7 +1391,7 @@ test("a statement's and a check's rows carry data-editable, a comment's, a resul
   const marked = async (isClosed: boolean): Promise<(string | undefined)[]> => {
     const view = renderTree(root, { artifacts, isClosed });
     try {
-      // The check's own branch arrives folded; the reader opens it to draw its result.
+      // Every branch arrives open (R11), the check's with its result under it.
       const [check] = rowsFor(view.container, "verification#b-c1");
       if (check === undefined) throw new Error("the tree drew no row of the check");
       await act(async () => check.focus());
@@ -2197,8 +2197,8 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
 });
 
 // The tester's red row `a row that edits a statement is no taller than the window, and the page
-// around it stays put`, its second half: the row's body - its facts, Keep open, Copy reference -
-// stands under its editor's box, and a box held to the room under its top alone left that body
+// around it stays put`, its second half: what the row draws under its words - its facts, its
+// acts - stands under its editor's box, and a box held to the room under its top alone left them
 // under the window: a long statement the reader moved to and edited made a row of 971 px in a
 // window 900 px tall. The box is held so the whole row fits the room between the band and the
 // foot: a row whose top is at the band gets the room less what the row draws over and under its
@@ -6264,10 +6264,9 @@ test("a press on a crumb zooms out with the focus left on the row the reader is 
   }
 });
 
-// The zoom out a crumb's press makes draws open only what something opened: the node the zoom
-// was rooted at is drawn open as the zoom's own row, and folded once the tree is rooted above it
-// unless the reader, the frontier, an address or a filter opened it, and a comment is on no
-// frontier. `.` on a comment opens only the path above it, so a press on the issue's crumb from
+// The zoom out a crumb's press draws every node open but the ones the reader folded (R11). It
+// once drew open only what something opened, the node the zoom was rooted at among them, and
+// `.` on a comment opened only the path above it, so a press on the issue's crumb from
 // that comment's reply drew the comment folded, the reply's row nowhere, and the focus went to
 // the row drawn at the reply's place, the second comment's; a press on the thread's crumb from a
 // reply under the reply `.` zoomed into did the same a level down. The press unfolds the path
@@ -6921,7 +6920,7 @@ test("the question the opening unfolded again after its answer keeps the focus t
     const { container } = tree.view;
     await waitFor(() => expect(focusedRow(container)).toBe("ask-mine"));
 
-    // The answer folds the thread the frontier alone opened, and the opening unfolds it again.
+    // The answer draws the thread again, open as every branch is (R11), with the question in it.
     tree.redraw(node({ children: [thread(false)], id: KEY, type: "issue" }));
     await nextFrame();
     expect(focusedRow(container), "the answer moved the focus off the question").toBe("ask-mine");
@@ -10804,7 +10803,7 @@ test("a comment the address landed on that leaves the tree leaves the outline dr
 // A read of the comments that answers without the comment whose row holds the focus takes that
 // row out of the tree, and the browser dropped the focus to the page's body with it: the reader's
 // place in the outline was lost, and no row held the focus. The nearest row still drawn takes
-// it, as a key's move gives it - the tab stop and the row's body go with it: the row that now
+// it, as a key's move gives it - the tab stop and the row's look go with it: the row that now
 // stands where the dropped one stood, or the last row where the tree now ends before that place.
 // The issue holds three comments, each a thread of its own, so each is a row of the tree's top
 // level; `focus` is the key that takes the reader from the first row to `dropped`'s.
@@ -10884,7 +10883,7 @@ test("a read that drops the focused comment's row, the tree's last, leaves the f
 // the page draws the document's editor nowhere, the panel holds the facts of the row the focus
 // went to, and the tree holds that row as any other. Left on, the editing waited for a row no
 // read draws, and the tree held every row the focus came to as the edited one: a Tab out of the
-// tree kept that row's body and its facts in Details.
+// tree kept hold of that row and its facts in Details.
 test("a read that drops the row being edited ends the editing, and a Tab out of the tree lets go of the row the focus went to", async () => {
   setViewport(1440);
   const user = userEvent.setup();

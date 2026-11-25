@@ -3668,7 +3668,7 @@ test("a requirement block outside the spec is no statement, and the spec's are, 
 // A `check` block of a document other than the issue's Verification document
 // is a block and nothing more. The results read never answers for it, so it draws no state word
 // - "No result" would be drawn on it for ever - and it is no check of the Verification filter's
-// rows or count, of the statement it serves, or of the fold's frontier. The Verification
+// rows or count, or of the statement it serves. The Verification
 // document's own check reads No result until the results read answers, and then as it stands.
 test("a check block outside the Verification document draws no state and is counted nowhere", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);

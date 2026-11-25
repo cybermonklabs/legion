@@ -72,8 +72,8 @@ const TONES = {
  * write disables or removes `control`. A focused control that is disabled drops the focus to the
  * document body (measured in Chromium: a `focusout` from Keep with no related target 45 ms
  * after its write went out), which loses a keyboard reader's place on the page, and the tree
- * then closes the body the focus held (`IssueTree.tsx`), taking Change with it. On the row the
- * focus has not left the tree, so the body stays open. The row is `NodeRow`'s `data-node-row`,
+ * then lets go of the row the focus held (`IssueTree.tsx`'s `useReleaseFocus`). On the row the
+ * focus has not left the tree, so the row stays focused. The row is `NodeRow`'s `data-node-row`,
  * and the move takes no scroll: the reader is already looking at it.
  */
 function keepFocusOnRow(control: HTMLElement): void {
@@ -84,9 +84,9 @@ function keepFocusOnRow(control: HTMLElement): void {
 /**
  * Each decision's Change the reader has open, by the decision's own address (`DecisionEntry.ref`),
  * with the words typed in it so far: `""` for a form opened with nothing typed yet, and no entry
- * for a Change that is closed, or whose words are out or landed. A row's body closes once the focus
- * leaves the rows, and Keep and Change go with it; held here, above the rows, the open form and
- * its words come back as the reader left them when the body opens again, rather than being
+ * for a Change that is closed, or whose words are out or landed. A read can draw a row again
+ * under a new key, and Keep and Change leave the page with the old row; held here, above the
+ * rows, the open form and its words come back as the reader left them, rather than being
  * dropped with no word said.
  * Outside a view that holds one, a Change holds its form only while it is drawn.
  */

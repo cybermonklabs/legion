@@ -12,8 +12,9 @@ import { storeAddressReference } from "../../refs/store-address";
  *
  * `RowText.tsx` loads on today's pages, so this file imports nothing from the issue page's model
  * or its word lists: of the files outside `lenses/`, only `refs/routes.ts` and
- * `refs/store-address.ts`, which today's pages load already. The files that name store addresses
- * in a row's words import these functions from here.
+ * `refs/store-address.ts`, which today's pages load already. `RowText.tsx` takes `storeLinkPath`
+ * from here; `StoreKind`, `storeKindOf` and `storeAddressOf` are exported for the step that drafts
+ * a store address's link in a row's words, and no file imports them yet.
  */
 
 /** The kinds of node a store address in a row's words names, as the tree names them. */

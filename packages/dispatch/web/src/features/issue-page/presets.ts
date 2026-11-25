@@ -437,7 +437,7 @@ function filterView(
  * so a row reads as it does in the outline, under the row the read places it under, else at the
  * top; two nodes of one read id, blocks of two documents, are two rows of two nodes. A node the
  * outline's tree holds no node of is drawn as the node of the tree the view's own answer builds
- * (`TreeViews.treeOf`), so the view draws its own read's rows whatever the outline read holds or
+ * (`TreeViews.trees`), so the view draws its own read's rows whatever the outline read holds or
  * whether it was sent at all (R4, R5). Verification draws each statement the view holds as
  * context, with each check under each statement it serves and each result under its check. A
  * node neither tree drafts - a criterion - is no row, and neither is the memo, a callout. A
@@ -487,7 +487,7 @@ function heldFilterView(
     }
   };
   index(root, true);
-  const own = root.views?.treeOf?.(filter);
+  const own = root.views?.trees?.[filter];
   if (own !== undefined) index(own, false);
   // The node's other parents (`TreeNode.alsoUnder`), each chip with no words named by its
   // parent's line, where a tree holds that parent.

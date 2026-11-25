@@ -6,7 +6,7 @@ import { deletedLineText } from "../refs/post-marks";
 import type { AddressFallback } from "./address-target";
 import type { AddressTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
-import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
+import { NODE_TYPE_NAMES, type NodeType, PRESET_ORDER, type Preset } from "./page-words";
 import {
   answerHolds,
   filterHolding,
@@ -160,7 +160,7 @@ test("Graph is no filter", () => {
   const root = issue();
   expect(isFilter("graph")).toBe(false);
   expect(isFilter("conversation")).toBe(false);
-  expect((["spec", "verification", "plan", "decisions"] as const).every(isFilter)).toBe(true);
+  expect(PRESET_ORDER.filter(isFilter)).toEqual(["spec", "verification", "plan", "decisions"]);
   const view = presetView(root, "graph", "");
   expect(view).toMatchObject({ lines: new Map(), rootRow: true });
   expect(nodesUnder(view.root).map((one) => one.id)).toEqual(nodesUnder(root).map((one) => one.id));
@@ -719,7 +719,7 @@ test("a view answer's decisions and constraints are lines, never rows", () => {
 });
 
 /** The Spec view read holding the statements r1 and r2, and the tree its own answer builds
- *  (`TreeViews.treeOf`), each statement worded as the view's. */
+ *  (`TreeViews.trees`), each statement worded as the view's. */
 function specViewOf(): { readonly answer: TreeAnswer; readonly tree: TreeNode } {
   return {
     answer: treeAnswer(
@@ -748,13 +748,11 @@ function rowWords(root: TreeNode, preset: Preset): [string, string][] {
 
 // R4, R5: a filter draws its view read's rows whatever the outline read holds. A node of its view
 // answer the outline's tree holds no node of is drawn as the node of the tree the view's answer
-// builds alone (`TreeViews.treeOf`): with the outline read not sent, as on Spec loaded cold below
+// builds alone (`TreeViews.trees`): with the outline read not sent, as on Spec loaded cold below
 // 1024 px (R13), the outline's tree is the issue alone and Spec still draws each statement.
 test("a filter draws a node its view answer holds that the outline's tree lacks", () => {
   const { answer, tree } = specViewOf();
-  const cold = node("CORE-1", "issue", [], {
-    views: { spec: answer, treeOf: (filter) => (filter === "spec" ? tree : undefined) },
-  });
+  const cold = node("CORE-1", "issue", [], { views: { spec: answer, trees: { spec: tree } } });
   expect(rowWords(cold, "spec")).toEqual([
     ["spec#b-r1", "The view's r1."],
     ["spec#b-r2", "The view's r2."],
@@ -770,7 +768,7 @@ test("a filter draws the outline's node where the outline's tree and its view's 
     "CORE-1",
     "issue",
     [statement("spec#b-r1", [], { readId: "CORE-1/spec#r1", text: "The outline's r1." })],
-    { views: { spec: answer, treeOf: (filter) => (filter === "spec" ? tree : undefined) } }
+    { views: { spec: answer, trees: { spec: tree } } }
   );
   expect(rowWords(root, "spec")).toEqual([
     ["spec#b-r1", "The outline's r1."],
@@ -798,9 +796,7 @@ test("a view's row drawn from its own tree names each other parent it serves by 
   const answer = treeAnswer([viewNode("t1", "plan_task", "query", { in: "plan" })], [], {
     view: "plan",
   });
-  const root = node("CORE-1", "issue", [], {
-    views: { plan: answer, treeOf: (filter) => (filter === "plan" ? tree : undefined) },
-  });
+  const root = node("CORE-1", "issue", [], { views: { plan: answer, trees: { plan: tree } } });
   const drawn = presetView(root, "plan", "").root.children.find((row) => row.id === "plan#b-t1");
   expect(
     drawn?.alsoUnder.map((chip) => chip.name),

@@ -55,9 +55,9 @@ export interface FailedRead {
 /** What the outline's reads give (`useOutlineReads`). Each field is one value for as long as the
  *  reads say the same; the object holding them is new on every render. */
 export interface OutlineReads {
-  /** Each role document's blocks, the tree read's (`IssueTreeView.blocksOf`), so a view that draws
-   *  from them reads them here, through the one observer of the tree read the outline's reads
-   *  hold. */
+  /** Each role document's blocks, from the read that holds them (`IssueTreeView.blocksOf`):
+   *  under that role's own filter its view read, and else the outline read; so a view that
+   *  draws from them reads them here, through the observers the outline's reads hold. */
   readonly blocksOf: IssueTreeView["blocksOf"];
   /** The line of each read the tree's rows come from that stands failed (`standsFailed`), and
    *  the names' line while it stands (`IssueTreeView.namesFailure`), in the order the reads are
@@ -89,8 +89,8 @@ export interface OutlineReads {
   readonly readsSettled: boolean;
   /** The lines a view tells the stage by (`slots/refused-reads.ts`'s `useTellsAddressDrawn`), by
    *  the key each is drawn under and whether rows come from its read: `failed`, and while the tree
-   *  read stands refused (`TreeRead.failed`) the tree read's own line, under the one key every
-   *  document's blocks stand on (`blocksKey`). The outline draws that line itself
+   *  read stands refused (`TreeRead.failed`) the tree read's own line, under the key a view
+   *  tells its blocks' line by (`blocksKey`). The outline draws that line itself
    *  (`TreeReadFailed`) and never among `failed`, so it is here alone. */
   readonly refused: readonly RefusedLine[];
   /** The whole tree (`useIssueTree`). */
@@ -105,15 +105,15 @@ export type RefusedLine = Pick<FailedRead, "key" | "placesRows">;
  *  opening, which read it, see one value; the tree's own where the page gives it none. */
 export const NO_FAILED_READS: readonly FailedRead[] = [];
 
-/** The key of the tree read's line: the one read behind every document's blocks, whose refusal
- *  draws one line (`tree-read/view-read.tsx`'s `TreeReadFailed`). */
+/** The key of the tree read's line, the outline read's, whose refusal draws one line
+ *  (`tree-read/view-read.tsx`'s `TreeReadFailed`), and the key a view tells its blocks' line by. */
 const TREE_READ_LINE = "tree";
 
 /** The key the line of a read rows come from is drawn under (`FailedRead.key`). */
 export type ReadKey = ReturnType<typeof sixReads>[number]["line"] | typeof TREE_READ_LINE;
 
-/** The key the line of the blocks read of the document `id` is drawn under: every document's
- *  blocks are the tree read's, so it is the tree read's line for every document. */
+/** The key a view tells the line of the document `id`'s blocks by (`useTellsAddressDrawn`): the
+ *  tree read's line for every document, whichever read holds its blocks (`TreeRead.blocksOf`). */
 export const blocksKey = (_id: string): ReadKey => TREE_READ_LINE;
 
 /** The six reads the tree is built from beside the tree read, in the order they are given, each

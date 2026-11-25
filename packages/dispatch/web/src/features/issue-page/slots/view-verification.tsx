@@ -11,7 +11,7 @@ import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
 import { blocksKey, useOutlineReads } from "../outline-reads";
 import { presetView } from "../presets";
-import { type TreeBlocksRead, useTreeReadRunning } from "../tree-read/tree-read";
+import { type TreeBlocksRead, useBlocksRunning } from "../tree-read/tree-read";
 import { NextViewPage } from "../tree-read/view-read";
 import {
   type FailedRead,
@@ -33,8 +33,9 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
   // tree reads it by, so they cost no request of their own.
   const { blocksOf, readsSettled, refused, root } = useOutlineReads(issue);
-  // Whether the tree read runs, from an observer of its own (`useTreeReadRunning`).
-  const running = useTreeReadRunning(issue.key);
+  // Whether the read that holds the Verification document's blocks runs, from an observer of its
+  // own (`useBlocksRunning`): under this filter its own view read.
+  const running = useBlocksRunning(issue.key, "verification");
   const { checks, reads } = useVerificationReads(issue.key, {
     ...blocksOf("verification"),
     isFetching: running,
@@ -57,7 +58,7 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   );
   // Whether the view draws a row of the node the address names, which the stage is told by the
   // rule for refused reads (`useTellsAddressDrawn`). The view draws a line of its own for the
-  // coverage read, the results read and, whether or not the results read holds a check, the tree
+  // coverage read, the results read and, whether or not the results read holds a check, the blocks
   // read (`useVerificationReads`'s `blocks`). Where the view may tell, the body says whether
   // it draws the node, with the reader's chip applied (`addressed`, one value while the node and
   // the call stay the same): a statement, a check under a statement it draws, a check that serves
@@ -124,10 +125,10 @@ export function useVerificationReads(
   // `verificationDocument`), and names it in a field of its own (`verification_artifact_id`),
   // which no line here reads. It must agree with the document whose blocks
   // `useIssueTree` reads, which that hook finds from the issue read (`roleDocument`); no other
-  // document's blocks place a check. The slot hands those blocks in (`blocks`, the tree read's),
+  // document's blocks place a check. The slot hands those blocks in (`blocks`, the view read's),
   // with whether that read runs, so it sends no request of its own and sees whatever
   // `useIssueTree`'s observer fetches; its `refetch` still fetches, which is what Retry asks.
-  // The tree read holds the statements too, so the view waits on it whether or not the results
+  // That read holds the statements too, so the view waits on it whether or not the results
   // read holds a check, and a read of it refused before it first answered is a line of its own,
   // with that read's own error and Retry.
   // Each read has answered where it holds data, and not by its status: a background refetch

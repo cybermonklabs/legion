@@ -109,6 +109,9 @@ function landingClient(comments: Comment[], asks: Ask[] = []): QueryClient {
   queryClient.setQueryData(["issue", issue.key], issue);
   queryClient.setQueryData(["inbox"], asks);
   queryClient.setQueryData(["asks", issue.key], asks);
+  // The new page's margin reads the asks with their threads (`useAnsweredAsks`), whose rows are
+  // the plain read's with each one's thread beside it.
+  queryClient.setQueryData(["asks", issue.key, "thread"], asks);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], comments);
   return queryClient;

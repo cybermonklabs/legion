@@ -488,25 +488,33 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     () => (named === undefined ? unnamed : builtTree({ ...reads, targets: named })),
     [named, reads, unnamed]
   );
-  const treeOf = useMemo(() => {
-    const held = new Map<TreeFilter, TreeNode>();
-    return (filter: TreeFilter): TreeNode | undefined => {
+  // Each held view's tree (`TreeViews.trees`): a getter per filter whose view answer is held,
+  // which builds the tree from that answer with the outline's context on its first read and
+  // answers that one tree on every read after, so a filter no reader asks for builds nothing,
+  // and callers of the same reads hold trees that compare equal.
+  const trees = useMemo(() => {
+    const held: Partial<Record<TreeFilter, TreeNode>> = {};
+    for (const filter of TREE_FILTERS) {
       const answer = views?.[filter];
-      if (answer === undefined) return undefined;
-      const cached = held.get(filter);
-      if (cached !== undefined) return cached;
-      const tree = builtTree({
-        ...reads,
-        tree: viewWithContext(answer, reads.tree),
-        ...(named === undefined ? {} : { targets: named }),
+      if (answer === undefined) continue;
+      let tree: TreeNode | undefined;
+      Object.defineProperty(held, filter, {
+        enumerable: true,
+        get: (): TreeNode => {
+          tree ??= builtTree({
+            ...reads,
+            tree: viewWithContext(answer, reads.tree),
+            ...(named === undefined ? {} : { targets: named }),
+          });
+          return tree;
+        },
       });
-      held.set(filter, tree);
-      return tree;
-    };
+    }
+    return held;
   }, [named, reads, views]);
   const root = useMemo(
-    () => (views === undefined ? built : { ...built, views: { ...views, treeOf } }),
-    [built, treeOf, views]
+    () => (views === undefined ? built : { ...built, views: { ...views, trees } }),
+    [built, trees, views]
   );
   return useMemo(
     () => ({

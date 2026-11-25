@@ -1003,6 +1003,70 @@ test("a failed names read says so in its own line, after the view's own, and its
   }
 });
 
+// Under the Spec filter the spec's blocks are the Spec view read's (`useTreeRead`'s `blocksOf`),
+// and the statements line runs by that read (`useBlocksRunning`), not by Conversation's, which
+// the page reads beside the view from 1024 px up. With Conversation's read out and the view read
+// refused, the line's Retry sends the view read again, the line is busy while it runs, and it
+// leaves once the view read answers.
+test("with Conversation's read out, the statements line's Retry sends the refused Spec view read, and is busy while it runs", async () => {
+  const user = userEvent.setup();
+  const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["whoami"], { kind: "user", login: READER });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
+  client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
+  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
+  client.setQueryData(["comments", KEY], TWO_THREADS);
+  client.setQueryData(["issue-messages", KEY], []);
+  // Conversation's read never answers; the Spec view read is refused, and then answers when the
+  // case says.
+  const again = Promise.withResolvers<TreeAnswer>();
+  let specReads = 0;
+  const trees = spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as { readonly kind?: unknown; readonly view?: string };
+    if (asked.view !== "spec") return Promise.withResolvers<never>().promise;
+    specReads += 1;
+    return specReads === 1 ? Promise.reject(new Error("offline")) : again.promise;
+  });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  void client.prefetchQuery(outlineQuery(KEY, "conversation"));
+  const view = render(
+    <MemoryRouter initialEntries={[`/issues/${KEY}/spec`]}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <AddressedStage issue={issue} />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const line = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
+    expect(
+      client.getQueryState(outlineQuery(KEY, "conversation").queryKey)?.fetchStatus,
+      "Conversation's read is not out"
+    ).toBe("fetching");
+    const retry = within(line).getByRole("button", { name: "Retry" });
+    await user.click(retry);
+    await waitFor(() => expect(specReads, "the Retry sent no Spec view read").toBe(2));
+    expect(retry.getAttribute("aria-busy"), "the line is not busy while the view read runs").toBe(
+      "true"
+    );
+    await act(async () => again.resolve(treeAnswer([])));
+    await waitFor(() =>
+      expect(view.container.textContent).not.toContain(STATE_LINES.statements_unreadable)
+    );
+  } finally {
+    view.unmount();
+    names.mockRestore();
+    trees.mockRestore();
+  }
+});
+
 // The page acts on each of the Contents list's asks
 // once, whichever outline or body took it (`outline-request.tsx`), so a body drawn again - the
 // view turned off and on again - does not move the reader back to an ask it already went to.

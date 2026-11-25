@@ -75,7 +75,7 @@ import { specSummary } from "../spec-summary";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
-import { issueTreeQuery, useTreeRead, useTreeReadRunning } from "../tree-read/tree-read";
+import { issueTreeQuery, useBlocksRunning, useTreeRead } from "../tree-read/tree-read";
 import { issueAskThreadsQuery, type NamesFailure } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
@@ -193,12 +193,15 @@ export function SpecFilterBody({
   const asksQuery = issueAskThreadsQuery(issue.key);
   const coverageRead = useQuery(treeRead(coverageQuery));
   const { blocksOf } = useTreeRead(issue);
-  // Whether the tree read runs, from an observer of its own (`useTreeReadRunning`): what a line
-  // of the blocks draws its Retry busy by.
-  const running = useTreeReadRunning(issue.key);
-  const specBlocksRead = { ...blocksOf("spec"), isFetching: running };
+  // Whether the read that holds each role's blocks runs, from an observer of its own
+  // (`useBlocksRunning`): what a line of those blocks draws its Retry busy by. Under the Spec
+  // filter the spec's are its view read's, and the Verification document's the outline read's.
+  const specBlocksRead = { ...blocksOf("spec"), isFetching: useBlocksRunning(issue.key, "spec") };
   const resultsRead = useQuery(treeRead(resultsQuery));
-  const checksRead = { ...blocksOf("verification"), isFetching: running };
+  const checksRead = {
+    ...blocksOf("verification"),
+    isFetching: useBlocksRunning(issue.key, "verification"),
+  };
   const decisionsRead = useQuery(treeRead(decisionsQuery));
   const asksRead = useQuery(treeRead(asksQuery));
   // One predicate per read: whether it holds an answer. Every part of the body that says what

@@ -115,7 +115,8 @@ export const liveTextQueryOptions = (artifactId: string) =>
   });
 
 /** The asks of the document `artifactId`'s owner, in every state: the issue's, under the key and
- * with the read the issue page takes them from (`issueAsksQuery`), or, where `issueKey` is null,
+ * with the read today's issue page takes them from (`issueAsksQuery`; the new page's outline
+ * reads `issueAskThreadsQuery`, under a key of its own), or, where `issueKey` is null,
  * the document's own, as a project document's are. A rendered ask block reads who asked from
  * these, and the server's read of its ask (`servedAskOfBlock`). The issue's read answers rows that
  * carry more than an ask, so the options take either read's key and fetch and read both as asks. */
