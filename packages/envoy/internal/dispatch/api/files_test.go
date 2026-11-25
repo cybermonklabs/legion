@@ -63,6 +63,7 @@ func versionRow(t *testing.T, database *store.Store, artifactID string, number i
 }
 
 func TestUploadsGoToTheFileStoreAndAreServedFromIt(t *testing.T) {
+	t.Parallel()
 	memory := filestest.NewMemory()
 	handler, database, _ := newTestServer(t, testServerOptions{files: memory})
 	issue := fileIssue(t, handler)
@@ -117,6 +118,7 @@ func TestUploadsGoToTheFileStoreAndAreServedFromIt(t *testing.T) {
 // without asking again, privately since the route is authenticated; a document version is the
 // document's JSON read and says nothing of the kind.
 func TestAFileVersionIsCachedForeverAndADocumentVersionIsNot(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	issue := fileIssue(t, handler)
 	if upload := multipartRequest(t, handler, "/api/v1/issues/"+issue+"/artifacts", map[string]string{"name": "shot.png"}, "shot.png", "image/png", []byte("png bytes"), "alice"); upload.Code != http.StatusCreated {
@@ -137,6 +139,7 @@ func TestAFileVersionIsCachedForeverAndADocumentVersionIsNot(t *testing.T) {
 }
 
 func TestAnUploadTheStoreRefusesLeavesNoVersionBehind(t *testing.T) {
+	t.Parallel()
 	memory := filestest.NewMemory()
 	memory.SetFailure(errors.New("bucket unreachable"))
 	handler, database, _ := newTestServer(t, testServerOptions{files: memory})
@@ -159,6 +162,7 @@ func TestAnUploadTheStoreRefusesLeavesNoVersionBehind(t *testing.T) {
 }
 
 func TestARowStillHoldingItsBytesIsServedFromTheRow(t *testing.T) {
+	t.Parallel()
 	// An upload made before the store existed keeps its bytes in the row; the store configured
 	// later holds nothing for it, and the route serves the row.
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -173,10 +177,10 @@ func TestARowStillHoldingItsBytesIsServedFromTheRow(t *testing.T) {
 	}
 
 	memory := filestest.NewMemory()
-	deps, err := NewDeps(DepsInput{
+	deps, err := NewDeps(withDocumentService(t, DepsInput{
 		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: "https://dispatch.example", Files: memory,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("new deps with a store: %v", err)
 	}
@@ -192,6 +196,7 @@ func TestARowStillHoldingItsBytesIsServedFromTheRow(t *testing.T) {
 }
 
 func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
+	t.Parallel()
 	memory := filestest.NewMemory()
 	handler, database, _ := newTestServer(t, testServerOptions{files: memory})
 	issue := fileIssue(t, handler)
@@ -226,10 +231,10 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 	}
 
 	// Without a store at all, a cleared row is a configuration the server names: 503.
-	noStore, err := NewDeps(DepsInput{
+	noStore, err := NewDeps(withDocumentService(t, DepsInput{
 		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: "https://dispatch.example",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("new deps without a store: %v", err)
 	}
@@ -251,6 +256,7 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 // takes the owner lock gate and waits, at most 5 s, for every transaction holding it, and before
 // the issue there is no document whose settlement could hold it.
 func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
+	t.Parallel()
 	thisBuild := []any{store.OwnerLockProtocol}
 	for _, tc := range []struct {
 		name, insert string
@@ -289,10 +295,10 @@ func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 				t.Fatalf("the row holds %d bytes; beside a %s it should hold the upload's %d", len(row), tc.name, len(image))
 			}
 
-			bucketless, err := NewDeps(DepsInput{
+			bucketless, err := NewDeps(withDocumentService(t, DepsInput{
 				Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 				ServerURL: "https://dispatch.example",
-			})
+			}))
 			if err != nil {
 				t.Fatalf("new deps without a store: %v", err)
 			}
@@ -463,6 +469,7 @@ func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string, with
 // it will never take. Without this nothing shows the arm can fire, and the test below could only
 // ever fail by timing out.
 func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := fileIssue(t, handler)
 	ctx := context.Background()
@@ -520,6 +527,7 @@ func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 // usually commits while fileIssue's own request is still answering, before there is an upload to
 // hold anything.
 func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
+	t.Parallel()
 	held := heldPut{Memory: filestest.NewMemory(), entered: make(chan struct{}), release: make(chan struct{})}
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(held.release) }) }
@@ -600,6 +608,7 @@ func (s tampered) Get(ctx context.Context, sha string) (*files.Object, error) {
 // response is cut short of its Content-Length, which a client reports. Over a real connection,
 // since the cut is the connection's.
 func TestATamperedObjectIsNotDeliveredWhole(t *testing.T) {
+	t.Parallel()
 	original := bytes.Repeat([]byte("o"), 300_000)
 	replaced := append(bytes.Repeat([]byte("o"), 299_999), 'x')
 	store := tampered{Store: filestest.NewMemory(), sha: files.SHA256(original), bytes: replaced}

@@ -166,6 +166,59 @@ func TestTheHubRefusesASessionWhosePersonDispatchHolds(t *testing.T) {
 	require.NoError(t, err, "the hub refused a session whose person Dispatch does not hold")
 }
 
+// Through the service, a session answers a request asked on a reply subject naming it
+// (bus.SessionReplySubject), as every relay frame, connection probe and agent stream replay asks,
+// and the server refuses the same answer on another session's reply
+// subject and on a requester's own plain inbox, by name. The watcher, a static user subscribed to
+// every reply inbox, hears the one admitted answer and none of the refused ones.
+func TestASessionThroughTheServiceAnswersOnlyUnderItsOwnReplyPrefix(t *testing.T) {
+	keys := testnats.NewCalloutKeys(t)
+	static, staticSeed := publisher(t)
+	url := testnats.StartWithCallout(t, keys, static)
+	a, b := newSession(t, "ses_a", 15*time.Minute), newSession(t, "ses_b", 15*time.Minute)
+	startService(t, url, keys, Deps{Introspect: introspector(a, b)}, Decide)
+
+	watcher, err := testnats.ConnectSeed(t, url, staticSeed)
+	require.NoError(t, err)
+	defer watcher.Close()
+	heard, err := watcher.SubscribeSync(nats.InboxPrefix + ">")
+	require.NoError(t, err)
+	require.NoError(t, watcher.Flush())
+
+	errs := make(chan error, 16)
+	nc, err := connectSession(t, url, a, errs)
+	require.NoError(t, err, "session ses_a was not admitted")
+	inbox := nats.NewInbox()
+	own := bus.SessionReplySubject(inbox, a.id)
+	refused := []string{bus.SessionReplySubject(inbox, b.id), inbox, inbox + ".1"}
+	for _, subject := range append([]string{own}, refused...) {
+		require.NoError(t, nc.Publish(subject, []byte("done")))
+	}
+	require.NoError(t, nc.Flush())
+
+	msg, err := heard.NextMsg(5 * time.Second)
+	require.NoError(t, err, "the watcher heard nothing of ses_a's answer on its own reply subject %s", own)
+	require.Equal(t, own, msg.Subject)
+	for _, subject := range refused {
+		want := `Permissions Violation for Publish to "` + subject + `"`
+		deadline := time.After(10 * time.Second)
+	wait:
+		for {
+			select {
+			case err := <-errs:
+				if strings.Contains(err.Error(), want) {
+					break wait
+				}
+			case <-deadline:
+				t.Fatalf("no %s: the server served ses_a's answer on %s", want, subject)
+			}
+		}
+	}
+	if extra, err := heard.NextMsg(500 * time.Millisecond); err == nil {
+		t.Fatalf("the watcher heard ses_a's answer on %s, which its grant should refuse", extra.Subject)
+	}
+}
+
 // Each authorization request the hub sends is sealed to the service's curve key: a second client
 // holding the service's NATS user, but not that key, reads bytes that are no JWT. The control is a
 // hub configured with no curve key, whose requests that client reads in the clear, and which the

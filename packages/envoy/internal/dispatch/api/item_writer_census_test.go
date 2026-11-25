@@ -295,6 +295,7 @@ const versionTableException = "none, and none to take: the table is a migration 
 // map and is found there, which is how docs/decided_wording.go's restore is found in
 // restoreWordings.
 func TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
@@ -438,6 +439,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 // It reads names alone and needs no database, as the census does: what the rows prove about locks
 // is TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites's half.
 func TestTheLockTablePlacesEveryWriterTheCensusNames(t *testing.T) {
+	t.Parallel()
 	placed := map[string]string{}
 	var unknown, twice []string
 	place := func(file, function, where string) {

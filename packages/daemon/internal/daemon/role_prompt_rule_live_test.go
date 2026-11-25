@@ -337,7 +337,7 @@ func (r *rolePromptRuleLive) seed() {
 	ctx := context.Background()
 	r.board.show(r.issue, "in_progress")
 	r.board.place(r.child, "in_progress", r.issue, false)
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.issue, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.issue,
 			Project: r.cfg.Project, Title: "the issue whose architect and planner this proof reads the command line of",

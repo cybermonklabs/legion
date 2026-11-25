@@ -51,10 +51,10 @@ func rowOf(sessionID string) func(value []byte) bool {
 
 // deleteInterestAt deletes sessionID's interest record only while its latest revision is
 // revision, and reports whether the bucket took the delete: a bucket that refused it holds a row
-// stored since, which is no error here (JetStream's wrong last sequence, 10071, which nats.go
-// names nats.ErrKeyExists), and that row stands. Each bucket call waits no longer than ctx
-// (bus.Bounded). A delete ctx abandoned may still land after this answer, and that is safe: it
-// deletes the one revision it names, so a write that landed since is kept.
+// stored since, which is no error here (JetStream's wrong last sequence, bus.IsCASConflict), and
+// that row stands. Each bucket call waits no longer than ctx (bus.Bounded). A delete ctx abandoned
+// may still land after this answer, and that is safe: it deletes the one revision it names, so a
+// write that landed since is kept.
 //
 // A revision of 0 fences nothing - nats.go sends no expected-last-sequence header for it, so the
 // bucket would take the delete over whatever it holds - and names no row a caller read, since a
@@ -72,7 +72,7 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 	if !answered {
 		return false, fmt.Errorf("delete %s's interest record at revision %d: %w", sessionID, revision, err)
 	}
-	if errors.Is(err, nats.ErrKeyExists) {
+	if bus.IsCASConflict(err) {
 		return false, nil
 	}
 	if err != nil {
@@ -378,7 +378,7 @@ func (r *Registry) recordInterest(merged Interest, revision, epoch uint64, getEr
 // creating it when revision is 0, which names the session that had no row when its plan read the
 // bucket (createInterest). It reports the revision written, the epoch of the handle it was written
 // through, and whether the bucket took the write: a bucket that refused it holds another writer's
-// row since, which is no error here (nats.ErrKeyExists, the wrong-last-sequence answer a Create
+// row since, which is no error here (bus.IsCASConflict, the wrong-last-sequence answer a Create
 // and an Update share), and the caller plans again over that row. Each call waits no longer than
 // ctx (bus.Bounded); a write ctx abandoned may still land, and is safe for the same reason a
 // conditional delete is: it stores only over the very revision it read, so it cannot undo a write
@@ -394,7 +394,7 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []
 	if !answered {
 		return 0, epoch, false, fmt.Errorf("write %s's interest record at revision %d: %w", sessionID, revision, err)
 	}
-	if errors.Is(err, nats.ErrKeyExists) {
+	if bus.IsCASConflict(err) {
 		return 0, epoch, false, nil
 	}
 	if err != nil {

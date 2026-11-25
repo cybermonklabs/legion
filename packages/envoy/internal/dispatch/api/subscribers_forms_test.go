@@ -23,6 +23,7 @@ import (
 // DELETE /api/v1/issues/LIVE-1/subscribers/<new-form follower> answered 404 SUBSCRIBER_NOT_FOUND
 // while that session still followed LIVE-1.
 func TestASubscriberFollowingTheNewIssueFormIsListedAndRemovable(t *testing.T) {
+	t.Parallel()
 	const (
 		oldForm = "notifications.dispatch.issue.TEST-1.>"
 		newForm = "notifications.dispatch.issue.TEST.TEST-1.>"

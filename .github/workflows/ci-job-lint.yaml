@@ -190,11 +190,11 @@ jobs:
         run: .github/scripts/check-ts-filters.sh
 
       # The notices step below builds go-licenses and loads every release binary's modules. It
-      # keeps them in a cache family of its own, go-notices: one entry, read on every run, so never
-      # evicted, and refreshed only when Go is bumped. Keyed on the go.sum files it would leave a
-      # 2.2 GB entry per key change; keyed on the Go version, a go.sum change only downloads the
-      # changed modules and rebuilds the changed packages, since Go's build cache is
-      # content-addressed. Restored only when the notices step runs; ci-caches.yaml fills it.
+      # keeps them in a cache family of its own, go-notices, which ci-caches.yaml fills again from
+      # its newest entry on every push to main. Keyed on the go.sum files it would leave a 2.2 GB
+      # entry per key change; keyed on the Go version, a go.sum change only downloads the changed
+      # modules and rebuilds the changed packages, since Go's build cache is content-addressed.
+      # Restored only when the notices step runs.
       #
       # The runner's architecture comes before the OS in this family's key, where the other Go
       # families put it after: the entry holds go-licenses, a program of the runner that built it,

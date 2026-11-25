@@ -154,6 +154,7 @@ jobs:
       main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.main_bypass_check_test }}
       edited_migrations_base_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
+      dispatch_browser_reading_rows_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_reading_rows_test }}
       dispatch_browser_run_reads_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_run_reads_test }}
       gh_read_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.gh_read_test }}
       dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_samples_test }}
@@ -373,6 +374,7 @@ jobs:
       main_bypass_check_test: ${{ needs.changes.outputs.main_bypass_check_test }}
       edited_migrations_base_test: ${{ needs.changes.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ needs.changes.outputs.dispatch_browser_latest_blobs_test }}
+      dispatch_browser_reading_rows_test: ${{ needs.changes.outputs.dispatch_browser_reading_rows_test }}
       dispatch_browser_run_reads_test: ${{ needs.changes.outputs.dispatch_browser_run_reads_test }}
       gh_read_test: ${{ needs.changes.outputs.gh_read_test }}
       dispatch_browser_samples_test: ${{ needs.changes.outputs.dispatch_browser_samples_test }}
@@ -985,10 +987,13 @@ jobs:
     if: ${{ always() }}
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # The verdict step's 10 and the hold step's 175 (the reconcile step's 10 runs only when the
+    # hold does not), with three over for the checkout and the two refusals.
+    timeout-minutes: 188
     env:
-      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 188 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
+      actions: read
       checks: write
     steps:
       # why: .github/ci-notes/ci.md#the-job-reads-nothing-of-the-tree-but-ci-oksh-ci-okjq-ci-ok-reconcilesh-and
@@ -1015,7 +1020,10 @@ jobs:
 
       # why: .github/ci-notes/ci.md#needs-is-tojsonneeds-changes-result-and-outputs-with-every-other-jobs-result
       - name: Judge every job of this run
+        id: verdict
+        timeout-minutes: 10
         env:
+          STEP_TIMEOUT_MINUTES: 10 # this step's timeout-minutes, for gh-read.sh's wait
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
           SELECTED_BY: ${{ env.CI_OK_SELECTED_BY }}
@@ -1028,10 +1036,35 @@ jobs:
           PARTIAL: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '[]' || '["dispatch-browser"]' }}
         run: .github/scripts/ci-ok.sh
 
+      # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front
+      - name: Hold a failing verdict until this group is the front of the queue
+        if: ${{ !cancelled() && steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1' }}
+        # The age's 170 minutes, which a run created moments before this step could hold for
+        # nearly whole, and the last pause and read's ladder (30 s, then three attempts and their
+        # pauses, two minutes).
+        timeout-minutes: 175
+        env:
+          STEP_TIMEOUT_MINUTES: 175 # this step's timeout-minutes, for gh-read.sh's wait
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          # 170 minutes from the run's creation: main's merge_queue rule assumes a check failed
+          # 180 minutes into the group, and the last pause, the last read's ladder and the job's
+          # end fit in the 10 left.
+          CI_OK_HOLD_AGE_SECONDS: 10200
+          # The longest merge-group run of 2026-11-22, 55.5 minutes (44966798236): taken off the
+          # age when the run's creation cannot be read and the hold counts from its own start.
+          CI_OK_HOLD_RUN_SECONDS: 3330
+        run: .github/scripts/ci-ok-hold.sh
+
       # why: .github/ci-notes/ci.md#why-every-other-ci-ok-on-this-head-is-set-to-this-jobs-conclusion
       - name: Set every other ci-ok on this head to this job's conclusion
-        if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') && !(steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1') }}
+        timeout-minutes: 10
         env:
+          STEP_TIMEOUT_MINUTES: 10 # this step's timeout-minutes, for gh-read.sh's wait
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CHECK_RUN_ID: ${{ job.check_run_id }}

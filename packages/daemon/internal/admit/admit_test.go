@@ -721,14 +721,12 @@ func TestTheBootListingOfATitleHoldingNULWritesNothingTheRecordAlreadyHolds(t *t
 	before := written()
 
 	listed := []intake.DispatchIssue{intake.ListedIssue(dispatch.IssueSummary{Key: "LEGION-3", Title: title, Status: "todo", Rank: "C", HandedOver: handed, LastSeq: 2, ResolvedRepo: "acme/widgets"})}
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, facts, func(tx pgx.Tx) error {
-		_, err := admission.Reconcile(scoped, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true})
+	if err := store.Transact(ctx, facts, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := admission.Reconcile(ctx, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true})
 		return err
 	}); err != nil {
 		t.Fatalf("reconcile the boot listing: %v", err)
 	}
-	committed()
 	if after := written(); after != before {
 		t.Fatalf("the boot listing of the title the record holds wrote the record again (xmin %s, then %s), want no write", before, after)
 	}

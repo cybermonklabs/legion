@@ -499,10 +499,15 @@ assert_claim_endpoints() {
     fail "ABORT: $role pane on $issue (OMP pid $omp) has $mismatch"
   fi
 }
-# pane_watcher checks every pane the daemon launches — including those it starts on its own —
-# as soon as its OMP process exists, which is before the plugin registers and before any turn.
-# A mismatch is recorded, the private tmux server is killed so no agent can act, and the next
-# bounded wait aborts naming the pane.
+# pane_watcher polls every 0.2 s and checks every pane the daemon launches — including those it
+# starts on its own — once its OMP process runs and its environment is laid out, usually before the
+# plugin registers, though no barrier holds the pane back for it. The kernel names the program an
+# exec starts before it lays out that program's environment (environ_laid_out, lib/process-tree.sh),
+# so an OMP found inside that window is read again at the next poll, never counted: a read there
+# would find no environment. One that never lays its environment out stays out of
+# pane-endpoints-checked.txt, and every_launch_checked fails naming it. A mismatch is recorded, the
+# private tmux server is killed, which ends every agent of the run, and the next bounded wait aborts
+# naming the pane.
 pane_watcher() {
   local claims inc issue role pane omp mismatch
   trap - EXIT ERR
@@ -513,6 +518,7 @@ pane_watcher() {
         grep -qF "$inc " "$evidence/pane-endpoints-checked.txt" 2>/dev/null && continue
         pane=$(incarnation_pid "$inc") || continue
         omp=$(omp_descendant "$pane") || continue
+        environ_laid_out "$omp" || continue
         if mismatch=$(endpoint_mismatch "$omp"); then
           printf '%s pane on %s (incarnation %s, OMP pid %s) has %s\n' "$role" "$issue" "$inc" "$omp" "$mismatch" \
             >"$evidence/pane-endpoint-violation.txt"

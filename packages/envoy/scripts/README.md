@@ -752,6 +752,8 @@ and let it run past the old task's exit. Options:
   file, never on its command line.
 - `--interval <s>` (default 1) and `--duration <s>` (default 300; `0` runs
   until Ctrl-C, which still prints the summary).
+- `--request-timeout <s>` (default 3, a decimal allowed) — how long each
+  request may take, its connection included; the connection alone gets 1 s.
 - `--send-to <session>` — also `POST /v1/messages/send` to that session at every
   target each tick, under one idempotency key per tick.
 - `--dispatch-url`, `--dispatch-token-file`, `--dispatch-issue <KEY>`,
@@ -783,7 +785,7 @@ message that tick had already posted.
 A target **fails** when `/v1/sessions` answers anything but 200 at any tick
 where its `/healthz` answered 200 (whatever its `status`, `starting` included),
 or when it never answers `/v1/sessions` 200 at all. A `/v1` request that times
-out (the probe allows 3 s, less than Dispatch's 5 s client timeout), or whose
+out (the probe allows 3 s by default, less than Dispatch's 5 s client timeout), or whose
 connection closes or resets without an answer (what Go's `net/http` does after
 a handler panics), is a non-200 answer: `000:timeout`, `000:empty reply`,
 `000:connection reset`. One that finds nothing listening right after `/healthz`
@@ -823,7 +825,9 @@ while, so the target fails: a client that reached it then was refused the list
 Python process per case serving `127.0.0.1` and `127.0.0.2` on one port the
 kernel chose, behind a fake `getent`, and that a `TERM` sent to the probe's
 process group during its sleep or a request, or an `INT` during its sleep,
-still ends in the summary and the verdict; CI runs it in the `envoy-go-checks`
+still ends in the summary and the verdict. Its other cases give the probe a
+`sleep` that returns at once, since no verdict depends on the time between
+ticks, and read the bounds each request is given; CI runs it in the `envoy-go-checks`
 job, whose steps are in `.github/workflows/ci-job-envoy-go-checks.yaml`.
 
 ## daemon-release-gate.sh

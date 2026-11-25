@@ -76,10 +76,11 @@ beforeAll(async () => {
   // three the entry's module scope writes as it loads — `PATH`, which it puts its own `bin/`
   // first on, `DISPATCH_HOST`, and the `ENVOY_CONFIG_FILE` it settles on — the two deleted below
   // so no profile of the caller's picks another envoy.json, and `DISPATCH_SESSION_ID`, which the
-  // entry writes for the session a pane here binds. They go back when this file ends: `bun test`
-  // runs every file of a package in one process, and the next file reads the environment this one
-  // leaves. They go back rather than being deleted, since the baseline is "not a Legion pane" and
-  // a process with no `PATH` finds none of the programs these tests run.
+  // entry writes for the session a pane here binds. They go back when this file ends: a plain
+  // `bun test` runs every file of a package in one process (the package's `test` script passes
+  // `--parallel`, which gives each file a fresh one), and the next file reads the environment
+  // this one leaves. They go back rather than being deleted, since the baseline is "not a Legion
+  // pane" and a process with no `PATH` finds none of the programs these tests run.
   restoreEntryEnvironment = captureEnvironment([
     "ENVOY_CONFIG_FILE",
     "OMP_PROFILE",

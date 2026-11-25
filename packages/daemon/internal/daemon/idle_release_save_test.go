@@ -61,6 +61,7 @@ func (r *idleRig) pendingSave(t *testing.T) {
 // teardown of the same pass go on, so each route must leave the pod and its workspace alone; once
 // the save row leaves on a later pass, the teardown it held back finishes or tears the pod down.
 func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// One drain over what the release queued: the save fails first, and the stop and teardown
 	// listed beside it run in the same pass.

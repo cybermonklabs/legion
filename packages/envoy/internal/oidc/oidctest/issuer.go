@@ -25,10 +25,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -101,12 +104,14 @@ type Issuer struct {
 }
 
 // codeFlowClient is one confidential client the code flow serves: its secret,
-// the key the ID tokens issued to it are signed with, and whether the device
-// authorization grant is armed for it (EnableDeviceFlow), which the clients
-// EnableCodeFlow arms it for do not serve.
+// the key the ID tokens issued to it are signed with, the redirect URIs it
+// registered, the only addresses an authorization sends the browser back to,
+// and whether the device authorization grant is armed for it
+// (EnableDeviceFlow), which the clients EnableCodeFlow arms it for do not serve.
 type codeFlowClient struct {
 	key          *Key
 	clientSecret string
+	redirectURIs []*url.URL
 	deviceGrant  bool
 }
 
@@ -387,17 +392,35 @@ func (i *Issuer) JWKSFetches() int {
 
 // EnableCodeFlow arms the authorization and token endpoints for one
 // confidential client, signing every ID token they issue to it with key (which
-// the caller publishes). Call it again with another client id to serve that
-// client too: one issuer holds a set of clients keyed by client id, each with
-// its own secret and signing key, while the queued sign-ins, the token failure
-// and the revocation state stay the issuer's own, shared by all of them. A
-// client id already served is replaced, and the codes and refresh tokens
-// already issued stand; a code or a refresh token is exchanged only by the
-// client it was issued to.
-func (i *Issuer) EnableCodeFlow(key *Key, clientID, clientSecret string) {
+// the caller publishes). redirectURIs are the client's registered redirect
+// URIs, as a client registers its own at Google: an authorization naming any
+// other is refused 400 redirect_uri_mismatch and sends the browser nowhere
+// (RFC 6749 section 4.1.2.1), so a client that registers none signs nobody
+// in. A registered loopback IP literal URI with no port is taken at any port
+// the request names (RFC 8252 section 7.3), for a server that binds a port the
+// OS chooses after the issuer starts. EnableCodeFlow panics on a redirect URI
+// ParseRedirectURI refuses, as regexp.MustCompile panics on a bad pattern: it
+// is the caller's own mistake.
+//
+// Call it again with another client id to serve that client too: one issuer
+// holds a set of clients keyed by client id, each with its own secret, signing
+// key and redirect URIs, while the queued sign-ins, the token failure and the
+// revocation state stay the issuer's own, shared by all of them. A client id
+// already served is replaced, and the codes and refresh tokens already issued
+// stand; a code or a refresh token is exchanged only by the client it was
+// issued to.
+func (i *Issuer) EnableCodeFlow(key *Key, clientID, clientSecret string, redirectURIs ...string) {
+	registered := make([]*url.URL, len(redirectURIs))
+	for at, raw := range redirectURIs {
+		parsed, err := ParseRedirectURI(raw)
+		if err != nil {
+			panic("oidctest: EnableCodeFlow for " + clientID + ": " + err.Error())
+		}
+		registered[at] = parsed
+	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	i.enableClient(key, clientID, clientSecret, false)
+	i.enableClient(&codeFlowClient{key: key, clientSecret: clientSecret, redirectURIs: registered}, clientID)
 }
 
 // EnableDeviceFlow arms the device authorization endpoint and the device code
@@ -406,17 +429,16 @@ func (i *Issuer) EnableCodeFlow(key *Key, clientID, clientSecret string) {
 // signing key and secret, the issuer's own queued sign-ins. A client id
 // already served is replaced, so a client serves the device grant or the code
 // flow, not both, as a Google client registered for limited-input devices is
-// not the one a browser signs in at. The device codes it issues are approved
-// by ApproveDeviceCode.
+// not the one a browser signs in at: it registers no redirect URI. The device
+// codes it issues are approved by ApproveDeviceCode.
 func (i *Issuer) EnableDeviceFlow(key *Key, clientID, clientSecret string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	i.enableClient(key, clientID, clientSecret, true)
+	i.enableClient(&codeFlowClient{key: key, clientSecret: clientSecret, deviceGrant: true}, clientID)
 }
 
-// enableClient serves clientID, arming the device grant for it when device is
-// set. The caller holds i.mu.
-func (i *Issuer) enableClient(key *Key, clientID, clientSecret string, device bool) {
+// enableClient serves client as clientID. The caller holds i.mu.
+func (i *Issuer) enableClient(client *codeFlowClient, clientID string) {
 	if i.codeFlow == nil {
 		i.codeFlow = &codeFlow{
 			clients:         map[string]*codeFlowClient{},
@@ -426,7 +448,63 @@ func (i *Issuer) enableClient(key *Key, clientID, clientSecret string, device bo
 			refreshFailures: map[string]tokenFailure{},
 		}
 	}
-	i.codeFlow.clients[clientID] = &codeFlowClient{key: key, clientSecret: clientSecret, deviceGrant: device}
+	i.codeFlow.clients[clientID] = client
+}
+
+// ParseRedirectURI reads raw as a redirect URI a client may register: an
+// absolute http or https URL naming a host, with no fragment (RFC 6749 section
+// 3.1.2). cmd/dev-oidc-issuer refuses a --code-flow callback with its error.
+func ParseRedirectURI(raw string) (*url.URL, error) {
+	parsed, err := url.Parse(raw)
+	switch {
+	case err != nil || parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.Opaque != "":
+		return nil, fmt.Errorf("the redirect URI %q is not an absolute http or https URL", raw)
+	case parsed.Fragment != "" || strings.Contains(raw, "#"):
+		return nil, fmt.Errorf("the redirect URI %q carries a fragment", raw)
+	}
+	return parsed, nil
+}
+
+// redirectTarget is where an authorization naming requested sends the browser:
+// the registered redirect URI that requested is, character for character, or,
+// for a registered loopback IP literal URI with no port, that URI at the port
+// requested names, when nothing else of requested differs from it. ok is false
+// for any other address. The target is built from the registered URI, never
+// from requested: only the port, read as a number, comes from the request.
+func (c *codeFlowClient) redirectTarget(requested string) (target url.URL, ok bool) {
+	asked, err := url.Parse(requested)
+	if err != nil {
+		return url.URL{}, false
+	}
+	for _, registered := range c.redirectURIs {
+		if requested == registered.String() {
+			return *registered, true
+		}
+		if registered.Port() != "" || !loopbackIP(registered.Hostname()) {
+			continue
+		}
+		port, err := strconv.Atoi(asked.Port())
+		if err != nil || port < 1 || port > 65535 || strconv.Itoa(port) != asked.Port() {
+			continue
+		}
+		withoutPort := *asked
+		withoutPort.Host = strings.TrimSuffix(asked.Host, ":"+asked.Port())
+		if withoutPort.String() != registered.String() {
+			continue
+		}
+		target = *registered
+		target.Host = net.JoinHostPort(registered.Hostname(), strconv.Itoa(port))
+		return target, true
+	}
+	return url.URL{}, false
+}
+
+// loopbackIP reports whether host is an IP literal for a loopback address, as
+// RFC 8252 section 7.3 names the redirect URIs whose port an issuer must let a
+// request choose. A name, localhost included, is not one (section 8.3).
+func loopbackIP(host string) bool {
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.Zone() == "" && !addr.Is4In6() && addr.IsLoopback()
 }
 
 // OmitCodeFlowEndpoints makes the discovery document name no authorization or
@@ -812,9 +890,13 @@ func (i *Issuer) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAuthorize issues a code for the next queued sign-in, or else the person
-// SignInByDefault set, and redirects to the request's redirect_uri with it and
-// the request's state. It records the client the code is for, the request's
-// nonce, for the ID token, and its PKCE code_challenge, which only the S256
+// SignInByDefault set, and redirects to the client's registered redirect URI
+// the request names (codeFlowClient.redirectTarget) with it and the request's
+// state. A redirect_uri the client did not register is refused 400
+// redirect_uri_mismatch, as Google refuses one, before any code is issued or
+// queued sign-in spent, and the browser is sent nowhere. It records the client
+// the code is for, the request's redirect_uri, which the exchange must repeat,
+// its nonce, for the ID token, and its PKCE code_challenge, which only the S256
 // method may carry: a challenge by any other method, plain included, is a bad
 // request, so a client that sends one never gets a code to exchange.
 func (i *Issuer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -827,9 +909,15 @@ func (i *Issuer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientID := query.Get("client_id")
-	switch {
-	case flow.clients[clientID] == nil || query.Get("response_type") != "code" || query.Get("redirect_uri") == "":
+	client := flow.clients[clientID]
+	if client == nil || query.Get("response_type") != "code" || query.Get("redirect_uri") == "" {
 		http.Error(w, "bad authorization request", http.StatusBadRequest)
+		return
+	}
+	target, registered := client.redirectTarget(query.Get("redirect_uri"))
+	switch {
+	case !registered:
+		http.Error(w, "redirect_uri_mismatch: the redirect_uri is not one the client registered", http.StatusBadRequest)
 		return
 	case query.Has("code_challenge") && (query.Get("code_challenge") == "" || query.Get("code_challenge_method") != "S256"):
 		http.Error(w, "bad authorization request: code_challenge must be S256", http.StatusBadRequest)
@@ -848,16 +936,13 @@ func (i *Issuer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	code := randomValue()
 	flow.codes[code] = codeGrant{clientID: clientID, claims: claims, nonce: query.Get("nonce"), redirectURI: query.Get("redirect_uri"), challenge: query.Get("code_challenge")}
-	target, err := url.Parse(query.Get("redirect_uri"))
-	if err != nil {
-		http.Error(w, "bad redirect_uri", http.StatusBadRequest)
-		return
-	}
+	// The registered URI's own query is kept, and the code and state follow the "?" that ends
+	// the URI's path, so nothing the request sent reaches the scheme, host or path.
 	values := target.Query()
 	values.Set("code", code)
 	values.Set("state", query.Get("state"))
-	target.RawQuery = values.Encode()
-	http.Redirect(w, r, target.String(), http.StatusFound)
+	target.RawQuery, target.ForceQuery = "", false
+	http.Redirect(w, r, target.String()+"?"+values.Encode(), http.StatusFound)
 }
 
 // handleDeviceAuthorization answers a device authorization request (RFC 8628

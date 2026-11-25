@@ -216,10 +216,10 @@ require_jq() { command -v jq >/dev/null || fail "jq is not on PATH"; }
 
 # Main's changes after the commit the base is pinned to, each a member main added to an answer on
 # the fixed list (access-lib.sh's main_additions, which says how an entry is written and held). The
-# list is empty: the base the checks name, #3178's head, holds main's changes up to the main it
-# merged, and every answer then is the same at both builds. An entry is added only for a member
-# main adds after that base, and is removed once the base holds its commit, where it would admit
-# nothing. An entry written as
+# list is empty: the base the checks name holds main's changes up to the main it holds, and every
+# answer then is the same at both builds. An entry is added only for a member main adds after that
+# base, and is removed once the base holds its commit, where it would admit nothing. An entry
+# written as
 #   $'<40-hex commit>\tGET /api/v1/issues/{key}\t.design_gates[].holds\tnull'
 # admits each answer to an issue whose design gates differ from the base's only by a `holds`
 # member, null at this build.
@@ -383,13 +383,13 @@ decisions_linked() {
 }
 
 # map_repository BUILD REPO PROJECT writes REPO's mapping to PROJECT straight into BUILD's database,
-# as the row the base's PUT /api/v1/settings/repo-projects/{owner}/{repo} wrote for carol's cookie
-# and a body of {project} alone (api/repo_projects.go, putRepoProject, at 5d01144423): not its
-# project's default, renamed to nothing, created by carol as her cookie's writes record her, and
-# created now. A build that holds #4457 (85f90626) serves no write of the mappings, its PUT
-# answering 404, while GET /api/v1/settings/repo-projects still answers the rows, so the seed
-# writes them the same way at both builds whatever routes each serves. The PUT also appended a
-# settings.repo_project.updated event, which this write does not, at either build.
+# as the row that PUT /api/v1/settings/repo-projects/{owner}/{repo} wrote for carol's cookie and a
+# body of {project} alone, before #4457 (85f90626) removed it (api/repo_projects.go,
+# putRepoProject, at 5d01144423): not its project's default, renamed to nothing, created by carol
+# as her cookie's writes record her, and created now. A build that holds #4457 serves no write of
+# the mappings, its PUT answering 404, while GET /api/v1/settings/repo-projects still answers the
+# rows, so the seed writes them the same way at both builds whatever routes each serves. The PUT
+# also appended a settings.repo_project.updated event, which this write does not, at either build.
 map_repository() {
   local url_var=${1}_database_url actor
   actor=$(jq -cn --arg id "$carol" '{kind: "user", id: $id, proven: true}')

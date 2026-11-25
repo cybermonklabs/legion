@@ -79,6 +79,7 @@ const storeStepWait = 20 * time.Second
 // names its project, whose foreign key takes the project row `for key share`, and that conflicts
 // with no lock an event's project is taken with (projectKeyShare).
 func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newStoreWriterRig(t)
 	for _, writer := range []storeWriter{

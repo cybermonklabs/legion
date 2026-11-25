@@ -142,6 +142,7 @@ func rateRetro(t *testing.T, handler http.Handler, project, issue, id string, ge
 // first issue's last end is 30.7 seconds past a whole minute, so its time is whole seconds, cut,
 // not minutes.
 func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issues := createListedIssues(t, handler, "LEG", 4)
 	reviewed, fitted, hurried, running := issues[0], issues[1], issues[2], issues[3]
@@ -280,6 +281,7 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 // retro's record carries it to a reader. The step write itself takes no rating: a body that names
 // one is written without it.
 func TestARatingBelongsToARetroRecordAlone(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -325,6 +327,7 @@ func TestARatingBelongsToARetroRecordAlone(t *testing.T) {
 // not, and the retro the daemon recorded stays unrated; the daemon's rating of it lands, which is
 // the control.
 func TestARatingIsTheDaemonsAlone(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	retro := uuid.NewString()
@@ -370,6 +373,7 @@ func (exactLogin) Login(r *http.Request) (string, error) {
 // kind is also judged where the issue is seen: under alice's reader, who made LEG-1, the user of
 // the daemon's id is refused STEP_WRITER at lockRecordedIssue and the session of that id passes.
 func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
+	t.Parallel()
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{identity: exactLogin{}})
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	writer := legionDaemonSessionPrefix + "LEG"
@@ -436,6 +440,7 @@ func workflowRows(t *testing.T, database *store.Store) int {
 // that write scope once a project is private, and OTH, public, is a project it sees. The same writes
 // over a credential scoped to the issue's project land, which is the control.
 func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	for _, private := range []bool{false, true} {
 		t.Run(map[bool]string{false: "while no project is private", true: "once a project is private"}[private], func(t *testing.T) {
 			rig := newBrokerTokenRig(t)
@@ -497,6 +502,7 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 // ISSUE_NOT_FOUND. A reason of exactly 2,000 code points is taken, which is the control of the
 // bound.
 func TestARatingWriteRefusesItsBadValues(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	retro := retroIdentity(daemonSessionOf("LEG"), 1)
@@ -542,6 +548,7 @@ func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 // naming rating_reason and where in it the NUL stands, with nothing written. The same rating with
 // the NUL taken out lands, which is the control.
 func TestARatingReasonHoldingANulIsRefused(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	retro := retroIdentity(daemonSessionOf("LEG"), 1)
@@ -565,6 +572,7 @@ func TestARatingReasonHoldingANulIsRefused(t *testing.T) {
 // actor.origin.cwd, on the plan write and on the rating write, with nothing written; the same body
 // with the NUL taken out lands, which is the control.
 func TestARepeatedMemberHidesNoNulFromAPlanOrARating(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	awaitBackgroundWrites(t, served)
@@ -605,6 +613,7 @@ func TestARepeatedMemberHidesNoNulFromAPlanOrARating(t *testing.T) {
 // A rating is written once, and the retro's end that lands after it keeps it: the daemon's two rows
 // for one retro land in either order.
 func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -634,6 +643,7 @@ func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
 // descending order as the retros ran, so a sort of the ratings by either, in either direction, is
 // seen; with two retros one direction of each always matches the order they ran in.
 func TestAnIssueWithThreeRetrosHasThreeRatings(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -713,6 +723,7 @@ func planRatingsText(ratings []model.PlanRating) []string {
 // A record whose start Dispatch never got (a step that started before the release) counts no time:
 // the issue's time starts at the earliest start the records hold.
 func TestAnUnknownStartCountsNoTime(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	recordRuns(t, handler, "LEG", issue,
@@ -741,6 +752,7 @@ func TestAnUnknownStartCountsNoTime(t *testing.T) {
 // started, and the later run's end has not reached Dispatch. The read answers no duration, where
 // the difference would be negative, and the start and the end as the records hold them.
 func TestAStartAfterTheLastEndCountsNoTime(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	recordRuns(t, handler, "LEG", issue,
@@ -768,6 +780,7 @@ func TestAStartAfterTheLastEndCountsNoTime(t *testing.T) {
 // moment a later run started, whose end has not reached Dispatch. The start and the end are the
 // moment the records hold.
 func TestAStartAtTheLastEndCountsZeroTime(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	recordRuns(t, handler, "LEG", issue,
@@ -792,6 +805,7 @@ func TestAStartAtTheLastEndCountsZeroTime(t *testing.T) {
 // A finished issue Legion never ran is listed with no plan, no rating, no time and no failed step,
 // each as null or empty on the wire, which is what Dispatch holds of it.
 func TestTheReadOfAnIssueLegionNeverRanHoldsNoTime(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	closeIssue(t, handler, issue)
@@ -810,6 +824,7 @@ func TestTheReadOfAnIssueLegionNeverRanHoldsNoTime(t *testing.T) {
 // [since, until) then holds no moment, 400 INVALID_QUERY; a project with no finished issue answers
 // an empty list.
 func TestTheReadOfPlansRefusesAnUnknownProjectAndABadWindow(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createTestIssue(t, handler, "LEG", "A run of steps")
 
@@ -843,6 +858,7 @@ func readPlanKeys(t *testing.T, handler http.Handler, project, query string) []s
 // it. pgx encodes a timestamptz by truncating it to the microsecond, which would move each
 // comparison onto the close itself.
 func TestTheReadOfPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	closeIssue(t, handler, issue)
@@ -878,6 +894,7 @@ func TestTheReadOfPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
 // an issue Dispatch does not hold is 404 ISSUE_NOT_FOUND; a closed issue takes it; the write
 // appends no event and answers the plan as it stands.
 func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issues := createListedIssues(t, handler, "LEG", 2)
 	issue, closed := issues[0], issues[1]
@@ -912,6 +929,7 @@ func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 // half, and an owner's plan naming its document and no version. An id another issue's plan holds is
 // 409 PLAN_OTHER_ISSUE.
 func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issues := createListedIssues(t, handler, "LEG", 2)
 	daemon := daemonSessionOf("LEG")
@@ -969,6 +987,7 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 // is read from its refusal of a source it does not take, which names every source it takes, so a
 // source the store gains and a tag lacks fails here rather than in a client the schema refuses it to.
 func TestThePlanSourceTagsNameTheStoresSources(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	response := putPlanRecord(t, handler, issue, uuid.NewString(),

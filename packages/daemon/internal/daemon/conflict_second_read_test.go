@@ -120,6 +120,7 @@ func appliedRead(t *testing.T, pool *store.Pool, api, base string, mergeable boo
 // why. A base whose name holds `#` and `/` reads its own rules, each segment escaped. A read that
 // finds the head mergeable reads no rules at all.
 func TestAConflictSecondReadCarriesTheBaseRules(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	const (
 		rules    = "/repos/acme/widgets/rules/branches/main"
@@ -356,6 +357,7 @@ var (
 // the first read, so the next conflicting read starts the two reads again. A row whose head the
 // record has left, or whose first read a later read already released, reads nothing.
 func TestAConflictSecondReadRowReadsTheHeadAgain(t *testing.T) {
+	t.Parallel()
 	// The record keeps the times to the microsecond.
 	first := time.Now().UTC().Truncate(time.Microsecond)
 
@@ -480,6 +482,7 @@ func TestAConflictSecondReadRowReadsTheHeadAgain(t *testing.T) {
 // nor the release its last attempt applies is about that first read. The newer first read's own
 // row reads GitHub a minute after it, and GitHub's CONFLICTING then confirms the conflict.
 func TestAConflictSecondReadOfAReleasedFirstReadLeavesTheNewerFirstReadStanding(t *testing.T) {
+	t.Parallel()
 	// The reads are timed below the microsecond, as the daemon's clock times them: the row and the
 	// record keep a first read's time in jsonb, whole, so the newer first read's own row still
 	// finds the record holding its first read.
@@ -552,12 +555,21 @@ func TestAConflictSecondReadOfAReleasedFirstReadLeavesTheNewerFirstReadStanding(
 }
 
 // recordCapture writes CAPTURE-1's pull request record as change leaves it, as no fact would: the
-// state a test reads a row against.
+// state a test reads a row against. It writes under the lock every fact the daemon applies takes
+// (intake.SerializeFacts), as each of the daemon's own writes of the record does. Without it, a
+// fact the daemon applies meanwhile — a merge state read's, which reads the row and writes the
+// whole row back (record.PutPullRequest) — can read the row before this write commits and write it
+// back after, putting the change out of the record again; a moved head lost that way leaves the
+// reads after the ladder following the old head for ever: the likely cause of the one time
+// TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown ran out its wait in twenty parallel runs.
 func recordCapture(t *testing.T, pool *store.Pool, change func(*record.PullRequest)) {
 	t.Helper()
 	ctx := context.Background()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return err
+		}
 		pr, err := records.PullRequest(ctx, tx, "CAPTURE-1")
 		if err != nil {
 			return err

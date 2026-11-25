@@ -53,6 +53,7 @@ func referenceTargets(t *testing.T, handler http.Handler, references []string) (
 // member is answered gone. GET /api/v1/references reads such a reference the same way
 // (wholeReference), as the design of the new issue page decided.
 func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "First paragraph.\n\nSecond paragraph.\n")
@@ -120,6 +121,7 @@ func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 // else in the set moved, so a tag over the references alone would tell a page holding it 304 for
 // an answer that now names the issue differently.
 func TestTheReferenceTargetsETagAnswers304UntilAMemberChanges(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "First paragraph.\n")
@@ -166,6 +168,7 @@ func TestTheReferenceTargetsETagAnswers304UntilAMemberChanges(t *testing.T) {
 // gone and not ambiguous, every other field as it was, and the ambiguous answer's tag sent back
 // is answered with the new answer under a new tag, never 304.
 func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")

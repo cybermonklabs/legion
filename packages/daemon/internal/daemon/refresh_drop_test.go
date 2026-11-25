@@ -56,6 +56,7 @@ func grantedAfter(gate *supervise.RefreshGate, limit int) int {
 // The negative control is the pass's release of a dropped post's credit removed: the gate then
 // holds the rate's worth of credits nothing will ever give back, and grants none.
 func TestARefreshPassTheStopHaltsGivesBackEveryCreditItCouldNotPost(t *testing.T) {
+	t.Parallel()
 	const rate = 8
 	sup, _ := newPluginSupervisor(t, 24, true)
 	claims := staleIdleClaims(t, rate)
@@ -96,6 +97,7 @@ func TestARefreshPassTheStopHaltsGivesBackEveryCreditItCouldNotPost(t *testing.T
 // The negative control is the release of a dropped post's credit removed from inbox.close: the
 // gate then holds the rate's worth of credits nothing will ever give back, and grants none.
 func TestAStopAfterTheRefreshPassDeliveredItsPostsGivesBackEveryCreditTheyCarry(t *testing.T) {
+	t.Parallel()
 	const rate = 8
 	sup, _ := newPluginSupervisor(t, 24, true)
 	hold := make(chan struct{})

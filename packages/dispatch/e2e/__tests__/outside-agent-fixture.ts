@@ -19,6 +19,7 @@ export const supportFiles = [
   "outside-agent-peer.sh",
   "outside-agent-sweep.sh",
   "outside-agent-pins.sh",
+  "outside-agent-grants.sh",
 ];
 
 /** The Codex leg's rows, in order, which the public leg prints after P10. */

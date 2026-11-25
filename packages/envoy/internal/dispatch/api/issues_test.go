@@ -23,6 +23,7 @@ import (
 // The issue detail carries the open asks themselves, not a count: agents read them from here
 // because the inbox needs the person scope, which an agent's credential does not hold.
 func TestIssueDetailCarriesOpenAsks(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -60,6 +61,7 @@ func TestIssueDetailCarriesOpenAsks(t *testing.T) {
 }
 
 func TestIssueDetailPreservesHistoricalNullCreator(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -99,6 +101,7 @@ func TestIssueDetailPreservesHistoricalNullCreator(t *testing.T) {
 // ask's thread, exactly as the inbox does, so the detail carries the same
 // last_reply: null until someone replies, then the newest comment's author.
 func TestIssueDetailOpenAsksCarryLastReply(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Whose turn", "A spec")
 	opened := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -172,6 +175,7 @@ func TestIssueDetailOpenAsksCarryLastReply(t *testing.T) {
 }
 
 func TestCreateExternalIssueIsIdempotentDuringConcurrentCreation(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -221,6 +225,7 @@ func TestCreateExternalIssueIsIdempotentDuringConcurrentCreation(t *testing.T) {
 }
 
 func TestListIssuesExcludesOpenAsksOnClosedIssues(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -280,6 +285,7 @@ func TestListIssuesExcludesOpenAsksOnClosedIssues(t *testing.T) {
 }
 
 func TestListIssuesFiltersByUpdatedSince(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	for _, project := range []string{"TEST", "OTHER"} {
 		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -344,6 +350,7 @@ func TestListIssuesFiltersByUpdatedSince(t *testing.T) {
 // closed_before): since is inclusive and before exclusive, an open issue was closed at no time so
 // either bound leaves it out, and both narrow beside the other filters, paged or not.
 func TestListIssuesFiltersByClosedWindow(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	for _, project := range []string{"TEST", "OTHER"} {
 		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -456,6 +463,7 @@ func TestListIssuesFiltersByClosedWindow(t *testing.T) {
 // bound leave it out and `closed_before` at it keeps it. pgx encodes a timestamptz by truncating
 // it to the microsecond, which would move each comparison onto the stored time itself.
 func TestListIssuesKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	key := createListedIssues(t, handler, "TEST", 1)[0]
 	at := time.Date(2026, time.November, 3, 0, 0, 0, 123456000, time.UTC)
@@ -494,6 +502,7 @@ func TestListIssuesKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
 }
 
 func TestListIssuesIncludesEventUpdatedIssuesSinceWatermark(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -563,6 +572,7 @@ func TestListIssuesIncludesEventUpdatedIssuesSinceWatermark(t *testing.T) {
 }
 
 func TestEventDoesNotMoveIssueUpdatedAtBackward(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -607,6 +617,7 @@ func TestEventDoesNotMoveIssueUpdatedAtBackward(t *testing.T) {
 // something stamped past it. The PATCH waits on the project's rank lock, which a message takes
 // no part of, so the message's whole transaction begins and commits inside the wait.
 func TestAPatchThatWaitedNeverMovesUpdatedAtBackward(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -680,6 +691,7 @@ func TestAPatchThatWaitedNeverMovesUpdatedAtBackward(t *testing.T) {
 }
 
 func TestListIssuesReportsLastSequenceAfterEvent(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -717,6 +729,7 @@ func TestListIssuesReportsLastSequenceAfterEvent(t *testing.T) {
 // scan of the asks table: a listing call is on Dispatch's hottest path and
 // must not scale with total ask volume across the instance.
 func TestListIssuesQueryUsesAsksOpenIndex(t *testing.T) {
+	t.Parallel()
 	_, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 
@@ -767,6 +780,7 @@ func TestListIssuesQueryUsesAsksOpenIndex(t *testing.T) {
 // the seq scan the buggy query would need), so Postgres keeps the cheap custom plan and
 // never organically reaches the generic plan this test exists to catch.
 func TestListIssueAsksOpenQueryUsesAsksOpenIndex(t *testing.T) {
+	t.Parallel()
 	_, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 
@@ -810,6 +824,7 @@ func TestListIssueAsksOpenQueryUsesAsksOpenIndex(t *testing.T) {
 }
 
 func TestListIssuesPinnedFilterAndLabels(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -875,6 +890,7 @@ func TestListIssuesPinnedFilterAndLabels(t *testing.T) {
 }
 
 func TestIssueLabelsCreateNormalizePatchAndFilter(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -995,6 +1011,7 @@ func TestIssueLabelsCreateNormalizePatchAndFilter(t *testing.T) {
 // newer build reaches the older one. A member the route does not declare is ignored: the issue is
 // stored exactly as the same body without it stores it.
 func TestIssueCreateIgnoresAMemberItDoesNotDeclare(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -1073,6 +1090,7 @@ func TestAnIgnoredMemberIsLoggedAtDebugWithItsRoute(t *testing.T) {
 }
 
 func TestIssueLabelsRejectInvalidInput(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -1104,6 +1122,7 @@ func TestIssueLabelsRejectInvalidInput(t *testing.T) {
 // A URL links exactly one issue; a second issue asking for it gets a 409 naming the
 // owner instead of the unique-index violation surfacing as a 500.
 func TestIssuePatchExternalLinkTakenByAnotherIssue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -1159,6 +1178,7 @@ func TestIssuePatchExternalLinkTakenByAnotherIssue(t *testing.T) {
 // the issue that replaced it, but still refuses to gain a new one or to touch any other field
 // alongside the removal.
 func TestIssuePatchExternalLinksRemovalOnClosedIssue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -1240,6 +1260,7 @@ func TestIssuePatchExternalLinksRemovalOnClosedIssue(t *testing.T) {
 // issue.updated carries the new parent, the old parent hears child.removed, and the new
 // parent hears child.added.
 func TestIssuePatchParentSetClearAndEvents(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -1327,6 +1348,7 @@ func TestIssuePatchParentSetClearAndEvents(t *testing.T) {
 }
 
 func TestIssuePatchParentValidation(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, project := range []string{"CORE", "SIDE"} {
 		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -1387,6 +1409,7 @@ func TestIssuePatchParentValidation(t *testing.T) {
 // Creating with a bad parent is a named 400, not the FK's opaque 500, and a parent from
 // another project is refused.
 func TestIssueCreateParentValidation(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, project := range []string{"CORE", "SIDE"} {
 		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -1419,6 +1442,7 @@ func TestIssueCreateParentValidation(t *testing.T) {
 // done = status 'done', active_at = the subtree's newest updated_at, and the child's own
 // external links ride along.
 func TestIssueChildrenSubtreeRollup(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",

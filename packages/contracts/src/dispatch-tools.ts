@@ -1550,7 +1550,7 @@ export const dispatchToolSpecs = [
       "Several paragraphs, or a list, go in one replace, since with writes the blocks its markdown names; blocks beside a block go in one insert, since two inserts at one anchor come out reversed. The result prints the markdown of each block the edit wrote, so read that rather than the document again. " +
       "Each decision block the edit adds gets the related-item check dispatch ask gets, waiting at most five seconds for all of them together: the result prints, after its first line, `Decision block <id>:` and what that check found, that it found nothing, or that it was not made and why. " +
       "A block id written as {#id} longer than 256 bytes is stored, but its block is no graph node, so no reference reaches it. " +
-      `The spec holds requirements, design, and decisions - never progress, status, or timestamps; a record of open items or progress is a document of its own. ${OWNER_REFERENCE} ${SPEC_WRITING_POINTER}`,
+      `The spec holds requirements, design, and decisions - never progress, status, or timestamps. Work still to do is a task in the issue's plan, an issue, or an ask, never a separate document that lists it. ${OWNER_REFERENCE} ${SPEC_WRITING_POINTER}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
       project: z.string().describe("Project key owning the document.").optional(),
@@ -1966,6 +1966,9 @@ export const dispatchToolSpecs = [
       "(before_merge): CI run <name> has no result (<case>)`. That is a run that has not " +
       "concluded, one that concluded neutral, skipped or cancelled, one absent at the head, an " +
       "issue with no pull request head, or GitHub not read, with what GitHub answered. " +
+      "A pull-request line writes `CI run <name>` only when it keeps every word of the name, " +
+      "and `the CI run the check names` in its place where it drops one: a word the line drops, " +
+      "such as an issue key or a word holding `_`. " +
       "A push that moves a pull request's head leaves a result at the commit before it, with " +
       "no write of anyone's: record the check again at the new head. A check CI proves is read " +
       "again at the new head by itself. " +

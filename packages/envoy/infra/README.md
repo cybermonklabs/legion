@@ -233,11 +233,14 @@ input:
 - an nkey seed (`bus.HoldsSeed`) in the hub's own name, first, then in any plain string input:
   `namespace`, `name`, `serviceName`, the images, `storageClassName`, `natsCpu`, `natsMemory`,
   `priorityClassName`, an entry of any of the three namespace lists, a user's `machineId`,
-  `listenerMachineId` or `dispatchMachineId`, and, of `tailnet`, `serviceName`, `tailnetDnsName`, `tailscaleImage`, a tag,
+  `listenerMachineId` or `dispatchMachineId`, `routeAuthorization`'s `secretName`, `secretKey` and
+  `stage`, and, of `tailnet`, `serviceName`, `tailnetDnsName`, `tailscaleImage`, a tag,
   and, of `listener` or `tailnet.listener`, `image`, `seedSecretName`, `seedSecretKey`, `machineId`,
-  `cpu`, `memory`, `oidcIssuer`, `oidcAudience`, `clientNamespaces`, `allowedHosts` and
-  `oidcAccounts` entries. The refusal names the
-  input by its path and never its value. A seed in
+  `cpu`, `memory`, `oidcIssuer`, `oidcAudience`, `consumerNames`, and `clientNamespaces`,
+  `allowedHosts` and `oidcAccounts` entries, and `authCallout`'s `issuer`, `xkey` and
+  `serviceUser`. The refusal's message names the input by its path and never its value;
+  its `core.InputError` names an entry of a list by the list's own name (`clientNamespaces` for
+  `clientNamespaces[1]`), as `gcp:NatsHub` and `gcp:Dispatch` do. A seed in
   a user's name, a rule entry or an `nkey` is refused by the authorization, as for `gcp:NatsHub`;
 - no `kubeconfig`;
 - a `name` that is not a DNS-1035 label or is over 43 bytes, a `namespace` that is not a DNS
@@ -4171,8 +4174,9 @@ relay frames, and `agentstream.*.frames`, and subscribes to its own relay subjec
 and to nothing else — no other `notifications.` subject,
 so a session can read no topic the listener does not relay to it. While sessions share one user,
 each holds the same set, so the relay subject carries `*` and one session can read another's
-relay frames, until the auth service's
-per-session credentials.
+relay frames. A session the NATS auth service admits holds `natsgrant.Session` instead, which
+names its own id alone and publishes its replies under `_INBOX.*.<session id>.>` alone
+(`bus.SessionReplies`).
 It does not
 subscribe to `_INBOX.>`, so a client holding this set alone may answer a request but not make one:
 sessions that share one user holding it, as a `gcp:NatsHub`'s `sessionUser` does, would otherwise

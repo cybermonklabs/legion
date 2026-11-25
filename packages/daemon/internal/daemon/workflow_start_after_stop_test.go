@@ -171,7 +171,7 @@ func seedSlottedMember(t *testing.T, dsn string, member record.Issue, worker sup
 	}
 	defer st.Close()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, member); err != nil {
 			return err
 		}
@@ -210,7 +210,7 @@ func lingerTree(t *testing.T, pool *store.Pool, records record.Store, key string
 	t.Helper()
 	ctx := context.Background()
 	until := time.Now().Add(time.Hour)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := records.Issue(ctx, tx, key)
 		if err != nil {
 			return err
@@ -288,6 +288,7 @@ func startedAgain(t *testing.T, cfg config.Config, rt *fake.Runtime, kept superv
 // starting this worker again, and the row is the whole of that start. That subtest makes those
 // passes and reads the row still there, and then reads it delivered.
 func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("a backward move into the worker's phase", func(t *testing.T) {
 		pool, cfg, o, rt := startedAgainDaemon(t)
 		project, err := claim.ProjectToken(cfg.Project)
@@ -474,7 +475,7 @@ func seedMergeablePullRequest(t *testing.T, pool *store.Pool, issue string) {
 	t.Helper()
 	ctx := context.Background()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue,
 			Repo: startedAgainRepo, Number: 42, Branch: "legion/" + issue, HeadSHA: "head", Failing: []string{}})
 	}); err != nil {
@@ -488,7 +489,7 @@ func mergingPhase(t *testing.T, pool *store.Pool, key string) {
 	t.Helper()
 	ctx := context.Background()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := records.Issue(ctx, tx, key)
 		if err != nil {
 			return err

@@ -6898,6 +6898,13 @@ A walk or a read that cannot see the processes it reads says why and fails with 
   read PID's environment or command line whole, in the calling shell, with no pipe between the read and the check: `env_of` prints every value of NAME, `env_has` is 0 when NAME is there, 1 when it is not and 2 when the environment cannot be read, so an absence holds only on 1, and `env_length` prints the length of NAME's value (0 when absent), so a check of a secret never holds its value in a variable.
   Each reader of an environment turns xtrace off for itself, so a run under `bash -x` writes no value of it into its transcript
 
+- `environ_laid_out PID`
+
+  succeeds once PID's environment holds a variable.
+  Linux names the program an exec starts in `/proc/<pid>/exe` before it lays out that program's arguments and environment: the command line reads empty until the environment's bounds are first set, and the environment until its end is, so `env_of`, `env_has` and `env_length` answer 2 there for a process that will run with a full environment.
+  A caller that found PID by the program it runs (`launched`, a wait on `/proc/<pid>/exe`) waits on this before it reads the environment, as the Stage 3 pane watchers do: an Oh My Pi found in that window is read again at the next poll, not counted as a violation.
+  It fails, too, for a process that has gone and for one started with an empty environment
+
 - `names_dir DIR NAME… PID`, `procs_naming DIR NAME…`
 
   are whether PID's environment gives one of the NAMEs the value DIR or a path under it, and `PID START` for every process whose environment does, read from every process of the machine (one `grep` per `xargs` batch, then each match read whole), failing with 2 when the walk could not read the machine.

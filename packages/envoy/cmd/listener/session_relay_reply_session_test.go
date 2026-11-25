@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // relayRefusedReplyLine is the line the relay writes for a reply whose subject names another
@@ -29,10 +31,10 @@ import (
 const relayRefusedReplyLine = "session relay refused a reply naming another session than the one its frame was sent to; the frame is unchanged"
 
 // sessionUser is a NATS user holding one session's own grant, the one the auth service admits a
-// session with once natsgrant.Session publishes bus.SessionReplies: publish its replies
-// (bus.SessionReplies) and its agent stream frames, subscribe its relay subject and its agent
-// stream control subject. A publish the server refuses reaches the client only as an asynchronous
-// error, so each refusal on its connection is recorded by subject.
+// session with (natsgrant.Session): publish its replies (bus.SessionReplies) and its agent stream
+// frames, subscribe its relay subject and its agent stream control subject. A publish the server
+// refuses reaches the client only as an asynchronous error, so each refusal on its connection is
+// recorded by subject.
 type sessionUser struct {
 	id, seed, public string
 	mu               sync.Mutex
@@ -45,11 +47,28 @@ func newSessionUser(t *testing.T, prefix string) *sessionUser {
 	return &sessionUser{id: prefix + id.New(), seed: seed, public: public}
 }
 
-// entry is the user's line of the server's authorization.
+// entry is the user's line of the server's authorization: natsgrant.Session's lists, deny lists
+// included, as the auth service answers them.
 func (s *sessionUser) entry() string {
-	return fmt.Sprintf("{ nkey: %q, permissions: { publish: { allow: [%q, %q] }, subscribe: { allow: [%q, %q] } } }",
-		s.public, bus.SessionReplies(s.id), contracts.AgentStreamFramesSubject(s.id),
-		bus.DeliverSubject(s.id), contracts.AgentStreamControlSubject(s.id))
+	grant, err := natsgrant.Session(s.id)
+	if err != nil {
+		panic(err)
+	}
+	quote := func(subjects []string) string {
+		quoted := make([]string, len(subjects))
+		for i, subject := range subjects {
+			quoted[i] = strconv.Quote(subject)
+		}
+		return strings.Join(quoted, ", ")
+	}
+	rules := func(allow, deny []string) string {
+		if len(deny) == 0 {
+			return fmt.Sprintf("{ allow: [%s] }", quote(allow))
+		}
+		return fmt.Sprintf("{ allow: [%s], deny: [%s] }", quote(allow), quote(deny))
+	}
+	return fmt.Sprintf("{ nkey: %q, permissions: { publish: %s, subscribe: %s } }",
+		s.public, rules(grant.Publish, grant.PublishDeny), rules(grant.Subscribe, grant.SubscribeDeny))
 }
 
 // connect connects to uri as the user and records every publish the server refuses it.

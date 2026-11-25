@@ -106,6 +106,7 @@ func waitForCommentDeliveries(
 }
 
 func TestMentionedCommentRecordsFailedOfflineSession(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/sessions" {
 			_, _ = w.Write([]byte(`[]`))
@@ -138,6 +139,7 @@ func TestMentionedCommentRecordsFailedOfflineSession(t *testing.T) {
 }
 
 func TestMentionedCommentUsesRequestedOrDefaultDeliveryMode(t *testing.T) {
+	t.Parallel()
 	capabilities := []string{"btw", "steer"}
 	sent := []map[string]any{}
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -218,6 +220,7 @@ func TestMentionedCommentUsesRequestedOrDefaultDeliveryMode(t *testing.T) {
 }
 
 func TestMentionedCommentRejectsInvalidMentionInput(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTargetedMessageHandler(t, "")
 	issue := createInteractionIssue(t, handler, "TEST", "Mention validation", "before")
 	tooMany := make([]map[string]any, 11)
@@ -244,6 +247,7 @@ func TestMentionedCommentRejectsInvalidMentionInput(t *testing.T) {
 }
 
 func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
+	t.Parallel()
 	roleHolder := "s1"
 	roleLookups := 0
 	sent := []map[string]any{}
@@ -297,6 +301,7 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 }
 
 func TestMentionReplyRequiresItsAttemptTargetAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -368,6 +373,7 @@ func TestMentionReplyRequiresItsAttemptTargetAndIsIdempotent(t *testing.T) {
 }
 
 func TestMentionReplyErrorRecordsAttemptWithoutComment(t *testing.T) {
+	t.Parallel()
 	live := true
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1" {
@@ -428,6 +434,7 @@ func TestMentionReplyErrorRecordsAttemptWithoutComment(t *testing.T) {
 }
 
 func TestMentionRetrySelectsOneTargetAndReresolvesIt(t *testing.T) {
+	t.Parallel()
 	live := false
 	roleHolder := "s1"
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -537,6 +544,7 @@ func TestMentionRetrySelectsOneTargetAndReresolvesIt(t *testing.T) {
 }
 
 func TestCommentMentionReadProjectionIncludesReplyChain(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -581,6 +589,7 @@ func TestCommentMentionReadProjectionIncludesReplyChain(t *testing.T) {
 }
 
 func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
+	t.Parallel()
 	roleLookups := 0
 	sends := 0
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -624,6 +633,7 @@ func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 // the Inbox row select every reply on ask_id, and the stream keys its refresh on the event's
 // own ask_id.
 func TestCallbackReplyUnderAnAskJoinsTheAskThread(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -706,6 +716,7 @@ func TestCallbackReplyUnderAnAskJoinsTheAskThread(t *testing.T) {
 // (mentionLookupTimeout, 250 ms): a write slower than that was cancelled, and one that started
 // later than that raced the comment's locked read.
 func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	var lookupsMu sync.Mutex
 	var lookups []string
@@ -866,6 +877,7 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 // a suggestion on a closed issue (which still takes every other comment), has to be found first,
 // from the pool, or every doomed request wakes the listener once per mention it names.
 func TestACommentItsOwnerRefusesResolvesNoMention(t *testing.T) {
+	t.Parallel()
 	lookups := 0
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]},` +
 		`{"session_id":"s2","title":"tester","capabilities":["steer"]}]`
@@ -922,6 +934,7 @@ func TestACommentItsOwnerRefusesResolvesNoMention(t *testing.T) {
 // neither the comment's delivery projection nor the issue event log describes the delivery that
 // plainly happened.
 func TestReplyDuringAMentionSendStillRecordsTheDeliveryReceipt(t *testing.T) {
+	t.Parallel()
 	var handler http.Handler
 	replied := 0
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`

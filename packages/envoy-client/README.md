@@ -363,9 +363,18 @@ runs when it moves to another session.
 accept optional `inReplyTo`, `supersedes`, `urgency`, `expectsReply`, and `expiresAt` metadata.
 Successful direct sends return both the envelope and listener-selected recipient, and
 `duplicate` when the listener already held a send under that target and idempotency key.
-A publish returns the envelope and an optional role holder. A role publish has three answers,
-told apart by status. 200 is a live holder that took the message, named by `holder`. 202 is a
-message the listener kept for one hour because no live session holds the role, with `kept`,
+`send` and `publish` return a `KeyTakenResult` instead, `{ keyTaken: { eventId, topic, issuedAt },
+delivered: false }`, when another sender's message already holds the idempotency key: Envoy stored
+nothing for this caller, and the listener names only that message's `event_id`, topic and time,
+with none of its text. A delivered result never carries `keyTaken`, so a caller tells the two
+apart by it; `keyTakenText` and `keyTakenDetails` (`tool-contract`) give the line and the fields a
+host shows for it. The listener gives that answer only to a request that names it, in the header
+`Envoy-Reads: key-taken`, which the client sends on a send or a publish that names its source
+session; a call that names none gets the envelope the listener built for it, with `duplicate`,
+since the listener cannot tell that caller's own earlier attempt from another sessionless
+sender's. A publish returns the envelope and an optional role holder. A role publish has three
+answers, told apart by status. 200 is a live holder that took the message, named by `holder`.
+202 is a message the listener kept for one hour because no live session holds the role, with `kept`,
 `keptReason` (`unclaimed`, or `holder_lapsed` with the `holder`, its `holderState` and its
 `lastSeen` when the claim's holder is not live) and `keptUntil`, the end of that hour in epoch
 milliseconds. The next session to hold the role live before `keptUntil` is handed the message. If
@@ -1070,8 +1079,10 @@ variable is an error that names both.
 While a sign-in record is on the machine, the client never trades the machine in its place. An
 error while it chooses, reads or trades the sign-in fails the call. Each refusal that a new
 sign-in cures names `agent-secrets login`. Some refusals are final (`isFinalRefusal`): the broker
-refused the sign-in, or the issuer answered `invalid_grant`. The process keeps a final refusal
-against that sign-in, the person and the box key's thumbprint, for the session it was refused to.
+refused the sign-in, or the issuer answered the renewal of the sign-in 400 or 401 `invalid_grant`.
+An issuer's 403, 429 or 5xx is an outage that a later call asks again about, whatever its body
+names. The process keeps a final refusal against that sign-in, the person and the box key's
+thumbprint, for the session it was refused to.
 A later call of that session in that process fails with the same words and sends nothing to the
 issuer or the broker. This stops when the store no longer holds that sign-in: a new
 `agent-secrets login` makes a new sign-in, with a new box key. A new process, such as the next

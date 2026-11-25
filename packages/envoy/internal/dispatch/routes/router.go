@@ -98,9 +98,10 @@ type AppContext struct {
 	// lifetime is AppContextOptions.Lifetime, which New passes to api.Register.
 	lifetime context.Context
 	// devSignInHost is the dashboard origin's host:port when the dev sign-in route is mounted,
-	// and empty otherwise. Only BuildAppContext sets it, from DevSignInOrigin, so no caller can
-	// turn the route on without the origin check.
-	devSignInHost string
+	// and empty otherwise, and devSignInOrigin that origin, scheme://host:port, the one place the
+	// route sends a browser. Only BuildAppContext sets them, from DevSignInOrigin, so no caller
+	// can turn the route on without the origin check.
+	devSignInHost, devSignInOrigin string
 	// origins is what GET /auth/whoami answers as origins: the canonical origin and OutsideOrigin,
 	// in that order, where the server answers at both, and nil where it answers at one. Only
 	// BuildAppContext sets it.
@@ -169,7 +170,9 @@ type AppContextOptions struct {
 	// machine's identity token every listener call presents in EnvoyToken's place instead
 	// (cmd/dispatch); empty presents none.
 	EnvoyGoogleAudience string
-	Docs                docs.API
+	// Docs is the document service, which BuildAppContext requires (api.NewDeps refuses none):
+	// its caller builds it and shuts it down once the router is done with it. See api.DepsInput.
+	Docs docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
@@ -295,7 +298,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	case opts.SignInRule != nil:
 		restricted = opts.SignInRule
 	}
-	var devSignInHost string
+	var devSignInHost, devSignInOrigin string
 	if opts.DevSignIn {
 		if opts.Sessions == nil {
 			return nil, fmt.Errorf("BuildAppContext: DevSignIn requires a Sessions store")
@@ -304,7 +307,9 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		if err != nil {
 			return nil, fmt.Errorf("BuildAppContext: %w", err)
 		}
-		devSignInHost = host
+		// DevSignInOrigin has parsed ServerURL already, so this parse cannot fail.
+		parsed, _ := url.Parse(opts.ServerURL)
+		devSignInHost, devSignInOrigin = host, parsed.Scheme+"://"+host
 	}
 	// A second origin is the second of two: whoami names the canonical one first, and a request
 	// whose Host is neither's is answered as the canonical one.
@@ -384,25 +389,26 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		clock = time.Now
 	}
 	return &AppContext{
-		SigningKey:     opts.SigningKey,
-		WebDistDir:     opts.WebDistDir,
-		AssetStore:     opts.AssetStore,
-		Sessions:       opts.Sessions,
-		People:         opts.People,
-		Identity:       opts.Identity,
-		Store:          opts.Store,
-		ServerURL:      strings.TrimSuffix(opts.ServerURL, "/"),
-		OutsideOrigin:  outsideOrigin,
-		SignIn:         opts.SignIn,
-		SignInRule:     opts.SignInRule,
-		Passkeys:       opts.Passkeys,
-		InsecureCookie: opts.InsecureCookie,
-		devSignInHost:  devSignInHost,
-		origins:        origins,
-		apiDeps:        apiDeps,
-		eventHead:      eventHead,
-		lifetime:       opts.Lifetime,
-		clock:          clock,
+		SigningKey:      opts.SigningKey,
+		WebDistDir:      opts.WebDistDir,
+		AssetStore:      opts.AssetStore,
+		Sessions:        opts.Sessions,
+		People:          opts.People,
+		Identity:        opts.Identity,
+		Store:           opts.Store,
+		ServerURL:       strings.TrimSuffix(opts.ServerURL, "/"),
+		OutsideOrigin:   outsideOrigin,
+		SignIn:          opts.SignIn,
+		SignInRule:      opts.SignInRule,
+		Passkeys:        opts.Passkeys,
+		InsecureCookie:  opts.InsecureCookie,
+		devSignInHost:   devSignInHost,
+		devSignInOrigin: devSignInOrigin,
+		origins:         origins,
+		apiDeps:         apiDeps,
+		eventHead:       eventHead,
+		lifetime:        opts.Lifetime,
+		clock:           clock,
 		// The ranges as boot parsed them, which nothing changes after.
 		trustedProxyRanges: opts.TrustedProxyRanges,
 	}, nil

@@ -28,6 +28,7 @@ import (
 // re-admitted root waits in the line for a slot, since its tree is opened only by the promotion
 // that gives it one.
 func TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("a reopen inside the linger", func(t *testing.T) {
 		rig := newChildArchitectRig(t)
 		token := mustClaimToken(t, doorChild, claim.RoleArchitect)
@@ -127,6 +128,7 @@ func TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain(t *testing.T) {
 // it finishes as a news-only start that reaches no claim (newsOnlyRefusal). Neither creates the
 // child's architect claim. Read as a first start, each returns the wait instead.
 func TestANewsOnlyStartOfAChildsArchitectWithNoClaimFinishesWhileItsTreeDoesNotRun(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		root func(*record.Issue)

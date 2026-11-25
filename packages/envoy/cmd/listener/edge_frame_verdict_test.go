@@ -10,9 +10,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 func TestEdgeFrameVerdict(t *testing.T) {
@@ -71,6 +73,77 @@ func TestEdgeFrameVerdict(t *testing.T) {
 			if verdict != tc.want {
 				t.Fatalf("edgeFrameVerdict(subject=%q, topic=%q, role=%q) = {action %d, reason %q}, want {action %d, reason %q}",
 					tc.subject, tc.topic, tc.role, verdict.action, verdict.reason, tc.want.action, tc.want.reason)
+			}
+		})
+	}
+}
+
+// TestEdgeFrameVerdictTellsARoleAsTheRelayDoes holds the edge's frame rule to the read the session
+// relay tells a role message by (readRoleFrame), on the session's own agent subject: a message that
+// read gives another project's role is withheld, and one it gives a role of the token's project
+// passes, whatever encoding/json makes of the message - an event id written as a number, a later
+// key that differs from "role" or "topic" only in case, a leading byte order mark, a value nested
+// deeper than encoding/json reads. A message whose role that read cannot tell is no role message,
+// as the relay sends it to the session whose subject holds it, and the edge judges it by its topic:
+// the session's own passes and another project's is withheld. Each row first checks what the
+// relay's read makes of the message, so no row passes on a message that read does not tell as the
+// row names it.
+func TestEdgeFrameVerdictTellsARoleAsTheRelayDoes(t *testing.T) {
+	const session = "ses_v"
+	own := contracts.LegacyAgentSubject(session)
+	const privRole, pubRole = "legion-priv-priv-1-tester", "legion-pub-pub-1-tester"
+	const otherIssue = "notifications.dispatch.issue.PUB.PUB-1.comment.created"
+	projects := []string{"PRIV"}
+
+	marked := func(role, more string) []byte {
+		return []byte(`{"topic":"` + own + `","role":"` + role + `"` + more + `}`)
+	}
+	forward := func(role, more string) []byte {
+		return []byte(`{"topic":"` + contracts.RoleTopicPrefix + role + `"` + more + `}`)
+	}
+	type row struct {
+		name string
+		data []byte
+		// role is the claim key the relay's read gives the message, empty for a message whose
+		// role that read cannot tell.
+		role string
+		want frameVerdict
+	}
+	var rows []row
+	for _, c := range []struct {
+		role string
+		want frameVerdict
+	}{
+		{pubRole, frameDrops(withheldProjectNotHeld)},
+		{privRole, framePasses()},
+	} {
+		key := store.RoleClaimKeyOf(c.role)
+		rows = append(rows,
+			row{c.role + ": a role-marked send", marked(c.role, ""), key, c.want},
+			row{c.role + ": a role-marked send whose event id is a number", marked(c.role, `,"event_id":4626`), key, c.want},
+			row{c.role + `: a role-marked send whose later "ROLE" key is empty`, marked(c.role, `,"ROLE":""`), key, c.want},
+			row{c.role + `: a role-lane forward whose later "TOPIC" key is the session's own subject`, forward(c.role, `,"TOPIC":"`+own+`"`), key, c.want},
+			row{c.role + ": a role-marked send after a byte order mark", append([]byte("\xef\xbb\xbf"), marked(c.role, "")...), key, c.want},
+			row{c.role + ": a role-marked send with a value nested 10,001 deep", nestedDeep(marked(c.role, "")), key, c.want},
+		)
+	}
+	rows = append(rows,
+		row{"a role mark that is a number, under the session's own subject", []byte(`{"topic":"` + own + `","role":7}`), "", framePasses()},
+		row{"a role mark that is a number, under another project's topic", []byte(`{"topic":"` + otherIssue + `","role":7}`), "", frameDrops(withheldProjectNotHeld)},
+	)
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			frame, err := readRoleFrame(tc.data)
+			switch {
+			case tc.role == "" && !errors.Is(err, errRoleFrameUnreadable):
+				t.Fatalf("readRoleFrame = {role %q}, %v; want errRoleFrameUnreadable", frame.role, err)
+			case tc.role != "" && (err != nil || frame.role != tc.role):
+				t.Fatalf("readRoleFrame = {role %q}, %v; want role %q", frame.role, err, tc.role)
+			}
+			verdict := edgeFrameVerdict(nil, session, projects, own, tc.data)
+			if verdict != tc.want {
+				t.Fatalf("edgeFrameVerdict(subject=%q) = {action %d, reason %q}, want {action %d, reason %q}",
+					own, verdict.action, verdict.reason, tc.want.action, tc.want.reason)
 			}
 		})
 	}

@@ -92,6 +92,7 @@ var routeOwnerLockTable = []routeOwnerLockCase{
 // of each route of routeOwnerLockTable and requires the route to wait for it having written
 // nothing, then to finish once the lock is given back (holdWriterBehindOwnerLock).
 func TestEveryRouteOnTheRouteTableWaitsForItsOwnerLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	for _, row := range routeOwnerLockTable {
 		t.Run(row.name, func(t *testing.T) { holdWriterBehindOwnerLock(t, row.route, row.ready(t, routeFixture{})) })
 	}
@@ -650,6 +651,7 @@ func (f itemRowFixture) rowCount(t *testing.T, query string, arg any) int {
 // lock while it is held, then lets the send answer: the settle must queue behind the lock having
 // updated nothing, and record the attempt sent once the lock is given back.
 func TestADeliverySettleWaitsForItsReceiptOwnersLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	entered, release := make(chan struct{}, 1), make(chan struct{})
 	sessions := `[{"session_id":"s1","title":"planner","capabilities":["btw"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

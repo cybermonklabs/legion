@@ -5,6 +5,10 @@
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
+    "./bun-child-environment": {
+      "types": "./src/bun-child-environment.ts",
+      "bun": "./src/bun-child-environment.ts"
+    },
     "./environment": {
       "types": "./src/environment.ts",
       "bun": "./src/environment.ts"
@@ -17,9 +21,21 @@
       "types": "./src/fixture-secret.ts",
       "bun": "./src/fixture-secret.ts"
     },
+    "./held-process": {
+      "types": "./src/held-process.ts",
+      "bun": "./src/held-process.ts"
+    },
     "./host-tools": {
       "types": "./src/host-tools.ts",
       "bun": "./src/host-tools.ts"
+    },
+    "./loopback-host": {
+      "types": "./src/loopback-host.ts",
+      "bun": "./src/loopback-host.ts"
+    },
+    "./standin-body": {
+      "types": "./src/standin-body.ts",
+      "bun": "./src/standin-body.ts"
     },
     "./temporary-directories": {
       "types": "./src/temporary-directories.ts",

@@ -154,7 +154,7 @@ func walkProcess(t *testing.T, issuer *oidctest.Issuer, rule identity.SignInRule
 	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html><title>Dispatch</title>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:    testSigningKey,
 		WebDistDir:    webDist,
 		People:        people,
@@ -166,7 +166,7 @@ func walkProcess(t *testing.T, issuer *oidctest.Issuer, rule identity.SignInRule
 		ServerURL:     "https://" + canonicalHost,
 		OutsideOrigin: outside,
 		Lifetime:      t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

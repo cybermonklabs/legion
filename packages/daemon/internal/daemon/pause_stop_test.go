@@ -257,6 +257,7 @@ func (r *pauseRig) wantReleasedOnce(row, pause int64) {
 // second run, which a second open would not notice either. The first stop also makes the
 // implementer's `pause_stop` row, waiting on its bounded retry, due at once.
 func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
 	held := r.pauseLegion()
 	if _, err := r.pool.Exec(r.ctx, `update outbox set next_at = now() + interval '1 hour'
@@ -318,6 +319,7 @@ func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
 // is taken before the pause, so it is no wake of the pause: a wake taken while the project is
 // paused is the open pause's (store.PodRecords.PauseOfWake).
 func TestAStopOwedToAClaimRunningAgainRecordsTheStopAlone(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
 	if taken, err := r.st.TakePodWake(r.ctx, "legion", pauseIssue, mustClaimToken(t, pauseIssue, claim.RoleTester),
 		pods.WakeChecks, time.Now(), 0); err != nil || !taken {
@@ -361,6 +363,7 @@ func TestAStopOwedToAClaimRunningAgainRecordsTheStopAlone(t *testing.T) {
 // implementer's stop, with the tester live, holds nothing, and the tester's, the pod's last live
 // role, holds it.
 func TestAStopHoldsThePodWhileItsPauseStandsAndAfterTheResumeOnlyWithNoRoleLive(t *testing.T) {
+	t.Parallel()
 	t.Run("while the pause stands", func(t *testing.T) {
 		r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
 		held := r.pauseLegion()
@@ -392,6 +395,7 @@ func TestAStopHoldsThePodWhileItsPauseStandsAndAfterTheResumeOnlyWithNoRoleLive(
 // inside the wait would leave the role idle and unstopped. A stop already asked is asked of no
 // second row.
 func TestTheBootOfAPausedProjectAsksItsWaitingStopsAgainAtOnce(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t, claim.RoleImplementer)
 	held := r.pauseLegion()
 	if _, err := r.pool.Exec(r.ctx, `update outbox set next_at = now() + interval '10 minutes'
@@ -424,6 +428,7 @@ func TestTheBootOfAPausedProjectAsksItsWaitingStopsAgainAtOnce(t *testing.T) {
 // stops it, and the stop transaction records the stop under the pause's project and holds the
 // claim's pod there.
 func TestTheBootOfAPausedProjectStopsALiveClaimOfAnotherProjectsIssue(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t)
 	sup, rt := r.supervisor()
 	sup.deps.PauseStopped = r.pauses.stopped
@@ -514,11 +519,12 @@ func waitingOnARowLock(t *testing.T, pool *store.Pool) bool {
 // tester's stop is owed a launch, and its start, which no pause holds any more, is logged as a
 // released held row.
 func TestTheLaterOfTwoOverlappingStopsHoldsThePodTheEarlierLeftIt(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
 	held := r.pauseLegion()
 	r.resume()
 
-	first, err := r.st.BeginTx(r.ctx, pgx.TxOptions{})
+	first, err := r.st.Pool().BeginTx(r.ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,10 +579,11 @@ func TestTheLaterOfTwoOverlappingStopsHoldsThePodTheEarlierLeftIt(t *testing.T) 
 // resume starts that held wake's stuck clock at its own moment. Without the row lock the resume
 // would read the held rows before the stop committed and leave its start out of the log.
 func TestAResumeWaitsForAStopTransactionUnderWay(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
 	held := r.pauseLegion()
 
-	first, err := r.st.BeginTx(r.ctx, pgx.TxOptions{})
+	first, err := r.st.Pool().BeginTx(r.ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -641,6 +648,7 @@ func TestAResumeWaitsForAStopTransactionUnderWay(t *testing.T) {
 // pause holds that start in the outbox, its own stop of the role finds the role stopped and ends
 // taken over, and the second pause's resume alone logs the start as released.
 func TestALateStopOfAPauseIsHeldByTheNextPauseAndLoggedByItsResume(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t, claim.RoleImplementer)
 	earlier := r.pauseLegion()
 	r.resume()
@@ -664,7 +672,7 @@ func TestALateStopOfAPauseIsHeldByTheNextPauseAndLoggedByItsResume(t *testing.T)
 		t.Fatalf("released held rows logged = %v, want none while the later pause holds the start", lines)
 	}
 	var heldRows []record.PauseHeldRow
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		heldRows, err = record.NewStore().PauseHeldRows(r.ctx, tx, "LEGION", time.Now())
 		return err
@@ -700,6 +708,7 @@ func TestALateStopOfAPauseIsHeldByTheNextPauseAndLoggedByItsResume(t *testing.T)
 // its stop is recorded owing a launch, it takes a held wake of the pause, and its start row is
 // queued and logged as a released held row, which the outbox runs at once through the pacing.
 func TestAStopThatCommitsAfterItsPauseEndedOwesTheRoleALaunch(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t, claim.RoleArchitect)
 	held := r.pauseLegion()
 	r.resume()
@@ -725,6 +734,7 @@ func TestAStopThatCommitsAfterItsPauseEndedOwesTheRoleALaunch(t *testing.T) {
 // transaction commits it is resumed by rule (supervise.RequestRuleResume), which the wake pacing
 // paces as it paces every resume of the rule, and the claim runs again.
 func TestAStopOfAnOperatorsSpawnAfterItsPauseEndedResumesItByRule(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t)
 	sup, rt := r.supervisor()
 	r.pauses.supervisor = sup
@@ -763,6 +773,7 @@ func TestAStopOfAnOperatorsSpawnAfterItsPauseEndedResumesItByRule(t *testing.T) 
 // launch owed; a claim a park suspended ends `taken_over`; and a launch whose outcome is uncertain
 // asks again after the bounded wait.
 func TestAPauseStopEndsItsStopRowByWhatTheClaimAnswers(t *testing.T) {
+	t.Parallel()
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger}
 	r := newPauseRig(t, roles...)
 	held := r.pauseLegion()
@@ -838,6 +849,7 @@ func (s pauseReadThenResumed) PauseByID(ctx context.Context, id int64) (store.Pa
 // transaction records it stopped, its stop row stays the one the resume cancelled, and the row
 // finishes without acting, saying so as a row that reads its pause ended does.
 func TestAPauseStopTheResumeOvertakesStopsNothing(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t, claim.RoleArchitect)
 	sup, rt := r.supervisor()
 	sup.deps.PauseStopped = r.pauses.stopped
@@ -881,6 +893,7 @@ func TestAPauseStopTheResumeOvertakesStopsNothing(t *testing.T) {
 // role through the wake pacing; the held wake's start row, which runs next, finds the role
 // running, and the role launches once.
 func TestANoticeThatMeetsThePausesHeldWakeAtTheResumeWarnsOfNoStuckResume(t *testing.T) {
+	t.Parallel()
 	const stuck = `"msg":"wake: a released pod's resume stands open with no process behind it; this wake resumes it"`
 	const heldWake = `"msg":"wake: a released role's open resume is its pause's held wake; this wake resumes the role through the wake pacing"`
 	r := newPauseRig(t, claim.RoleArchitect)
@@ -939,6 +952,7 @@ func TestANoticeThatMeetsThePausesHeldWakeAtTheResumeWarnsOfNoStuckResume(t *tes
 // claim the daemon suspended stays suspended by the daemon. The same row over a role still
 // released resumes it, which is what tells the fence from a row that starts nothing anyway.
 func TestAWakeStartOfARoleTheDaemonTookOverFinishesWithoutActing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	runner, sup, _ := hookRunner(t, &outboxPublisher{})
 	parked := releasedClaim(t, sup, claim.RoleImplementer)
@@ -970,6 +984,7 @@ func TestAWakeStartOfARoleTheDaemonTookOverFinishesWithoutActing(t *testing.T) {
 // (decision 17): another role's backstop is all that brings that role back. An issue's close
 // still drops every backstop of the issue, since the issue's work is over.
 func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	runner, sup, pool := hookRunner(t, &outboxPublisher{})
 	releasedClaim(t, sup, claim.RoleImplementer)

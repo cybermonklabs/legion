@@ -9,7 +9,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 ## Every phase
 
-1. Read the issue, then its `open-items.md` where one exists (`dispatch doc-read --issue <issue> --artifact open-items-md`): the architect records decisions there that it does not message. Then read each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`). A record beats your memory.
+1. Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`). Your architect's decisions for you come in your task and your messages: read no other document for them. A record beats your memory.
 2. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 3. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work: another role that commits next sets aside whatever the working copy holds.
 4. Every role writes the one workspace, so a file can change under your check. Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) where you can, and run `git diff --quiet <head> -- <files the check reads>` before you record a result. A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after. A run whose output you did not capture can be neither confirmed nor cleared.

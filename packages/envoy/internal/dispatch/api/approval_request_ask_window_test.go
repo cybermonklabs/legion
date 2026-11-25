@@ -22,6 +22,7 @@ import (
 // pass - up to docs.BlockIndexReconcileInterval (30 s) after the request, and a tick every 2 s
 // while the arm has a full batch - the ask is unreachable by meaning search.
 func TestAnApprovalRequestLeavesItsAskToTheWindowArm(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "APPRW", "Window the request's ask", "A spec")
 

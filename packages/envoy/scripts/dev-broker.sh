@@ -119,8 +119,9 @@
 # A secret request is approved on the broker's own page, <broker>/approve/<record>, by a person
 # signed in to the broker (BROKER_SIGNIN_*). The same issuer process stands in for that person's
 # identity provider: --code-flow serves the broker's sign-in client, whose secret this script
-# generates into WORK_DIR, and --sign-in-as signs every authorization in as APPROVER_LOGIN with
-# no page to fill in, so a browser on this machine approves a secret request on that page.
+# generates into WORK_DIR and whose one callback is the approval page's on loopback, taken at the
+# port the broker binds, and --sign-in-as signs every authorization in as APPROVER_LOGIN with no
+# page to fill in, so a browser on this machine approves a secret request on that page.
 #
 # Each invocation creates and drops its own isolated Postgres database (named from this run's own
 # WORK_DIR, below) and binds OS-assigned ephemeral ports for its API and its metrics
@@ -564,7 +565,7 @@ echo "dev-broker: starting dev-oidc-issuer..." >&2
   --token "$EXCHANGE_AUDIENCE=$READ_ACCOUNT=$READ_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$EXCHANGE_ACCOUNT=$POD_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$REGISTRAR_ACCOUNT=$REGISTRAR_TOKEN_FILE" \
-  --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE" \
+  --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE=http://127.0.0.1/signin/callback" \
   --sign-in-as "$APPROVER_LOGIN" \
   > >(trap '' TERM INT; exec tee -a "$ISSUER_LOG" >&2) 2>&1 &
 ISSUER_PID=$!

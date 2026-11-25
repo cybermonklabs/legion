@@ -81,7 +81,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$endpoint" ] || { echo "fake gh: no endpoint" >&2; exit 2; }
 path=${endpoint%%\?*}
-refusal="${FAKE_ROOT:?}/refuse/$(printf '%s' "$path" | tr '/' '_')"
+refusal="${FAKE_ROOT:?}/refuse/${path//\//_}"
 [ ! -f "$refusal" ] || { cat "$refusal" >&2; exit 1; }
 case "$path" in
   repos/"${FAKE_DEPLOYMENT:?}"/contents/*)
@@ -143,7 +143,7 @@ print(json.dumps({"sha": sha, "tree": entries, "truncated": os.path.exists(trunc
 PY
     ;;
   repos/"${FAKE_DEPLOYMENT}"/tarball/*)
-    top="$(printf '%s' "$FAKE_DEPLOYMENT" | tr '/' '-')-${path##*/}"
+    top="${FAKE_DEPLOYMENT//\//-}-${path##*/}"
     if [ -e "${FAKE_ROOT}/corrupt-archive" ]; then
       echo "this is no archive"
     elif [ -f "${FAKE_ROOT}/archive.tgz" ]; then
@@ -210,7 +210,7 @@ if [ "$1" = run ]; then
   done
   ref=$1
   shift
-  dir="${FAKE_ROOT:?}/images/$(printf '%s' "$ref" | tr '/:@' '___')"
+  dir="${FAKE_ROOT:?}/images/${ref//[\/:@]/_}"
   if [ ! -d "$dir/fs" ]; then
     echo "docker: Error response from daemon: manifest for $ref not found: manifest unknown" >&2
     printf '\nRun '"'"'docker run --help'"'"' for more information\n' >&2
@@ -234,9 +234,9 @@ if [ "$1" = run ]; then
   exit 0
 fi
 [ "$1 $2 $3" = "buildx imagetools inspect" ] && [ "$5" = --format ] || { echo "fake docker: unexpected command: $*" >&2; exit 2; }
-dir="${FAKE_ROOT:?}/images/$(printf '%s' "$4" | tr '/:@' '___')"
+dir="${FAKE_ROOT:?}/images/${4//[\/:@]/_}"
 [ -f "$dir/mediatype" ] || { echo "ERROR: $4: not found" >&2; exit 1; }
-mediatype=$(cat "$dir/mediatype")
+mediatype=$(<"$dir/mediatype")
 case "$6" in
   '{{json .Manifest.MediaType}}') printf '%s' "$mediatype" ;;
   '{{json .Image.Config.Labels}}')
@@ -245,11 +245,11 @@ case "$6" in
       *) cat "$dir/labels" ;;
     esac
     ;;
-  '{{range .Manifest.Manifests}}'*) printf '%s' "$(cat "$dir/platforms")" ;;
+  '{{range .Manifest.Manifests}}'*) printf '%s' "$(<"$dir/platforms")" ;;
   '{{json (index .Image "'*)
     platform=${6#'{{json (index .Image "'}
     platform=${platform%%'"'*}
-    file="$dir/platform-$(printf '%s' "$platform" | tr '/' '_')"
+    file="$dir/platform-${platform//\//_}"
     [ -f "$file" ] || { echo "ERROR: template: :1:17: executing \"\" at <index .Image \"$platform\">: nil pointer evaluating *v1.Image.Config" >&2; exit 1; }
     cat "$file"
     ;;
@@ -263,13 +263,23 @@ EOF
 # spec under the npm configuration the case sets; that file with `.raw` added is answered as it is,
 # as an npm that answers garbage would. With `--registry=<url>`, each is read from
 # FAKE_ROOT/npm-registries/<url with / and : as _>/ instead. It fails as npm does (E404) when no
-# file names a version, and as an unreachable registry when FAKE_NPM_DOWN=1. `npm exec` (the gate's
-# parse of the marketplace's spec with the npm-package-arg npm ships), and `npm pack` when
-# FAKE_NPM_REAL_PACK=1, run the real npm the harness found when it started, so a case sees what
+# file names a version, and as an unreachable registry when FAKE_NPM_DOWN=1. `npm pack` with
+# FAKE_NPM_REAL_PACK=1 runs the real npm the harness found when it started, so a case sees what
 # the real npm does with a spec. It records each call, the directory it runs in as an `npm-cwd
 # <dir>` line, and each npm_config_ variable it runs with as an `npm-config <name>=<value>` line,
 # so a case sees where the gate runs npm and the configuration it leaves npm; it refuses any other
 # command, and a pack without --dry-run, which would write the tarball.
+#
+# `npm exec --offline --yes=false -c <command>`, the gate's parse of the marketplace's spec, runs
+# <command> through a shell with npm_node_execpath and npm_execpath set to the node npm runs on
+# and npm's own npm-cli.js (@npmcli/config lib/set-envs.js), which is all that command reads of
+# npm: it runs that node on the npm-package-arg npm ships, resolved from npm_execpath's directory,
+# so the parse is npm's own either way. Starting npm's CLI again for two paths the harness already
+# found costs 0.34 u + 0.19 s of CPU a call against 0.05 u + 0.03 s for the command alone
+# (measured on a developer box, npm 10.9.7 on node 22.22.2), about a fifth of a --clients case, so
+# the fake runs the command itself. The harness runs the real `npm exec`, with these same flags,
+# once when it starts: an npm that no longer takes them fails the suite there. A call of any other
+# shape is refused rather than emulated.
 cat >"${temporary_dir}/bin/npm" <<'EOF'
 #!/usr/bin/env bash
 printf 'npm %s\n' "$*" >>"${FAKE_CALLS:?}"
@@ -277,7 +287,12 @@ printf 'npm-cwd %s\n' "$PWD" >>"$FAKE_CALLS"
 env | grep '^npm_config_' | sort | sed 's/^/npm-config /' >>"$FAKE_CALLS"
 if [ "$1" = exec ] || { [ "$1" = pack ] && [ "${FAKE_NPM_REAL_PACK:-0}" = 1 ]; }; then
   mapfile -t real_npm <"$(dirname "$0")/../real-npm"
-  exec "${real_npm[0]}" "${real_npm[1]}" "$@"
+  if [ "$1" != exec ]; then
+    exec "${real_npm[0]}" "${real_npm[1]}" "$@"
+  fi
+  [ "$#" -eq 5 ] && [ "$2" = --offline ] && [ "$3" = --yes=false ] && [ "$4" = -c ] ||
+    { echo "fake npm: unexpected exec: $*" >&2; exit 2; }
+  exec env npm_node_execpath="${real_npm[0]}" npm_execpath="${real_npm[1]}" sh -c "$5"
 fi
 registry=""
 words=()
@@ -294,12 +309,13 @@ case "$1 $#:${*:3}" in
 esac
 [ "${FAKE_NPM_DOWN:-0}" != 1 ] || { echo "npm error code ENOTFOUND" >&2; exit 1; }
 dir="${FAKE_ROOT:?}/npm"
-[ -z "$registry" ] || dir="${FAKE_ROOT}/npm-registries/$(printf '%s' "$registry" | tr '/:' '__')"
-file="${dir}/$(printf '%s' "$2" | tr '/@<>=' '_____')"
+[ -z "$registry" ] || dir="${FAKE_ROOT}/npm-registries/${registry//[\/:]/_}"
+file="${dir}/${2//[\/@<>=]/_}"
 [ ! -f "${file}.raw" ] || { cat "${file}.raw"; exit 0; }
 [ -f "$file" ] || { echo "npm error code E404" >&2; exit 1; }
 name=${2%@*}
-jq -n --arg name "$name" --arg version "$(tr -d '\n' <"$file")" '[{
+version=$(<"$file")
+jq -n --arg name "$name" --arg version "${version//$'\n'/}" '[{
   id: "\($name)@\($version)", name: $name, version: $version, size: 1, unpackedSize: 1, shasum: "",
   integrity: "", filename: "\($name | ltrimstr("@") | sub("/"; "-"))-\($version).tgz", files: [],
   entryCount: 0, bundled: []
@@ -349,7 +365,7 @@ compare() {
 }
 # refuse <endpoint> <answer>: GitHub answers <endpoint> (no query) with the error <answer>.
 refuse() {
-  printf '%s\n' "$2" >"${case_root}/refuse/$(printf '%s' "$1" | tr '/' '_')"
+  printf '%s\n' "$2" >"${case_root}/refuse/${1//\//_}"
 }
 # tag <tag> <commit>: the commit cybermonklabs/legion's release tag <tag> names.
 tag() {
@@ -357,7 +373,7 @@ tag() {
 }
 # image_dir <ref>: the directory of the fake docker's answers for <ref>.
 image_dir() {
-  printf '%s/images/%s' "$case_root" "$(printf '%s' "$1" | tr '/:@' '___')"
+  printf '%s/images/%s' "$case_root" "${1//[\/:@]/_}"
 }
 # single <ref> <source> <revision>: a single image labelled with source and revision; an empty
 # source or revision leaves that label out.

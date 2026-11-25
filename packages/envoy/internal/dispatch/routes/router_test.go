@@ -23,8 +23,11 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -44,6 +47,26 @@ func sharedAgentTokens(t *testing.T, setting string) *auth.SharedAgentTokens {
 		t.Fatalf("ParseSharedAgentTokens(%q): %v", setting, err)
 	}
 	return tokens
+}
+
+// withDocuments is options with a document service of the test's own, which BuildAppContext
+// requires: one over the options' store, event broker, identity and origins (the server URL and
+// the outside origin, read as api.NewDeps reads them), shut down once the test ends. Options with
+// no broker get one, which the router and the service then share.
+func withDocuments(t testing.TB, options AppContextOptions) AppContextOptions {
+	t.Helper()
+	if options.Events == nil {
+		options.Events = events.NewBroker()
+	}
+	origins := text.NewOrigins(strings.TrimSuffix(options.ServerURL, "/"), options.OutsideOrigin)
+	documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, Origins: origins})
+	t.Cleanup(func() {
+		if err := documents.Shutdown(context.Background()); err != nil {
+			t.Errorf("shut the document service down: %v", err)
+		}
+	})
+	options.Docs = documents
+	return options
 }
 
 type memorySessionStore struct {
@@ -266,8 +289,14 @@ func newDomainSignInRig(t *testing.T) *signInRig {
 
 func newSignInRigFor(t *testing.T, serverURL string, rule identity.SignInRule, hostedDomain string) *signInRig {
 	t.Helper()
+	// The callback the rig's sign-ins name: the configured origin's, else that of the Host every
+	// rig request carries, dispatch.test.
+	callback := "http://dispatch.test/auth/callback"
+	if serverURL != "" {
+		callback = strings.TrimSuffix(serverURL, "/") + "/auth/callback"
+	}
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), rigClientID, "dispatch-secret")
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), rigClientID, "dispatch-secret", callback)
 	flow := oidc.NewCodeFlow(issuer.URL(), rigClientID, "dispatch-secret", hostedDomain)
 	rig := &signInRig{issuer: issuer, people: newMemoryPeople(), sessions: &memorySessionStore{generations: map[string]int64{}}, now: time.Now()}
 	rig.people.sessions = rig.sessions
@@ -284,12 +313,14 @@ func newSignInRigFor(t *testing.T, serverURL string, rule identity.SignInRule, h
 		Lifetime:   t.Context(),
 	}
 	var err error
-	rig.ctx, err = BuildAppContext(rig.options)
+	rig.ctx, err = BuildAppContext(withDocuments(t, rig.options))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
 	standInEventLog(rig.ctx, 0)
-	rig.handler, _ = New(rig.ctx)
+	handler, background := New(rig.ctx)
+	t.Cleanup(background.Wait)
+	rig.handler = handler
 	return rig
 }
 
@@ -301,11 +332,12 @@ func (r *signInRig) process(t *testing.T, keys auth.SigningKeys) http.Handler {
 	options := r.options
 	options.SigningKey = keys
 	options.Identity = identity.CookieIdentity{SigningKey: keys, Sessions: r.sessions, Membership: r.membership}
-	ctx, err := BuildAppContext(options)
+	ctx, err := BuildAppContext(withDocuments(t, options))
 	if err != nil {
 		t.Fatalf("build another process's context: %v", err)
 	}
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	return handler
 }
 
@@ -487,11 +519,12 @@ func TestSignInAgainstAnUndiscoveredIssuerAnswers503(t *testing.T) {
 	rig.issuer.FailDiscovery(http.StatusServiceUnavailable)
 	options := rig.options
 	options.SignIn = oidc.NewCodeFlow(rig.issuer.URL(), rigClientID, "dispatch-secret", "")
-	ctx, err := BuildAppContext(options)
+	ctx, err := BuildAppContext(withDocuments(t, options))
 	if err != nil {
 		t.Fatalf("build the undiscovered process's context: %v", err)
 	}
-	undiscovered, _ := New(ctx)
+	undiscovered, background := New(ctx)
+	t.Cleanup(background.Wait)
 
 	response := httptest.NewRecorder()
 	undiscovered.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/start", nil))
@@ -912,17 +945,18 @@ func TestAuthStartWithoutSignInIsUnavailable(t *testing.T) {
 func newTestRouter(t *testing.T) (http.Handler, *AppContext) {
 	t.Helper()
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     people,
 		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		Lifetime:   t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
 	standInEventLog(ctx, 0)
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	return handler, ctx
 }
 
@@ -1800,7 +1834,7 @@ func cookieRouter(t *testing.T, serverURL string) (http.Handler, *http.Cookie, *
 		t.Fatalf("record sign-in: %v", err)
 	}
 	sessions := &memorySessionStore{generations: map[string]int64{"sami@d.example": 0}}
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:  testSigningKey,
 		People:      people,
 		Sessions:    sessions,
@@ -1808,7 +1842,7 @@ func cookieRouter(t *testing.T, serverURL string) (http.Handler, *http.Cookie, *
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL:   serverURL,
 		Lifetime:    t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
@@ -1817,7 +1851,8 @@ func cookieRouter(t *testing.T, serverURL string) (http.Handler, *http.Cookie, *
 	if err != nil {
 		t.Fatalf("parse session cookie: %v", err)
 	}
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	return handler, cookie, people
 }
 
@@ -1892,7 +1927,7 @@ func TestIAPAuthenticatedUnsafeRequestsRequireSameOrigin(t *testing.T) {
 	signing := oidctest.NewES256Key(t, "iap-key")
 	keys.Publish(signing)
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     people,
 		Sessions:   &memorySessionStore{generations: map[string]int64{}},
@@ -1904,12 +1939,13 @@ func TestIAPAuthenticatedUnsafeRequestsRequireSameOrigin(t *testing.T) {
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL:   "https://dispatch.example",
 		Lifetime:    t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
 	standInEventLog(ctx, 0)
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	now := time.Now()
 	assertion := keys.Mint(t, signing, map[string]any{
 		"iss": oidc.IAPIssuer, "aud": audience, "sub": "accounts.google.com:118000000000000000001",

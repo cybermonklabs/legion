@@ -61,10 +61,10 @@ func TestWhoamiRefusesWhenTheKindCannotBeRead(t *testing.T) {
 	database := storetest.Open(t)
 	database.Pool.Close()
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey, People: people, Store: database, Lifetime: t.Context(),
 		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
@@ -90,10 +90,10 @@ func TestWhoamisMemberKindWarningNamesNoPerson(t *testing.T) {
 	database := storetest.Open(t)
 	database.Pool.Close()
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey, People: people, Store: database, Lifetime: t.Context(),
 		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

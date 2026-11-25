@@ -601,7 +601,7 @@ func TestMembershipPassChecksEveryStoredToken(t *testing.T) {
 	)
 	database := storetest.Open(t)
 	google := oidctest.New(t)
-	google.EnableCodeFlow(google.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	google.EnableCodeFlow(google.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	broker := newPassBroker()
 	brokerServer := httptest.NewServer(broker)
 	t.Cleanup(brokerServer.Close)

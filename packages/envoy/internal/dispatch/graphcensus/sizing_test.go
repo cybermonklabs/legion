@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -34,7 +35,10 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests through the Dispatch harness's Main inside cmdtest.Run, which
+// makes the directory the dispatch-seed binary store_drives_test.go builds is written into and
+// removes it once the tests end.
+func TestMain(m *testing.M) { os.Exit(cmdtest.Run(func() int { return storetest.Main(m) })) }
 
 // sizingCensus runs the store census with its growth pass over database, as
 // `envoy-dispatch census --store --sizing` runs it, and returns everything it printed.

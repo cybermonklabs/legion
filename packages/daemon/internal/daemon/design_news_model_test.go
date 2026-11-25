@@ -117,6 +117,7 @@ import (
 // left. A seed's steps are its own: every step waits for the machines before the next, and the
 // machines' timers fire only when a step fires them.
 func TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold(t *testing.T) {
+	t.Parallel()
 	steps := keptPropertyEnv(t, "LEGION_NEWS_MODEL_STEPS", 40)
 	seeds := []int64{newsModelCISeed, newsModelReplacementSeed}
 	if named := os.Getenv("LEGION_NEWS_MODEL_SEED"); named != "" {

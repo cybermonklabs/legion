@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // warnings is every WARN or ERROR record, each as its level, message and error.
@@ -32,7 +33,7 @@ func warnings(records []map[string]any) []string {
 // testConsumers lists the test bucket's consumers.
 func testConsumers(t *testing.T, conn *natsgo.Conn) []string {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -53,26 +54,17 @@ func TestEndEndsAWatcherArmedAfterTheStop(t *testing.T) {
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-time.After(5 * time.Second):
-		close(held.release)
-		t.Fatal("the watch never armed its watcher")
-	}
+	armedWatch(t, held, "the watch to arm its watcher")
 	w.Stop()
 	ended := make(chan struct{})
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		w.End(ctx)
+		// Under the test's own context, which has no deadline: End's return is the fact the row
+		// waits for, and only the wait below ends that wait.
+		w.End(t.Context())
 		close(ended)
 	}()
 	close(held.release)
-	select {
-	case <-ended:
-	case <-time.After(15 * time.Second):
-		t.Fatal("End never returned")
-	}
+	testwait.Receive(t, "End to return once the watch it waited for armed and ended its watcher", ended)
 	if consumers := testConsumers(t, conn); len(consumers) != 0 {
 		t.Fatalf("consumers after End = %v, want none", consumers)
 	}
@@ -91,12 +83,7 @@ func TestAWatchStillStartingAtEndsDeadlineIsAnError(t *testing.T) {
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-time.After(5 * time.Second):
-		close(held.release)
-		t.Fatal("the watch never armed its watcher")
-	}
+	armedWatch(t, held, "the watch to arm its watcher")
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	w.End(ctx)
@@ -149,12 +136,7 @@ func TestALateWatchAfterALostConnectionIsAWarning(t *testing.T) {
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-time.After(5 * time.Second):
-		close(held.release)
-		t.Fatal("the watch never armed its watcher")
-	}
+	armedWatch(t, held.heldWatchKV, "the watch to arm its watcher")
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(bus.ErrConnectionLost)
 	w.End(ctx)
@@ -178,12 +160,7 @@ func TestADeleteConsumerAnsweredErrDisconnectedDuringEndIsAWarning(t *testing.T)
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-time.After(5 * time.Second):
-		close(held.release)
-		t.Fatal("the watch never armed its watcher")
-	}
+	armedWatch(t, held.heldWatchKV, "the watch to arm its watcher")
 	close(held.release)
 	eventually(t, "the first read to follow", w.Following)
 	w.End(context.Background())
@@ -221,29 +198,20 @@ func TestEndCalledTwiceAtOnceReturnsForBoth(t *testing.T) {
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-time.After(5 * time.Second):
-		close(held.release)
-		t.Fatal("the watch never armed its watcher")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	armedWatch(t, held, "the watch to arm its watcher")
 	ended := make(chan struct{}, 2)
 	for range 2 {
 		go func() {
-			w.End(ctx)
+			// Under the test's own context, which has no deadline: each End's return is the fact
+			// the row waits for, and only the wait below ends that wait.
+			w.End(t.Context())
 			ended <- struct{}{}
 		}()
 	}
 	eventually(t, "both Ends to wait for the watch", func() bool { return endsWaiting() == 2 })
 	close(held.release)
 	for range 2 {
-		select {
-		case <-ended:
-		case <-time.After(5 * time.Second):
-			t.Fatal("an End did not return once the watch it waited for had finished")
-		}
+		testwait.Receive(t, "both Ends to return once the watch they waited for had finished", ended)
 	}
 	if consumers := testConsumers(t, conn); len(consumers) != 0 {
 		t.Fatalf("consumers after both Ends = %v, want none", consumers)
@@ -262,16 +230,14 @@ func TestAFailedConsumerDeleteAtTheEndIsAnError(t *testing.T) {
 	w := kvwatch.New("test cache", kv, newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
 	eventually(t, "the first scan", w.Ready)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
 	if err := js.DeleteKeyValue("kvwatch-test"); err != nil {
 		t.Fatalf("delete bucket: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	w.End(ctx)
+	w.End(testContext(t))
 	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end failed: nats: stream not found"; got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
 	}

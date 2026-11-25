@@ -94,6 +94,7 @@ func (d *heldCheckReads) Text(ctx context.Context, who model.Actor, artifactID s
 // check: the version the second upload wrote and the digest it left, not the ones the resolve
 // read.
 func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing.T) {
+	t.Parallel()
 	reads := &heldCheckReads{
 		stop:     t.Context().Done(),
 		resolved: make(chan struct{}),
@@ -214,6 +215,7 @@ func (d *contendedCheckReads) Text(ctx context.Context, who model.Actor, artifac
 // retry a second later asks, and no budget of its own that a longer wait would refill
 // (checkContendedRetryAfter).
 func TestAResultsWriteRefusesACheckRewordedAtEveryAttempt(t *testing.T) {
+	t.Parallel()
 	reads := &contendedCheckReads{stop: t.Context().Done(), held: make(chan int), let: make(chan struct{}, resolutionAttempts)}
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
@@ -342,6 +344,7 @@ func offerCheckRead[T any](to chan<- T, value T, stop <-chan struct{}) error {
 // check at version 1 under version 3's digest - the check as a version this transaction cannot
 // see.
 func TestAResultsWriteReadsTheCheckAgainWhenALaterVersionRestoredItsDigest(t *testing.T) {
+	t.Parallel()
 	reads := &restoredCheckReads{
 		stop:      t.Context().Done(),
 		resolving: make(chan struct{}),

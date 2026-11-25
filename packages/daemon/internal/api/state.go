@@ -1861,8 +1861,3 @@ func ClaimWakes(wakes []WakeWaiting) map[claim.Token]WakeView {
 type StateSource interface {
 	State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)
 }
-
-// StateTransactions begins the one snapshot transaction every state response reads through.
-type StateTransactions interface {
-	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
-}

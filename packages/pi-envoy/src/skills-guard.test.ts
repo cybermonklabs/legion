@@ -76,10 +76,50 @@ test("the injected dispatch-first context holds the blocker and accepted-request
   const context = readDispatchFirstContext(dispatchFirstSkillFile(staged));
   for (const rule of [
     "The moment a person blocks your work, open an ask: an ask block for a design question its document records, else `dispatch ask`. A blocker that is not an open ask does not exist for them. A Legion phase worker sends decisions to its architect instead. Before you say you wait on a person, run `dispatch open-asks`.",
-    "Record every request you accept in Dispatch before you start it: an issue, or a line in your issue's `open-items.md` artifact. Before you end a turn, read that record. Each item is done, in progress, or an open ask. Never drop one.",
+    "Record each request you accept in Dispatch before you start it. Your issue's work is a task, or a task's new text, in its plan. Other work is an issue or an ask. Before you end a turn, read the plan, your issues and open asks: each item is done, in progress, or an open ask. Never drop one.",
   ]) {
     expect(context).toContain(rule);
   }
+});
+
+// dispatch-first paid for the longer accepted-request rule by shortening other lines. Each
+// shortened sentence still carries its rule, and these pins hold it.
+test("dispatch-first's shortened sentences keep their rules", () => {
+  const context = readDispatchFirstContext(dispatchFirstSkillFile(staged));
+  for (const rule of [
+    "**Question already decided:** cite the answered ask (`dispatch://KEY/ask/<id>`) and never ask again.",
+    "**Duplicate found, or a likely duplicate a create names:** fold it only when it is the same work.",
+    "A result a person asked for ends its document with an ask block asking their next step, else `dispatch ask`.",
+    "| write or change a spec, ask, comment or message a person reads | `skill://dispatch-writing-specs` |",
+  ]) {
+    expect(context).toContain(rule);
+  }
+});
+
+// The issue, its plan, other issues and asks are the one record of work still to do. No skill or
+// daemon prompt names a separate list of open items. The check bans the name itself, even in a
+// ban, because that is simpler than telling an offer from a ban. The controls are the two lines
+// that offered the list. Each root must hold Markdown, so an empty root cannot pass.
+test("no skill or daemon prompt names a list of open items", () => {
+  const listName = /open[- _]items/i;
+  for (const retired of [
+    "Record every request you accept in Dispatch before you start it: an issue, or a line in your issue's `open-items.md` artifact.",
+    "Read the issue, then its `open-items.md` where one exists",
+  ]) {
+    expect(listName.test(retired), retired).toBe(true);
+  }
+  const named = skillAndPromptRoots.flatMap((root) => {
+    const markdown = files(root).filter((file) => file.endsWith(".md"));
+    expect(markdown.length, root).toBeGreaterThan(0);
+    return markdown.flatMap((file) =>
+      readFileSync(file, "utf8")
+        .split("\n")
+        .flatMap((line, index) =>
+          listName.test(line) ? [`${path.relative(REPO_ROOT, file)}:${index + 1}`] : []
+        )
+    );
+  });
+  expect(named).toEqual([]);
 });
 
 // The three Dispatch skills are read by every session with Dispatch, so their length is a cost on
@@ -173,16 +213,14 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // 2,339 and the bound moves from 2,326 by those 14 to 2,340, keeping the margin above it the raise
 // before set and adding none.
 //
-// It moved again on 2026-11-16, when private projects let a token list the projects it may
-// use and answer every other project's items as missing: an agent whose token cannot see a
-// private project reads that project as gone, so the skill every session loads says what a token
-// sees, and no other skill holds that. The `blocked_by` bullet's refusal is `BLOCKED_BY_INPUT`
-// now, the answer to a key of a project the caller does not see as to an unknown key, and its
-// sentence, "A token links only issues it sees", is 1 word shorter. The token bullet gains 21:
-// "It sees the projects it lists, or with none the public ones, within what its person sees;
-// others answer as missing." So the three skills stand at 2,339 - 1 + 21 = 2,359, and the bound
-// moves by those 20 to 2,360, keeping the margin above it as it was.
-test("the three Dispatch skills total fewer than 2,360 words", () => {
+// The accepted-request rule grew by 17 words when it moved to the plan, issues and asks. The
+// bound did not move: dispatch-first cut 17 words from its own lines. Each cut is a reason or
+// words that another of its sentences says. The decided bullet lost its reason, "the answered ask
+// is the record" (3). The duplicate bullet lost "read it", which the bullet on reading each hit
+// says (1). The research bullets lost "Ask only the part no search answered.", which their first
+// two bullets say together (7). The result bullet lost "is the same" (3). The spec-writing row
+// lost "or write an" (3). The three skills stay at 2,337 words, as on main.
+test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -192,7 +230,7 @@ test("the three Dispatch skills total fewer than 2,360 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_360);
+  expect(words).toBeLessThan(2_340);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {

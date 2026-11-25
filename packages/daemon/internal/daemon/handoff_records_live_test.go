@@ -64,6 +64,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -241,7 +242,7 @@ func (r *handoffRecordsLive) seedIssues(issues []dispatchSeed) {
 	t := r.t
 	t.Helper()
 	ctx := context.Background()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, s := range issues {
 			listed := r.dispatch.issue(s.key)
 			if err := r.records.PutIssue(ctx, tx, record.Issue{

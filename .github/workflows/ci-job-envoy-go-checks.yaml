@@ -296,7 +296,19 @@ jobs:
       # reads off the module's own build constraints, so a file under a tag that lands later, or
       # under a negated one, is vetted too rather than passed over in silence. One
       # darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
+      # Its objects go to a build cache of their own, the GOCACHE in the step's env, which the
+      # go-envoy-darwin-vet family holds (.github/workflows/ci-caches.yaml fills it again on every
+      # push to main): restored from nothing, the vet compiled the standard library and every
+      # dependency for darwin on every run, 137.9 s of job 137308591036 and 172 s at the median of
+      # 550 pull request runs. Kept out of go-envoy, whose entry every envoy job downloads.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-build-darwin
+          key: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-darwin-vet-{0}-{1}-', runner.os, runner.arch) }}
       - name: Vet envoy for darwin, its tagged tests included
+        env:
+          GOCACHE: ${{ runner.temp }}/go-build-darwin
         run: |
           flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)
           while IFS= read -r flag; do

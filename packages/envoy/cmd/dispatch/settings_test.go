@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
@@ -214,7 +215,7 @@ func envoyJSONHome(t *testing.T) string {
 func routerFor(t *testing.T, boot bootConfig, built routes.AppContextOptions) http.Handler {
 	t.Helper()
 	built.Lifetime = t.Context()
-	appCtx, err := appContextFor(boot, built)
+	appCtx, err := appContextFor(t, boot, built)
 	if err != nil {
 		t.Fatalf("build the router: %v", err)
 	}
@@ -234,7 +235,9 @@ var testSigningKey = auth.SingleSigningKey("signing-key")
 // currentSessions unless the case passes the database's own, as one whose sign-ins record Google
 // accounts must: recording an account moves the session generation in the database itself
 // (migration 20261118041916), which the mint's and the approve's re-read compare a cookie with.
-func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.AppContext, error) {
+// A case that gives no document service (built.Docs) gets one (withDocumentService).
+func appContextFor(t testing.TB, boot bootConfig, built routes.AppContextOptions) (*routes.AppContext, error) {
+	t.Helper()
 	built.SigningKey = testSigningKey
 	if built.People == nil {
 		built.People = store.NewPgPeopleStore(nil, built.SigningKey, nil)
@@ -256,7 +259,31 @@ func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.App
 	if err != nil {
 		return nil, err
 	}
-	return buildAppContext(boot, rule, built, membership)
+	return buildAppContext(boot, rule, withDocumentService(t, boot, built), membership)
+}
+
+// withDocumentService is built with a document service of the test's own where it has none
+// (built.Docs), which routes.BuildAppContext requires: one over built's store, event broker,
+// identity and server URL, built as main builds it (newDocumentService, which takes the origins
+// from boot), shut down once t ends. built with no broker gets one, which the router and the
+// service then share. Every test that builds the router through buildAppContext hands its options
+// through here.
+func withDocumentService(t testing.TB, boot bootConfig, built routes.AppContextOptions) routes.AppContextOptions {
+	t.Helper()
+	if built.Docs != nil {
+		return built
+	}
+	if built.Events == nil {
+		built.Events = events.NewBroker()
+	}
+	documents := newDocumentService(boot, built.ServerURL, docs.Deps{Store: built.Store, Events: built.Events, Identity: built.Identity})
+	t.Cleanup(func() {
+		if err := documents.Shutdown(context.Background()); err != nil {
+			t.Errorf("shut the document service down: %v", err)
+		}
+	})
+	built.Docs = documents
+	return built
 }
 
 // pgPeople is the Postgres people store people is, or holds (testPeople), for the passkey store
@@ -322,11 +349,12 @@ func devSignIn(t *testing.T, boot bootConfig, login string) *httptest.ResponseRe
 }
 
 // signInPool is a sign-in pool on this machine with Dispatch's app client, clientID and
-// clientSecret, the one DISPATCH_SIGNIN_ISSUER names in a case.
+// clientSecret, the one DISPATCH_SIGNIN_ISSUER names in a case, registering the callback the
+// router signInRouter builds names for the Host startSignIn's request carries, dispatch.test.
 func signInPool(t *testing.T, clientID, clientSecret string) *oidctest.Issuer {
 	t.Helper()
 	pool := oidctest.New(t)
-	pool.EnableCodeFlow(pool.PublishKey(t, "signing-key"), clientID, clientSecret)
+	pool.EnableCodeFlow(pool.PublishKey(t, "signing-key"), clientID, clientSecret, "http://dispatch.test/auth/callback")
 	return pool
 }
 
@@ -2562,7 +2590,13 @@ func documentCapReachesTheService(t *testing.T, name string, capOf func(rooms, c
 	t.Helper()
 	for value, want := range map[string]int{"": 1000, " 25 ": 25} {
 		boot := resolveWith(t, map[string]string{name: value})
-		if got := capOf(newDocumentService(boot, "", docs.Deps{}).RoomCapsForTest()); got != want {
+		documents := newDocumentService(boot, "", docs.Deps{})
+		t.Cleanup(func() {
+			if err := documents.Shutdown(context.Background()); err != nil {
+				t.Errorf("shut the document service down: %v", err)
+			}
+		})
+		if got := capOf(documents.RoomCapsForTest()); got != want {
 			t.Errorf("%s=%q: the document service's cap is %d, want %d", name, value, got, want)
 		}
 	}

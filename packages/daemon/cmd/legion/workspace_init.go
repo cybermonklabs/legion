@@ -65,15 +65,15 @@ func secretFileFromEnv(name string) (string, error) {
 // mounted in. The controller's pod (`controller: daemon`) runs none. A repository cache's pod runs
 // `cache` as its one container, on its own volume, until it is stopped. Each one's log lines go to
 // stdout and its refusals and failures to stderr — together the init log the runtime quotes —
-// both through the URL rule (redact.Writer), as Go's standard logger is for the run of each
-// (podLogs): a failure that quotes --cache-url, the cache's address, loses its query and its
-// userinfo. No child process is handed either writer. A usage error exits 2
-// (workspace.InitExitUsage), as for every legion command. `fetch` and `provision` exit 3
-// (workspace.InitExitOutsideVolume) for a failure whose cause is outside the issue's volume, and 1
-// for every other failure (issuePodInitExit). `cache` exits 1 for every failure
+// both through the URL rule (redact.Writer here for stdout, newRoot's for stderr), as Go's
+// standard logger is for the run of each (podLogs): a failure that quotes --cache-url, the cache's
+// address, loses its query and its userinfo. No child process is handed either writer. A usage
+// error exits 2 (workspace.InitExitUsage), as for every legion command. `fetch` and `provision`
+// exit 3 (workspace.InitExitOutsideVolume) for a failure whose cause is outside the issue's
+// volume, and 1 for every other failure (issuePodInitExit). `cache` exits 1 for every failure
 // (workspaceInitExit).
 func newWorkspaceInitCommand(stdout, stderr io.Writer) *cobra.Command {
-	stdout, stderr = redact.Writer(stdout), redact.Writer(stderr)
+	stdout = redact.Writer(stdout)
 	return group(&cobra.Command{
 		Use:    "workspace-init",
 		Short:  "an issue pod's init containers: fetch the repository, provision the issue's workspace; and a repository cache pod's process",

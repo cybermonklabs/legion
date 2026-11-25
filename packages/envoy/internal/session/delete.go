@@ -139,12 +139,13 @@ func (c DeleteConditions) keeps(stored SessionEntry) DeleteOutcome {
 // Every comparison holds at the revision it deletes: the entry is read for its value and its
 // revision together, and the delete names that revision (nats.LastRevision), so a registration
 // that landed in between is kept rather than deleted on the strength of a value that is no longer
-// stored. JetStream refuses that delete with wrong last sequence (10071, which nats.go names
-// nats.ErrKeyExists), and the whole sequence runs once more: the common cause is the deleting
-// instance's own heartbeat landing between the read and the delete, and answering "kept" for it
-// would leave the predecessor's entry alive and turn the role claim that follows into a 409 for
-// no reason. A second lost compare-and-swap answers EntryKeptAfterLostRace and no error, the
-// outcome that says the entry stayed without claiming whose registration it is now.
+// stored. JetStream refuses that delete with wrong last sequence (bus.IsCASConflict: 10071, or
+// 10164 from a replicated bucket whose winning write is still being replicated), and the whole
+// sequence runs once more: the common cause is the deleting instance's own heartbeat landing
+// between the read and the delete, and answering "kept" for it would leave the predecessor's entry
+// alive and turn the role claim that follows into a 409 for no reason. A second lost
+// compare-and-swap answers EntryKeptAfterLostRace and no error, the outcome that says the entry
+// stayed without claiming whose registration it is now.
 //
 // EntryDeleted and no error means the entry is gone; any kept outcome and no error means the
 // entry stayed, and the caller keeps whatever it names; an error means the bucket did not answer,

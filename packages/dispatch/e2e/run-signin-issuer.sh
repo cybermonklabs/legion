@@ -16,7 +16,9 @@ set -euo pipefail
 #
 # DISPATCH_E2E_SIGNIN_CLIENT_ID and DISPATCH_E2E_SIGNIN_CLIENT_SECRET are the client every server
 # is handed; the issuer reads the secret from a file once, at its start, here a pipe this script
-# writes it to, so the secret never reaches an argv or the disk.
+# writes it to, so the secret never reaches an argv or the disk. The client's one callback is the
+# servers' /auth/callback on the loopback dashboard origin, which the issuer takes at whatever
+# port that origin is on.
 : "${DISPATCH_E2E_SIGNIN_CLIENT_ID:?DISPATCH_E2E_SIGNIN_CLIENT_ID must name the Dispatch client at the dev OIDC issuer}"
 : "${DISPATCH_E2E_SIGNIN_CLIENT_SECRET:?DISPATCH_E2E_SIGNIN_CLIENT_SECRET must give the secret of that client}"
 if [ -n "${DISPATCH_E2E_SIGNIN_ISSUER_PORT:-}" ]; then
@@ -46,5 +48,5 @@ cd "$(dirname "$0")/../../envoy"
 # issuer's: one binary per checkout, under a lock of its own, rewritten only when the source changed.
 flock ./.dev-oidc-issuer-e2e.lock go build -o ./dev-oidc-issuer-e2e ./cmd/dev-oidc-issuer
 exec ./dev-oidc-issuer-e2e \
-  --code-flow "$client_id="<(printf '%s' "$secret") \
+  --code-flow "$client_id="<(printf '%s' "$secret")"=http://127.0.0.1/auth/callback" \
   "${people[@]}"

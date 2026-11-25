@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -37,7 +38,15 @@ type restrictedMintRig struct {
 
 func newRestrictedMintRig(t *testing.T) restrictedMintRig {
 	t.Helper()
-	handler, database := newAccessServerWith(t, testServerOptions{admitsRestricted: true})
+	return newRestrictedMintRigWith(t, testServerOptions{})
+}
+
+// newRestrictedMintRigWith is newRestrictedMintRig's rig under options, which admit restricted
+// members whatever else they set.
+func newRestrictedMintRigWith(t *testing.T, options testServerOptions) restrictedMintRig {
+	t.Helper()
+	options.admitsRestricted = true
+	handler, database := newAccessServerWith(t, options)
 	if listed := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}
@@ -111,8 +120,8 @@ func writesInACC(t *testing.T, handler http.Handler, token, session string) *htt
 // TestARestrictedMembersMintHoldsNoScopeAndNamesTheirOneProject (R16): erin, a restricted member
 // whom ACC's list alone names, mints a token at her browser naming nothing, and it holds no scope
 // and lists exactly ACC. Her agent acts in ACC with it, and settles nothing of hers: it reads no
-// person-scope route, mints no token and approves nothing, each 403 OAUTH_SCOPE_REQUIRED. An
-// explicit empty set of scopes is that same token.
+// person-scope route, mints no token, looks up no machine login and approves nothing, each 403
+// OAUTH_SCOPE_REQUIRED. An explicit empty set of scopes is that same token.
 //
 // Control: give a restricted member's mint the caller's own scopes again (tokenScopes answering
 // callerScopes for them), and the first check fails naming [person approve]; and the full member's
@@ -137,6 +146,7 @@ func TestARestrictedMembersMintHoldsNoScopeAndNamesTheirOneProject(t *testing.T)
 	for _, call := range []struct{ method, path string }{
 		{http.MethodGet, "/api/v1/inbox"},
 		{http.MethodPost, "/api/v1/me/agent-tokens"},
+		{http.MethodPost, "/api/v1/credential-requests/machine-lookup"},
 		{http.MethodPost, "/api/v1/credential-requests/00000000-0000-0000-0000-000000000001/approve"},
 	} {
 		response := agentRequest(t, r.handler, call.method, call.path, map[string]any{"name": "minted by erin's agent", "code": "ABCD-EFGH"}, token.Token)
@@ -149,16 +159,135 @@ func TestARestrictedMembersMintHoldsNoScopeAndNamesTheirOneProject(t *testing.T)
 	}
 }
 
+// accessRows is what a write of ACC's access list moves: the people and groups its list names
+// (project_access), the outside people's links (outside_invitations) and the events.
+type accessRows struct{ listed, links, events int64 }
+
+func (r restrictedMintRig) accessRows(t *testing.T) accessRows {
+	t.Helper()
+	return accessRows{
+		listed: countRows(t, r.database, `select count(*) from project_access where project_key = 'ACC'`),
+		links:  countRows(t, r.database, `select count(*) from outside_invitations`),
+		events: allEvents(t, r.database),
+	}
+}
+
+// everyRow is databaseFingerprint with agent_tokens read without last_used_at, which a token's use
+// writes at most once a minute whatever the call answers (personalTokenActor): two reads around a
+// call match exactly where it wrote no row of any table.
+func (r restrictedMintRig) everyRow(t *testing.T) map[string]string {
+	t.Helper()
+	fingerprint := databaseFingerprint(t, r.database)
+	var tokens string
+	if err := r.database.Pool.QueryRow(context.Background(), `select count(*) || ':' ||
+		coalesce(md5(string_agg((to_jsonb(t) - 'last_used_at')::text, ',' order by t.id)), '') from agent_tokens t`).Scan(&tokens); err != nil {
+		t.Fatalf("fingerprint agent_tokens: %v", err)
+	}
+	fingerprint["agent_tokens"] = tokens
+	return fingerprint
+}
+
+// TestARestrictedMembersMintedTokenWritesNoAccessList (R16): erin, a restricted member whom ACC's
+// list names, mints a token at her browser naming nothing, which holds no scope and lists exactly
+// ACC, and with it writes nothing of ACC's access list: naming dave on it, taking carol off it and
+// making her own link are each 403 OAUTH_SCOPE_REQUIRED, a scope check's refusal, and no row of
+// any table changes. Two scope checks hold these routes, either alone enough: the table's gate
+// (gateRouteScopes, routeScopes) and actingPerson's hold of person behind it. In the same run
+// alice, ACC's owner and a full member, makes the same writes with her own token holding person
+// and approve: dave is named and carol taken off, each 200 moving ACC's list and the events, and
+// her token's link reaches its handler, 403 BROWSER_SESSION_REQUIRED (no token makes a link),
+// which her browser makes, 201 storing it. So each refusal of erin's is a scope check's, not the
+// rig's.
+//
+// Controls: let every credential through both scope checks (gateRouteScopes never calling
+// refuseMissingScope, and actingPerson never refusing a credential without person), and each of
+// erin's writes reaches the owner's check and the row fails naming 403 PROJECT_OWNER_REQUIRED;
+// with either check let through alone, the other refuses her and the row passes. Give a restricted
+// member's mint the caller's scopes (tokenScopes not reading restricted), and the row fails at the
+// mint naming [person approve], while each write is still refused, the scopes dropped at the
+// token's use (personalTokenActor).
+func TestARestrictedMembersMintedTokenWritesNoAccessList(t *testing.T) {
+	r := newRestrictedMintRigWith(t, testServerOptions{passkeyIssuer: passkeyOutsideOrigin})
+	if listed := dispatchRequest(t, r.handler, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessCarol, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names carol on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	writes := []struct{ method, path string }{
+		{http.MethodPut, "/api/v1/projects/ACC/access/people/" + accessDave},
+		{http.MethodDelete, "/api/v1/projects/ACC/access/people/" + accessCarol},
+		{http.MethodPost, "/api/v1/projects/ACC/access/people/" + accessErin + "/invitations"},
+	}
+
+	token := minted(t, r.mintAt(t, accessErin, map[string]any{"name": "erin's agent"}), "erin's default mint")
+	if len(token.Scopes) != 0 || token.Scopes == nil || !slices.Equal(token.Projects, []string{"ACC"}) {
+		t.Errorf("erin's default mint holds scopes %v and lists %v, want no scope ([]) and exactly [ACC]", token.Scopes, token.Projects)
+	}
+	for _, write := range writes {
+		call := write.method + " " + write.path
+		rows, tables := r.accessRows(t), r.everyRow(t)
+		response := agentRequest(t, r.handler, write.method, write.path, nil, token.Token)
+		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+codeScopeRequired+`"`) {
+			t.Errorf("erin's token: %s = %d %s, want 403 %s", call, response.Code, response.Body.String(), codeScopeRequired)
+		}
+		if after := r.accessRows(t); after != rows {
+			t.Errorf("erin's token: %s moved ACC's list, the links and the events from %+v to %+v, want them as they were", call, rows, after)
+		}
+		assertUnchanged(t, "erin's token's "+call, tables, r.everyRow(t))
+	}
+
+	owner := minted(t, r.mintAt(t, "alice", map[string]any{"name": "alice's agent"}), "alice's default mint")
+	if !slices.Equal(owner.Scopes, model.Scopes) {
+		t.Fatalf("alice's default mint holds %v, want %v", owner.Scopes, model.Scopes)
+	}
+	start := r.accessRows(t)
+	for i, want := range []accessRows{
+		{listed: start.listed + 1, links: start.links, events: start.events + 1},
+		{listed: start.listed, links: start.links, events: start.events + 2},
+	} {
+		call := writes[i].method + " " + writes[i].path
+		tables := r.everyRow(t)
+		if response := agentRequest(t, r.handler, writes[i].method, writes[i].path, nil, owner.Token); response.Code != http.StatusOK {
+			t.Errorf("alice's token: %s = %d %s, want 200", call, response.Code, response.Body.String())
+		}
+		if after := r.accessRows(t); after != want {
+			t.Errorf("alice's token: %s left ACC's list, the links and the events at %+v, want %+v", call, after, want)
+		}
+		if maps.Equal(tables, r.everyRow(t)) {
+			t.Errorf("alice's token: %s changed no table's fingerprint, so the fingerprint sees no write", call)
+		}
+	}
+	link := writes[2]
+	call := link.method + " " + link.path
+	rows, tables := r.accessRows(t), r.everyRow(t)
+	if response := agentRequest(t, r.handler, link.method, link.path, nil, owner.Token); response.Code != http.StatusForbidden ||
+		!strings.Contains(response.Body.String(), `"code":"BROWSER_SESSION_REQUIRED"`) {
+		t.Errorf("alice's token: %s = %d %s, want its handler's 403 BROWSER_SESSION_REQUIRED", call, response.Code, response.Body.String())
+	}
+	assertUnchanged(t, "alice's token's "+call, tables, r.everyRow(t))
+	if made := dispatchRequest(t, r.handler, link.method, link.path, nil, "alice"); made.Code != http.StatusCreated {
+		t.Errorf("alice at her browser: %s = %d %s, want 201", call, made.Code, made.Body.String())
+	}
+	if after := r.accessRows(t); after != (accessRows{listed: rows.listed, links: rows.links + 1, events: rows.events}) {
+		t.Errorf("alice at her browser: %s left ACC's list, the links and the events at %+v from %+v, want one more link", call, after, rows)
+	}
+}
+
 // TestARestrictedMemberIsRefusedAScopeOrAListOfOtherThanOneProject (R16): a restricted member's
 // mint or edit that asks for a scope is 403 RESTRICTED_MEMBER saying the token holds none, and one
 // whose list would name other than one project is 403 RESTRICTED_MEMBER saying it lists exactly
 // one, each writing nothing. Seeing two projects, erin's mint naming none is refused and asks her
 // to name one; naming one she sees mints it, and an edit moves it to the other. A token of hers
 // listing none, which a mint before the rule made, is refused an edit that keeps its list, and is
-// held once an edit names one project.
+// held once an edit names one project. Taken off OTH's list, her edit that keeps the list of a
+// token naming OTH alone, stored holding person and approve, is 403 RESTRICTED_MEMBER saying its
+// project is no project she sees, and the token's row is as it was; the same edit of her token of
+// ACC, which she still sees, is made.
 //
-// Control: refuse nothing for a restricted member (tokenScopes and tokenProjects as before), and
-// the first refusal fails, erin's mint of person answering 201.
+// Controls: refuse nothing for a restricted member (tokenScopes and tokenProjects as before), and
+// the first refusal fails, erin's mint of person answering 201. Refuse no kept list naming a
+// project she does not see (restrictedKeptListRefusal's second case answering none), and the edit
+// of her OTH token, once she is off OTH's list, answers 200 and the row fails there; with
+// restrictedKeptListRefusal answering no refusal at all, the row fails earlier, the edit keeping a
+// list of no project answering 200.
 func TestARestrictedMemberIsRefusedAScopeOrAListOfOtherThanOneProject(t *testing.T) {
 	r := newRestrictedMintRig(t)
 	before := r.tokensOf(t, accessErin)
@@ -216,6 +345,24 @@ func TestARestrictedMemberIsRefusedAScopeOrAListOfOtherThanOneProject(t *testing
 	if whoami := agentRequest(t, r.handler, http.MethodGet, "/api/v1/whoami", nil, unlisted); whoami.Code != http.StatusOK || !strings.Contains(whoami.Body.String(), `"project":"OTH"`) {
 		t.Fatalf("whoami under erin's token once it names OTH = %d %s, want 200 held to OTH", whoami.Code, whoami.Body.String())
 	}
+
+	stale := personalTokenListing(t, r.database, accessErin, []string{"OTH"}, model.ScopePerson, model.ScopeApprove)
+	staleID := r.tokenIDOf(t, stale)
+	if removed := dispatchRequest(t, r.handler, http.MethodDelete, "/api/v1/projects/OTH/access/people/"+accessErin, nil, "alice"); removed.Code != http.StatusOK {
+		t.Fatalf("alice takes erin off OTH's list: status=%d body=%s", removed.Code, removed.Body.String())
+	}
+	wantRestrictedRefusal(t, edit(staleID, map[string]any{"scopes": []string{}}),
+		"erin at her browser, taken off OTH's list", "an edit keeping a list of OTH", "no project this request's credential sees")
+	if row := r.rowOf(t, staleID); !slices.Equal(row.Scopes, []string{model.ScopePerson, model.ScopeApprove}) || !slices.Equal(row.Projects, []string{"OTH"}) {
+		t.Fatalf("erin's OTH token after the refused edit holds %v listing %v, want it as stored, [person approve] listing [OTH]", row.Scopes, row.Projects)
+	}
+	kept := edit(token.ID, map[string]any{"scopes": []string{}})
+	if kept.Code != http.StatusOK {
+		t.Fatalf("erin's edit keeping the list of her ACC token, taken off OTH's list: status=%d body=%s, want 200", kept.Code, kept.Body.String())
+	}
+	if got := decodeBody[heldToken](t, kept); len(got.Scopes) != 0 || !slices.Equal(got.Projects, []string{"ACC"}) {
+		t.Fatalf("erin's edited ACC token holds %v listing %v, want no scope listing [ACC]", got.Scopes, got.Projects)
+	}
 }
 
 // TestAStoredRestrictedTokenHoldingApproveActsWithNoScope (R16, R3): a token of erin's that a
@@ -227,8 +374,9 @@ func TestARestrictedMemberIsRefusedAScopeOrAListOfOtherThanOneProject(t *testing
 // saying a restricted member's token lists exactly one.
 //
 // Control: drop nothing at the token's use (personalTokenActor answering the row's scopes), and
-// the first check fails on whoami's scopes, and its mint answers 201; at 809a2c288d the grant and
-// sign-in revokes reached their handler (404 FEATURE_OFF here, where no broker is configured).
+// the first check fails on whoami's scopes, whoami answering person and approve, and the test
+// stops there; at 809a2c288d the grant and sign-in revokes reached their handler (404 FEATURE_OFF
+// here, where no broker is configured).
 func TestAStoredRestrictedTokenHoldingApproveActsWithNoScope(t *testing.T) {
 	r := newRestrictedMintRig(t)
 	stored := personalTokenListing(t, r.database, accessErin, []string{"ACC"}, model.ScopePerson, model.ScopeApprove)
@@ -289,8 +437,9 @@ func TestAStoredRestrictedTokenHoldingApproveActsWithNoScope(t *testing.T) {
 // and listing none; that token mints another holding both, and an edit narrows it to person and
 // widens it back.
 //
-// Control: hold every caller to the restricted member's rule (tokenScopes and tokenProjects
-// reading every caller as restricted), and the first check fails naming carol's scopes.
+// Control: give every caller's mint the restricted member's scopes (tokenScopes reading every
+// caller as restricted, the mint handing it true), and the first check fails, carol's default mint
+// holding [] where the row wants [person approve].
 func TestAFullMembersMintStillHoldsPersonAndApprove(t *testing.T) {
 	r := newRestrictedMintRig(t)
 	token := minted(t, r.mintAt(t, accessCarol, map[string]any{"name": "carol's agent"}), "carol's default mint")
@@ -317,7 +466,8 @@ func TestAFullMembersMintStillHoldsPersonAndApprove(t *testing.T) {
 // none. Before the change of kind, the same token minted a token, so each refusal is the change's.
 //
 // Control: drop nothing at a token's use (personalTokenActor answering the row's scopes), and the
-// row fails at the first refusal, dana's token minting 201 after she was made restricted.
+// row fails at its whoami check once she is restricted, whoami under her ACC token answering
+// person and approve where the row wants none, and stops there.
 func TestAMemberMadeRestrictedActsWithNoScopeThroughTheirTokens(t *testing.T) {
 	r := newRestrictedMintRig(t)
 	seedPeople(t, r.database, accessDana)

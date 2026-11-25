@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
@@ -37,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/testlimits"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -45,6 +48,18 @@ import (
 // server's resident memory read from /proc, and requests over HTTP and the document websocket.
 // Both files build only under the `memory` tag, which the dispatch-memory CI job sets: their rows
 // run past go test's default deadline, so the unit run of every Go package leaves them out.
+//
+// The tests run at the same time (t.Parallel), each on a database of its own (newMemoryHarness).
+// What a test measures is one server process's own memory - its resident peak above its own idle
+// (peakAboveIdle) or the heap its own collector found live (liveHeapAboveIdle) - which other
+// processes do not move while the machine has memory to spare: the most any test reads is about
+// 400 MiB above a server's idle (TestColdReadCacheEvictionPlateaus), four servers at once on a
+// 16 GB runner. One after another, the suite kept 0.92 of 4 CPUs busy on average (2,461 CPU
+// seconds over 2,675 s, the whole suite pinned to 4 CPUs of a dev box). The two tests that
+// measure this test process's own allocations (TestBlockPathsOfTheHeaviestTablesStayWithinTheMemoryBound
+// and TestTableRowsOfSpannedTablesShareOneSpanBudget) do not call t.Parallel, so go test runs
+// them before any parallel test starts. At most testlimits.MaxProcessesAtOnce servers run at once
+// (serverSlots), the count the lane's Postgres is sized for.
 
 const memoryTestToken = "memory-test-token"
 
@@ -165,11 +180,34 @@ func collectOnSignal() {
 	}()
 }
 
+// serverSlots holds one token for each Dispatch server running in this test binary, at most
+// testlimits.MaxProcessesAtOnce: the most the lane's Postgres is sized to serve at once, which
+// requireConnectionCeiling refuses a start past. A start past it waits here for a server to exit
+// instead, so tests that run at the same time share the servers the lane can serve.
+var serverSlots = make(chan struct{}, testlimits.MaxProcessesAtOnce)
+
+// takeServerSlot waits for a slot of serverSlots and answers the call that gives it back, which
+// the test's cleanup also runs, for a start that never ran a process; only the first call counts.
+// A test holds a slot for each of its servers that is running, so a test that waits for one while
+// it holds another (TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound's reader beside its
+// writer) waits for a server of another test, which never waits for a slot while it holds one:
+// every other test stops its server before it starts the next.
+func takeServerSlot(t *testing.T) (release func()) {
+	t.Helper()
+	serverSlots <- struct{}{}
+	var once sync.Once
+	release = func() { once.Do(func() { <-serverSlots }) }
+	t.Cleanup(release)
+	return release
+}
+
 // start starts a Dispatch server on a loopback port the kernel chose and the test holds from that
 // moment, which the server inherits as DISPATCH_LISTEN_FD and serves on, so no other program can
-// take the port before it serves.
+// take the port before it serves. It takes the server's slot before the drain, so what the drain
+// leaves owed is what the server meets.
 func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	t.Helper()
+	releaseSlot := takeServerSlot(t)
 	held := cmdtest.HoldPort(t)
 	port := strconv.Itoa(held.Port)
 	h.drainBeforeStart(t, port)
@@ -203,11 +241,14 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	held.Pass(command, "DISPATCH_LISTEN_FD")
 	// This server is a Dispatch process like any other a test starts, so the connection guard
 	// counts it, and releases it before exited closes, so a test that sees the exit sees the
-	// count fall (requireConnectionCeiling, cmdtest.StartThen). StartThen closes the test's copy
-	// of the held socket once the server has started, so the server releases the port when it
-	// exits.
+	// count fall (requireConnectionCeiling, cmdtest.StartThen); its slot goes back with it.
+	// StartThen closes the test's copy of the held socket once the server has started, so the
+	// server releases the port when it exits.
 	releaseConnections := requireConnectionCeiling(t, h.database.Pool.Config().ConnString())
-	process := cmdtest.StartThen(t, "the Dispatch server", command, releaseConnections)
+	process := cmdtest.StartThen(t, "the Dispatch server", command, func() {
+		releaseConnections()
+		releaseSlot()
+	})
 	server := &memoryServer{command: command, base: "http://127.0.0.1:" + port, output: process.Output, exited: process.Exited, database: h.database}
 	// Registered after StartThen's own cleanup, so it runs first: the server is stopped with
 	// SIGTERM as a deploy stops it, and StartThen's kill finds it gone.
@@ -813,9 +854,11 @@ func requireAnswered(t *testing.T, upload uploadResult) {
 }
 
 // loadOverWebsocket opens the document's room as a browser does - it connects and asks for the
-// whole document - and closes once the room has sent it.
+// whole document - closes once the room has sent it, and returns once the server has ended the
+// socket, the settlement attempt its departure makes included.
 func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 	t.Helper()
+	written := p.output.Len()
 	address := "ws" + strings.TrimPrefix(p.base, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
 	connection, answer, err := gws.DefaultDialer.Dial(address, http.Header{"X-Dispatch-User": {"alice"}})
 	if err != nil {
@@ -851,9 +894,42 @@ func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 	if err := connection.Close(); err != nil {
 		t.Fatalf("close the connection: %v", err)
 	}
-	// The room's last peer leaving runs its settlement; give it the time a settlement of the
-	// heaviest admitted document takes here, so the peak counts it.
-	time.Sleep(3 * time.Second)
+	// The room's last peer leaving runs the settlement it owes on the socket's own handler: ygo's
+	// ServeHTTP runs the departure (handleDisconnect, which calls OnLastPeer, the service's
+	// settleLastPeer, and waits for it) before it returns, and the access log writes the request's
+	// line once the handler has returned (accesslog.Handler). So the socket's line is the moment
+	// the departure, and the settlement attempt it made, have ended, and the peak read after it
+	// counts them. A settlement whose timer fired before the departure, or one that attempt arms
+	// again, runs on its own and can end after the line; this load sends no update, and the
+	// server it meets started owing nothing (drainBeforeStart), so it leaves neither.
+	// A fixed 3 s stood here before, which counted no settlement that ran past it: across nine
+	// cold loads of heavy documents the server spent at most 40 ms of CPU in those 3 s.
+	p.waitForRequestLine(t, written, "route=/ws/doc/{room}", "path=/ws/doc/"+artifactID)
+}
+
+// waitForRequestLine waits until the server's output past offset holds the access log line of a
+// request whose line carries every one of fields, and fails the test if the server exits first or
+// a minute passes, a hang guard on a line a healthy server writes in milliseconds.
+func (p *memoryServer) waitForRequestLine(t *testing.T, offset int, fields ...string) {
+	t.Helper()
+	want := append([]string{`msg="` + accesslog.Message + `"`}, fields...)
+	deadline := time.Now().Add(time.Minute)
+	for {
+		for line := range strings.Lines(p.outputFrom(offset)) {
+			if !slices.ContainsFunc(want, func(field string) bool { return !strings.Contains(line, field) }) {
+				return
+			}
+		}
+		select {
+		case <-p.exited:
+			t.Fatalf("the server exited before it logged the request %q:\n%s", fields, p.outputTail())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server logged no request %q within a minute:\n%s", fields, p.outputTail())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // outputTail is the last 4,000 bytes the server has written, for a failure to show.

@@ -1079,7 +1079,7 @@ func (l *keptLog) mark() int {
 // alone: the linger's close hands over what its own reading finds unfinished, and the member a
 // blocker holds is handed over by the step that writes that hand-over (handOverChildWithoutItsRun).
 func (r *keptRun) mirror(key, status string, seq int64, waits ...string) {
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutDispatchIssue(r.ctx, tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: seq,
 			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry(waits)})
 	}); err != nil {
@@ -1392,7 +1392,7 @@ func (r *keptRun) decideOn(issue string) {
 	kind := []record.DecisionKind{record.DecisionAskAnswered, record.DecisionAskResolved}[r.rng.IntN(2)]
 	r.at = r.at.Add(time.Minute)
 	outcome, tree := record.RelayNone, ""
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := r.records.Issue(r.ctx, tx, issue)
 		if err != nil || stored == nil {
 			return err
@@ -1503,7 +1503,7 @@ func (r *keptRun) park() {
 func (r *keptRun) awaitTheChildsMerge() {
 	r.child.issue.Phase = phase.Merging
 	r.putIssue(r.child.issue)
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPullRequest(r.ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: keptChild,
 			Repo: "acme/widgets", Number: keptChildPullRequest, Branch: "legion/" + keptChild, HeadSHA: "head", Failing: []string{}})
 	}); err != nil {
@@ -1552,7 +1552,7 @@ func (r *keptRun) readmitRoot() error {
 // (its nextSlotIndex): the slots a run holds are not a run of indexes from zero once a root in
 // the middle of them has given its own back, and the column is unique.
 func (r *keptRun) takeSlot(key string) error {
-	return pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	return store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		slots, err := r.records.Slots(r.ctx, tx)
 		if err != nil {
 			return err
@@ -1576,7 +1576,7 @@ func (r *keptRun) takeSlot(key string) error {
 // ended confirm it once every claim of the tree has retired (store.CleanupReservedTree). Those
 // rows are among the ones this run does not drive, so their one lasting mark is written here.
 func (r *keptRun) closeTreeLifecycle(key string) {
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		lifecycle, err := treelifecycle.ReserveCleanup(r.ctx, tx, "legion", key, treelifecycle.AuthorityWorkflow)
 		if err != nil {
 			return err
@@ -1590,7 +1590,7 @@ func (r *keptRun) closeTreeLifecycle(key string) {
 // releaseSlot gives back the slot of a root that left the workflow, as admission's own pass does
 // for every issue that no longer needs one (releaseSlots).
 func (r *keptRun) releaseSlot(key string) {
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.ReleaseSlot(r.ctx, tx, key)
 	}); err != nil {
 		r.fatalf("release the slot of %s: %v", key, err)
@@ -1607,7 +1607,7 @@ func (r *keptRun) enqueueStart() {
 func (r *keptRun) enqueueStartRow() error {
 	var kept *record.KeptDecisions
 	now := time.Now()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		task, named, err := r.engine.ParkedDecisionTask(r.ctx, tx, r.root.issue)
 		if err != nil {
 			return err
@@ -1656,7 +1656,7 @@ func (r *keptRun) handsOverEveryMember() bool {
 // the narrow rule reads that record.Issue does not carry (record.Store.PullRequest).
 func (r *keptRun) pullRequestOpen(key string) bool {
 	var pr *record.PullRequest
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		pr, err = r.records.PullRequest(r.ctx, tx, key)
 		return err
@@ -1709,7 +1709,7 @@ func (r *keptRun) handOverMember(member *keptTree, parent string, withRun bool) 
 // waiting behind it, where a failure is the step's to report (raceRow, handOverInsideAHeldTask).
 func (r *keptRun) handOverMemberErr(member *keptTree, parent string, withRun bool) error {
 	now := time.Now()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutHandover(r.ctx, tx, record.Handover{Issue: member.key, Tree: r.root.issue.Tree,
 			Generation: r.root.issue.Generation}); err != nil {
 			return err
@@ -1849,7 +1849,7 @@ func (r *keptRun) adoptionTarget() *keptTree {
 			continue
 		}
 		live := false
-		if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			live, err = record.TreeLive(r.ctx, r.records, tx, *stored, nil)
 			return err
@@ -2299,7 +2299,7 @@ func (r *keptRun) runOne(row *record.OutboxRow, payload record.OutboxPayload) er
 
 // finishRow finishes a row as its lane finishes it, under the lease the run took.
 func (r *keptRun) finishRow(row record.OutboxRow) error {
-	return pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	return store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.FinishOutbox(r.ctx, tx, row.ID, row.LeaseToken)
 	})
 }
@@ -2308,7 +2308,7 @@ func (r *keptRun) finishRow(row record.OutboxRow) error {
 // settle and retry): the store's RetryOutbox under the run's lease, which clears the lease, due
 // again now rather than after the lane's backoff, since the run's time is compressed.
 func (r *keptRun) retryRow(row record.OutboxRow, runErr error) error {
-	return pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	return store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.RetryOutbox(r.ctx, tx, row.ID, row.LeaseToken, time.Now().UTC(), runErr.Error())
 	})
 }
@@ -3496,7 +3496,7 @@ func (r *keptRun) observe() {
 // the root's one architect session whenever that session is next ready.
 func (r *keptRun) architectToHear(key string) bool {
 	var hears bool
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		root, err := r.records.Issue(r.ctx, tx, key)
 		if err != nil || root == nil {
 			return err
@@ -3707,7 +3707,7 @@ func (r *keptRun) putIssue(issue record.Issue) {
 }
 
 func (r *keptRun) putIssueErr(issue record.Issue) error {
-	return pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	return store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutIssue(r.ctx, tx, issue)
 	})
 }
@@ -3715,7 +3715,7 @@ func (r *keptRun) putIssueErr(issue record.Issue) error {
 // issueRecord is the record of key, nil for an issue the daemon does not record.
 func (r *keptRun) issueRecord(key string) *record.Issue {
 	var stored *record.Issue
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = r.records.Issue(r.ctx, tx, key)
 		return err
@@ -3761,7 +3761,7 @@ func (r *keptRun) enqueue(issue string, payload record.OutboxPayload) {
 	if err != nil {
 		r.fatalf("build an outbox row: %v", err)
 	}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.Enqueue(r.ctx, tx, row)
 	}); err != nil {
 		r.fatalf("enqueue an outbox row: %v", err)
@@ -3825,7 +3825,7 @@ func (r *keptRun) waitsForItsSlot(tree *keptTree) bool {
 		return false
 	}
 	var waits bool
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		waits, err = record.WaitsForSlot(r.ctx, tx, r.records, *stored, nil)
 		return err

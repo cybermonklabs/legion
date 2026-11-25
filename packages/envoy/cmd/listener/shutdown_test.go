@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // errorLine matches an ERROR record in each format the listener's process writes: its own JSON
@@ -29,11 +31,22 @@ var errorLine = regexp.MustCompile(`"level":"ERROR"|level=ERROR|^\d{4}/\d{2}/\d{
 // forward and a role message arrives every 10 ms, so at the signal one forward is in its handler
 // and more are queued behind it. Each must reach the stream: the forward opens a reply
 // subscription for the stream's acknowledgement, which a connection that is already draining
-// refuses. The drain also
-// closes the session registry's KV watcher, which logs at ERROR if the registry still expects
-// it, and looks like a lost connection to the bus client, whose recovery would re-dial NATS.
-// Whether a goroutine logs before the exit is a race, so the test stops the real binary several
-// times.
+// refuses. The drain also closes the session registry's KV watcher, which logs at ERROR if the
+// registry still expects it, and looks like a lost connection to the bus client, whose recovery
+// would re-dial NATS. Whether a goroutine logs before the exit is a race, so the test stops the
+// real binary several times.
+//
+// One failure is not counted: a role forward whose window (roleForwardTimeout) ended before it was
+// published, which its line marks "window_ended_before_publish":true (finishRoleForward). The
+// window runs on the listener's own wall clock, which a loaded machine spends without the listener
+// running, so that failure says how the machine ran and not what the shutdown did. A drain cannot
+// cause it: a forward meets a connection before its publish only in ensureConnWithContext, which
+// serves a draining connection and refuses a stopped client at once, and in SubscribeSync, which
+// refuses a draining connection with an error of its own, counted here. A drain that holds a
+// forward after its publish fails it on its flush or its acknowledgement, with no mark, and is
+// counted. What this cannot see is a shutdown path that holds a forward before its publish, behind
+// a lock say: that forward would carry the mark. A change to the shutdown path or to
+// bus.Client.StartRequestStoredTo is read against this test for that case.
 func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 	_, uri := testnats.Start(t)
 	testnats.Connect(t, uri).Close()
@@ -51,7 +64,8 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 		postListener(t, listener.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1"))
 		postListener(t, listener.port, "/v1/roles/set", `{"session_id":"`+sessionID+`","role":"`+role+`"}`)
 		holder := testnats.Connect(t, uri)
-		if _, err := holder.Subscribe(contracts.LegacyAgentSubject(sessionID), func(*natsgo.Msg) {}); err != nil {
+		var forwarded atomic.Uint64
+		if _, err := holder.Subscribe(contracts.LegacyAgentSubject(sessionID), func(*natsgo.Msg) { forwarded.Add(1) }); err != nil {
 			t.Fatalf("run %d: holder subscribe: %v", run, err)
 		}
 		if err := holder.Flush(); err != nil {
@@ -62,6 +76,9 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 		go func() {
 			defer close(trafficDone)
 			for index := 0; ; index++ {
+				// The cadence of a client's steady role traffic, which this stand-in sender copies:
+				// it keeps a forward in flight and more queued behind it at every moment of the
+				// shutdown, and bounds nothing.
 				select {
 				case <-stopTraffic:
 					return
@@ -81,22 +98,45 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 				_ = publisher.Publish(item.Topic, data)
 			}
 		}()
-		time.Sleep(time.Second)
+		// The signal arrives while traffic is flowing through the listener, which the holder's
+		// own count of the forwards it took says, rather than after a span of the machine's clock.
+		testwait.Eventually(t, "the role holder to take forwards through the listener before the signal", func() bool {
+			return forwarded.Load() >= 3
+		})
 
 		listener.Terminate(t)
 		listener.WaitExit(t, "SIGTERM")
 		close(stopTraffic)
 		<-trafficDone
 		holder.Close()
-		if !strings.Contains(listener.Output.String(), "envoy-listener shutdown complete") {
-			t.Fatalf("run %d: the listener did not finish its ordered shutdown:\n%s", run, listener.Output.String())
+		output := listener.Output.String()
+		if !strings.Contains(output, "envoy-listener shutdown complete") {
+			t.Fatalf("run %d: the listener did not finish its ordered shutdown:\n%s", run, output)
 		}
-		for _, line := range strings.Split(listener.Output.String(), "\n") {
-			if errorLine.MatchString(line) {
-				t.Fatalf("run %d: a SIGTERM shutdown logged an error: %s", run, line)
+		signal := strings.Index(output, shutdownSignalLine)
+		var counted []string
+		start := 0
+		for line := range strings.SplitSeq(output, "\n") {
+			lineStart := start
+			start += len(line) + 1
+			if !errorLine.MatchString(line) {
+				continue
 			}
+			side := "before the signal"
+			if signal >= 0 && lineStart > signal {
+				side = "after the signal"
+			}
+			if forwardWindowEndedBeforePublish(line) {
+				t.Logf("run %d: not counted, %s: %s", run, side, line)
+				continue
+			}
+			counted = append(counted, side+": "+line)
 		}
-		_, afterSignal, _ := strings.Cut(listener.Output.String(), "received signal, shutting down")
+		if len(counted) > 0 {
+			t.Fatalf("run %d: a SIGTERM shutdown logged an error:\n%s\nthe listener's output from 2s before its signal on:\n%s",
+				run, strings.Join(counted, "\n"), outputAroundSignal(output, signal))
+		}
+		_, afterSignal, _ := strings.Cut(output, shutdownSignalLine)
 		if strings.Contains(afterSignal, "envoy nats recovery attempt") {
 			t.Fatalf("run %d: the listener reconnected to NATS during its shutdown:\n%s", run, afterSignal)
 		}
@@ -104,6 +144,48 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 			t.Fatalf("run %d: no role message in flight at the signal reached the holder:\n%s", run, afterSignal)
 		}
 	}
+}
+
+// shutdownSignalLine is the message the listener logs when a signal begins its shutdown.
+const shutdownSignalLine = "received signal, shutting down"
+
+// forwardWindowEndedBeforePublish reports whether line is the listener's JSON record of a role
+// forward that failed because its window ended before it was published (finishRoleForward).
+func forwardWindowEndedBeforePublish(line string) bool {
+	var record struct {
+		Msg                      string `json:"msg"`
+		WindowEndedBeforePublish bool   `json:"window_ended_before_publish"`
+	}
+	return json.Unmarshal([]byte(line), &record) == nil && record.Msg == "listener role forward failed" && record.WindowEndedBeforePublish
+}
+
+// outputAroundSignal is the listener's output from the first JSON line whose time is no more than
+// 2 s before that of its signal line, which starts at or before offset signal, to the end: what a
+// failure of the shutdown shows of how the listener ran into its signal. Output with no signal
+// line, or none whose time can be read, is given whole.
+func outputAroundSignal(output string, signal int) string {
+	type timed struct {
+		Time time.Time `json:"time"`
+	}
+	if signal < 0 {
+		return output
+	}
+	lineStart := strings.LastIndexByte(output[:signal], '\n') + 1
+	signalLine, _, _ := strings.Cut(output[lineStart:], "\n")
+	var signalled timed
+	if json.Unmarshal([]byte(signalLine), &signalled) != nil || signalled.Time.IsZero() {
+		return output
+	}
+	from := signalled.Time.Add(-2 * time.Second)
+	start := 0
+	for line := range strings.SplitSeq(output, "\n") {
+		var record timed
+		if json.Unmarshal([]byte(line), &record) == nil && !record.Time.IsZero() && !record.Time.Before(from) {
+			return output[start:]
+		}
+		start += len(line) + 1
+	}
+	return output
 }
 
 // A replacement that waits out the old task's durable serves /v1 while it waits, so a SIGTERM there

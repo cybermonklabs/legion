@@ -88,7 +88,7 @@ func preEntryStore(t *testing.T) *store.Store {
 		if migration.Version == phaseEntryMigration || migration.Version > olderReleasesNewestMigration {
 			continue
 		}
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 				return err
 			}
@@ -257,6 +257,7 @@ type upgradeShape struct {
 // role level at zero is owed nothing — which is all workflow.OwedEntry answers and all admit's
 // owedEntryRoles selects.
 func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preEntryStore(t)
 	pool := st.Pool()
@@ -315,7 +316,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 		tokens[shape.key] = token
 	}
 
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}

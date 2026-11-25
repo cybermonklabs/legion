@@ -444,8 +444,20 @@ per stack, so the readiness wait's own bucket worked and ten upload rows of run
 42409479235 failed on 502s from the Dispatch server's PutObject, every one of them for
 a stack's own bucket.
 
+The two flags after those, `-master.raftHashicorp -master.raftBootstrap`, are this job's own.
+A one-node master on weed's default raft elects itself only after about 19 s: the log of
+run 45048924209's shard 4 has "Starting RaftServer" at 17:33:08.6 and "is the leader" at
+17:33:27.5, and the S3 gateway answers only after that, so the readiness wait below took
+23 s at the median of 3,247 shard legs on 2026-11-22 (p90 24 s). With HashiCorp's raft and
+a bootstrap of the empty data directory each run starts with, the master is leader within
+about a second of its start. Measured with the weed 3.97 binary from that release on a
+loaded developer machine, start to an object written and read back: 31 to 37 s with the
+default raft, 10.5 to 13 s with these two flags, leader at 1.4 s. Neither flag changes
+what the store keeps or serves: the data directory is new in every run, so there is no
+earlier raft state to resume.
+
 So, for whoever moves the seaweedfs row of .github/ci-images.yaml to a new version:
-read that image's /entrypoint.sh again and reconcile these flags with its `server`
+read that image's /entrypoint.sh again and reconcile the three image flags with its `server`
 case, because they are the script's and this job runs the binary without it. The row
 pins a digest, so the entrypoint cannot change under this job between bumps, which is
 what makes the rule a read at bump time rather than a check on every run. Read it with
@@ -1334,10 +1346,10 @@ job. The script reads GITHUB_RUN_ATTEMPT, which Actions sets, so this step needs
 else, the action's own call and retries being in the download step's error line and
 not anywhere this job can read.
 
-This step is kept rather than deleted in favour of reading one's `downloaded =
-failure` branch, which names the refused download too, because a run whose jobs read
-is refused as well exits reading one at its own refusal and never reaches that
-branch, and then this step is the only line that names the refused download.
+This step is kept rather than deleted in favour of reading one's refused-download
+branch (the download concluded `failure`), which names the refused download too, because
+a run whose jobs read is refused as well exits reading one at its own refusal and never
+reaches that branch, and then this step is the only line that names the refused download.
 
 ## Why only the newest attempt of each leg is merged
 
@@ -1348,6 +1360,19 @@ script's head says what two attempts of one leg did to a merged report when they
 downloaded over each other. It runs from $GITHUB_WORKSPACE, this step's own directory.
 Where several artifacts matched, its log names the attempt it took for each leg; where one
 matched, it names the files it took.
+
+The step's id, `select-blobs`, is how "Reading one, the rows" reads its conclusion beside the
+download's. Reading one reads only this step's directory; this step runs only after a download
+that succeeded, and the merge step only after this step succeeded. So a leg is named as having
+sent no blob only when both steps succeeded. A failed download's error keeps its own message,
+the refused read that the section above describes, and the notice lists the legs it read
+nothing of. When the download did not complete in another way, or this step did not complete
+after a download that did, reading one names that step and how it ended, says that the job made
+no merged report, and names the legs whose blob and whose count it did not read, claiming
+nothing about whether those legs uploaded. Run
+44754426131, attempt 1, is why: the job's limit cancelled its `bun install`, both steps were
+skipped, and reading one named four shards as having sent no blob, though each blob had been
+uploaded before the job started.
 
 ## What the merged report's three outputs are for
 

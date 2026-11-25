@@ -270,6 +270,32 @@ func TestRoleInitIsHiddenAndRefusesToRunOutsideARolesNamespaces(t *testing.T) {
 	}
 }
 
+// role-init's own lines pass the URL rule, though the stderr it is handed goes to the role's shim
+// as it is (newRoleInitCommand): a flag's value it cannot read, quoted in its refusal, keeps no
+// userinfo and no query, so a URL with a token in either reaches the launcher's log with neither,
+// its host and path kept.
+func TestRoleInitsOwnLinesPrintNoCredentialAURLCarries(t *testing.T) {
+	const token = "FAKEtok3nZQ9x"
+	for _, value := range []string{
+		"https://legion-reader:" + token + "@d.example/status",
+		"https://d.example/status?token=" + token,
+	} {
+		var stdout, stderr bytes.Buffer
+		code := run(context.Background(), []string{"legion", "launcher", "role-init", "--status-fd", value}, &stdout, &stderr)
+		printed := stdout.String() + stderr.String()
+		shown := strings.ReplaceAll(printed, token, "<the token>")
+		if code != launcher.RoleInitSetupFailedExit {
+			t.Errorf("role-init --status-fd <a URL> = exit %d, %q; want %d", code, shown, launcher.RoleInitSetupFailedExit)
+		}
+		if strings.Contains(printed, token) {
+			t.Errorf("role-init printed the token its flag's value carries: %s", shown)
+		}
+		if want := `"https://d.example/status"`; !strings.Contains(stderr.String(), want) {
+			t.Errorf("role-init printed %q, want it to quote the value as %s", shown, want)
+		}
+	}
+}
+
 // `legion launcher volume-trim-delete` is the launcher's second hidden subcommand, the deleter
 // one sweep of the pod's cache trimmer makes its removals through. It takes every directory it
 // covers — the roles directory, the directory the container mounts the home's volumes under and

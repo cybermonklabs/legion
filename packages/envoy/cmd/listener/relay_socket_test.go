@@ -569,21 +569,30 @@ func TestARelaySocketStaysOpenWhenTheNATSClientDropsAFrameAheadOfItsQueue(t *tes
 
 // What a replica's sockets hold for their clients together stays within its budget
 // (relaySocketReplicaPendingBytes; here 8 MiB), whatever each socket may hold alone: four clients
-// that read nothing are each sent 40 frames of 512 KiB at once, 80 MiB in all, and the frame that
-// would take the replica past the budget closes its socket 1013 slow_consumer. The replica's count
-// of the bytes held never passes the budget, the sockets that held frames close, and once they
-// have, the count is 0 again. Control: the budget's check removed; the count passes the budget,
-// and the row fails naming it.
+// that read nothing are each sent 20 frames of 512 KiB at once, 10 MiB each and 40 MiB in all, and
+// the frame that would take the replica past the budget closes its socket 1013 slow_consumer. Each
+// socket's pump is held from writing (its write lock, which the row holds), so every frame a
+// socket takes stays counted and none is written ahead of the close; each socket alone is sent
+// more than the budget, so each closes, and its client reads the close first. The replica's count
+// of the bytes held never passes the budget, and once the pumps are let go it is 0 again. The four
+// sockets share the replica's one NATS connection, so the 40 MiB stay under the 64 MiB nats-server
+// queues for one connection (max_pending): past that it cuts the connection as a slow consumer, and
+// the frames it held for the sockets not yet closed are lost, so those sockets never close. Control:
+// the budget's check removed; the count passes the budget, and the row fails naming it.
 func TestARelaySocketsReplicaHoldsNoMoreThanItsBudget(t *testing.T) {
-	const budget = 8 << 20
+	const budget, frames = 8 << 20, 20
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30), withReplicaBudget(budget))
 	sessions := []string{"ses_edge_budget_a", "ses_edge_budget_b", "ses_edge_budget_c", "ses_edge_budget_d"}
-	var conns []*websocket.Conn
-	for _, session := range sessions {
+	conns := make([]*websocket.Conn, len(sessions))
+	sockets := make([]*relaySocket, len(sessions))
+	unlocks := make([]func(), len(sessions))
+	for i, session := range sessions {
 		token := "access-token-of-" + session
 		rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
-		conn, _ := rig.dialStalled(t, session, token)
-		conns = append(conns, conn)
+		conns[i], sockets[i] = rig.dialStalled(t, session, token)
+		sockets[i].writeMu.Lock()
+		unlocks[i] = sync.OnceFunc(sockets[i].writeMu.Unlock)
+		t.Cleanup(unlocks[i])
 	}
 	var most atomic.Int64
 	watching := make(chan struct{})
@@ -601,36 +610,46 @@ func TestARelaySocketsReplicaHoldsNoMoreThanItsBudget(t *testing.T) {
 			}
 		}
 	}()
+	stopWatching := sync.OnceFunc(func() {
+		close(watching)
+		<-watched
+	})
+	t.Cleanup(stopWatching)
 	for _, session := range sessions {
-		flood(t, rig.owner.url, session, 40)
+		flood(t, rig.owner.url, session, frames)
 	}
-	closed := 0
-	for i, conn := range conns {
-		_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
-				var ended *websocket.CloseError
-				if errors.As(err, &ended) && ended.Code == websocket.CloseTryAgainLater && ended.Text == relaySocketReasonSlowConsumer {
-					closed++
-				} else {
-					t.Logf("the socket of %s ended with %v", sessions[i], err)
-				}
-				break
+	// Each socket has either taken every frame sent to it or closed.
+	testwait.Eventually(t, "each socket to take every frame sent to it or close", func() bool {
+		for _, socket := range sockets {
+			if held, _ := socket.held(); !socket.ended.Load() && held != frames {
+				return false
 			}
 		}
-	}
-	close(watching)
-	<-watched
+		return true
+	})
+	stopWatching()
 	if most.Load() > budget {
 		t.Fatalf("the replica's sockets held %d bytes at once, past its budget of %d", most.Load(), budget)
 	}
-	if closed == 0 {
-		t.Fatalf("no socket closed %d %q though 80 MiB came for a replica whose budget is %d bytes", websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer, budget)
+	for i, socket := range sockets {
+		if !socket.ended.Load() {
+			held, bytes := socket.held()
+			t.Fatalf("the socket of %s holds %d frames, %d bytes, and is open, though it alone was sent %d frames of 512 KiB past the replica's budget of %d", sessions[i], held, bytes, frames, budget)
+		}
+		_ = conns[i].SetReadDeadline(time.Now().Add(testwait.Bounded(t, time.Minute, time.Second)))
+		_, _, err := conns[i].ReadMessage()
+		var closed *websocket.CloseError
+		if !errors.As(err, &closed) || closed.Code != websocket.CloseTryAgainLater || closed.Text != relaySocketReasonSlowConsumer {
+			t.Fatalf("the client of %s read %v first, want the close %d %q", sessions[i], err, websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer)
+		}
 	}
-	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool { return rig.sockets.buffered.Load() == 0 }) {
-		t.Fatalf("the replica still counts %d bytes held 5s after its sockets closed, want 0", rig.sockets.buffered.Load())
+	for _, unlock := range unlocks {
+		unlock()
 	}
-	t.Logf("the replica held at most %d of its %d bytes; %d of %d sockets closed %s", most.Load(), budget, closed, len(sessions), relaySocketReasonSlowConsumer)
+	testwait.Eventually(t, "the replica's count of the bytes its sockets hold to be 0 once their pumps are let go", func() bool {
+		return rig.sockets.buffered.Load() == 0
+	})
+	t.Logf("the replica held at most %d of its %d bytes; %d of %d sockets closed %s", most.Load(), budget, len(sockets), len(sessions), relaySocketReasonSlowConsumer)
 }
 
 // A replica holds at most its cap of sockets, of every session: the next upgrade is refused 503,

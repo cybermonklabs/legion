@@ -3522,10 +3522,13 @@ type MessageDelivery struct {
 	Delivery   string  `json:"delivery"`
 	SessionID  string  `json:"session_id"`
 	EnvelopeID *string `json:"envelope_id"`
-	// Duplicate reports that the stream already held this message when the attempt was sent: an
-	// earlier attempt landed, so this one is a repeat the recipient is not handed again
-	// (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts). EnvelopeID is then nil: the envelope
-	// this send minted is the one JetStream discarded.
+	// Duplicate reports that the stream already held a message under this attempt's key when the
+	// attempt was sent: an earlier attempt landed, or another sender's message holds the key, so
+	// the stream stored nothing new for this one (DELIVERY_DUPLICATE_WINDOW_MS in
+	// packages/contracts). EnvelopeID is then nil: the copy the stream holds may be an earlier
+	// attempt's or another sender's under the same key, and an older listener answers the envelope
+	// this send minted, which JetStream discarded, so a duplicate's answer is no envelope id to
+	// record.
 	Duplicate bool `json:"duplicate"`
 	// State is "pending" before the send, then "sent" for a message the listener handed to a
 	// running session, "queued" for one it stored for a session it knows that is not running

@@ -153,16 +153,20 @@ func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthR
 
 // ErrSignInEnded is a kept refresh token the issuer no longer honours: the person revoked the
 // grant at Google, or it expired. It is a sentinel because it is as final as a revoke the
-// broker records — no retry and no other caller cures it — so every reader of a sign-in falls
-// back to this machine's own authority on it rather than asking the issuer again at every
-// enrolment (SignInAuthority.Current). Refresh returns it, with the command to sign in again
-// (FailureSignInRefused), for a refresh the issuer refuses invalid_grant, and no other text of
-// that answer prints.
+// broker records — no retry and no other caller cures it — so a client drops the token in hand
+// and its renewal loop stops on it (finalRefusal), and every reader of a sign-in falls back to
+// this machine's own authority on it rather than asking the issuer again at every enrolment
+// (SignInAuthority.Current). Refresh returns it, with the command to sign in again
+// (FailureSignInRefused), for a refresh the issuer refuses 400 or 401 invalid_grant
+// (oauthrefusal.EndsGrant), and no other text of that answer prints.
 var ErrSignInEnded = errors.New("the issuer no longer honours this sign-in")
 
 // Refresh mints a fresh ID token from a kept refresh token, with no step by the person. A
 // refresh token the issuer no longer honours — the person revoked the grant, or it expired — is
-// ErrSignInEnded, a sign-in that is over, which names the command that makes another.
+// ErrSignInEnded, a sign-in that is over, which names the command that makes another; the rule is
+// oauthrefusal.EndsGrant's, a 400 or 401 invalid_grant. Every other failure, an issuer that is
+// busy or down or a 403 among them, is an error that says nothing about the sign-in, which a
+// later refresh may cure.
 func (d *DeviceFlow) Refresh(ctx context.Context, refreshToken string) (*SignIn, error) {
 	config, err := d.discover(ctx)
 	if err != nil {
@@ -170,8 +174,7 @@ func (d *DeviceFlow) Refresh(ctx context.Context, refreshToken string) (*SignIn,
 	}
 	token, err := config.TokenSource(d.context(ctx), &oauth2.Token{RefreshToken: refreshToken}).Token()
 	if err != nil {
-		var refused *oauth2.RetrieveError
-		if errors.As(err, &refused) && refused.ErrorCode == "invalid_grant" {
+		if oauthrefusal.EndsGrant(err) {
 			return nil, WithHint(fmt.Errorf("%s: %w", d.issuer(), ErrSignInEnded), FailureSignInRefused)
 		}
 		return nil, fmt.Errorf("renew the sign-in at %s: %w", d.issuer(), redact.Class(err))

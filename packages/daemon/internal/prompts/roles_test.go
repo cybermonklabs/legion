@@ -333,6 +333,32 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 	}
 }
 
+// A pull request in one of GitHub's stacks takes neither of the merger's calls (GitHub refuses
+// `gh pr merge` and `enqueuePullRequest` for it, measured on cybermonklabs/legion#4961 on
+// 2026-11-22), and the stack's own asynchronous merge refuses a GitHub App on a merge-queue base
+// ("Enqueuer is not authorized to merge", github/gh-stack#497, measured on the same pull request
+// with the merge App's token). That merge would also land every open pull request below, which
+// the base holds to its reviews and checks alone and not to its issue's acceptance, retro or
+// design gate. So the merger waits while every pull request below lands through its own issue,
+// then takes the stack apart, after which its pull request merges as any other.
+func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testing.T) {
+	merger := rolePart(t, "merger.md")
+	for _, want := range []string{
+		"gh api repos/<o>/<r>/pulls/<n> --jq .stack",
+		"gh api 'repos/<o>/<r>/stacks?pull_request=<n>'",
+		"Where one below yours is open, merge nothing",
+		"gh api -X POST repos/<o>/<r>/stacks/<stack number>/unstack",
+		"yours is now a pull request like any other",
+	} {
+		if !strings.Contains(merger, want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+	if strings.Contains(merger, "merge-async") {
+		t.Errorf("roles/merger.md names merge-async, which refuses the App the merger acts as on a merge-queue base")
+	}
+}
+
 // Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
 // merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
 // base's newer code breaks, has the reviewer read the merge's resolution and approve the new head

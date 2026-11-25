@@ -134,8 +134,8 @@ func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testin
 				"\t_ = context.AfterFunc(context.Background(), plantedCallback)\n"+
 				"\tplantedStarts()\n")
 		plant(t, overlay, "leakcheck.go", "", "\nvar plantedCallback = func() { _ = exec.Command(\"/bin/false\").Run() }\n")
-		plant(t, overlay, "launcher.go", "restore := newBundleRestore(guard.starter())",
-			"restore := newBundleRestore(procgroup.NoReaper)")
+		plant(t, overlay, "launcher.go", "restore := newBundleRestore(guard.starter(), cfg.Workspace)",
+			"restore := newBundleRestore(procgroup.NoReaper, cfg.Workspace)")
 		// The defect this check came from: the install's run of the check with a bare cmd.Run, in
 		// another package the launcher calls.
 		plant(t, overlay, "../leakguard/install.go", "procgroup.Err(procgroup.Run(cmd, start))",
