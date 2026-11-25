@@ -18,12 +18,12 @@ import (
 const mainCommit = "4444444444444444444444444444444444444444"
 
 // mergeStateReads is every line of logged that records a read of a pull request's merge state
-// (mergeStateReadLine), in the order written.
+// (MergeStateReadLine), in the order written.
 func mergeStateReads(logged *bytes.Buffer) []map[string]any {
 	var reads []map[string]any
 	for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
 		var entry map[string]any
-		if json.Unmarshal([]byte(line), &entry) == nil && entry["msg"] == mergeStateReadLine {
+		if json.Unmarshal([]byte(line), &entry) == nil && entry["msg"] == MergeStateReadLine {
 			reads = append(reads, entry)
 		}
 	}
@@ -65,7 +65,7 @@ func TestEachReadOfAMergeStateIsLoggedWithItsHeadAndBase(t *testing.T) {
 		applyRefusingNothing(t, pool, engine, step.fact)
 		lines := mergeStateReads(&logged)
 		if len(lines) != 1 {
-			t.Fatalf("%s logged %d lines %q (%v), want exactly one", step.name, len(lines), mergeStateReadLine, lines)
+			t.Fatalf("%s logged %d lines %q (%v), want exactly one", step.name, len(lines), MergeStateReadLine, lines)
 		}
 		line := lines[0]
 		text, _ := line["readAt"].(string)

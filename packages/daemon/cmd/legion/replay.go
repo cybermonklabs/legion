@@ -27,17 +27,18 @@ import (
 // newReplayCommand is `legion replay`, a developer's tool rather than an operator's: it replays a
 // recorded window of a daemon's project through the daemon's own admission pass under a named
 // slot rule (internal/replay), so a rule is judged by the daemon's own decisions over a window it
-// lived through. Its commands collect a window (collect, collect-merges, collect-queue), neutralize
-// one for the repository's test data (neutralize), replay one (run), read the measures of a
-// window's record (scorecard), read R11's signals of a window at a moment (signals), fit R11's load
-// models on a window's record (models), check the replay against the record (validate) and against
-// a recorded change of the rule (forecast), compare the rules on two windows (compare) and name the
-// rules a replay can run (rules). None of them reaches a daemon.
+// lived through. Its commands collect a window (collect, collect-merges, collect-queue,
+// collect-git), neutralize one for the repository's test data (neutralize), replay one (run), read
+// the measures of a window's record (scorecard), read R11's signals of a window at a moment
+// (signals), fit R11's load models on a window's record (models), check the replay against the
+// record (validate) and against a recorded change of the rule (forecast), compare the rules on two
+// windows (compare) and name the rules a replay can run (rules). None of them reaches a daemon.
 func newReplayCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "replay", Short: "replay a recorded window of a daemon's project through the daemon's own admission pass under a named slot rule (a developer's tool)"},
 		newReplayCollectCommand(stdout, stderr),
 		newReplayCollectMergesCommand(stdout, stderr),
 		newReplayCollectQueueCommand(stdout, stderr),
+		newReplayCollectGitCommand(stdout, stderr),
 		newReplayNeutralizeCommand(stdout, stderr),
 		newReplayRunCommand(stdout, stderr),
 		newReplayScorecardCommand(stdout, stderr),
@@ -90,7 +91,7 @@ lines and the daemon's start lines show, the line kinds the log holds, the deplo
 the collector's commit (--collector, else the binary's own), the default assignee, the spans
 each signal has a record in, each ancestor whose events Dispatch does not show
 (missingAncestors), and the sha256 of every file. Run collect-merges next for each base branch,
-and collect-queue for each repository.`
+and collect-queue and collect-git for each repository.`
 
 // newReplayCollectCommand is `legion replay collect` (replay.Collect).
 func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -214,8 +215,8 @@ of its count. A commit GitHub records no such merge of keeps its committer's tim
 with no "event" and no "pr", whatever its subject names. The commits so placed in [--from, --to)
 are kept. The listing reaches commits committed from a day before --from alone, so a commit
 committed earlier and merged in the span is not read. The token is read from the environment
-variable --github-token-env names, and is never printed. Run it once for each base branch the
-window's pull requests name.`,
+variable --github-token-env names, and is never printed. ` + githubShareHelp + ` Run it once for
+each base branch the window's pull requests name.`,
 		Args: noArguments,
 	}
 	flags := cmd.Flags()
@@ -226,6 +227,7 @@ window's pull requests name.`,
 	tokenEnv := flags.String("github-token-env", "", "the environment variable that holds the GitHub token (required)")
 	api := flags.String("github-api", replay.DefaultGitHubAPI, "GitHub's REST API")
 	out := flags.String("out", "", "the directory of the window collect wrote (required)")
+	reserve, rate := githubShareFlags(cmd)
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		if missing := missingFlag(cmd, "repo", "branch", "from", "to", "github-token-env", "out"); missing != "" {
 			return refuse(cmd, "--%s is required", missing)
@@ -234,13 +236,16 @@ window's pull requests name.`,
 		if code != 0 {
 			return code
 		}
+		if err := replay.CheckGitHubShare(*reserve, *rate); err != nil {
+			return refuse(cmd, "--github-reserve %d, --github-rate %v: %v", *reserve, *rate, err)
+		}
 		token := strings.TrimSpace(os.Getenv(*tokenEnv))
 		if token == "" {
 			fmt.Fprintf(stderr, "legion replay collect-merges: the environment variable %s holds no token\n", *tokenEnv)
 			return 1
 		}
 		merges, err := replay.CollectMerges(ctx, replay.MergesConfig{Repo: *repo, Branch: *branch, From: span[0], To: span[1],
-			Token: token, API: *api, Window: *out})
+			Token: token, API: *api, Window: *out, Reserve: *reserve, Rate: *rate})
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay collect-merges: %v\n", err)
 			return 1
@@ -249,6 +254,22 @@ window's pull requests name.`,
 		return 0
 	})
 	return cmd
+}
+
+// githubShareHelp is the help each command that reads GitHub gives of its share of the quota.
+const githubShareHelp = `GitHub's quota is the installation's, which the daemon and the other
+roles share, so the command leaves them --github-reserve requests of it: after an answer that
+leaves that many or fewer, it sends nothing before the quota's reset, saying so on stderr. It
+sends at most --github-rate requests a second. 0 turns either off.`
+
+// githubShareFlags declares --github-reserve and --github-rate on cmd, a command that reads GitHub:
+// its share of the quota the daemon and the other roles share (replay's githubReader).
+func githubShareFlags(cmd *cobra.Command) (*int, *float64) {
+	flags := cmd.Flags()
+	reserve := flags.Int("github-reserve", replay.DefaultGitHubReserve,
+		"the requests of the shared GitHub quota left to the daemon and the other roles: at or below it, wait for the quota's reset (0: no reserve)")
+	rate := flags.Float64("github-rate", replay.DefaultGitHubRate, "the most requests a second sent to GitHub (0: no pacing)")
+	return reserve, rate
 }
 
 // newReplayCollectQueueCommand is `legion replay collect-queue` (replay.CollectQueue).
@@ -267,8 +288,8 @@ signal over the window's reach written again. A pull request a line names for an
 repository the window does not give is named, and not read. A line names no repository, so a
 pull request that only lines name, and whose timeline GitHub answers 404 Not Found in --repo, is
 named and skipped; a 404 of one an attribution names fails the read. The token is read from the
-environment variable --github-token-env names, and is never printed. Run it once for each
-repository of the project's issues.`,
+environment variable --github-token-env names, and is never printed. ` + githubShareHelp + ` Run it
+once for each repository of the project's issues.`,
 		Args: noArguments,
 	}
 	flags := cmd.Flags()
@@ -276,16 +297,20 @@ repository of the project's issues.`,
 	tokenEnv := flags.String("github-token-env", "", "the environment variable that holds the GitHub token (required)")
 	api := flags.String("github-api", replay.DefaultGitHubAPI, "GitHub's REST API")
 	out := flags.String("out", "", "the directory of the window collect wrote (required)")
+	reserve, rate := githubShareFlags(cmd)
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		if missing := missingFlag(cmd, "repo", "github-token-env", "out"); missing != "" {
 			return refuse(cmd, "--%s is required", missing)
+		}
+		if err := replay.CheckGitHubShare(*reserve, *rate); err != nil {
+			return refuse(cmd, "--github-reserve %d, --github-rate %v: %v", *reserve, *rate, err)
 		}
 		token := strings.TrimSpace(os.Getenv(*tokenEnv))
 		if token == "" {
 			fmt.Fprintf(stderr, "legion replay collect-queue: the environment variable %s holds no token\n", *tokenEnv)
 			return 1
 		}
-		queued, err := replay.CollectQueue(ctx, replay.QueueConfig{Repo: *repo, Token: token, API: *api, Window: *out})
+		queued, err := replay.CollectQueue(ctx, replay.QueueConfig{Repo: *repo, Token: token, API: *api, Window: *out, Reserve: *reserve, Rate: *rate})
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay collect-queue: %v\n", err)
 			return 1
@@ -299,6 +324,114 @@ repository of the project's issues.`,
 		if len(queued.NotFound) > 0 {
 			fmt.Fprintf(stdout, "legion replay collect-queue: only the log names the pull requests %v, and GitHub answers 404 Not Found for each of them in %s; none of them is written\n",
 				queued.NotFound, *repo)
+		}
+		return 0
+	})
+	return cmd
+}
+
+// newReplayCollectGitCommand is `legion replay collect-git` (replay.CollectGit).
+func newReplayCollectGitCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "collect-git --repo <owner/name> --branch <name> --github-token-env <VAR> --out <dir> [--github-only | --git-only]",
+		Short: "add each pull request's heads, read from GitHub, and git's verdict of merging each head with its base, to a collected window",
+		Long: `Write into the window collect wrote in --out, as git/<owner>__<name>.jsonl, with window.json's
+digest of the file written again, what git says of each pull request of --repo of the window's
+issues: the pull requests are those collect-queue reads. Run it after collect-merges of --branch,
+whose merges file it reads; it refuses a window with no merges file of --repo.
+
+The GitHub phase reads, with GET alone, each pull request and its timeline: its merge into
+--branch, and its heads, each committed event's commit at its committer's time, which only
+estimates when the commit was pushed, and each force push's new tip at the push's time. It writes
+each head whose time falls in the window's reach, span or run-out, the head that stood at the
+reach's start, and each head a read of a merge state in the window's log names, a head the
+timeline does not give at the read's time. The token is read from the environment variable
+--github-token-env names, and is never printed.
+
+The git phase reads no GitHub API. It clones --repo once into --clones, the base branch alone with
+no blob (git clone --filter=blob:none --bare), with the credential your git credential helper
+gives, which collect-git never reads, prints or stores, and fetches each commit it needs that the
+clone lacks. It writes the paths each commit of the base branch changes, and for each head the
+paths it changes since its merge base and git's verdict of merging it with the base as it stands
+at each later commit of the base that changes one of those paths, up to the pull request's own
+merge (git merge-tree). Each git command runs alone, its process group killed once its memory
+passes --memory-cap or it runs past its time; a kill, and anything git cannot give, is a missing
+input of the file, never a clean verdict, and the run goes on.
+
+--github-only runs the GitHub phase alone, where a GitHub token is and no git credential need be;
+--git-only runs the git phase alone, from the file the GitHub phase wrote, and takes no token: a
+public repository's git phase runs in a build job, a private one's where your git credential is.
+A run on a window whose git file exists asks GitHub and git for nothing that file holds, so a run
+that was killed goes on where it stopped. It prints a line as it finishes each pull request.
+
+` + githubShareHelp + ` --git-only takes neither.`,
+		Args: noArguments,
+	}
+	flags := cmd.Flags()
+	repo := flags.String("repo", "", "the repository as owner/name (required)")
+	branch := flags.String("branch", "", "the base branch, whose merges file collect-merges wrote (required)")
+	tokenEnv := flags.String("github-token-env", "", "the environment variable that holds the GitHub token (required but with --git-only)")
+	api := flags.String("github-api", replay.DefaultGitHubAPI, "GitHub's REST API")
+	out := flags.String("out", "", "the directory of the window collect wrote (required)")
+	clones := flags.String("clones", "", "the directory the repository is cloned into, outside the window (else clones/ beside the window)")
+	memoryCap := flags.Int64("memory-cap", replay.DefaultGitMemoryCap, "the bytes of resident memory one git command's processes may hold before they are killed")
+	githubOnly := flags.Bool("github-only", false, "run the GitHub phase alone: the pull requests and their heads")
+	gitOnly := flags.Bool("git-only", false, "run the git phase alone, from the heads the GitHub phase wrote, reading no GitHub API")
+	reserve, rate := githubShareFlags(cmd)
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		if missing := missingFlag(cmd, "repo", "branch", "out"); missing != "" {
+			return refuse(cmd, "--%s is required", missing)
+		}
+		switch {
+		case *githubOnly && *gitOnly:
+			return refuse(cmd, "--github-only and --git-only exclude each other; give neither to run both phases")
+		case *gitOnly && (cmd.Flags().Changed("github-token-env") || cmd.Flags().Changed("github-api") ||
+			cmd.Flags().Changed("github-reserve") || cmd.Flags().Changed("github-rate")):
+			return refuse(cmd, "--git-only reads no GitHub API, so it takes none of --github-token-env, --github-api, --github-reserve and --github-rate")
+		case !*gitOnly && *tokenEnv == "":
+			return refuse(cmd, "--github-token-env is required but with --git-only")
+		case *memoryCap <= 0:
+			return refuse(cmd, "--memory-cap %d: name the bytes git's processes may hold, above zero", *memoryCap)
+		}
+		if err := replay.CheckGitHubShare(*reserve, *rate); err != nil {
+			return refuse(cmd, "--github-reserve %d, --github-rate %v: %v", *reserve, *rate, err)
+		}
+		config := replay.GitConfig{Repo: *repo, Branch: *branch, Window: *out, Clones: *clones, MemoryCap: *memoryCap,
+			GitHubOnly: *githubOnly, GitOnly: *gitOnly, Finished: func(done replay.GitPullFinished) {
+				if done.Kept {
+					fmt.Fprintf(stdout, "legion replay collect-git: %s phase: #%d kept as the window's git file holds it\n", done.Phase, done.PR)
+					return
+				}
+				fmt.Fprintf(stdout, "legion replay collect-git: %s phase: #%d: %d heads, %d verdicts, %d conflicts, %d missing inputs\n",
+					done.Phase, done.PR, done.Heads, done.Verdicts, done.Conflicts, done.Missing)
+			}}
+		if !*gitOnly {
+			if config.Token = strings.TrimSpace(os.Getenv(*tokenEnv)); config.Token == "" {
+				fmt.Fprintf(stderr, "legion replay collect-git: the environment variable %s holds no token\n", *tokenEnv)
+				return 1
+			}
+			config.API, config.Reserve, config.Rate = *api, *reserve, *rate
+		}
+		collected, err := replay.CollectGit(ctx, config)
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay collect-git: %v\n", err)
+			return 1
+		}
+		missing := "none"
+		if len(collected.Missing) > 0 {
+			var parts []string
+			for _, reason := range slices.Sorted(maps.Keys(collected.Missing)) {
+				parts = append(parts, fmt.Sprintf("%s %d", reason, collected.Missing[reason]))
+			}
+			missing = strings.Join(parts, ", ")
+		}
+		fmt.Fprintf(stdout, "legion replay collect-git: wrote the git file of %s %s into %s: %d pull requests, %d heads, %d verdicts, %d conflicts; "+
+			"missing inputs: %s; %d reads of a merge state in the log; git's peak memory %d MiB; took %s\n",
+			*repo, *branch, *out, collected.PullRequests, collected.Heads, collected.Verdicts, collected.Conflicts, missing, collected.Reads,
+			collected.PeakMemory>>20, collected.Took.Round(time.Second))
+		if len(collected.NoRepo) > 0 {
+			fmt.Fprintf(stdout, "legion replay collect-git: the log names the pull requests %v of issues whose repository the window does not give; none of them is read\n",
+				collected.NoRepo)
 		}
 		return 0
 	})

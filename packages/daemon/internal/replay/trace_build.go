@@ -180,6 +180,10 @@ type IssueTrace struct {
 	// MergeForwards is each merge forward of the issue's conflicting head, in order, the issue
 	// keeping its phase.
 	MergeForwards []MergeForwardRound
+	// MergeStateReads is each read of the merge state of the issue's pull request the log holds
+	// (MergeStateRead), in the log's order. The replay decides nothing from them; a window
+	// collected before the daemon wrote the line holds none.
+	MergeStateReads []MergeStateRead
 	// LinkedPullRequests is the number of the pull request the issue's Dispatch events link, by
 	// its repository as owner/repo in lower case: the newest issue event's link of the form
 	// https://github.com/<owner>/<repo>/pull/<n> among its external links, for each repository.
@@ -1214,6 +1218,13 @@ func (b *traceBuilder) onLine(line LogLine) {
 	// The daemon's line of a kill a launcher reported is the kill matcher's evidence alone
 	// (MatchKills): it moves nothing of the trace, and no process boundary.
 	if _, ok := line.(GuardKillLine); ok {
+		return
+	}
+	// A read of a pull request's merge state is held on its issue and nothing more: the replay
+	// decides nothing from it, so a window that holds it is traced as one that does not.
+	if read, ok := line.(MergeStateRead); ok {
+		iss := b.issue(read.Issue)
+		iss.MergeStateReads = append(iss.MergeStateReads, read)
 		return
 	}
 	starts := false

@@ -40,6 +40,7 @@ const (
 	launcherFile = "launcher/log.jsonl"
 	queueDir     = "queue"
 	settingsFile = "settings/events.jsonl"
+	gitDir       = "git"
 )
 
 // The signals of R11 a window's signals map holds a record of, each by the name the map gives its
@@ -80,10 +81,15 @@ var windowSignals = []string{SignalIdle, SignalQueue, SignalProvider, SignalKill
 //   - queue/<owner>__<repo>.jsonl, the merge queue's events of the repository's pull requests,
 //     each the timeline event as GitHub serves it with its pull request's number (ParseQueueLine);
 //   - settings/events.jsonl, the project's own settings events of Dispatch's event log, verbatim,
-//     in the log's order (ParseSettingsEvent).
+//     in the log's order (ParseSettingsEvent);
+//
+// and, optional too, git/<owner>__<repo>.jsonl, git's reading of the repository's pull requests of
+// the window: the paths each first-parent commit of its base branch changes, each pull request's
+// heads, and git's verdict of merging each head with each later commit of the base that changes a
+// path the head changes (GitInput, CollectGit).
 //
 // A window with none of the signals' inputs, as every window collected before them, holds no
-// record of any signal (Recorded).
+// record of any signal (Recorded); one with no git input holds no verdict of git's.
 //
 // A window is the record a replay runs from (RunConfig.Window) and the record a scorecard is read
 // from (Score), so both read the same bytes, and the hash of each input in Files is what says
@@ -170,6 +176,8 @@ type Window struct {
 	Memory   []MemorySample               `json:"-"`
 	Queue    map[string][]json.RawMessage `json:"-"`
 	Settings []json.RawMessage            `json:"-"`
+	// Git is each git input, by repository as owner/repo; nil where the window holds none.
+	Git map[string]GitInput `json:"-"`
 }
 
 // Recorded says whether w holds a record of signal at at: whether at is in one of the spans its
@@ -286,9 +294,10 @@ func readWindowHead(dir string) (Window, error) {
 // names, each read once, a line at a time, and hashed as it is read (walkWindow), every line of
 // every input held. It refuses a window of another format, an input that is missing or whose hash
 // differs, a name in Files that is no input of the format, a line of an input that is not one JSON
-// object or not of that input's form, an input file in dir that Files does not name, since nothing
-// would check it, and a record of the signals no reader could trust (checkSignals). Other files of
-// dir — a fixture's README.md and expect.json — are no part of the window and are not read.
+// object or not of that input's form, a git input whose lines do not stand in the order its format
+// writes them in (GitInput), an input file in dir that Files does not name, since nothing would
+// check it, and a record of the signals no reader could trust (checkSignals). Other files of dir —
+// a fixture's README.md and expect.json — are no part of the window and are not read.
 func ReadWindow(dir string) (Window, error) {
 	w, err := readWindowHead(dir)
 	if err != nil {
@@ -296,6 +305,7 @@ func ReadWindow(dir string) (Window, error) {
 	}
 	w.Events = make(map[string][]json.RawMessage)
 	w.Merges = make(map[string][]Merge)
+	var gits map[string]*gitReading
 	err = walkWindow(dir, w, func(input windowInput) func(json.RawMessage, any) {
 		switch input.kind {
 		case logFile:
@@ -340,11 +350,30 @@ func ReadWindow(dir string) (Window, error) {
 			return func(line json.RawMessage, _ any) {
 				w.Settings = append(w.Settings, bytes.Clone(line))
 			}
+		case gitDir:
+			if gits == nil {
+				gits = make(map[string]*gitReading)
+			}
+			reading := &gitReading{name: input.name}
+			gits[input.key] = reading
+			return func(_ json.RawMessage, line any) {
+				reading.add(line.(gitLineRead))
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return Window{}, err
+	}
+	for _, repo := range slices.Sorted(maps.Keys(gits)) {
+		input, err := gits[repo].input()
+		if err != nil {
+			return Window{}, fmt.Errorf("read the window in %s: %w", dir, err)
+		}
+		if w.Git == nil {
+			w.Git = make(map[string]GitInput)
+		}
+		w.Git[repo] = input
 	}
 	return w, nil
 }
@@ -492,7 +521,8 @@ func (r *inputReader) line() ([]byte, bool, error) {
 
 // decodeInputLine checks line, a line of an input of kind (inputOf), against that input's form,
 // and is the line decoded for an input a Window holds decoded: a Merge, a ProviderMinute, a
-// LauncherLine or a MemorySample; nil for the others, which a Window holds as their lines.
+// LauncherLine, a MemorySample or a git input's line (gitLineRead); nil for the others, which a
+// Window holds as their lines.
 func decodeInputLine(kind string, line []byte) (any, error) {
 	switch kind {
 	case mergesDir:
@@ -531,6 +561,8 @@ func decodeInputLine(kind string, line []byte) (any, error) {
 	case settingsFile:
 		_, err := ParseSettingsEvent(line)
 		return nil, err
+	case gitDir:
+		return parseGitLine(line)
 	}
 	return nil, nil
 }
@@ -592,10 +624,11 @@ func decodeStrict(line []byte, into any) error {
 // Write writes w into dir, which it creates where it is missing: each input, then window.json,
 // whose Files it fills with the sha256 of every input it wrote and whose Format it sets. Each
 // line is written compact on a line of its own. An input of the signals is written where w holds
-// it, as a file with no line where w holds it empty. dir is meant to be empty: an input file
-// already there that w does not hold is left in place, and ReadWindow then refuses the window for
-// it. A record of the signals ReadWindow would refuse (checkSignals) is refused before anything is
-// written.
+// it, as a file with no line where w holds it empty, and each git input in its format's order
+// (GitInput), so a git input read is written back byte for byte. dir is meant to be empty: an
+// input file already there that w does not hold is left in place, and ReadWindow then refuses the
+// window for it. A record of the signals ReadWindow would refuse (checkSignals) is refused before
+// anything is written.
 func (w Window) Write(dir string) error {
 	w.Format = WindowFormat
 	w.Files = make(map[string]string)
@@ -669,6 +702,19 @@ func (w Window) Write(dir string) error {
 			return fmt.Errorf("write the window to %s: a merge queue of %q, which is no owner/repo", dir, repo)
 		}
 		if err := write(path.Join(queueDir, owner+"__"+name+".jsonl"), w.Queue[repo]); err != nil {
+			return fmt.Errorf("write the window to %s: %w", dir, err)
+		}
+	}
+	for _, repo := range slices.Sorted(maps.Keys(w.Git)) {
+		owner, name, ok := splitRepo(repo)
+		if !ok {
+			return fmt.Errorf("write the window to %s: a git input of %q, which is no owner/repo", dir, repo)
+		}
+		lines, err := w.Git[repo].lines()
+		if err == nil {
+			err = write(path.Join(gitDir, owner+"__"+name+".jsonl"), lines)
+		}
+		if err != nil {
 			return fmt.Errorf("write the window to %s: %w", dir, err)
 		}
 	}
@@ -789,9 +835,9 @@ func splitRepo(repo string) (owner, name string, ok bool) {
 }
 
 // inputOf is which input of the format name is — logFile, eventsDir, mergesDir, providerFile,
-// launcherFile, memoryFile, queueDir or settingsFile — and the key it holds: the issue key of an
-// events file, owner/repo of a merges or a queue file, "" for the others. A name that is not clean,
-// relative and slash-separated, or that names no input, is refused.
+// launcherFile, memoryFile, queueDir, settingsFile or gitDir — and the key it holds: the issue key
+// of an events file, owner/repo of a merges, a queue or a git file, "" for the others. A name that
+// is not clean, relative and slash-separated, or that names no input, is refused.
 func inputOf(name string) (kind, key string, err error) {
 	if name == "" || path.IsAbs(name) || path.Clean(name) != name || strings.Contains(name, "\\") {
 		return "", "", fmt.Errorf("window.json names the file %q, which is no clean relative path", name)
@@ -806,7 +852,7 @@ func inputOf(name string) (kind, key string, err error) {
 	case !jsonl:
 	case dir == eventsDir+"/" && claim.IsIssueKey(base):
 		return eventsDir, base, nil
-	case dir == mergesDir+"/" || dir == queueDir+"/":
+	case dir == mergesDir+"/" || dir == queueDir+"/" || dir == gitDir+"/":
 		if owner, repo, ok := strings.Cut(base, "__"); ok && owner != "" && repo != "" {
 			return strings.TrimSuffix(dir, "/"), owner + "/" + repo, nil
 		}
@@ -815,7 +861,7 @@ func inputOf(name string) (kind, key string, err error) {
 }
 
 // inputDirs is every directory of a window's format that holds input files.
-var inputDirs = []string{eventsDir, mergesDir, path.Dir(providerFile), path.Dir(launcherFile), queueDir, path.Dir(settingsFile)}
+var inputDirs = []string{eventsDir, mergesDir, path.Dir(providerFile), path.Dir(launcherFile), queueDir, path.Dir(settingsFile), gitDir}
 
 // inputFiles is every input file dir holds, by its name relative to dir: log.jsonl where it is
 // there, and every entry of the format's directories (inputDirs). A directory of the format that

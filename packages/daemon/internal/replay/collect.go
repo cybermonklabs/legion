@@ -1057,6 +1057,8 @@ func keysOfLine(line LogLine) []string {
 		return []string{l.Issue}
 	case MergeForwardLanded:
 		return []string{l.Issue}
+	case MergeStateRead:
+		return []string{l.Issue}
 	case MergedCloseWaits:
 		return append([]string{l.Issue, l.Tree}, l.WaitingFor...)
 	}

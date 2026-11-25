@@ -153,7 +153,7 @@ func (e *Engine) logDroppedSettlement(ctx context.Context, fact intake.PullReque
 // engine's clock where a fact carries none, so tests control it.
 const conflictConfirmWait = time.Minute
 
-// mergeStateReadLine is the line mergeability writes, once its fact commits, for each read of a
+// MergeStateReadLine is the line mergeability writes, once its fact commits, for each read of a
 // pull request's merge state whose pull request the record holds: whatever GitHub answered -
 // clean, a conflict or `unknown` - and whatever the engine then decides of it, a read it drops for
 // a head the record has left or for being older than the read the record holds included. It names
@@ -168,15 +168,16 @@ const conflictConfirmWait = time.Minute
 // back writes none, and its caller reads again; a fact applied again under an event id already
 // applied writes none, since no handler runs for it; a read of a pull request the record does not
 // hold writes none; and a fact minted by something that read no GitHub - a test's, or the replay's
-// made-up conflict (internal/replay's conflictFor) - writes one all the same.
-const mergeStateReadLine = "workflow: GitHub's merge state of a pull request was read"
+// made-up conflict (internal/replay's conflictFor) - writes one all the same. The replay's trace
+// reads it, and its collector of git's verdicts reads each read's head and base commit from it.
+const MergeStateReadLine = "workflow: GitHub's merge state of a pull request was read"
 
 // mergeability records what GitHub's last read found for whether the pull request's head can be
 // merged into its base (intake.PullRequestMergeability, readPullRequest's own GitHub answer), and
 // acts on a conflict only once a second read has confirmed it and R0's decision says the head
 // must be merged forward now (classify.ConflictNeedsMerge). Each read of a pull request the record
 // holds is logged before anything is decided of it, the reads dropped below included
-// (mergeStateReadLine, dispatch://INFRA-3199/spec R9).
+// (MergeStateReadLine, the replay's spec, R9).
 //
 // A head that conflicts with its base is judged in two reads (dispatch://INFRA-4374 R2). GitHub
 // computes mergeability in a background job and can answer CONFLICTING about a base it has not
@@ -269,7 +270,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 	if fact.Base != "" {
 		base = fact.Base
 	}
-	e.logOnCommit(ctx, mergeStateReadLine,
+	e.logOnCommit(ctx, MergeStateReadLine,
 		"issue", pr.Issue, "repo", pr.Repo, "pullRequest", pr.Number, "head", fact.HeadSHA, "recordedHead", pr.HeadSHA,
 		"base", base, "baseSha", fact.BaseSHA, "mergeable", string(fact.Mergeable), "mergeState", string(fact.MergeState), "readAt", fact.ReadAt)
 	if fact.HeadSHA != pr.HeadSHA {

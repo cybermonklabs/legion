@@ -642,6 +642,30 @@ type MergedCloseWaits struct {
 	WaitingFor  []string
 }
 
+// mergeStateReadLine is the msg of the daemon's line of each read of a pull request's merge state
+// (workflow.MergeStateReadLine), the constant its writer logs it under.
+const mergeStateReadLine = workflow.MergeStateReadLine
+
+// MergeStateRead is a `workflow: GitHub's merge state of a pull request was read` line (workflow's
+// mergeability): a read of the merge state of the pull request PullRequest of Repo, the pull
+// request of Issue, whose fact committed. HeadSHA is the head GitHub answered for (the line's
+// head) and RecordedHead the one the record stood at; Base is the base branch GitHub named, else
+// the record's, and BaseSHA the base commit GitHub's answer names, "" where it names none;
+// Mergeable and MergeState are GitHub's answer; ReadAt is the moment the reader had the answer in
+// hand, zero for a fact that carries none. The trace holds each read on its issue
+// (IssueTrace.MergeStateReads) and decides nothing from it, and collect-git reads the heads and
+// base commits git's verdicts are read for from it (CollectGit). A window collected before the
+// daemon wrote the line holds none, which Window.Lines shows.
+type MergeStateRead struct {
+	LineHead
+	Issue, Repo           string
+	PullRequest           int
+	HeadSHA, RecordedHead string
+	Base, BaseSHA         string
+	Mergeable, MergeState string
+	ReadAt                time.Time
+}
+
 // PassMovedSlots is an `admission: a pass moved slots` line (admit's logPassMoves), the record of
 // one admission pass that gave out or took back at least one slot, written once its fact
 // committed: the slots in use after the pass, the cap it ran with, each slot it took back with
@@ -971,6 +995,11 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 	mergedCloseWaitsLine: func(h LineHead, a *lineAttrs) LogLine {
 		return MergedCloseWaits{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), PullRequest: a.count("pullRequest"),
 			WaitingFor: strings.Split(a.str("waitingFor"), ", ")}
+	},
+	mergeStateReadLine: func(h LineHead, a *lineAttrs) LogLine {
+		return MergeStateRead{LineHead: h, Issue: a.str("issue"), Repo: a.str("repo"), PullRequest: a.count("pullRequest"), HeadSHA: a.str("head"),
+			RecordedHead: a.str("recordedHead"), Base: a.str("base"), BaseSHA: a.str("baseSha"), Mergeable: a.str("mergeable"),
+			MergeState: a.str("mergeState"), ReadAt: a.at("readAt")}
 	},
 	guardKillToldLine:       readGuardKill,
 	guardKillUnrecordedLine: readGuardKill,
