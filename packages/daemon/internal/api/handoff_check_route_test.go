@@ -173,8 +173,9 @@ func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *tes
 	// The testing turn ends with the verdict a check report also names.
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-	if !strings.Contains(message, "checkOpenedAt") || !strings.Contains(message, "recorded nothing") {
-		t.Fatalf("the refusal is %q, want the missing check identity and nothing recorded", message)
+	if !strings.Contains(message, "checkOpenedAt") || !strings.Contains(message, "recorded nothing") ||
+		!strings.Contains(message, "production check is the tester's") {
+		t.Fatalf("the refusal is %q, want the check's role, the missing check identity and nothing recorded", message)
 	}
 	theCheckIsUntouched(t, h, facts)
 }
