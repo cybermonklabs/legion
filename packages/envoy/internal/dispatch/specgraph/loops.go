@@ -84,11 +84,11 @@ func statementEdges(statements []Statement) map[string][]edge {
 	edges := map[string][]edge{}
 	for _, s := range statements {
 		if held[s.Parent] {
-			edges[s.ID] = append(edges[s.ID], edge{to: s.Parent, relation: "parent"})
+			edges[s.ID] = append(edges[s.ID], edge{to: s.Parent, relation: statementParent.member})
 		}
 		for _, id := range s.Serves {
 			if held[id] {
-				edges[s.ID] = append(edges[s.ID], edge{to: id, relation: "serves"})
+				edges[s.ID] = append(edges[s.ID], edge{to: id, relation: statementServes.member})
 			}
 		}
 	}

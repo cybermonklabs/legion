@@ -194,14 +194,14 @@ func (v *validator) statement(s Statement) {
 	}
 	if s.Parent != "" {
 		if slices.Contains(statementParent.kinds, v.kinds[s.Parent]) {
-			v.edges[s.ID] = append(v.edges[s.ID], edge{to: s.Parent, relation: "parent"})
+			v.edges[s.ID] = append(v.edges[s.ID], edge{to: s.Parent, relation: statementParent.member})
 		} else {
 			v.problem(s.Pos, s.ID, fmt.Sprintf("no-parent: the files hold no statement %q", s.Parent))
 		}
 	}
 	for _, id := range s.Serves {
 		if v.target(s.Pos, s.ID, statementServes.member, id, statementServes.kinds...) {
-			v.edges[s.ID] = append(v.edges[s.ID], edge{to: id, relation: "serves"})
+			v.edges[s.ID] = append(v.edges[s.ID], edge{to: id, relation: statementServes.member})
 		}
 	}
 	for _, id := range s.About {
@@ -291,7 +291,7 @@ func (v *validator) component(c Component) {
 	}
 	if c.Parent != "" {
 		if slices.Contains(componentParent.kinds, v.kinds[c.Parent]) {
-			v.edges[c.ID] = append(v.edges[c.ID], edge{to: c.Parent, relation: "parent"})
+			v.edges[c.ID] = append(v.edges[c.ID], edge{to: c.Parent, relation: componentParent.member})
 		} else {
 			v.problem(c.Pos, c.ID, fmt.Sprintf("bad-component: parent %q is no component", c.Parent))
 		}
