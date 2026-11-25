@@ -57,7 +57,7 @@ export const LegionInstant = timestamp.regex(
  * the role working it: `workers` is keyed by role, each of `LEGION_ROLES` or a role of the
  * deployment. `awaiting_person` is a root that keeps its admission slot while its architect waits
  * on a person's answer (`waitingOn` on the issue record). `step` runs each step of a role the
- * deployment defines, which the issue names in `stepRole` (contract 258). `accepting` is the
+ * deployment defines, which the issue names in `stepRole` (contract 297). `accepting` is the
  * architect's acceptance, where the issue's task places its `acceptance:owner` step (in the
  * default steps, between the reviewer's approval and retro): no worker runs it. The merger
  * merges in `merging`, and the daemon closes the issue when it reads that merge (`done`); the
@@ -79,7 +79,7 @@ export const LEGION_WORKFLOW_PHASES = [
 ] as const;
 
 /** The `api.PhaseBackwardRequest` targets contract-12's daemon accepts, and `step` since contract
- * 258. Future state-only phases join this list only with their daemon transition. */
+ * 297. Future state-only phases join this list only with their daemon transition. */
 export const LEGION_PHASE_BACKWARD_TARGETS = [
   "admitted",
   "planning",
@@ -783,9 +783,9 @@ const legionIssue = z.object({
   generation: z.number().int().nonnegative().optional(),
   phase: z.enum(LEGION_PHASES),
   /** The role of the deployment that works the issue's running step, where the issue stands at
-   * `step` or its hold took it out of `step` (contract 258): no phase names such a role, so the
+   * `step` or its hold took it out of `step` (contract 297): no phase names such a role, so the
    * phase alone does not say who works the issue. Absent at every other phase, whose role the
-   * phase names, and from every issue of the body the route serves a caller before 258, which is
+   * phase names, and from every issue of the body the route serves a caller before 297, which is
    * served an issue at `step` as `implementing`. */
   stepRole: stepRole.optional(),
   status: nonEmptyString.optional(),
@@ -2336,7 +2336,7 @@ export const LegionPhaseBackwardRequest = z.strictObject({
   reason: nonEmptyString,
   issue: nonEmptyString.optional(),
   /** The step of the running task the move returns to, by its place, 1 for its first (contract
-   * 258): the daemon judges it as it judges a failed step's `returnTo`, and `to` must be the phase
+   * 297): the daemon judges it as it judges a failed step's `returnTo`, and `to` must be the phase
    * that step runs as. */
   returnTo: z.number().int().positive().optional(),
 });
