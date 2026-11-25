@@ -127,6 +127,7 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -259,6 +260,7 @@ jobs:
       # push to main): restored from nothing, the vet compiled the standard library and every
       # dependency for darwin on every run, 137.9 s of job 137308591036 and 172 s at the median of
       # 550 pull request runs. Kept out of go-envoy, whose entry every envoy job downloads.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/go-build-darwin
