@@ -31,6 +31,7 @@ test("the heads scenarios have one canonical membership", () => {
     "reviewer-pass-and-fail",
     "architect-pass-and-fail",
     "ci-pass-and-fail",
+    "fix-judge",
   ]);
   expect(isHeadsScenario("reviewer-own-head")).toBe(true);
   expect(isHeadsScenario("measure-before-ask")).toBe(false);
