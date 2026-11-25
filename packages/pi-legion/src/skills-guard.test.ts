@@ -15,7 +15,10 @@ import {
   longSkillBodies,
   misnamedSkills,
   oversizedFiles,
+  RED_AT_THE_HEAD,
   REPO_ROOT,
+  retiredRerunProhibitions,
+  retiredTesterCiReads,
   skillLinks,
   stageSkills,
 } from "@legion/pi-shared/test/skills-guard";
@@ -38,6 +41,7 @@ const PLUGIN_BUILDER = path.join(REPO_ROOT, "packages/claude-envoy/scripts/build
 // partition is valid because the Envoy plugin, installed beside this one, ships it.
 const repoSkillsRoot = path.join(REPO_ROOT, "skills");
 const promptsRoot = path.join(REPO_ROOT, "packages/daemon/internal/prompts");
+const docsSiteRoot = path.join(REPO_ROOT, "docs/site/src/content");
 const agentsRoot = path.join(REPO_ROOT, "packages/pi-legion/agents");
 let staged: string;
 
@@ -67,6 +71,109 @@ test("every skill://<name>/<path> link names a file that exists, and its #anchor
 
 test("every relative link resolves to a file inside the staged partition", () => {
   expect(brokenRelativeLinks(staged)).toEqual([]);
+});
+
+// INFRA-1303 gave the reviewer in `reviewing`, the implementer while it holds `implementing` and
+// the merger in `merging` at a head its own forward merge made one re-run of a red at the head the
+// change did not make (`skill://legion-worker/references/red-at-the-head.md`), and took the
+// sentences that forbade it out of this partition's skills and the daemon's prompts. A forward
+// merge keeps both sides of a deletion with no conflict for anyone to read, so the prohibitions are
+// refused over every root rather than over the files they were deleted from. The documentation
+// site is one of them: an operator reads it, and its running-legion.md carried "re-runs nothing"
+// until this change (test round 1's F4). docs/plans and docs/solutions stay out, since they are
+// dated history that may quote a retired rule on purpose.
+test("no staged skill, daemon prompt or docs page forbids the holders' re-run of a red at the head", () => {
+  expect(retiredRerunProhibitions([staged, promptsRoot, docsSiteRoot])).toEqual([]);
+});
+
+// The tester reads no CI (Sami's decision on
+// dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3: "let CI do its job, your job is
+// to boot and run the app's real workflows like a user would"), so its sentences that read CI,
+// held the re-run, waited on CI or recorded a red at the head were taken out of the tester's prompt
+// part, this partition's skills and the docs pages at once, and are refused over the same roots for
+// the same reason.
+test("no staged skill, daemon prompt or docs page has the tester read CI, re-run a red, wait on CI or record a red", () => {
+  expect(retiredTesterCiReads([staged, promptsRoot, docsSiteRoot])).toEqual([]);
+});
+
+// The docs site's page of what GitHub answers copies the red-at-the-head page's commands, the
+// page's `<o>/<r>` written there as `<owner>/<repo>` (INFRA-1303's review round 3). A command fixed
+// on one page and not the other leaves a reader of the docs running the old one, so each fenced
+// `bash` block, and each inline command of the ancestry rules, is held equal on the two. The
+// prose around them is not: the docs page states the facts GitHub answers, and the skill page the
+// rule a role follows on them.
+const CHECKS_AND_RERUNS = path.join(
+  REPO_ROOT,
+  "docs/site/src/content/docs/legion/checks-and-re-runs.md"
+);
+
+/** The body of each fenced `bash` block of `markdown`, in order. */
+function bashBlocks(markdown: string): string[] {
+  return [...markdown.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map(([, body = ""]) => body);
+}
+
+/** The inline `git` and `test` commands of the `## heading` section of `markdown`, sorted. */
+function ancestryCommands(markdown: string, heading: string): string[] {
+  const start = markdown.indexOf(`\n## ${heading}\n`);
+  if (start === -1) throw new Error(`no section "## ${heading}"`);
+  const end = markdown.indexOf("\n## ", start + 1);
+  return [
+    ...markdown
+      .slice(start, end === -1 ? undefined : end)
+      .replace(/\s+/g, " ")
+      .matchAll(/`((?:git|test) [^`]+)`/g),
+  ]
+    .map(([, command = ""]) => command)
+    .sort();
+}
+
+test("the docs page's commands are the red-at-the-head page's, `<o>/<r>` written as `<owner>/<repo>`", () => {
+  const page = readFileSync(RED_AT_THE_HEAD, "utf8").replaceAll("<o>/<r>", "<owner>/<repo>");
+  const docs = readFileSync(CHECKS_AND_RERUNS, "utf8");
+  const blocks = bashBlocks(page);
+  expect(blocks).not.toEqual([]);
+  expect(bashBlocks(docs)).toEqual(blocks);
+  const ancestry = ancestryCommands(
+    page,
+    "When the cause is another tree's, so no re-run clears it"
+  );
+  expect(ancestry).not.toEqual([]);
+  expect(ancestryCommands(docs, "Whether a branch carries a fix")).toEqual(ancestry);
+});
+
+// The commit endpoint's count at 9b728582 was read twice, 113 and later 114 (INFRA-1303's
+// comment 07122575 and INFRA-3035's spec); a page that gives one count as the only one misstates
+// a measurement a reader can repeat and get the other.
+// The --required read at ed157dc9 was made while ci-ok had not yet reported (1 of 46); settled, the
+// same read gives 2 of 48 (INFRA-1303's spec, last claim review).
+test("the docs page gives both reads of --required at ed157dc9", () => {
+  const docs = readFileSync(CHECKS_AND_RERUNS, "utf8").replace(/\s+/g, " ");
+  expect(docs).toContain(
+    "read while `ci-ok` had not yet reported, it printed 1 row where the rollup held 46, and once CI settled the same read gives 2 of 48"
+  );
+});
+
+// The red-at-the-head page reads the counted set "Never with `--required`" (pinned in
+// @legion/pi-shared's redAtTheHeadFaults, the architect's gap review of 2026-11-20, item 7), and
+// the docs page copies that fact in its own words: the read is made without the flag, what the flag
+// prints, what it leaves out, and what it answers on a base that requires nothing. Each sentence is
+// pinned whole and literally, as the page's are, and the lost ones are listed together.
+test("the docs page reads the counted set without --required, and says what --required leaves out", () => {
+  const docs = readFileSync(CHECKS_AND_RERUNS, "utf8").replace(/\s+/g, " ");
+  expect(
+    [
+      "Without `--required`. With it, `gh` prints only the checks the base requires:",
+      "So no lane under the aggregate `ci-ok` and no check the base does not require is in it.",
+      "On a base that requires nothing, `--required` prints that no required checks are reported and exits 1",
+    ].filter((sentence) => !docs.includes(sentence))
+  ).toEqual([]);
+});
+
+test("the docs page gives both reads of the commit endpoint at 9b728582", () => {
+  const docs = readFileSync(CHECKS_AND_RERUNS, "utf8").replace(/\s+/g, " ");
+  expect(docs).toContain(
+    "it answered 113 check runs, later 114, where the pull request's rollup held 57"
+  );
 });
 
 // Reads by filesystem path stop at 300 lines, so a worker reaches a reference only through a
@@ -169,6 +276,18 @@ test("no skill or prompt promises an update round no daemon can open", () => {
 // (or any role) cannot read GitHub. The commands live in the two references SKILL.md sends the
 // controller to (its session and its triage), so SKILL.md must link both, and the strings are
 // read from those three files only.
+//
+// The row reads every file under packages/daemon/internal, the pages under
+// docs/site/src/content/docs, the controller skill and four more paths, so it is real work, and
+// Bun's default of 5 s is a bound nobody chose for it. Measured on 2026-11-18 in an issue pod with
+// two CPUs, with both sweep files in one process (`bun test
+// packages/pi-legion/src/skills-guard.test.ts packages/pi-envoy/src/skills-guard.test.ts`): quiet,
+// five runs of the row took 0.73 to 1.49 s; with three CPU-bound processes beside it, four of five
+// runs took 3.68 to 4.21 s and the fifth was stopped at the default (`this test timed out after
+// 5000ms`). Beside a twelve-world skill-scenario batch on 2026-11-17, it failed at 6.6 s. Thirty
+// seconds is twenty times the slowest quiet run and more than four times the slowest loaded one, so
+// a loaded pod still finishes it. The row is synchronous, so Bun cannot stop it mid-run; it reports
+// a run past the bound as timed out once it returns.
 test("the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential", () => {
   const controllerDir = path.join(staged, "legion-controller");
   const entry = readFileSync(path.join(controllerDir, "SKILL.md"), "utf8");
@@ -215,7 +334,7 @@ test("the controller skill reads pull requests as the review App, and nothing sa
         .map(({ number }) => `${path.relative(REPO_ROOT, file)}:${number}`);
     });
   expect(offending).toEqual([]);
-});
+}, 30_000);
 
 // INFRA-83 took the `CI:` line out of the pull request body, and the forward merge of main put the
 // paragraph that defined it back into skills/legion-worker/references/pr-body.md with no conflict

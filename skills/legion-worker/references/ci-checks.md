@@ -40,7 +40,7 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
   On a task that takes a fix, a failure at the head goes to the implementer's step or starts a fix, as its role prompt says.
 
 - The tester runs and records only the checks with no `ci_check`.
-  It neither reads nor records a `ci_check` check, which is CI's.
+  It neither reads nor records a `ci_check` check's derived result, which is CI's: the reviewer reads it before it approves.
   Each failure of a check it runs is a fail result on that check in Dispatch, never a field of its handoff.
 
 - The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
@@ -60,8 +60,8 @@ When the head's checks have settled and no run of the name answers:
 2. A held-back job reads `skipped`, not absent: the label cures it.
 
 3. Otherwise the check's words are wrong.
-   Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, Legion holds the task before its retro, and the architect reads the name in the `retro-held` notice.
-   No role fails the round or requests changes for it.
+   The reviewer sends it to the architect as a finding with `envoy_publish`, and requests no changes for it; the tester reads no CI run, so the case never reaches it.
+   With no reviewer step, Legion holds the task before its retro, and the architect reads the name in the `retro-held` notice.
 
 ## What the evidence is
 

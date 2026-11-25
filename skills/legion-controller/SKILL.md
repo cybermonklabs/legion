@@ -51,7 +51,7 @@ Every launch opens with a start message. Envoy keeps no wake sent while no contr
 | `parked-decision` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held` with `reason: "escalated"`, `update-stalled`, an architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference or answer | `skill://legion-controller/references/finding-asks.md` |
-| A clear defect a role sends | `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` |
+| A clear defect a role sends, or a test it re-ran green | `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` |
 | A scope question, a routing request | `skill://legion-controller/references/backlog-stewardship.md` |
 | A Slack mention | `skill://legion-controller/references/slack-mentions.md` |
 | A finding sent as text | Open an ask ([Findings](#findings-and-the-issues-you-file)) |
@@ -75,6 +75,7 @@ A slot is one issue the daemon started, a root or a child. Free slots are `admis
 Every move to `todo` you make is one of these:
 
 - a root you labelled at a person's request, or filed for a clear defect;
+- a test's issue you reopen for the re-run census, once you read that its fix is still in place;
 - an issue a person asks you to start, a parked one included;
 - a root in the workflow whose architect failed, once you found no cause or checked that its cause is gone; one that is held, once you checked that its cause is gone, but not one held for its children, a fix or its CI, which a `todo` leaves held; one whose architect retired, once a person's decision gives its work a next step and you found no cause or checked that its cause is gone;
 - a tree you parked with the mark `Parked by Legion while it waits on:`, once its cause is gone or its event happened (comment the mark and what you checked), or a person's later decision gives it a next step;
@@ -82,7 +83,7 @@ Every move to `todo` you make is one of these:
 
 ## Findings, and the issues you file
 
-File an issue only when a person asks you to, for a clear defect no running tree owns, and the report issue. Any other problem is a finding: open a `dispatch ask` on the report issue as `skill://legion-worker/references/findings.md` says, and file nothing until a person answers. Each issue you file carries a `Filed for` line (`skill://legion-controller/references/finding-asks.md#the-filed-for-line`).
+File an issue only when a person asks you to, for a clear defect no running tree owns, a test a role re-ran green among them (one issue per test, never one per occurrence: `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect`), and the report issue. Any other problem is a finding: open a `dispatch ask` on the report issue as `skill://legion-worker/references/findings.md` says, and file nothing until a person answers. Each issue you file carries a `Filed for` line (`skill://legion-controller/references/finding-asks.md#the-filed-for-line`).
 
 ## Daily report
 

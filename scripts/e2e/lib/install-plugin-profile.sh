@@ -5,7 +5,7 @@
 # untouched. A Legion pane needs both: the daemon's boot gate refuses pi-legion without pi-envoy, so
 # every stage installs each in turn, into a --dest of its own.
 #
-#   scripts/e2e/lib/install-plugin-profile.sh --package <pi-envoy|pi-legion> --profile <name> --home <dir> --dest <dir> [--omp <mise tool spec>]
+#   scripts/e2e/lib/install-plugin-profile.sh --package <pi-envoy|pi-legion> --profile <name> --home <dir> --dest <dir> [--omp <mise tool spec> | --omp-binary <path>]
 #
 # --home is the HOME Oh My Pi runs under for the profile, made by make_omp_home (lib/omp-home.sh): the
 # profile is <home>/.omp/profiles/<name>, and the caller's own HOME is refused.
@@ -22,7 +22,8 @@
 # names: a stage proof passes the one build its daemon and panes run, so the profile is never
 # opened by another (under LEGION_E2E_MODEL_ROUTE=box-login the profile's agent.db is the
 # operator's own login database, which only a build with the refresh-race fix may open;
-# lib/install-box-login-route.sh).
+# lib/install-box-login-route.sh). --omp-binary names an omp binary to run in place of any mise
+# build, for a machine that carries the pinned binary and no mise.
 # Each source is cited by what it runs, never by line number: the lines move with every edit
 # above them. The tarball is written under this run's temp directory, so an interrupted run strands
 # no .tgz in the checkout (the release's `rm -f ./*.tgz` guards the same stale-glob case).
@@ -31,7 +32,7 @@ set -euo pipefail
 me=install-plugin-profile
 refuse() {
   echo "$me: $*" >&2
-  echo "usage: $0 --package <pi-envoy|pi-legion> --profile <name> --home <dir> --dest <dir>" >&2
+  echo "usage: $0 --package <pi-envoy|pi-legion> --profile <name> --home <dir> --dest <dir> [--omp <mise tool spec> | --omp-binary <path>]" >&2
   exit 2
 }
 
@@ -44,6 +45,7 @@ have_profile=
 have_home=
 have_dest=
 omp_spec=
+omp_binary=
 while [ $# -gt 0 ]; do
   case "$1" in
   --package)
@@ -71,6 +73,11 @@ while [ $# -gt 0 ]; do
     omp_spec=$2
     shift 2
     ;;
+  --omp-binary)
+    [ $# -ge 2 ] && [ -n "$2" ] || refuse "--omp-binary needs a value: the path of an omp binary to run as it is"
+    omp_binary=$2
+    shift 2
+    ;;
   *) refuse "unknown argument: $1" ;;
   esac
 done
@@ -82,6 +89,12 @@ esac
 [ -n "$have_profile" ] || refuse "--profile is required: the OMP profile to install into"
 [ -n "$have_home" ] || refuse "--home is required: the HOME Oh My Pi runs under for the profile"
 [ -n "$have_dest" ] || refuse "--dest is required: the directory the plugin is unpacked into"
+[ -z "$omp_spec" ] || [ -z "$omp_binary" ] || refuse "--omp and --omp-binary each name the Oh My Pi to run; give one of them"
+# A binary path is checked here, by name, before anything runs: a path that is not an executable
+# file is a mistake, and no mise call can make it one.
+if [ -n "$omp_binary" ] && { [ ! -f "$omp_binary" ] || [ ! -x "$omp_binary" ]; }; then
+  refuse "--omp-binary $omp_binary is not an executable file"
+fi
 
 # OMP trims the profile name and reads an empty one or "default" as its default profile
 # (normalizeProfileName, @oh-my-pi/pi-utils dirs.ts), the one every plain `omp` uses. Any other
@@ -118,14 +131,28 @@ fi
 # the install's own bin/omp by its absolute path, never an `omp` looked up on PATH, where an
 # operator's wrapper could answer instead (and a wrapper's own setup could rewrite the profile,
 # whose agent.db is the operator's login database under the box-login route).
-pin=${omp_spec:-$(<"$root/.omp-pin")}
-mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
-omp=$(realpath -e -- "$(mise where "$pin")/bin/omp" 2>/dev/null) && [ -x "$omp" ] || {
-  echo "$me: mise has no executable bin/omp for $pin" >&2
-  exit 1
-}
-mise_data=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}
-run_omp() { (cd "$dest" && HOME=$home MISE_DATA_DIR=$mise_data OMP_PROFILE=$profile mise x "$pin" -- "$omp" "$@"); }
+#
+# --omp-binary is that binary, run as it is and with no mise call at all: a Kubernetes issue pod
+# carries the pinned binary at LEGION_OMP_PATH and no mise, so a profile built there names the
+# binary rather than a tool spec (dispatch://INFRA-1303). --omp is a mise tool spec whatever it
+# looks like, so a path given to it goes to mise as a spec, never run as a binary.
+# omp_named is how the verification's failure names the Oh My Pi that ran: the binary's own path,
+# or `omp <spec>` for mise's build.
+if [ -n "$omp_binary" ]; then
+  omp=$(realpath -e -- "$omp_binary")
+  omp_named=$omp
+  run_omp() { (cd "$dest" && HOME=$home OMP_PROFILE=$profile "$omp" "$@"); }
+else
+  pin=${omp_spec:-$(<"$root/.omp-pin")}
+  mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+  omp=$(realpath -e -- "$(mise where "$pin")/bin/omp" 2>/dev/null) && [ -x "$omp" ] || {
+    echo "$me: mise has no executable bin/omp for $pin" >&2
+    exit 1
+  }
+  omp_named="omp $pin"
+  mise_data=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}
+  run_omp() { (cd "$dest" && HOME=$home MISE_DATA_DIR=$mise_data OMP_PROFILE=$profile mise x "$pin" -- "$omp" "$@"); }
+fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
@@ -147,7 +174,7 @@ listing=$(run_omp plugin list --json)
 plugin=$(jq -c --arg name "$name" '[.npm[]? | select(.name == $name)]' <<<"$listing")
 if ! jq -e --arg v "$version" 'length == 1 and .[0].version == $v and .[0].enabled == true' \
   <<<"$plugin" >/dev/null; then
-  echo "$me: omp $pin plugin list under HOME=$home OMP_PROFILE=$profile does not show $name@$version enabled: $plugin" >&2
+  echo "$me: $omp_named plugin list under HOME=$home OMP_PROFILE=$profile does not show $name@$version enabled: $plugin" >&2
   exit 1
 fi
 installed=$(jq -r '.[0].path' <<<"$plugin")

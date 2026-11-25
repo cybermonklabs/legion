@@ -1,0 +1,26 @@
+kind: Changed
+body: |-
+  The tester's role prompt lets CI do its job: the tester boots and runs the app's real workflows
+  like a user would, reads no check run, re-runs no CI and waits on no CI, and a red at the head
+  ends no round of its. The reviewer's role prompt gives the reviewer in `reviewing` one re-run of
+  a red check the change did not make, at the head of its pull request, after it records the
+  failure; the architect's prompt keeps the decision and gives the re-run to the reviewer in
+  `reviewing`, the implementer while it holds `implementing` and the merger in `merging` at a head
+  its own forward merge made, and the implementer's acts on a red only while it holds
+  `implementing` and waits on CI for nothing but the waits
+  `skill://legion-worker/references/red-at-the-head.md` gives for a red it acts on. The
+  merger's prompt queues a `failed_checks` ejection at an unchanged head once more, after it
+  records it, and sends the work back only on the second such removal. The reviewer's prompt
+  reads the head's checks as GitHub counts them for the pull request, never every check run at
+  the commit: a required red the change made is a `REQUEST_CHANGES`, and one it did not make takes
+  the head's one re-run first. It neither waits for nor re-runs a check the base does not require
+  for the approval, and approves over a red of it the change did not make. Every phase worker's
+  prompt gives the re-run to the reviewer in `reviewing`, the implementer while it holds
+  `implementing` or the merger in `merging` at a head its own forward merge made, and never to the
+  tester. The merger re-runs only a failed `pull_request` check, once at that head and after it
+  records the failure in a `dispatch comment` on the issue, and re-runs no group build and nothing
+  at any other head. The reviewer's and the implementer's prompts act on a failed job of the head's
+  own `pull_request` run once that run has completed, whether or not GitHub's checks of the pull
+  request list it yet.
+custom:
+  Issue: pr3514
