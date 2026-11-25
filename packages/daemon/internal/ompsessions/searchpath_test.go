@@ -245,6 +245,29 @@ func TestThePoolURLRefusesASocketDirectoryWithAComma(t *testing.T) {
 	}
 }
 
+// poolUser is the --user the pool's container runs as, the test's own uid and gid, so that
+// PgBouncer can make its socket in the test's directory, which is mode 0700. A test run as root is
+// refused here: PgBouncer stops at a uid of 0 ("PgBouncer should not run as root"), so the pool
+// would end before it answered a connection and say only that.
+func poolUser(uid, gid int) (string, error) {
+	if uid == 0 {
+		return "", errors.New("the test runs as root, and PgBouncer refuses to (\"PgBouncer should not run as root\"), while " +
+			"the pool must run as the test's own user to make its socket in the test's own directory: run the test as another user")
+	}
+	return fmt.Sprintf("%d:%d", uid, gid), nil
+}
+
+// TestThePoolRefusesToRunAsRoot: the pool's user is the test's own, and root is refused by a
+// message that names PgBouncer's own refusal.
+func TestThePoolRefusesToRunAsRoot(t *testing.T) {
+	if user, err := poolUser(1001, 118); err != nil || user != "1001:118" {
+		t.Fatalf("poolUser(1001, 118) = %q, %v; want 1001:118", user, err)
+	}
+	if _, err := poolUser(0, 0); err == nil || !strings.Contains(err.Error(), "PgBouncer should not run as root") {
+		t.Fatalf("poolUser(0, 0) = %v; want a refusal naming PgBouncer's own refusal of root", err)
+	}
+}
+
 // startPool starts PgBouncer 1.25.2 (PoolImage) with docker in front of the server direct names,
 // set up as settings says, and answers the URL that reaches direct's database through it, once a
 // connection through it has opened. The container is removed when the test ends, and its removal
@@ -254,10 +277,13 @@ func TestThePoolURLRefusesASocketDirectoryWithAComma(t *testing.T) {
 // docker mounts into the container, and on no TCP port. A port is the machine's: one the test
 // probed and released for PgBouncer to bind by number was taken by another process in between on
 // a shared box (dispatch://INFRA-3904), and a port Docker picks comes from its own record, which
-// picked one already held (testport.LoopbackPorts). The socket's directory is the test's alone,
-// mode 0700, so no other user's process can bind there before PgBouncer does, and PgBouncer runs
-// as the test's own user so that it can. The mount needs docker's daemon on this machine, as the
-// host network below already does.
+// picked one already held (docs/testing.md, on the host side of a port Docker publishes). The
+// socket's directory is the test's alone, mode 0700, so no other user's process can bind there
+// before PgBouncer does, and PgBouncer runs as the test's own user (poolUser) so that it can. The
+// container runs with SELinux labelling off (--security-opt label=disable), so that on a host
+// that enforces SELinux it can make its socket in the mounted directory, which carries no
+// container label; on a host without SELinux the option changes nothing. The mount needs docker's
+// daemon on this machine, as the host network below already does.
 //
 // One wildcard [databases] entry serves every database on the server under its own name, and the
 // pool's auth_file holds the one login direct names, so a login that is no superuser, such as a
@@ -280,12 +306,16 @@ func startPool(t *testing.T, docker, direct string, settings pool) string {
 	if host == "localhost" {
 		host = "127.0.0.1"
 	}
-	quote := func(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 	socketDir := testtmp.Dir(t, ".s.PGSQL."+poolPort)
 	address, err := poolURL(server.User, server.Password, server.Database, socketDir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	user, err := poolUser(os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	quote := func(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 	config := strings.Join([]string{
 		"[databases]",
 		fmt.Sprintf("* = host=%s port=%d", host, server.Port),
@@ -313,7 +343,7 @@ func startPool(t *testing.T, docker, direct string, settings pool) string {
 		}
 	})
 	run := exec.Command(docker, "run", "-d", "--name", name, "--network", "host", "--cpus", "1", "--memory", "256m",
-		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "--mount", "type=bind,src="+socketDir+",dst=/pool",
+		"--user", user, "--security-opt", "label=disable", "--mount", "type=bind,src="+socketDir+",dst=/pool",
 		"-e", "POOL_CONFIG", "-e", "POOL_USERS", "--entrypoint", "sh", PoolImage, "-c",
 		`printf "%s\n" "$POOL_USERS" > /tmp/userlist.txt && printf "%s" "$POOL_CONFIG" > /tmp/pgbouncer.ini && exec pgbouncer /tmp/pgbouncer.ini`)
 	run.Env = append(os.Environ(), "POOL_CONFIG="+config, "POOL_USERS="+quote(server.User)+" "+quote(server.Password))
