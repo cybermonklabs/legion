@@ -3,17 +3,14 @@ package api
 import (
 	"net/http"
 	"reflect"
-	"slices"
 	"testing"
-
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 func TestAnUnboundPersonalDeployNamesItsProvedAccount(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	minted := rig.asPerson(t, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{
-		"name": "unbound-deployer", "scopes": []string{model.ScopeReadWrite},
+		"name": "unbound-deployer", "scopes": []string{},
 	})
 	if minted.Code != http.StatusCreated {
 		t.Fatalf("mint the personal token: %d %s", minted.Code, minted.Body)
@@ -22,7 +19,7 @@ func TestAnUnboundPersonalDeployNamesItsProvedAccount(t *testing.T) {
 	before := rig.serve(brokerRequest(t, http.MethodGet, "/api/v1/whoami", nil, "Bearer "+token, ""))
 	written := rig.serve(brokerRequest(t, http.MethodPost, "/api/v1/deploys", deployBody("worker", afterMergeC1), "Bearer "+token, ""))
 	if written.Code != http.StatusCreated {
-		t.Fatalf("the read-write token records a deploy: %d %s", written.Code, written.Body)
+		t.Fatalf("the unbound personal token records a deploy: %d %s", written.Code, written.Body)
 	}
 	listed := rig.serve(brokerRequest(t, http.MethodGet, "/api/v1/deploys?repo=acme/widgets", nil, "Bearer "+token, ""))
 	if listed.Code != http.StatusOK {
@@ -36,7 +33,7 @@ func TestAnUnboundPersonalDeployNamesItsProvedAccount(t *testing.T) {
 	if writer.Kind != "user" || writer.ID != brokerTestPerson || !writer.Proven || writer.Act == nil {
 		t.Fatalf("deploys must name the token's proved account and its act, got %+v", writer)
 	}
-	if writer.Act.TokenID == "" || writer.Act.TokenName != "unbound-deployer" || !slices.Equal(writer.Act.Scopes, []string{model.ScopeReadWrite}) {
+	if writer.Act.TokenID == "" || writer.Act.TokenName != "unbound-deployer" || len(writer.Act.Scopes) != 0 {
 		t.Fatalf("the personal token's audit provenance = %+v", writer.Act)
 	}
 	after := rig.serve(brokerRequest(t, http.MethodGet, "/api/v1/whoami", nil, "Bearer "+token, ""))
@@ -64,15 +61,11 @@ func TestADeployKeepsTheCredentialProvedSession(t *testing.T) {
 func TestDeployAttributionDoesNotChangeAReadOnlyTokensScope(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
-	minted := rig.asPerson(t, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{
-		"name": "read-only-deployer", "scopes": []string{model.ScopeRead},
-	})
-	if minted.Code != http.StatusCreated {
-		t.Fatalf("mint the read-only token: %d %s", minted.Code, minted.Body)
-	}
-	token := decodeBody[struct{ Token string `json:"token"` }](t, minted).Token
+	caller := newBrokerCaller(t)
+	const token = "the-read-only-deployers-token"
+	rig.broker.Says(token, readOnlyToken(caller.jkt))
 	for range 2 {
-		refused := rig.serve(brokerRequest(t, http.MethodPost, "/api/v1/deploys", deployBody("worker", afterMergeC1), "Bearer "+token, ""))
+		refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/deploys", token, deployBody("worker", afterMergeC1)))
 		if refused.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, refused).Code != "READ_ONLY_TOKEN" {
 			t.Fatalf("the unchanged read-only token must remain refused: %d %s", refused.Code, refused.Body)
 		}
