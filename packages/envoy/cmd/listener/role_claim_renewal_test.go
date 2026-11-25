@@ -175,11 +175,11 @@ func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T
 // never renewed while its holder kept registering.
 //
 // It runs serially, before the package's parallel tests start (listenerTestParallelism), because
-// the budget it holds the registration to times the registration's own work: under -race about
-// 0.7 s of one core on the build cluster, most of it the in-process NATS server checking the
-// session consumer's filter subjects. Beside seven parallel tests on CI's four-core runner that
-// work got a fraction of a core and ran past the budget, though the registration did no more work
-// than before.
+// the budget it holds the registration to times the registration's own work. Under -race the
+// registration takes about 0.7 s on four idle CPUs of the build cluster, and most of its CPU is
+// the in-process NATS server checking the session consumer's filter subjects. Beside seven
+// parallel tests on CI's four-core runner that work got a fraction of a core and ran past the
+// budget, though the registration did no more work than before.
 func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testing.T) {
 	const (
 		role      = "legion-controller"
