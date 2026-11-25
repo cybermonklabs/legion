@@ -255,6 +255,13 @@ func TestAnEventsParentIsInTheCopyBeforeItsDecisions(t *testing.T) {
 // of its project in the database it is in.
 func copyRuntime(t *testing.T, pool *store.Pool, board *copyBoard, slots int) *workflowRuntime {
 	t.Helper()
+	return boundedCopyRuntime(t, pool, board, slots, slots)
+}
+
+// boundedCopyRuntime is copyRuntime under a starting cap of start and a ceiling of ceiling
+// (admission_cap and admission_ceiling).
+func boundedCopyRuntime(t *testing.T, pool *store.Pool, board *copyBoard, start, ceiling int) *workflowRuntime {
+	t.Helper()
 	ctx := context.Background()
 	st, err := store.Open(ctx, pool.Config().ConnString())
 	if err != nil {
@@ -262,8 +269,8 @@ func copyRuntime(t *testing.T, pool *store.Pool, board *copyBoard, slots int) *w
 	}
 	t.Cleanup(st.Close)
 	registerProjectController(t, pool, "CAPTURE")
-	cfg := config.Config{Project: "CAPTURE", DispatchURL: dispatchBoard(t, board.serve(t)), AdmissionCap: slots,
-		Projects: map[string]config.Project{"CAPTURE": {}}}
+	cfg := config.Config{Project: "CAPTURE", DispatchURL: dispatchBoard(t, board.serve(t)), AdmissionCap: start,
+		AdmissionCeiling: ceiling, Projects: map[string]config.Project{"CAPTURE": {}}}
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", workflowDispatchToken, nil, newRepositories(cfg.Project, cfg.RepositoryRenames),
 		appauth.NewInstalled(), slog.New(slog.NewTextHandler(io.Discard, nil)), tokens, repositoriesGitHub(t), nil, time.Now, nil, nil)

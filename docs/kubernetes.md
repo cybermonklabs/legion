@@ -3579,7 +3579,7 @@ The migrations recorded above this one are these.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, true on the roots whose re-admission has still to bring their members back, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
-20261124040825_admission_cap, of dispatch://INFRA-5616, adds the table `project_admission_cap_changes`, empty, and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release never reads, so it admits under its configured cap; it carries no way back.
+20261124040825_admission_cap, of dispatch://INFRA-5616, adds the table `project_admission_cap_changes`, empty, and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release never reads, so it admits under its configured cap; it carries no way back, and a rollback to a release before it takes the step of its own section first, `admission_ceiling` out of `legion.yaml` ([Moving the admission cap](#moving-the-admission-cap)).
 20261124060500_issue_priority adds `issues.priority`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since an earlier release reads none of it, a row that release updates keeps the priority it held, and only a row it inserts gets null.
 20261124073512_claim_cause_times adds `claims.last_death_at`, `claims.last_start_failure_at`, `claims.last_death_digest` and `claims.last_start_failure_digest`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; it carries no way back.
 20261124143026_issue_release_teardown, of dispatch://INFRA-3149, adds `issue_releases.teardown` at its default, `reached`, on every mark it finds, adds `pod_releases.issue_release_id`, null on every row it finds, with a unique index of the rows that name a mark, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release names its columns in every read and write of `issue_releases` and `pod_releases` and its inserts leave both columns to their defaults.
@@ -8523,7 +8523,7 @@ Every pass reads the cap again, and admits under the smaller of the cap set and 
 A raise starts the issues that wait for the slots it adds.
 A lower cap stops nothing that runs: it starts no new issue until fewer issues hold a slot than it allows.
 
-The daemon's store keeps one row for each change (`project_admission_cap_changes`): the cap set, or none for a clear, the caps the daemon admitted under before and after it, the ceiling then, who made it, why, and when, stamped as the change applies, so the times never fall as the ids rise.
+The daemon's store keeps one row for each change (`project_admission_cap_changes`): the cap set, or none for a clear, the caps the daemon admitted under before and after it, the ceiling then, who made it, why, and when, from the wall clock as the change applies, so the changes are stamped in the order they apply.
 Who is the controller, with the session it acted from, or the operator.
 The record is in the store, so the cap holds across a restart; a restart under a lower `admission_ceiling` admits under that ceiling, and the cap set comes back when the ceiling is raised again.
 A set of the cap that stands, and a clear where none stands, change nothing: the daemon writes no row and logs one Debug line.
@@ -8539,7 +8539,13 @@ Each change is `{id, cap?, capBefore, capAfter, ceiling, setBy, setAt, reason}`,
 Those names are the record the project's Evals tab reads (dispatch://INFRA-5616/spec#b-r7-tick-log, dispatch://INFRA-979/spec#b-r39), so they stay as they are.
 `legion state` prints the cap on its `admission cap` line.
 
-An earlier release reads no row of `project_admission_cap_changes` and admits under its configured cap, so a rollback needs no statement; a roll forward reads the table again.
+A rollback below this release has one step of its own.
+**`admission_ceiling` must come out of `legion.yaml` first.**
+An earlier loader knows no such key and refuses the file by name (`unknown key admission_ceiling`), so its daemon does not start while the key stands.
+Take the key out before the earlier image is pinned, and `legion config check` on the earlier image reads the file clean.
+A file that never set the key needs nothing, and `LEGION_ADMISSION_CEILING` needs no step, since an earlier release reads no such variable.
+The database needs no statement: an earlier release reads no row of `project_admission_cap_changes` and admits under its configured `admission_cap`.
+A roll forward reads the table again, so a cap set before the rollback is in force again from the roll forward's first pass.
 
 ### Liveness rules
 

@@ -141,12 +141,18 @@ type SummaryClaim = NonNullable<LegionIssue["architect"]>;
 const pauseActorWords = (session: string | undefined): string =>
   session === undefined ? "the operator" : `the controller (session ${session})`;
 
-/** A pause as the summary's line names it: its id, since when, who paused and why (`pauseWords`
- * in `packages/daemon/cmd/legion/project.go`). The reason is a person's words, quoted as JSON, so
- * a newline or an instruction in it reads as the text it is and cannot pose as a line of the
- * summary. */
+/** A person's words as the summary quotes them: JSON's quoting, with U+0085, U+2028 and U+2029
+ * escaped too, which JSON leaves raw and Go's `%q` in `legion state` escapes. A newline or an
+ * instruction in the words reads as the text it is and cannot pose as a line of the summary. */
+const quotedWords = (words: string): string =>
+  JSON.stringify(words).replace(/[\u0085\u2028\u2029]/g, (separator) =>
+    separator === "\u0085" ? "\\u0085" : separator === "\u2028" ? "\\u2028" : "\\u2029"
+  );
+
+/** A pause as the summary's line names it: its id, since when, who paused and why, quoted
+ * (`pauseWords` in `packages/daemon/cmd/legion/project.go`). */
 const pauseWords = (id: number, since: string, by: string, reason: string): string =>
-  `pause ${id} since ${since} by ${by}: ${JSON.stringify(reason)}`;
+  `pause ${id} since ${since} by ${by}: ${quotedWords(reason)}`;
 
 /**
  * The summary's line on the project's pause, in the words `legion state` prints for an operator
@@ -242,8 +248,8 @@ const SUMMARY_LEGEND =
   "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
   "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
-  "admission cap <cap in force> [free <n>] [ceiling <deployment's cap>]; cap set <cap> by <who> at " +
-  "<time>: <reason>, the cap the controller or the operator set while the daemon runs " +
+  "admission cap <cap in force> [free <n>] [ceiling <admission_ceiling>]; cap set <cap> by <who> at " +
+  '<time>: "<reason>", quoted, the cap the controller or the operator set while the daemon runs ' +
   "and that stands, absent where none stands; active/waiting/trees/blocked/held, trees <root>... naming the root of every " +
   "live tree and held <issue> <reason> [by <issue>...] one per issue the workflow holds that is " +
   "neither active nor waiting; wakes waiting <count> [next <earliest due time>], the " +
@@ -292,7 +298,7 @@ function stateSummary(state: LegionState): string {
         override.setBy.kind === "controller" ? override.setBy.session : undefined
       );
       lines.push(
-        `cap set ${override.cap} by ${by} at ${override.setAt}: ${JSON.stringify(override.reason)}`
+        `cap set ${override.cap} by ${by} at ${override.setAt}: ${quotedWords(override.reason)}`
       );
     }
     lines.push(

@@ -501,9 +501,9 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // setAdmissionCap appends the change the fact makes (store.RecordAdmissionCapChangeTx) with the cap
 // the passes admitted under before it and the one they admit under from it on, and logs it once it
 // commits: who made it, why, the cap it set or that it cleared, the caps before and after it and
-// the deployment's ceiling. It stamps the change's time itself, from admission's clock, inside the
-// fact's transaction and so under intake's one lock: a change that waited for its turn is stamped
-// when it applies, so no record's time is earlier than the time of a record before it. A change
+// the deployment's ceiling. It stamps the change's time itself, from admission's wall clock,
+// inside the fact's transaction and so under intake's one lock: a change that waited for its turn
+// is stamped when it applies, so changes are stamped in the order they apply. A change
 // that changes nothing writes no row and logs one Debug line: a set of the cap that stands, and a
 // clear where no cap stands. It refuses nothing: the routes refused a cap above the ceiling before
 // the fact, and capAt admits under the smaller of the two whatever the row holds.

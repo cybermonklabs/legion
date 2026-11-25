@@ -10,12 +10,11 @@
 -- the daemon admitted under before the change and from it on, and ceiling is the deployment's
 -- ceiling at the change (legion.yaml's admission_ceiling, else LEGION_ADMISSION_CEILING, else
 -- admission_cap), so each row reads on its own as from what to what. Who changed it has a pause's
--- shape
--- (project_pauses_by_session): the kind `controller` with the controller's session id, or the kind
+-- shape (project_pauses_by_session): the kind `controller` with the controller's session id, or the kind
 -- `operator` with no session. reason is why, which may not be white space alone and holds at most
 -- 2,048 characters (store's AdmissionCapReasonMax), since the state serves the newest 50 reasons
--- on every read. changed_at is stamped inside the fact's transaction, under intake's one lock, so
--- it never falls as id rises.
+-- on every read. changed_at is the wall clock, stamped inside the fact's transaction under
+-- intake's one lock, so changes are stamped in the order they apply.
 --
 -- The cap in force is read off the project's newest row (store's AdmissionCapTx): its cap where it
 -- set one, and none after a clear. The daemon admits under the smaller of that cap and the
@@ -28,8 +27,10 @@
 -- No outbox kind is added, so outbox_kind_check stays as the last migration that wrote it left it.
 --
 -- Migrations here are forward-only and this one has no down file. A daemon of an earlier release on
--- the same database reads no row of the table and admits under its configured cap, so a rollback
--- needs no statement: the table stays, and a roll forward reads it again.
+-- the same database reads no row of the table and admits under its configured cap, so the table
+-- needs no statement on a rollback: it stays, and a roll forward reads it again. legion.yaml does:
+-- an earlier release refuses the key admission_ceiling, so it comes out of the file first
+-- (docs/kubernetes.md, "Moving the admission cap").
 create table project_admission_cap_changes (
   id bigserial primary key,
   project text not null check (project ~ '^[A-Z][A-Z0-9]*$'),

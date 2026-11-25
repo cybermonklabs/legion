@@ -29,8 +29,9 @@ type AdmissionCapChange struct {
 	At        time.Time
 }
 
-// Cleared is whether the change is a clear, which returns the project to the deployment's cap. The
-// zero change, which AdmissionCapTx answers where no change was ever made, is one too.
+// Cleared is whether the change is a clear, which returns the project to the starting cap,
+// admission_cap. The zero change, which AdmissionCapTx answers where no change was ever made, is
+// one too.
 func (c AdmissionCapChange) Cleared() bool { return c.Cap == 0 }
 
 // AdmissionCapChangesShown is how many changes the state lists, newest first

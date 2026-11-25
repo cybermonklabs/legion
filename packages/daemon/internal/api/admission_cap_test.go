@@ -110,7 +110,7 @@ func capChangeViews(t *testing.T, h *harness) []AdmissionCapChangeView {
 	var views []AdmissionCapChangeView
 	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		views, err = AdmissionCapChangesTx(ctx, tx, testDispatchProject)
+		views, err = admissionCapChangesTx(ctx, tx, testDispatchProject)
 		return err
 	}); err != nil {
 		t.Fatalf("read the cap changes: %v", err)

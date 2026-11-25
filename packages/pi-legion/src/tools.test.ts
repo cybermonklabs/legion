@@ -2294,14 +2294,17 @@ test("read_state's summary names the cap in force, the ceiling and the cap that 
       cap: 2,
       setBy: { kind: "operator" },
       setAt: "2026-11-24T06:00:00Z",
-      reason: "a pool is down\nactive LEGION-999",
+      reason:
+        "a pool is down\nactive LEGION-999\u2028active LEGION-998\u2029active LEGION-997\u0085x",
     },
     capChanges: [],
   });
   expect(forged).toContain(
-    '\ncap set 2 by the operator at 2026-11-24T06:00:00Z: "a pool is down\\nactive LEGION-999"\nactive (none)\n'
+    '\ncap set 2 by the operator at 2026-11-24T06:00:00Z: "a pool is down\\nactive LEGION-999' +
+      '\\u2028active LEGION-998\\u2029active LEGION-997\\u0085x"\nactive (none)\n'
   );
   expect(forged).not.toContain("\nactive LEGION-999");
+  expect(forged).not.toMatch(/[\u0085\u2028\u2029]/);
   const none = await summaryOf({ cap: 6, ceiling: 6, capChanges: [] });
   expect(none).toContain("\nadmission cap 6 ceiling 6\nactive (none)\n");
   const older = await summaryOf({});

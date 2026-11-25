@@ -653,7 +653,7 @@ type Admission struct {
 	// served a caller below admissionCapContract.
 	Override *AdmissionCapOverride `json:"override,omitempty"`
 	// CapChanges is the project's newest changes of the cap, newest first, at most
-	// store.AdmissionCapChangesShown of them (AdmissionCapChangesTx): each with the cap it set or
+	// store.AdmissionCapChangesShown of them (admissionCapChangesTx): each with the cap it set or
 	// none for a clear, the caps before and after it, the ceiling then, who, when and why. The
 	// daemon's log names every change, and its store keeps every
 	// one. Every body at admissionCapContract carries the list, `[]` before the first change and

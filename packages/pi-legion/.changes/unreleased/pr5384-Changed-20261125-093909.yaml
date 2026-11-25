@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    `read_state`'s summary quotes a pause's reason on its `paused:` and `last pause:` lines, as it
+    quotes the reason of the admission cap that stands: `… by the operator: "<reason>"`, with JSON's
+    escapes and U+0085, U+2028 and U+2029 escaped too, so no reason can pose as a line of the
+    summary.
+time: 2026-11-25T09:39:09.104934281Z
+custom:
+    Issue: pr5384

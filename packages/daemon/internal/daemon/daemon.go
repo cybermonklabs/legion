@@ -758,16 +758,15 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			err = nil
 			listener.Close()
 		case err == nil:
-			log.Info("legion daemon started", append([]any{
+			words := []any{
 				"project", cfg.Project,
 				"address", listener.Addr().String(),
 				"workerStream", s.stream.Addr(),
 				"runtime", cfg.Runtime.Name,
-			}, append(bootAdmissionCap(ctx, st, cfg),
-				"migrationsApplied", applied,
-				"claims", s.supervisor.count(),
-				"boot", bootID,
-			)...)...)
+			}
+			words = append(words, bootAdmissionCap(starting, st, cfg)...)
+			words = append(words, "migrationsApplied", applied, "claims", s.supervisor.count(), "boot", bootID)
+			log.Info("legion daemon started", words...)
 			if workflow != nil {
 				log.Info("legion workflow boot stage", "stage", "api")
 			}
@@ -2744,29 +2743,31 @@ func (l *servingLatch) reach() { l.served.Store(true) }
 // on whatever goroutine a probe's request runs on.
 func (l *servingLatch) serving() bool { return l.served.Load() }
 
-// bootAdmissionCap is the boot line's words for the admission cap (dispatch://INFRA-5616):
-// admissionStart, the deployment's starting cap; admissionCeiling, its admission_ceiling;
-// admissionCap, the cap the passes admit under, which a cap set while an earlier boot ran keeps
-// apart from the starting cap until a person clears it or sets another; and, where such a cap
-// stands, who set it, when and why. A change of admission_cap leaves a cap that stands in force,
-// and this line is where an operator who changed it sees why. A failed read logs the bounds and
-// the error, and never stops the boot.
+// bootAdmissionCap is the boot line's words for the admission cap (dispatch://INFRA-5616): the
+// deployment's starting cap and ceiling, the cap in force, and the cap that stands, with who set
+// it, when and why. A change of admission_cap leaves a standing cap in force, and this line shows
+// why. It reads read-only under ctx, the boot's budget, through api.AdmissionCapStateTx, the
+// reading every pass makes. A failed read logs its error and never stops the boot.
 func bootAdmissionCap(ctx context.Context, st *store.Store, cfg config.Config) []any {
 	words := []any{"admissionStart", cfg.AdmissionCap, "admissionCeiling", cfg.AdmissionCeiling}
-	var standing store.AdmissionCapChange
-	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+	var inForce int
+	var standing *api.AdmissionCapOverride
+	if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		standing, err = store.AdmissionCapTx(ctx, tx, cfg.Project)
+		inForce, standing, err = api.AdmissionCapStateTx(ctx, tx, cfg.Project, cfg.AdmissionCap, cfg.AdmissionCeiling)
 		return err
 	}); err != nil {
 		return append(words, "admissionCapReadError", err.Error())
 	}
-	words = append(words, "admissionCap", store.EffectiveAdmissionCap(cfg.AdmissionCap, cfg.AdmissionCeiling, standing))
-	if standing.Cleared() {
+	words = append(words, "admissionCap", inForce)
+	if standing == nil {
 		return words
 	}
-	return append(words, "admissionCapSet", standing.Cap, "admissionCapSetBy", string(standing.By.Kind),
-		"admissionCapSetAt", standing.At.Format(time.RFC3339), "admissionCapReason", standing.Reason)
+	words = append(words, "admissionCapSet", standing.Cap, "admissionCapSetBy", standing.SetBy.Kind)
+	if standing.SetBy.Session != "" {
+		words = append(words, "admissionCapSetBySession", standing.SetBy.Session)
+	}
+	return append(words, "admissionCapSetAt", standing.SetAt.Format(time.RFC3339), "admissionCapReason", standing.Reason)
 }
 
 // serve runs the API on the listener the daemon already took until ctx is done or the server

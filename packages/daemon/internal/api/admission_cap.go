@@ -136,7 +136,8 @@ func (s *server) projectAdmissionCap(w http.ResponseWriter, r *http.Request) {
 }
 
 // projectAdmissionCapClear is the controller's clear_admission_cap, which returns the project to
-// the deployment's cap whoever set the cap it clears. Its answer is a plugin's, as a set's is.
+// the starting cap, admission_cap, whoever set the cap it clears. Its answer is a plugin's, as a
+// set's is.
 func (s *server) projectAdmissionCapClear(w http.ResponseWriter, r *http.Request) {
 	var req ProjectAdmissionCapClearRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) {
@@ -259,13 +260,13 @@ func FillAdmissionCapTx(ctx context.Context, tx pgx.Tx, project string, start, c
 	if admission.Cap, admission.Override, err = AdmissionCapStateTx(ctx, tx, project, start, ceiling); err != nil {
 		return err
 	}
-	admission.CapChanges, err = AdmissionCapChangesTx(ctx, tx, project)
+	admission.CapChanges, err = admissionCapChangesTx(ctx, tx, project)
 	return err
 }
 
-// AdmissionCapChangesTx is, through tx, the state's `admission.capChanges`: project's newest
+// admissionCapChangesTx is, through tx, the state's `admission.capChanges`: project's newest
 // changes of the cap, newest first, at most store.AdmissionCapChangesShown of them. Never nil.
-func AdmissionCapChangesTx(ctx context.Context, tx pgx.Tx, project string) ([]AdmissionCapChangeView, error) {
+func admissionCapChangesTx(ctx context.Context, tx pgx.Tx, project string) ([]AdmissionCapChangeView, error) {
 	changes, err := store.AdmissionCapChangesTx(ctx, tx, project, store.AdmissionCapChangesShown)
 	if err != nil {
 		return nil, err
