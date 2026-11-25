@@ -16,7 +16,12 @@ body: |-
   and so the kept decision, of every block it leaves unchanged after them. A `[^label]` that a
   `doc-edit` insert or replace writes is a footnote reference where the document, or any operation
   of the same batch, defines that label, so `doc-read` prints `[^1]` with no backslash; one that no
-  definition names is stored as before.
+  definition names is stored as before. `dispatch edit-ask` takes an option sent back as its stored
+  line, inline code included, as unchanged, writes an option's or a question's inline code as code
+  rather than as escaped backticks, and a `doc-edit` move of an option out of an open ask is
+  refused `400 INVALID_OP`, naming the ask. In the browser editor, text typed after a mark's
+  closing `**`, `*` or backtick is no longer under that mark, so typing `**Status quo is not an
+  excuse.** Reject historical mistakes.` stores exactly that.
 time: 2026-11-25T10:42:08Z
 custom:
     Issue: INFRA-4345
