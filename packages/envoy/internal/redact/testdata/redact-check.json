@@ -312,7 +312,7 @@
         "test": "print-loadtest.checkNATSServerName.varz"
       },
       {
-        "holder": "(github.com/sjawhar/envoy/loadtest.dispatchCoverage).readCoverage struct{Identity redact.RemoteText \"json:\\\"identity\\\"\"; Place redact.RemoteText \"json:\\\"place\\\"\"; Model redact.RemoteText \"json:\\\"model\\\"\"}",
+        "holder": "(github.com/sjawhar/envoy/loadtest.dispatchCoverage).readCoverage struct{model.SearchCoverage; Identity *redact.RemoteText \"json:\\\"identity\\\"\"; Place *redact.RemoteText \"json:\\\"place\\\"\"; Model *redact.RemoteText \"json:\\\"model\\\"\"}",
         "test": "print-loadtest.dispatchCoverage.readCoverage.embedder"
       },
       {
@@ -4117,6 +4117,150 @@
         "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
         "files": ["packages/envoy/cmd/listener/edge_repositories_url_join_test.go"],
         "capture": "listener.edge-url/unparsed"
+      },
+      {
+        "row": "dev-proxy-stands-enroll-url-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/cmd/dev-proxy-stands/enroll_url_join_test.go"],
+        "capture": "dev-proxy-stands.enroll-url/unparsed"
+      },
+      {
+        "row": "dev-proxy-stands-enroll-refusal-url-user-information",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/cmd/dev-proxy-stands/enroll_refusal_url_test.go"],
+        "capture": "dev-proxy-stands.enroll-refusal-url/user-information"
+      },
+      {
+        "row": "dev-proxy-stands-enroll-refusal-url-query",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/cmd/dev-proxy-stands/enroll_refusal_url_test.go"],
+        "capture": "dev-proxy-stands.enroll-refusal-url/query"
+      },
+      {
+        "row": "loadtest-answer-members-cached-decode",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/loadtest/replay_decode_shapes_test.go"],
+        "capture": "loadtest.answer-members/cached-decode"
+      },
+      {
+        "row": "loadtest-api-url-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": [
+          "packages/envoy/loadtest/api_url_join_test.go",
+          "packages/envoy/loadtest/join_stand_test.go"
+        ],
+        "capture": "loadtest.api-url/unparsed"
+      },
+      {
+        "row": "listenerclient-url-sessions-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/loadtest/listenerclient/url_join_test.go"],
+        "capture": "listenerclient.url/sessions-unparsed"
+      },
+      {
+        "row": "listenerclient-url-publish-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/loadtest/listenerclient/url_join_test.go"],
+        "capture": "listenerclient.url/publish-unparsed"
+      },
+      {
+        "row": "listenerclient-refusal-url-credentials",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/loadtest/listenerclient/refusal_url_test.go"],
+        "capture": "listenerclient.refusal-url/credentials"
+      },
+      {
+        "row": "loadtest-guard-url-dispatch-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": [
+          "packages/envoy/loadtest/guard_url_join_test.go",
+          "packages/envoy/loadtest/join_stand_test.go"
+        ],
+        "capture": "loadtest.guard-url/dispatch-unparsed"
+      },
+      {
+        "row": "loadtest-guard-url-nats-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": [
+          "packages/envoy/loadtest/guard_url_join_test.go",
+          "packages/envoy/loadtest/join_stand_test.go"
+        ],
+        "capture": "loadtest.guard-url/nats-unparsed"
+      },
+      {
+        "row": "loadtest-dashboard-url-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": [
+          "packages/envoy/loadtest/dashboard_url_join_test.go",
+          "packages/envoy/loadtest/join_stand_test.go"
+        ],
+        "capture": "loadtest.dashboard-url/unparsed"
+      },
+      {
+        "row": "loadtest-dashboard-url-reparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": [
+          "packages/envoy/loadtest/dashboard_url_join_test.go",
+          "packages/envoy/loadtest/join_stand_test.go"
+        ],
+        "capture": "loadtest.dashboard-url/reparsed"
+      },
+      {
+        "row": "loadtest-rooms-url-proxy-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": [
+          "packages/envoy/loadtest/rooms_url_join_test.go",
+          "packages/envoy/loadtest/join_stand_test.go"
+        ],
+        "capture": "loadtest.rooms-url/proxy-unparsed"
+      },
+      {
+        "row": "loadtest-rooms-url-pprof-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": [
+          "packages/envoy/loadtest/rooms_url_join_test.go",
+          "packages/envoy/loadtest/join_stand_test.go"
+        ],
+        "capture": "loadtest.rooms-url/pprof-unparsed"
+      },
+      {
+        "row": "loadtest-sampler-url-pprof-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": [
+          "packages/envoy/loadtest/sampler_url_join_test.go",
+          "packages/envoy/loadtest/join_stand_test.go"
+        ],
+        "capture": "loadtest.sampler-url/pprof-unparsed"
+      },
+      {
+        "row": "loadtest-sampler-url-heap-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": [
+          "packages/envoy/loadtest/sampler_url_join_test.go",
+          "packages/envoy/loadtest/join_stand_test.go"
+        ],
+        "capture": "loadtest.sampler-url/heap-unparsed"
+      },
+      {
+        "row": "loadtest-sampler-url-nats-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": [
+          "packages/envoy/loadtest/sampler_url_join_test.go",
+          "packages/envoy/loadtest/join_stand_test.go"
+        ],
+        "capture": "loadtest.sampler-url/nats-unparsed"
+      },
+      {
+        "row": "loadtest-loop-listener-url-refused",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/loadtest/loop_listener_url_test.go"],
+        "capture": "loadtest.loop-listener-url/refused"
+      },
+      {
+        "row": "loadtest-loop-listener-url-driver-line",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/loadtest/loop_listener_url_test.go"],
+        "capture": "loadtest.loop-listener-url/driver-line"
       }
     ],
     "boundary_fields": {
@@ -6882,7 +7026,7 @@
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestAnArtifactListingThatDoesNotDecodePrintsNoTokenItEchoes",
-      "production": "loadtest replayFetcher.run: an artifact listing that does not decode is named, and no value of it printed"
+      "production": "loadtest readListing, which replayFetcher.run reads an artifact listing through: a listing that does not decode is named, and no value of it printed (decodeCached)"
     },
     {
       "id": "oidc-discovery-references",
@@ -8562,7 +8706,7 @@
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestABundleHoldsNoIDThatEchoesItsRequest/listing",
-      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).run refuses an artifact listing that names an artifact by an id out of Dispatch's shape (listingInShape), so no bundle keeps one and the seed's docText prints none"
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).run refuses an artifact listing that names an artifact by an id out of Dispatch's shape (readListing, whose decode takes an artifact's id as a dispatchID), so no bundle keeps one and the seed's docText prints none"
     },
     {
       "id": "loadtest-answer-members-bundle-ask",
@@ -8653,28 +8797,28 @@
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestTheEmbeddingGatesRecordNamesTheEmbedderAsTheRuleReadsIt",
-      "production": "loadtest dispatchCoverage.readCoverage: the embedder's identity, place and model held as redact.RemoteText with the read's record, so the gate's record (coverageRecord) names them as the rule reads them"
+      "production": "loadtest dispatchCoverage.readCoverage: the embedder's identity, place and model decoded into a redact.RemoteText behind a pointer each, with the read's record, and held on the report as the rule reads them (shownEmbedder), so the gate's record (coverageRecord) names them as the rule reads them"
     },
     {
       "id": "loadtest-answer-members-file-names-dotdot",
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestAnIDThatClimbsOutOfTheBundleNamesNoFileOutsideIt",
-      "production": "loadtest replay-fetch refuses a listing or an event naming a document id or issue key out of Dispatch's shape where it decodes it (listingInShape, eventInShape), before a cache or bundle file is named after it, so an id with ../ writes no file outside raw/ or the bundle"
+      "production": "loadtest replay-fetch refuses a listing or an event naming a document id or issue key out of Dispatch's shape where it decodes it (readListing, whose decode takes an artifact's id as a dispatchID; eventInShape), before a cache or bundle file is named after it, so an id with ../ writes no file outside raw/ or the bundle"
     },
     {
       "id": "loadtest-answer-members-file-names-long",
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestAnIDLongerThanAFileNameNamesNoneOfIt",
-      "production": "loadtest replay-fetch refuses a listing or an event naming an id longer than Dispatch's shapes where it decodes it (listingInShape, eventInShape), before a file is named after it, so no *os.PathError prints it"
+      "production": "loadtest replay-fetch refuses a listing or an event naming an id longer than Dispatch's shapes where it decodes it (readListing, whose decode takes an artifact's id as a dispatchID; eventInShape), before a file is named after it, so no *os.PathError prints it"
     },
     {
       "id": "print-loadtest.dispatchCoverage.readCoverage.embedder",
       "requirement": "r2-held",
       "package": "./loadtest",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/loadtest.dispatchCoverage.readCoverage.embedder",
-      "production": "(github.com/sjawhar/envoy/loadtest.dispatchCoverage).readCoverage struct{Identity redact.RemoteText \"json:\\\"identity\\\"\"; Place redact.RemoteText \"json:\\\"place\\\"\"; Model redact.RemoteText \"json:\\\"model\\\"\"}: every printer at every placement"
+      "production": "(github.com/sjawhar/envoy/loadtest.dispatchCoverage).readCoverage struct{model.SearchCoverage; Identity *redact.RemoteText \"json:\\\"identity\\\"\"; Place *redact.RemoteText \"json:\\\"place\\\"\"; Model *redact.RemoteText \"json:\\\"model\\\"\"}: every printer at every placement"
     },
     {
       "id": "cireconcile-answer-words-errors",
@@ -11136,7 +11280,7 @@
       "capture": "loadtest.api-redirect/unparsed",
       "mutation": {
         "file": "packages/envoy/loadtest/api.go",
-        "preimage": "redact.Error(err, a.base+path)",
+        "preimage": "redact.Error(err, callURL)",
         "replacement": "err"
       }
     },
@@ -13886,13 +14030,13 @@
       "requirement": "r3-each-site",
       "package": "./cmd/dev-proxy-stands",
       "test": "TestABoundProbeAddressThatDoesNotParsePrintsItsClass/unparsed",
-      "production": "dev-airlock-stands probe-bound: an AIRLOCK_S_URL that does not parse prints by its class (redact.Class), never net/url's text, which quotes the value whole, its user information among it",
+      "production": "dev-airlock-stands probe-bound: an AIRLOCK_S_URL that does not parse is refused where urljoin.Join joins /go onto it, before any request, and prints by its class in fixed words (redact.ClassNotAURL), never the value, its user information and query among it",
       "function": "github.com/sjawhar/envoy/cmd/dev-proxy-stands.runProbeBound",
       "capture": "dev-proxy-stands.probe-address/unparsed",
       "mutation": {
         "file": "packages/envoy/cmd/dev-proxy-stands/probe.go",
-        "preimage": "redact.Class(err)",
-        "replacement": "err"
+        "preimage": "fmt.Fprintln(stdout, \"error\", redact.ClassNotAURL)",
+        "replacement": "fmt.Fprintln(stdout, \"error\", os.Getenv(\"AIRLOCK_S_URL\")+\"/go\")"
       }
     },
     {
@@ -16821,6 +16965,972 @@
       "package": "./internal/cipher/helper",
       "test": "TestARevokeOfAnIDNoURLCanHoldIsRefusedUnsent/plain",
       "production": "agent-secrets-helper revokeUnder: a revoke of a plain id reaches the broker, as before"
+    },
+    {
+      "id": "devrelay-broker-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher-devrelay",
+      "test": "TestABrokerCallGoesToThePathJoinedOntoTheBrokerAddress/query",
+      "production": "agent-secrets-devrelay apiClient.do: a --broker address with a path and a query (http://host/prefix?key=...) asks each call's route joined onto that path, the query kept (cipheraddr.Address.Join: /prefix/v1/machine-logins/lookup?key=... and /prefix/v1/credential-requests/<record>/approve?key=...), where the route appended to the address's text sat inside the query and the broker was asked /prefix"
+    },
+    {
+      "id": "devrelay-broker-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher-devrelay",
+      "test": "TestABrokerCallGoesToThePathJoinedOntoTheBrokerAddress/no-query",
+      "production": "agent-secrets-devrelay apiClient.do: a --broker address with a path and no query (http://host/prefix) asks /prefix/v1/machine-logins/lookup and /prefix/v1/credential-requests/<record>/approve, as before the join"
+    },
+    {
+      "id": "devrelay-broker-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher-devrelay",
+      "test": "TestABrokerAddressThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed --broker row: http.NewRequest's error for that address with the route appended quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "devrelay-broker-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher-devrelay",
+      "test": "TestABrokerAddressThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "agent-secrets-devrelay apiClient.do: a --broker address url.Parse refuses is refused where it is joined, before any request, by the setting, the URL as redact.NotPrinted and the class (not a valid URL), never url.Parse's error, which quotes it whole",
+      "capture": "devrelay.broker-url/unparsed"
+    },
+    {
+      "id": "devrelay-broker-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher-devrelay",
+      "test": "TestABrokerAddressThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed --broker row: url.Parse takes that address, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "devrelay-broker-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher-devrelay",
+      "test": "TestABrokerAddressThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "agent-secrets-devrelay apiClient.do: a --broker address url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) fails in http.NewRequest and prints through the Address's Error, the URL as redact.NotPrinted and the class, never http.NewRequest's error, which quotes that URL whole",
+      "function": "(*github.com/sjawhar/envoy/cmd/cipher-devrelay.apiClient).do",
+      "capture": "devrelay.broker-url/reparsed",
+      "mutation": {
+        "file": "packages/envoy/cmd/cipher-devrelay/main.go",
+        "preimage": "callURL.String(), reader)\n\tif err != nil {\n\t\treturn nil, c.base.Error(err)",
+        "replacement": "callURL.String(), reader)\n\tif err != nil {\n\t\treturn nil, err"
+      }
+    },
+    {
+      "id": "dev-proxy-stands-enroll-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnEnrolmentGoesToTheRoutesJoinedOntoTheBrokerURL/query",
+      "production": "dev-airlock-stands enroll-pod: a --url with a path and a query (http://host/prefix?key=...) asks the service login and the enrolment at their routes joined onto that path, the query kept (urljoin.Join: /prefix/v1/launcher-credentials/token?key=... and /prefix/v1/enrollments?key=...), and the launcher proof signs the URL the enrolment asked, where the route appended to the URL's text sat inside the query and the broker was asked /prefix"
+    },
+    {
+      "id": "dev-proxy-stands-enroll-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnEnrolmentGoesToTheRoutesJoinedOntoTheBrokerURL/no-query",
+      "production": "dev-airlock-stands enroll-pod: a --url with a path and no query (http://host/prefix) asks /prefix/v1/launcher-credentials/token and /prefix/v1/enrollments, and the launcher proof signs the enrolment's URL, as before the join"
+    },
+    {
+      "id": "dev-proxy-stands-enroll-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnEnrolmentURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed --url row: http.NewRequest's error for that URL with the service login's route appended quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "dev-proxy-stands-enroll-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnEnrolmentURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "dev-airlock-stands enroll-pod: a --url url.Parse refuses is refused before any call by --url, the URL as redact.NotPrinted and the class (brokerRoute), never http.NewRequest's error, which the service login printed and which quotes the URL whole, its user information and query included",
+      "capture": "dev-proxy-stands.enroll-url/unparsed"
+    },
+    {
+      "id": "dev-proxy-stands-enroll-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnEnrolmentURLThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed --url row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "dev-proxy-stands-enroll-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnEnrolmentURLThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "dev-airlock-stands enroll-pod call: a joined URL url.Parse refuses (an IPv6 zone escape) fails the call by its method, the URL as redact.URL prints it and its class (redact.Class), never http.NewRequest's error, which quotes that URL whole",
+      "function": "github.com/sjawhar/envoy/cmd/dev-proxy-stands.call",
+      "capture": "dev-proxy-stands.enroll-url/reparsed",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/enroll.go",
+        "preimage": "redact.Class(err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "dev-proxy-stands-enroll-refusal-url-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnEnrolmentRefusalPrintsNoCredentialItsURLCarries/twin",
+      "production": "the probe of the enroll-pod refusal URL rows: the URLs the service login asks hold the user information and the access token, so the rows can see them printed"
+    },
+    {
+      "id": "dev-proxy-stands-enroll-refusal-url-user-information",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnEnrolmentRefusalPrintsNoCredentialItsURLCarries/user-information",
+      "production": "dev-airlock-stands enroll-pod call: a refusal names the call's URL through redact.URL, so a --url with user information prints it as redact.NotPrinted, never the user name and password the URL carries",
+      "function": "github.com/sjawhar/envoy/cmd/dev-proxy-stands.call",
+      "capture": "dev-proxy-stands.enroll-refusal-url/user-information",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/enroll.go",
+        "preimage": "method, redact.URL(url), answer.StatusCode",
+        "replacement": "method, url, answer.StatusCode"
+      }
+    },
+    {
+      "id": "dev-proxy-stands-enroll-refusal-url-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnEnrolmentRefusalPrintsNoCredentialItsURLCarries/query",
+      "production": "dev-airlock-stands enroll-pod call: a refusal names the call's URL through redact.URL, so a --url with a query prints it as redact.NotPrinted, never the access token the query carries",
+      "function": "github.com/sjawhar/envoy/cmd/dev-proxy-stands.call",
+      "capture": "dev-proxy-stands.enroll-refusal-url/query",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/enroll.go",
+        "preimage": "method, redact.URL(url), answer.StatusCode",
+        "replacement": "method, url, answer.StatusCode"
+      }
+    },
+    {
+      "id": "dev-proxy-stands-enroll-refusal-url-clean",
+      "requirement": "r4-unchanged",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnEnrolmentRefusalPrintsNoCredentialItsURLCarries/clean",
+      "production": "dev-airlock-stands enroll-pod call: a refusal beside a clean --url still names the call's URL as the call asked it"
+    },
+    {
+      "id": "dev-proxy-stands-probe-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestABoundProbeGoesToThePathJoinedOntoItsAddress/query",
+      "production": "dev-airlock-stands probe-bound: an AIRLOCK_S_URL with a path and a query (http://host/prefix?key=...) asks /go joined onto that path, the query kept (urljoin.Join: /prefix/go?key=...), where /go appended to the URL's text sat inside the query and the bound host was asked /prefix"
+    },
+    {
+      "id": "dev-proxy-stands-probe-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestABoundProbeGoesToThePathJoinedOntoItsAddress/no-query",
+      "production": "dev-airlock-stands probe-bound: an AIRLOCK_S_URL with a path and no query (http://host/prefix) asks /prefix/go, as before the join"
+    },
+    {
+      "id": "dev-proxy-stands-probe-address-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestABoundProbeAddressThatDoesNotReparsePrintsItsClass/reparsed-twin",
+      "production": "the probe of the reparsed AIRLOCK_S_URL row: url.Parse takes that value, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "dev-proxy-stands-probe-address-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestABoundProbeAddressThatDoesNotReparsePrintsItsClass/reparsed",
+      "production": "dev-airlock-stands probe-bound: an AIRLOCK_S_URL whose joined URL url.Parse refuses (an IPv6 zone escape) prints by its class (redact.Class), never http.NewRequest's error, which quotes that URL whole, its user information among it",
+      "function": "github.com/sjawhar/envoy/cmd/dev-proxy-stands.runProbeBound",
+      "capture": "dev-proxy-stands.probe-address/reparsed",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/probe.go",
+        "preimage": "redact.Class(err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "dev-proxy-stands-connect-wire-user-information",
+      "requirement": "r4-unchanged",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestTheConnectWritesItsRequestLineHostAndProxyAuthorization/user-information",
+      "production": "dev-airlock-stands load connect: the CONNECT's headers are written to the wire from the request its answer is read with (sent.Header.Write), so the record redact.Carried reads holds the Proxy-Authorization the proxy is sent, and the bytes on the wire are the request line, the Host header, that header and the blank line, as before"
+    },
+    {
+      "id": "dev-proxy-stands-connect-wire-no-user-information",
+      "requirement": "r4-unchanged",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestTheConnectWritesItsRequestLineHostAndProxyAuthorization/no-user-information",
+      "production": "dev-airlock-stands load connect: a proxy URL with no user information writes the request line, the Host header and the blank line alone, as before"
+    },
+    {
+      "id": "loadtest-answer-members-cached-decode",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADecodeOfDispatchsCachedBytesNamesNoneOfThem/window",
+      "production": "loadtest decodeCached: Dispatch's words read back from a file -- replay-fetch's cache of an answer, a bundle file, an event's payload -- that do not decode are named by what the caller read and the rule's reading of the failure (redact.DecodeError), never by the decoder's error, which quotes the time it could not read",
+      "capture": "loadtest.answer-members/cached-decode"
+    },
+    {
+      "id": "loadtest-answer-members-cached-decode-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADecodeOfDispatchsCachedBytesNamesNoneOfThem/twin",
+      "production": "the probe of the cached-decode row: encoding/json's own error for that window line quotes the created_at it could not read whole, so the row can see the bearer printed"
+    },
+    {
+      "id": "loadtest-answer-members-issue-key-bound",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnIssueKeyIsTheProjectsKeyAndABoundedNumber",
+      "production": "loadtest isIssueKey: an issue key is a project key as contracts.IssueProject reads one, and a number of at most issueKeyDigits digits, so every key the bundle keeps names a file of at most 21 bytes"
+    },
+    {
+      "id": "loadtest-answer-members-shape-types",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnIDOrKeyOutOfDispatchsShapeDoesNotDecode",
+      "production": "loadtest dispatchID and issueKey: a member of Dispatch's answer decoded into one of them is in Dispatch's shape or does not decode, and the refusal names no part of the member"
+    },
+    {
+      "id": "browsertype-room-url-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/browsertype",
+      "test": "TestAPeersRoomGoesToThePathJoinedOntoTheURL/query",
+      "production": "browsertype roomURL: a -url with a path and a query (http://host/dispatch?key=...) opens that path joined with the room's, the URL's query kept ahead of the schema version (urljoin.JoinURL: /dispatch/ws/doc/<artifact>?key=...&schema_version=5), where the room's query was written over the URL's and the server was asked without key=..."
+    },
+    {
+      "id": "browsertype-room-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/browsertype",
+      "test": "TestAPeersRoomGoesToThePathJoinedOntoTheURL/query-trailing-slash",
+      "production": "browsertype roomURL: a -url whose path ends in a slash and that has a query (http://host/dispatch/?key=...) opens /dispatch/ws/doc/<artifact>?key=...&schema_version=5, where the room's query was written over the URL's"
+    },
+    {
+      "id": "browsertype-room-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/browsertype",
+      "test": "TestAPeersRoomGoesToThePathJoinedOntoTheURL/fragment",
+      "production": "browsertype roomURL: a -url with a fragment (http://host/dispatch#pane) opens /dispatch/ws/doc/<artifact> and the room's URL holds no fragment, which no request sends, where the room kept the URL's"
+    },
+    {
+      "id": "browsertype-room-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/browsertype",
+      "test": "TestAPeersRoomGoesToThePathJoinedOntoTheURL/no-query",
+      "production": "browsertype roomURL: a -url with a path and no query (http://host/dispatch) opens /dispatch/ws/doc/<artifact>?schema_version=5, as before the join"
+    },
+    {
+      "id": "browsertype-room-url-https",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/browsertype",
+      "test": "TestAnHTTPSURLOpensAWSSRoom",
+      "production": "browsertype roomURL: an https -url with a query opens the wss room at the joined path with the URL's query kept (wss://host/dispatch/ws/doc/<artifact>?key=...&schema_version=5); the scheme still follows the URL's, as it did before the join"
+    },
+    {
+      "id": "loadtest-api-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADispatchCallGoesToItsPathJoinedOntoTheDispatchURL/query",
+      "production": "loadtest api.callRawKeyed: a Dispatch URL with a path and a query (http://host/prefix?key=...) calls each path joined onto that path, the URL's query ahead of the call's own (urljoin.Join: /prefix/api/v1/issues?key=...&project=P), where the path appended to the URL's text sat inside the query and Dispatch was asked /prefix"
+    },
+    {
+      "id": "loadtest-api-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADispatchCallGoesToItsPathJoinedOntoTheDispatchURL/query-trailing-slash",
+      "production": "loadtest api.callRawKeyed: a Dispatch URL whose path ends in a slash and that has a query (http://host/prefix/?key=...) calls /prefix/api/v1/issues?key=...&project=P, where the path appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "loadtest-api-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADispatchCallGoesToItsPathJoinedOntoTheDispatchURL/no-query",
+      "production": "loadtest api.callRawKeyed: a Dispatch URL with a path and no query (http://host/prefix) calls /prefix/api/v1/issues?project=P, as before the join"
+    },
+    {
+      "id": "loadtest-api-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADispatchURLThatDoesNotJoinPrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed Dispatch URL row: http.NewRequest's error for that URL with the call's path appended quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "loadtest-api-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADispatchURLThatDoesNotJoinPrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed Dispatch URL row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "loadtest-api-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADispatchURLThatDoesNotJoinPrintsNoneOfIt/unparsed",
+      "production": "loadtest api.callRawKeyed: a Dispatch URL url.Parse refuses fails the call in fixed words where it is joined, before any request, never http.NewRequest's error, which the call answered and which quotes the URL whole, its user information and query included",
+      "capture": "loadtest.api-url/unparsed"
+    },
+    {
+      "id": "loadtest-api-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADispatchURLThatDoesNotJoinPrintsNoneOfIt/reparsed",
+      "production": "loadtest api.callRawKeyed: a Dispatch URL url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) fails the call in fixed words, never http.NewRequest's error, which quotes that URL whole",
+      "function": "(*github.com/sjawhar/envoy/loadtest.api).callRawKeyed",
+      "capture": "loadtest.api-url/reparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/api.go",
+        "preimage": "errors.New(\"the Dispatch URL joined with the call's path does not parse (it is not printed)\")",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "loadtest-answer-words-api-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADispatchAnswerPrintsThroughAnswerWordsWithNoBearerItEchoes/twin",
+      "production": "the probe of the answerWords row: the stand-in's 502 answer, as it came, holds the bearer the call carried, so the row can see it printed"
+    },
+    {
+      "id": "loadtest-answer-words-api-echo",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADispatchAnswerPrintsThroughAnswerWordsWithNoBearerItEchoes/echo",
+      "production": "loadtest answerWords: every log line of a call result (callResult.text) prints the answer's words as the rule reads them, the credentials the request carried redacted (redact.Answer.Words), never the answer's bytes as they came, which echo the bearer",
+      "function": "github.com/sjawhar/envoy/loadtest.answerWords",
+      "capture": "loadtest.answer-words/echo",
+      "mutation": {
+        "file": "packages/envoy/loadtest/api.go",
+        "preimage": "trunc([]byte(answer.Words().String()))",
+        "replacement": "trunc([]byte(func() string { var b bytes.Buffer; _, _ = answer.StreamTo(&b); return b.String() }()))"
+      }
+    },
+    {
+      "id": "listenerclient-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestACallGoesToItsRouteJoinedOntoTheListenerURL/query",
+      "production": "listenerclient Client (newRequest): a listener URL with a path and a query (http://host/prefix?key=...) calls every route joined onto that path, the query kept (urljoin.Join: /prefix/v1/sessions?key=..., /prefix/v1/messages/publish?key=...), where the route appended to the URL's text sat inside the query and the listener was asked /prefix"
+    },
+    {
+      "id": "listenerclient-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestACallGoesToItsRouteJoinedOntoTheListenerURL/query-trailing-slash",
+      "production": "listenerclient Client (newRequest): a listener URL whose path ends in a slash and that has a query (http://host/prefix/?key=...) calls /prefix/<route>?key=..., where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "listenerclient-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestACallGoesToItsRouteJoinedOntoTheListenerURL/no-query",
+      "production": "listenerclient Client (newRequest): a listener URL with a path and no query (http://host/prefix) calls /prefix/<route>, as before the join"
+    },
+    {
+      "id": "listenerclient-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestAListenerURLThatDoesNotJoinPrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed listener URL rows: http.NewRequest's error for that URL with the session-list route appended quotes its user information and its access token"
+    },
+    {
+      "id": "listenerclient-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestAListenerURLThatDoesNotJoinPrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed listener URL rows: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "listenerclient-url-sessions-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestAListenerURLThatDoesNotJoinPrintsNoneOfIt/sessions-unparsed",
+      "production": "listenerclient Client.newRequest: Sessions to a listener URL url.Parse refuses fails in fixed words before any request, never http.NewRequest's error, which the call answered and which quotes the URL whole, its user information and query included",
+      "capture": "listenerclient.url/sessions-unparsed"
+    },
+    {
+      "id": "listenerclient-url-sessions-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestAListenerURLThatDoesNotJoinPrintsNoneOfIt/sessions-reparsed",
+      "production": "listenerclient Client.newRequest: Sessions to a listener URL url.Parse takes, whose joined URL url.Parse refuses (an IPv6 zone escape), fails in fixed words, never http.NewRequest's error, which quotes that URL whole",
+      "function": "(*github.com/sjawhar/envoy/loadtest/listenerclient.Client).newRequest",
+      "capture": "listenerclient.url/sessions-reparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/listenerclient/listenerclient.go",
+        "preimage": "errors.New(\"the listener URL joined with the route does not parse (it is not printed)\")",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "listenerclient-url-publish-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestAListenerURLThatDoesNotJoinPrintsNoneOfIt/publish-unparsed",
+      "production": "listenerclient Client.newRequest: a publish (post) to a listener URL url.Parse refuses fails in fixed words before any request, never http.NewRequest's error, which the call answered and which quotes the URL whole, its user information and query included",
+      "capture": "listenerclient.url/publish-unparsed"
+    },
+    {
+      "id": "listenerclient-url-publish-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestAListenerURLThatDoesNotJoinPrintsNoneOfIt/publish-reparsed",
+      "production": "listenerclient Client.newRequest: a publish (post) to a listener URL url.Parse takes, whose joined URL url.Parse refuses (an IPv6 zone escape), fails in fixed words, never http.NewRequest's error, which quotes that URL whole",
+      "function": "(*github.com/sjawhar/envoy/loadtest/listenerclient.Client).newRequest",
+      "capture": "listenerclient.url/publish-reparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/listenerclient/listenerclient.go",
+        "preimage": "errors.New(\"the listener URL joined with the route does not parse (it is not printed)\")",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "listenerclient-refusal-url-clean",
+      "requirement": "r4-unchanged",
+      "package": "./loadtest/listenerclient",
+      "test": "TestARefusalNamesItsRouteWithNoCredentialTheListenerURLCarries/clean",
+      "production": "listenerclient Client.post: a refusal beside a clean listener URL still names the route's URL whole (redact.Call), so a 401 says which listener and route refused"
+    },
+    {
+      "id": "listenerclient-refusal-url-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestARefusalNamesItsRouteWithNoCredentialTheListenerURLCarries/twin",
+      "production": "the probe of the listener refusal URL row: a publish to a listener URL with user information and an access token in its query carries all three, as Basic credentials and in its query, so the row can see them printed"
+    },
+    {
+      "id": "listenerclient-refusal-url-credentials",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestARefusalNamesItsRouteWithNoCredentialTheListenerURLCarries/credentials",
+      "production": "listenerclient Client.post: a Refusal names the refused route's URL as redact.Call prints it beside the listener's URL, redact.NotPrinted for one with user information or a query, never the URL the request was sent to, which carries both",
+      "function": "(*github.com/sjawhar/envoy/loadtest/listenerclient.Client).post",
+      "capture": "listenerclient.refusal-url/credentials",
+      "mutation": {
+        "file": "packages/envoy/loadtest/listenerclient/listenerclient.go",
+        "preimage": "URL: redact.Call(c.URL, request.URL.String())",
+        "replacement": "URL: request.URL.String()"
+      }
+    },
+    {
+      "id": "loadtest-guard-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheGuardChecksGoToTheirRoutesJoinedOntoTheEndpointURLs/query",
+      "production": "loadtest checkStack and checkNATSServerName: an endpoint URL with a path and a query (http://host/prefix?key=...) is checked at each route joined onto that path, the query kept (urljoin.Join: /prefix/varz?key=..., /prefix/api/v1/projects?key=..., /prefix/v1/sessions?key=...), where the route appended to the URL's text sat inside the query and each endpoint was asked /prefix"
+    },
+    {
+      "id": "loadtest-guard-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheGuardChecksGoToTheirRoutesJoinedOntoTheEndpointURLs/query-trailing-slash",
+      "production": "loadtest checkStack and checkNATSServerName: an endpoint URL whose path ends in a slash and that has a query (http://host/prefix/?key=...) is checked at /prefix/<route>?key=..., where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "loadtest-guard-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheGuardChecksGoToTheirRoutesJoinedOntoTheEndpointURLs/no-query",
+      "production": "loadtest checkStack and checkNATSServerName: an endpoint URL with a path and no query (http://host/prefix) is checked at /prefix/<route>, as before the join"
+    },
+    {
+      "id": "loadtest-guard-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAGuardEndpointURLThatDoesNotJoinPrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed guard endpoint rows: http.NewRequest's error for that URL with /varz appended quotes its user information and its access token"
+    },
+    {
+      "id": "loadtest-guard-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAGuardEndpointURLThatDoesNotJoinPrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed guard endpoint rows: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "loadtest-guard-url-dispatch-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAGuardEndpointURLThatDoesNotJoinPrintsNoneOfIt/dispatch-unparsed",
+      "production": "loadtest guard: the Dispatch check (checkStack) refuses an endpoint URL url.Parse refuses in fixed words where it is joined, before any request, never http.NewRequest's error, which the check printed and which quotes the URL whole, its user information and query included",
+      "capture": "loadtest.guard-url/dispatch-unparsed"
+    },
+    {
+      "id": "loadtest-guard-url-dispatch-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAGuardEndpointURLThatDoesNotJoinPrintsNoneOfIt/dispatch-reparsed",
+      "production": "loadtest guardGet: the Dispatch check (checkStack) of an endpoint URL url.Parse takes, whose joined URL url.Parse refuses (an IPv6 zone escape), fails in fixed words, never http.NewRequest's error, which quotes that URL whole",
+      "function": "github.com/sjawhar/envoy/loadtest.guardGet",
+      "capture": "loadtest.guard-url/dispatch-reparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/guard.go",
+        "preimage": "return 0, redact.Answer{}, errJoinedURLUnparsed",
+        "replacement": "return 0, redact.Answer{}, err"
+      }
+    },
+    {
+      "id": "loadtest-guard-url-nats-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAGuardEndpointURLThatDoesNotJoinPrintsNoneOfIt/nats-unparsed",
+      "production": "loadtest guard: the NATS check (checkNATSServerName) refuses an endpoint URL url.Parse refuses in fixed words where it is joined, before any request, never http.NewRequest's error, which the check printed and which quotes the URL whole, its user information and query included",
+      "capture": "loadtest.guard-url/nats-unparsed"
+    },
+    {
+      "id": "loadtest-guard-url-nats-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAGuardEndpointURLThatDoesNotJoinPrintsNoneOfIt/nats-reparsed",
+      "production": "loadtest guardGet: the NATS check (checkNATSServerName) of an endpoint URL url.Parse takes, whose joined URL url.Parse refuses (an IPv6 zone escape), fails in fixed words, never http.NewRequest's error, which quotes that URL whole",
+      "function": "github.com/sjawhar/envoy/loadtest.guardGet",
+      "capture": "loadtest.guard-url/nats-reparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/guard.go",
+        "preimage": "return 0, redact.Answer{}, errJoinedURLUnparsed",
+        "replacement": "return 0, redact.Answer{}, err"
+      }
+    },
+    {
+      "id": "loadtest-endpoint-trim-url-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnEndpointFlagKeepsTheSlashThatEndsItsQuery/url-query",
+      "production": "loadtest resolveEndpoints (joinTrimPath): -url whose query ends in a slash (http://host/p?next=/) is taken as it came, its query whole, where the trim of the value's text cut the query's slash and every request asked with next empty"
+    },
+    {
+      "id": "loadtest-endpoint-trim-url-trailing-slash",
+      "requirement": "r4-unchanged",
+      "package": "./loadtest",
+      "test": "TestAnEndpointFlagKeepsTheSlashThatEndsItsQuery/url-trailing-slash",
+      "production": "loadtest resolveEndpoints (joinTrimPath): -url whose path ends in a slash and that has no query still loses that slash, so a value that differs from the stack's by it alone is the stack's own, as before"
+    },
+    {
+      "id": "loadtest-endpoint-trim-listener-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnEndpointFlagKeepsTheSlashThatEndsItsQuery/listener-query",
+      "production": "loadtest resolveEndpoints (joinTrimPath): -listener whose query ends in a slash (http://host/p?next=/) is taken as it came, its query whole, where the trim of the value's text cut the query's slash and every request asked with next empty"
+    },
+    {
+      "id": "loadtest-endpoint-trim-listener-trailing-slash",
+      "requirement": "r4-unchanged",
+      "package": "./loadtest",
+      "test": "TestAnEndpointFlagKeepsTheSlashThatEndsItsQuery/listener-trailing-slash",
+      "production": "loadtest resolveEndpoints (joinTrimPath): -listener whose path ends in a slash and that has no query still loses that slash, so a value that differs from the stack's by it alone is the stack's own, as before"
+    },
+    {
+      "id": "loadtest-endpoint-trim-nats-mon-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnEndpointFlagKeepsTheSlashThatEndsItsQuery/nats-mon-query",
+      "production": "loadtest resolveEndpoints (joinTrimPath): -nats-mon whose query ends in a slash (http://host/p?next=/) is taken as it came, its query whole, where the trim of the value's text cut the query's slash and every request asked with next empty"
+    },
+    {
+      "id": "loadtest-endpoint-trim-nats-mon-trailing-slash",
+      "requirement": "r4-unchanged",
+      "package": "./loadtest",
+      "test": "TestAnEndpointFlagKeepsTheSlashThatEndsItsQuery/nats-mon-trailing-slash",
+      "production": "loadtest resolveEndpoints (joinTrimPath): -nats-mon whose path ends in a slash and that has no query still loses that slash, so a value that differs from the stack's by it alone is the stack's own, as before"
+    },
+    {
+      "id": "loadtest-endpoint-trim-pprof-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnEndpointFlagKeepsTheSlashThatEndsItsQuery/pprof-query",
+      "production": "loadtest resolveEndpoints (joinTrimPath): -pprof whose query ends in a slash (http://host/p?next=/) is taken as it came, its query whole, where the trim of the value's text cut the query's slash and every request asked with next empty"
+    },
+    {
+      "id": "loadtest-endpoint-trim-pprof-trailing-slash",
+      "requirement": "r4-unchanged",
+      "package": "./loadtest",
+      "test": "TestAnEndpointFlagKeepsTheSlashThatEndsItsQuery/pprof-trailing-slash",
+      "production": "loadtest resolveEndpoints (joinTrimPath): -pprof whose path ends in a slash and that has no query still loses that slash, so a value that differs from the stack's by it alone is the stack's own, as before"
+    },
+    {
+      "id": "loadtest-endpoint-trim-loop-listeners-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnEndpointFlagKeepsTheSlashThatEndsItsQuery/loop-listeners-query",
+      "production": "loadtest parseLoopListeners (joinTrimPath): each -loop-listeners endpoint whose query ends in a slash (http://host/p?next=/) is taken as it came, its query whole, where the trim of the value's text cut the query's slash and every request asked with next empty"
+    },
+    {
+      "id": "loadtest-endpoint-trim-loop-listeners-trailing-slash",
+      "requirement": "r4-unchanged",
+      "package": "./loadtest",
+      "test": "TestAnEndpointFlagKeepsTheSlashThatEndsItsQuery/loop-listeners-trailing-slash",
+      "production": "loadtest parseLoopListeners (joinTrimPath): each -loop-listeners endpoint whose path ends in a slash and that has no query still loses that slash, so a value that differs from the stack's by it alone is the stack's own, as before"
+    },
+    {
+      "id": "loadtest-dashboard-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheDashboardProbeAsksTheSSEFeedJoinedOntoTheDispatchURL/query",
+      "production": "loadtest probeDashboard: a Dispatch URL with a path and a query (http://host/prefix?key=...) asks the SSE feed at its path joined onto that path, the query kept (urljoin.Join: /prefix/api/v1/events?key=...), and answers that URL for the step's streams, where the path appended to the URL's text sat inside the query and the probe found no stream"
+    },
+    {
+      "id": "loadtest-dashboard-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheDashboardProbeAsksTheSSEFeedJoinedOntoTheDispatchURL/query-trailing-slash",
+      "production": "loadtest probeDashboard: a Dispatch URL whose path ends in a slash and that has a query (http://host/prefix/?key=...) asks /prefix/api/v1/events?key=..., where the path appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "loadtest-dashboard-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheDashboardProbeAsksTheSSEFeedJoinedOntoTheDispatchURL/no-query",
+      "production": "loadtest probeDashboard: a Dispatch URL with a path and no query (http://host/prefix) asks /prefix/api/v1/events, as before the join"
+    },
+    {
+      "id": "loadtest-dashboard-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADashboardURLThatDoesNotJoinPrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed dashboard URL row: http.NewRequest's error for that URL with the SSE feed's path appended quotes its user information and its access token"
+    },
+    {
+      "id": "loadtest-dashboard-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADashboardURLThatDoesNotJoinPrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed dashboard URL row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "loadtest-dashboard-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADashboardURLThatDoesNotJoinPrintsNoneOfIt/unparsed",
+      "production": "loadtest probeDashboard: a Dispatch URL url.Parse refuses is refused in fixed words where the SSE feed's path is joined onto it, before any dial, never http.NewRequest's error, which the probe answered and which quotes the URL whole",
+      "capture": "loadtest.dashboard-url/unparsed"
+    },
+    {
+      "id": "loadtest-dashboard-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADashboardURLThatDoesNotJoinPrintsNoneOfIt/reparsed",
+      "production": "loadtest probeDashboard: a Dispatch URL url.Parse takes whose joined SSE URL url.Parse refuses (an IPv6 zone escape) is refused in fixed words, never http.NewRequest's error, which quotes that URL whole, nor the probe's refusal naming the URL, whose access token redactURL keeps",
+      "function": "github.com/sjawhar/envoy/loadtest.probeDashboard",
+      "capture": "loadtest.dashboard-url/reparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/dashboard.go",
+        "preimage": "errors.New(\"the Dispatch URL joined with the SSE feed's path does not parse (it is not printed)\")",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "loadtest-dashboard-live-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheDashboardProbeDialsTheLiveSocketJoinedOntoTheDispatchURL/query",
+      "production": "loadtest liveSocketURL (joinSocketURL), dialled by probeDashboard: a Dispatch URL with a path and a query (http://host/prefix?key=...) dials the live socket at /ws/live joined onto that path, the query kept (ws://host/prefix/ws/live?key=...), and answers that URL for the step's streams, where /ws/live appended to the URL's text sat inside the query and the probe found no live socket"
+    },
+    {
+      "id": "loadtest-dashboard-live-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheDashboardProbeDialsTheLiveSocketJoinedOntoTheDispatchURL/query-trailing-slash",
+      "production": "loadtest liveSocketURL (joinSocketURL), dialled by probeDashboard: a Dispatch URL whose path ends in a slash and that has a query (http://host/prefix/?key=...) dials ws://host/prefix/ws/live?key=..., where /ws/live appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "loadtest-dashboard-live-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheDashboardProbeDialsTheLiveSocketJoinedOntoTheDispatchURL/no-query",
+      "production": "loadtest liveSocketURL (joinSocketURL), dialled by probeDashboard: a Dispatch URL with a path and no query (http://host/prefix) dials ws://host/prefix/ws/live, as before the join"
+    },
+    {
+      "id": "loadtest-editors-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnEditorDialsItsDocumentSocketJoinedOntoTheDispatchURL/query",
+      "production": "loadtest startEditors (joinSocketURL): a Dispatch URL with a path and a query (http://host/prefix?key=...) dials each document's socket at /ws/doc/<artifact> joined onto that path, the URL's query ahead of the socket's schema_version (ws://host/prefix/ws/doc/<artifact>?key=...&schema_version=<n>), where the socket's path appended to the URL's text sat inside the query and no editor reached its room"
+    },
+    {
+      "id": "loadtest-editors-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnEditorDialsItsDocumentSocketJoinedOntoTheDispatchURL/query-trailing-slash",
+      "production": "loadtest startEditors (joinSocketURL): a Dispatch URL whose path ends in a slash and that has a query (http://host/prefix/?key=...) dials ws://host/prefix/ws/doc/<artifact>?key=...&schema_version=<n>, where the path appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "loadtest-editors-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnEditorDialsItsDocumentSocketJoinedOntoTheDispatchURL/no-query",
+      "production": "loadtest startEditors (joinSocketURL): a Dispatch URL with a path and no query (http://host/prefix) dials ws://host/prefix/ws/doc/<artifact>?schema_version=<n>, as before the join"
+    },
+    {
+      "id": "loadtest-editors-socket-schemes",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestJoinSocketURLDialsEachSchemeAsItsWebsocketsAndRefusesTheRest",
+      "production": "loadtest joinSocketURL: an http Dispatch URL's socket is ws:// and an https one's wss://, the path joined onto the URL's and its query after the URL's own; a URL of another scheme, or one that does not parse, is refused in fixed words that quote none of it, its user information and query among it"
+    },
+    {
+      "id": "loadtest-rooms-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheRoomsReadsGoToTheirRoutesJoinedOntoTheEndpointURLs/query",
+      "production": "loadtest readWindow (getJSON, routeURL): a proxy-stats or -pprof URL with a path and a query (http://host/prefix?key=...) reads /stats and /debug/vars joined onto that path, the query kept (/prefix/stats?key=..., /prefix/debug/vars?key=...), where the route appended to the URL's text sat inside the query and the window had no reading"
+    },
+    {
+      "id": "loadtest-rooms-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheRoomsReadsGoToTheirRoutesJoinedOntoTheEndpointURLs/query-trailing-slash",
+      "production": "loadtest readWindow (getJSON, routeURL): an endpoint URL whose path ends in a slash and that has a query (http://host/prefix/?key=...) reads /prefix/stats?key=... and /prefix/debug/vars?key=..., where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "loadtest-rooms-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheRoomsReadsGoToTheirRoutesJoinedOntoTheEndpointURLs/no-query",
+      "production": "loadtest readWindow (getJSON, routeURL): an endpoint URL with a path and no query (http://host/prefix) reads /prefix/stats and /prefix/debug/vars, as before the join"
+    },
+    {
+      "id": "loadtest-rooms-url-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestARoomsEndpointURLThatDoesNotJoinPrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed rooms endpoint rows: http.NewRequest's error for that URL with /stats appended quotes its user information and its access token"
+    },
+    {
+      "id": "loadtest-rooms-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestARoomsEndpointURLThatDoesNotJoinPrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed rooms endpoint rows: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "loadtest-rooms-url-proxy-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestARoomsEndpointURLThatDoesNotJoinPrintsNoneOfIt/proxy-unparsed",
+      "production": "loadtest readWindow (getJSON, routeURL): the proxy's wire counts at an endpoint URL url.Parse refuses give the window's reading a reason in fixed words that name the route, never http.NewRequest's error, which the reason held and which quotes the URL whole",
+      "capture": "loadtest.rooms-url/proxy-unparsed"
+    },
+    {
+      "id": "loadtest-rooms-url-proxy-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestARoomsEndpointURLThatDoesNotJoinPrintsNoneOfIt/proxy-reparsed",
+      "production": "loadtest getOK: the proxy's wire counts at an endpoint URL url.Parse takes, whose joined URL url.Parse refuses (an IPv6 zone escape), give the reading a reason in fixed words, never http.NewRequest's error, which getOK answered and which quotes that URL whole",
+      "function": "github.com/sjawhar/envoy/loadtest.getOK",
+      "capture": "loadtest.rooms-url/proxy-reparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/sample.go",
+        "preimage": "return nil, errJoinedURLUnparsed",
+        "replacement": "return nil, err"
+      }
+    },
+    {
+      "id": "loadtest-rooms-url-pprof-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestARoomsEndpointURLThatDoesNotJoinPrintsNoneOfIt/pprof-unparsed",
+      "production": "loadtest readWindow (getJSON, routeURL): Dispatch's /debug/vars at an endpoint URL url.Parse refuses give the window's reading a reason in fixed words that name the route, never http.NewRequest's error, which the reason held and which quotes the URL whole",
+      "capture": "loadtest.rooms-url/pprof-unparsed"
+    },
+    {
+      "id": "loadtest-rooms-url-pprof-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestARoomsEndpointURLThatDoesNotJoinPrintsNoneOfIt/pprof-reparsed",
+      "production": "loadtest getOK: Dispatch's /debug/vars at an endpoint URL url.Parse takes, whose joined URL url.Parse refuses (an IPv6 zone escape), give the reading a reason in fixed words, never http.NewRequest's error, which getOK answered and which quotes that URL whole",
+      "function": "github.com/sjawhar/envoy/loadtest.getOK",
+      "capture": "loadtest.rooms-url/pprof-reparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/sample.go",
+        "preimage": "return nil, errJoinedURLUnparsed",
+        "replacement": "return nil, err"
+      }
+    },
+    {
+      "id": "loadtest-sampler-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheSamplerReadsGoToTheirRoutesJoinedOntoTheEndpointURLs/query",
+      "production": "loadtest goroutineCounts, heapLive, natsVarz and natsJsz (routeURL): a -pprof or -nats-mon URL with a path and a query (http://host/prefix?key=...) reads each route joined onto that path, the URL's query ahead of the route's own (/prefix/debug/pprof/goroutine?key=...&debug=1, /prefix/debug/pprof/heap?key=..., /prefix/varz?key=..., /prefix/jsz?key=...), where the route appended to the URL's text sat inside the query and the sample held no reading"
+    },
+    {
+      "id": "loadtest-sampler-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheSamplerReadsGoToTheirRoutesJoinedOntoTheEndpointURLs/query-trailing-slash",
+      "production": "loadtest goroutineCounts, heapLive, natsVarz and natsJsz (routeURL): an endpoint URL whose path ends in a slash and that has a query (http://host/prefix/?key=...) reads the same four joined routes, where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "loadtest-sampler-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheSamplerReadsGoToTheirRoutesJoinedOntoTheEndpointURLs/no-query",
+      "production": "loadtest goroutineCounts, heapLive, natsVarz and natsJsz (routeURL): an endpoint URL with a path and no query (http://host/prefix) reads /prefix/debug/pprof/goroutine?debug=1, /prefix/debug/pprof/heap, /prefix/varz and /prefix/jsz, as before the join"
+    },
+    {
+      "id": "loadtest-sampler-url-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestASamplerEndpointURLThatDoesNotJoinPrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed sampler endpoint rows: http.NewRequest's error for that URL with /varz appended quotes its user information and its access token"
+    },
+    {
+      "id": "loadtest-sampler-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestASamplerEndpointURLThatDoesNotJoinPrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed sampler endpoint rows: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "loadtest-sampler-url-pprof-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestASamplerEndpointURLThatDoesNotJoinPrintsNoneOfIt/pprof-unparsed",
+      "production": "loadtest routeURL: goroutineCounts' read of an endpoint URL url.Parse refuses fails in fixed words that name the route, before any request, never http.NewRequest's error, which the read failed with and which quotes the URL whole, its user information and query included",
+      "capture": "loadtest.sampler-url/pprof-unparsed"
+    },
+    {
+      "id": "loadtest-sampler-url-pprof-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestASamplerEndpointURLThatDoesNotJoinPrintsNoneOfIt/pprof-reparsed",
+      "production": "loadtest getOK: goroutineCounts' read of an endpoint URL url.Parse takes, whose joined URL url.Parse refuses (an IPv6 zone escape), fails in fixed words, never http.NewRequest's error, which quotes that URL whole",
+      "function": "github.com/sjawhar/envoy/loadtest.getOK",
+      "capture": "loadtest.sampler-url/pprof-reparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/sample.go",
+        "preimage": "return nil, errJoinedURLUnparsed",
+        "replacement": "return nil, err"
+      }
+    },
+    {
+      "id": "loadtest-sampler-url-heap-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestASamplerEndpointURLThatDoesNotJoinPrintsNoneOfIt/heap-unparsed",
+      "production": "loadtest routeURL: heapLive's read of an endpoint URL url.Parse refuses fails in fixed words that name the route, before any request, never http.NewRequest's error, which the read failed with and which quotes the URL whole, its user information and query included",
+      "capture": "loadtest.sampler-url/heap-unparsed"
+    },
+    {
+      "id": "loadtest-sampler-url-heap-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestASamplerEndpointURLThatDoesNotJoinPrintsNoneOfIt/heap-reparsed",
+      "production": "loadtest getOK: heapLive's read of an endpoint URL url.Parse takes, whose joined URL url.Parse refuses (an IPv6 zone escape), fails in fixed words, never http.NewRequest's error, which quotes that URL whole",
+      "function": "github.com/sjawhar/envoy/loadtest.getOK",
+      "capture": "loadtest.sampler-url/heap-reparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/sample.go",
+        "preimage": "return nil, errJoinedURLUnparsed",
+        "replacement": "return nil, err"
+      }
+    },
+    {
+      "id": "loadtest-sampler-url-nats-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestASamplerEndpointURLThatDoesNotJoinPrintsNoneOfIt/nats-unparsed",
+      "production": "loadtest routeURL: natsVarz's read of an endpoint URL url.Parse refuses fails in fixed words that name the route, before any request, never http.NewRequest's error, which the read failed with and which quotes the URL whole, its user information and query included",
+      "capture": "loadtest.sampler-url/nats-unparsed"
+    },
+    {
+      "id": "loadtest-sampler-url-nats-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestASamplerEndpointURLThatDoesNotJoinPrintsNoneOfIt/nats-reparsed",
+      "production": "loadtest getOK: natsVarz's read of an endpoint URL url.Parse takes, whose joined URL url.Parse refuses (an IPv6 zone escape), fails in fixed words, never http.NewRequest's error, which quotes that URL whole",
+      "function": "github.com/sjawhar/envoy/loadtest.getOK",
+      "capture": "loadtest.sampler-url/nats-reparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/sample.go",
+        "preimage": "return nil, errJoinedURLUnparsed",
+        "replacement": "return nil, err"
+      }
+    },
+    {
+      "id": "loadtest-profile-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheProfileFetchesGoToTheirRoutesJoinedOntoThePprofURL/query",
+      "production": "loadtest step.profile (fetchTo, routeURL): a -pprof URL with a path and a query (http://host/prefix?key=...) fetches each profile at its route joined onto that path, the URL's query ahead of the route's own (/prefix/debug/pprof/profile?key=...&seconds=<n>, /prefix/debug/pprof/goroutine?key=...&debug=2, /prefix/debug/pprof/heap?key=..., /prefix/debug/pprof/heap?key=...&debug=1), and saves each answer, where the route appended to the URL's text sat inside the query and the step saved no profile"
+    },
+    {
+      "id": "loadtest-profile-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheProfileFetchesGoToTheirRoutesJoinedOntoThePprofURL/query-trailing-slash",
+      "production": "loadtest step.profile (fetchTo, routeURL): a -pprof URL whose path ends in a slash and that has a query (http://host/prefix/?key=...) fetches the same four joined routes, where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "loadtest-profile-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheProfileFetchesGoToTheirRoutesJoinedOntoThePprofURL/no-query",
+      "production": "loadtest step.profile (fetchTo, routeURL): a -pprof URL with a path and no query (http://host/prefix) fetches /prefix/debug/pprof/<profile>, as before the join"
+    },
+    {
+      "id": "loadtest-loop-listener-url-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestALoopListenerThatIsNoURLIsRefusedWithNoneOfIt/twin",
+      "production": "the probe of the loop-listener refusal row: url.Parse's error for that endpoint quotes its user information and its access token"
+    },
+    {
+      "id": "loadtest-loop-listener-url-refused",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestALoopListenerThatIsNoURLIsRefusedWithNoneOfIt/refused",
+      "production": "loadtest parseLoopListeners: a -loop-listeners endpoint that is no URL is refused by its place in the list, in fixed words that name none of it, where the refusal quoted the value whole, its user information and query included",
+      "function": "github.com/sjawhar/envoy/loadtest.parseLoopListeners",
+      "capture": "loadtest.loop-listener-url/refused",
+      "mutation": {
+        "file": "packages/envoy/loadtest/loopsessions.go",
+        "preimage": "fmt.Errorf(\"-loop-listeners endpoint %d is not a URL with a scheme and a host (it is not printed)\", i+1)",
+        "replacement": "fmt.Errorf(\"-loop-listeners endpoint %d (%q) is not a URL with a scheme and a host\", i+1, ep)"
+      }
+    },
+    {
+      "id": "loadtest-loop-listener-url-driver-line",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheLoopDriversLineNamesItsListenerWithNoCredential",
+      "production": "loadtest startLoopSessions: the step's line about the loop's driver session names its -loop-listeners endpoint through redactURL, without its user information and its password parameter, where it printed the endpoint as it was given",
+      "function": "(*github.com/sjawhar/envoy/loadtest.step).startLoopSessions",
+      "capture": "loadtest.loop-listener-url/driver-line",
+      "mutation": {
+        "file": "packages/envoy/loadtest/loopsessions.go",
+        "preimage": "redactURL(lp.cfg.loopListeners[len(lp.cfg.loopListeners)-1])",
+        "replacement": "lp.cfg.loopListeners[len(lp.cfg.loopListeners)-1]"
+      }
+    },
+    {
+      "id": "loadtest-answer-members-listing-shape-in-shape",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAListingNamesEachArtifactByAnIDInDispatchsShape/in-shape",
+      "production": "loadtest readListing: a listing whose every entry names its artifact by an id in Dispatch's shape is read as it came"
+    },
+    {
+      "id": "loadtest-answer-members-listing-shape-out-of-shape",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAListingNamesEachArtifactByAnIDInDispatchsShape/out-of-shape",
+      "production": "loadtest readListing: a listing whose entry names an artifact by an id out of Dispatch's shape does not decode (listedArtifact.ID is a dispatchID), and the refusal names none of the id"
+    },
+    {
+      "id": "loadtest-answer-members-listing-shape-no-id-empty",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAListingNamesEachArtifactByAnIDInDispatchsShape/no-id-empty",
+      "production": "loadtest readListing: a listing whose entry names its artifact by the empty string, which dispatchID takes as naming nothing, is refused for naming an artifact by no id"
+    },
+    {
+      "id": "loadtest-answer-members-listing-shape-no-id-null",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAListingNamesEachArtifactByAnIDInDispatchsShape/no-id-null",
+      "production": "loadtest readListing: a listing whose entry names its artifact by a JSON null is refused for naming an artifact by no id"
+    },
+    {
+      "id": "loadtest-answer-members-listing-shape-no-id-absent",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAListingNamesEachArtifactByAnIDInDispatchsShape/no-id-absent",
+      "production": "loadtest readListing: a listing whose entry has no id member is refused for naming an artifact by no id"
     }
   ],
   "bun": [
@@ -20120,6 +21230,166 @@
       "site": "agent-secrets-helper revokeUnder: a typed enrollment id holding a '#' was cut by net/http and the enrollment the rest began with was revoked",
       "source": "the round-9 decisions of #4368",
       "guard": "helper-revoke-unsendable-fragment"
+    },
+    {
+      "site": "agent-secrets-devrelay apiClient.do: each call's URL was the --broker address's text with the route appended, so a configured query took the route into its last value and the broker was asked the configured path",
+      "source": "the round-9 decisions of #4368",
+      "guard": "devrelay-broker-url-join-query"
+    },
+    {
+      "site": "dev-airlock-stands enroll-pod: the service login's URL, the enrolment's URL and the URL its launcher proof signs were --url's text with the route appended, so a configured query took the route into its last value and the broker was asked the configured path",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dev-proxy-stands-enroll-url-join-query"
+    },
+    {
+      "site": "dev-airlock-stands enroll-pod: a --url that does not parse printed http.NewRequest's error, which quotes the URL whole, its user information and query included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dev-proxy-stands-enroll-url-unparsed"
+    },
+    {
+      "site": "dev-airlock-stands enroll-pod call: a refusal named the call's URL as the call asked it, so a --url with user information or a query printed that credential",
+      "source": "the reading of enroll-pod's call in round 9's URL-join work",
+      "guard": "dev-proxy-stands-enroll-refusal-url-user-information"
+    },
+    {
+      "site": "dev-airlock-stands probe-bound: the GET's URL was AIRLOCK_S_URL's text with /go appended, so a configured query took /go into its last value and the bound host was asked the configured path",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dev-proxy-stands-probe-url-join-query"
+    },
+    {
+      "site": "dev-airlock-stands load connect: the CONNECT was built twice, the wire text and the request its answer is read with, so a header added to the wire and not to the record would print unredacted",
+      "source": "the round-6 quality review, item 26",
+      "guard": "dev-proxy-stands-connect-wire-user-information"
+    },
+    {
+      "site": "loadtest replay-fetch's cache and bundle: a decode error printed the decoder's own error, which quotes the time it could not read, where an answer wrote the fetch's bearer",
+      "source": "round 6's quality review of #4368, finding 14",
+      "guard": "loadtest-answer-members-cached-decode"
+    },
+    {
+      "site": "loadtest isIssueKey: an issue key's number had no bound, so a key of any length named a cache file",
+      "source": "round 6's quality review of #4368, finding 22",
+      "guard": "loadtest-answer-members-issue-key-bound"
+    },
+    {
+      "site": "loadtest eventInShape: the id members of Dispatch's answers were checked by a hand-kept list beside each decode",
+      "source": "round 7's quality review of #4368, finding 11",
+      "guard": "loadtest-answer-members-shape-types"
+    },
+    {
+      "site": "browsertype roomURL: each peer's room was the -url's path with /ws/doc/<artifact> appended and the room's own query written over the URL's, so a configured query was dropped and the server was asked without it, and a configured fragment stayed in a URL no request sends",
+      "source": "the round-9 decisions of #4368",
+      "guard": "browsertype-room-url-query"
+    },
+    {
+      "site": "loadtest api.callRawKeyed: each call's URL was the Dispatch URL's text, its trailing slashes trimmed, with the call's path appended, so a configured query took the path into its last value and Dispatch was asked the configured path",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-api-url-join-query"
+    },
+    {
+      "site": "loadtest api.callRawKeyed: a Dispatch URL that did not parse failed the call with http.NewRequest's error, which quotes the URL whole, its user information and query included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-api-url-unparsed"
+    },
+    {
+      "site": "loadtest answerWords: the print of every call result's answer, through the box's own reader, was named by no row, so a change that printed the answer otherwise failed none",
+      "source": "the round-9 class search of #4368 (round 5's finding 6, its class)",
+      "guard": "loadtest-answer-words-api-echo"
+    },
+    {
+      "site": "listenerclient Client: each call's URL was the listener URL's text with the route appended, so a configured query took the route into its last value and the listener was asked the configured path",
+      "source": "the round-9 decisions of #4368",
+      "guard": "listenerclient-url-join-query"
+    },
+    {
+      "site": "listenerclient Client: a listener URL that did not parse failed the call with http.NewRequest's error, which quotes the URL whole",
+      "source": "the round-9 decisions of #4368",
+      "guard": "listenerclient-url-sessions-unparsed"
+    },
+    {
+      "site": "listenerclient Refusal: a refusal named the route by the URL the request was sent to, so a listener URL with user information or a query printed that credential",
+      "source": "the round-9 decisions of #4368",
+      "guard": "listenerclient-refusal-url-credentials"
+    },
+    {
+      "site": "loadtest checkStack and checkNATSServerName: each check's URL was the endpoint URL's text with the route appended, so a configured query took the route into its last value and the endpoint was asked the configured path",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-guard-url-join-query"
+    },
+    {
+      "site": "loadtest guard: an endpoint URL that did not parse failed the check with http.NewRequest's error, which quotes the URL whole",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-guard-url-dispatch-unparsed"
+    },
+    {
+      "site": "loadtest resolveEndpoints and parseLoopListeners: every endpoint flag's value had the slashes that ended its text trimmed, so a URL whose query or fragment ended in a slash lost it",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-endpoint-trim-url-query"
+    },
+    {
+      "site": "loadtest probeDashboard: the SSE feed's URL was the Dispatch URL's text with the feed's path appended, so a configured query took the path into its last value and the probe found no stream",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-dashboard-url-join-query"
+    },
+    {
+      "site": "loadtest probeDashboard: a Dispatch URL that did not parse, or whose feed URL did not, failed the probe with an error that quotes the URL",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-dashboard-url-unparsed"
+    },
+    {
+      "site": "loadtest liveSocketURL: the live socket's URL was the Dispatch URL's text, its http prefix replaced by ws, with /ws/live appended, so a configured query took the path into its last value and the probe found no live socket",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-dashboard-live-url-join-query"
+    },
+    {
+      "site": "loadtest startEditors: each editor's document socket was the Dispatch URL's text, its http prefix replaced by ws, with /ws/doc/<artifact>?schema_version=<n> appended, so a configured query took the socket's path into its last value",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-editors-url-join-query"
+    },
+    {
+      "site": "loadtest readWindow: the proxy's wire counts and Dispatch's /debug/vars were read at the endpoint URL's text with the route appended, so a configured query took the route into its last value and the window had no reading",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-rooms-url-join-query"
+    },
+    {
+      "site": "loadtest readWindow: an endpoint URL that did not parse gave the window's reading http.NewRequest's error, which quotes the URL whole",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-rooms-url-proxy-unparsed"
+    },
+    {
+      "site": "loadtest getOK: a URL that did not parse, such as a route joined onto an endpoint URL that url.URL.String writes as text url.Parse refuses, failed with http.NewRequest's error, which quotes the URL whole",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-rooms-url-proxy-reparsed"
+    },
+    {
+      "site": "loadtest sampler (goroutineCounts, heapLive, natsVarz, natsJsz): each read's URL was the -pprof or -nats-mon URL's text with the route appended, so a configured query took the route into its last value and the sample held no reading",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-sampler-url-join-query"
+    },
+    {
+      "site": "loadtest sampler: a -pprof or -nats-mon URL that did not parse failed each read with http.NewRequest's error, which quotes the URL whole, and the sampler logged it",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-sampler-url-pprof-unparsed"
+    },
+    {
+      "site": "loadtest fetchTo: the step's profile fetches and the replay's heap fetches were the -pprof URL's text with the profile's route appended, so a configured query took the route into its last value and the step saved no profile",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-profile-url-join-query"
+    },
+    {
+      "site": "loadtest parseLoopListeners: a -loop-listeners endpoint that is no URL was refused by quoting it whole, its user information and query included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-loop-listener-url-refused"
+    },
+    {
+      "site": "loadtest startLoopSessions: the driver session's line named its -loop-listeners endpoint as it was given, user information and password parameter included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-loop-listener-url-driver-line"
+    },
+    {
+      "site": "loadtest readListing: an artifact listing's ids were checked by hand after its decode (listingInShape), beside the dispatchID type the rest of the fetch decodes ids into",
+      "source": "round 7's quality review of #4368, finding 11",
+      "guard": "loadtest-answer-members-listing-shape-out-of-shape"
     }
   ]
 }
