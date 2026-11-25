@@ -34,15 +34,15 @@ import (
 // the first pod of a volume for the later one. A later pod of a volume never marks an earlier one,
 // so the first pod of a volume this release records is never marked.
 //
-// A row's kept_since is the one its first write gave it: a pod's Sandbox, and with it the volume,
-// is the same for the pod's whole life. On a row it finds, the upsert sets the mark alone, and only
-// where this call marks a pod the row leaves unmarked: no write clears a mark, and a later start in
-// a recorded pod writes nothing unless it marks the pod.
+// A pod's first record owns its row, kept_since and mark alike: a pod's Sandbox, and with it the
+// volume, is the same for the pod's whole life, and the mark is decided at that first record
+// (above). A later start in a recorded pod writes nothing, so no write changes a mark or clears
+// one.
 //
 // It refuses an empty project, an empty podUID and a zero keptSince: the record could say neither
 // whose pod it is, nor which pod, nor which volume. It runs until one run commits
-// (transactUntilCommitted): every run writes the same row, so a run after one whose commit reply
-// was lost writes nothing new.
+// (transactUntilCommitted): a run after one whose commit reply was lost finds the row and writes
+// nothing.
 func (s *Store) StartKeptPod(ctx context.Context, project, issue, podUID string, keptSince time.Time) error {
 	switch {
 	case project == "":
@@ -56,8 +56,7 @@ func (s *Store) StartKeptPod(ctx context.Context, project, issue, podUID string,
 		_, err := tx.Exec(ctx, `insert into issue_pod_disks (issue, pod_uid, kept_since, holds_earlier_work)
 			select $1, $2, $3, exists (select 1 from issue_pod_disks where issue = $1 and pod_uid <> $2 and kept_since = $3)
 			where `+projectRecordsIssue+`
-			on conflict (issue, pod_uid) do update set holds_earlier_work = true
-			where excluded.holds_earlier_work and not issue_pod_disks.holds_earlier_work`,
+			on conflict (issue, pod_uid) do nothing`,
 			issue, podUID, keptSince, project)
 		return err
 	})
