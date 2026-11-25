@@ -121,6 +121,20 @@ type ExchangeSession struct {
 	// is what lets the machine enroll afterwards. Like Principal it is no claim of the token and
 	// is not stored.
 	Fleet string `json:"-"`
+
+	// SubjectSignature is the signature of the machine login's access token a narrowed token is
+	// traded from (the access-token subject type), and empty for every other trade, whose subject
+	// is a JWT the broker keeps no row of. CreateAccessTokenSession stores it beside a narrowed
+	// token (oauth_narrowed_access_tokens.subject_signature), so the narrowed token ends when that
+	// row is revoked, retired or expired. Like Principal it is no claim of the token and is not
+	// stored in the session's JSON.
+	SubjectSignature string `json:"-"`
+
+	// SubjectExpiresAt is when the subject token a narrowed token is traded from expires: a JWT
+	// subject's `exp`, or the stored expiry of a machine login's access token. The zero time is
+	// none. CreateAccessTokenSession clamps a narrowed token's expiry to it, so a narrowed token
+	// never outlives its subject. It is not stored either.
+	SubjectExpiresAt time.Time `json:"-"`
 }
 
 // NewExchangeSession is an empty exchange session with its extra claims ready to be written, the
@@ -173,11 +187,13 @@ func (s *ExchangeSession) Clone() oauth2.Session {
 		return nil
 	}
 	cloned := &ExchangeSession{
-		SubjectToken: maps.Clone(s.SubjectToken),
-		ActorToken:   maps.Clone(s.ActorToken),
-		Principal:    s.Principal,
-		Instance:     s.Instance,
-		Fleet:        s.Fleet,
+		SubjectToken:     maps.Clone(s.SubjectToken),
+		ActorToken:       maps.Clone(s.ActorToken),
+		Principal:        s.Principal,
+		Instance:         s.Instance,
+		Fleet:            s.Fleet,
+		SubjectSignature: s.SubjectSignature,
+		SubjectExpiresAt: s.SubjectExpiresAt,
 	}
 	if s.DefaultSession != nil {
 		cloned.DefaultSession, _ = s.DefaultSession.Clone().(*oauth2.DefaultSession)

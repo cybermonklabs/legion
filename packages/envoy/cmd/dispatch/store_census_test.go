@@ -1,17 +1,29 @@
 //go:build basebuild
 
-// The three acceptance tests of this tag are this change's acceptance runs:
-// TestTheStoreCensusReadsZeroDifferences in this file, and TestNoWritePathThisChildChangesGetsSlower
-// (write_cost_test.go) and TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
-// (read_cost_test.go), which share graph_cost_test.go. Each builds the server at the commit
-// BASELINE_SHA names (baseBuild, testbaseline.Commit) and compares it with this build, so each
-// needs a checkout that holds that commit, and each takes from 2 to 45 minutes on an issue pod.
-// The tag also holds TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise, a unit test of
-// one bound that needs neither a database nor that commit and takes milliseconds.
-// They carry a build tag of their own and no CI job runs it: they are run on the pod, one at a
+// The basebuild tag holds per-change tools, not standing tests. Each is run at a child's head
+// against a base its Verification document names, never on its own as a check of main: this
+// file's TestTheStoreCensusReadsZeroDifferences, and the predicate-and-lens read cost of the
+// INFRA-1098 tree's branches (predicate_lens_read_cost_test.go, which only those branches carry).
+// Each builds the server at the commit BASELINE_SHA names (baseBuild, testbaseline.Commit) and
+// compares it with this build, so it needs a checkout that holds that commit, and takes from 2 to
+// 45 minutes on an issue pod. graph_cost_test.go holds the two arms, the clock and the order
+// statistic a cost tool builds on, and read_cost_test.go and write_cost_test.go the corpora and
+// readers; the cost tests of #3178 that drove them are gone from main (no Verification of an open
+// child names them), and the helpers stay for the INFRA-1098 tree's branches.
+//
+// The census tool refuses by name at its first step (requireTheSizingRunsBeforeTheMigration)
+// against any base that already holds the store, whatever the head: on such a base the census
+// reads graph_nodes as a store, and finds no row of the kinds the older build cannot write
+// (graphcensus's verdict). That is every fork point with main after #3178 until
+// cybermonklabs/legion#4173 lands, which lets the census read the store only over a database
+// migrated to the build under test (graphcensus.storeAbsence). Until then, give the census tool a
+// base from before the store: 62110c253b58ea2c852b60b85a7cd371f4951eac, the parent of #3178. A
+// branch that carries #4173 can use its own fork point with main, as the INFRA-1098 tree's do.
+//
+// They carry a build tag of their own and no CI job runs it: each is run on the pod, one at a
 // time and by name, as
 //
-//	BASELINE_SHA=$(git merge-base origin/main HEAD) go test -tags basebuild ./cmd/dispatch/ -run '^TestTheStoreCensusReadsZeroDifferences$' -count=1 -v
+//	BASELINE_SHA=62110c253b58ea2c852b60b85a7cd371f4951eac go test -tags basebuild ./cmd/dispatch/ -run '^TestTheStoreCensusReadsZeroDifferences$' -count=1 -v
 
 package main
 

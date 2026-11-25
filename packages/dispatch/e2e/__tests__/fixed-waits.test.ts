@@ -43,8 +43,8 @@ test("the scan reads files and waits of the real suite", () => {
   expect(realWaits.length).toBeGreaterThan(0);
 });
 
-// The walk is `e2e/source-files.ts`'s, which `e2e/no-browser-rows.ts` walks with too, and the
-// filters `suiteFiles` hands it are this rule's own, so what it covers is asserted rather than
+// The walk is `e2e/source-files.ts`'s, which the suite's other source scans walk with too, and
+// the filters `suiteFiles` hands it are this rule's own, so what it covers is asserted rather than
 // assumed: every spec e2e/no-browser-rows.ts reads for the row rule is a file this rule reads
 // too, and the helpers those specs import are read beside them - `touch.ts` holds a wait of its
 // own. The two sets it leaves are asserted as well: `__tests__`, whose controls are written to

@@ -41,7 +41,8 @@
 #     DEMO_GITHUB_APP's statuses at write write a status for the commit the repository holds and
 #     are answered 422 for another.
 #   - p4: POST /v1/requests and POST /v1/grants/{id}/values, each sent with curl and a body
-#     carrying github_app, are each refused 400 GITHUB_APP_FIELD_REMOVED with its message.
+#     carrying github_app, are each refused 400 GITHUB_APP_FIELD_REMOVED with its message, the
+#     stack's broker running with BROKER_GITHUB_APP_FIELD=off.
 #
 # It prints one PASS or FAIL line for each property, each naming the exit status or the HTTP
 # status of what it read, because a property that failed and a command that never ran look alike
@@ -257,7 +258,13 @@ echo "github-profile-check: starting the stack (dev-broker.sh, the proxied GitHu
 # background job of this script leads none. cleanup stops that whole group, because a go build
 # dev-broker.sh is running is a process of its own that a signal to dev-broker.sh alone leaves
 # running, as an orphan, once dev-broker.sh's EXIT trap has ended it.
+# BROKER_GITHUB_APP_FIELD=off is p4's own condition: this broker answers the github_app field of
+# an earlier agent-secrets for the requesters and the secrets its deployment names, and p4 holds
+# the refusal a deployment gets once it sets this. With the field answered, p4's body, which
+# carries no signed request, would be refused REQUEST_INVALID by the request object's own check
+# before the field is read, and p4 would hold nothing about the field.
 DEV_BROKER_PROXIED_GITHUB_IP="$GITHUB_IP" DEV_BROKER_GITHUB_PERMISSIONS="$INSTALLATION_PERMISSIONS" \
+	BROKER_GITHUB_APP_FIELD=off \
 	setsid bash "$SCRIPT_DIR/dev-broker.sh" >"$STACK_LOG" 2>&1 &
 STACK_PID=$!
 STACK_STARTED=$SECONDS
@@ -549,7 +556,7 @@ judge "p3 $DEV_BROKER_GITHUB_SECRET's token, whose cut keeps statuses at write, 
 judge "p3 the same token is answered 422 for a commit the repository does not hold (it answered $(answered status-other "$p3_app_output"))" \
 	is 422 "$(answered status-other "$p3_app_output")"
 
-# --- p4: a body carrying the removed github_app is refused with its own code ---------------------
+# --- p4: with BROKER_GITHUB_APP_FIELD=off, a body carrying github_app is refused with its own code
 
 # post_github_app sends one body carrying github_app to a route with curl, signed by the session,
 # leaving the answer's status in P4_STATUS and its code and message in P4_CODE and P4_MESSAGE.

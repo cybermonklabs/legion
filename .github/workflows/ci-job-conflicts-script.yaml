@@ -31,8 +31,9 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the conflict measurement script
-        run: bunx biome check --error-on-warnings scripts/conflicts
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/conflicts
       # scripts/conflicts is no workspace; the root package pins its TypeScript and Bun types.
       - name: Typecheck the conflict measurement script
         run: bunx tsc --noEmit -p scripts/conflicts
