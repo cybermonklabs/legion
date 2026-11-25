@@ -1177,8 +1177,8 @@ def finish(state_path):
     subject = "chore(daemon): convert contract " + ", ".join(
         f"entry {e['number']} to entry {e['id']} {e['slug']}" for e in entries) + f", and merge {main_name}"
     body = ["scripts/daemon-contract-convert.sh moved each numbered entry this branch added to",
-            f"{VERSION_GO} into an entry file (dispatch://INFRA-1569, R8), and merged main",
-            f"({main}{'' if main_name == 'main' else ', through the base branch ' + main_name}) into the branch.", ""]
+            f"{VERSION_GO} into an entry file (dispatch://INFRA-1569, R8), and merged {main_name}",
+            f"({main}) into the branch.", ""]
     body += [f"- entry {e['number']}: {e['file']} ({e['const']})" for e in entries]
     body += [f"- moved {path}:{line} ({field}) into the entry file of {const}" for path, line, field, const in state["moves"]]
     body += [f"- undid {path}: {what}" for path, what in state["undo"]]
