@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+    No git a role runs in the shared clone starts git's automatic maintenance. Every provision writes
+    `gc.auto=0` and `maintenance.auto=false` into the clone's own configuration, which every issue
+    workspace of the clone reads, so a clone made before this release takes them at its next
+    provision too. Before, the clone carried neither, and once it held more than 50 packs every
+    fetch, commit or merge a role ran started `git maintenance run --auto`, whose `git gc --auto`
+    rewrote the whole clone into one new pack: on large repositories that repack filled issue pods'
+    volumes and left its temporary pack behind. A clone's packs now pile up until something repacks
+    it, which costs its gits time and not correctness.
+time: 2026-11-25T09:22:24Z
+custom:
+    Issue: INFRA-5727

@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -216,6 +218,128 @@ func TestTheSharedCloneMapsPacksInSmallWindows(t *testing.T) {
 		if output, code := gitConfigRead(t, fed.Feed, "--git-dir="+fed.Feed, "config", "--get", setting[0]); output != "" || code != 1 {
 			t.Errorf("the feed %s reads %s as %q (exit %d), want nothing and exit 1", fed.Feed, setting[0], output, code)
 		}
+	}
+}
+
+// noMaintenance are the two settings that keep a git in the shared clone from starting git's
+// automatic maintenance, written out here rather than read from the list provisioning writes, so
+// that a key taken out of that list, or a value changed in it, fails each test that holds a git to
+// them.
+var noMaintenance = [][2]string{
+	{"gc.auto", "0"},
+	{"maintenance.auto", "false"},
+}
+
+// The shared clone's own configuration turns git's automatic maintenance off, for every git a role
+// runs in the clone or in the issue's workspace, the git jj runs for a fetch among them: neither a
+// role's GIT_CONFIG pairs (sandbox's gitConfigPairs) nor the worker image's /etc/gitconfig carries
+// either setting, so the clone's file is the one place a role's git reads them from. After a
+// provision from a feed, as `workspace-init provision` does in a pod, a git in the issue's
+// workspace reads each from the local scope, the clone's own file. A clone made before the
+// settings existed holds neither, as does the clone of a seed volume that new issue volumes are
+// restored from, and a role may have changed either: the next provision writes both again, so such
+// a clone takes them at the seed's next refresh or at its pod's next start, which each provision it.
+func TestTheSharedCloneTurnsOffGitsAutomaticMaintenance(t *testing.T) {
+	run := newLocalRunner(t)
+	fetch := fetchRequest(t)
+	if _, err := Fetch(context.Background(), run, fetch); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	request := provisionRequest(t)
+	request.Source = FromFeed(fetch.Feed)
+	readsAll := func(t *testing.T, working Workspace) {
+		t.Helper()
+		for _, setting := range noMaintenance {
+			if output, code := gitConfigRead(t, working.Dir, "config", "--show-scope", "--get", setting[0]); output != "local\t"+setting[1]+"\n" || code != 0 {
+				t.Errorf("the issue's workspace %s reads %s as %q (exit %d), want %s from the clone's own configuration", working.Dir, setting[0], output, code, setting[1])
+			}
+		}
+	}
+	working, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision from the feed: %v", err)
+	}
+	readsAll(t, working)
+	gitDir := "--git-dir=" + filepath.Join(working.Clone, ".git")
+	runSetup(t, working.Clone, "git", gitDir, "config", "--unset-all", "gc.auto")
+	runSetup(t, working.Clone, "git", gitDir, "config", "maintenance.auto", "true")
+	again, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision again: %v", err)
+	}
+	readsAll(t, again)
+}
+
+// A role's `git fetch` in the issue's workspace starts no git maintenance, however far past its
+// limits the clone is. On 2026-11-25 one deployment's issue pods filled their volumes this way:
+// each pod's clone held more than gc.autoPackLimit's 50 packs, so a role's fetch of one commit
+// started `git maintenance run --auto`, then `git gc --auto`, then a `git repack -d -l --cruft` of
+// the whole 41 GB clone, which ran out of room and left its temporary pack behind (INFRA-5727).
+// Here gc.autoPackLimit 1 and a fetch that keeps its pack (fetch.unpackLimit 1) make a gc due on
+// the fixture's small clone, and gc.autoDetach and maintenance.autoDetach false hold any such run
+// in the foreground, so each of its gits is in the fetch's trace before the fetch returns. The
+// fetch runs under the fixtures' environment, which reads no system or global file, so the
+// clone's own configuration is all that stands between it and the gc.
+func TestARolesFetchInTheSharedCloneStartsNoGitMaintenance(t *testing.T) {
+	run := newLocalRunner(t)
+	fetch := fetchRequest(t)
+	if _, err := Fetch(context.Background(), run, fetch); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	request := provisionRequest(t)
+	request.Source = FromFeed(fetch.Feed)
+	working, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision from the feed: %v", err)
+	}
+	gitDir := filepath.Join(working.Clone, ".git")
+	for _, pair := range [][2]string{{"gc.autoPackLimit", "1"}, {"gc.autoDetach", "false"}, {"maintenance.autoDetach", "false"}} {
+		runSetup(t, working.Clone, "git", "--git-dir="+gitDir, "config", pair[0], pair[1])
+	}
+	// The fixture's clone holds its few objects loose, so they are packed first: then the clone
+	// holds a pack, and the fetch keeps its own (an index-pack in its trace, not an
+	// unpack-objects), two packs at its end, past gc.autoPackLimit 1, so a gc is due there.
+	// Without both, the gc's absence below would say nothing of the clone's configuration.
+	runSetup(t, working.Clone, "git", "--git-dir="+gitDir, "repack", "-d", "--quiet")
+	packs, err := filepath.Glob(filepath.Join(gitDir, "objects", "pack", "*.pack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packs) == 0 {
+		t.Fatalf("the clone holds no pack before the fetch, so the fetch's pack alone stays within gc.autoPackLimit 1")
+	}
+	advanceRemote(t, run.remote)
+	trace := filepath.Join(t.TempDir(), "trace2.json")
+	runSetupWith(t, working.Dir, []string{
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=url." + run.remote + ".insteadOf", "GIT_CONFIG_VALUE_0=https://github.com/acme/widgets",
+		"GIT_TRACE2_EVENT=" + trace,
+	}, "git", "-c", "fetch.unpackLimit=1", "fetch", "--quiet", "origin")
+
+	body, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatalf("read the fetch's git trace: %v", err)
+	}
+	fetched, kept := false, false
+	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+		var event struct {
+			Event string   `json:"event"`
+			Argv  []string `json:"argv"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decode the git trace event %q: %v", line, err)
+		}
+		if event.Event == "start" && slices.Contains(event.Argv, "fetch") {
+			fetched = true
+		}
+		if event.Event == "start" && slices.Contains(event.Argv, "index-pack") {
+			kept = true
+		}
+		if slices.Contains(event.Argv, "maintenance") || slices.Contains(event.Argv, "gc") || slices.Contains(event.Argv, "repack") {
+			t.Errorf("the role's fetch traced %s of %q: git's automatic maintenance ran in the shared clone", event.Event, strings.Join(event.Argv, " "))
+		}
+	}
+	if !fetched || !kept {
+		t.Fatalf("the git trace holds a git fetch: %t, and an index-pack keeping its pack: %t; without both no gc was due, and it says nothing of the fetch's maintenance:\n%s", fetched, kept, body)
 	}
 }
 

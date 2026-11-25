@@ -232,7 +232,18 @@ type Workspace struct {
 // is older. So no process provisioning starts holds a lock of the clone once it has returned. git
 // would read GIT_CONFIG_PARAMETERS (its `-c`) after the pins, so no process provisioning starts
 // inherits it.
-var pinnedGitConfig = [][2]string{{"core.hooksPath", "/dev/null"}, {"gc.auto", "0"}, {"maintenance.auto", "false"}}
+var pinnedGitConfig = append([][2]string{{"core.hooksPath", "/dev/null"}}, noAutomaticMaintenance...)
+
+// noAutomaticMaintenance is the git configuration under which no git starts git's automatic
+// maintenance. maintenance.auto false keeps a fetch, a commit, a merge or a rebase from starting
+// `git maintenance run --auto` at all; gc.auto 0 keeps a maintenance run or a `git gc --auto` that
+// something else starts from running a gc. Measured with the worker image's git 2.47.3 on a clone
+// of 55 packs: a fetch under git's defaults ran `git maintenance run --auto`, `git gc --auto` and a
+// `git repack -d -l --cruft` that left one pack; with maintenance.auto false alone it started no
+// maintenance; with gc.auto 0 alone it started `git maintenance run --auto`, which ran no gc; with
+// both, neither. pinnedGitConfig holds both for every git provisioning starts, and the shared
+// clone's own configuration for every git a role runs there (configureCloneMaintenance).
+var noAutomaticMaintenance = [][2]string{{"gc.auto", "0"}, {"maintenance.auto", "false"}}
 
 // transportEnvironment is set on every process provisioning starts before the command's own
 // environment: git reaches a remote over https alone, so a url.<base>.insteadOf the tree wrote
@@ -1005,6 +1016,34 @@ func PackWindowConfig() [][2]string { return slices.Clone(packWindowConfig) }
 // twice included. The feed does not take them, for the reason configureCloneReads gives.
 func configurePackWindows(ctx context.Context, run Runner, cloneDir string) error {
 	for _, pair := range packWindowConfig {
+		argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "--replace-all", pair[0], pair[1]}
+		if _, err := RunChecked(ctx, run, argv, nil, cloneDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// configureCloneMaintenance sets noAutomaticMaintenance in the shared clone's own configuration,
+// which every workspace of the clone reads too, so no git a role runs there starts git's automatic
+// maintenance. The clone's file is the one place such a git reads them from: provisioning's pins
+// (pinnedGitConfig) reach only the gits provisioning starts, and neither a role's GIT_CONFIG pairs
+// (sandbox's gitConfigPairs) nor the worker image's /etc/gitconfig holds either key. Under git's
+// defaults a clone past gc.autoPackLimit's 50 packs or gc.auto's 6,700 loose objects has every
+// fetch, commit and merge start `git maintenance run --auto`, whose `git gc --auto` writes the whole
+// clone into one new pack before it removes the old ones. On 2026-11-25 that repack filled the
+// volumes of one deployment's issue pods, whose clones held 53 and 69 packs, 41 GB, past the room
+// left, and each left its temporary pack behind; a role's fetch of one commit had started it
+// (INFRA-5727). With the settings, a clone's packs pile up instead, which costs its gits time and
+// not correctness, until something repacks it by name. Every provision writes them, so every
+// shared clone takes them, a host clone of the tmux runtime too (the daemon's Provision with
+// FromGitHub), whose panes' fetches would otherwise start the same maintenance beside the
+// daemon's provisions; a clone made before the settings existed, the one a seed volume carries
+// into every issue volume restored from it among them, or one whose file a role changed, takes
+// them at its next provision. --replace-all leaves one line of each key whatever the file held.
+// The feed holds both already (feedConfiguration).
+func configureCloneMaintenance(ctx context.Context, run Runner, cloneDir string) error {
+	for _, pair := range noAutomaticMaintenance {
 		argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "--replace-all", pair[0], pair[1]}
 		if _, err := RunChecked(ctx, run, argv, nil, cloneDir); err != nil {
 			return err
