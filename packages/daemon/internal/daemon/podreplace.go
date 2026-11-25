@@ -371,8 +371,10 @@ func (s *supervision) recordLaunchTakes(ctx context.Context, taken runtime.Taken
 // round's record of the pod among them: a round's call that ran out of time on the pod's launch
 // turn, which the launch held for its whole try, leaves its record standing, and the launch's
 // replacement of that pod takes it. Each such round ends here, as the act that took its pod, with
-// no notice of its own (endTakenRounds), so no later walk reads the pod as one that went before
-// its round was over (the Legion reviewer's Medium 2 on #5285 at 4b123279).
+// no notice of its own (endTakenRounds), so within one daemon run no later walk reads the pod as
+// one that went before its round was over (the Legion reviewer's Medium 2 on #5285 at 4b123279); a
+// restart before the members' machines take the end can end the round again as a pod that went,
+// as after every round's own finish (roundReplaced).
 func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod) {
 	attrs := []any{"claim", taken.Claim, "why", taken.Why}
 	if !taken.Tells() {

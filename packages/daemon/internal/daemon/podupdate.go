@@ -1414,8 +1414,14 @@ func (s *supervision) overtakenByLaunch(ctx context.Context, recorded store.PodR
 // confirmed (the Legion reviewer's Medium 1 on #5285 at 4b123279), and where the
 // runtime shows the act not made, the record is forgotten and nothing is told of a call that took
 // nothing (the Legion reviewer's Medium 1 on #5285 at 18d81dad). The end is the round's end all
-// the same, so no later walk reads the round's pod as one that went without its round (the Legion
-// reviewer's Important on #5285 at 69e00593, path a).
+// the same, so within one daemon run no later walk reads the round's pod as one that went without
+// its round (the Legion reviewer's Important on #5285 at 69e00593, path a). The end is posted to the
+// members' machines and kept in memory (endPodUpdates, keepEndedRound), and the yield deleted the
+// round's record: a daemon that stops after the yield commits and before every member's machine has
+// taken the end boots with the round restored from the claims and no record holding the issue, so
+// its walk can end the round again as a pod that went, and the launch's later finish tells the
+// architect as well. Every round's own finish has the same window (the Legion reviewer's finding on
+// podupdate.go:1416 on #5285 at aae2c628).
 //
 // read is what the read of the workspace before the replacement found (workspaceRead), and read.by
 // is who made the replacement (roundReplacer). The line of a replacement by issue or at a launch
