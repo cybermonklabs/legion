@@ -105,9 +105,12 @@ func TestAReviewersTaskAtAnotherHeadGoesToAProcessLaunchedAtIt(t *testing.T) {
 // the store keeps, so a machine a daemon restart rebuilt hands its live reviewer the next task in
 // the process it found, where the record's head has not moved, and relaunches it where it has.
 // A row that records no launch head for the process the claim records — one a release before this
-// one launched — sends the reviewer's next task to a process launched at the record's head. A
-// record that holds no head (an issue with no pull request) holds no task back, and a record that
-// cannot be read holds the task back, unsent and with no relaunch, until it answers.
+// one launched — sends the reviewer's next task to a process launched at the record's head, and so
+// does a row whose launch head is the record's but whose launch generation is not the claim's: a
+// release before this one started the process the claim records, and left the columns this
+// release wrote for the process before it. A record that holds no head (an issue with no pull
+// request) holds no task back, and a record that cannot be read holds the task back, unsent and
+// with no relaunch, until it answers.
 func TestAReviewersTaskWaitsForAProcessWhoseHeadTheMachineKnows(t *testing.T) {
 	t.Run("after a restart, at the same head", func(t *testing.T) {
 		h, _ := newReviewerHarness(t, "head-1")
@@ -141,6 +144,34 @@ func TestAReviewersTaskWaitsForAProcessWhoseHeadTheMachineKnows(t *testing.T) {
 		earlier := h.store.load(h.token)
 		earlier.ReviewLaunchHead, earlier.ReviewLaunchGeneration = "", 0
 		if err := h.store.PutClaim(h.ctx, earlier); err != nil {
+			t.Fatal(err)
+		}
+		h.restart()
+		h.must(RequestDeliver{Claim: h.token, Task: "review round two"})
+		h.m.Wait()
+		h.wantPrompts(1)
+		if got := h.wantCalls("Resume", 1)[0].Spec.ReviewHead; got != "head-1" {
+			t.Fatalf("the relaunch gave the reviewer head %q, want head-1", got)
+		}
+		h.relaunched()
+		h.m.Wait()
+		h.wantPrompts(2)
+	})
+	t.Run("a process an earlier release started over this release's head", func(t *testing.T) {
+		// This release launched the reviewer at head-1 and recorded that launch. A release before
+		// this one then started the claim's process again, at the claim's next generation: it
+		// reads and writes the row and leaves both columns, so the row still names head-1, at a
+		// generation that is not the claim's. That launch made no clone at head-1.
+		h, _ := newReviewerHarness(t, "head-1")
+		h.reach(StateIdle)
+		h.m.Wait()
+		rolledBack := h.store.load(h.token)
+		if rolledBack.ReviewLaunchHead != "head-1" || rolledBack.ReviewLaunchGeneration != rolledBack.Generation {
+			t.Fatalf("the launch recorded head %q at generation %d, want head-1 at the claim's generation %d",
+				rolledBack.ReviewLaunchHead, rolledBack.ReviewLaunchGeneration, rolledBack.Generation)
+		}
+		rolledBack.Generation++
+		if err := h.store.PutClaim(h.ctx, rolledBack); err != nil {
 			t.Fatal(err)
 		}
 		h.restart()
