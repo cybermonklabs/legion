@@ -205,10 +205,9 @@ type Options struct {
 	// DaemonURL, EnvoyURL, and DispatchURL are the pane values LEGION_DAEMON_URL, ENVOY_URL, and
 	// DISPATCH_URL; an empty one is left unset.
 	DaemonURL, EnvoyURL, DispatchURL string
-	// DispatchToken is the Dispatch bearer every claim's Secret carries as DISPATCH_TOKEN, and its
-	// main container reads through DISPATCH_TOKEN_FILE. It is configured exactly when DispatchURL
-	// is.
-	DispatchToken string
+	// Dispatch is the Dispatch credential a launch's role holds, configured exactly when
+	// DispatchURL is (DispatchCredential).
+	Dispatch DispatchCredential
 	// NATSURLs are ENVOY_NATS_URL, comma-joined; none leaves it unset.
 	NATSURLs []string
 	Tools    Tools
@@ -416,6 +415,12 @@ type Options struct {
 	// which is one no live record and no launch since the last read names, once that cache's
 	// retention passes. Required for supervision.
 	CacheRepositories func() []ghrepo.Repository
+	// KeptPodStart is a role's start in a pod whose Sandbox owns the issue's kept volume
+	// (runtime.KeptPodStart): it records the pod with its volume for the issue's update round. At
+	// each role start in a pod of such a Sandbox the runtime asks it before the start is sent
+	// (launchers.recordKeptPod); when it fails, the runtime refuses the role's start
+	// (runtime.KeptPodUnrecorded). A runtime given none records no pod.
+	KeptPodStart runtime.KeptPodStart
 	// MemoryGuardKilled takes one process an issue pod's memory guard ended, as that pod's
 	// launcher reported it on the connection of the role whose process it was
 	// (runtime.MemoryGuardKilled): the daemon turns it into the note that tells that role why its
@@ -477,6 +482,43 @@ type Options struct {
 // issue pod's, whose one container runs every workflow role, and the project controller's.
 type PodResources struct {
 	Issue, Controller corev1.ResourceRequirements
+}
+
+// DispatchCredential is the Dispatch credential a launch's role holds, in exactly one of two ways.
+//
+// Bearer is the shared Dispatch bearer (dispatch_token_file): every launch carries it as
+// DISPATCH_TOKEN in its start command's Files, which the launcher writes into the generation's
+// private directory, and its role reads it through DISPATCH_TOKEN_FILE.
+//
+// Broker is dispatch_token_broker: a launch into a pod that carries an exchange identity
+// (launch.trades) carries no Dispatch token at all, and its role is told DISPATCH_TOKEN_BROKER=1,
+// under which its Dispatch client trades that identity at the secrets broker for a token of its
+// own session. It needs AgentSecrets.ExchangeAudience, so every pod a launch builds carries the
+// identity. Transition, given only with Broker, is the shared token
+// dispatch_token_transition_file holds: a launch that keeps a live pod built before the identity
+// carries it as a launch carries Bearer, since a role of such a pod has no identity to trade until
+// its update round replaces the pod; with no Transition such a launch is refused, nothing of the
+// pod touched, and waits for that round (runtime.ErrAwaitingPodRound).
+type DispatchCredential struct {
+	Bearer     string
+	Broker     bool
+	Transition string
+}
+
+// DispatchTokens is what the runtime counts of the Dispatch tokens its launches hand out
+// (Runtime.DispatchTokens): the two counts a deployment under dispatch_token_broker reads before
+// it removes dispatch_token_transition_file (dispatch://INFRA-4425 R4).
+//
+// TransitionLaunches is how many launches since this runtime was built sent a start that carried
+// the transition token (DispatchCredential.Transition), and LastTransitionLaunch when the latest
+// of them was sent, zero before the first. LiveLaunches is how many claims' live generations
+// started with DISPATCH_TOKEN in their start command's Files, whichever daemon started them: the
+// launcher deletes those files with the generation, so a token handed to a role lives exactly as
+// long as the generation it was handed to.
+type DispatchTokens struct {
+	TransitionLaunches   int
+	LastTransitionLaunch time.Time
+	LiveLaunches         int
 }
 
 // AgentSecrets is the secrets broker the runtime enrolls every pod with: the URL the

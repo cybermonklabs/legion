@@ -80,7 +80,9 @@ func launchSecretNames(cfg config.Config, lookup func(string) (string, bool)) []
 // Sandbox runtime's own refusals (sandbox.CheckPod), over the roles the runtime would run: the
 // issue roles of the deployment (sandbox.IssueRoles over deploymentApps), then the controller;
 // the exchange identity's names are among them only where runtime.kubernetes.agent_secrets names
-// an exchange_audience.
+// an exchange_audience, and DISPATCH_TOKEN_BROKER only under dispatch_token_broker. CheckPod
+// refuses a provider key named DISPATCH_TOKEN or DISPATCH_TOKEN_FILE with or without
+// dispatch_token_broker, and under it gives the broker's reason: a shared Dispatch token.
 func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) error {
 	names := launchSecretNames(cfg, lookup)
 	for _, key := range cfg.ProviderKeys {
@@ -92,9 +94,13 @@ func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) 
 		return nil
 	}
 	roles := append(sandbox.IssueRoles(deploymentApps(cfg.Roles)), claim.RoleController)
-	broker := cfg.Runtime.Kubernetes.AgentSecrets
+	audience := ""
+	if broker := cfg.Runtime.Kubernetes.AgentSecrets; broker != nil {
+		audience = broker.ExchangeAudience
+	}
 	return sandbox.CheckPod(sandbox.Pod(cfg.Runtime.Kubernetes.Pod), roles, providerSecretKeys(cfg.ProviderKeys),
-		workerImageTools, names, providersSecrets(cfg, lookup), cfg.Runtime.Kubernetes.SessionStore, broker != nil && broker.ExchangeAudience != "")
+		workerImageTools, names, providersSecrets(cfg, lookup), cfg.Runtime.Kubernetes.SessionStore,
+		sandbox.ExchangeOf(audience, cfg.DispatchTokenBroker))
 }
 
 // environLookup is os.LookupEnv over environ, the daemon's environment or a test's.

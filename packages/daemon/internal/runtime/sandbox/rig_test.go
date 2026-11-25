@@ -1117,7 +1117,7 @@ func (g *rig) reportLauncher(token claim.Token, state shimwire.LauncherState) {
 	if pod == nil {
 		g.t.Fatal("cannot report launcher state without its pod")
 	}
-	s := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
+	s := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
 	s.mu.Lock()
 	s.state = state
 	close(s.ready)
@@ -1359,7 +1359,7 @@ func (g *rig) connect(token claim.Token) { g.connectRunning(token, 0) }
 func (g *rig) connectRunning(token claim.Token, running uint64) {
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{
+	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
 		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
 		CredentialWait: !g.noCredentialWait,
@@ -1427,6 +1427,27 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			}
 		}
 	}()
+}
+
+// keptSince is what the resolver reads off the Sandbox of token's pod for a hello
+// (LauncherResolver, keptVolumeSince): when that Sandbox was created, where it owns the issue's
+// kept volume, and the zero time otherwise. It reads the Sandbox the tracker holds, and a Sandbox
+// the tracker does not hold or cannot decode reads as the zero time, since a fake launcher may
+// connect from the controller stand-in's goroutine, where the test cannot fail.
+func (g *rig) keptSince(token claim.Token) time.Time {
+	object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, SandboxName(token))
+	if err != nil {
+		return time.Time{}
+	}
+	u, ok := object.(*unstructured.Unstructured)
+	if !ok {
+		return time.Time{}
+	}
+	s, err := decodeSandbox(u)
+	if err != nil {
+		return time.Time{}
+	}
+	return keptVolumeSince(s)
 }
 
 // issueLaunchers connects a fake launcher for every role of token's issue.

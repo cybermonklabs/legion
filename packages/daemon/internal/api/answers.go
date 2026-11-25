@@ -47,12 +47,13 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256, 297 and 298 are constants rather than their
-// numbers, because the entries that added them name them. A renumber changes that entry, its
+// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256, 275, 297 and 298 are constants rather than
+// their numbers, because the entries that added them name them. A renumber changes that entry, its
 // constant and this list together: moving either one alone would describe a shape at a contract
-// no entry declares. The last entry is strandedTokenContract, after deploymentRolesContract.
-// The other entries above 193 follow them as numbers: 199, 217 and 232.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract, deploymentRolesContract, strandedTokenContract}
+// no entry declares. The last entry is strandedTokenContract, after deploymentRolesContract, which
+// follows dispatchCredentialContract. The other entries above 193 follow them as numbers: 199, 217
+// and 232.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract, dispatchCredentialContract, deploymentRolesContract, strandedTokenContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer

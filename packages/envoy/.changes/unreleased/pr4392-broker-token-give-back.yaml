@@ -1,0 +1,13 @@
+kind: Fixed
+custom:
+  Issue: pr4392
+body: |-
+  The broker-token check that Dispatch and the Envoy listener share no longer refuses callers whose
+  tokens the broker answers live, however many of them share one source address, as every caller
+  behind a gateway does. Dispatch answered such a caller `429 BROKER_TOKEN_RATE_LIMITED`, and the
+  listener `429` "too many access tokens checked from this address". The check still takes one
+  request from the source address's bucket (a burst of 20 and five a second per address, per
+  process) before it asks the broker about a token, and it now gives that request back when the
+  broker answers that the token is live. A token the broker refuses, and a question the broker does
+  not answer, keep their request, so a caller that presents tokens the broker did not issue meets
+  the same bound as before. Nothing is configured and no deployment changes.
