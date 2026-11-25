@@ -642,14 +642,14 @@ failure under the cause word `provider_error`, with the same sentence as its `de
 background job's result — names no task in the plugin's turn-outcome report, so the daemon judges
 it from that report alone, by the HTTP status in its provider error (a plugin from before daemon
 API contract 274 says the same with `unprompted` and `httpStatus`). The same rule holds: a status
-that cannot clear fails the claim at once, with `why` reading `a provider error that cannot clear
-ended a turn this claim's agent ran with no prompt of the daemon's: <cause>`, holds the issue under
-the cause word `provider_error`, and so ends the plugin's reminders. Any other refusal, or one
-whose report carries no status, fails nothing and logs `supervise: a turn that ran no prompt of the
-daemon's ended in a provider error`; the reminders keep their pace of one every 5 minutes, and the
-turn counts in the claim's run of provider-error turns below. Nothing is given again for such a
-turn: it carried no task. A report a plugin marks `unprompted` is read as one naming no task,
-whatever task it names.
+that cannot clear fails the claim at once, with `why` reading
+`a provider error that cannot clear ended a turn of this claim's agent that ran none of the daemon's tasks: <cause>`,
+holds the issue under the cause word `provider_error`, and so ends the plugin's reminders. Any
+other refusal, or one whose report carries no status, fails nothing and logs
+`supervise: a turn that ran none of the daemon's tasks ended in a provider error`; the reminders
+keep their pace of one every 5 minutes, and the turn counts in the claim's run of provider-error
+turns below. Nothing is given again for such a turn: it carried no task. A report a plugin marks
+`unprompted` is read as one naming no task, whatever task it names.
 
 **After six turns of one claim in a row have ended in a provider error**, whether the take's turn
 or another, the project's controller is told once, as `provider-errors on <KEY>`,
@@ -658,7 +658,7 @@ with the run, the model where the report's provider error named one, and the cau
 held and nothing is stopped by that count. The take's task is still kept and still given again on
 the ladder, and the notice says the daemon writes it again; a turn that was not the take's carried
 no task, so nothing is given again for it, the reminders keep their pace, and a notice whose sixth
-turn was such a turn says that the daemon sends no task again for it. The run
+turn was such a turn says that the daemon writes no task again for it. The run
 goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
 compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
 Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's

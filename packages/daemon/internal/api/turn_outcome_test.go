@@ -201,9 +201,9 @@ func TestATurnOutcomeTheRouteCannotActOnIsRefusedAndRecordsNothing(t *testing.T)
 
 // A status outside the HTTP range is no status a provider answered, and the rollout of the field
 // is warn-first: the report is taken, as one whose status cannot be read, and the daemon warns
-// naming the number rather than refusing it. So a turn that ran no prompt of the daemon's, refused
-// with 1400, counts in the claim's run of provider-error turns and fails nothing, as a refusal
-// with no status does, where a 400 would fail the claim.
+// naming the number rather than refusing it. So a turn that ran none of the daemon's tasks,
+// refused with 1400, counts in the claim's run of provider-error turns and fails nothing, as a
+// refusal with no status does, where a 400 would fail the claim.
 func TestATurnOutcomeWithAStatusOutsideTheHTTPRangeIsTakenAsNoStatusWithAWarning(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
@@ -248,7 +248,7 @@ func TestAReportOfAnEarlierGenerationIsRecordedInItsOwnPlace(t *testing.T) {
 	}
 }
 
-// The report of a turn that ran no prompt of the daemon's is that turn's one record, so the daemon
+// The report of a turn that ran none of the daemon's tasks is that turn's one record, so the daemon
 // judges the turn from it (supervise's turnOutcome): refused with a status that can clear, it
 // fails nothing, and refused with one that cannot, a 400, it fails the claim, and the answer's
 // `failed` says so (claim.TurnOutcomeResponse).

@@ -127,7 +127,7 @@ func TestTakeOfNoTaskATurnsRefusedReportIsCountedAndWritesNothingAgain(t *testin
 					return
 				}
 				if c.State != StateFailed || c.FailureCause != CauseProviderError ||
-					!strings.Contains(c.Failure, "with no prompt of the daemon's") || !strings.Contains(c.Failure, "HTTP 400") {
+					!strings.Contains(c.Failure, "that ran none of the daemon's tasks") || !strings.Contains(c.Failure, "HTTP 400") {
 					t.Fatalf("the claim is %s (%q, %q), want it failed by the 400 of a turn that was not the take's", c.State, c.FailureCause, c.Failure)
 				}
 			})
@@ -166,7 +166,7 @@ func TestTakeTaskNamedByAReportMarkedUnpromptedIsJudgedAsATurnOfNoTask(t *testin
 				t.Errorf("the window keeps %+v, want the report kept as one of no task", kept)
 			}
 			if tc.fails {
-				if c.State != StateFailed || !strings.Contains(c.Failure, "with no prompt of the daemon's") || !strings.Contains(c.Failure, "HTTP 400") {
+				if c.State != StateFailed || !strings.Contains(c.Failure, "that ran none of the daemon's tasks") || !strings.Contains(c.Failure, "HTTP 400") {
 					t.Fatalf("the claim is %s (%q), want it failed with the words of a turn that was not the take's", c.State, c.Failure)
 				}
 				return

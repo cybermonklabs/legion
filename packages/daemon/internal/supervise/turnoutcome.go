@@ -329,10 +329,11 @@ func refusedRun(window []TurnOutcome) int {
 
 // LastRefusal is what the provider said about the newest refused turn the claim keeps, and "" when
 // it keeps none or the provider said nothing. The retry that leaves a refused session behind logs
-// it (retry). The words are stored for more than that line: a turn that ran no prompt of the
-// daemon's, a phase reminder among them, has no prompt result, so its report is the daemon's one
-// record of what the provider answered that turn. The report's status, never these words, is what
-// judges such a turn (turnOutcome).
+// it (retry). The words are stored for more than that line: for the take's turn, whose end report
+// names the take's number (reportedTask), and for a turn that ran none of the daemon's tasks, a
+// phase reminder among them, alike, the turn's report is the daemon's one record of what the
+// provider answered that turn. The report's status, never these words, is what judges the turn
+// (turnOutcome).
 func (c Claim) LastRefusal() string {
 	for i := len(c.TurnOutcomes) - 1; i >= 0; i-- {
 		if c.TurnOutcomes[i].Refused {

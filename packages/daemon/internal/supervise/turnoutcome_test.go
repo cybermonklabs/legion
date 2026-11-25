@@ -73,9 +73,9 @@ func (h *harness) refusedTurn(sequence uint64, status int, message string) {
 }
 
 // refusedUntilA400 is a working claim whose provider refused launch_failure_limit turns in a row:
-// each but the last with a 529, which can clear, so the ladder sends the task again after it, and
-// the last with a 400, which cannot clear and fails the claim. It answers the claim's harness and
-// that limit.
+// each but the last with a 529, which can clear, so the ladder writes the task's value again after
+// it for the worker to take, and the last with a 400, which cannot clear and fails the claim. It
+// answers the claim's harness and that limit.
 func refusedUntilA400(t *testing.T) (*harness, int) {
 	t.Helper()
 	h := workingClaim(t)
@@ -444,12 +444,12 @@ func TestTheRefusedRunCarriesAcrossAGenerationThatResumesTheSameSession(t *testi
 // 429 refuses every session of the team alike — and no sign that its session is bad. Two runs here
 // are of twenty refused turns, each a plugin turn's report, one with a 429 and one with no status;
 // neither fails the claim, so it fails the way such a claim does, its process dying until its
-// launch budget runs out. A claim a prompt result's 400 failed resumes too, and so do claims that
-// failed on deaths, retried by the workflow or by an operator. Only the retry that asks for a new
-// session (`--fresh-session`, the controller's fresh_session) leaves the recorded session behind,
-// whatever failed the claim. Each row states which it wants. With freshSession as at 9e30e970,
-// which started a new session for a run that reached launch_failure_limit, the 429 and no-status
-// rows that ask for nothing start a new session and fail.
+// launch budget runs out. A claim the 400 of its take's end report failed resumes too, and so do
+// claims that failed on deaths, retried by the workflow or by an operator. Only the retry that asks
+// for a new session (`--fresh-session`, the controller's fresh_session) leaves the recorded session
+// behind, whatever failed the claim. Each row states which it wants. With freshSession as at
+// 9e30e970, which started a new session for a run that reached launch_failure_limit, the 429 and
+// no-status rows that ask for nothing start a new session and fail.
 func TestARetryResumesTheRecordedSessionUnlessItAsksForANewOne(t *testing.T) {
 	const run = 20
 	const newSessionLine = "supervise: retrying in a new session"
@@ -504,7 +504,7 @@ func TestARetryResumesTheRecordedSessionUnlessItAsksForANewOne(t *testing.T) {
 	}{
 		{"a run of 20 refused turns that ends in a 429 resumes its session", refusedRun(429), byWorkflow(false), false},
 		{"a run of 20 refused turns that ends in a report with no status resumes its session", refusedRun(0), byWorkflow(false), false},
-		{"a claim a prompt result's 400 failed resumes its session", failedByA400, byWorkflow(false), false},
+		{"a claim the 400 of its take's end report failed resumes its session", failedByA400, byWorkflow(false), false},
 		{"a claim that died out, retried by the workflow, resumes its session", diedOut(queuedClaim()), byWorkflow(false), false},
 		{"a claim that died out, retried by an operator, resumes its session", diedOut(rootClaim()), byOperator(false), false},
 		{"a run of 20 refused turns that ends in a 429, retried with --fresh-session, starts a new session", refusedRun(429), byWorkflow(true), true},

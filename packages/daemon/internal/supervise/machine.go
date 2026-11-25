@@ -1056,9 +1056,11 @@ type Timeouts struct {
 	// flight, and a machine whose lock is held through an outage decides nothing at all. Through
 	// the daemon's store (Deps.BoundWrite) it counts from the moment the pool hands the write a
 	// connection, and a dial the write waits for runs under it too (store.BoundAfterAcquire); the
-	// wait in the pool's queue before that is defaultClaimAcquire's. No setting names it, because
-	// it answers a question about the write rather than about a deployment, and only tests set it.
-	// Zero takes defaultClaimWrite.
+	// wait in the pool's queue before that is defaultClaimAcquire's. It bounds each write and
+	// delete of the task bucket (TaskValues) a decision makes too, alone, with no acquire bound
+	// before it, since the bucket queues for no connection of the store (writeBucket). No setting
+	// names it, because it answers a question about the write rather than about a deployment, and
+	// only tests set it. Zero takes defaultClaimWrite.
 	ClaimWrite time.Duration
 }
 

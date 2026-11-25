@@ -118,11 +118,11 @@ func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome)
 	}
 	_, failed, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
 		status: r.status(), model: model,
-		line:  "supervise: a turn that ran no prompt of the daemon's ended in a provider error",
+		line:  "supervise: a turn that ran none of the daemon's tasks ended in a provider error",
 		attrs: []any{"generation", r.Generation, "sequence", r.Sequence, "task", r.Task},
-		turn:  "a turn this claim's agent ran with no prompt of the daemon's",
-		next: "the last of them ran no prompt of the daemon's (a phase reminder, an Envoy message or a " +
-			"background job's result), so the daemon sends no task again for it",
+		turn:  "a turn of this claim's agent that ran none of the daemon's tasks",
+		next: "the last of them ran none of the daemon's tasks (a phase reminder, an Envoy message or a " +
+			"background job's result), so the daemon writes no task again for it",
 	})
 	if err != nil || failed {
 		return err

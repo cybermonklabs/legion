@@ -9,11 +9,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// The cases of this file are dispatch://INFRA-4508's R4: a turn that ran no prompt of the
-// daemon's — the phase reminder's, which the plugin starts itself with pi.sendMessage — has no
-// prompt result, so the daemon judges it from its producer's report, which is marked unprompted
-// and carries the status the provider refused it with where the provider library gave one
-// (turnOutcome, unpromptedTurnEnded).
+// The cases of this file are dispatch://INFRA-4508's R4: a turn that ran none of the daemon's
+// tasks — the phase reminder's, which the plugin starts itself with pi.sendMessage — is no take's
+// turn, so no take's end report judges it: the daemon judges it from its producer's own report,
+// which is marked unprompted and carries the status the provider refused it with where the
+// provider library gave one (turnOutcome, unpromptedTurnEnded).
 
 // pluginTurn is one such turn as its producer reports it, at the claim's current generation:
 // refused with status, 0 where the library gave none, or clean. No take names it. sequence counts
@@ -80,7 +80,7 @@ func TestAPluginTurnRefusedWithA400FailsTheClaimAtOnce(t *testing.T) {
 	if c.FailureCause != CauseProviderError {
 		t.Errorf("the failure's cause is %q, want %q", c.FailureCause, CauseProviderError)
 	}
-	for _, want := range []string{"cannot clear", "no prompt of the daemon's", "HTTP 400"} {
+	for _, want := range []string{"cannot clear", "none of the daemon's tasks", "HTTP 400"} {
 		if !strings.Contains(c.Failure, want) {
 			t.Errorf("the failure is %q, want it to say %q", c.Failure, want)
 		}
@@ -334,7 +334,7 @@ func TestTheNoticeOfARunEndedByAPluginTurnSendsNoTaskAgain(t *testing.T) {
 	if len(reasons) != 1 {
 		t.Fatalf("the controller was told %d times, want once", len(reasons))
 	}
-	for _, want := range []string{"6 turns in a row", "HTTP 529", "no prompt of the daemon's", "sends no task again"} {
+	for _, want := range []string{"6 turns in a row", "HTTP 529", "none of the daemon's tasks", "writes no task again"} {
 		if !strings.Contains(reasons[0], want) {
 			t.Errorf("the notice is %q, want it to say %q", reasons[0], want)
 		}
@@ -414,7 +414,7 @@ func TestTheTurnOutcomeAnswerSaysWhetherThisReportFailedTheClaim(t *testing.T) {
 
 	p.wantState(StateFailed)
 	if err != nil || answer != (TurnOutcomeAnswer{}) {
-		t.Fatalf("the clean report answered %+v, %v; want no run and not failed: the prompt result's 400 failed the claim after this report's decision",
+		t.Fatalf("the clean report answered %+v, %v; want no run and not failed: the take's end report's 400 failed the claim after this report's decision",
 			answer, err)
 	}
 }

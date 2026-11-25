@@ -24,7 +24,7 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
  * the issue, and any other counts in the claim's run of provider-error turns. No run of refused
  * turns fails a claim. Naming no task is how this plugin says a turn was not the take's, so it
  * sends neither the `unprompted` mark nor an `httpStatus` of its own beside `providerError`, which
- * a plugin from before the task's number sends (daemon API contract 232).
+ * a plugin from before the task's number sends (below daemon API contract 274).
  *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and

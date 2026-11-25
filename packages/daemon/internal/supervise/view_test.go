@@ -162,7 +162,7 @@ func TestViewSaysAProcessIsStoppingOnlyWhenItsClaimDoesNotRunAgain(t *testing.T)
 
 // A turn's start is published as the decision writes it, as a launch is (putClaim): the start
 // writes the claim working together with the task it carries, in one transaction
-// (confirmCarrying, putClaimAndPending), and then goes on to write the turn's step record. A
+// (startTakesTurn, putClaimAndPending), and then goes on to write the turn's step record. A
 // reader of the published claim reads it working from the moment the store holds it working, not
 // only once the decision ends. The daemon's refresh pass is such a reader: it posts a claim in a
 // turn no credit of the refresh gate, and one it read ready would be posted a credit its machine
@@ -246,7 +246,7 @@ func (s *stepHeldStore) PutClaimStep(ctx context.Context, token claim.Token, ste
 // it (internal/daemon's refreshStalePlugins).
 //
 // The claim is given both of those to hold and the write is made under the machine's lock,
-// which is where every caller makes it (confirmCarrying, settle, repair, retirePending): the
+// which is where every caller makes it (startTakesTurn, settle, repair, retirePending): the
 // published claim is read inside that section, before the decision's end publishes again. The
 // control is the publish put back before the stored call: each field then reads as the claim held
 // it.

@@ -1620,7 +1620,7 @@ const legionProviderError = z.strictObject({
  * has lost its count of the process's turns (a daemon restarted under the process). It is
  * optional: a report without it is read as before, and none is refused for lacking it.
  *
- * `httpStatus` and `unprompted` are how a plugin from before the task's number (contract 232)
+ * `httpStatus` and `unprompted` are how a plugin from before the task's number (below contract 274)
  * says what a current plugin says with `providerError` and with naming no `task`.
  * `httpStatus` is the HTTP status the provider refused the turn with, where the producer's
  * provider library gives one (Oh My Pi's `errorStatus` on the refused assistant message, Claude
