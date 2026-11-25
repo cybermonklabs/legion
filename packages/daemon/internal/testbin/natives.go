@@ -76,7 +76,7 @@ func nativesCache(omp string) (string, error) {
 // Which natives a binary writes is its own choice: the pin writes only the variant its CPU
 // selects, and earlier binaries wrote every variant they embed. So the check reads what was
 // extracted rather than demanding each embedded name. What it refuses is a file that is not a
-// whole native of this binary: omp writes each native to a `.tmp.<pid>.<ms>` file and renames it
+// whole native of this binary: omp writes each native to a `.tmp.<pid>.<uuid>` file and renames it
 // only once it is whole, so a failed write leaves nothing (refused as an empty extraction), or a
 // leftover temporary file when the cleanup fails too (refused by its name), and anything that is
 // not a regular file, or not at its embedded size, is refused as well. Among the fills a failed
@@ -164,8 +164,9 @@ func fillNativesCache(root, omp string) (string, error) {
 
 // embeddedNative is one native file omp embeds, as pi-natives' scripts/embed-native.ts writes each
 // into the compiled binary: `{ variant: "modern", filename: "pi_natives.linux-x64-modern.node",
-// size: 185671184 },`. The scan finds each by its marker with bytes.Index, since a regexp over the
-// whole binary takes seconds.
+// size: 130426104, sha256: "c452fa13…", zstdPath: B0 }` at the pin. The scan finds each by its
+// marker with bytes.Index, since a regexp over the whole binary takes seconds, and reads no member
+// after `size`.
 var (
 	embeddedMarker = []byte(`filename: "pi_natives.`)
 	embeddedNative = regexp.MustCompile(`^filename: "(pi_natives\.[^"/]+)", size: ([0-9]+)`)

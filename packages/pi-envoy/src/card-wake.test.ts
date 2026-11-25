@@ -557,11 +557,12 @@ describe("a card the host folds into the context with no turn", () => {
   });
 });
 
-// Oh My Pi's RPC mode awaits every send an extension starts during startup, the run an idle card's
-// `triggerTurn` starts included, before it reads any command, so a card that reaches an idle host
-// in the startup phase starts no turn: it goes as a follow-up, and its own `message_end`, which the
-// host emits only after startup released the send, arms the check that wakes the session for it
-// once the host is idle.
+// Oh My Pi's RPC mode holds every command that starts a turn until its startup is over
+// (`rpc-mode.ts` `waitsForStartup`, released at `startupSettled`), and starts the sends an
+// extension makes during startup only once startup discovery is done, so a card that reaches an
+// idle host in the startup phase starts no turn: it goes as a follow-up, and its own
+// `message_end`, which the host emits only after startup released the send, arms the check that
+// wakes the session for it once the host is idle.
 describe("in the startup phase", () => {
   for (const targeted of [false, true]) {
     test(`sends ${targeted ? "a targeted Aside" : "a card"} that finds an RPC host idle as a follow-up that starts no turn`, () => {
@@ -577,7 +578,8 @@ describe("in the startup phase", () => {
 
   // Print and JSON mode prompt right after their own post-startup awaits, and a turn a wake started
   // there makes that prompt fail; a terminal reads input only once its startup is over. Only RPC
-  // mode reads nothing while the host drains the startup sends.
+  // mode, or any mode while the start-turn mark holds, keeps the startup phase (card-wake.ts's
+  // note on the startup phase says why).
   for (const mode of ["print", "json", "tui", null] as const) {
     test(`sends a card that finds the host idle as an aside in ${mode ?? "a context with no"} mode`, () => {
       const host = harness({ mode });
