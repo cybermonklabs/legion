@@ -470,17 +470,27 @@ func credentialFileFailure(fields credentialFields) string {
 	return ""
 }
 
-// X509CredentialFailure is why the X.509 certificate files an external_account credential file
-// names cannot be used (certificateFailure), in words that print no path, and "" where the file
-// names no certificate, does not parse, or each of its certificate files can be used. Any reader
-// of such a file calls it before Google's library loads the file: the secret forms' sign-in
-// (cmd/cipher) as the machine source does.
-func X509CredentialFailure(credential []byte) string {
-	var fields credentialFields
-	if json.Unmarshal(credential, &fields) != nil || fields.Source.Certificate == nil {
+// CredentialsFileFailure is why a credentials file must not be handed to Google's library, in
+// words that print no path and no part of it, and "" where it may be: it repeats a key
+// (repeatsKey), whatever its type, or it is an external_account credential of an X.509 certificate
+// whose files cannot be used (certificateFailure), as these bytes read in the types the library
+// decodes them into. A file that is not JSON answers "", for its reader's own refusal. Any reader
+// that hands a credentials file to the library calls it first, on the bytes it hands over: the
+// secret forms' sign-in (cmd/cipher), as the machine source does in Token.
+func CredentialsFileFailure(credential []byte) string {
+	if repeated, err := repeatsKey(credential); err != nil {
+		return ""
+	} else if repeated {
+		return "it repeats a key, which Google's library could read as another credential than this client does"
+	}
+	var kind struct {
+		Type string `json:"type"`
+	}
+	fields, err := readCredentialFields(credential)
+	if err != nil || json.Unmarshal(credential, &kind) != nil || kind.Type != string(credentials.ExternalAccount) || fields.certificate() == nil {
 		return ""
 	}
-	return certificateFailure(*fields.Source.Certificate)
+	return certificateFailure(*fields.certificate())
 }
 
 // certificateFailure is why an X.509 credential's files cannot be used, and "" where each can be:

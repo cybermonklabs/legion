@@ -21,11 +21,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +35,8 @@ import (
 
 	"cloud.google.com/go/auth/credentials"
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
+
+	"github.com/sjawhar/envoy/internal/cipherclient/repeatprobe"
 )
 
 // storeX509 are the files of an X.509 credential the tests write, and the subject token the
@@ -170,13 +174,15 @@ func TestAnX509CredentialsFileSignsTheStoreIn(t *testing.T) {
 // configuration Google's library reads as an enterprise certificate proxy's is refused in the
 // machine source's words before the library would start the signer it names. So is one whose
 // configuration names a workload certificate and key and then a null workload, in either case of
-// its key: the library reads the null, and so no workload. Control: for each, the signer runs
-// when Google's library alone reads the file.
+// its key, which the library reads as no workload: it repeats a key. Control: for each, the signer
+// runs when Google's library alone reads the file.
 func TestAnEnterpriseCertificateProxyCredentialsFileIsRefused(t *testing.T) {
-	for _, row := range []struct{ name, workload string }{
-		{"an enterprise certificate proxy's configuration", ``},
-		{"a workload, then a null workload", `"workload":{"cert_path":%q,"key_path":%q},"workload":null,`},
-		{"a workload, then a null Workload", `"workload":{"cert_path":%q,"key_path":%q},"Workload":null,`},
+	const repeats = "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: the certificate configuration its credential_source names repeats a key"
+	for _, row := range []struct{ name, workload, want string }{
+		{"an enterprise certificate proxy's configuration", ``,
+			"the credentials file GOOGLE_APPLICATION_CREDENTIALS names: the certificate configuration its credential_source names holds no workload certificate and private key"},
+		{"a workload, then a null workload", `"workload":{"cert_path":%q,"key_path":%q},"workload":null,`, repeats},
+		{"a workload, then a null Workload", `"workload":{"cert_path":%q,"key_path":%q},"Workload":null,`, repeats},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -205,14 +211,127 @@ func TestAnEnterpriseCertificateProxyCredentialsFileIsRefused(t *testing.T) {
 
 			_, err = gcpCredentialsFile(context.Background(), files.credential)
 			refusal := credentialsFileRefusal("the credentials file GOOGLE_APPLICATION_CREDENTIALS names", err)
-			if want := "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: the certificate configuration its credential_source names holds no workload certificate and private key"; err == nil || refusal.Error() != want {
-				t.Fatalf("gcpCredentialsFile: %v (refusal %q); want %q", err, refusal, want)
+			if err == nil || refusal.Error() != row.want {
+				t.Fatalf("gcpCredentialsFile: %v (refusal %q); want %q", err, refusal, row.want)
 			}
 			if _, err := os.Stat(ran); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("the enterprise certificate proxy's signer ran (stat: %v)", err)
 			}
 		})
 	}
+}
+
+// TestAStoreCredentialsFileThatRepeatsAKeyIsRefused: a credentials file that repeats a key is
+// refused before any reader reads it, whatever its type, in the machine source's words: the shapes
+// a review found, an external_account file with no certificate, and an authorized_user file. The
+// one whose library-alone read starts the enterprise certificate proxy's signer (a null between
+// two credential_source, the last asking for the default configuration, which
+// GOOGLE_API_CERTIFICATE_CONFIG names as the proxy's) starts none. Control: the authorized_user
+// file with no key repeated loads.
+func TestAStoreCredentialsFileThatRepeatsAKeyIsRefused(t *testing.T) {
+	const want = "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: it repeats a key"
+	dir := t.TempDir()
+	surface, err := repeatprobe.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOGLE_API_CERTIFICATE_CONFIG", surface.Proxy)
+	top := `"type":"external_account","audience":"//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/x509",` +
+		`"subject_token_type":"urn:ietf:params:oauth:token-type:mtls","token_url":"http://127.0.0.1:9/v1/token"`
+	location := func(path string) string {
+		return `{"certificate":{"certificate_config_location":` + strconv.Quote(path) + `}}`
+	}
+	// The authorized_user fields that hold a credential are named from parts, as storeFederated
+	// is, so no line of this file reads as a credential assigned a value.
+	user := `"type":"authorized_user","client_id":"store-client",` + strconv.Quote("client"+"_secret") + `:"store-fixture",` +
+		strconv.Quote("refresh"+"_token") + `:"store-fixture"`
+	for _, row := range []struct {
+		name, credential string
+		signer           bool
+	}{
+		{"credential_source, then null, then the default configuration",
+			`{` + top + `,"credential_source":` + location(surface.Workload) + `,"credential_source":null,"credential_source":{"certificate":{"use_default_certificate_config":true}}}`, true},
+		{"credential_source, then CREDENTIAL_SOURCE",
+			`{` + top + `,"credential_source":` + location(surface.Proxy) + `,"CREDENTIAL_SOURCE":` + location(surface.Workload) + `}`, false},
+		{"an external_account file of a subject token file whose token_url repeats",
+			`{` + top + `,"TOKEN_URL":"https://sts.invalid/v1/token","credential_source":{"file":"/nowhere"}}`, false},
+		{"an authorized_user file whose client_id repeats in another case", `{` + user + `,"Client_ID":"other"}`, false},
+		{"control: an authorized_user file", `{` + user + `}`, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "credentials.json")
+			if err := os.WriteFile(path, []byte(row.credential), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if row.signer {
+				_, _ = credentials.NewCredentialsFromJSON(credentials.ExternalAccount, []byte(row.credential), &credentials.DetectOptions{Scopes: secretmanager.DefaultAuthScopes()})
+				if err := os.Remove(surface.Ran); err != nil {
+					t.Fatalf("control: Google's library did not start the signer: %v", err)
+				}
+			}
+			_, err := gcpCredentialsFile(context.Background(), path)
+			if strings.HasPrefix(row.name, "control:") {
+				if err != nil {
+					t.Fatalf("control: gcpCredentialsFile: %v; want the file loaded", err)
+				}
+				return
+			}
+			refusal := credentialsFileRefusal("the credentials file GOOGLE_APPLICATION_CREDENTIALS names", err)
+			if err == nil || !strings.HasPrefix(refusal.Error(), want) {
+				t.Fatalf("gcpCredentialsFile: %v (refusal %q); want %q", err, refusal, want)
+			}
+			if _, err := os.Stat(surface.Ran); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("the enterprise certificate proxy's signer ran (stat: %v)", err)
+			}
+		})
+	}
+}
+
+// TestNoStoreCredentialThatRepeatsAKeyStartsASigner: every credentials file repeatprobe writes,
+// which repeat a key at each level of the credentials file and of its certificate configuration,
+// in each spelling Go's JSON decoder matches, is refused by the secret forms' loader, and none
+// starts the enterprise certificate proxy's signer beside them. Control: Google's library alone,
+// given each file, starts the signer for some, so the probe sees a signer that runs.
+func TestNoStoreCredentialThatRepeatsAKeyStartsASigner(t *testing.T) {
+	dir := t.TempDir()
+	surface, err := repeatprobe.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOGLE_API_CERTIFICATE_CONFIG", surface.Proxy)
+	inputs, err := surface.Inputs("http://127.0.0.1:9/v1/token",
+		"https://iamcredentials.invalid/v1/projects/-/serviceAccounts/store-robot@example-project.iam.gserviceaccount.com:generateAccessToken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := func() bool {
+		_, err := os.Stat(surface.Ran)
+		_ = os.Remove(surface.Ran)
+		return err == nil
+	}
+	path := filepath.Join(dir, "credentials.json")
+	reached := 0
+	for _, input := range inputs {
+		_, _ = credentials.NewCredentialsFromJSON(credentials.ExternalAccount, input.Credential,
+			&credentials.DetectOptions{Scopes: secretmanager.DefaultAuthScopes(), Logger: slog.New(slog.DiscardHandler)})
+		if ran() {
+			reached++
+		}
+		if err := os.WriteFile(path, input.Credential, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := gcpCredentialsFile(context.Background(), path)
+		if ran() {
+			t.Errorf("SIGNER RAN: %s", input.Name)
+		}
+		if refusal := credentialsFileRefusal("the file", err); err == nil || !strings.Contains(refusal.Error(), "repeats a key") {
+			t.Errorf("NOT REFUSED: %s: %v", input.Name, err)
+		}
+	}
+	if reached == 0 {
+		t.Fatalf("control: Google's library started the signer for none of %d inputs, so this probe cannot see one run", len(inputs))
+	}
+	t.Logf("%d inputs; Google's library alone started the signer for %d of them", len(inputs), reached)
 }
 
 // TestAnExternalAccountStoreSignInPrintsNoToken: GOOGLE_SDK_GO_LOGGING_LEVEL=debug makes Google's
