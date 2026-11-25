@@ -368,6 +368,40 @@ test("a control the focus reaches in a panel stands whole in the panel's box, wh
   }
 });
 
+// INFRA-3135, round 26's goal red team: a pointer press focuses its control as the pointer goes
+// down, and a scroll then moves the control under the pointer before it comes up - 24 px on a chip
+// cut by the bottom of the Inbox's +N more panel, in Chromium, Firefox and WebKit (builds Job
+// infra-3135-probe1-8lssx). So the focus a press makes scrolls nothing, and the next control a key
+// reaches is still shown whole.
+test("a control a pointer press focuses in a panel scrolls nothing while the press is down, and a key's focus after it still shows its control whole", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <OpenPanel label="Filters">
+      {buttons(["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"])}
+    </OpenPanel>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    const panel = screen.getByRole("dialog", { name: "Filters" });
+    // Six controls hold 8 + 6 × 52 px; the panel shows 0-198 px of them, and Delta stands at
+    // 164-208, 10 px below what the panel shows.
+    layOutPanel(panel, 320, stacked(within(panel).getAllByRole("button")));
+    const delta = screen.getByRole("button", { name: "Delta" });
+    // The press as a browser makes it: the pointer goes down, and its mousedown focuses Delta.
+    fireEvent.pointerDown(delta);
+    fireEvent.mouseDown(delta);
+    act(() => delta.focus());
+    expect([document.activeElement?.textContent, panel.scrollTop]).toEqual(["Delta", 0]);
+    fireEvent.pointerUp(delta);
+    fireEvent.mouseUp(delta);
+    // Epsilon, at 216-260, ends 62 px below what the panel shows.
+    await user.tab();
+    expect([document.activeElement?.textContent, panel.scrollTop]).toEqual(["Epsilon", 62]);
+  } finally {
+    view.unmount();
+  }
+});
+
 // What a box inside the panel cuts off is drawn nowhere, so no scroll of the panel shows it: the
 // panel shows whole what that box draws of the control.
 test("a control in a scroll box of its own inside the panel: the panel scrolls the least that shows whole what that box shows of it, and nothing for one that box shows none of", async () => {
