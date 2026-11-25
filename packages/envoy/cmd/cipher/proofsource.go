@@ -82,8 +82,24 @@ func (f *fileSigner) Reenroll(ctx context.Context) error {
 }
 
 func (f *fileSigner) SignRequestObject(audience cipheraddr.Address, names []string, reason string, lifetimeSeconds *int, locations []string) (string, error) {
-	return record.Sign(f.key, audience.Raw(), record.SecretDetails(names, locations), reason, "", lifetimeSeconds, time.Now())
+	return signRequestFor(f.key, audience, record.SecretDetails(names, locations), reason, lifetimeSeconds)
 }
+
+// signRequestFor is record.Sign of a request object for the broker at base, with no operator: its
+// audience is proof.Audience of the address, the URL the broker verifies the object's aud against,
+// with none of the query, fragment or user information the address may carry. An address that is
+// no absolute URL with a host is refused in fixed words, which print no part of it.
+func signRequestFor(key *ecdsa.PrivateKey, base cipheraddr.Address, details []record.AuthorizationDetail, reason string, lifetimeSeconds *int) (string, error) {
+	audience, err := proof.Audience(base)
+	if err != nil {
+		return "", errAddressNotURL
+	}
+	return record.Sign(key, audience, details, reason, "", lifetimeSeconds, time.Now())
+}
+
+// errAddressNotURL is signRequestFor's refusal of a broker address that is no absolute URL with a
+// host.
+var errAddressNotURL = errors.New(addressNotURL)
 
 // helperSigner asks agent-secrets-helper, over its unix socket, to sign for this process's
 // registered machine session. The helper resolves the session (and its enrollment id) from the

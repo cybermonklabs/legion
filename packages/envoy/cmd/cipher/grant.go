@@ -79,15 +79,18 @@ func grantExpiry(expires *time.Time) string {
 // grantColumns is the table's header: one name for each cell grantRow builds, in that order.
 var grantColumns = []string{"GRANT_ID", "SECRETS", "GRANTED", "APPROVER", "DECIDED_BY", "SESSION", "OPERATOR", "EXPIRES"}
 
-// grantRow is one grant's cells, in grantColumns' order, each "-" where the grant carries no
-// such value. Each cell is the broker's, so it prints as the broker's address base lets its answer
-// print (cipheraddr.Address.Words): as the rule reads it on one line, with the credentials the
-// list's request carried redacted (each field is held as redact.RemoteText with the answer's
-// record), Go-quoted where a control character in it, a tab among them, would start a line of its
-// own or split the cell, and not at all beside an address that carries a credential; the grant
-// id, as every id the broker answers prints (idWordsOf), still whole there where it is a UUID the
-// address does not hold. A cell of several fields - the secrets, the session - is each field's
-// reading joined, read by the rule again as one cell.
+// grantRow is one grant's cells, in grantColumns' order. Each cell is the broker's, so it prints
+// as the broker's address base lets its answer print: a cell of one field - the granted time, the
+// approver, the decider, the operator - as the field prints itself (fieldCell,
+// cipheraddr.Address.WordsOf), "-" beside a clean address where the grant carries no such value,
+// as the rule reads it on one line with the credentials the list's request carried redacted (each
+// field is held as redact.RemoteText with the answer's record), Go-quoted where a control character
+// in it, a tab among them, would start a line of its own or split the cell, and not at all beside
+// an address that carries a credential; the grant id, as every id the broker answers prints
+// (idWordsOf), still whole there where it is a UUID the address does not hold. A cell of several
+// fields - the secrets, the session - is each field's reading joined, read by the rule again as
+// one cell (cipheraddr.Address.Words), since the joined text is text of its own, and so is the
+// expiry.
 //
 // APPROVER and DECIDED_BY sit side by side because they differ for one kind of grant: one the
 // model judge approved, which records the record's own approver — the secret's owner, or anyone
@@ -103,24 +106,24 @@ func grantRow(base cipheraddr.Address, g OperatorGrant) []string {
 	for i, name := range g.Names {
 		names[i] = name.String()
 	}
-	cells := []string{
-		"", strings.Join(names, ","), g.Granted.String(), orDashSaid(g.Approver), orDashSaid(g.DecidedBy),
-		session, orDash(g.Enrollment.Operator.String()), grantExpiry(g.ExpiresAt),
+	return []string{
+		idWordsOf(base, g.GrantID), base.Words(strings.Join(names, ",")), fieldCell(base, &g.Granted), fieldCell(base, g.Approver),
+		fieldCell(base, g.DecidedBy), base.Words(session), fieldCell(base, &g.Enrollment.Operator), base.Words(grantExpiry(g.ExpiresAt)),
 	}
-	for i, cell := range cells {
-		cells[i] = base.Words(cell)
-	}
-	cells[0] = idWordsOf(base, g.GrantID)
-	return cells
 }
 
-// orDashSaid is the rule's reading of what field points at (RemoteText.String), or "-" where it
-// points at nothing or at no text: a cell the broker's answer leaves null.
-func orDashSaid(field *redact.RemoteText) string {
+// fieldCell is field, one field of the broker's answer a table prints alone in a cell, as base
+// lets the broker's words print (cipheraddr.Address.WordsOf), and "-" in place of a field the
+// answer leaves null or empty beside a clean address; beside any other address the cell is
+// cipheraddr.WordsNotPrinted, whatever the field holds.
+func fieldCell(base cipheraddr.Address, field *redact.RemoteText) string {
 	if field == nil {
+		field = &redact.RemoteText{}
+	}
+	if field.IsEmpty() && base.Clean() {
 		return "-"
 	}
-	return orDash(field.String())
+	return base.WordsOf(*field)
 }
 
 // orDashPtr is what s points at, or "-" where it points at nothing or at no text.

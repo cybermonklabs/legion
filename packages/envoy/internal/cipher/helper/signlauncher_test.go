@@ -118,6 +118,8 @@ func TestSignLauncherRefusalPrintsNothingTheCallerSent(t *testing.T) {
 		{"a typed id under the wrong method", route,
 			Request{Op: "sign-launcher", Method: http.MethodGet, URL: broker + "/v1/operator/machines/" + typed + "/revoke"}},
 		{"a method the caller sent", route, Request{Op: "sign-launcher", Method: typed, URL: broker + "/v1/operator/grants"}},
+		{"a route of this helper's broker that is no operator route", route,
+			Request{Op: "sign-launcher", Method: http.MethodPost, URL: broker + "/v1/enrollments/" + typed + "/renew"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			got := r.call(t, row.req)

@@ -47,16 +47,15 @@ func New(raw string) Address {
 // Raw is the address as configured, credential included. It builds a request to the broker: its
 // URL, which Join builds from it (no caller joins a path onto it by hand), the URL its proof signs,
 // the audience of a request object it carries, and the OAuth endpoints. Five callers read it for
-// anything else, and none of them prints it: the helper's check that a URL it is asked to sign is
-// one of its operator routes (internal/cipher/helper's operatorRoute), agent-secrets-helper's
-// check that an address is set (its serve), the token client's trim of the address it is given
-// (cipherclient.New), agent-secrets' check that a broker whose settings it acts on is https or
-// loopback (requireTrustedBrokerURL), and its check that an id it prints by its shape is no value
-// the address holds (addressHolds). Every caller keeps what it answers out of every output - a log
-// field, an error's text, a line on stderr - since printing it is the leak this type exists to
-// prevent: a message names the address through the Address itself, a request URL built from it
-// through Call, and that request's error through Error or Cause, or through Named where the URL
-// ends in what a caller typed.
+// anything else, and none of them prints it: agent-secrets-helper's check that an address is set
+// (its serve), the token client's trim of the address it is given (cipherclient.New),
+// agent-secrets' check that a broker whose settings it acts on is https or loopback
+// (requireTrustedBrokerURL), and its two checks of an id it prints by its shape: that the address
+// could carry no credential (plainAddress) and does not hold the id (addressHolds). Every caller
+// keeps what it answers out of every output - a log field, an error's text, a line on stderr -
+// since printing it is the leak this type exists to prevent: a message names the address through
+// the Address itself, a request URL built from it through Call, and that request's error through
+// Error or Cause, or through Named where the URL ends in what a caller typed.
 func (a Address) Raw() string {
 	if a.raw == nil {
 		return ""
@@ -127,6 +126,22 @@ func (a Address) LogValue() slog.Value { return slog.StringValue(a.String()) }
 // Call is redact.Call with the address as the base: callURL, a request URL built from Raw, as a
 // message may print it.
 func (a Address) Call(callURL string) string { return redact.Call(a.Raw(), callURL) }
+
+// Route is route, a broker route whose id a caller typed is spelled as words in its place (as
+// "/v1/enrollments/(the enrollment id, not printed)"), at the address as a message may print it:
+// route joined onto the address as a request's path is (Join), its words as written, and
+// redact.NotPrinted beside an address that is not clean. It names a call whose URL ends in what a
+// caller typed (Named), since the broker never accepted that id and an argument that is no id is
+// where a credential pasted in the wrong place lands.
+func (a Address) Route(route string) string {
+	joined, err := a.Join(route)
+	if err != nil || !a.Clean() {
+		return redact.NotPrinted
+	}
+	// A clean address holds no user information, query or fragment, and the route's words print
+	// as written (Path, not EscapedPath), the way the route spells the id it leaves out.
+	return joined.Scheme + "://" + joined.Host + joined.Path
+}
 
 // Error is redact.Error with the address as the base: err, from a request built from Raw, as a
 // message may print it.

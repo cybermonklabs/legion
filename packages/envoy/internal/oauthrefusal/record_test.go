@@ -38,7 +38,7 @@ func TestRecorderKeepsTheBodyOfAnAnswerThatIsNoSuccessAlone(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 			answered := &oauthrefusal.Recorder{}
-			client := oauthrefusal.Record(context.Background(), answered).Value(oauth2.HTTPClient).(*http.Client)
+			client := oauthrefusal.Record(context.Background(), nil, answered).Value(oauth2.HTTPClient).(*http.Client)
 			client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 			response, err := client.Get(server.URL)
 			if err != nil {

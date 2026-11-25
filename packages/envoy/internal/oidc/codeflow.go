@@ -296,7 +296,7 @@ func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string
 		return Session{}, err
 	}
 	answered := &oauthrefusal.Recorder{}
-	token, err := redact.OAuth2(issuer.config.Exchange(oauthrefusal.Record(f.tokenContext(ctx), answered), code, append(redirectTo(redirectURL), options...)...))
+	token, err := redact.OAuth2(issuer.config.Exchange(oauthrefusal.Record(ctx, f.http, answered), code, append(redirectTo(redirectURL), options...)...))
 	if err != nil {
 		// The recorder reads the status of the answer an error came from, an answer x/oauth2
 		// reports in no *oauth2.RetrieveError among them (a 2xx with no token), and whether its

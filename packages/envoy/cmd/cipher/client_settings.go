@@ -60,7 +60,7 @@ type JudgeKey struct {
 }
 
 func (c *client) Settings(ctx context.Context) (Settings, error) {
-	answer, err := c.do(ctx, http.MethodGet, c.route("/v1/settings"), nil, nil)
+	answer, err := c.do(ctx, http.MethodGet, "/v1/settings", nil, nil)
 	if err != nil {
 		return Settings{}, err
 	}
@@ -108,7 +108,7 @@ func (c *client) RereadSecret(ctx context.Context, signer proofSigner, name stri
 	if signer != nil {
 		status, answer, err = c.doProofStatus(ctx, signer, http.MethodPost, path, nil)
 	} else {
-		status, answer, err = c.doStatus(ctx, http.MethodPost, c.route(path), nil, nil)
+		status, answer, err = c.doStatus(ctx, http.MethodPost, path, nil, nil)
 	}
 	if err != nil {
 		return Reread{}, err

@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -852,9 +853,10 @@ func (s *Server) sign(peer *Peer, pid int, method, url string) Response {
 // rather than carrying "secrets"/"reason" as plain fields), lifetimeSeconds, the grant's
 // lifetime, when it is not nil, and locations, the target that narrows the one secret, when it is
 // not nil (record.SecretDetails), for a pid resolveDescendant ties to a registered session. The
-// audience is always s.Broker.URL, never a value the peer supplies: a request object's aud claim
-// must be the broker's own public URL for the broker to accept it, and there is no reason to trust
-// an untrusted local peer's opinion of that value over the helper's own configuration.
+// audience is always s.Broker's (Broker.audience), never a value the peer supplies: a request
+// object's aud claim must be the broker's own public URL for the broker to accept it, and there is
+// no reason to trust an untrusted local peer's opinion of that value over the helper's own
+// configuration.
 func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string, lifetimeSeconds *int, locations []string) Response {
 	if len(names) == 0 {
 		peer.Close()
@@ -867,7 +869,11 @@ func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string,
 	if st := sess.snapshot(); st.EnrollmentID == "" {
 		return s.notEnrolled(st)
 	}
-	compact, err := record.Sign(sess.identity().Key, s.Broker.URL.Raw(), record.SecretDetails(names, locations), reason, "", lifetimeSeconds, time.Now())
+	audience, err := s.Broker.audience()
+	if err != nil {
+		return Response{Code: CodeSign, Error: err.Error()}
+	}
+	compact, err := record.Sign(sess.identity().Key, audience, record.SecretDetails(names, locations), reason, "", lifetimeSeconds, time.Now())
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}
@@ -894,7 +900,7 @@ func (s *Server) signLauncher(peer *Peer, pid int, method, url string) Response 
 		peer.Close()
 		return Response{Code: CodeBadRequest, Error: "sign-launcher needs method and url"}
 	}
-	if !operatorRoute(s.Broker.URL.Raw(), method, url) {
+	if !operatorRoute(s.Broker.URL, method, url) {
 		peer.Close()
 		return Response{Code: CodeBadRequest, Error: s.operatorRouteRefusal(url)}
 	}
@@ -924,24 +930,28 @@ func (s *Server) signLauncher(peer *Peer, pid int, method, url string) Response 
 }
 
 // operatorRoute reports whether method and url are one of the broker's four operator routes
-// under broker: GET /v1/operator/machines, POST /v1/operator/machines/{id}/revoke,
-// GET /v1/operator/grants or POST /v1/operator/grants/{id}/revoke, with no query or fragment
-// (the broker binds a proof to its path alone) and {id} one path segment that does not unescape
-// to empty, ".", ".." or a "/". The id need not be a UUID: the broker's own answer names one
-// that is not.
-func operatorRoute(broker, method, url string) bool {
-	path, ok := strings.CutPrefix(url, broker)
+// under broker, as a proof of the call names them (operatorRoot): GET /v1/operator/machines,
+// POST /v1/operator/machines/{id}/revoke, GET /v1/operator/grants or POST
+// /v1/operator/grants/{id}/revoke, with no query or fragment (the broker binds a proof to its path
+// alone) and {id} one path segment that does not unescape to empty, ".", ".." or a "/". The id need
+// not be a UUID: the broker's own answer names one that is not.
+func operatorRoute(broker cipheraddr.Address, method, url string) bool {
+	root, ok := operatorRoot(broker)
+	if !ok {
+		return false
+	}
+	path, ok := strings.CutPrefix(url, root)
 	if !ok {
 		return false
 	}
 	switch path {
-	case "/v1/operator/machines", "/v1/operator/grants":
+	case "/machines", "/grants":
 		return method == http.MethodGet
 	}
 	if method != http.MethodPost {
 		return false
 	}
-	for _, list := range []string{"/v1/operator/machines/", "/v1/operator/grants/"} {
+	for _, list := range []string{"/machines/", "/grants/"} {
 		if id, ok := strings.CutPrefix(path, list); ok {
 			id, ok = strings.CutSuffix(id, "/revoke")
 			return ok && pathSegment(id)
@@ -950,16 +960,30 @@ func operatorRoute(broker, method, url string) bool {
 	return false
 }
 
+// operatorRoot is the URL the broker's operator routes sit under, as a proof of a call to one names
+// it: proof.TargetURI of /v1/operator joined onto broker (cipheraddr.Address.Join), the address's
+// path kept and its query, fragment and user information, which no proof names, left out, the URL
+// agent-secrets signs from its own address. ok is false for an address that is no absolute URL
+// with a host.
+func operatorRoot(broker cipheraddr.Address) (string, bool) {
+	root, err := broker.Join("/v1/operator")
+	if err != nil {
+		return "", false
+	}
+	return proof.TargetURI(root), true
+}
+
 // operatorRouteRefusal is the refusal of a sign-launcher call to url that is not one of the four
 // operator routes under this helper's broker (operatorRoute). It names the routes the helper
-// signs and which check the call failed - another address than the broker's, or a method and
-// route that are none of the four - and never the method or the url the caller sent: the url ends
-// in the id a person typed to `machine revoke` or `grant revoke`, which is where a credential
-// pasted in the wrong place lands, the caller's AGENT_SECRETS_URL can carry a user, a password or
-// a query, and the CLI prints this text as it is.
+// signs and which check the call failed - another address than the broker's (a url that does not
+// begin with the broker's own URL as a proof names it, Broker.audience), or a method and route
+// that are none of the four - and never the method or the url the caller sent: the url ends in the
+// id a person typed to `machine revoke` or `grant revoke`, which is where a credential pasted in
+// the wrong place lands, the caller's AGENT_SECRETS_URL can carry a user, a password or a query,
+// and the CLI prints this text as it is.
 func (s *Server) operatorRouteRefusal(url string) string {
 	failed := "the call's method and route are none of them"
-	if !strings.HasPrefix(url, s.Broker.URL.Raw()) {
+	if broker, err := s.Broker.audience(); err != nil || !strings.HasPrefix(url, broker) {
 		failed = "the call is to another address than this helper's broker (AGENT_SECRETS_URL may name another broker than the helper serves)"
 	}
 	return fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; %[2]s (the call's method and URL are not printed: the URL can end in an id a person typed)", s.Broker.URL, failed)

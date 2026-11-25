@@ -246,26 +246,20 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 }
 
 // machineRow is one machine login's cells, in the table's column order: its credential id, its
-// host, who approved it ("-" for none), when it was issued and expires, and its state. The first
-// three are the broker's, so each prints as the broker's address base lets its answer print
-// (cipheraddr.Address.WordsOf): as the rule reads it on one line, with the credentials the list's
-// request carried redacted (each is held as redact.RemoteText with the answer's record),
-// Go-quoted where a control character in it, a tab among them, would start a line of its own or
-// split the cell, and not at all beside an address that carries a credential; the credential id,
-// as every id the broker answers prints (idWordsOf), still whole there where it is a UUID the
-// address does not hold.
+// host, who approved it ("-" for none, beside a clean address), when it was issued and expires,
+// and its state. The first three are the broker's, so each prints as the broker's address base
+// lets its answer print (cipheraddr.Address.WordsOf, fieldCell for the approver): as the rule
+// reads it on one line, with the credentials the list's request carried redacted (each is held as
+// redact.RemoteText with the answer's record), Go-quoted where a control character in it, a tab
+// among them, would start a line of its own or split the cell, and not at all beside an address
+// that carries a credential; the credential id, as every id the broker answers prints
+// (idWordsOf), still whole there where it is a UUID the address does not hold.
 func machineRow(base cipheraddr.Address, m OperatorMachine) []string {
 	state := "ok"
 	if m.Expired {
 		state = "expired"
 	}
-	// No approver prints "-" beside a clean address and cipheraddr.WordsNotPrinted beside one that
-	// is not, as the empty field prints there (WordsOf).
-	approvedBy := base.WordsOf(m.ApprovedBy)
-	if m.ApprovedBy.IsEmpty() && base.Clean() {
-		approvedBy = "-"
-	}
-	return []string{idWordsOf(base, m.CredentialID), base.WordsOf(m.Host), approvedBy,
+	return []string{idWordsOf(base, m.CredentialID), base.WordsOf(m.Host), fieldCell(base, &m.ApprovedBy),
 		m.IssuedAt.UTC().Format(time.RFC3339), m.ExpiresAt.UTC().Format(time.RFC3339), state}
 }
 

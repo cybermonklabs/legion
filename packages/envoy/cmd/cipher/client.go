@@ -28,14 +28,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
+	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/redirects"
 )
@@ -81,9 +83,23 @@ func newClient(baseURL cipheraddr.Address) *client {
 	return &client{baseURL: baseURL, http: redirects.Refused(&http.Client{Timeout: leasetime.RenewClientTimeout})}
 }
 
-// route is path's URL at the broker, built from the address as configured (Raw) to be sent and
-// signed, never printed: a message names it through c.baseURL.Call.
-func (c *client) route(path string) string { return c.baseURL.Raw() + path }
+// addressNotURL is the fixed words of every refusal of a broker address that is no absolute URL
+// with a host (target, send, signRequestFor): they print no part of the address.
+const addressNotURL = "the broker's address is not a valid URL"
+
+// target is path's URL at the broker: path, with the query of this client's own it may end in,
+// joined onto the address as configured (cipheraddr.Address.Join), so the address's path stays
+// ahead of path and its own query ahead of path's, where path appended to the address's text would
+// sit inside that query. It is sent and signed (proof.TargetURI of it), never printed: a message
+// names it through c.baseURL.Call. An address that is no absolute URL with a host is refused as
+// one, before anything is signed or sent, and no part of it is printed.
+func (c *client) target(method, path string) (*url.URL, error) {
+	target, err := c.baseURL.Join(path)
+	if err != nil {
+		return nil, &unreachableError{addressNotURL, c.baseURL, method, path, errNothingSent, ""}
+	}
+	return target, nil
+}
 
 // apiError is the broker's {"code":...,"error":...,"answer_id":...} error envelope, plus the HTTP
 // status it came with. The answer id is the id the broker's own record of the answer names: the
@@ -205,37 +221,49 @@ func (e *apiError) terminalCode() string {
 // ended enrollment its legacy code spells (enrollmentEnded).
 func (e *apiError) Permanent() bool { return e.terminalCode() != "" }
 
-// do sends the request and, on a 2xx response, returns its answer (*redact.Answer); any other
-// status decodes the broker's error envelope into an *apiError.
-func (c *client) do(ctx context.Context, method, url string, body []byte, headers map[string]string) (*redact.Answer, error) {
-	_, answer, err := c.doStatus(ctx, method, url, body, headers)
+// do sends method to path at the broker (target) and, on a 2xx response, returns its answer
+// (*redact.Answer); any other status is an *apiError: the broker's error envelope decoded, or, for
+// a 3xx, the redirect this client does not follow.
+func (c *client) do(ctx context.Context, method, path string, body []byte, headers map[string]string) (*redact.Answer, error) {
+	_, answer, err := c.doStatus(ctx, method, path, body, headers)
 	return answer, err
 }
 
 // doStatus is do, also answering the 2xx status itself, which tells apart the two answers a
 // route gives for success — POST /v1/enrollments's 201 for a new enrollment and 200 for the one
 // this key already holds.
+func (c *client) doStatus(ctx context.Context, method, path string, body []byte, headers map[string]string) (int, *redact.Answer, error) {
+	target, err := c.target(method, path)
+	if err != nil {
+		return 0, nil, err
+	}
+	return c.send(ctx, method, target, body, headers)
+}
+
+// send is one request of method to target, a URL target built, answered as doStatus answers it.
 //
-// A failure names the call by its URL without the query, as its proof does: the only query this
-// client sends is one it builds itself (GetRequest's wait), and the redactor prints no URL that
-// holds a query, so a read that asked the broker to hold it would otherwise name neither its
-// call nor its cause.
-func (c *client) doStatus(ctx context.Context, method, url string, body []byte, headers map[string]string) (int, *redact.Answer, error) {
-	named, query, _ := strings.Cut(url, "?")
+// A failure names the call by the URL its proof names (proof.TargetURI), without the query: the
+// queries this client sends are the address's own, which no clean address holds, and the one it
+// builds itself (GetRequest's wait), and the redactor prints no URL that holds a query, so a read
+// that asked the broker to hold it would otherwise name neither its call nor its cause.
+func (c *client) send(ctx context.Context, method string, target *url.URL, body []byte, headers map[string]string) (int, *redact.Answer, error) {
+	named, query := proof.TargetURI(target), target.RawQuery
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	req, err := http.NewRequestWithContext(ctx, method, target.String(), reader)
 	if err != nil {
-		// With a base that prints as written, the part that did not parse is the path this
-		// client built, so the error says so (through Error, which prints it as net/url wrote it
-		// only where that is clean). With any other base, the parser's own text could quote a bad
-		// escape in a password, so the message says only that the address is not valid.
+		// target parsed the URL already, so what fails here is the method, or the URL as String
+		// writes it, which url.Parse can refuse where it took the address (an escape in an IPv6
+		// zone). With a base that prints as written, the error says which (through Error, which
+		// prints it as net/url wrote it only where that is clean). With any other base, the
+		// parser's own text quotes the URL, its user information included, so the message says
+		// only that the address is not valid.
 		if c.baseURL.Clean() {
 			return 0, nil, fmt.Errorf("the request could not be built: %w", c.baseURL.Error(err))
 		}
-		return 0, nil, &unreachableError{"the broker's address is not a valid URL", c.baseURL, method, named, errNothingSent, ""}
+		return 0, nil, &unreachableError{addressNotURL, c.baseURL, method, named, errNothingSent, ""}
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -308,9 +336,10 @@ func enrollmentNotLive(err error) bool {
 	return errors.As(err, &refusal) && refusal.enrollmentEnded()
 }
 
-// doProof signs the request with signer.Sign against exactly this method and URL less any query
-// path carries, the shape proof.Verifier.Verify compares htm/htu against (the broker rebuilds the
-// htu from BROKER_PUBLIC_URL and the request's path, never its query).
+// doProof signs the request with signer.Sign against exactly this method and proof.TargetURI of
+// the request's URL, the shape proof.Verifier.Verify compares htm/htu against: the broker rebuilds
+// the htu from BROKER_PUBLIC_URL and the request's path, so the signed URL holds no query (the
+// address's own or path's), no fragment and no user information the address carries.
 func (c *client) doProof(ctx context.Context, signer proofSigner, method, path string, body []byte) (*redact.Answer, error) {
 	_, answer, err := c.doProofStatus(ctx, signer, method, path, body)
 	return answer, err
@@ -355,13 +384,15 @@ func (c *client) doProofBuilt(ctx context.Context, signer proofSigner, method, p
 // the enrollment the broker no longer holds (terminalRenewal, exit 76) rather than quietly
 // register another.
 func (c *client) proofCall(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, *redact.Answer, error) {
-	url := c.route(path)
-	signedPath, _, _ := strings.Cut(path, "?")
-	token, err := signer.Sign(method, c.route(signedPath))
+	target, err := c.target(method, path)
+	if err != nil {
+		return 0, nil, err
+	}
+	token, err := signer.Sign(method, proof.TargetURI(target))
 	if err != nil {
 		return 0, nil, &signError{err: err}
 	}
-	return c.doStatus(ctx, method, url, body, map[string]string{"Proof": token})
+	return c.send(ctx, method, target, body, map[string]string{"Proof": token})
 }
 
 // signError is proofCall's failure to sign the proof, before anything was sent: the signer's own
@@ -558,17 +589,27 @@ func (c *client) CancelRequest(ctx context.Context, signer Signer, id string) er
 // was handed over — which is every release of a broker with no rules file. The keys of Values, of
 // Airlock.Names and of GitHubLeftOut are the broker's text too, and encoding/json decodes a key
 // into no redact.RemoteText: a line names a name or a profile only where this run asked for it
-// (releasedName), and an account only as LeftOutAccounts holds it.
+// (releasedName), and an account only as LeftOut holds it.
 type GrantValues struct {
 	Values        map[string]string                         `json:"values"`
 	ExpiresAt     *time.Time                                `json:"expires_at"`
 	Locations     []string                                  `json:"locations"`
 	GitHubLeftOut map[string]map[string][]redact.RemoteText `json:"github_left_out"`
 	Airlock       *AirlockRelease                           `json:"airlock"`
-	// LeftOutAccounts is each account GitHubLeftOut names, by its key as it came, held with the
-	// release request's record (redact.Answer.Said), which the decode gives no key. GrantValues
-	// fills it from the answer; no member of the answer does.
-	LeftOutAccounts map[string]redact.RemoteText `json:"-"`
+	// LeftOut is GitHubLeftOut as reportLeftOut prints it, one entry for each profile and account,
+	// in that order. GrantValues fills it from the answer; no member of the answer does.
+	LeftOut []leftOut `json:"-"`
+}
+
+// leftOut is one line of what a release's GitHub profile left out: the profile (a key of the
+// answer, which a line names only where this run asked for it), one account of its release, held
+// as the answer said it with the release request's record (redact.Answer.Said, since the decode
+// gives a key no box), and every entry of the profile's permissions the installation on that
+// account does not hold.
+type leftOut struct {
+	Profile string
+	Account redact.RemoteText
+	Entries []redact.RemoteText
 }
 
 // AirlockRelease is POST /v1/grants/{id}/values's airlock object: how a session reaches the
@@ -638,14 +679,10 @@ func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string,
 	if err := answer.Decode(&values); err != nil {
 		return GrantValues{}, fmt.Errorf("decode grant values: %w", err)
 	}
-	// An account is a key of github_left_out, which the decode holds in no box: each is held here
-	// as the answer said it, with its request's record, for the line that names it (reportLeftOut).
-	for _, accounts := range values.GitHubLeftOut {
-		for account := range accounts {
-			if values.LeftOutAccounts == nil {
-				values.LeftOutAccounts = make(map[string]redact.RemoteText)
-			}
-			values.LeftOutAccounts[account] = answer.Said(account)
+	for _, profile := range slices.Sorted(maps.Keys(values.GitHubLeftOut)) {
+		accounts := values.GitHubLeftOut[profile]
+		for _, account := range slices.Sorted(maps.Keys(accounts)) {
+			values.LeftOut = append(values.LeftOut, leftOut{Profile: profile, Account: answer.Said(account), Entries: accounts[account]})
 		}
 	}
 	return values, nil

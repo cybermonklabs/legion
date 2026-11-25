@@ -7,10 +7,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/cipheraddr"
 )
 
 const typeHeader = "agent-secrets-proof+jwt"
@@ -81,4 +84,30 @@ func Sign(key *ecdsa.PrivateKey, enrollmentID, method, url string, now time.Time
 // approved, with no enrollment involved at all.
 func SignLauncher(key *ecdsa.PrivateKey, launcherID, method, url string, now time.Time) (string, error) {
 	return sign(key, method, url, now, claims{LauncherID: launcherID})
+}
+
+// TargetURI is the htu a proof of a request to u signs: u's scheme, host and port, and path,
+// without its query and fragment (RFC 9449 section 4.2) and without its user information, which
+// is no part of the request's target (RFC 9110 section 4.2.4). The broker checks a proof against
+// its public URL followed by the path the request reached it at (the url Verifier.Verify is given,
+// internal/cipher/api's proofSubject), which holds none of the three, so a proof signed over the
+// whole URL of a request to an address with a query or a user name is refused. agent-secrets, its
+// helper and the token client (cipherclient) each sign TargetURI of the URL their request asks.
+func TargetURI(u *url.URL) string {
+	target := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, RawPath: u.RawPath}
+	return target.String()
+}
+
+// Audience is the audience a request object signed for the broker at address names (record.Sign's
+// aud): TargetURI of the address as configured, so none of the query, fragment or user information
+// it may carry. The broker verifies an object for its own public URL exactly
+// (record.VerifyRequestObject), which holds none of the three, so an object signed for the address's
+// whole text is refused. An address that is no absolute URL with a host is urljoin.ErrBase, which
+// quotes no part of it.
+func Audience(address cipheraddr.Address) (string, error) {
+	u, err := address.Join("")
+	if err != nil {
+		return "", err
+	}
+	return TargetURI(u), nil
 }

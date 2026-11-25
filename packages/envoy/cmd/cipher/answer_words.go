@@ -97,15 +97,28 @@ func printDetail(stdout io.Writer, base cipheraddr.Address, detail *redact.Remot
 	fmt.Fprintf(stdout, "detail: %s\n", base.WordsOf(*detail))
 }
 
-// requestStates are the states of a request this CLI acts on, as the broker spells them.
-var requestStates = []string{"pending", "granted", "denied", "cancelled", "expired"}
+// requestState is a state of a request this CLI acts on, as the broker spells it: a word of this
+// CLI's own, which a line may name whatever the address. Every decision on a request's state reads
+// it through stateOf, so the set is written once.
+type requestState string
+
+// The states of a request this CLI acts on.
+const (
+	statePending   requestState = "pending"
+	stateGranted   requestState = "granted"
+	stateDenied    requestState = "denied"
+	stateCancelled requestState = "cancelled"
+	stateExpired   requestState = "expired"
+)
+
+// requestStates are the states of a request this CLI acts on.
+var requestStates = []requestState{statePending, stateGranted, stateDenied, stateCancelled, stateExpired}
 
 // stateOf is the one of requestStates the broker's state is, compared as it came
-// (RemoteText.Equal), and "" for any other: a word of this CLI's own, which a line may name
-// whatever the address.
-func stateOf(state redact.RemoteText) string {
+// (RemoteText.Equal), and "" for any other.
+func stateOf(state redact.RemoteText) requestState {
 	for _, known := range requestStates {
-		if state.Equal(known) {
+		if state.Equal(string(known)) {
 			return known
 		}
 	}

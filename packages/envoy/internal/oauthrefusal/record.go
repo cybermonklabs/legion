@@ -1,6 +1,7 @@
 package oauthrefusal
 
 import (
+	"cmp"
 	"context"
 	"io"
 	"net/http"
@@ -10,18 +11,16 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// Record is ctx carrying a copy of the client x/oauth2 and go-oidc send their requests with - the
-// one ctx carries (oauth2.HTTPClient), else http.DefaultClient - timeout and all, with its
-// transport wrapped so answered records what became of each request it carries, under a
-// RefusalClient as every client handed to those libraries is (redact.OAuth2). A reader whose
-// library error drops an answer's status, or quotes its body, reads the answer from answered
-// instead.
-func Record(ctx context.Context, answered *Recorder) context.Context {
-	base, _ := ctx.Value(oauth2.HTTPClient).(*http.Client)
-	if base == nil {
-		base = http.DefaultClient
-	}
-	wrapped := *base
+// Record is ctx carrying a copy of client, the client x/oauth2 and go-oidc send their requests
+// with as its caller resolved it (nil is http.DefaultClient), timeout and redirect rule and all,
+// with its transport wrapped so answered records what became of each request it carries, under a
+// RefusalClient as every client handed to those libraries is (redact.OAuth2). The caller hands
+// the client it already holds rather than putting it on ctx for this to read back, so the
+// request goes through one record layer and one Recorder, and the client the context carries is
+// resolved in one place (cipherclient.clientOf, redact.CallScope.Context). A reader whose library
+// error drops an answer's status, or quotes its body, reads the answer from answered instead.
+func Record(ctx context.Context, client *http.Client, answered *Recorder) context.Context {
+	wrapped := *cmp.Or(client, http.DefaultClient)
 	answered.base = wrapped.Transport
 	if answered.base == nil {
 		answered.base = http.DefaultTransport

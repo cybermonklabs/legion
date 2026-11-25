@@ -55,7 +55,7 @@ func TestABrokerRefusalReadsAsOneLine(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]string{"code": row.code, "error": row.words})
 			}))
 			defer srv.Close()
-			_, err := newClient(cipheraddr.New(srv.URL)).do(context.Background(), http.MethodGet, srv.URL+"/v1/requests/req-1", nil, nil)
+			_, err := newClient(cipheraddr.New(srv.URL)).do(context.Background(), http.MethodGet, "/v1/requests/req-1", nil, nil)
 			var refusal *apiError
 			if !errors.As(err, &refusal) {
 				t.Fatalf("the refusal read as %v, want an *apiError", err)

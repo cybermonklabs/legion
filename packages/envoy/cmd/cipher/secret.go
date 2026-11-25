@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 type secretForm struct {
@@ -1107,9 +1108,12 @@ func sayUnchecked(s *secretSession, stderr io.Writer, form, name, secretType str
 			pipeCommand(s.backend.signInPrefix(), "secret", "retag", name, "--type", secretType), cipherclient.SignInCommand, name, secretType)
 		return
 	}
-	route := s.broker.baseURL.Call(s.broker.route("/v1/secrets/" + name + "/reread"))
+	shown := redact.NotPrinted
+	if target, err := s.broker.baseURL.Join("/v1/secrets/" + name + "/reread"); err == nil {
+		shown = s.broker.baseURL.Call(target.String())
+	}
 	fmt.Fprintf(stderr, "agent-secrets %s: %s took the reread of %s, but how it serves %s was not checked (%v), so this exit 0 says only that the write stands. To check it, run `curl -s -X POST -H \"Proof: $(agent-secrets sign --method POST --url %s)\" %s` where this command has a broker identity (`%s`)\n",
-		form, s.src.brokerAt(), name, name, unsigned, route, route, cipherclient.SignInCommand)
+		form, s.src.brokerAt(), name, name, unsigned, shown, shown, cipherclient.SignInCommand)
 }
 
 // printReread prints the broker's answer to a reread of name: taken and nothing more (a call with
@@ -1148,8 +1152,11 @@ func rereadOpen(s *secretSession, stdout, stderr io.Writer, form, name string) {
 }
 
 // rereadCommand is the shell command that asks the broker to reread name: POST
-// /v1/secrets/{name}/reread at the address brokerURLVar holds, without the slashes it ends in, as
-// brokerBaseURL reads it (the broker's mux answers a path with a doubled slash with a redirect,
+// /v1/secrets/{name}/reread joined onto the address brokerURLVar holds, as the CLI joins a route
+// (cipheraddr.Address.Join): its fragment, which no request sends, dropped; its query cut off and
+// put back after the route, where the route appended to the address's text would sit inside that
+// query and ask the broker the address's own path; and the slashes its path ends in dropped, as
+// the join cleans them (the broker's mux answers a path with a doubled slash with a redirect,
 // which curl would not follow and -f would not fail on). It stops naming the config file where
 // the shell has no such variable, since this CLI may have read the address from that file, and
 // curl exits non-zero naming the status of a broker's refusal (-sSf). It sends no proof, so the
@@ -1159,7 +1166,7 @@ func rereadOpen(s *secretSession, stdout, stderr io.Writer, form, name string) {
 // says whether the reread was taken. The CLI prints no broker address itself, and name has passed
 // policy.NameToSlug, so it holds no shell metacharacter.
 func rereadCommand(name string) string {
-	return fmt.Sprintf(`u=${%s:?set it to the broker address in ~/.config/agent-secrets/config} && curl -sSf -o /dev/null -X POST "${u%%"${u##*[!/]}"}/v1/secrets/%s/reread"`, brokerURLVar, name)
+	return fmt.Sprintf(`u=${%s:?set it to the broker address in ~/.config/agent-secrets/config} && u=${u%%%%\#*} && q= && case $u in *\?*) q=?${u#*\?} u=${u%%%%\?*};; esac && curl -sSf -o /dev/null -X POST "${u%%"${u##*[!/]}"}/v1/secrets/%s/reread$q"`, brokerURLVar, name)
 }
 
 // secretShowCommand is the `secret show` that reads name's tags and versions under the sign-in
