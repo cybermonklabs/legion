@@ -209,7 +209,7 @@ function walkedFrom(branch: readonly unknown[], at: number): ModelChangeEntry | 
 
 /** When the branch says an entry was written, or undefined when this build cannot read it: the
  * host stamps every entry with an ISO time (`SessionEntryBase`,
- * `session/session-entries.ts:98-116` at the pinned tag). */
+ * `session/session-entries.ts:99-117` at the pinned tag). */
 function changedAt(entry: ModelChangeEntry): number | undefined {
   const at = entry.timestamp === undefined ? Number.NaN : Date.parse(entry.timestamp);
   return Number.isFinite(at) ? at : undefined;
@@ -405,12 +405,12 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
   /**
    * The plugin's own step down the chain, for a content filter the host did not walk: the host
    * leaves a refusal that lands after the model has already sent text where it is
-   * (`turn-recovery.ts:1782-1816` and `:3153-3163` at tag
-   * `v18.18.6-sami.20261123-024918`).
+   * (`turn-recovery.ts:1820-1854` and `:3228-3238` at tag
+   * `v18.18.6-sami.20261125-001804`).
    *
    * The arming names the `model_change` entry **this** call wrote, read back from `getBranch()`
    * after it. The host's own fallback claim would not do: `pi.setModel` clears the active retry
-   * fallback and appends an ordinary `model_change` (`session/model-controls.ts:322-325` at the
+   * fallback and appends an ordinary `model_change` (`session/model-controls.ts:327-331` at the
    * pinned tag), so nothing on the branch would carry the host's claim at all.
    */
   const walkChain = async (ctx: ModelFallbackContext, current: HostModel): Promise<void> => {
@@ -460,7 +460,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
 
   const settled = async (event: AgentEndEvent, ctx: ModelFallbackContext): Promise<void> => {
     // The host is about to go on with this turn itself (`turnGoesOn`), so it has not settled;
-    // acting on it would step the session down twice (`session/agent-session.ts:5902-5910` at the
+    // acting on it would step the session down twice (`session/agent-session.ts:6195-6203` at the
     // pinned tag). An end that waits only on a background job's result has settled, and the job's
     // result starts the next turn on the model this end leaves the session on.
     //
@@ -659,7 +659,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         appliedThisTurn = { entryId: own.entry.id, reasoned: event.reason !== undefined };
         // What the host walked for, in the provider's own words: it names the reason as
         // `Request failed: ` and the error text of the message that failed
-        // (`session/turn-recovery.ts` at tag `v18.18.6-sami.20261123-024918`), so
+        // (`session/turn-recovery.ts` at tag `v18.18.6-sami.20261125-001804`), so
         // `Request failed: Refusal (cyber): Declined` reads as Anthropic's `cyber` filter and
         // arms the same refusal the plugin's own walk arms, category and all.
         //
@@ -668,7 +668,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         // settled turn's last assistant message is clean and `settled` below never sees that
         // refusal. An `"other"` arming would then wait on a suppression the host never applies
         // — for a classifier refusal it pins the fallback instead
-        // (`session/turn-recovery.ts:3736` at the pinned tag) — and hand the session straight
+        // (`session/turn-recovery.ts:3811` at the pinned tag) — and hand the session straight
         // back to the model that had just refused it, with no cooldown at all.
         //
         // A host build that sends no reason arms `"other"`, as every arming did before, and

@@ -29,13 +29,16 @@ func (r *Runtime) Observe(ctx context.Context) (<-chan runtime.Observation, erro
 	go r.refreshGitHubCredentialsEvery(ctx, gitHubRefreshInterval)
 	go func() {
 		defer close(out)
-		ticker := time.NewTicker(r.probeInterval)
-		defer ticker.Stop()
+		// The period's timer is armed again as it fires, before the sweep it starts, so a sweep
+		// that outlasts the period is followed by the next at once, as a ticker's would be.
+		period := r.clock.NewTimer(r.probeInterval)
+		defer period.Stop()
 		for r.sweep(ctx, out) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-period.C():
+				period.Reset(r.probeInterval)
 			}
 		}
 	}()

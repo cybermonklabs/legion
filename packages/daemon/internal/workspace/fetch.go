@@ -1222,27 +1222,13 @@ func (c *fetchCredential) scrub(text string) string {
 	return text
 }
 
-// Clock is the time Fetch's retries read and wait on: WallClock, or a test's own.
+// Clock is the time Fetch's retries read and wait on: clock.Real(), or a test's own. It is a
+// narrowing of the module's clock.Clock to the two calls Fetch makes, so a test's fake needs only
+// those.
 type Clock interface {
 	Now() time.Time
 	// Sleep waits d, or returns ctx's error once ctx ends first.
 	Sleep(ctx context.Context, d time.Duration) error
-}
-
-// WallClock is the real time.
-type WallClock struct{}
-
-func (WallClock) Now() time.Time { return time.Now() }
-
-func (WallClock) Sleep(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
 
 // fetchBackoff is the wait before each retry of the fetch's clone, one retry per entry: a first

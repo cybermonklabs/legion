@@ -258,16 +258,23 @@ type roleLane struct {
 // the lane before the durable binds forwards no message twice. It counts the lane's slow-consumer
 // errors on met and watches them (watchRoleLaneSlowConsumers) until the lane's drain.
 //
+// It is a connect of the listener's start (natsStart): behind a hub whose servers reload a new
+// nkey one at a time, the main client can get in through the one server that has reloaded while
+// the lane's connect meets one that has not, so it waits out a refusal of the credential under
+// the start's bound (natsStart.option), which /healthz reports while it lasts and forgets once the
+// lane's connect gets in (natsStart.admitted), before its subscribe and flush. A failure still ends
+// the start, as main ends it, and names the credential only when the connect did not get in.
+//
 // An edge listener (edge) opens none: its grant subscribes no role lane (natsgrant.Edge), so it
 // takes no share of any project's role messages. A shared listener resolves a role's holder, an
 // edge session's among them, and forwards the message to the holder's agent subject, which the
 // holder's session consumer delivers. Its lane holds the forwards alone.
-func startRoleLane(cfg config.Service, edge *edgeGrant, handler nats.MsgHandler, forwards *roleForwarder, met *metrics.Registry, logger *logging.Logger) (roleLane, error) {
+func startRoleLane(cfg config.Service, edge *edgeGrant, handler nats.MsgHandler, forwards *roleForwarder, met *metrics.Registry, logger *logging.Logger, start *natsStart) (roleLane, error) {
 	if edge != nil {
 		logger.Info("role lane not subscribed: an edge listener takes no role message; a shared listener forwards each to its holder's agent subject")
 		return roleLane{forwards: forwards}, nil
 	}
-	client, queue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, handler)
+	client, queue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, handler, start.option())
 	if err != nil {
 		return roleLane{}, err
 	}
