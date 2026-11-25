@@ -11,11 +11,13 @@ package api
 // (testbaseline.Build), which needs a checkout that holds that commit. It writes its corpus by SQL
 // from testdata/moved-read-cost-corpus.sql. It is run on its own, by name, as
 //
-//	STORES_BASE_SHA=$(git merge-base origin/main HEAD) go test -tags basebuild ./internal/dispatch/api/ -run '^TestNoMovedReadGetsSlower$' -timeout 90m -count=1 -v
+//	STORES_BASE_SHA=$(git merge-base origin/main HEAD) MOVED_COST_LOOKUP_MERGED=no MOVED_COST_ISSUE_LIST_PLAN_MERGED=no go test -tags basebuild ./internal/dispatch/api/ -run '^TestNoMovedReadGetsSlower$' -timeout 270m -count=1 -v
 //
 // from packages/envoy, with DISPATCH_TEST_DATABASE_URL naming a Postgres server it may create a
 // database on, over TCP and without TLS (the plan proxy relays that connection in the clear), which
 // preloads pg_stat_statements (shared_preload_libraries) and whose role may create that extension.
+// MOVED_COST_LOOKUP_MERGED and MOVED_COST_ISSUE_LIST_PLAN_MERGED are the check's two inputs, each
+// yes or no as the role's line before the Jobs reads them on the base (movedCostSwitches).
 // MOVED_READ_COST_SCALE scales the corpus (movedCostScale), and MOVED_READ_COST_SEED_ONLY=1, for
 // diagnosis, keeps the database the release before seeded and ends the run before any reading
 // (movedCostSeedOnly); the check's run leaves both unset.
@@ -82,15 +84,24 @@ var movedCostMigrations = []string{
 // movedCostMigrationsDir is where a commit holds its migrations, from the repository's root.
 const movedCostMigrationsDir = "packages/envoy/internal/dispatch/store/migrations"
 
-// The three bounds of each read on the new side and on the third side, each against its old side:
-// its p50 at most movedCostP50Bound times the old side's p50, the bound c-read-cost holds its reads
-// to and R22's bound for every read; its p90 at most movedCostP90Bound; and its database time per
-// reading at most movedCostDatabaseBound times the old side's, the owner's two bounds
-// (dispatch://INFRA-1098/ask/88f91e7d-b257-4476-becc-6b5c91ccffef).
+// movedCostP90Bound is the one bound the run holds on its own: the p90 of each reading on the new
+// side and on the third side is at most 200 ms, the owner's bound
+// (dispatch://INFRA-1098/ask/88f91e7d-b257-4476-becc-6b5c91ccffef), but where the switch of a
+// priority reading reads no (movedCostSwitches). The bounds of p50 and of database time against
+// the old side are the check's step's, over the medians of three runs, and the run prints what
+// that step reads (logMovedCostReadings).
+const movedCostP90Bound = 200 * time.Millisecond
+
+// The two inputs that switch the p90 bound of the three priority reads, each yes or no: whether the
+// base holds the merge into main of the pull request that brings those reads under 200 ms, as the
+// role's line before the Jobs reads it. MOVED_COST_LOOKUP_MERGED is dispatch://INFRA-5791's, on
+// legion/INFRA-5791, and switches the priorities read and its summary read;
+// MOVED_COST_ISSUE_LIST_PLAN_MERGED is dispatch://INFRA-5609's cybermonklabs/legion#5361, on
+// fix/infra-5609-issue-list-plan, and switches both forms of the issue list with advances
+// (dispatch://INFRA-1098/ask/0fa27283-9014-409b-bb22-300cb7747afb).
 const (
-	movedCostP50Bound      = 2.0
-	movedCostP90Bound      = 200 * time.Millisecond
-	movedCostDatabaseBound = 2.0
+	movedCostLookupMerged        = "MOVED_COST_LOOKUP_MERGED"
+	movedCostIssueListPlanMerged = "MOVED_COST_ISSUE_LIST_PLAN_MERGED"
 )
 
 // The projects of the corpus. The steps read and the plans read address the first of the three;
@@ -119,11 +130,11 @@ var movedCostEventsShape = struct{ mean, p50, p90, p99, most float64 }{51, 16, 1
 const movedCostEventsTail = 0.8
 
 // movedCostProduction is production's shape, read through its API at 2026-11-23T23:20Z, which the
-// corpus's issues are seeded to in place of Verification version 150's priority side
-// (movedCostDeparture). Each figure is at scale 1 and counts issues, or open pairs of an issue and a
-// priority it advances, and scales with the corpus; the priorities and the deepest chain do not.
-// The corpus's SQL lays its issues out from the same figures (its moved_counts). The finished
-// issues Legion never ran stand beside these issues and are counted apart (movedCostNeverRan).
+// corpus's issues are seeded to. Each figure is at scale 1 and counts issues, or open pairs of an
+// issue and a priority it advances, and scales with the corpus; the priorities and the deepest
+// chain do not. The corpus's SQL lays its issues out from the same figures (its moved_counts). The
+// finished issues Legion never ran of the first project are among these issues; those of the two
+// other projects stand beside them and are counted apart (movedCostBeside).
 var movedCostProduction = struct {
 	issues, members, own, parented float64
 	// The open pairs by status, and how many there are in all.
@@ -146,37 +157,34 @@ var movedCostProduction = struct {
 // from production's figure.
 const movedCostShapeSlack = 0.05
 
-// movedCostDeparture is the line a run prints to say where its corpus departs from the check's
-// Verification versions 150 and 152, and nothing more: production's shape in place of 150's
-// priority side, and 152's finished issues Legion never ran in each of the three projects, beside
-// production's issues.
-const movedCostDeparture = "c-moved-read-cost: this run's corpus departs from Verification versions 150 and 152. From 150: " +
-	"in place of 50 priorities and 5,000 advances tuples over 2,000 issues, it holds production's shape, read through its API " +
-	"at 2026-11-23T23:20Z: 13,298 issues, 13 live priorities, 7,677 issues that advance one, 1,600 of them by a relation of " +
-	"their own, 68% with a parent, 2,995 open pairs, done 35%, 115 unplaced and 729 parked. From 152: it writes the 2,860 " +
-	"finished issues Legion never ran in each of the three projects, not in the first only, beside production's 13,298 " +
-	"issues and not among them, so the database holds 21,878 issues; and each of those 8,580 issues has the 3 events of a " +
-	"finished issue's shortest life (created, moved to in_progress, closed), not a count drawn from production's events per issue"
-
-// movedCostNeverRan is the condition, on an issue i, that it is one of the finished issues Legion
-// never ran that the corpus writes beside production's issues: a finished issue of one of the
-// three projects that no run is part_of. The shape and the events count these issues apart.
-var movedCostNeverRan = `(i.project_key in (` + sqlStringList(movedCostProjects) + `) and i.status = 'done' and not exists (
+// movedCostNeverRan is the condition, on an issue i, that it is a finished issue of one of projects
+// that Legion never ran: one that no run is part_of.
+func movedCostNeverRan(projects []string) string {
+	return `(i.project_key in (` + sqlStringList(projects) + `) and i.status = 'done' and not exists (
 		select 1 from workflow_tuples w
 		where w.from_kind = 'step' and w.kind = 'part_of' and w.to_kind = 'issue' and w.to_id = i.key))`
+}
+
+// movedCostBeside is the condition, on an issue i, that it is one of the finished issues Legion
+// never ran that the corpus writes beside production's issues: those of the two other projects.
+// The first project's stand among production's issues. The shape and the events count the issues
+// beside them apart.
+var movedCostBeside = movedCostNeverRan(movedCostProjects[1:])
 
 // movedCostShapeQuery reads the corpus's shape as production's figures count it, over every issue
-// of production's shape the database holds, one row of a name and a count each, and beside them
-// counts apart, by project, the finished issues Legion never ran (movedCostNeverRan). The members
-// are read as the priorities read reads them (priorityRelationsQuery, priorityMemberTerms): the
-// newest advances tuple of each pair of an issue and a live priority, where it asserts the pair,
-// and every issue below such an issue. A pair is an issue and a priority it advances, its depth
-// the fewest levels it stands below an issue that states that priority, and an open pair an open
+// of production's shape the database holds, which leaves out the finished issues Legion never ran
+// beside them (movedCostBeside), one row of a name and a count each. It also counts by project the
+// finished issues Legion never ran of each of the three (movedCostNeverRan): the first project's
+// among the issues of production's shape, the two others' beside them. The members are read as
+// the priorities read reads them (priorityRelationsQuery, priorityMemberTerms): the newest
+// advances tuple of each pair of an issue and a live priority, where it asserts the pair, and
+// every issue below such an issue. A pair is an issue and a priority it advances, its depth the
+// fewest levels it stands below an issue that states that priority, and an open pair an open
 // issue's.
 var movedCostShapeQuery = `with recursive never_ran as (
-		select i.key, i.project_key from issues i where ` + movedCostNeverRan + `
+		select i.key, i.project_key from issues i where ` + movedCostNeverRan(movedCostProjects) + `
 	), production as (
-		select i.* from issues i where not exists (select 1 from never_ran n where n.key = i.key)
+		select i.* from issues i where not ` + movedCostBeside + `
 	), relations as (
 		select newest.from_id as key, newest.to_id as priority
 		from (select distinct on (t.from_id, t.to_id) t.from_id, t.to_id, t.asserted
@@ -226,28 +234,25 @@ var movedCostShapeQuery = `with recursive never_ran as (
 const movedCostNeverRanName = "finished issues Legion never ran in "
 
 // movedCostEventsQuery reads the events of the issues the corpus writes in the projects $1, their
-// first issues left out. Of the issues of production's shape: how many events there are and over
-// how many issues, each issue's count of them in nearest-rank percentiles, the issues whose events
-// run seq 1 to their last_seq, and, of the issues parked in backlog or icebox, how many there are,
-// those that hold the issue.updated that moved them there as the parked read finds it
-// (parkedMoveLateral), and those whose move is not their newest event. Then, apart, of the
-// finished issues Legion never ran (movedCostNeverRan): how many there are, how many events they
-// hold, and how many of them hold events seq 1 to their last_seq.
+// first issues left out, in two rows: first those of production's shape, then the finished issues
+// Legion never ran beside them (movedCostBeside), each row led by whether it is theirs. Of each:
+// how many events there are and over how many issues, each issue's count of them in nearest-rank
+// percentiles, the issues whose events run seq 1 to their last_seq, and, of the issues parked in
+// backlog or icebox, how many there are, those that hold the issue.updated that moved them there
+// as the parked read finds it (parkedMoveLateral), and those whose move is not their newest event.
 var movedCostEventsQuery = `with written as (
-		select i.key, i.status, i.last_seq, ` + movedCostNeverRan + ` as never_ran
+		select i.key, i.status, i.last_seq, ` + movedCostBeside + ` as beside
 		from issues i
 		where i.project_key = any($1) and i.number > 1
 	), counted as (
-		select w.key, w.status, w.last_seq, w.never_ran, count(e.id) as events, min(e.seq) as low, max(e.seq) as high,
+		select w.key, w.status, w.last_seq, w.beside, count(e.id) as events, min(e.seq) as low, max(e.seq) as high,
 		       max(e.seq) filter (where e.type = 'issue.updated' and e.payload->'changed' @> '"status"'::jsonb
 		                          and e.payload->>'status' = w.status) as moved
 		from written w
 		left join events e on e.issue_key = w.key
-		group by w.key, w.status, w.last_seq, w.never_ran
-	), production as (
-		select * from counted where not never_ran
+		group by w.key, w.status, w.last_seq, w.beside
 	)
-	select coalesce(sum(events), 0)::bigint, count(*), coalesce(avg(events), 0)::float8,
+	select beside, coalesce(sum(events), 0)::bigint, count(*), coalesce(avg(events), 0)::float8,
 	       coalesce(percentile_disc(0.5) within group (order by events), 0),
 	       coalesce(percentile_disc(0.9) within group (order by events), 0),
 	       coalesce(percentile_disc(0.99) within group (order by events), 0),
@@ -255,11 +260,17 @@ var movedCostEventsQuery = `with written as (
 	       count(*) filter (where events = last_seq and low = 1 and high = last_seq),
 	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `)),
 	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `) and moved is not null),
-	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `) and moved < last_seq),
-	       (select count(*) from counted where never_ran),
-	       (select coalesce(sum(events), 0)::bigint from counted where never_ran),
-	       (select count(*) from counted where never_ran and events = last_seq and low = 1 and high = last_seq)
-	from production`
+	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `) and moved < last_seq)
+	from counted
+	group by beside
+	order by beside`
+
+// movedCostEvents is one row of movedCostEventsQuery: the events of one group of the issues the
+// corpus writes.
+type movedCostEvents struct {
+	events, issues, p50, p90, p99, most, whole, shelved, moved, movedBefore int64
+	mean                                                                    float64
+}
 
 // ───── the corpus ─────────────────────────────────────────────────────────
 
@@ -268,8 +279,9 @@ var movedCostEventsQuery = `with written as (
 type movedCostCorpus struct {
 	scale float64
 	// The workflow side, the check's: in each of the three projects, the finished issues, the
-	// issues among them run 30 times, and the others, the finished issues Legion never ran, which
-	// stand beside production's issues (unran); and the tuples of other kinds.
+	// issues among them run 30 times, and the others, the finished issues Legion never ran
+	// (unran), which in the first project are among production's issues and in the two others
+	// stand beside them; and the tuples of other kinds.
 	finished, ran, unran int
 	others               int64
 	// priorities is how many priorities the corpus writes, every one live; issues how many issues
@@ -403,8 +415,8 @@ func seedMovedCostTemplates(t *testing.T, s *readCostServer) {
 // seedMovedCostCorpus runs the corpus's SQL over conn with the run's settings, and holds what it
 // wrote before anything is measured: the workflow side and the corpus's own writes to the counts
 // they fix, the issues of production's shape to it (movedCostProduction), each count printed
-// beside production's figure at the run's scale, and the finished issues Legion never ran apart
-// from them.
+// beside production's figure at the run's scale, the finished issues Legion never ran beside them
+// apart, and the events of both to production's events per issue (holdMovedCostEvents).
 func seedMovedCostCorpus(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) {
 	t.Helper()
 	ctx := context.Background()
@@ -422,7 +434,6 @@ func seedMovedCostCorpus(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) 
 		t.Fatalf("write the corpus by SQL (%s): %v", movedCostCorpusPath, err)
 	}
 	t.Logf("c-moved-read-cost: wrote the corpus by SQL at scale %v in %s", corpus.scale, time.Since(started).Round(time.Millisecond))
-	t.Log(movedCostDeparture)
 
 	// corpusCount is one count of the corpus as SQL reads it, held to want within slack.
 	type corpusCount struct {
@@ -473,47 +484,7 @@ func seedMovedCostCorpus(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) 
 		}
 	}
 	holdMovedCostShape(t, conn, corpus)
-	// The events of the issues the corpus writes: those of production's shape against production's
-	// events per issue, and apart from them those of the finished issues Legion never ran, the 3 of
-	// a finished issue's shortest life each.
-	var events, withEvents, p50, p90, p99, most, whole, shelved, moved, movedBefore, neverRan, neverRanEvents, neverRanWhole int64
-	var mean float64
-	if err := conn.QueryRow(ctx, movedCostEventsQuery, append(slices.Clone(movedCostProjects), movedCostAdvancesProject)).
-		Scan(&events, &withEvents, &mean, &p50, &p90, &p99, &most, &whole, &shelved, &moved, &movedBefore,
-			&neverRan, &neverRanEvents, &neverRanWhole); err != nil {
-		t.Fatalf("count the corpus's events: %v", err)
-	}
-	shape := movedCostEventsShape
-	t.Logf("c-moved-read-cost: the corpus holds %d events over %d issues of production's shape, by issue mean %.1f, p50 %d, p90 %d, "+
-		"p99 %d and max %d (production: mean %.0f, p50 %.0f, p90 %.0f, p99 %.0f and max %.0f)", events, withEvents, mean, p50, p90, p99, most,
-		shape.mean, shape.p50, shape.p90, shape.p99, shape.most)
-	t.Logf("c-moved-read-cost: %d of the corpus's issues of production's shape hold events seq 1 to their last_seq (the corpus at "+
-		"scale %v writes %d issues); %d of the %d in backlog or icebox hold the issue.updated that moved them there, %d of them before "+
-		"their newest event", whole, corpus.scale, corpus.issues, moved, shelved, movedBefore)
-	t.Logf("c-moved-read-cost: beside them, %d finished issues Legion never ran hold %d events, and %d of them hold events seq 1 to "+
-		"their last_seq (the corpus at scale %v writes %d such issues, 3 events each)", neverRan, neverRanEvents, neverRanWhole,
-		corpus.scale, len(movedCostProjects)*corpus.unran)
-	if withEvents != int64(corpus.issues) || whole != withEvents {
-		t.Errorf("%d of the corpus's %d issues of production's shape hold events seq 1 to their last_seq, where the corpus at scale %v "+
-			"writes %d issues, each with its events", whole, withEvents, corpus.scale, corpus.issues)
-	}
-	if unran := int64(len(movedCostProjects) * corpus.unran); neverRan != unran || neverRanWhole != neverRan || neverRanEvents != 3*neverRan {
-		t.Errorf("%d of the corpus's %d finished issues Legion never ran hold events seq 1 to their last_seq, %d events in all, where "+
-			"the corpus at scale %v writes %d such issues, each with 3 events", neverRanWhole, neverRan, neverRanEvents, corpus.scale, unran)
-	}
-	if shelved == 0 || moved != shelved || movedBefore == 0 || movedBefore == moved {
-		t.Errorf("%d of the corpus's %d issues in backlog or icebox hold the issue.updated that moved them there, %d of them before "+
-			"their newest event, where every one holds it and some but not all before their newest", moved, shelved, movedBefore)
-	}
-	near := func(read, production float64) bool {
-		return math.Abs(read-production) <= movedCostShapeSlack*production
-	}
-	if !near(mean, shape.mean) || !near(float64(p50), shape.p50) || !near(float64(p90), shape.p90) || !near(float64(p99), shape.p99) ||
-		float64(most) > shape.most || float64(most) <= movedCostEventsTail*shape.most {
-		t.Errorf("the corpus's events by issue, mean %.1f, p50 %d, p90 %d, p99 %d and max %d, are not production's: mean %.0f, p50 %.0f, "+
-			"p90 %.0f and p99 %.0f within %.0f%%, and max at most %.0f and above %.0f", mean, p50, p90, p99, most,
-			shape.mean, shape.p50, shape.p90, shape.p99, 100*movedCostShapeSlack, shape.most, movedCostEventsTail*shape.most)
-	}
+	holdMovedCostEvents(t, conn, corpus)
 	var issues, workflow, graph int64
 	if err := conn.QueryRow(ctx, `select (select count(*) from issues), (select count(*) from workflow_tuples), (select count(*) from graph_tuples)`).
 		Scan(&issues, &workflow, &graph); err != nil {
@@ -529,10 +500,12 @@ func seedMovedCostCorpus(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) 
 // holdMovedCostShape holds the corpus to production's shape (movedCostShapeQuery), each count
 // printed beside production's figure at the run's scale: exactly where the corpus fixes the count
 // to that figure, and within movedCostShapeSlack where it cannot. The corpus's 4,663 finished
-// issues of production's shape are 35.1% of its issues where production's done are about 35%, and
-// the issues done, in flight and in triage or icebox, the issues that advance a priority and the
-// open pairs in all follow from them. The finished issues Legion never ran are counted apart, in
-// each project exactly the corpus's count, and a line prints both counts.
+// issues of production's shape, the 1,803 Legion ran and the first project's 2,860 it never ran,
+// are 35.1% of its issues where production's done are about 35%, and the issues done, in flight
+// and in triage or icebox, the issues that advance a priority and the open pairs in all follow
+// from them. The finished issues Legion never ran are counted in each project, exactly the
+// corpus's count: the first project's among the issues of production's shape, the two others'
+// beside them and apart. A line prints both counts.
 func holdMovedCostShape(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) {
 	t.Helper()
 	rows, err := conn.Query(context.Background(), movedCostShapeQuery)
@@ -596,20 +569,89 @@ func holdMovedCostShape(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) {
 			t.Errorf("the corpus holds %d %s, where production at scale %v holds %d, held %s", holds, count.what, scale, count.production, held)
 		}
 	}
-	var neverRan int64
-	apart := make([]string, 0, len(movedCostProjects))
-	for _, project := range movedCostProjects {
+	var beside int64
+	apart := make([]string, 0, len(movedCostProjects)-1)
+	for place, project := range movedCostProjects {
 		holds := read[movedCostNeverRanName+project]
-		neverRan += holds
-		apart = append(apart, fmt.Sprintf("%d in %s", holds, project))
-		t.Logf("c-moved-read-cost: the corpus holds %d %s%s, apart from production's issues (the corpus at scale %v writes %d, held exactly)",
-			holds, movedCostNeverRanName, project, scale, corpus.unran)
+		where := "among the issues of production's shape"
+		if place > 0 {
+			beside += holds
+			apart = append(apart, fmt.Sprintf("%d in %s", holds, project))
+			where = "beside the issues of production's shape and apart from them"
+		}
+		t.Logf("c-moved-read-cost: the corpus holds %d %s%s, %s (the corpus at scale %v writes %d, held exactly)",
+			holds, movedCostNeverRanName, project, where, scale, corpus.unran)
 		if holds != int64(corpus.unran) {
 			t.Errorf("the corpus holds %d %s%s, where the corpus at scale %v writes %d", holds, movedCostNeverRanName, project, scale, corpus.unran)
 		}
 	}
-	t.Logf("c-moved-read-cost: the corpus holds %d issues of production's shape and, beside them and counted apart, %d finished issues "+
-		"Legion never ran (%s)", read["issues"], neverRan, strings.Join(apart, ", "))
+	t.Logf("c-moved-read-cost: the corpus holds %d issues of production's shape, %d of them finished issues of %s Legion never ran, "+
+		"and, beside them and counted apart, %d finished issues Legion never ran (%s)", read["issues"],
+		read[movedCostNeverRanName+movedCostProjects[0]], movedCostProjects[0], beside, strings.Join(apart, ", "))
+}
+
+// holdMovedCostEvents holds the events of the issues the corpus writes (movedCostEventsQuery) to
+// production's events per issue (movedCostEventsShape): those of production's shape, and apart
+// from them those of the finished issues Legion never ran beside them, each drawn from it on its
+// own. Every issue of both holds its events seq 1 to its last_seq, and every issue of production's
+// shape in backlog or icebox the issue.updated that moved it there, some but not all of them
+// before their newest event.
+func holdMovedCostEvents(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) {
+	t.Helper()
+	rows, err := conn.Query(context.Background(), movedCostEventsQuery, append(slices.Clone(movedCostProjects), movedCostAdvancesProject))
+	if err != nil {
+		t.Fatalf("count the corpus's events: %v", err)
+	}
+	groups := map[bool]movedCostEvents{}
+	for rows.Next() {
+		var beside bool
+		var read movedCostEvents
+		if err := rows.Scan(&beside, &read.events, &read.issues, &read.mean, &read.p50, &read.p90, &read.p99, &read.most, &read.whole,
+			&read.shelved, &read.moved, &read.movedBefore); err != nil {
+			t.Fatalf("count the corpus's events: %v", err)
+		}
+		groups[beside] = read
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("count the corpus's events: %v", err)
+	}
+	shape := movedCostEventsShape
+	near := func(read, production float64) bool {
+		return math.Abs(read-production) <= movedCostShapeSlack*production
+	}
+	for _, group := range []struct {
+		what   string
+		beside bool
+		issues int
+	}{
+		{"issues of production's shape", false, corpus.issues},
+		{"finished issues Legion never ran beside them", true, (len(movedCostProjects) - 1) * corpus.unran},
+	} {
+		read := groups[group.beside]
+		t.Logf("c-moved-read-cost: the corpus holds %d events over %d %s, by issue mean %.1f, p50 %d, p90 %d, p99 %d and max %d "+
+			"(production: mean %.0f, p50 %.0f, p90 %.0f, p99 %.0f and max %.0f); %d of them hold events seq 1 to their last_seq "+
+			"(the corpus at scale %v writes %d such issues)", read.events, read.issues, group.what, read.mean, read.p50, read.p90,
+			read.p99, read.most, shape.mean, shape.p50, shape.p90, shape.p99, shape.most, read.whole, corpus.scale, group.issues)
+		if read.issues != int64(group.issues) || read.whole != read.issues {
+			t.Errorf("%d of the corpus's %d %s hold events seq 1 to their last_seq, where the corpus at scale %v writes %d such issues, "+
+				"each with its events", read.whole, read.issues, group.what, corpus.scale, group.issues)
+		}
+		if !near(read.mean, shape.mean) || !near(float64(read.p50), shape.p50) || !near(float64(read.p90), shape.p90) ||
+			!near(float64(read.p99), shape.p99) || float64(read.most) > shape.most || float64(read.most) <= movedCostEventsTail*shape.most {
+			t.Errorf("the events by issue of the corpus's %s, mean %.1f, p50 %d, p90 %d, p99 %d and max %d, are not production's: mean "+
+				"%.0f, p50 %.0f, p90 %.0f and p99 %.0f within %.0f%%, and max at most %.0f and above %.0f", group.what, read.mean,
+				read.p50, read.p90, read.p99, read.most, shape.mean, shape.p50, shape.p90, shape.p99, 100*movedCostShapeSlack, shape.most,
+				movedCostEventsTail*shape.most)
+		}
+	}
+	production := groups[false]
+	t.Logf("c-moved-read-cost: %d of the corpus's %d issues of production's shape in backlog or icebox hold the issue.updated that moved "+
+		"them there, %d of them before their newest event", production.moved, production.shelved, production.movedBefore)
+	if production.shelved == 0 || production.moved != production.shelved || production.movedBefore == 0 || production.movedBefore == production.moved {
+		t.Errorf("%d of the corpus's %d issues in backlog or icebox hold the issue.updated that moved them there, %d of them before "+
+			"their newest event, where every one holds it and some but not all before their newest", production.moved, production.shelved,
+			production.movedBefore)
+	}
 }
 
 // ───── what a server owes ─────────────────────────────────────────────────
@@ -617,7 +659,8 @@ func holdMovedCostShape(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) {
 // The owed wait: every count is read every readCostOwedPoll, as c-read-cost reads them, printed
 // every movedCostOwedPrint while one stands above zero, and the run fails once one has stayed
 // above zero for movedCostOwedWait. At scale 1 the release before's roll alone reads the corpus's
-// 680,000 events 1,000 a tick, a tick every 2 s, about 23 minutes.
+// events, about 680,000 of the issues of production's shape and 290,000 of the finished issues
+// beside them, 1,000 a tick, a tick every 2 s, about 32 minutes.
 const (
 	movedCostOwedWait  = 60 * time.Minute
 	movedCostOwedPrint = 30 * time.Second
@@ -697,15 +740,19 @@ func waitMovedCostOwed(t *testing.T, conn *pgx.Conn, s *readCostServer, counts [
 	t.Logf("c-moved-read-cost: %s owes nothing at %s; the wait took %s", s.name, at, time.Since(started).Round(time.Millisecond))
 }
 
-// ───── the seven reads ────────────────────────────────────────────────────
+// ───── the eight reads ────────────────────────────────────────────────────
 
-// movedCostRead is one read R32 moves: the route a reading GETs, and how many of what its answer
-// holds, which every side must answer alike before it is measured.
+// movedCostRead is one reading of a read R32 moves: its name in the check's reading lines, the
+// route it GETs, and how many of what its answer holds, which every side must answer alike before
+// it is measured.
 type movedCostRead struct {
 	name, path, unit string
 	count            func(body []byte) (int, error)
 	// want is the count the corpus decides, or 0 where the corpus decides only that there is one.
 	want int
+	// gate is the input that switches the reading's p90 bound (movedCostSwitches), or "" where the
+	// run holds it at every value of both.
+	gate string
 }
 
 // movedCostCount decodes body into a value of T and answers the count measure takes of it.
@@ -730,15 +777,21 @@ func movedCostTotal(page movedCostPage) int {
 	return *page.Total
 }
 
-// movedCostReads are the seven reads of the check. The two issue lists are read as the dashboard
-// pages them, at contracts.DefaultIssuePageLimit: their advances terms read the moved relation of
-// every issue the page answers, and the unpaged list grows faster than the issues it lists on both
-// sides (the R32 bench's README).
+// movedCostReads are the eight reads of the check, nine readings: the issue list with advances set
+// is read in two forms, each a reading of its own. The issue list with no filter, and the one form
+// of the advances list, are read as one page of contracts.DefaultIssuePageLimit: their advances
+// terms read the moved relation of every issue the page answers. The other form of the advances
+// list names no limit, as the pages send it (advancesIssuesParams in the web app's api/queries.ts),
+// and answers every issue that advances the priority. The summary read is the one the sidebar sends
+// on every page (prioritySummaryQuery), the two summary statements of the faults.
 func movedCostReads(corpus *movedCostCorpus) []movedCostRead {
 	type rows = []json.RawMessage
+	type fault struct {
+		Count int `json:"count"`
+	}
 	return []movedCostRead{
 		{
-			name: "priorities", path: "/api/v1/priorities", unit: "live priorities", want: corpus.priorities,
+			name: "priorities", path: "/api/v1/priorities", unit: "live priorities", want: corpus.priorities, gate: movedCostLookupMerged,
 			count: movedCostCount(func(v struct {
 				Priorities rows `json:"priorities"`
 			}) int {
@@ -746,11 +799,21 @@ func movedCostReads(corpus *movedCostCorpus) []movedCostRead {
 			}),
 		},
 		{
-			name: "priority history", path: "/api/v1/priorities/" + movedCostPriority + "/history", unit: "acts",
+			name: "priorities_summary", path: "/api/v1/priorities?summary=true", unit: "issues the two faults count",
+			gate: movedCostLookupMerged,
+			count: movedCostCount(func(v struct {
+				Unplaced fault `json:"work_under_no_priority"`
+				Parked   fault `json:"priority_work_parked"`
+			}) int {
+				return v.Unplaced.Count + v.Parked.Count
+			}),
+		},
+		{
+			name: "priority_history", path: "/api/v1/priorities/" + movedCostPriority + "/history", unit: "acts",
 			count: movedCostCount(func(v rows) int { return len(v) }),
 		},
 		{
-			name: "issue that advances a priority", path: "/api/v1/issues/" + corpus.advancing, unit: "advances",
+			name: "issue", path: "/api/v1/issues/" + corpus.advancing, unit: "advances",
 			count: movedCostCount(func(v struct {
 				Advances rows `json:"advances"`
 			}) int {
@@ -758,12 +821,18 @@ func movedCostReads(corpus *movedCostCorpus) []movedCostRead {
 			}),
 		},
 		{
-			name: "issue list", path: "/api/v1/issues?limit=50", unit: "issues in the listing's total",
+			name: "issue_list", path: "/api/v1/issues?limit=50", unit: "issues in the listing's total",
 			count: movedCostCount(movedCostTotal),
 		},
 		{
-			name: "issue list by advances", path: "/api/v1/issues?advances=" + movedCostPriority + "&limit=50", unit: "issues in the listing's total",
+			name: "issue_list_by_advances", path: "/api/v1/issues?advances=" + movedCostPriority + "&limit=50", unit: "issues in the listing's total",
+			gate:  movedCostIssueListPlanMerged,
 			count: movedCostCount(movedCostTotal),
+		},
+		{
+			name: "issue_list_by_advances_unpaged", path: "/api/v1/issues?advances=" + movedCostPriority, unit: "issues the listing answers",
+			gate:  movedCostIssueListPlanMerged,
+			count: movedCostCount(func(v rows) int { return len(v) }),
 		},
 		{
 			name: "steps", path: "/api/v1/issues/" + corpus.busy + "/steps", unit: "runs", want: 200,
@@ -1302,15 +1371,17 @@ func movedCostParameters(statement movedCostStatement) string {
 
 // No read that R32 moves gets slower.
 //
-// Seven reads are measured, each over HTTP through one client against a server process over one
-// database: the priorities, a priority's history, an issue that advances a priority, the issue
-// list, the issue list by one priority it advances, an issue's steps and a project's plans. The
-// run has three sides over one database. First, the release before, built from STORES_BASE_SHA,
-// migrates it and makes the four projects; the run stops it, writes the corpus by SQL, boots it
-// again and measures the old side over the four tables. Second, this head boots, which moves both
-// stores into the graph store, and the run measures the new side. Third, as a rollback does, the
-// release before boots again, now reading through the four views, and the run measures the third
-// side. Each side answers each read alike before it is measured.
+// Eight reads are measured, each over HTTP through one client against a server process over one
+// database: the priorities, their summary, a priority's history, an issue that advances a
+// priority, the issue list, the issue list by one priority it advances, an issue's steps and a
+// project's plans. The issue list by a priority is read in two forms, one page of 50 and the form
+// with no limit, so each side has nine readings (movedCostReads). The run has three sides over one
+// database. First, the release before, built from STORES_BASE_SHA, migrates it and makes the four
+// projects; the run stops it, writes the corpus by SQL, boots it again and measures the old side
+// over the four tables. Second, this head boots, which moves both stores into the graph store, and
+// the run measures the new side. Third, as a rollback does, the release before boots again, now
+// reading through the four views, and the run measures the third side. Each side answers each
+// reading alike before it is measured.
 //
 // Before each side is measured, the run prints the plans of every statement each read sends on
 // that side (planMovedCostSide). A side's readings run each statement past its fifth execution,
@@ -1326,16 +1397,22 @@ func movedCostParameters(statement movedCostStatement) string {
 // corpus wrote after its cursor, its object pass and its block index (movedCostBaseOwed), this
 // head's backfills (readCostHeadOwed), and each boot's run of the graph store's backfill.
 //
-// Each read on the new side and on the third side is held to three bounds against its old side,
-// and fails on each it breaks, naming the read, the side, the bound and both values
-// (holdMovedCostBounds): its p50 at most twice the old side's p50 (movedCostP50Bound), its p90 at
-// most 200 ms (movedCostP90Bound), and its database time per reading at most twice the old side's
-// (movedCostDatabaseBound). The database time is read from pg_stat_statements as c-read-cost reads
-// it (readCostStatements), and printed with the statements behind it and the database time of an
-// idle interval after it. A read whose database time the run could not read on either side, where
-// no snapshot of its batch was read or pg_stat_statements held no statement that ran once per
-// reading of it, fails on that side, naming the read. Each p95 and p99 is printed and bound at
-// nothing.
+// For each reading on the new side and on the third side the run prints the line the check's step
+// reads over three runs, `c-moved-read-cost: reading: read=<name> side=<new|third> old_p50=<ms>
+// p50=<ms> p90=<ms> old_db=<ms> db=<ms>`, the old figures being this run's old side
+// (logMovedCostReadings). The step holds the median of three runs' p50s and of their database time
+// against the old side's; the run holds neither. It holds each reading's p90 on both sides to at
+// most 200 ms (movedCostP90Bound), failing on each it breaks, naming the reading, the side and the
+// bound (holdMovedCostP90). The p90 of the priorities read and of its summary read is held only
+// where MOVED_COST_LOOKUP_MERGED is yes, and that of both forms of the issue list with advances
+// only where MOVED_COST_ISSUE_LIST_PLAN_MERGED is yes; where one is no, the run prints those
+// readings' p90 beside the bound and holds it to nothing. The run prints both inputs on one line at
+// its start (movedCostSwitches). The database time is read from pg_stat_statements as c-read-cost
+// reads it (readCostStatements), and printed with the statements behind it and the database time
+// of an idle interval after it. A reading whose database time the run could not read on either
+// side, where no snapshot of its batch was read or pg_stat_statements held no statement that ran
+// once per reading of it, fails on that side, naming the reading. Each p95 and p99 is printed and
+// bound at nothing.
 //
 // MOVED_READ_COST_SEED_ONLY=1, for diagnosis, builds only the release before, writes the corpus,
 // boots that release over it until it owes nothing, stops it and keeps the database, writing its
@@ -1343,16 +1420,22 @@ func movedCostParameters(statement movedCostStatement) string {
 // with no reading, and is no reading of the check.
 //
 // It fails, never skips, before it builds anything: where MOVED_READ_COST_SEED_ONLY is set to
-// anything but 1; where STORES_BASE_SHA is unset, names no 40-character commit, or names a commit
-// that lacks one of the three migrations; and, unless MOVED_READ_COST_SEED_ONLY is 1, where
-// pg_stat_statements cannot be read, naming why and each read whose bound on database time it
-// cannot read (requireMovedCostStatements).
+// anything but 1; unless MOVED_READ_COST_SEED_ONLY is 1, where MOVED_COST_LOOKUP_MERGED or
+// MOVED_COST_ISSUE_LIST_PLAN_MERGED is unset or holds anything but yes or no, naming it; where
+// STORES_BASE_SHA is unset, names no 40-character commit, or names a commit that lacks one of the
+// three migrations; and, unless MOVED_READ_COST_SEED_ONLY is 1, where pg_stat_statements cannot be
+// read, naming why and each reading whose database time it cannot read
+// (requireMovedCostStatements).
 func TestNoMovedReadGetsSlower(t *testing.T) {
 	began := time.Now()
 	t.Cleanup(func() {
 		t.Logf("c-moved-read-cost: TestNoMovedReadGetsSlower took %s of wall time", time.Since(began).Round(time.Second))
 	})
 	seedOnly := movedCostSeedOnly(t)
+	var merged map[string]bool
+	if !seedOnly {
+		merged = movedCostSwitches(t)
+	}
 	baseCommit := movedCostBaseCommit(t)
 	corpus := newMovedCostCorpus(t, movedCostScale(t))
 	var headCommit, headBinary string
@@ -1446,14 +1529,13 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 	t.Logf("c-moved-read-cost: old side and third side %s, new side %s; %d readings of each read on each side; corpus scale %v",
 		baseCommit, headCommit, readCostRuns, corpus.scale)
 	t.Log("c-moved-read-cost: read\troute\t" + strings.Join(readCostHeads("old", "new", "third"), "\t") +
-		"\tnew/old db\tthird/old db\tnew/old p50\tthird/old p50\tbounds")
+		"\tnew/old db\tthird/old db\tnew/old p50\tthird/old p50\tbound in the run")
 	for _, read := range reads {
 		before, after, rolled := old[read.name], now[read.name], third[read.name]
 		cells := append(readCostTableCells(before.cells(), after.cells(), rolled.cells()),
 			readCostDatabaseRatio(before.database, after.database), readCostDatabaseRatio(before.database, rolled.database),
 			fmt.Sprintf("%.2f", float64(after.p50)/float64(before.p50)), fmt.Sprintf("%.2f", float64(rolled.p50)/float64(before.p50)),
-			fmt.Sprintf("p50 %.2fx the old side's, p90 %.0f ms, db %.2fx the old side's", movedCostP50Bound, msOf(movedCostP90Bound),
-				movedCostDatabaseBound))
+			movedCostP90Held(read, merged))
 		t.Logf("c-moved-read-cost: %s\t%s\t%s", read.name, read.path, strings.Join(cells, "\t"))
 	}
 	sides := []struct {
@@ -1470,63 +1552,91 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 			t.Logf("c-moved-read-cost: %s, %s, every reading in order, in ms: %v", read.name, side.name, readCostMilliseconds(side.readings[read.name].runs))
 		}
 	}
+	logMovedCostReadings(t, reads, old, now, third)
 
-	// The bounds, one subtest for each read on each side, so a read that breaks a bound names
+	// The bound, one subtest for each reading on each side, so a reading that breaks it names
 	// itself and its side and the rest still report theirs.
 	for _, read := range reads {
 		before := old[read.name]
 		for _, side := range sides[1:] {
 			t.Run(read.name+" on the "+side.name, func(t *testing.T) {
-				holdMovedCostBounds(t, read, side.name, before, side.readings[read.name])
+				holdMovedCostP90(t, read, side.name, before, side.readings[read.name], merged)
 			})
 		}
 	}
 }
 
-// holdMovedCostBounds holds reading, of read on side, to its three bounds against before, the old
-// side's reading of read, each on its own: it fails on each bound reading breaks, naming the read,
-// the side, the bound and both values, and says of each it keeps that it keeps it. A database time
-// it could not read on either side fails, naming the read and why, since its bound cannot be read.
-func holdMovedCostBounds(t *testing.T, read movedCostRead, side string, before, reading readCostReading) {
+// logMovedCostReadings prints, for each reading on the new side and on the third side, the line
+// the check's step reads from each run: the reading's name and its side, the old side's p50, its
+// p50 and its p90, and the old side's database time per reading and its own, each in ms, a
+// database time that could not be read as none (movedCostDatabaseUnread).
+func logMovedCostReadings(t *testing.T, reads []movedCostRead, old, now, third map[string]readCostReading) {
+	t.Helper()
+	database := func(spent *readCostDatabaseTime) string {
+		if movedCostDatabaseUnread(spent) != "" {
+			return "none"
+		}
+		return fmt.Sprintf("%.3f", spent.ms)
+	}
+	for _, read := range reads {
+		before := old[read.name]
+		for _, side := range []struct {
+			name     string
+			readings map[string]readCostReading
+		}{{"new", now}, {"third", third}} {
+			reading := side.readings[read.name]
+			t.Logf("c-moved-read-cost: reading: read=%s side=%s old_p50=%.2f p50=%.2f p90=%.2f old_db=%s db=%s", read.name, side.name,
+				msOf(before.p50), msOf(reading.p50), msOf(reading.p90), database(before.database), database(reading.database))
+		}
+	}
+}
+
+// movedCostP90Holds says whether the run holds read's p90 to movedCostP90Bound: where read has no
+// gate, and where its gate reads yes (movedCostSwitches).
+func movedCostP90Holds(read movedCostRead, merged map[string]bool) bool {
+	return read.gate == "" || merged[read.gate]
+}
+
+// movedCostP90Held is the table's cell of the bound the run holds read to.
+func movedCostP90Held(read movedCostRead, merged map[string]bool) string {
+	if !movedCostP90Holds(read, merged) {
+		return "p90 held to nothing, " + read.gate + "=no"
+	}
+	return fmt.Sprintf("p90 at most %.0f ms", msOf(movedCostP90Bound))
+}
+
+// holdMovedCostP90 holds reading, of read on side, to movedCostP90Bound where the run holds read
+// to it (movedCostP90Holds): it fails where the p90 is over the bound, naming the reading, the side
+// and the bound, and says otherwise that it keeps it. Where read's gate reads no, it prints the p90
+// beside the bound and holds it to nothing. A database time it could not read on either side
+// fails, naming the reading and why, since the step's bound of database time cannot be read.
+func holdMovedCostP90(t *testing.T, read movedCostRead, side string, before, reading readCostReading, merged map[string]bool) {
 	t.Helper()
 	what := read.name + " (" + read.path + ") on the " + side
-	if ratio := float64(reading.p50) / float64(before.p50); ratio > movedCostP50Bound {
-		t.Errorf("%s: p50 %.1f ms is %.2fx the old side's p50 of %.1f ms, over its bound of %.2fx",
-			what, msOf(reading.p50), ratio, msOf(before.p50), movedCostP50Bound)
-	} else {
-		t.Logf("%s: p50 %.1f ms is %.2fx the old side's p50 of %.1f ms, within %.2fx", what, msOf(reading.p50), ratio, msOf(before.p50), movedCostP50Bound)
-	}
-	if reading.p90 > movedCostP90Bound {
+	switch {
+	case !movedCostP90Holds(read, merged):
+		t.Logf("%s: p90 %.1f ms beside its bound of %.0f ms, held to nothing, since %s=no (the old side's p90 is %.1f ms)",
+			what, msOf(reading.p90), msOf(movedCostP90Bound), read.gate, msOf(before.p90))
+	case reading.p90 > movedCostP90Bound:
 		t.Errorf("%s: p90 %.1f ms is over its bound of %.0f ms (the old side's p90 is %.1f ms)",
 			what, msOf(reading.p90), msOf(movedCostP90Bound), msOf(before.p90))
-	} else {
-		t.Logf("%s: p90 %.1f ms is within %.0f ms (the old side's p90 is %.1f ms)", what, msOf(reading.p90), msOf(movedCostP90Bound), msOf(before.p90))
+	default:
+		t.Logf("%s: p90 %.1f ms is within its bound of %.0f ms (the old side's p90 is %.1f ms)",
+			what, msOf(reading.p90), msOf(movedCostP90Bound), msOf(before.p90))
 	}
-	unread := false
 	for _, database := range []struct {
 		side  string
 		spent *readCostDatabaseTime
 	}{{"the old side", before.database}, {"the " + side, reading.database}} {
 		if why := movedCostDatabaseUnread(database.spent); why != "" {
-			unread = true
-			t.Errorf("%s: its database time per reading on %s could not be read, so its bound of %.2fx the old side's cannot be read: %s",
-				what, database.side, movedCostDatabaseBound, why)
+			t.Errorf("%s: its database time per reading on %s could not be read, so the check's bound of database time against the "+
+				"old side's cannot be read: %s", what, database.side, why)
 		}
-	}
-	if unread {
-		return
-	}
-	if ratio := reading.database.ms / before.database.ms; ratio > movedCostDatabaseBound {
-		t.Errorf("%s: database time %.2f ms per reading is %.2fx the old side's %.2f ms per reading, over its bound of %.2fx",
-			what, reading.database.ms, ratio, before.database.ms, movedCostDatabaseBound)
-	} else {
-		t.Logf("%s: database time %.2f ms per reading is %.2fx the old side's %.2f ms per reading, within %.2fx",
-			what, reading.database.ms, ratio, before.database.ms, movedCostDatabaseBound)
 	}
 }
 
-// movedCostDatabaseUnread says why database, a side's database time of a read, cannot bear the
-// read's bound on database time, or "" where it can: no snapshot of its batch was read, or
+// movedCostDatabaseUnread says why database, a side's database time of a reading, cannot bear the
+// check's bound on database time, or "" where it can: no snapshot of its batch was read, or
 // pg_stat_statements held no statement that ran once per reading of it.
 func movedCostDatabaseUnread(database *readCostDatabaseTime) string {
 	switch {
@@ -1540,8 +1650,8 @@ func movedCostDatabaseUnread(database *readCostDatabaseTime) string {
 
 // requireMovedCostStatements opens what database time is read with (openReadCostStatements)
 // before anything is built, and fails the run at once where pg_stat_statements cannot be read,
-// naming why and each read whose bound on database time, on the new side and on the third side,
-// it then cannot read.
+// naming why and each reading whose database time, on the new side and on the third side, it then
+// cannot read.
 func requireMovedCostStatements(t *testing.T, databaseURL string, reads []movedCostRead) *readCostStatements {
 	t.Helper()
 	statements, err := openReadCostStatements(t, "c-moved-read-cost", databaseURL)
@@ -1551,10 +1661,43 @@ func requireMovedCostStatements(t *testing.T, databaseURL string, reads []movedC
 			named[index] = read.name + " (" + read.path + ")"
 		}
 		t.Fatalf("c-moved-read-cost: database time cannot be read: %v; the run's Postgres must preload pg_stat_statements "+
-			"(shared_preload_libraries) and its role must be able to create that extension, or no read's bound of %.2fx the old "+
-			"side's database time can be read on the new side or the third side: %s", err, movedCostDatabaseBound, strings.Join(named, ", "))
+			"(shared_preload_libraries) and its role must be able to create that extension, or no reading's database time, which "+
+			"the check's step bounds against the old side's, can be read on the new side or the third side: %s", err, strings.Join(named, ", "))
 	}
 	return statements
+}
+
+// movedCostSwitches reads the two inputs that switch the priority readings' p90 bound
+// (movedCostLookupMerged, movedCostIssueListPlanMerged) before anything is built or read, and
+// prints them on the line the check's step reads from each run, `c-moved-read-cost: switches:
+// MOVED_COST_LOOKUP_MERGED=<value> MOVED_COST_ISSUE_LIST_PLAN_MERGED=<value>`. It fails, never
+// skips, naming each input that is unset or holds anything but yes or no. It answers whether each
+// holds yes.
+func movedCostSwitches(t *testing.T) map[string]bool {
+	t.Helper()
+	merged := map[string]bool{}
+	named := make([]string, 0, 2)
+	for _, input := range []struct{ name, branch string }{
+		{movedCostLookupMerged, "legion/INFRA-5791"},
+		{movedCostIssueListPlanMerged, "fix/infra-5609-issue-list-plan"},
+	} {
+		value, set := os.LookupEnv(input.name)
+		switch {
+		case !set:
+			t.Errorf("c-moved-read-cost: %s is unset: it takes yes where the base holds the merge into main of %s's pull request, "+
+				"and no where it does not, as the role's line before the Jobs reads it", input.name, input.branch)
+		case value != "yes" && value != "no":
+			t.Errorf("c-moved-read-cost: %s=%q holds neither yes nor no: it takes yes where the base holds the merge into main of %s's "+
+				"pull request, and no where it does not, as the role's line before the Jobs reads it", input.name, value, input.branch)
+		}
+		merged[input.name] = value == "yes"
+		named = append(named, input.name+"="+value)
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+	t.Logf("c-moved-read-cost: switches: %s", strings.Join(named, " "))
+	return merged
 }
 
 // movedCostBaseCommit reads STORES_BASE_SHA and fails, never skips, where it is unset, names no

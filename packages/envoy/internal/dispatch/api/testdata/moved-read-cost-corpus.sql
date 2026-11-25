@@ -29,18 +29,20 @@
 --     part_of children: 50 comments, 35 blocks, 10 asks and 5 messages;
 --   * the other 2,860 of n = 1 to 3,461 are finished issues Legion never ran, which the plans read
 --     lists beside the 601 it ran.
--- The 8,580 finished issues Legion never ran stand beside production's issues, below, and not
--- among them: each advances no priority, has no parent, closed from 8 to 60 days before the corpus
--- is written, and has the 3 events of a finished issue's shortest life (created, moved to
--- in_progress, closed). The test counts them apart from production's issues. Beside all the
--- issues stand 1,000,000 tuples of other kinds, split by the tuples_a_day of each `census: sizing
--- tuples-a-write` line that cybermonklabs/legion#3178's body records.
+-- The first project's 2,860 finished issues Legion never ran are among production's issues,
+-- below: each advances a priority, as every finished issue of production's shape does. The 5,720
+-- of the two other projects stand beside production's issues, and not among them: each advances
+-- no priority, has no parent, and closed from 8 to 60 days before the corpus is written. The test
+-- counts them apart from production's issues. Every issue, these among them, has its events drawn
+-- from production's events per issue, below. Beside all the issues stand 1,000,000 tuples of other
+-- kinds, split by the tuples_a_day of each `census: sizing tuples-a-write` line that
+-- cybermonklabs/legion#3178's body records.
 --
--- The other issues take production's shape, as its API answered at 2026-11-23T23:20Z, in place of
--- the 50 priorities and 5,000 advances tuples over 2,000 issues of the check's Verification
--- version 150:
---   * 13,298 issues, the four first issues and the 1,803 issues Legion ran among them, and 13 live
---     priorities.
+-- Every issue but those 5,720 takes production's shape, as its API answered at 2026-11-23T23:20Z,
+-- in place of the 50 priorities and 5,000 advances tuples over 2,000 issues of the check's
+-- Verification version 150:
+--   * 13,298 issues, the four first issues, the 1,803 issues Legion ran and the first project's
+--     2,860 finished issues it never ran among them, and 13 live priorities.
 --   * Production has 7,677 issues that advance a priority (57.7%), 1,600 of them by a relation of
 --     their own (12%). Here each of 1,593 open issues of the advances project states one priority
 --     (a root), and every finished issue of production's shape and every other open issue of that
@@ -52,7 +54,7 @@
 --     parked issues (729). The first of them is <advances project>-2. Every own relation whose
 --     place is a multiple of 8 is preceded by an assert and a retraction of another priority on
 --     the same issue. All 4,663 finished issues of production's shape advance a priority, the
---     1,803 Legion ran and 2,860 more in the advances project, so 7,651 issues do: production's
+--     1,803 Legion ran and the first project's 2,860 it never ran, so 7,651 issues do: production's
 --     2,995 open pairs leave its 7,677 room for no more finished ones than its 35% done.
 --   * The open pairs of an issue and a priority by status are production's: in_progress 972, todo
 --     826, backlog 525, triage 217, icebox 211, needs_review 119, testing 104 and retro 21. 622
@@ -64,11 +66,12 @@
 --     each. The 4,663 finished issues are 35.1% (production's 35% is 4,654), and with the 1,216
 --     open members in flight the unplaced make production's 10% in flight. As many of these issues
 --     have a parent among them as bring all issues to production's 68% with a parent.
---   * Each of these issues has its events, seq 1 to its count. The counts are drawn from
---     production's events per issue (mean 51, p50 16, p90 118, p99 425, at most 937: the newest
---     event's seq of 120 issues that advance a priority). Each issue takes that distribution's
---     quantile at its place in the md5 order of these issues' keys, so every scale draws the same
---     distribution and only the count of issues scales.
+--   * Each issue the corpus writes, of production's shape or beside it, has its events, seq 1 to its
+--     count. The counts are drawn from production's events per issue (mean 51, p50 16, p90 118, p99
+--     425, at most 937: the newest event's seq of 120 issues that advance a priority). Each issue
+--     of production's shape takes that distribution's quantile at its place in the md5 order of
+--     these issues' keys, and each issue beside them at its place among those beside, so every
+--     scale draws the same distribution in each and only the count of issues scales.
 
 create temp table moved_counts as
 with production as (
@@ -88,7 +91,7 @@ with production as (
   -- The open members by status, the parked ones that advance two priorities among the backlog's,
   -- the roots that state the rest of the own relations, the finished issues Legion never ran in
   -- each project (unran), and the finished issues of production's shape (done): the 3 x (ran + 1)
-  -- Legion ran, and as many more in the advances project as the first project's never-ran ones.
+  -- Legion ran, and the first project's never-ran ones.
   select p.*, p.backlog_pairs + p.icebox - p.parked as doubled, p.parked - p.icebox as backlog,
          p.in_progress + p.testing + p.needs_review + p.retro + p.todo + p.triage + p.parked as open_members,
          p.own - (p.backlog_pairs + p.icebox - p.parked) as roots, p.finished - p.ran - 1 as unran,
@@ -112,35 +115,36 @@ select p.key, p.place - 1 as slot,
 from unnest(string_to_array(current_setting('moved_read_cost.projects'), ',')) with ordinality as p(key, place);
 
 -- Every issue the corpus writes, by what it stands for, and its status. In each of the three
--- projects the first issues are finished: those Legion ran, and the others, which Legion never ran
--- (unran). After them, in the second and third projects, half in each, stand the open issues that
--- advance no priority (unadvanced). The advances project holds the issues that advance one: first
--- the doubled ones, which state a second priority beside the one they inherit, then the roots,
--- then the open issues below the roots (grown), and then the finished issues of production's
--- shape Legion did not run. The open issues of each group take its statuses by count in the md5
--- order of their keys.
+-- projects the first issues are finished: those Legion ran, and the others, which Legion never
+-- ran. Those Legion ran, and the first project's others, are of production's shape (finished);
+-- the never-ran ones of the second and third projects stand beside them (beside). After them, in
+-- the second and third projects, half in each, stand the open issues that advance no priority
+-- (unadvanced). The advances project holds the open issues that advance one: first the doubled
+-- ones, which state a second priority beside the one they inherit, then the roots, then the open
+-- issues below the roots (grown). The open issues of each group take its statuses by count in the
+-- md5 order of their keys.
 create temp table moved_roles as
 with written as (
   select p.key as project, n, p.key || '-' || (n + 1) as key,
-         case when n = 1 or (n % 5 = 0 and n <= 5 * c.ran) then 'finished' when n <= c.finished then 'unran'
+         case when n = 1 or (n % 5 = 0 and n <= 5 * c.ran) or (p.slot = 0 and n <= c.finished) then 'finished'
+              when n <= c.finished then 'beside'
               else 'unadvanced' end as role
   from moved_projects p
   cross join moved_counts c
   cross join lateral generate_series(1, c.finished + case when p.slot = 0 then 0 else (c.unadvanced + 2 - p.slot) / 2 end) n
   union all
   select a.key, n, a.key || '-' || (n + 1),
-         case when n <= c.doubled then 'doubled' when n <= c.doubled + c.roots then 'root' when n <= c.open_members then 'grown'
-              else 'finished' end
+         case when n <= c.doubled then 'doubled' when n <= c.doubled + c.roots then 'root' else 'grown' end
   from (select current_setting('moved_read_cost.advances_project') as key) a
   cross join moved_counts c
-  cross join lateral generate_series(1, c.open_members + c.done - 3 * (c.ran + 1)) n
+  cross join lateral generate_series(1, c.open_members) n
 ), placed as (
   select w.*, row_number() over (partition by w.role in ('root', 'grown'), w.role = 'unadvanced'
                                  order by md5('moved-read-cost status/' || w.key)) as place
   from written w
 )
 select p.project, p.n, p.key, p.role, case
-         when p.role in ('finished', 'unran') then 'done'
+         when p.role in ('finished', 'beside') then 'done'
          when p.role = 'doubled' then 'backlog'
          else (select drawn.status
                from (select shares.status, sum(shares.share) over (order by shares.turn) as reach
@@ -199,16 +203,16 @@ join placed up on up.m = 40 * r.n - 15
 where r.role = 'doubled';
 
 -- Every issue the corpus writes, before its row is written: its status, its parent, its life, the
--- count of its events, and whether it is claimed or asked. Each issue of production's shape takes
--- its place in the draw of the counts by the md5 of its key, and an issue in backlog or icebox the
--- seq of its move there by the next eight hex digits of that md5, from 2 to its count. An issue's
--- first event creates it and every status but todo is reached by a move, so every issue but one in
--- todo has at least two events; a finished issue Legion never ran has 3, created, moved to
--- in_progress and closed. A finished issue lives 9 hours, and the ones of production's shape drawn
--- to have closed in the last 7 days closed from 1 hour to 6 days 1 hour before the corpus is
--- written, the others from 8 to 60 days before; an open issue was made from 1 to 60 days before
--- and last changed 2 hours later. The claims are drawn among the open members in flight, and the
--- asks among the open members that advance one priority.
+-- count of its events, and whether it is claimed or asked. Each issue takes its place in the draw
+-- of the counts by the md5 of its key, those of production's shape among themselves and those
+-- beside them among themselves, and an issue in backlog or icebox the seq of its move there by the
+-- next eight hex digits of that md5, from 2 to its count. An issue's first event creates it and
+-- every status but todo is reached by a move, so every issue but one in todo has at least two
+-- events. A finished issue lives 9 hours, and the ones of production's shape drawn to have closed
+-- in the last 7 days closed from 1 hour to 6 days 1 hour before the corpus is written, the others
+-- from 8 to 60 days before; an open issue was made from 1 to 60 days before and last changed 2
+-- hours later. The claims are drawn among the open members in flight, and the asks among the open
+-- members that advance one priority.
 create temp table moved_issues as
 with drawn as (
   select r.*, coalesce(t.parent_key, u.parent_key) as parent_key, t.own,
@@ -231,7 +235,7 @@ with drawn as (
   ) u on u.key = r.key
 ), lived as (
   select d.*,
-         case when d.role not in ('finished', 'unran') then null
+         case when d.role not in ('finished', 'beside') then null
               when d.role = 'finished' and d.closed_place <= c.closed_recently
                 then c.written_at - interval '1 hour' - d.moment_place * interval '6 days'
               else c.written_at - interval '8 days' - d.moment_place * interval '52 days' end as closed_at,
@@ -241,12 +245,12 @@ with drawn as (
   from drawn d
   cross join moved_counts c
 ), placed as (
-  select l.*, case when l.role in ('finished', 'unran') then 'Finished work item ' || l.n || ' of project ' || l.project
+  select l.*, case when l.role in ('finished', 'beside') then 'Finished work item ' || l.n || ' of project ' || l.project
                    else 'Open work item ' || l.n || ' of project ' || l.project end as title,
          coalesce(l.closed_at - interval '9 hours', l.opened_at) as created_at,
          coalesce(l.closed_at, l.opened_at + interval '2 hours') as updated_at,
-         (row_number() over (partition by l.role = 'unran' order by md5('moved-read-cost events/' || l.key)) - 0.5)::float8
-           / count(*) over (partition by l.role = 'unran') as place,
+         (row_number() over (partition by l.role = 'beside' order by md5('moved-read-cost events/' || l.key)) - 0.5)::float8
+           / count(*) over (partition by l.role = 'beside') as place,
          ('x' || substr(md5('moved-read-cost events/' || l.key), 9, 8))::bit(32)::bigint / 4294967296.0 as move_place
   from lived l
 )
@@ -254,14 +258,14 @@ select p.project, p.n, p.key, p.role, p.title, p.status, p.parent_key, p.own, p.
        p.claimed, p.asked, drawn.events,
        case when p.status in ('backlog', 'icebox') then 2 + floor(p.move_place * (drawn.events - 1))::int end as moved_at
 from placed p
--- The quantile at the place, for an issue of production's shape: log-linear through 1 at 0,
--- production's p50 of 16 and p90 of 118, 425 at 0.99 and 900 at the top, which hold the mean at 51.
+-- The quantile at the place: log-linear through 1 at 0, production's p50 of 16 and p90 of 118, 425
+-- at 0.99 and 900 at the top, which hold the mean at 51.
 cross join lateral (
-  select case when p.role = 'unran' then 3 else greatest(case when p.status = 'todo' then 1 else 2 end, round(case
+  select greatest(case when p.status = 'todo' then 1 else 2 end, round(case
     when p.place < 0.5 then power(16, p.place / 0.5)
     when p.place < 0.9 then 16 * power(118 / 16.0, (p.place - 0.5) / 0.4)
     when p.place < 0.99 then 118 * power(425 / 118.0, (p.place - 0.9) / 0.09)
-    else 425 * power(900 / 425.0, (p.place - 0.99) / 0.01) end)::int) end as events
+    else 425 * power(900 / 425.0, (p.place - 0.99) / 0.01) end)::int) as events
 ) drawn;
 
 -- The issues, each a copy of its project's first issue. A parent in another project is written in
