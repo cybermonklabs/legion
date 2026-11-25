@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -218,34 +219,76 @@ func TestATestingVerdictBehindAnUnreadLooksTaskIsNoReportOnTheProductionCheck(t 
 	theCheckIsUntouched(t, h, facts)
 }
 
-// A session that works no look of a done issue's production check completes nothing: the issue
-// runs no phase. Held to the phase path, an implementer's and a merger's completion is refused
-// for its commit (MISSING_FIELD), which the plugin's done branch never sends — it sends what a
-// check report sends (pi-shared's legion-phase-ops.ts) — so that answer names a field no turn of
-// theirs can fill. The route names the cause instead and says what the agent does next. A late
-// implementer or merger turn after the close lands here, and so does a look a restart left
-// unrecorded on its claim (the 20261105231916 migration backfills none). Nothing is recorded
-// either way, so the answer is the whole of it.
-func TestACompletionOfADoneIssueFromASessionWorkingNoLookIsRefused(t *testing.T) {
+// A session that works neither a look of a done issue's production check nor the retro Legion
+// runs after its close completes nothing: the issue runs no phase. Held to the phase path, an
+// implementer's and a merger's completion is refused for its commit (MISSING_FIELD), which the
+// plugin's done branch never sends — it sends what a check report or a retro's report sends
+// (pi-shared's legion-phase-ops.ts) — so that answer names a field no turn of theirs can fill. The
+// route names the cause instead and says what the agent does next. A late implementer or merger
+// turn after the close lands here, and so does a look a restart left unrecorded on its claim (the
+// 20261105231916 migration backfills none). Nothing is recorded either way, so the answer is the
+// whole of it, and it names whose report the issue takes (INFRA-5602's s4): the check's role, which
+// reports on a look, and the agent of the retro after the close, which reports that retro, so a
+// report of either from any other session says who has one to make. A retro's report from a claim
+// that is not the retro's agent, and a look's report where only that retro is open, name that agent
+// rather than saying no role has anything to report.
+func TestACompletionOfADoneIssueFromASessionWorkingNoRetroOrLookIsRefused(t *testing.T) {
+	retroReport := retroReportBy("")
 	for _, tc := range []struct {
 		name string
-		req  HandoffCompleteRequest
+		// check is the tester's production check open on the issue, and retro the implementer's
+		// retro after the close open on its run.
+		check, retro bool
+		// role is the session that completes.
+		role  claim.Role
+		req   HandoffCompleteRequest
+		wants []string
+		never []string
 	}{
-		{name: "the plugin's done branch, which sends no commit", req: HandoffCompleteRequest{Summary: "production carries it", Verdict: "pass"}},
-		{name: "a phase completion at its commit", req: HandoffCompleteRequest{Summary: "merged", Commit: headSHA}},
+		{name: "the plugin's done branch, which sends no commit", check: true, role: claim.RoleImplementer,
+			req:   HandoffCompleteRequest{Summary: "production carries it", Verdict: "pass"},
+			wants: []string{"LEGION-208 is done", "works no look", "recorded nothing", "pass, pending or fail"}},
+		{name: "a phase completion at its commit", check: true, role: claim.RoleImplementer,
+			req:   HandoffCompleteRequest{Summary: "merged", Commit: headSHA},
+			wants: []string{"LEGION-208 is done", "works no look", "recorded nothing", "pass, pending or fail"}},
+		{name: "a retro's report from a claim that is not the retro's agent", retro: true, role: claim.RoleTester,
+			req:   retroReport,
+			wants: []string{"LEGION-208 is done", "recorded nothing", "retro", "implementer"},
+			never: []string{"nothing here for any role to report"}},
+		{name: "a look's report where the retro after the close is served", retro: true, role: claim.RoleTester,
+			req:   HandoffCompleteRequest{Summary: "production carries it", Verdict: "pass"},
+			wants: []string{"LEGION-208 is done", "recorded nothing", "retro", "implementer"},
+			never: []string{"nothing here for any role to report"}},
+		{name: "a look's report where the check and the retro after the close are both open", check: true, retro: true, role: claim.RoleReviewer,
+			req:   HandoffCompleteRequest{Summary: "production carries it", Verdict: "pass"},
+			wants: []string{"LEGION-208 is done", "recorded nothing", "tester", "pass, pending or fail", "retro", "implementer"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 			seedIssueAt(t, h, "LEGION-208", phase.Done)
-			seedCheck(t, h, "LEGION-208", claim.RoleTester, false, false)
-			implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+			if tc.check {
+				seedCheck(t, h, "LEGION-208", claim.RoleTester, false, false)
+			}
+			if tc.retro {
+				agent, err := claim.NewToken(testProject, "LEGION-208", claim.RoleImplementer)
+				if err != nil {
+					t.Fatal(err)
+				}
+				seedRetroAfterClose(t, h, "LEGION-208", agent)
+			}
+			session := newLiveClaim(t, h, "LEGION-208", tc.role)
 			req := tc.req
-			req.GrantID = implementer.grant(t)
+			req.GrantID = session.grant(t)
 
 			message := refused(t, h.complete(req), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-			for _, want := range []string{"LEGION-208 is done", "works no look", "recorded nothing", "pass, pending or fail"} {
+			for _, want := range tc.wants {
 				if !strings.Contains(message, want) {
 					t.Fatalf("the refusal is %q, want it to say %q", message, want)
+				}
+			}
+			for _, never := range tc.never {
+				if strings.Contains(message, never) {
+					t.Fatalf("the refusal is %q, want it not to say %q: the retro's agent has a report to make here", message, never)
 				}
 			}
 			if got := facts.recorded(); len(got) != 0 {
@@ -256,6 +299,100 @@ func TestACompletionOfADoneIssueFromASessionWorkingNoLookIsRefused(t *testing.T)
 			}
 		})
 	}
+
+	// INFRA-5602's s20, driven through the workflow's own close: the agent the close keeps for the
+	// retro is mid-turn in another phase, and that turn's completion is of a phase the done issue no
+	// longer runs. It is refused with nothing recorded, naming the retro, whose task the outbox
+	// queued behind the running turn; once that turn ends, the retro's own turn reports it.
+	t.Run("a turn of another phase after the close", func(t *testing.T) {
+		h, facts, implementer := closedBehindAnImplementingTurn(t)
+		machine, ok := h.supervisor.Machine(implementer.token)
+		if !ok {
+			t.Fatal("no machine for the implementer")
+		}
+		ctx := context.Background()
+		retroID := "outbox:retro-after-close"
+		if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: implementer.token, Task: retroTaskOf("LEGION-208"), ID: retroID,
+			Generation: 1, RetroRun: 1}); err != nil {
+			t.Fatalf("deliver the retro's task behind the implementing turn: %v", err)
+		}
+		if p := machine.Claim().Pending; p == nil || p.ID != retroID || !p.ConfirmedAt.IsZero() || machine.Claim().State != supervise.StateWorking {
+			t.Fatalf("the implementer's delivery is %+v in %s, want the retro's task queued unconfirmed behind the running turn", p, machine.Claim().State)
+		}
+
+		message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA,
+			HandoffID: implementer.writeHandoff("implement", 1), HandoffVersion: 1}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
+		for _, want := range []string{"LEGION-208 is done", "recorded nothing", "retro", "implementer"} {
+			if !strings.Contains(message, want) {
+				t.Fatalf("the refusal of the implementing turn's completion is %q, want it to say %q", message, want)
+			}
+		}
+		if got := facts.recorded(); len(got) != 0 {
+			t.Fatalf("facts = %#v, want none: the implementing turn's completion records nothing", got)
+		}
+		if row := phaseRowOf(t, h, "LEGION-208", claim.RoleImplementer); row != nil && row.Completed() {
+			t.Fatalf("the implementer's row after the refusal = %+v, want no completion recorded", *row)
+		}
+
+		// The turn ends, and the retro's task the close queued behind it is the next turn's.
+		if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: implementer.token}); err != nil {
+			t.Fatalf("end the implementing turn: %v", err)
+		}
+		if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: implementer.token, DeliveryID: retroID}); err != nil {
+			t.Fatalf("start the retro's turn: %v", err)
+		}
+		completion(t, h.complete(retroReportBy(implementer.grant(t))))
+		want := intake.RetroReport{Issue: "LEGION-208", Claim: implementer.token, Generation: 1, Summary: "the retro of the closed run",
+			PlanRating: record.PlanRating{Rating: retroRating, Reason: retroReason}}
+		if got := facts.recorded(); len(got) != 1 || got[0] != want {
+			t.Fatalf("facts after the retro's own turn = %#v, want the one report %#v", got, want)
+		}
+	})
+}
+
+// closedBehindAnImplementingTurn drives a root's run as far as its close while the implementer's
+// turn of implementing runs (INFRA-5602's s20). LEGION-208's owner gives its plan, `implementer
+// reviewer`, and its first step starts as the admission pass starts it, which starts the run; the
+// implementer takes its implementing task, and a person sets the issue done while that turn runs.
+// The run had no retro, so the close keeps the implementer, the agent of the retro on main, for
+// the retro it owes, whose start waits behind the running turn. It answers the harness, its
+// record of every fact the routes applied, and the implementer's claim.
+func closedBehindAnImplementingTurn(t *testing.T) (*harness, *factRecorder, liveClaim) {
+	t.Helper()
+	const root = "LEGION-208"
+	h, engine, facts := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour})
+	seedIssueAt(t, h, root, phase.Admitted)
+	h.handoffs.documents = map[string]string{planDoc: root}
+	h.handoffs.approvals = map[string]dispatch.Approval{planDoc: {State: "none", LatestVersion: 1}}
+	h.handoffs.plans = map[string]dispatch.DocumentVersion{}
+	h.handoffs.givePlan(planDoc, 1, taskBlock("a", "implementer reviewer"))
+	architect := newLiveClaim(t, h, root, claim.RoleArchitect)
+	if given := registerPlan(h, architect.grant(t), root, planDoc, 1); given.Code != http.StatusOK {
+		t.Fatalf("the owner's plan = %d %s, want 200", given.Code, given.Body)
+	}
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		ctx = engine.OpenFact(ctx)
+		issue, err := record.NewStore().Issue(ctx, tx, root)
+		if err != nil {
+			return err
+		}
+		if err := engine.StartFirstPhase(ctx, tx, *issue, nil); err != nil {
+			return err
+		}
+		return engine.SettleFact(ctx, tx)
+	}); err != nil {
+		t.Fatalf("start the first step of %s: %v", root, err)
+	}
+	if got := recordedChild(t, h, root); got == nil || got.Phase != phase.Implementing {
+		t.Fatalf("%s once its first step started = %#v, want implementing, the plan's first step", root, got)
+	}
+	implementer := newLiveClaim(t, h, root, claim.RoleImplementer)
+	takeStart(t, h, implementer.token, root, claim.RoleImplementer)
+
+	// The person's done reaches the daemon while that turn runs.
+	applyEntryFact(t, h, engine, "done", intake.DispatchIssue{Key: root, Status: "done", Title: root, ResolvedRepo: "acme/widgets"})
+	return h, facts, implementer
 }
 
 // The other arm of the same refusal, which the sibling above does not reach: a done issue whose

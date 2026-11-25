@@ -336,6 +336,10 @@ func (r *idleWakeRig) address() string {
 
 // podReady starts the pod's launchers, for the roles the rig gave the issue a claim, and records
 // where each launcher writes its generations so the role process can be handed its boot token.
+// Every issue of the rig has its implementer's claim; the root architect has a claim only where a
+// subtest starts it (the wakes of a closed tree's root architect, INFRA-5602's s16 and s21, whose
+// woken process must get the message sent to its role topic), so its launcher is started too.
+// The seeded issues hold no architect claim, so no other subtest's pod runs a second launcher.
 func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 	key := pod
 	for _, issue := range r.issues {
@@ -345,7 +349,7 @@ func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 	}
 	wanted := map[string]string{}
 	for role, token := range roles {
-		if role == string(claim.RoleImplementer) {
+		if role == string(claim.RoleImplementer) || role == string(claim.RoleArchitect) {
 			wanted[role] = token
 		}
 	}
