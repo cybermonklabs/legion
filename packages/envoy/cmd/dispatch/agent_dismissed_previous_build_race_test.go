@@ -1,0 +1,124 @@
+//go:build basebuild
+
+// The basebuild tag, and how a test of it is run: store_census_test.go. This file's test reads the
+// base release at $TMPDIR/base-dispatch (baseRelease), built from BASELINE_SHA, and is run as
+//
+//	go test -tags basebuild -timeout 30m ./cmd/dispatch -run '^TestTheBaseReleasesRestoreAndASessionsReplyBothLandWhileThisHeadServes$' -count=1 -v
+
+package main
+
+import (
+	"context"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/cmdtest"
+)
+
+// While this head rolls, the release before serves beside it over the database this head migrated,
+// where the trigger of 20261125053125 mirrors each delete of a mark of user_agent_thread_dismissed
+// onto the mark's root (messages.agent_dismissed_at). That release's restore (POST
+// /api/v1/me/inbox/dismiss with restore) takes the caller's marks and deletes them and takes no
+// root, so under the mirror it holds the mark when it reaches the root. A session's reply into the
+// thread takes the root before the marks it clears: the clear trigger 20261125053125 rewrote takes
+// it `for no key update` for a reply the release before writes, and Recording.QueueRootLock for one
+// this head writes. The restore and the reply then wait on each other, and Postgres breaks the cycle
+// by failing one of them (40P01): a person's restore that answers 500, or a session's reply lost.
+//
+// The test widens the restore's window between its mark and the root with a trigger that pauses
+// two seconds before each delete of a mark, which changes no lock either write takes or the order
+// it takes them in. Seven tenths of a second into that pause it writes the session's reply as the
+// release before writes one, and it requires both writes to land, and the thread back in this
+// head's Inbox with no mark on its root.
+func TestTheBaseReleasesRestoreAndASessionsReplyBothLandWhileThisHeadServes(t *testing.T) {
+	ctx := context.Background()
+	databaseURL := censusDatabase(t)
+	base := baseRelease(t)
+	head := cmdtest.BuildStamped(t, "envoy-dispatch", headBuildStamp)
+
+	previous := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: base, SigningKey: previousBuildSigningKey})
+	previous.waitHealthy(t)
+	current := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: head, SigningKey: previousBuildSigningKey})
+	current.waitHealthy(t)
+	database, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to the run's database: %v", err)
+	}
+	t.Cleanup(func() { database.Close(ctx) })
+
+	// One one-off message of alice's to a session, with the session's reply, written as the base
+	// release writes them, and dismissed through the base release's own route.
+	var root string
+	if err := database.QueryRow(ctx, `
+		insert into messages (author, body, target, created_at)
+		values ('{"kind":"user","id":"alice"}', 'Can you look at the deploy?', 'session:s1', now() - interval '10 minutes')
+		returning id::text
+	`).Scan(&root); err != nil {
+		t.Fatalf("write alice's message to s1: %v", err)
+	}
+	reply := sessionReplyAsTheBaseWritesIt(t, ctx, database, root)
+	dismissed := previous.send(t, http.MethodPost, "/api/v1/me/inbox/dismiss", encodeJSON(t, map[string]any{
+		"threads": []string{"agent:" + root},
+		"seen_replies": map[string]any{"agent:" + root: map[string]any{
+			"newest_reply": reply, "unread_replies": []string{reply},
+		}},
+	}), asUser("alice"))
+	if dismissed.status != http.StatusOK || !dismissedOne(t, dismissed) {
+		t.Fatalf("the base release's dismissal of %s: %s, want one thread dismissed", root, dismissed)
+	}
+	requireRootColumnIsAlicesMark(t, ctx, database, root, "the base release's dismissal while both serve")
+
+	dropPause := func() {
+		if _, err := database.Exec(ctx, `
+			drop trigger if exists tester_pause_before_a_marks_delete on user_agent_thread_dismissed;
+			drop function if exists tester_pause_before_a_marks_delete();
+		`); err != nil {
+			t.Errorf("drop the pause before a mark's delete: %v", err)
+		}
+	}
+	if _, err := database.Exec(ctx, `
+		create function tester_pause_before_a_marks_delete() returns trigger language plpgsql as $$
+		begin
+		  perform pg_sleep(2);
+		  return old;
+		end;
+		$$;
+		create trigger tester_pause_before_a_marks_delete before delete on user_agent_thread_dismissed
+		  for each row execute function tester_pause_before_a_marks_delete();
+	`); err != nil {
+		t.Fatalf("pause each delete of a mark: %v", err)
+	}
+	t.Cleanup(dropPause)
+
+	replier, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect the session's reply: %v", err)
+	}
+	t.Cleanup(func() { replier.Close(ctx) })
+	replied := make(chan error, 1)
+	go func() {
+		time.Sleep(700 * time.Millisecond)
+		_, err := replier.Exec(ctx, `
+			insert into messages (author, body, in_reply_to, target)
+			select '{"kind":"session","id":"s1"}', 'Still looking.', parent.id, parent.target
+			from messages parent where parent.id = $1
+		`, reply)
+		replied <- err
+	}()
+	restored, err := previous.trySend(http.MethodPost, "/api/v1/me/inbox/dismiss", encodeJSON(t, map[string]any{
+		"threads": []string{"agent:" + root}, "restore": true,
+	}), asUser("alice"))
+	replyErr := <-replied
+	dropPause()
+	if err != nil {
+		t.Fatalf("the base release's restore of %s: %v", root, err)
+	}
+	if restored.status != http.StatusOK || replyErr != nil {
+		t.Fatalf("while this head serves, the base release's restore of %s answered %s and the session's reply into that thread %v, want both to land: the restore holds alice's mark when the mirror of 20261125053125 updates the root, and the reply holds the root when it deletes that mark", root, restored, replyErr)
+	}
+	requireRootColumnIsAlicesMark(t, ctx, database, root, "the base release's restore and the session's reply")
+	requireInbox(t, current, []string{root}, nil)
+}
