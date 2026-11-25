@@ -88,6 +88,13 @@ var tourRefusals = map[string][]tourRefusal{
 		{Name: "an expected title the priority no longer stores", Change: refusalBody("expected", map[string]any{"title": "A title the tour never wrote"}), Code: apicode.PriorityChanged},
 		{Name: "an expected description beside no description written", Change: refusalBody("expected", map[string]any{"description": "A description the tour never wrote"}), Code: apicode.PriorityInput},
 	},
+	"PUT /api/v2/issues/{key}/steps/{id}/experiment": {
+		{Name: "an experiment outside the daemon's rule for names", Change: refusalBody("experiment", "Not A Name"), Code: apicode.StepInput},
+		{Name: "a variant without its experiment", Change: refusalBody("experiment", nil), Code: apicode.StepInput},
+		{Name: "neither the experiment nor the variant", Change: refusalWithoutExperiment, Code: apicode.StepInput},
+		{Name: "a writer other than the issue's daemon", Change: refusalBody("actor", map[string]any{"kind": "session", "id": legionDaemonSessionPrefix + "OTHER"}), Code: apicode.StepWriter},
+		{Name: "an id whose record is a run of another issue", Change: refusalStepOfAnotherIssue, Code: apicode.StepOtherIssue},
+	},
 	"POST /api/v2/artifacts/{id}/edits": {
 		{Name: "a precondition behind the document", Change: refusalBody("precondition", map[string]any{"document": tourStaleDocumentToken}), Code: apicode.PreconditionFailed},
 		{Name: "a precondition naming neither document nor blocks", Change: refusalBody("precondition", map[string]any{}), Code: apicode.InvalidPrecondition},

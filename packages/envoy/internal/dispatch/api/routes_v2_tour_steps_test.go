@@ -1,6 +1,7 @@
 package api
 
 import (
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,13 +16,15 @@ import (
 
 func init() { addTourSteps("steps", stepsTourSteps) }
 
-// stepsTourSteps are the route tour's steps of an issue's step records, #4400's two routes and the
-// rating #4488 added: the read of every run of an issue, the end of a run its start has made, as
-// the issue's daemon writes it, and the rating of a retro its start has made. A run's {id} names a
+// stepsTourSteps are the route tour's steps of an issue's step records, #4400's two routes, the
+// rating #4488 added and the experiment #5014 added: the read of every run of an issue, the end of
+// a run its start has made, as the issue's daemon writes it, the rating of a retro its start has
+// made, and the experiment and the variant of a run its start has made. A run's {id} names a
 // stored record only to a write that cannot make one, so the write's missing step is a write that
-// names no identity, the end or the rating, sent to an id no record has. It holds #4488's plans
-// too: the plan of a run, whose write makes the plan whatever id it names, so its {id} names no
-// missing object, and the read of a project's finished issues, one closed with its plan.
+// names no identity, the end, the rating or the experiment, sent to an id no record has. It holds
+// #4488's plans too: the plan of a run, whose write makes the plan whatever id it names, so its
+// {id} names no missing object, and the read of a project's finished issues, one closed with its
+// plan.
 func stepsTourSteps() []tourStep {
 	issueMissing := tourMissing{Param: "key", Value: "NOPE-404", Code: apicode.IssueNotFound}
 	return []tourStep{
@@ -51,6 +54,16 @@ func stepsTourSteps() []tourStep {
 				run := uuid.NewString()
 				tour.writeStep(t, issue, run, tourRetroStart())
 				return stepWriteOf(issue, run, tourRating())
+			},
+			Missing: []tourMissing{issueMissing, {Param: "id", Value: uuid.NewString(), Code: apicode.StepNotFound}},
+		},
+		{
+			Method: http.MethodPut, Pattern: "/issues/{key}/steps/{id}/experiment", Status: http.StatusOK,
+			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+				issue := tour.issue(t)
+				run := uuid.NewString()
+				tour.writeStep(t, issue, run, tourStepStart())
+				return stepWriteOf(issue, run, tourExperiment())
 			},
 			Missing: []tourMissing{issueMissing, {Param: "id", Value: uuid.NewString(), Code: apicode.StepNotFound}},
 		},
@@ -104,6 +117,12 @@ func tourRating() map[string]any {
 	return map[string]any{"rating": 4, "rating_reason": "The plan put the tests before the review."}
 }
 
+// tourExperiment is the experiment a draw put an issue in and the variant it drew there, as the
+// daemon writes them once the run's start has landed: the pair, and no identity.
+func tourExperiment() map[string]any {
+	return map[string]any{"experiment": "planning", "variant": "b"}
+}
+
 // tourDefaultPlan is the plan of an issue's first run whose owner gave none, in the shape the
 // daemon writes it: the source default and the one task default, whose steps are four of the
 // daemon's five default steps (workflow.DefaultSteps), all but acceptance:owner.
@@ -147,6 +166,27 @@ func (tour *routeTour) writePlan(t *testing.T, issue tourIssue, plan string, bod
 		t.Fatalf("write plan %s of %s: %d %s", plan, issue.Key, written.Code, written.Body.String())
 	}
 	return decodeBody[model.PlanRecord](t, written)
+}
+
+// refusalWithoutExperiment leaves the experiment and the variant out of an experiment write's
+// body, which then names neither.
+func refusalWithoutExperiment(_ *testing.T, _ *routeTour, request tourRequest) tourRequest {
+	body := maps.Clone(request.Body.(map[string]any))
+	delete(body, "experiment")
+	delete(body, "variant")
+	request.Body = body
+	return request
+}
+
+// refusalStepOfAnotherIssue names in {id} a run the daemon recorded on another issue of the tour's
+// project, so the write's issue holds no record of that id and the store holds it as the other's.
+func refusalStepOfAnotherIssue(t *testing.T, tour *routeTour, request tourRequest) tourRequest {
+	t.Helper()
+	run := uuid.NewString()
+	tour.writeStep(t, tour.issue(t), run, tourStepStart())
+	request.Path = maps.Clone(request.Path)
+	request.Path["id"] = run
+	return request
 }
 
 // TestV2StepWriteOfWhatTheRecordHoldsWritesNothing: a write of a run every field of which the

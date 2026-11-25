@@ -1077,7 +1077,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the issues of every project, filtered. project=<key>, repeatable, keeps those projects' issues, with no default project; GET /api/v2/projects/{key}/issues lists one project's. ref=<KEY or owner/repo#n> keeps the issue a key names, or every issue linked to that GitHub issue or pull request (an issue imported from it, or one a link names), none where nothing is; any other ref is 400 INVALID_ISSUE_REF. status=, repeatable, keeps the issues standing in any of those statuses (a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue); parent=<key> an issue's children; label=, repeatable, the issues carrying every label named; priority=, repeatable, 0 to 3 or none for unset; advances=, repeatable, a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited, several a union; open=true the open issues; updated_from and updated_to window updated_at, and closed_from and closed_to closed_at, RFC3339, each from inclusive and to exclusive, so an open issue matches no closed window (a closed_to at or before closed_from is 400 INVALID_CLOSED_WINDOW, an updated_to at or before updated_from 400 INVALID_QUERY); route_status=live, holder_unresponsive, no_holder or unknown keeps the open issues whose route stands so (503 ENVOY_UNAVAILABLE or ENVOY_REFILLING where the listener cannot judge a route); pinned=true the issues the caller pinned, which needs the person scope; moved=true adds moved_at and moved_by to each issue standing in backlog or icebox, when it was moved there and by whom. Issues come in lifecycle order of their status, then by rank, creation time and key. Each is one row: its own fields, its route's reach (route_status, route_holder, route_status_reason), closed_at, open_asks and progress {tasks, children}, each null when it has none. limit 1 to 250 (default 50) and offset; {items, total, limit, offset}, total counting every issue the filters match. */
+    /** @description List the issues of every project, filtered. project=<key>, repeatable, keeps those projects' issues, with no default project; GET /api/v2/projects/{key}/issues lists one project's. ref=<KEY or owner/repo#n> keeps the issue a key names, or every issue linked to that GitHub issue or pull request (an issue imported from it, or one a link names), none where nothing is; any other ref is 400 INVALID_ISSUE_REF. status=, repeatable, keeps the issues standing in any of those statuses (a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue); parent=<key> an issue's children; label=, repeatable, the issues carrying every label named; priority=, repeatable, 0 to 3 or none for unset; advances=, repeatable, a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited, several a union; own=true keeps, of the issues the advances values answer, those whose own row names a priority a value matches and no issue above them carries it, so a child that only inherits a priority or restates one an issue above it carries is left out and none keeps nothing, and without an advances value it filters nothing (advances=any&own=true over backlog and icebox is the second fault of GET /api/v2/priorities); open=true the open issues; updated_from and updated_to window updated_at, and closed_from and closed_to closed_at, RFC3339, each from inclusive and to exclusive, so an open issue matches no closed window (a closed_to at or before closed_from is 400 INVALID_CLOSED_WINDOW, an updated_to at or before updated_from 400 INVALID_QUERY); route_status=live, holder_unresponsive, no_holder or unknown keeps the open issues whose route stands so (503 ENVOY_UNAVAILABLE or ENVOY_REFILLING where the listener cannot judge a route); pinned=true the issues the caller pinned, which needs the person scope; moved=true adds moved_at and moved_by to each issue standing in backlog or icebox, when it was moved there and by whom. Issues come in lifecycle order of their status, then by rank, creation time and key. Each is one row: its own fields, its route's reach (route_status, route_holder, route_status_reason), closed_at, open_asks and progress {tasks, children}, each null when it has none. limit 1 to 250 (default 50) and offset; {items, total, limit, offset}, total counting every issue the filters match. */
     get: operations["getApiV2Issues"];
     put?: never;
     /** @description Create an issue {project, title, parent?, blocked_by?, advances?, external?, force?, spec?, labels?, priority?, assignee?, components?, repo?}, a bearer naming its session in actor: a native issue in project, or one imported from a GitHub owner/repo#n named in external into project. Every create names its project, an import included: external with no project, or an empty one, is 400 INVALID_ISSUE, and an external ref already linked to an issue of another project is 400 EXTERNAL_PROJECT_MISMATCH. assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. An unforced create whose title is a near copy of another issue's is 409 POSSIBLE_DUPLICATE with the candidates. Answers 201 the issue with advice beside it, and 200 the issue an external ref already imported. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the advice's suggestions say whether it found related items (outcome found, none or not_made with the reason in missing), how it searched, the three items most like the new issue with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches). A blocked_by that would make the new issue wait on itself through its parent is 409 ISSUE_CYCLE. */
@@ -1409,7 +1409,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every run of every step of the issue's workflow, as the Legion daemon wrote them, task by task in the order of each task's first run and each task's runs in the order they ran: each {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too; an issue no step ran on reads []. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    /** @description Every run of every step of the issue's workflow, as the Legion daemon wrote them, task by task in the order of each task's first run and each task's runs in the order they ran: each {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. A closed issue's read too; an issue no step ran on reads []. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     get: operations["getApiV2IssuesByKeySteps"];
     put?: never;
     post?: never;
@@ -1427,8 +1427,25 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Write one run of one step of the issue's workflow {task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone; a body every field of which the record holds as sent answers the record and writes nothing. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    /** @description Write one run of one step of the issue's workflow {task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none; a body every field of which the record holds as sent answers the record and writes nothing. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     put: operations["putApiV2IssuesByKeyStepsById"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/issues/{key}/steps/{id}/experiment": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Write the experiment and the variant of a run's issue {experiment, variant, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: experiment is the experiment a draw put the issue in and variant the variant it drew there, each a name of 1 to 32 characters of a-z, 0-9 and -. The Legion daemon writes it under the id of the run, after the run's own write, with the fields PUT /api/v2/issues/{key}/steps/{id} takes, which make the record where the run's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the experiment and the variant are written once. The actor must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none; a body every field of which the record holds as sent answers the record and writes nothing. A body naming neither, one naming one alone, and a name outside its form are 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    put: operations["putApiV2IssuesByKeyStepsByIdExperiment"];
     post?: never;
     delete?: never;
     options?: never;
@@ -1444,7 +1461,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Write the rating of a retro's run {rating, rating_reason, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: rating, 1 to 5, is how well the plan the issue ran fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and at most 2000 characters counted as Unicode code points. The Legion daemon writes it under the id of the retro's run, with the fields PUT /api/v2/issues/{key}/steps/{id} takes, which make the record where the retro's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the rating is written once and lands before or after the retro's end. The actor must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone; a body every field of which the record holds as sent answers the record and writes nothing. A rating or reason outside its form, and a record that is not a retro's, are 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    /** @description Write the rating of a retro's run {rating, rating_reason, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: rating, 1 to 5, is how well the plan the issue ran fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and at most 2000 characters counted as Unicode code points. The Legion daemon writes it under the id of the retro's run, with the fields PUT /api/v2/issues/{key}/steps/{id} takes, which make the record where the retro's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the rating is written once and lands before or after the retro's end. The actor must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none; a body every field of which the record holds as sent answers the record and writes nothing. A rating or reason outside its form, and a record that is not a retro's, are 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     put: operations["putApiV2IssuesByKeyStepsByIdRating"];
     post?: never;
     delete?: never;
@@ -1857,10 +1874,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state live, and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the envelope it answers the two faults: work_under_no_priority {count, by_project}, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked {count, by_priority}, the issues that advance one and stand in backlog or icebox; include=fault_issues adds to each its issues, the newest 50 rows, each carrying advances as the issue read does. empty is the sentence saying why the list is empty where no priority is live. A priority belongs to no project, so any authenticated caller reads this; project=<key>, repeatable, narrows the work counted and both faults to those projects and never the priorities themselves. limit 0 to 200 (default 50) and offset; {items, total, limit, offset}, total every live priority. limit=0 answers no priority and, without include=fault_issues, the two fault counts alone, with no by_project and no by_priority, which is what the navigation rail reads. */
+    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state live, and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the envelope it answers the two faults: work_under_no_priority {count, by_project}, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked {count, by_priority}, the open issues in backlog or icebox whose own row names a live priority no issue above them carries (a child that only inherits a priority, or restates one an issue above it carries, is no such fault), by_priority counting each under every priority it so names; include=fault_issues adds to each its issues, the newest 50 rows, each carrying advances as the issue read does. empty is the sentence saying why the list is empty where no priority is live. A priority belongs to no project, so any authenticated caller reads this; project=<key>, repeatable, narrows the work counted and both faults to those projects and never the priorities themselves. limit 0 to 200 (default 50) and offset; {items, total, limit, offset}, total every live priority. limit=0 answers no priority and, without include=fault_issues, the two fault counts alone, with no by_project and no by_priority, which is what the navigation rail reads. */
     get: operations["getApiV2Priorities"];
     put?: never;
-    /** @description Write one priority {id?, title, description?, owner?}, a bearer naming its session in actor: title is required, and id defaults to the title written as a slug; a title with nothing in it or over 1000 characters, an id that is no slug of lowercase letters, digits and single hyphens, one over 200 characters, none and any (the issue listing's keywords), and a title no slug can be written from are each 400 PRIORITY_INPUT; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none. Answers 201 the priority. */
+    /** @description Write one priority {id?, title, description?, owner?}, a bearer naming its session in actor: title is required, and a title with nothing in it or over 1000 characters is 400 PRIORITY_INPUT. A body that names no id takes the title written as a slug (lowercase ASCII letters and digits, each other run of characters one hyphen), and a slug over 200 characters is cut to its longest start of at most 200 characters that ends at the end of a word, or to its first 200 characters when its first word is longer, so a long title is written whole under a cut id. A title with no ASCII letter or digit, or one the cut leaves as none or any, takes the id priority- and the first 12 lower-case hex characters of the SHA-256 of the title's UTF-8 bytes instead, so every title gives an id. A given id that is no slug of lowercase letters, digits and single hyphens, one over 200 characters, and none and any (the issue listing's keywords) are each 400 PRIORITY_INPUT; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none. Answers 201 the priority. */
     post: operations["postApiV2Priorities"];
     delete?: never;
     options?: never;
@@ -1882,7 +1899,7 @@ export interface paths {
     delete: operations["deleteApiV2PrioritiesById"];
     options?: never;
     head?: never;
-    /** @description Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?}, a bearer naming its session in actor: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below; a rank naming neither, a neighbour that is this priority, and one no live priority carries are each 400 RANK_INPUT. A title with nothing in it or over 1000 characters and a body naming nothing to write are 400 PRIORITY_INPUT. Answers the priority and appends priority.updated. A credential scoped to one project is refused. 404 PRIORITY_NOT_FOUND for an id no priority carries, or one whose priority is gone. */
+    /** @description Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?, expected?}, a bearer naming its session in actor: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below; a rank naming neither, a neighbour that is this priority, and one no live priority carries are each 400 RANK_INPUT. A title with nothing in it or over 1000 characters and a body naming nothing to write are 400 PRIORITY_INPUT. expected is {title?, description?}, the value the writer's edit of each started from, for the title and the description this same write writes; owner and rank take none. An expected naming an attribute the write does not write is 400 PRIORITY_INPUT. One that differs from the value the priority stores now (the title compared with the stored title exactly, which is stored trimmed, so a writer sends the title it read; the description exactly) is 409 PRIORITY_CHANGED, whose message names each attribute that differs and its value now, quoted and cut past 200 characters with a trailing …; that write writes nothing and appends no priority.updated. The compare and the write are one transaction holding the priority's row, so a write naming expected waits for any other write of the priority in flight and compares against what that one wrote. A body with no expected writes over whatever is stored. Answers the priority and appends priority.updated. A credential scoped to one project is refused. 404 PRIORITY_NOT_FOUND for an id no priority carries, or one whose priority is gone. */
     patch: operations["patchApiV2PrioritiesById"];
     trace?: never;
   };
@@ -2032,7 +2049,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List one project's issues, filtered: the rows GET /api/v2/issues?project={key} answers for the same filters. status=, repeatable, keeps the issues standing in any of those statuses (a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue); parent=<key> an issue's children; label=, repeatable, the issues carrying every label named; priority=, repeatable, 0 to 3 or none for unset; advances=, repeatable, a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited, several a union; open=true the open issues; updated_from and updated_to window updated_at, and closed_from and closed_to closed_at, RFC3339, each from inclusive and to exclusive, so an open issue matches no closed window (a closed_to at or before closed_from is 400 INVALID_CLOSED_WINDOW, an updated_to at or before updated_from 400 INVALID_QUERY); route_status=live, holder_unresponsive, no_holder or unknown keeps the open issues whose route stands so (503 ENVOY_UNAVAILABLE or ENVOY_REFILLING where the listener cannot judge a route); pinned=true the issues the caller pinned, which needs the person scope; moved=true adds moved_at and moved_by to each issue standing in backlog or icebox, when it was moved there and by whom. Issues come in lifecycle order of their status, then by rank, creation time and key. Each is one row: its own fields, its route's reach (route_status, route_holder, route_status_reason), closed_at, open_asks and progress {tasks, children}, each null when it has none. limit 1 to 250 (default 50) and offset; {items, total, limit, offset}, total counting every issue the filters match. 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description List one project's issues, filtered: the rows GET /api/v2/issues?project={key} answers for the same filters. status=, repeatable, keeps the issues standing in any of those statuses (a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue); parent=<key> an issue's children; label=, repeatable, the issues carrying every label named; priority=, repeatable, 0 to 3 or none for unset; advances=, repeatable, a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited, several a union; own=true keeps, of the issues the advances values answer, those whose own row names a priority a value matches and no issue above them carries it, so a child that only inherits a priority or restates one an issue above it carries is left out and none keeps nothing, and without an advances value it filters nothing (advances=any&own=true over backlog and icebox is the second fault of GET /api/v2/priorities); open=true the open issues; updated_from and updated_to window updated_at, and closed_from and closed_to closed_at, RFC3339, each from inclusive and to exclusive, so an open issue matches no closed window (a closed_to at or before closed_from is 400 INVALID_CLOSED_WINDOW, an updated_to at or before updated_from 400 INVALID_QUERY); route_status=live, holder_unresponsive, no_holder or unknown keeps the open issues whose route stands so (503 ENVOY_UNAVAILABLE or ENVOY_REFILLING where the listener cannot judge a route); pinned=true the issues the caller pinned, which needs the person scope; moved=true adds moved_at and moved_by to each issue standing in backlog or icebox, when it was moved there and by whom. Issues come in lifecycle order of their status, then by rank, creation time and key. Each is one row: its own fields, its route's reach (route_status, route_holder, route_status_reason), closed_at, open_asks and progress {tasks, children}, each null when it has none. limit 1 to 250 (default 50) and offset; {items, total, limit, offset}, total counting every issue the filters match. 404 PROJECT_NOT_FOUND for a project that does not exist. */
     get: operations["getApiV2ProjectsByKeyIssues"];
     put?: never;
     post?: never;
@@ -2102,7 +2119,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within from and to on closed_at, RFC3339, from inclusive and to exclusive (400 INVALID_QUERY when from is not before to): each {issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed. It writes nothing, and a read-only token may call it. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within from and to on closed_at, RFC3339, from inclusive and to exclusive (400 INVALID_QUERY when from is not before to): each {issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. It writes nothing, and a read-only token may call it. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist. */
     get: operations["getApiV2ProjectsByKeyPlans"];
     put?: never;
     post?: never;
@@ -4430,6 +4447,7 @@ export interface components {
       duration_seconds: null | number;
       /** Format: date-time */
       ended_at: null | string;
+      experiment: null | string;
       failed_steps: number;
       issue: string;
       plan: components["schemas"]["PlanRecord"] | null;
@@ -4437,6 +4455,7 @@ export interface components {
       /** Format: date-time */
       started_at: null | string;
       title: string;
+      variant: null | string;
     };
     ForeignChildOpen: {
       key: string;
@@ -5802,9 +5821,14 @@ export interface components {
       title?: null | string;
       unlink_children?: boolean;
     };
+    PatchPriorityExpected: {
+      description?: null | string;
+      title?: null | string;
+    };
     PatchPriorityInput: {
       actor?: components["schemas"]["Actor"] | null;
       description?: null | string;
+      expected?: components["schemas"]["PatchPriorityExpected"] | null;
       owner?: null | string;
       rank?: components["schemas"]["IssueRankInput"] | null;
       title?: null | string;
@@ -5907,6 +5931,8 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+      /** @description Whether the server's parser takes description whole, so a writer's editor may take its markdown: false where it refuses a block of it or the whole of it, which description_tree draws as no write would store it. description_tree still resets the attributes the server owns either way, so it is drawn and never written back. Present exactly where description_tree is. */
+      description_tree_exact?: boolean;
       id: string;
       /** Format: date-time */
       made_at: string;
@@ -5947,6 +5973,8 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+      /** @description Whether the server's parser takes description whole, so a writer's editor may take its markdown: false where it refuses a block of it or the whole of it, which description_tree draws as no write would store it. description_tree still resets the attributes the server owns either way, so it is drawn and never written back. Present exactly where description_tree is. */
+      description_tree_exact?: boolean;
       id: string;
       /** Format: date-time */
       made_at: string;
@@ -6453,6 +6481,29 @@ export interface components {
       code: string;
       error: string;
     };
+    StepExperimentInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      agent?: null | string;
+      /** Format: date-time */
+      ended_at?: null | string;
+      experiment: null | string;
+      generation?: null | number;
+      /** @enum {null|string} */
+      kind?: "step" | "retro" | "merge" | null;
+      model?: null | string;
+      report?: null | string;
+      /** @enum {null|string} */
+      result?: "passed" | "failed" | "stopped" | null;
+      returned_to?: null | number;
+      role?: null | string;
+      session?: null | string;
+      /** Format: date-time */
+      started_at?: null | string;
+      step?: null | number;
+      task?: null | string;
+      type?: null | string;
+      variant: null | string;
+    };
     StepRatingInput: {
       actor?: components["schemas"]["Actor"] | null;
       agent?: null | string;
@@ -6481,6 +6532,7 @@ export interface components {
       attempt: number;
       /** Format: date-time */
       ended_at: null | string;
+      experiment: null | string;
       /** Format: int64 */
       generation: number;
       id: string;
@@ -6501,6 +6553,7 @@ export interface components {
       step: number;
       task: string;
       type: string;
+      variant: null | string;
     };
     StepRecordInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -10430,6 +10483,7 @@ export interface operations {
         label?: string[];
         priority?: string[];
         advances?: string[];
+        own?: boolean;
         route_status?: "live" | "holder_unresponsive" | "no_holder" | "unknown";
         open?: boolean;
         moved?: boolean;
@@ -12072,6 +12126,56 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": components["schemas"]["StepRecordInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StepRecord"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV2IssuesByKeyStepsByIdExperiment: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StepExperimentInput"];
       };
     };
     responses: {
@@ -14500,6 +14604,7 @@ export interface operations {
         label?: string[];
         priority?: string[];
         advances?: string[];
+        own?: boolean;
         route_status?: "live" | "holder_unresponsive" | "no_holder" | "unknown";
         open?: boolean;
         moved?: boolean;
@@ -15960,6 +16065,7 @@ export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
 export type PassRecord = components["schemas"]["PassRecord"];
 export type PatchIssueV2Input = components["schemas"]["PatchIssueV2Input"];
+export type PatchPriorityExpected = components["schemas"]["PatchPriorityExpected"];
 export type PatchPriorityInput = components["schemas"]["PatchPriorityInput"];
 export type PatchProjectV2Input = components["schemas"]["PatchProjectV2Input"];
 export type PersonNode = components["schemas"]["PersonNode"];
@@ -16034,6 +16140,7 @@ export type StatusChangeAnswer = components["schemas"]["StatusChangeAnswer"];
 export type StatusChangeConflict = components["schemas"]["StatusChangeConflict"];
 export type StatusChangeEntry = components["schemas"]["StatusChangeEntry"];
 export type StatusChangeRefusal = components["schemas"]["StatusChangeRefusal"];
+export type StepExperimentInput = components["schemas"]["StepExperimentInput"];
 export type StepRatingInput = components["schemas"]["StepRatingInput"];
 export type StepRecord = components["schemas"]["StepRecord"];
 export type StepRecordInput = components["schemas"]["StepRecordInput"];

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -542,6 +543,110 @@ func TestAnEndPutTwiceKeepsItsFirstEnd(t *testing.T) {
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].Result != "stopped" || !steps[0].EndedAt.Equal(stepEnd) {
 		t.Fatalf("the read lists %+v, want the one run ended stopped at %s", steps, stepEnd)
+	}
+}
+
+// putExperiment writes body as the experiment and the variant of the run id of issue, over the
+// credential the deployment configured for its daemon.
+func putExperiment(t *testing.T, handler http.Handler, issue, id string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	return sessionRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/steps/"+id+"/experiment", body)
+}
+
+// The experiment a draw put an issue in and the variant it drew reach a run's record on a route of
+// their own, which takes the step write's body with the two, both required: decodeJSON ignores a
+// member a route does not declare, so the step route drops the pair, and a Dispatch older than the
+// experiment route answers it its router's NOT_FOUND rather than a 200 that loses them. The write
+// makes the record where the run's start has not landed, sets each field once, and the read of the
+// issue answers both on the run, a start that lands after it included. A body naming neither, or a
+// name outside the daemon's rule for the names its settings declare, is 400 STEP_INPUT and writes
+// nothing; a second variant leaves the first.
+func TestTheExperimentRouteWritesTheVariantOfARun(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of an experiment")
+	daemon := daemonSessionOf("LEG")
+	id := uuid.NewString()
+	variant := func(step model.StepRecord) string {
+		if step.Experiment == nil || step.Variant == nil {
+			return fmt.Sprintf("%v/%v", step.Experiment, step.Variant)
+		}
+		return *step.Experiment + "/" + *step.Variant
+	}
+
+	written := putExperiment(t, handler, issue, id, withFields(stepIdentity(daemon), map[string]any{"experiment": "planning", "variant": "b"}))
+	if written.Code != http.StatusOK {
+		t.Fatalf("write the variant of %s: status=%d body=%s, want 200", id, written.Code, written.Body.String())
+	}
+	if got := variant(decodeBody[model.StepRecord](t, written)); got != "planning/b" {
+		t.Fatalf("the write answers the variant %s, want planning/b", got)
+	}
+	putStepOK(t, handler, issue, id, implementerStart(daemon))
+	if step := stepOf(t, handler, issue, id); variant(step) != "planning/b" || step.StartedAt == nil {
+		t.Fatalf("the read lists %s, want the run started with the variant planning/b", asJSON(t, step))
+	}
+
+	dropped := uuid.NewString()
+	putStepOK(t, handler, issue, dropped, withFields(implementerStart(daemon), map[string]any{"experiment": "planning", "variant": "b"}))
+	if step := stepOf(t, handler, issue, dropped); step.Experiment != nil || step.Variant != nil {
+		t.Fatalf("the step route wrote the variant %s, want it dropped as a member the route does not declare", variant(step))
+	}
+
+	neither := putExperiment(t, handler, issue, uuid.NewString(), stepIdentity(daemon))
+	expectRefusal(t, "a variant's write naming neither", neither, http.StatusBadRequest, contracts.StepInputCode,
+		"experiment and variant are required")
+	alone := putExperiment(t, handler, issue, uuid.NewString(), withFields(stepIdentity(daemon), map[string]any{"experiment": "planning"}))
+	expectRefusal(t, "a variant's write naming the experiment alone", alone, http.StatusBadRequest, contracts.StepInputCode,
+		"stated together or not at all")
+	bad := putExperiment(t, handler, issue, uuid.NewString(), withFields(stepIdentity(daemon), map[string]any{"experiment": "Bad", "variant": "b"}))
+	expectRefusal(t, "a variant's write naming the experiment Bad", bad, http.StatusBadRequest, contracts.StepInputCode,
+		`experiment "Bad" must match`)
+
+	again := putExperiment(t, handler, issue, id, withFields(stepIdentity(daemon), map[string]any{"experiment": "planning", "variant": "a"}))
+	if again.Code != http.StatusOK {
+		t.Fatalf("write a second variant of %s: status=%d body=%s, want 200", id, again.Code, again.Body.String())
+	}
+	if step := stepOf(t, handler, issue, id); variant(step) != "planning/b" {
+		t.Fatalf("after a second variant the read lists %s, want the first, planning/b", variant(step))
+	}
+	if steps := stepsOf(t, handler, issue); len(steps) != 2 {
+		t.Fatalf("the read lists %d records, want the two the taken writes made", len(steps))
+	}
+}
+
+// Only the daemon of the issue's project writes the experiment and the variant of a run, as only
+// it writes the run's record: the route checks its writer in its own handler, as the step route and
+// the rating route do. A person, an agent's session and the daemon of another project, each
+// sending the pair the daemon's own write lands with, are refused 403 STEP_WRITER, whether the
+// run's record exists or not, and the run the daemon recorded names no variant; the daemon's write
+// of the pair lands, which is the control.
+func TestAVariantIsTheDaemonsAlone(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of an experiment")
+	run := uuid.NewString()
+	putStepOK(t, handler, issue, run, implementerStart(daemonSessionOf("LEG")))
+	pair := map[string]any{"experiment": "planning", "variant": "b"}
+
+	for _, id := range []string{run, uuid.NewString()} {
+		path := "/api/v1/issues/" + issue + "/steps/" + id + "/experiment"
+		person := dispatchRequest(t, handler, http.MethodPut, path, withFields(stepIdentity(nil), pair), "alice")
+		expectRefusal(t, "a person's variant of "+id, person, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
+		for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
+			refused := putExperiment(t, handler, issue, id, withFields(stepIdentity(map[string]any{"kind": "session", "id": session}), pair))
+			expectRefusal(t, "a variant of "+id+" as "+session, refused, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
+		}
+	}
+	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].ID != run || steps[0].Experiment != nil || steps[0].Variant != nil {
+		t.Fatalf("the refused variants left %s, want the one run %s, with no variant", asJSON(t, steps), run)
+	}
+
+	written := putExperiment(t, handler, issue, run, withFields(stepIdentity(daemonSessionOf("LEG")), pair))
+	if written.Code != http.StatusOK {
+		t.Fatalf("the daemon's variant of %s: status=%d body=%s, want 200", run, written.Code, written.Body.String())
+	}
+	if step := stepOf(t, handler, issue, run); step.Experiment == nil || *step.Experiment != "planning" || step.Variant == nil || *step.Variant != "b" {
+		t.Fatalf("after the daemon's write the read lists %s, want the run with the variant planning/b", asJSON(t, step))
 	}
 }
 

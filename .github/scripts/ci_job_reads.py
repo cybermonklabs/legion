@@ -747,6 +747,19 @@ def ceiling_reads(job, workflow=""):
     return reads((CEILING, f"{at(job, CEILING_STEP, workflow)} runs it"))
 
 
+# Every job with a Postgres service turns the service's crash safety off in its
+# CRASH_SAFETY_STEP, which runs .github/scripts/pg-crash-safety-off.sh, before its tests
+# (.github/scripts/check-workflow-files.sh refuses a job that does not). The check reads the
+# step's run: line, not what the script runs, so each such gate declares the script.
+CRASH_SAFETY = ".github/scripts/pg-crash-safety-off.sh"
+CRASH_SAFETY_STEP = "Turn crash safety off on the service"
+
+
+def crash_safety_reads(job, workflow="", step=CRASH_SAFETY_STEP):
+    """pg-crash-safety-off.sh itself, which `job`'s crash-safety step runs."""
+    return reads((CRASH_SAFETY, f"{at(job, step, workflow)} runs it"))
+
+
 # The forced-order steps run packages/envoy/scripts/forced-order.sh, whose go test builds each
 # package's TestForcedOrder tests under -tags odatrace and -race against a copy of nats-server
 # that the script hooks with internal/testnats/testdata/hooked/v<version>, and replaces through a
@@ -822,7 +835,7 @@ def two_builds_go_reads():
          "cmd/dispatch/twobuild_harness_test.go checks, and "
          f"{at(TWO_BUILDS_SAME_JOB, 'Build this tree as the previous build', job_file(TWO_BUILDS_JOB))} "
          "writes the one its own Go step runs against"),
-    ) + ceiling_reads(TWO_BUILDS_JOB) + setup_go(TWO_BUILDS_JOB, f"{ENVOY}/go.mod") + bun_job(TWO_BUILDS_JOB)
+    ) + ceiling_reads(TWO_BUILDS_JOB) + crash_safety_reads(TWO_BUILDS_JOB) + setup_go(TWO_BUILDS_JOB, f"{ENVOY}/go.mod") + bun_job(TWO_BUILDS_JOB)
 
 
 # ---------------------------------------------------------------- reading a Go file as text

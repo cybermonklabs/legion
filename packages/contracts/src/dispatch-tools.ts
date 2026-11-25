@@ -2999,8 +2999,12 @@ export const dispatchToolSpecs = [
     example: { issue: "DSP-1" },
     description:
       "Print each step that ran on an issue, as the Legion daemon recorded it at the step's " +
-      "start and at its end. The first line is `<KEY>: <n> steps in <m> tasks`. Then each run " +
-      "of a step prints one line, task by task, in the order each task first ran: `<task> " +
+      "start and at its end, and the experiment and the variant the issue was drawn into, where " +
+      "its records name one. The first line is `<KEY>: <n> steps in <m> tasks`. Where the " +
+      "records of the issue's newest run name an experiment, the next line is `Experiment " +
+      "<experiment>: variant <variant>.`, and an issue whose newest run's records name none " +
+      "prints no such line. Then each run of a step prints one line, task by task, in the order " +
+      "each task first ran: `<task> " +
       "<step> <kind> <role> <type> attempt <attempt> <agent> <model> <started_at> <ended_at> " +
       "<result>`. kind is step, retro or merge. step is the step's place in its task, from 1, " +
       "and 0 for a retro or a merge. attempt counts the runs of the same task, step and kind, " +
@@ -3020,11 +3024,14 @@ export const dispatchToolSpecs = [
     example: { project: "INFRA" },
     description:
       "Print each finished issue of a project, newest close first, with the plan Legion ran it " +
-      "from, the rating each retro gave that plan with its reason, its time and its count of " +
-      "failed steps. An issue is finished when its status is done and Dispatch closed it. The " +
+      "from, the rating each retro gave that plan with its reason, its time, its count of " +
+      "failed steps, and the experiment and the variant it was drawn into, where its records " +
+      "name one. An issue is finished when its status is done and Dispatch closed it. The " +
       "first line is `<PROJECT>: <n> finished issues`. Then each issue prints one line: `<KEY> " +
       "closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings " +
-      `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n>\`. ` +
+      `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n>[ variant <experiment>/<variant>]\`. ` +
+      "The line ends with variant <experiment>/<variant> where the records of the issue's " +
+      "newest run name an experiment, and at failed steps <n> where they name none. " +
       "source is default (Legion's default steps) or owner (the plan the issue's owner wrote), " +
       `and the plan is the one of the issue's newest run. A rating is ${LEGION_PLAN_RATING_LEAST} (the plan cost the ` +
       `work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work), one for each retro in the order the retros ran, and ` +

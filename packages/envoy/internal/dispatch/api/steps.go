@@ -23,12 +23,14 @@ import (
 // /api/v2/issues/{key}/steps/{id}), and which every reader of the project reads (GET
 // /api/v1/issues/{key}/steps, and GET /api/v2/issues/{key}/steps). A retro's record also takes the
 // rating the agent that did the retro gave the plan, and its reason, through a route of its own
-// (PUT /api/v1/issues/{key}/steps/{id}/rating, and PUT /api/v2/issues/{key}/steps/{id}/rating):
-// decodeJSON ignores a member a body's route does not declare, so a rating sent as a member of the
-// step write to a Dispatch older than it would be dropped in silence, where a route that Dispatch
-// does not serve answers its router's NOT_FOUND, which the daemon sends again until Dispatch serves
-// it. All of them live in internal/dispatch/workflowstore, the one writer of the nodes and tuples
-// that hold them.
+// (PUT /api/v1/issues/{key}/steps/{id}/rating, and PUT /api/v2/issues/{key}/steps/{id}/rating),
+// and the record of a run of an issue that a draw put in an experiment takes the experiment and
+// the variant drawn through another (PUT /api/v1/issues/{key}/steps/{id}/experiment, and PUT
+// /api/v2/issues/{key}/steps/{id}/experiment): decodeJSON ignores a member a body's route does not
+// declare, so a rating or a variant sent as a member of the step write to a Dispatch older than
+// its route would be dropped in silence, where a route that Dispatch does not serve answers its
+// router's NOT_FOUND, which the daemon sends again until Dispatch serves it. All of them live in
+// internal/dispatch/workflowstore, the one writer of the nodes and tuples that hold them.
 //
 // Each write names the session of the issue's project's daemon, legion-daemon:<PROJECT>, as its
 // actor, or is refused 403 STEP_WRITER. That holds the session the body names, which a bearer
@@ -45,7 +47,8 @@ import (
 // identity, the message naming the field (workflowstore.ErrStepInput); apicode.StepWriter, a
 // writer that is not the session of the issue's project's daemon; and apicode.StepOtherIssue, an
 // id whose record is a run of another issue. /api/v2 answers the write that names no identity to
-// an id no record has 404 STEP_NOT_FOUND instead (putIssueStepV2, putIssueStepRatingV2).
+// an id no record has 404 STEP_NOT_FOUND instead (putIssueStepV2, putIssueStepRatingV2,
+// putIssueStepExperimentV2).
 
 // stepRecordInput is the body PUT /api/v1/issues/{key}/steps/{id} and its /api/v2 route take: the
 // writer, and each field of the run the write states. A field the body leaves out, or sends null
@@ -72,7 +75,8 @@ type stepRecordInput struct {
 }
 
 // write is the step write input states, each field as the body sent it: the fields the record
-// shares with the rating route's body, which adds the rating and its reason to it.
+// shares with the rating route's body, which adds the rating and its reason to it, and with the
+// experiment route's body, which adds the experiment and the variant.
 func (input stepRecordInput) write() workflowstore.StepWrite {
 	return workflowstore.StepWrite{
 		Task: input.Task, Kind: input.Kind, Role: input.Role, Type: input.Type, Agent: input.Agent,
@@ -89,6 +93,15 @@ type stepRatingInput struct {
 	stepRecordInput
 	Rating       *int    `json:"rating" required:"true"`
 	RatingReason *string `json:"rating_reason" required:"true"`
+}
+
+// stepExperimentInput is the body PUT /api/v1/issues/{key}/steps/{id}/experiment and its /api/v2
+// route take: the step write's body, which makes the run's record where its start and end have not
+// landed yet, and the experiment and the variant of the run's issue, both required.
+type stepExperimentInput struct {
+	stepRecordInput
+	Experiment *string `json:"experiment" required:"true"`
+	Variant    *string `json:"variant" required:"true"`
 }
 
 // putIssueStep writes one run of one step of an issue and answers its record as it stands after
@@ -150,6 +163,45 @@ func (s *server) putIssueStepRatingFrom(w http.ResponseWriter, r *http.Request, 
 	write.Rating = &workflowstore.StepRating{Rating: *input.Rating}
 	if input.RatingReason != nil {
 		write.Rating.Reason = *input.RatingReason
+	}
+	s.writeIssueStep(w, r, write, actor, key, unmade, unchanged)
+}
+
+// putIssueStepExperiment writes the experiment and the variant of a run's issue, with every field
+// of the run the body states, as putIssueStep writes them: the two are set once, and the record is
+// made where the run's start and end have not landed yet.
+func (s *server) putIssueStepExperiment(w http.ResponseWriter, r *http.Request) {
+	var input stepExperimentInput
+	if err := decodeJSON(r, &input); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	s.putIssueStepExperimentFrom(w, r, input, apicode.StepInput, nil)
+}
+
+// putIssueStepExperimentFrom is the experiment write both versions make, input its body, as
+// putIssueStepFrom makes a step write. A body that names neither is refused once its writer is
+// checked, before the transaction and the issue's lock, as the package refuses a required field it
+// lacks: the store takes a step write with no experiment, so this route alone holds the pair
+// required. The one of the two the body leaves out is "", which the store refuses as one stated
+// without the other, after it has checked the write's other fields.
+func (s *server) putIssueStepExperimentFrom(w http.ResponseWriter, r *http.Request, input stepExperimentInput, unmade apicode.Code, unchanged func(workflowstore.StepRead) bool) {
+	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
+	if !ok {
+		return
+	}
+	if input.Experiment == nil && input.Variant == nil {
+		writeError(w, r, apicode.StepInput,
+			"experiment and variant are required: the experiment route writes the experiment and the variant of the run's issue")
+		return
+	}
+	write := input.write()
+	write.Experiment = &workflowstore.StepExperiment{}
+	if input.Experiment != nil {
+		write.Experiment.Experiment = *input.Experiment
+	}
+	if input.Variant != nil {
+		write.Experiment.Variant = *input.Variant
 	}
 	s.writeIssueStep(w, r, write, actor, key, unmade, unchanged)
 }
@@ -320,9 +372,9 @@ func issueStepTasks(issue string, steps []workflowstore.StepRead) model.IssueSte
 	return read
 }
 
-// stepRecord is a run as the routes answer it: an absent ReturnedTo, an empty report and a nil
-// Rating are a run that has none, which the answer carries as null, the rating and its reason
-// both; a return to place 0 carries 0.
+// stepRecord is a run as the routes answer it: an absent ReturnedTo, an empty report, a nil Rating
+// and a nil Experiment are a run that has none, which the answer carries as null, the rating and
+// its reason both, and the experiment and the variant both; a return to place 0 carries 0.
 func stepRecord(step workflowstore.StepRead) model.StepRecord {
 	record := model.StepRecord{
 		ID: step.ID, Issue: step.Issue, Task: step.Task, Step: step.Place, Kind: step.Kind,
@@ -337,6 +389,10 @@ func stepRecord(step workflowstore.StepRead) model.StepRecord {
 	if step.Rating != nil {
 		rating := *step.Rating
 		record.Rating, record.RatingReason = &rating.Rating, &rating.Reason
+	}
+	if step.Experiment != nil {
+		drawn := *step.Experiment
+		record.Experiment, record.Variant = &drawn.Experiment, &drawn.Variant
 	}
 	return record
 }

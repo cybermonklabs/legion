@@ -19,8 +19,9 @@ import (
 // (PUT /api/v1/issues/{key}/plans/{id}, and PUT /api/v2/issues/{key}/plans/{id}), and the read of a
 // project's finished issues (GET /api/v1/projects/{key}/plans, and GET
 // /api/v2/projects/{key}/plans): each with its plan, the rating each retro gave it with the reason,
-// the time from the first start of its step records to the last end, and its count of failed
-// steps. Both live in internal/dispatch/workflowstore, the one writer of the nodes and tuples that
+// the time from the first start of its step records to the last end, its count of failed steps,
+// and the experiment and the variant the step records of its newest run name, null where they name
+// none. Both live in internal/dispatch/workflowstore, the one writer of the nodes and tuples that
 // hold the plans and the step records.
 //
 // The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
@@ -175,7 +176,8 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 
 // projectFinishedIssues is each finished issue of project whose close is within window, newest
 // close first, as both versions list it: its plan, the rating of each of its retros, the span of
-// its step records and its count of failed steps (workflowstore.ProjectPlans).
+// its step records, its count of failed steps, and the experiment and the variant its newest run's
+// records name (workflowstore.ProjectPlans).
 func projectFinishedIssues(ctx context.Context, q workflowstore.Queryer, project string, window workflowstore.Window) ([]model.FinishedIssue, error) {
 	finished, err := workflowstore.ProjectPlans(ctx, q, project, window)
 	if err != nil {
@@ -191,6 +193,10 @@ func projectFinishedIssues(ctx context.Context, q workflowstore.Queryer, project
 		if issue.Plan != nil {
 			plan := planRecord(*issue.Plan)
 			listed.Plan = &plan
+		}
+		if issue.Experiment != nil {
+			drawn := *issue.Experiment
+			listed.Experiment, listed.Variant = &drawn.Experiment, &drawn.Variant
 		}
 		for place, rating := range issue.Ratings {
 			listed.Ratings[place] = model.PlanRating(rating)

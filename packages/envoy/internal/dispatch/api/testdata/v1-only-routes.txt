@@ -133,6 +133,7 @@ PUT /api/v1/issues/{key}/role-holders # #4228, merged after c8a44f97
 POST /api/v1/issues/{key}/status-change # #4631, change a status with related issue moves that keep the parent-status rule
 GET /api/v1/issues/{key}/steps # #4400, record each phase of an issue as a step
 PUT /api/v1/issues/{key}/steps/{id} # #4400, record each phase of an issue as a step
+PUT /api/v1/issues/{key}/steps/{id}/experiment # #5014, each step record names its experiment and variant
 PUT /api/v1/issues/{key}/steps/{id}/rating # #4488, each retro rates the plan its issue ran
 GET /api/v1/issues/{key}/subscribers
 DELETE /api/v1/issues/{key}/subscribers/{session_id}

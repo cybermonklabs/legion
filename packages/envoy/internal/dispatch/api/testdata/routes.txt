@@ -122,6 +122,7 @@ PUT /api/v1/issues/{key}/role-holders any
 POST /api/v1/issues/{key}/status-change any
 GET /api/v1/issues/{key}/steps any
 PUT /api/v1/issues/{key}/steps/{id} any
+PUT /api/v1/issues/{key}/steps/{id}/experiment any
 PUT /api/v1/issues/{key}/steps/{id}/rating any
 GET /api/v1/issues/{key}/subscribers any
 DELETE /api/v1/issues/{key}/subscribers/{session_id} any
@@ -303,6 +304,7 @@ GET /api/v2/issues/{key}/role-holder-set any
 PUT /api/v2/issues/{key}/role-holder-set any
 GET /api/v2/issues/{key}/steps any
 PUT /api/v2/issues/{key}/steps/{id} any
+PUT /api/v2/issues/{key}/steps/{id}/experiment any
 PUT /api/v2/issues/{key}/steps/{id}/rating any
 GET /api/v2/issues/{key}/subscribers any
 DELETE /api/v2/issues/{key}/subscribers/{session_id} any
