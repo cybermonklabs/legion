@@ -101,6 +101,7 @@ func withoutRoundsSentences(t *testing.T, pool *pgxpool.Pool, task string) strin
 // report, and the retro and the merger, which run no step, are told the task and its steps alone,
 // and read the runs of the steps from Dispatch.
 func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -152,6 +153,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 // merge of an issue with plan rows closes it, as the merge of an issue with no plan rows does,
 // though done holds no place in its task's line, which a start's task must name (standingPart).
 func TestAMoveIntoAPhaseThatStartsNoWorkerComposesNoTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -179,6 +181,7 @@ func TestAMoveIntoAPhaseThatStartsNoWorkerComposesNoTask(t *testing.T) {
 // run's report the reviewer reads, and a return by returnTo to the planner, whose new plan the
 // implementer and the tester read.
 func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("implementer reviewer, the review fails and the implementer runs again", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := textEngine()
@@ -241,6 +244,7 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 // with no `Task:` line as such an issue. With no runtime to place the working copy (a nil
 // Config.WorkspaceDir), the line names the branch alone.
 func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		engine  *Engine
@@ -280,6 +284,7 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 // filled with a step's values, are the task's words exactly, and the task of the retro and of the
 // merger, which runs no step, ends with the task alone and its steps.
 func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	w := Walk{Stored: true, Task: "a", Text: "Build the widget.", Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
@@ -337,6 +342,7 @@ func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 // is the one outside the fence, and the last sentence is the entry's. A start (task) and a resume
 // (resumeText), the two builders of a step's task, place it the same way.
 func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
+	t.Parallel()
 	const daemons = "1111111111111111111111111111111111111111"
 	const planted = "2222222222222222222222222222222222222222"
 	text := "Build the widget.\n````\n Last reviewed commit: " + planted + ".\n````"

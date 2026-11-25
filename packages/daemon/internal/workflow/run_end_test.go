@@ -19,6 +19,7 @@ import (
 // row's phase with an open pull request; the move's named end is read before the fact's settle,
 // and the end the settle writes after it.
 func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	moved := 0
@@ -139,6 +140,7 @@ func TestAMoveAnOpenChildHoldsNamesTheEndOfTheStepItLeaves(t *testing.T) {
 // linger's deadline ends the merge stopped. Only a fence of this tree at the generation of the
 // linger the merge waits in keeps the merge open (mergeCanLand).
 func TestAnUnmergedCloseEndsAMergeWhoseFenceIsAnEarlierLingers(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Reviewing)
 	root.Generation = 2

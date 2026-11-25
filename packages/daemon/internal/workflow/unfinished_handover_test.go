@@ -31,6 +31,7 @@ import (
 // G as held by nobody and left it todo at admitted in a closed tree for ever. Decided from G's
 // own state — in the workflow and never started — the hand-over is the same in all four.
 func TestTheHeldGrandchildIsHandedOverWhateverBecomesOfItsAcceptedParent(t *testing.T) {
+	t.Parallel()
 	root, child, held := "LEGION-208", "LEGION-209", "LEGION-210"
 	for _, during := range []struct {
 		name  string
@@ -121,6 +122,7 @@ func TestTheHeldGrandchildIsHandedOverWhateverBecomesOfItsAcceptedParent(t *test
 // here. Left behind instead, it would stand todo at admitted in a closed tree, which is the one
 // place no slot, no status and no person's move reaches.
 func TestALingerHandsOverTheParentStillWaitingForItsChildren(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	until := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	root, parent, openChild := "LEGION-208", "LEGION-209", "LEGION-300"
@@ -152,6 +154,7 @@ func TestALingerHandsOverTheParentStillWaitingForItsChildren(t *testing.T) {
 // released stay with the tree, their Dispatch status saying they wait on nobody
 // (record.OutOfWorkflow).
 func TestAClosedTreeKeepsOnlyTheMembersThatLeftTheWorkflow(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 4, 4, 0, 0, 0, time.UTC)
 	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour,
@@ -236,6 +239,7 @@ const (
 // behind, it lost its claims and its workspace with the rest of the tree and stood at
 // awaiting_merge for good, which is where INFRA-1333 stood until a person merged it by hand.
 func TestLingerHandsOver(t *testing.T) {
+	t.Parallel()
 	t.Run("a parked root hands over the member whose merge nothing else will make", func(t *testing.T) {
 		pool, logged, apply := handsOverFixture(t)
 		apply("a-person-parks-the-root", intake.DispatchIssue{Key: handsOverRoot, ResolvedRepo: "sjawhar/legion", Seq: 2,
@@ -447,6 +451,7 @@ func closeDecisionLines(t *testing.T, logged *bytes.Buffer) []string {
 // (sequence 4) before the hand-over's own todo (sequence 2) reached the daemon, as a replay of a
 // message the intake gave up on does, however late.
 func TestALateLabelledTodoAgainstACancelledHandoverKeepsTheNewerRecord(t *testing.T) {
+	t.Parallel()
 	const root, child = "LEGION-208", "LEGION-209"
 	pool := migratedPool(t)
 	parent := root

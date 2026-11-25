@@ -56,6 +56,7 @@ func forgeTaskPlace(t *testing.T, pool *pgxpool.Pool, key string, generation uin
 // beginLinger) or that refuse a task elsewhere themselves (StartHeldRetro) write the phase the
 // place gives, so no fixture makes them disagree.
 func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
+	t.Parallel()
 	reviewing := record.TaskPlace{Kind: record.PlaceStep, Position: 3}
 	implementing := record.TaskPlace{Kind: record.PlaceStep, Position: 1}
 	for _, tc := range []struct {
@@ -152,6 +153,7 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 // every other leave does (leaveState): left where the status is not done, at the place it stood,
 // so the phase done its record takes is the phase its task stands in.
 func TestARootLeavingUnderTheOperatorsTreeEndsItsTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
