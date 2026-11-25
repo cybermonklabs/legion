@@ -365,10 +365,11 @@ func (r *versionNewsLive) writeHandoff(key, word, session string) (string, int) 
 	return latest.ID, latest.Version
 }
 
-// Step A6. A root in merging whose pull request GitHub reports merged, which waits there for its
-// child still in reviewing, is sent nothing for a spec change the person approves, and its
-// merger's request_backward_move is refused naming the merge; the unmerged child's reviewer is sent
-// the task, which is the delivery the root's window sees.
+// Step A6. A root in merging whose pull request GitHub reports merged moves to verifying, where its
+// close waits for its child still in reviewing. It is sent nothing for a spec change the person
+// approves, and its merger's request_backward_move is refused, since no role runs verifying and a
+// merged change never moves back; the unmerged child's reviewer is sent the task, which is the
+// delivery the root's window sees.
 func (r *versionNewsLive) a6() {
 	tree := r.trees["a6"]
 	root, child := tree.root(), tree.members[1]
@@ -383,8 +384,8 @@ func (r *versionNewsLive) a6() {
 		}
 		return issue.PullRequest.State == string(record.PullRequestMerged), "pull request " + issue.PullRequest.State + " in phase " + string(issue.Phase)
 	})
-	r.holdPhase(root.key, phase.Merging)
-	r.held("GitHub's merge of #%d is recorded and %s waits in merging for %s", root.pr, root.key, child.key)
+	r.holdPhase(root.key, phase.Verifying)
+	r.held("GitHub's merge of #%d is recorded and %s waits in verifying for %s", root.pr, root.key, child.key)
 	mark := time.Now()
 	r.newVersion(tree, record.DesignStepSpec, versionNewsDesign, versionNewsDesignAgain, 2)
 	r.approve(tree.spec, 2)
@@ -397,12 +398,12 @@ func (r *versionNewsLive) a6() {
 	r.quiet([]*versionNewsClaimant{merger}, mark, task.at.Add(liveSettle))
 	r.held("%s, on a merged pull request, was sent nothing in the window %s's task arrived in", merger.name(), child.key)
 	status, failure := merger.backward(phase.Implementing, "version 2 of the spec changed the Design section")
-	if status == http.StatusOK || failure.Code != "BACKWARD_REFUSED" || !strings.Contains(failure.Error, "merged") {
-		r.fail("%s's request_backward_move to implementing = %d %s: %s, want BACKWARD_REFUSED naming the merge", merger.name(), status, failure.Code, failure.Error)
+	if status == http.StatusOK || failure.Code != "BACKWARD_REFUSED" {
+		r.fail("%s's request_backward_move to implementing = %d %s: %s, want BACKWARD_REFUSED: no role runs verifying, and a merged change never moves back", merger.name(), status, failure.Code, failure.Error)
 	}
 	r.note("POST /legion/v1/phase/backward as %s: %d %s: %s", merger.name(), status, failure.Code, failure.Error)
-	r.holdPhase(root.key, phase.Merging)
-	r.held("%s's request_backward_move was refused %s naming the merge, and %s stays in merging", merger.name(), failure.Code, root.key)
+	r.holdPhase(root.key, phase.Verifying)
+	r.held("%s's request_backward_move was refused %s, and %s stays in verifying", merger.name(), failure.Code, root.key)
 }
 
 // publishMerged publishes GitHub's close of member's pull request as merged, as Envoy relays the

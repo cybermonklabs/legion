@@ -32,9 +32,9 @@
 #     completes with a pass, and the reviewer's start task names the changed check, while the
 #     start task of the reviewer of the root's child, whose issue that version changed nothing of,
 #     names none;
-#   - a6-a-merged-root-is-told-nothing: a root in merging on a pull request GitHub reports merged
-#     is sent nothing and its merger's request_backward_move is refused naming the merge, while
-#     its unmerged child in reviewing is sent the task;
+#   - a6-a-merged-root-is-told-nothing: a root whose pull request GitHub reports merged moves from
+#     merging to verifying, where its close waits for its child, is sent nothing, and its merger's
+#     request_backward_move is refused, while its unmerged child in reviewing is sent the task;
 #   - a7-the-merger-waits-then-reads-the-opening: with the gate closed the merger is not launched,
 #     in the window a merger whose gate is open is launched; the approval launches it with a start
 #     task that holds the start's own text, a blank line, and then the news, which opens with the

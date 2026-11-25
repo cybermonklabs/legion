@@ -10,15 +10,17 @@
 # Requirement 12 asks for.
 #
 # Four roots run under admission_cap 4, a cap of the issues the daemon has started rather than of trees
-# (dispatch://INFRA-980). Tree 1 runs the whole workflow with real agents to `done`, through one
-# changes-requested review round whose thread the reviewer opens, lingers, and closes; while its
+# (dispatch://INFRA-980). Tree 1 runs the whole workflow with real agents to its merge, through one
+# changes-requested review round whose thread the reviewer opens, then waits in `verifying` for its
+# production check, whose last look closes the check as not run and leaves it there, until the
+# operator parks it, and it lingers and closes; while its
 # planner holds, the driver files two children under it, each in an issue pod and on a volume of
 # its own, which fills the cap and leaves tree 3 waiting for a slot, then closes one as done and
 # parks the other in backlog, which frees the slots tree 3 and the re-entry take, sets it todo
 # again so the daemon resumes its parked planner by rule, and parks it once more; two more
 # children are filed while the root stands in `accepting`, where the daemon refuses its sign-off
 # (`SIGNOFF_CHILD_IN_WORKFLOW`) until the proof human has parked both, one at a time, and the
-# merge then closes the root, since nothing of its tree is left in the workflow. Its
+# merge then moves the root to `verifying`, since nothing of its tree is left in the workflow. Its
 # architect is suspended from the operator shell while its
 # implementer completes, and stays held until the operator resumes it; in merging, every one of its
 # roles uses Oh My Pi's tools and the image's toolchain as its own App (full-agent-tools). Tree 2
@@ -36,9 +38,9 @@
 # whose children entered the tree after its root was accepted): no merge closes a root while a child
 # of its tree is still in the workflow any more, and no issue enters a tree beneath an ancestor
 # already accepted, so a root that merges with work of its tree still running is a state no tree
-# started on this release reaches at all. A root in `merging` waiting for the rest of its tree
-# keeps its cover in the daemon's own tests of that close (internal/workflow/merged_chain_close_test.go
-# and merged_child_close_test.go), which seed the shape a migration leaves. The one close that would still make it here — a person's own,
+# started on this release reaches at all. A root whose children still run when it merges waits in
+# `verifying` for them, which the daemon's own tests of that close cover. The one close that would
+# still make it here — a person's own,
 # in the Dispatch dashboard — is not one this driver can make, since every write it sends
 # production Dispatch names a session as its author (lib/workflow.sh), the daemon sets a live
 # root's status back when the session writing it holds no claim in the tree, and the operator's
@@ -1469,10 +1471,9 @@ admission_cap: $admission_cap
 # the default of 8 wakes a minute every wake after the first would spend those waits queueing.
 # restart_daemon writes this file afresh, so every daemon of the run reads it.
 worker_wakes_per_minute: 0
-# The close of tree 1 — the merge of its pull request, with nothing of its tree left in the
-# workflow — begins its linger: done's first
-# production-check look and its suspension and the smoke main's cleanup all run in it, as does
-# production-check-bound's 15 minutes, so 30 minutes; close then waits for the expiry.
+# The operator's park of tree 1 at production-check-bound, once its production check closed as
+# not run in `verifying`, begins its linger; node-release reads the nodes inside it and close then
+# waits for the expiry, so 30 minutes.
 linger_hours: 0.5
 # The production check's bound (14 days by default) must come due inside the run, since its wake,
 # the check's last look, is production-check-bound's proof; and after the first look's report,
@@ -2966,7 +2967,7 @@ cleanup() {
   if [ -z "$ok" ] && [ -z "$was_blocked" ] && [[ ! $status =~ ^(129|130|143)$ ]]; then
     bash "$root/scripts/e2e/lib/model-gateway-unserved.sh" --notes "$evidence/model-gateway" "$check_started" "$check" || true
     if [ -n "$smoke_main_cleaning" ] && [ -z "$teardown_failed" ] && [ ! -s "$evidence/pane-endpoint-violation.txt" ]; then
-      echo "stage 4b e2e: FAIL (fixture teardown, in check $check): every checkpoint before $check passed, and $check failed only at the cleanup of $repo main, after tree 1's merge, which closed it, with its production check's first look under way; the rest of $check and the checkpoints after it did not run"
+      echo "stage 4b e2e: FAIL (fixture teardown, in check $check): every checkpoint before $check passed, and $check failed only at the cleanup of $repo main, after tree 1's merge, which moved it to verifying, with its production check's first look under way; the rest of $check and the checkpoints after it did not run"
     else
       echo "stage 4b e2e: FAIL (check $check)"
     fi
@@ -3551,13 +3552,13 @@ timeout set to 600 seconds) before it replies WAITING: the proof holds a tree by
 implementer's launches while its task is outstanding, an end that lands after the task's turn is
 over charges nothing, and the end takes up to a minute to land on a loaded host, so that turn must
 last long enough to be ended inside. A production check's task (its first line `Production check of
-<key>: …`, handed to the tester once the merge closed its issue) is no phase's task line and
+<key>: …`, handed to the tester after its issue's merge) is no phase's task line and
 waits for no targeted message, since the proof sends none to it. Run no
 `sleep 300` on it; act on the task as it is written. The issues of this proof have no requirement
 that only the deploy can show, and no spec of this proof names one. This proof has no production
 and no deploy role: no production carries the merge, so the look leaves `Production: pending deploy
-of <merge commit>` on the pull request's body (on the last look, whose pending is only for an issue
-with no requirement that only the deploy can show, as here, writes on the pull request why the
+of <merge commit>` on the pull request's body (on the last look, where a requirement still
+unobserved is pending and closes the check as not run, writes on the pull request why the
 check did not run within the bound) and reports verdict
 pending with the legion tool's handoff_complete, committing nothing. A pending report on a look
 that is not the last also carries wake_at, an RFC 3339 time: when you want your next look. Nothing
@@ -3577,7 +3578,7 @@ this run in the line, a child of a running tree as readily as the root the drive
 ## A tree's children in this proof
 
 The driver files child issues under a root itself, in `todo`, and later closes one as `done` and
-parks the others in `backlog`, the last of them while its root waits in `merging` for the
+parks the others in `backlog`, the last two while their root waits in `accepting` for the
 rest of its tree; each child's planner holds for the driver like every other role. The daemon
 starts a child's own architect with the child's first phase. That architect does not start its
 child from its `catch-up` notice. It reads the catch-up, which names its child and every issue
@@ -6438,16 +6439,15 @@ pass
 
 begin "done"
 on_tree "$tree1" wait_for_worker "$tree1" merger
-# The merge closes tree 1: nothing of its tree is in the workflow — children 3 and 4 were parked
-# at children-first-acceptance, before the sign-off the daemon held for them, and no issue has
-# entered the tree since, which beneath an accepted root the daemon refuses — so the merge's own
-# close runs (closeMerged, internal/workflow/pullrequest.go): the status done, the slots its
-# issues held already freed, the tree lingered (linger_hours 0.5) with every member's claims
-# suspended except child 1's, which its done retired, and the production check opened on the
-# merge commit, whose first look the daemon hands the tester — the role a project that names no
-# `production_check` gets — in the still-live pod: its claim alone comes back, resumed on its kept
-# session, while the other five stay suspended, and the root's Sandbox stays Running for the look
-# (the look's start supersedes the linger's suspension of the issue).
+# A merge closes nothing by itself. Nothing of tree 1 is in the workflow beneath it — children 3
+# and 4 were parked at children-first-acceptance, before the sign-off the daemon held for them, and
+# no issue has entered the tree since, which beneath an accepted root the daemon refuses — so the
+# daemon's read of the merged pull request moves tree 1 from merging to verifying, with the
+# Dispatch status testing, where it stays until the checks of its goal pass, its production check
+# among them. The move retires and suspends no claim, lingers no tree and takes no admission slot.
+# The first read of tree 1's checks after its merge opens the production check on the merge commit,
+# whose first look the daemon hands the tester — the role a project that names no
+# `production_check` gets — in the still-live pod.
 # The merger merges the pull request itself, at the head it read, so what must be in place at the
 # merge is in place before the merger is released. The smoke main is held from here until
 # the cleanup below has emptied it (hold_smoke_main), on an open descriptor: start no background
@@ -6479,85 +6479,43 @@ await_merger_merge "$repo" "$pr_number" --delete-branch
 handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of pull request #$pr_number"
 [ -z "$handoff_pushes" ] || fail "merged pull request #$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
 note "merged pull request #$pr_number holds $(gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha' | grep -c .) commits, none changing only .legion/"
-# The merge is recorded and the root waits for the rest of its tree (INFRA-229).
-merge_recorded() {
-  daemon_state | jq -e --arg issue "$tree1" '.issues[$issue] | .phase == "merging" and .pullRequest.state == "merged"' >/dev/null
-}
-on_tree "$tree1" until_true 600 "the daemon to record pull request #$pr_number merged on $tree1, which stays in merging" merge_recorded
-waiting_for=$(log_lines "workflow: a merged root's close waits for the rest of its tree" |
-  jq -r -s --arg issue "$tree1" '[.[] | select(.issue == $issue)] | last | .waitingFor // empty')
-[ "$waiting_for" = "$child3, $child4" ] ||
-  fail "the daemon logged $tree1's merged close waiting for '${waiting_for:-nothing}', want \"$child3, $child4\""
-until_true 300 "the pr-merged notice on $tree1's architect" notice_delivered "$tree1" architect "$(notice_needle pr-merged "$tree1")"
-merged_notice=$(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")")
-for want in "#$pr_number" "$child3" "$child4"; do
-  grep -qF -- "$want" <<<"$merged_notice" ||
-    fail "the pr-merged notice on $tree1's architect does not name $want: $(cut -c1-300 <<<"$merged_notice")"
-done
-state_file merged-waiting
-jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and .issues[$issue].check == null' "$evidence/merged-waiting.json" >/dev/null ||
-  fail "the merge left $tree1 holding an admission slot in merging, which keeps none, or opened its production check while its tree still ran: $(jq -c --arg issue "$tree1" '{active: .admission.active, check: .issues[$issue].check}' "$evidence/merged-waiting.json")"
-dispatch_status_is "$tree1" retro >/dev/null ||
-  fail "the board shows $tree1 $(dispatch_get "issues/$tree1" | jq -r .status) at its merge, want the retro it stands in: the done is the close's"
-lingered=$(log_lines "workflow: tree lingers" | jq -c --arg tree "$tree1" 'select(.tree == $tree)' | grep -c . || true)
-[ "$lingered" = 0 ] ||
-  fail "the daemon lingered tree $tree1 at its merge ($lingered times) while $child3 and $child4 were still in the workflow"
-merge_claims=$(issue_claim_states "$tree1" | paste -sd ',' -)
-case $merge_claims in *suspended*) fail "the merge suspended a claim of $tree1 while its tree still ran: $merge_claims" ;; esac
-note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit: the daemon recorded the merge and left $tree1 in merging (claims $merge_claims, no slot as merging keeps none, Dispatch retro, no linger, no production check), telling its architect once that the close waits for $waiting_for"
-# The children leave one at a time, and only the last park closes the root. A parked child leaves
-# the workflow (phase done) with its claims suspended, and the park deletes its Sandbox with the six
-# role Secrets it owned once its pod is gone, the disk going with that pod: the path child-release
-# took for child 2, read the same way (child_parked).
-for child in "$child3" "$child4"; do
-  if [ "$child" = "$child3" ]; then child_pod=$child3_pod; else child_pod=$child4_pod; fi
-  set_status "$child" backlog
-  until_true 600 "$child to leave the workflow" issue_phase "$child" "done"
-  until_true "$phase_seconds" "$child's park to suspend its planner" issue_worker_state "$child" planner suspended
-  until_true 600 "$child's Sandbox, pod and disk to be gone after its backlog" child_parked "$child" "$child_pod"
-  note "the proof human parked $child (backlog): it left the workflow, its planner is suspended, and it has no Sandbox, no pod and no disk (its pod $child_pod took the disk $child_pod-issue with it)"
-  [ "$child" = "$child4" ] || issue_phase "$tree1" merging >/dev/null ||
-    fail "$tree1 left merging on $child3's park, with $child4 still in the workflow"
-done
-# The last park closes the root, as the merge of a finished tree's root does.
-on_tree "$tree1" wait_for_phase "$tree1" "done" 900
-phase_change_logged "$tree1" merging "done" pull_request_merged ||
-  fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from merging to done on pull_request_merged"
-closed_last=$(log_lines "workflow: a merged root closes once its last child left the workflow" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
-[ "$closed_last" = 1 ] ||
-  fail "the daemon logged \"a merged root closes once its last child left the workflow\" for $tree1 $closed_last times, want once, at $child4's park"
-until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
-state_file merged-closed
-# No issue of tree 1 holds an admission slot once it closes: the root's row went when it reached
-# accepting, which keeps none, its children's at their parks, and the close frees whatever is left.
-jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and ([.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key] | length) == 0' \
-  "$evidence/merged-closed.json" >/dev/null ||
-  fail "an issue of tree $tree1 holds an admission slot at its close: $(jq -c --arg issue "$tree1" '{active: .admission.active, slotted: [.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key]}' "$evidence/merged-closed.json")"
-note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit: the merge closed $tree1 at once, with nothing of its tree left in the workflow — phase changed merging → done on pull_request_merged, the board reads done, no issue of the tree holds a slot, no close waited and no pr-merged notice was sent"
+on_tree "$tree1" wait_for_phase "$tree1" verifying 900
+phase_change_logged "$tree1" merging verifying pull_request_merged ||
+  fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from merging to verifying on pull_request_merged"
+until_true 120 "the daemon's testing status on the Dispatch board" dispatch_status_is "$tree1" testing
+on_tree "$tree1" until_true 300 "the first read of $tree1's checks after its merge to open its production check" check_open "$tree1"
 check_opened_on "$tree1" "$merge_when_clean_commit" ||
   fail "$tree1's production check reads $(daemon_state | jq -c --arg issue "$tree1" '.issues[$issue].check'), want it open on merge commit $merge_when_clean_commit at its first look, woken by the merge"
+close_waits "$tree1" ||
+  fail "$tree1 reads $(daemon_state | jq -c --arg issue "$tree1" '.issues[$issue] | {phase, closeWait}'), want it in verifying with a closeWait naming what its close waits for"
 state_file check-opened
-# The tester — the role a project that names no `production_check` gets, this run's own among them
-# — is live at its first look, the five other claims suspended (the close's; the architect's,
-# planner's, implementer's, reviewer's and merger's turns are over, so each lands at once);
-# a tester that reported the look before this read is suspended again already, which the
-# wait after the prompt judges.
-first_look_handed() { claim_states_are "$tree1" tester "ready working idle" suspended || check_look_reported "$tree1" 1; }
-until_true 300 "the close to leave the tester live at its first look, the five other claims of $tree1 suspended" first_look_handed
+# No issue of tree 1 holds an admission slot: the root's row went when it reached accepting, its
+# children's at their parks, and verifying keeps none.
+jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and ([.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key] | length) == 0' \
+  "$evidence/check-opened.json" >/dev/null ||
+  fail "an issue of tree $tree1 holds an admission slot in verifying, which keeps none: $(jq -c --arg issue "$tree1" '{active: .admission.active, slotted: [.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key]}' "$evidence/check-opened.json")"
+! tree_lingered "$tree1" || fail "the daemon lingered tree $tree1 at its merge, which closes nothing"
+merge_claims=$(issue_claim_states "$tree1" | paste -sd ',' -)
+case $merge_claims in *retired*) fail "the merge retired a claim of $tree1, which the move to verifying stops none of: $merge_claims" ;; esac
+note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit, which moved $tree1 to verifying and closed nothing, with nothing of its tree left in the workflow — phase changed merging → verifying on pull_request_merged, the board testing, closeWait $(jq -c --arg issue "$tree1" '.issues[$issue].closeWait' "$evidence/check-opened.json"), no issue of the tree holding a slot, no linger, claims $merge_claims; the first read of its checks opened its production check on the merge commit"
+# The tester is live at its first look, and no claim of tree 1 is retired: the move to verifying
+# stops no role. A tester that reported the look before this read is suspended again already, which
+# the wait after the prompt judges.
+first_look_handed() { claim_states_are "$tree1" tester "ready working idle" "ready working idle suspended" || check_look_reported "$tree1" 1; }
+until_true 300 "the tester live at its first look, no claim of $tree1 retired" first_look_handed
 first_look_claims=$(issue_claim_states "$tree1" | paste -sd ',' -)
 # The first look. The task the daemon handed the tester is the whole instruction: the proof
 # sends it nothing, and the fixture's instructions say a check task waits for no targeted message. The
 # smoke repository is neither the deploy repository nor a Legion production, so the look's verdict is
 # pending: the check stays open with its first look reported, and the daemon suspends the
-# tester's claim, session kept, and deletes the issue's Sandbox, which takes the pod and the
-# pod's own disk with it, since that Sandbox owns no volume of its own. The report's wake_at is
-# an hour on, past this run's bound, so it names no look of its own and the bound's last look is
-# the next: the root keeps no pod in between, which is what the reads below need. Its
-# report is the observation, read from the daemon's state below.
+# tester's claim, session kept. In verifying the report deletes nothing of the issue's pod: the
+# idle release frees it once no role has had a turn for ten minutes. The report's wake_at is an
+# hour on, past this run's bound, so it names no look of its own and the bound's last look is the
+# next. Its report is the observation, read from the daemon's state below.
 # The smoke main's cleanup is the fixture's teardown, not the workflow under test. It stays inside
 # this checkpoint, so a STAGE4B_UNTIL=done run still cleans the smoke main, and smoke_main_cleaning
 # tells the EXIT trap's verdict that a failure here is the cleanup's. It runs while the tester
-# works its look, inside the linger either way.
+# works its look.
 smoke_main_cleaning=1
 clean_smoke_main
 release_smoke_main
@@ -6565,13 +6523,11 @@ smoke_main_cleaning=
 timeout_hook=limit_pending_blocked # clean_smoke_main leaves the hook empty
 # A look took up to 10 minutes from its task to its report in acceptance runs.
 on_tree "$tree1" until_true 600 "the tester's pending report on the first look of $tree1's production check" check_look_reported "$tree1" 1
-# root_parked: the root keeps no Sandbox, no pod and no disk between its looks. The pending report
-# suspends the tester's claim and queues an IssueSuspend, which deletes the Sandbox with the six
-# role Secrets it owned once the pod is gone (internal/workflow/check.go endLookPending), exactly as
-# any other stop of an issue does, so there is no mode left to read: the gone-read of
-# child1_released is the signal here too, the pod's disk inside it for the reason child2_parked
-# gives. root_running: a look's wake has made the Sandbox again, Running, with a pod. Each read is
-# held to its exit status (see child1_released).
+# root_parked: the root has no Sandbox, no pod and no disk: a stop of the issue queued an
+# IssueSuspend, which deletes the Sandbox with the six role Secrets it owned once the pod is gone,
+# so there is no mode left to read: the gone-read of child1_released is the signal here too, the
+# pod's disk inside it for the reason child2_parked gives. root_running: the root's Sandbox is
+# Running, with a pod. Each read is held to its exit status (see child1_released).
 root_parked() {
   local out
   out=$(op get sandboxes,pods -l "legion.dev/project=$run_label,legion.dev/issue=$tree1" -o name) && [ -z "$out" ] &&
@@ -6582,76 +6538,84 @@ root_running() {
   mode=$(op get sandbox "$root_pod" -o jsonpath='{.spec.operatingMode}') && { [ -z "$mode" ] || [ "$mode" = Running ]; } &&
     pods=$(op get pods -l "legion.dev/project=$run_label,legion.dev/issue=$tree1" -o name) && [ -n "$pods" ]
 }
-until_true 600 "the pending report to delete the root's Sandbox $root_pod and take its pod and disk" root_parked
-until_true 300 "the pending report to suspend the tester's claim beside the five suspended claims of $tree1" claim_states_are "$tree1" tester suspended suspended
+# The report deleted nothing of the root's pod, which the idle release frees only after ten minutes
+# with no turn, and the tester's turn has just ended.
+root_running ||
+  fail "the pending report on the first look of $tree1's production check took the root's Sandbox $root_pod or its pod, which a look in verifying leaves to the idle release"
+until_true 300 "the pending report to suspend the tester's claim, no other claim of $tree1 retired" claim_states_are "$tree1" tester suspended "ready working idle suspended"
 [ -n "$(issue_worker_session "$tree1" tester)" ] || fail "the tester's claim lost its session at its suspension between looks"
 state_file check-look-1
 # The wake_at that report carried falls at or past the check's bound, so the daemon names no row
 # of its own for it and starts no look before the bound: nothing else wakes a check.
 check_wake_past_bound "$tree1" 1 ||
   fail "the daemon log records no wake at or past the bound named at the first look of $tree1's production check: $(jq -R -c 'fromjson? | select(.msg | startswith("workflow: production check"))' "$daemon_log" | tail -3 | tr '\n' ' ')"
-note "the merge's own close opened $tree1's production check on merge commit $merge_when_clean_commit and handed the tester its first look in the live pod (claims at the look: $first_look_claims); its pending report left the check open ($(jq -c --arg issue "$tree1" '.issues[$issue].check | {role, looks, lookOpen, lastWake: .lastWake.kind, nextWakeAt}' "$evidence/check-look-1.json")), named a wake at or past the check's bound, which starts no look of its own, suspended its claim with its session — which the session database keeps, not the disk — and took Sandbox $root_pod with the pod it ran in: no Sandbox, no pod and no disk until the bound's last look makes one afresh"
-# The close is what stops the roles the tree kept live: each claim of tree 1 is suspended, its
-# session kept for a re-admission to resume, the tester's by its look's pending report. The
-# daemon's suspension of a role in a turn waits for that turn to end, however long it takes, so the
-# wait is long, and a role still unsuspended when it runs out is named with whether its suspension
-# is held for a turn.
-tree1_roles_suspended() {
-  local role
-  for role in architect planner implementer tester reviewer merger; do issue_worker_state "$tree1" "$role" suspended || return 1; done
-}
-tree1_roles_unsuspended() {
-  note "tree 1's claims not yet suspended: $(claims_cli list --json | jq -c --arg i "$tree1" '[.claims[] | select(.issue == $i and .state != "suspended")
-    | {role, state, suspensionHeld: (.suspensionHeld // false), pending: (.pending.phase // null)}]')"
-  limit_pending_blocked
-}
-timeout_hook=tree1_roles_unsuspended
-until_true 1800 "the close to suspend every role of $tree1" tree1_roles_suspended
-timeout_hook=limit_pending_blocked
-note "the close suspended the architect, planner, tester, reviewer and merger of $tree1, and its first look's pending report the implementer"
-# The daemon's done released the claim tree 1's architect took on its root issue (LEGION-392).
-dispatch_events "$tree1" | jq -e 'any(.[]; .type == "issue.claimed" and .actor.kind == "session")' >/dev/null ||
-  fail "$tree1's events hold no issue.claimed by its architect's session"
-root_claim_released() { dispatch_get "issues/$1" | jq -e '.claim == null' >/dev/null; }
-until_true 120 "$tree1's root claim to be released by its done" root_claim_released "$tree1"
-note "$tree1's architect claimed its root issue, and the done released the claim"
+note "the first read of $tree1's checks after its merge opened its production check on merge commit $merge_when_clean_commit and handed the tester its first look in the live pod (claims at the look: $first_look_claims); its pending report left the check open ($(jq -c --arg issue "$tree1" '.issues[$issue].check | {role, looks, lookOpen, lastWake: .lastWake.kind, nextWakeAt}' "$evidence/check-look-1.json")), named a wake at or past the check's bound, which starts no look of its own, and suspended its claim with its session, which the session database keeps; Sandbox $root_pod stood Running with its pod after the report"
 pass
 
 begin production-check-bound
-# The check's bound (production_check_hours 0.25: 15 minutes after the close) starts its last look,
-# the only wake left once the first look asked for one past that bound: the wake makes the root's
-# Sandbox afresh and its pod comes back, the tester resumed on its kept session, told the last
-# look, woken by the bound. The wait runs from here, after done: what remains of the 15 minutes,
-# and a bound deferred by a look still open when it came due (by the look's own two-hour bound)
-# fails here by name rather than hanging. The last look's pending closes the check as not_run: the
-# tester's claim is retired, its session kept (issue_close), the state omits the check, and the
-# root's Sandbox is deleted again with the pod it ran in and the disk that pod owned, leaving the
-# close at linger expiry nothing of it to take. It runs before node-release, which needs tree 1's
-# pods gone for good, and the tree's close at its linger expiry (close) waits for no open check
-# once it has closed.
+# The check's bound (production_check_hours 0.25: 15 minutes after the check opened) starts its last
+# look, the only wake left once the first look asked for one past that bound: the wake finds the
+# root's Sandbox Running with a pod, the one the first look left or one it makes afresh after the
+# idle release took it, the tester resumed on its kept session, told the last look, woken by the
+# bound. The wait runs from here: what remains of the 15 minutes, and a bound deferred by a look
+# still open when it came due (by the look's own two-hour bound) fails here by name rather than
+# hanging. On the last look a requirement still unobserved is pending, which closes the check as
+# not_run: the tester's claim is retired, its session kept (issue_close), and the state omits the
+# check. A check closed as not run is no pass, so tree 1 stays in verifying with the Dispatch
+# status testing and nothing closes it: the close follows the checks. The operator then parks
+# tree 1 (take_out), the one way out of the workflow this driver has for a root whose checks have
+# not passed, and the park lingers the tree; node-release, which needs tree 1's pods gone for good,
+# and close, at the linger's expiry, read that linger.
 until_true 900 "the bound to start the last look of $tree1's production check" last_look_started "$tree1"
 state_file check-look-2
-# The pod comes back for the look: 1 to 3 minutes in acceptance runs, placed on the pool like any.
-# A tester that reported the last look before this read has had its pod taken again. The
-# daemon's task names the last look and its rule (its pending is only for an issue with no
-# requirement that only the deploy can show, as here: write on the pull request why the check did
-# not run within the bound, report pending), and the proof sends the closed issue nothing: the
-# close of the check is the observation.
+# The pod is back for the look, or never left: 1 to 3 minutes in acceptance runs for a pod placed
+# afresh on the pool. The daemon's task names the last look and its rule (a requirement still
+# unobserved there is pending, which closes the check as not run: write on the pull request why
+# the check did not run within the bound, report pending), and the proof sends the issue nothing:
+# the close of the check is the observation.
 last_look_pod_back() { root_running || check_closed "$tree1"; }
-on_tree "$tree1" until_true 900 "the bound's look to make the root's Sandbox $root_pod again, Running, and bring its pod back" last_look_pod_back
-until_true 600 "the last look's pending report to close $tree1's production check" check_closed "$tree1"
+on_tree "$tree1" until_true 900 "the bound's look to find the root's Sandbox $root_pod Running with its pod" last_look_pod_back
+until_true 600 "the last look's pending report to close $tree1's production check, $tree1 left in verifying" check_closed "$tree1"
 last_look_logged "$tree1" ||
   fail "the daemon log records no last look of $tree1's production check woken by the bound: $(log_lines "workflow: production check look started" | tail -3 | tr '\n' ' ')"
 check_closed_as "$tree1" not_run ||
   fail "the daemon log records no close of $tree1's production check as not_run: $(log_lines "workflow: production check closed" | tail -1)"
-until_true 120 "the check's close to retire the tester's claim beside the five suspended claims of $tree1" claim_states_are "$tree1" tester retired suspended
-until_true 600 "the check's close to delete the root's Sandbox $root_pod again and take its pod and disk" root_parked
+until_true 120 "the check's close to retire the tester's claim, no other claim of $tree1 retired" claim_states_are "$tree1" tester retired "ready working idle suspended"
 state_file check-closed
-note "the bound started the last look of $tree1's production check, the only wake left after the first look asked for one past the bound (the state at the wake: $(jq -c --arg issue "$tree1" '.issues[$issue].check | if . == null then "already closed" else {role, looks, lookOpen, lastWake: .lastWake.kind, last} end' "$evidence/check-look-2.json"); the daemon log: cause bound, last), Sandbox $root_pod Running with its pod back; its pending closed the check as not_run, the state omits it, the tester's claim is retired while the five others stay suspended ($(issue_claim_states "$tree1" | paste -sd ',' -)), and the Sandbox is gone again with the pod and the disk it owned"
+close_waits "$tree1" ||
+  fail "$tree1 reads $(jq -c --arg issue "$tree1" '.issues[$issue] | {phase, closeWait}' "$evidence/check-closed.json") after its production check closed as not run, want it in verifying with a closeWait: a check closed as not run closes nothing"
+dispatch_status_is "$tree1" testing >/dev/null ||
+  fail "the board shows $tree1 $(dispatch_get "issues/$tree1" | jq -r .status) after its production check closed as not run, want testing"
+! tree_lingered "$tree1" || fail "the daemon lingered tree $tree1, which nothing closed"
+note "the bound started the last look of $tree1's production check, the only wake left after the first look asked for one past the bound (the state at the wake: $(jq -c --arg issue "$tree1" '.issues[$issue].check | if . == null then "already closed" else {role, looks, lookOpen, lastWake: .lastWake.kind, last} end' "$evidence/check-look-2.json"); the daemon log: cause bound, last), Sandbox $root_pod Running with its pod; its pending closed the check as not_run, the state omits it, the tester's claim is retired while no other claim is ($(issue_claim_states "$tree1" | paste -sd ',' -)); $tree1 stays in verifying, the board testing, its closeWait $(jq -c --arg issue "$tree1" '.issues[$issue].closeWait' "$evidence/check-closed.json"), and its tree lingers nowhere"
+# The operator's park takes tree 1 out of the workflow and lingers the tree: the linger suspends
+# every claim of tree 1 but the tester's, which its check's close retired, each session kept for a
+# re-admission to resume, and queues an IssueSuspend that deletes the root's Sandbox with the pod
+# and the disk it owned. The daemon's suspension of a role in a turn waits for that turn to end,
+# however long it takes, so the wait is long, and a role still unsuspended when it runs out is
+# named with whether its suspension is held for a turn.
+take_out "$tree1"
+on_tree "$tree1" wait_for_phase "$tree1" "done" 300
+tree_lingered "$tree1" || fail "the daemon logged no linger of tree $tree1 at its park"
+tree1_roles_unsuspended() {
+  note "tree 1's claims not yet suspended: $(claims_cli list --json | jq -c --arg i "$tree1" '[.claims[] | select(.issue == $i and .role != "tester" and .state != "suspended")
+    | {role, state, suspensionHeld: (.suspensionHeld // false), pending: (.pending.phase // null)}]')"
+  limit_pending_blocked
+}
+timeout_hook=tree1_roles_unsuspended
+until_true 1800 "the park to suspend every role of $tree1 but its retired tester" claim_states_are "$tree1" tester retired suspended
+timeout_hook=limit_pending_blocked
+until_true 600 "the park to delete the root's Sandbox $root_pod and take its pod and disk" root_parked
+# The park released the claim tree 1's architect took on its root issue (LEGION-392).
+dispatch_events "$tree1" | jq -e 'any(.[]; .type == "issue.claimed" and .actor.kind == "session")' >/dev/null ||
+  fail "$tree1's events hold no issue.claimed by its architect's session"
+root_claim_released() { dispatch_get "issues/$1" | jq -e '.claim == null' >/dev/null; }
+until_true 120 "$tree1's root claim to be released by its park" root_claim_released "$tree1"
+note "the operator's park took $tree1 out of the workflow (backlog, phase done) and lingered its tree: the architect, planner, implementer, reviewer and merger are suspended beside the retired tester ($(issue_claim_states "$tree1" | paste -sd ',' -)), Sandbox $root_pod is gone with the pod and the disk it owned, and the park released the root claim its architect took"
 pass
 
 begin node-release
-# Tree 1 lingers (linger_hours 0.5, from the close its merge brought on): no issue of it
+# Tree 1 lingers (linger_hours 0.5, from the operator's park at production-check-bound): no issue of it
 # keeps a Sandbox or a pod — the linger suspends every member and queues an IssueSuspend for each
 # (linger.go beginLinger), which deletes that member's Sandbox, with the six role Secrets it owned,
 # once its pod is gone, and the disk went with the pod; children 2, 3 and 4 had already lost theirs
@@ -6681,7 +6645,7 @@ tree1_lingers() { [ "$(date -u +%s)" -lt "$(($(date -u -d "$tree1_until" +%s) - 
 # tree1_parked WHEN: tree 1's root and its parked children 2, 3 and 4 each have no Sandbox and no
 # disk, so none of them has a pod either: a pod declares the disk in its own template, so a disk
 # that is gone is a pod that is gone. The children's Sandboxes went with their parks, the root's
-# with its production check's close, each stop deleting its Sandbox and the role Secrets it owned
+# with the park's linger, each stop deleting its Sandbox and the role Secrets it owned
 # once that member's pod was gone. WHEN says when the read was made, for a failure's message.
 tree1_parked() {
   local issue modes pod
@@ -6762,14 +6726,14 @@ note "at $at: $releases; $parked_note ($(grep -c . <<<"$tree1_nodes") nodes carr
 pass
 
 begin close
-# At linger expiry (30 minutes from the close that followed tree 1's merge, the daemon's `until`
+# At linger expiry (30 minutes from the operator's park of tree 1, the daemon's `until`
 # for its linger, which node-release read; the expiry may already have passed while node-release
 # waited, and the reads below hold either way; the close waits while a member's production check is
 # open, which production-check-bound saw closed) the tree's cleanup foreground-deletes every Sandbox
 # still carrying tree 1's label, and the linger leaves it little: a member's own stop took its
 # Sandbox and the six role Secrets it owned once that member's pod was gone — child 1's at its done,
 # child 2's at child-release, those of children 3 and 4 at the parks that let the sign-off land, the
-# root's at the linger's IssueSuspend row and again when its production check closed — and each
+# root's at the linger's IssueSuspend row after the park — and each
 # disk went with the pod that owned it. Every member of the tree is out of the workflow, so nothing
 # is handed over and nothing is left behind.
 # The Sandboxes are read by the tree label, which the cleanup selects them by; the disks by their

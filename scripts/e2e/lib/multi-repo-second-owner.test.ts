@@ -378,9 +378,13 @@ describe("second-owner: the role's credential, resolved once, reaching another o
     );
   });
 
-  test("a phase before the close (merging) is a FAIL even with a merged PR and valid credentials", async () => {
+  test("a phase before the merge's record (merging) is a FAIL even with a merged PR and valid credentials", async () => {
     const result = await scenario({ phase: "merging" });
     expectVerdictFail(result);
+  });
+
+  test("verifying, where a merged issue waits for its checks, is a PASS like done", async () => {
+    expectPass(await scenario({ phase: "verifying" }));
   });
 
   describe("a verdict FAIL, never a PASS, for each way the probes can go wrong", () => {

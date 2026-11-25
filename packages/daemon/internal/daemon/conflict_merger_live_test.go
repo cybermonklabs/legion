@@ -15,10 +15,12 @@
 // told the merge landed and to merge only once the reviewer's approval of the new head is on the
 // pull request, and the reviewer is asked to read the merge with `git show --remerge-diff` and
 // approve the new head (R2). A required check that settles red on the new head is told to the
-// merger and the architect, and not to the implementer. GitHub's merge of the pull request closes
-// the issue. Throughout, the issue never enters implementing: every move the daemon logs for it goes
-// from accepting to retro to merging to done, no read of GET /legion/v1/state shows implementing,
-// and the daemon writes no in_progress status to Dispatch. Last, the merger's own
+// merger and the architect, and not to the implementer. GitHub's merge of the pull request moves the
+// issue to verifying, and the first read of its checks after it closes the issue: the project runs
+// no production check and the issue has no check to wait for. Throughout, the issue never enters
+// implementing: every move the daemon logs for it goes from accepting to retro to merging to
+// verifying to done, no read of GET /legion/v1/state shows implementing, and the daemon writes no
+// in_progress status to Dispatch. Last, the merger's own
 // prompt, as its launch carries it, is printed beside what the daemon sent it, for a reader to
 // hold the one against the other. scripts/e2e/conflict-merger.sh builds this driver with
 // `-tags e2e`, owns the nats-server it runs against, and takes the PostgreSQL from
@@ -118,7 +120,7 @@ func TestAConflictPastTheReviewIsTheMergersLive(t *testing.T) {
 	r.step("step2-sign-off-and-retro-ask-nothing-and-merging-asks-the-merger", r.mergingAsksTheMerger)
 	r.step("step3-the-mergers-push-lands-and-the-reviewer-is-asked-to-read-the-merge", r.mergerMergeLands)
 	r.step("step4-a-red-check-in-merging-reaches-the-merger-and-not-the-implementer", r.redCheckReachesTheMerger)
-	r.step("step5-githubs-merge-closes-the-issue-which-never-entered-implementing", r.mergeClosesTheIssue)
+	r.step("step5-githubs-merge-moves-the-issue-to-verifying-and-its-checks-close-it-which-never-entered-implementing", r.mergeThenTheChecksCloseTheIssue)
 	r.step("step6-the-mergers-prompt-as-its-launch-carries-it", r.mergerPromptAsLaunched)
 }
 
@@ -444,18 +446,21 @@ func (r *conflictMergerLive) redCheckReachesTheMerger() {
 	r.note("read back: %s is still in merging", r.key)
 }
 
-// Step 5. GitHub merges the pull request at the merger's head, which closes the issue: done. Then
+// Step 5. GitHub merges the pull request at the merger's head, which moves the issue to verifying,
+// and the first read of its checks after the merge closes it: done, since the project runs no
+// production check (its configuration names none) and the issue has no check to wait for. Then
 // what held over the whole run: the moves the daemon logged for the issue went from accepting to
-// retro, to merging and to done, and no other; every read of GET /legion/v1/state the watch made
-// showed the issue in those phases, in that order, and never in implementing; the daemon wrote no
-// in_progress status to Dispatch; and every merge-forward message it delivered or ended went to the
-// merger or the reviewer, none to the implementer.
+// retro, to merging, to verifying and to done, and no other; every read of GET /legion/v1/state the
+// watch made showed the issue in those phases, in that order, and never in implementing; the daemon
+// wrote no in_progress status to Dispatch; and every merge-forward message it delivered or ended
+// went to the merger or the reviewer, none to the implementer.
 //
 // The order of the phases is read from the daemon's log, not from the watch. The daemon logs each
 // move its transition table makes once the move commits (phaseChangedLine). The watch reads the
 // state ten times a second, and the driver completes retro at once, so retro can fall between two
-// of its reads (phaseWatch). The watch still holds what the route showed.
-func (r *conflictMergerLive) mergeClosesTheIssue() {
+// of its reads (phaseWatch), and so can verifying, which the read after the merge ends. The watch
+// still holds what the route showed.
+func (r *conflictMergerLive) mergeThenTheChecksCloseTheIssue() {
 	t := r.t
 	r.waitProcessed(r.publishMergeOf(r.number, r.key, mergerMergeHead, conflictBase))
 	r.note("drove GitHub's merge of #%d at %s onto %s", r.number, mergerMergeHead, conflictBase)
@@ -467,14 +472,14 @@ func (r *conflictMergerLive) mergeClosesTheIssue() {
 		moves = r.phaseMoves()
 		return len(moves) > 0 && strings.HasSuffix(moves[len(moves)-1], " to "+string(phase.Done))
 	})
-	if want := []string{"accepting to retro", "retro to merging", "merging to done"}; !slices.Equal(moves, want) {
+	if want := []string{"accepting to retro", "retro to merging", "merging to verifying", "verifying to done"}; !slices.Equal(moves, want) {
 		t.Fatalf("the daemon logged the moves %v of %s, want exactly %v: never implementing", moves, r.key, want)
 	}
 	reads, failed, seen := r.watch.stop()
 	if reads == 0 {
 		t.Fatalf("the watch of %s's phase read GET /legion/v1/state no time (%d reads failed): it saw nothing, so it says nothing", r.key, failed)
 	}
-	order := []phase.Phase{phase.Accepting, phase.Retro, phase.Merging, phase.Done}
+	order := []phase.Phase{phase.Accepting, phase.Retro, phase.Merging, phase.Verifying, phase.Done}
 	if seen[0] != phase.Accepting || seen[len(seen)-1] != phase.Done || !inOrder(seen, order) {
 		t.Fatalf("the watch of %s read the phases %v over %d reads, want accepting first, done last and each in the order %v: never implementing",
 			r.key, seen, reads, order)
@@ -585,19 +590,19 @@ func (r *conflictMergerLive) pullRequest() record.PullRequest {
 // a re-admitted root's and the record of a child that enters its tree (enterChild).
 //
 // The run moves no phase through any of them. Its root is seeded in accepting with no child, and
-// the driver sends no stop, plan, retry, adoption or Dispatch event. GitHub's merge closes the root
-// through the table, because its tree lingers only once the root has left. The root's leave that
-// follows does reach one of them: beginLinger runs endTaskWithLeave, which writes done over the
-// done the move wrote and so changes no phase. The driver scripts no failure of the fake runtime
-// either. A claim that failed anyway holds the issue only where its role works the issue's phase
-// and is not an architect (claimFailed): here the implementer's in retro and the merger's in
-// merging. A failed claim of any other role holds nothing. A hold in retro fails the driver before
-// retro ends, since the daemon refuses the retro completion of a held issue, and a hold from
-// merging before step 4's last read of the issue fails a read that wants merging. The one release
-// of a hold in the run is GitHub's merge of an issue held from merging (closeMerged), which the
-// daemon logs as merging to done. So a hold from merging after step 4's last read leaves the three
-// moves in the log, and step 5's check of the watch refuses it only where one of the watch's reads
-// fell inside it.
+// the driver sends no stop, plan, retry, adoption or Dispatch event. GitHub's merge moves the root to
+// verifying through the table, and the read of its checks after the merge closes it through the
+// table, because its tree lingers only once the root has left. The root's leave that follows does
+// reach one of them: beginLinger runs endTaskWithLeave, which writes done over the done the move
+// wrote and so changes no phase. The driver scripts no failure of the fake runtime either. A claim
+// that failed anyway holds the issue only where its role works the issue's phase and is not an
+// architect (claimFailed): here the implementer's in retro and the merger's in merging. A failed
+// claim of any other role holds nothing. A hold in retro fails the driver before retro ends, since
+// the daemon refuses the retro completion of a held issue, and a hold from merging before step 4's
+// last read of the issue fails a read that wants merging. The one release of a hold in the run is
+// GitHub's merge of an issue held from merging, which the daemon logs as merging to verifying. So a
+// hold from merging after step 4's last read leaves the four moves in the log, and step 5's check of
+// the watch refuses it only where one of the watch's reads fell inside it.
 const phaseChangedLine = "workflow: phase changed"
 
 // phaseMoves is each move of the issue the daemon logged (phaseChangedLine), oldest first, as

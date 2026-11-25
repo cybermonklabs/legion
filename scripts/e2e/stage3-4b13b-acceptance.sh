@@ -13,7 +13,8 @@
 #   - phase-finished carrying the worker's summary and verdict;
 #   - the merger merging its own pull request, under the squash message it writes itself, and a
 #     design gate re-closed in merging holding that merge until the person approves the new version;
-#   - pr-merged / pr-closed-unmerged, and a merge the merger did not make closing the issue.
+#   - pr-merged / pr-closed-unmerged, and a merge the merger did not make moving the issue to
+#     verifying, where its close waits for its checks.
 # Nothing here merges into sjawhar/legion-smoke's main: each proof PR is retargeted to a scratch base
 # branch before any merge, and the scratch base is deleted at the end.
 #
@@ -581,7 +582,7 @@ instructor() {
 phase_rank() {
   case "$1" in
     admitted) echo 0 ;; planning) echo 1 ;; implementing) echo 2 ;; testing) echo 3 ;; reviewing) echo 4 ;;
-    accepting) echo 5 ;; retro) echo 6 ;; merging) echo 7 ;; done) echo 8 ;; *) echo -1 ;;
+    accepting) echo 5 ;; retro) echo 6 ;; merging) echo 7 ;; verifying) echo 8 ;; done) echo 9 ;; *) echo -1 ;;
   esac
 }
 phase_at_least() { local p; p=$(daemon_state | jq -r --arg i "$1" '.issues[$i].phase') || return 1; [ "$(phase_rank "$p")" -ge "$(phase_rank "$2")" ]; }
@@ -994,7 +995,7 @@ printf '%s\n' "$child2" >>"$work/instructor-issues"
 set_status "$child2" todo
 wait_for_phase "$child2" planning
 wait_for_worker "$child2" planner
-# The proof human closes the child: the workflow's leave takes it out as the merge's close does (phase done,
+# The proof human closes the child: the workflow's leave takes it out as any close does (phase done,
 # Dispatch status done), and rerun_child must reopen a closed Dispatch issue.
 set_status "$child2" "done"
 until_true 300 "$child2 to leave the workflow" issue_phase "$child2" "done"
@@ -1103,8 +1104,8 @@ for issue in "$root1" "$root2" "$root3"; do until_true 1800 "$issue in merging w
 note "each merger held at its assignment: $({ grep ' merger merging' "$evidence/instructor.log" || true; } | tr '\n' ';')"
 pass
 
-# ---- 6. a merge the merger did not make still closes the issue --------------------------------------
-begin a-merge-in-merging-closes-the-issue
+# ---- 6. a merge the merger did not make moves the issue to verifying -------------------------------
+begin a-merge-in-merging-moves-the-issue-to-verifying
 # $root2's merger is held at its assignment and never released, so the merge below is the proof
 # human's and the merger completes nothing: what moves $root2 is the daemon's own reading of the
 # merged pull request. $root2's pull request targets $scratch_base, which carries no ruleset, so
@@ -1115,15 +1116,24 @@ begin a-merge-in-merging-closes-the-issue
 # UNSTABLE also confirms every check on this head actually passed — which matters here, since
 # $root2's retro push (this check's own last push to it) runs the project's full CI.
 merge_when_clean "$repo" "${pr_of[$root2]}" --squash --delete-branch
-# The merge closes the issue where it stands, so its architect is told no pr-merged: that notice is
-# for a merge the close did not follow, and $root2's tree has nothing else in the workflow.
-wait_for_phase "$root2" "done" 600
+# A merge closes nothing by itself: the daemon's read of the merged pull request moves $root2 from
+# merging to verifying, where its close waits for the checks of its goal, its production check among
+# them (this project names no production_check, so the tester works it). So its architect is told no
+# pr-merged, which is for a merge that lands before the issue reaches merging, and nothing closes
+# $root2 in this run: its production check finds no production, and its bound is 14 days.
+wait_for_phase "$root2" verifying 600
+phase_change_logged "$root2" merging verifying pull_request_merged ||
+  fail "the daemon log has no \"workflow: phase changed\" line moving $root2 from merging to verifying on pull_request_merged"
 sleep 30
 n=$(notice_deliveries "$root2" architect "$(notice_needle pr-merged "$root2")")
 c=$(notice_deliveries "$root2" architect "$(notice_needle pr-closed-unmerged "$root2")")
-[ "$n" = 0 ] || soft "$root2's architect got $n pr-merged notices for a merge that closed the issue, want 0"
+[ "$n" = 0 ] || soft "$root2's architect got $n pr-merged notices for a merge of the issue in merging, want 0"
 [ "$c" = 0 ] || soft "$root2's merged PR also produced $c pr-closed-unmerged notices"
-note "merged $repo#${pr_of[$root2]} while its merger was held in merging: $root2 → done on the daemon's read of the merge, with no merger completion; pr-merged $n, pr-closed-unmerged $c (controls)"
+daemon_state | jq -e --arg i "$root2" '.issues[$i] | .phase == "verifying" and .closeWait != null' >/dev/null ||
+  fail "$root2 reads $(daemon_state | jq -c --arg i "$root2" '.issues[$i] | {phase, closeWait}') 30 s after its merge, want it in verifying with a closeWait: the merge closes nothing"
+dispatch_status_is "$root2" testing >/dev/null ||
+  fail "the board shows $root2 $(dispatch_get "issues/$root2" | jq -r .status) after its merge, want testing"
+note "merged $repo#${pr_of[$root2]} while its merger was held in merging: $root2 → verifying on the daemon's read of the merge, with no merger completion, the board testing and its closeWait $(daemon_state | jq -c --arg i "$root2" '.issues[$i].closeWait'); pr-merged $n, pr-closed-unmerged $c (controls)"
 pass
 
 # ---- 7a. the merger's pane: no grant file, and no `legion` run from bash ----------------------------
@@ -1176,13 +1186,16 @@ case "$merge_message" in
   *"Omp-Session:"* | *"Legion-Role:"* | *"skip-checks: true"* | *"Dispatch: $root1"*)
     soft "the squash commit message of $repo#${pr_of[$root1]} carries the branch's own commit messages: $merge_message" ;;
 esac
-# The merge closes the issue, and its architect is told no pr-merged: nothing of $root1's tree is
-# left in the workflow, so the close follows the merge at once.
-wait_for_phase "$root1" "done" 600
+# A merge closes nothing by itself: the daemon's read of it moves $root1 to verifying, where its close
+# waits for its checks, and its architect is told no pr-merged, which is for a merge that lands before
+# the issue reaches merging.
+wait_for_phase "$root1" verifying 600
 sleep 60
 n=$(notice_deliveries "$root1" architect "$(notice_needle pr-merged "$root1")")
-[ "$n" = 0 ] || soft "the merge that closed $root1 still told its architect pr-merged ($n)"
-note "the merger merged $repo#${pr_of[$root1]} at $merge_when_clean_commit under its own message ('$merge_message'); $root1 → done on the daemon's read of that merge, pr-merged notices $n (negative control)"
+[ "$n" = 0 ] || soft "the merge of $root1 in merging still told its architect pr-merged ($n)"
+issue_phase "$root1" verifying >/dev/null ||
+  fail "$root1 left verifying within a minute of its merge, reading $(daemon_state | jq -c --arg i "$root1" '.issues[$i].phase'): its production check finds no production, so nothing closes it"
+note "the merger merged $repo#${pr_of[$root1]} at $merge_when_clean_commit under its own message ('$merge_message'); $root1 → verifying on the daemon's read of that merge, still there a minute later, pr-merged notices $n (negative control)"
 pass
 
 # ---- 8. a design gate that re-closes in merging holds the merge until a person approves ------------
@@ -1247,9 +1260,9 @@ until_true 600 "the opening of version $reclosed to reach $root3's merger" sessi
 how="a task"
 ! notice_delivered "$root3" merger "$opening" || how="the opened role message"
 await_merger_merge "$repo" "${pr_of[$root3]}"
-wait_for_phase "$root3" "done" 600
+wait_for_phase "$root3" verifying 600
 daemon_state >"$evidence/state-after-gated-merge.json" || true
-note "the closed gate held the merge: $repo#${pr_of[$root3]} stayed open while version $reclosed was with the person, the opening reached the merger as $how, and the merger merged at $merge_when_clean_commit; $root3 reached done"
+note "the closed gate held the merge: $repo#${pr_of[$root3]} stayed open while version $reclosed was with the person, the opening reached the merger as $how, and the merger merged at $merge_when_clean_commit; $root3 reached verifying, where its close waits for its checks"
 pass
 
 begin production-untouched

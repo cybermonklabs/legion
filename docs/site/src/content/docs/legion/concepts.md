@@ -1,6 +1,6 @@
 ---
 title: Concepts
-description: The controller, the architect, the phase workers and the plan that picks which of them an issue runs, admission and the legion label, the design gate, handoffs, review, the architect's acceptance, the merge that closes the issue and the production check your project's production_check setting opens after it.
+description: The controller, the architect, the phase workers and the plan that picks which of them an issue runs, admission and the legion label, the design gate, handoffs, review, the architect's acceptance, the merge, the close when the issue's checks pass, and the production check your project's production_check setting opens after the merge.
 sidebar:
   order: 2
 ---
@@ -121,7 +121,7 @@ admission to close. The architect:
 3. asks you to approve the spec (the [design gate](#the-design-gate));
 4. decides how many pull requests deliver the work best, files any child issues that takes, and releases them with their dependencies;
 5. decides what to do when a phase gets stuck, a review round cap is reached, or CI keeps failing;
-6. accepts the issue once the step before its acceptance passes (in the default steps, the reviewer's approval), reading the evidence of the steps that ran, or sends it back; the merge then closes it. An issue whose [plan](#the-plan-of-an-issue) has no acceptance step goes on to retro without one.
+6. accepts the issue once the step before its acceptance passes (in the default steps, the reviewer's approval), reading the evidence of the steps that ran, or sends it back. After the merge, the issue closes when its checks pass ([the close](#the-close)). An issue whose [plan](#the-plan-of-an-issue) has no acceptance step goes on to retro without one.
 
 The architect writes no code. A child issue runs the steps its own plan names, as its root does,
 with a pull request of its own, inside the same tree.
@@ -144,13 +144,14 @@ child's first phase starts, the architect above it keeps the child.
 **The children do the work first.** An issue's first phase does not start while Dispatch shows an
 open child under it, a child the architect has filed and not released yet included; the architect
 is told so once, with a notice naming each open child and the Dispatch status that holds it. A
-parent's own first phase can start once the last of them has left the workflow, and its pull
-request then builds on a base that already carries their merges. For the same reason the daemon
-refuses a parent's acceptance, and a root's close, while an issue beneath it is still in the
-workflow. A child's own architect starts with the child's first phase, so the children it files
-run beside the child's own work. Where its task has an acceptance step, the child is accepted only
-after its last round, on a head that the step before its acceptance passed and at which its checks
-pass.
+parent's own first phase can start once each of them has left the workflow or merged and stands in
+`verifying`, and its pull request then builds on a base that already carries their merges. For the
+same reason the daemon refuses a parent's acceptance while an issue beneath it is in the workflow
+and not in `verifying`. An issue's close waits for every issue beneath it in the workflow, one in
+`verifying` included ([the close](#the-close)). A child's own architect starts with the child's
+first phase, so the children it files run beside the child's own work. Where its task has an
+acceptance step, the child is accepted only after its last round, on a head that the step before
+its acceptance passed and at which its checks pass.
 
 ## Phase workers
 
@@ -173,9 +174,10 @@ working copy and no bookmark reaches, such as a side head, is not kept.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
-| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
+| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow and not in `verifying`. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
-| `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
+| `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes nothing by itself: once the daemon reads it, the issue moves to `verifying`. | implement App |
+| `verifying` | none | The issue's pull request has merged, and its close waits ([the close](#the-close)): for each check of its Verification document to pass, for its production check, for each issue beneath it, for a defect or for a next change. It holds no admission slot, and its Dispatch status is `testing`. | none |
 
 A failed test or a review that requests changes sends the issue back to `implementing` from
 testing or review, and the change goes through the issue's steps after the implementer again: in
@@ -635,63 +637,143 @@ head GitHub reports dirty conflicts with the base itself, which the merger merge
 state GitHub answers unknown is asked again on the merger's own backoff for up to five minutes and
 then read the same way.
 
-What closes the issue is the daemon's own reading of the merged pull request, by GitHub's webhook
-or by its own read: it writes `done`, whether the merger's completion arrived before that or after
-it.
+The daemon's own reading of the merged pull request, by GitHub's webhook or by its own read,
+records the merge, whether the merger's completion arrived before that or after it.
+A merge no longer closes the issue by itself: the issue moves to `verifying`, and
+[the close](#the-close) says what it waits for.
+
+## The close
+
+After its merge, the issue stands in `verifying`, with the Dispatch status `testing`.
+It holds no admission slot, no worker starts for the phase, and the move suspends no role.
+It stays there until all of these hold:
+
+- each check of its Verification document passes, as Dispatch computes it at the newest merge;
+- its [production check](#the-production-check) of that merge passes, where the project runs one;
+- no issue beneath it is in the workflow, and no open child beneath it;
+- no defect waits, and no next change is open.
+
+The daemon then closes it and writes `done`.
+Where all of that already holds when the merge lands, the issue closes at the first read of its
+checks after it.
+A merged issue that waits only for an issue beneath it stands in `verifying` too, so a root whose
+tree still runs waits there for the rest of its tree.
+A child held at `admitted` under its root starts at the root's merge, and the root's close waits
+for it.
+Each read of the checks also reads the issue's children from Dispatch, so a child that the
+architect files holds the close as soon as Dispatch holds it.
+A role's word that the issue is done closes nothing: the close reads the checks.
+
+What the close waits for is in the issue's document `close-wait.md`, and in `legion state`'s
+`closeWait`.
+Legion writes the document again whole at each change of the wait, and posts no message for such
+a change.
+The document's versions are the history, and its last version says that the issue closed and when.
+Once a day, Legion tells the owning architect each term that still holds the close, with its cause,
+so that it acts on it.
+For example, it has an eligible agent run a check, or a person approve a reworded check.
+
+**The next change.**
+A check that Dispatch computes as failed after a merge, and a production check's `fail`, start the
+next change of the same issue by themselves.
+Legion tells the owning architect at once, and no role reports them.
+A defect that a role finds after the task's last step passed starts one too: the role reports it
+with the `legion` tool's `report_defect`.
+A gap found before that goes back as any gap does, and in `accepting` by the owner's return.
+The retro's check gate does not change: a `before_merge` check with no pass at the head is a failed
+check, and the work goes back for it.
+The next change is a new pull request of the same issue, on the same branch `legion/<KEY>`, which
+Legion first moves to the head of the base that the last pull request merged into.
+It runs the default steps, or the steps of a plan that its owning architect gives for it before its
+first step, and it asks no person to approve the design again.
+Its own pull request needs its own pass of each `before_merge` check.
+It starts only after the merge of the reviewed work, and after the merger's completion.
+A next change never starts while another one is open.
+Legion stops no next change for a count: at each multiple of `review_round_cap` next changes, it
+tells the owning architect and the controller, and goes on.
+The tree's architect keeps its run through a next change of its root: its pending task and a
+request for approval in flight stand, and the notice `next-change` tells it of the change.
+The next change is no deferral, because the issue stays open and Legion starts the work by itself.
+
+**What changes a check, and who else closes an issue.**
+Only a new version of the Verification document that a person approves removes or rewords a check,
+and Legion closes nothing over a fail.
+Work that is owed after the merge and is no defect is a check of the Verification document whose
+`when` is after the merge, which the owning architect adds before its acceptance.
+Legion keeps no second list.
+The owning architect's `done` on a child whose pull request merged is set back: such a child closes
+by its checks.
+`close_root` is refused for a root whose pull request merged, which closes by its checks.
+Where its architect judges the rest moot, it withdraws each defect with its reason and asks a
+person, whose `done` closes the root.
+After the close, Legion opens nothing for the issue.
+A `fail` recorded later on an issue that Legion closed by its checks sends the controller one
+notice, `closed-check-failed`.
 
 ## The production check
 
-The merge closes the issue: the daemon reads the merged pull request, writes `done`, and nothing is
-left of the issue to develop. A root whose tree still runs, and a child with an issue beneath it
-still in the workflow, are the issues the merge does not close at once: the daemon records the
-merge, and the issue stays in `merging` with its workers while the issues beneath it reach their
-own merges.
-It stands there on no admission slot, as `accepting` and `retro` do, so no wait of it changes the
-cap.
-Its architect is told once which issues the close waits for,
-and the close comes when the last of them is done or parked. What is
-left after the close is to see the change work in production, and that is
-work after the close, where your project asks for it: `projects.<KEY>.production_check` in
-`legion.yaml` takes `off` or `tester` and is `tester` by default, so the tester is handed a
-production check as the issue closes, in its own session or, where the issue's plan had no tester
-step, a fresh one, and a project that sets `off` opens no
-check at all — a child's close retires every claim of the child and releases its pod, and a
-root's close suspends every claim of its tree for the linger, whose end retires them. The loader
-refuses any other value, naming the key and the value it read. The check's record carries the
-role, written when the check opened, so changing the setting leaves an open check with the role
-it started under, and only that role may report on it. Each look of the check reaches the deploy
-as your
-deployment instructions say (the merge commit published to your deploy role, with no reply
-awaited), reads whether production carries the merge, and ends one of three ways: `pass`, once
-the agent drove the change in production through a user's own access path, drove each
-requirement of the issue only the deploy can show as the requirement names it, and recorded the
-result of the issue's `after_merge` check, naming the merge commit and what woke the look, with
-that result's line on the pull request; `pending`,
-when production does not carry the merge yet, or an observation a requirement names has not
-happened yet; or `fail`, a requirement observed as not met, one still unobserved at the last
-look whether or not production carries the merge, or a defect, naming the issue, the pull
-request, the merge commit, what it drove and what failed. A defect with a clear fix goes to the
-controller, which gives it to the tree that owns that code and files an issue only when none does.
-One that needs a decision is a Dispatch ask on Legion's
-daily report issue, so you decide whether it needs an issue.
-The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message.
+Where your project asks for it, the close also waits for a production check:
+`projects.<KEY>.production_check` in `legion.yaml` takes `off` or `tester` and is `tester` by
+default.
+The check opens at the first read of the issue's checks after its merge where no issue beneath it
+is in the workflow.
+The tester is handed it in its own session or, where the issue's plan had no tester step, a fresh
+one.
+A project that sets `off` opens no check, and its close waits for none.
+In such a project no role runs a check after the merge: at the merge, the owning architect is told
+each such check, and that it must have an eligible agent run it.
+The loader refuses any other value, naming the key and the value it read. The check's record
+carries the role, written when the check opened, so changing the setting leaves an open check with
+the role it started under, and only that role may report on it.
+The look's task names each check of the issue whose `when` is `after_merge` or `default_branch`
+and that names no `ci_check`, and the checking role runs each of them at each look.
+A check whose `subject` is `code` is recorded at a commit of the merge's branch that holds the
+newest merge.
+A check whose `subject` is `production` or `graph` is recorded at the commit of the build that the
+live system runs, which holds the merge.
+A pass of a check after the merge comes from CI, another program, or an agent that made no commit
+of the change, never from the implementer: the tester qualifies.
+Each look of the check reaches the deploy as your deployment instructions say (the merge commit
+published to your deploy role, with no reply awaited), reads whether production carries the merge,
+and ends one of three ways:
+`pass`, once the agent drove the change in production through a user's own access path, drove each
+requirement of the issue only the deploy can show as the requirement names it, and recorded a
+result of each check the look's task names, naming what woke the look, with each result's line on
+the pull request;
+`pending`, when production does not carry the merge yet, or an observation a requirement names has
+not happened yet;
+or `fail`, a requirement observed as not met, or a defect of the change, naming the issue, the pull
+request, the merge commit, what it drove and what failed.
+A `fail` starts the next change of the issue ([the close](#the-close)) and goes to no controller.
+A defect the look finds outside the issue goes to the controller, which gives it to the tree that
+owns that code and files an issue only when none does.
+One that needs a decision is a Dispatch ask on Legion's daily report issue, so you decide whether it
+needs an issue.
+The record is those results and the pull request.
 
 Nothing waits for the deploy, and the agent names its own next look. A `pending` on any look but
 the check's last carries `wake_at`, an RFC 3339 time: when the agent wants to look again. The
-look ends, the pod goes — and its disk
-with it, since an issue's disk belongs to its pod — while the conversation is kept in the session
-database, and at the time the agent named a new pod comes back and the same session takes the
+look ends and the checking role's claim is suspended. The pod goes once no role of the issue has
+had a turn for ten minutes, as [Phase workers](#phase-workers) says — and its disk with it, since
+an issue's disk belongs to its pod — while the conversation is kept in the session database. At
+the time the agent named, a pod comes back and the same session takes the
 next look. A time less than 60 seconds ahead becomes 60 seconds ahead, and a time at or after the
 check's own bound starts no look of its own, because the look at that bound already stands.
-Nothing else wakes a check: no deploy run, no Dispatch `issue.deployed`, no Dispatch build and no
-daemon boot, and the daemon reads no deployment's production workflows at all.
+Nothing else wakes an open check: no deploy run, no Dispatch `issue.deployed`, no Dispatch build and
+no daemon boot, and the daemon reads no deployment's production workflows at all.
 A look is bounded at two hours, and a look nobody reported — its two hours, an operator's hold,
 or a claim that failed to start — starts the next look two hours later. A look that began before
 a pause of the project ended counts its two hours from the resume, or from its agent's last ready
 after the resume where that is later, and counts nothing while that agent is still starting.
-The whole check is bounded at `production_check_hours` (336, fourteen
-days, by default): the look at that bound is the last, and a `pending` there closes the check
-as not run, which the agent writes on the pull request. `legion state` prints how many checks
+The whole check is bounded at `production_check_hours` (336, fourteen days, by default), counted
+from its open: the look at that bound is the last.
+On the last look, a requirement still unobserved is `pending`, which closes the check as not run,
+and the agent writes so on the pull request.
+A requirement observed as not met is a `fail`.
+A check closed as not run is no pass, so the issue stays open, and its owning architect is told
+once.
+After that, each result recorded for a check without a pass opens one more look.
+`legion state` prints how many checks
 are open and the oldest of them, with when its next look is due.
 
 A child's close deletes its pod, and the disk goes with it; a root's close releases any admission

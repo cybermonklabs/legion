@@ -1,6 +1,6 @@
 ---
 title: Walkthrough
-description: One issue going through Legion from handover to the merge that closes it and the production check your project's production_check setting opens after it, as you see it in Dispatch, and an example Legion daemon in the operator's terminal.
+description: One issue going through Legion from handover to its merge, the production check your project's production_check setting opens after it, and the close when its checks pass, as you see it in Dispatch, and an example Legion daemon in the operator's terminal.
 sidebar:
   order: 6
 ---
@@ -72,23 +72,28 @@ The merger reads the pull request and merges it itself, at the head it read and 
 it writes — the pull request's title and number, with an empty body — so GitHub's own default,
 which joins every commit message of the branch, puts none of Legion's internal trailers on your
 default branch. The merge lands under the repository's own rules, the checks it requires among
-them. It closes the issue: the daemon reads the merged pull request and moves the issue to `done`.
+them. The merge closes nothing by itself: the daemon reads the merged pull request and moves the
+issue to `verifying`, with the status `testing`, where it waits for its checks. The issue's
+document `close-wait.md` names what its close waits for.
 
-![The issue closed as Done at the merge, with the architect's acceptance on it.](/legion/media/legion/signed-off.png)
+## 8. The production check and the close
 
-## 8. The production check
-
-After the close the tester gets the production check in its live session, or in a fresh one where
+After the merge the tester gets the production check in its live session, or in a fresh one where
 the task had no tester step — the role your project's `production_check` names, which is the
 tester unless the setting is `off`, where no check opens. It asks your deploy
-role to carry the merge and waits for no reply; when production does not carry the merge yet, or
+role to carry the merge and waits for no reply. When production does not carry the merge yet, or
 carries it with a requirement only the deploy can show still unobserved, it reports `pending` with
-`wake_at`, the time it wants to look again, its pod goes, and the daemon brings it back at that
-time, until the check's last look, where such a requirement still unobserved is a `fail` whether
-or not production carries the merge. Nothing else wakes a check. The look that finds the merge in
-production drives the change and records the result of
-the issue's `after_merge` check, naming the merge commit and what woke the look, with that
-result's line on the pull request. A closed issue takes such a result, a comment and a message.
+`wake_at`, the time it wants to look again, and the daemon brings it back at that time. On the
+check's last look, such a requirement still unobserved is `pending`, which closes the check as not
+run and leaves the issue open. A requirement observed as not met is a `fail`, which starts the
+next change of the issue by itself. Nothing else wakes an open check. The look that finds the
+merge in production drives the change and records a result of each check of the issue that runs
+after the merge, naming what woke the look, with each result's line on the pull request.
+
+When each check of the issue passes and the production check passes, the daemon closes the issue:
+its status becomes `done`.
+
+![The issue closed as Done, with the architect's acceptance on it.](/legion/media/legion/signed-off.png)
 
 ## The operator's view
 

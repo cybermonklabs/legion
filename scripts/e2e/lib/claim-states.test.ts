@@ -2,17 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { scriptFunctions } from "./script-functions";
 
-// claim_states_are ISSUE ROLE STATES OTHERS (lib/workflow.sh), the predicate Stage 4b's done,
-// production-check and production-check-bound checkpoints wait on: the issue's six claims, ROLE's
-// in one of the states STATES names and every other in one of OTHERS, as a close leaves an issue
-// whose production check keeps the role the project's `production_check` names apart from the
-// rest. An empty ROLE spares none, which is how the close of a project whose `production_check`
-// is off leaves the six. It is taken from the script by name and run over a claims_list stub
-// answering `legion claims list --json`'s shape. The second Stage 4b run at 4ab26ee5 failed
-// `done` after 300 s with the daemon log and the checking role's transcript showing the state the
-// predicate names (six suspended at the root's close, that role resumed by the look's start row
-// and idle with the task text): the predicate itself must hold on that listing, and refuse one
-// that differs.
+// claim_states_are ISSUE ROLE STATES OTHERS (lib/workflow.sh), the predicate Stage 3's
+// merger-merge and production-check-bound and Stage 4b's done and production-check-bound
+// checkpoints wait on: the issue's six claims, ROLE's in one of the states STATES names and every
+// other in one of OTHERS. In `verifying` the production check keeps the role the project's
+// `production_check` names apart from the rest, and the move to `verifying` retired no other claim,
+// which a live state or the idle release's suspension leaves; a close leaves the others suspended.
+// An empty ROLE spares none, which is how the close of a project whose `production_check` is off
+// leaves the six. It is taken from the script by name and run over a claims_list stub answering
+// `legion claims list --json`'s shape. The second Stage 4b run at 4ab26ee5 failed `done` after
+// 300 s with the daemon log and the checking role's transcript showing the state the predicate
+// names (six suspended at the root's close, that role resumed by the look's start row and idle
+// with the task text): the predicate itself must hold on that listing, and refuse one that differs.
 const fn = scriptFunctions(join(import.meta.dir, "workflow.sh"));
 
 function holds(
@@ -76,6 +77,18 @@ describe("claim_states_are", () => {
     expect(holds(allSuspended, "", "", "suspended").ok).toBe(true);
     // No claim is apart there, so a tester outside OTHERS fails like any other claim.
     expect(holds(closed, "", "", "suspended").ok).toBe(false);
+  });
+
+  test("holds in verifying for the tester at its look beside claims live or suspended, and refuses a retired one", () => {
+    const verifying = closed.map((c) =>
+      c.role === "architect" || c.role === "merger" ? { ...c, state: "idle" } : c
+    );
+    const live = "ready working idle suspended";
+    expect(holds(verifying, "tester", "ready working idle", live).ok).toBe(true);
+    const retiredReviewer = verifying.map((c) =>
+      c.role === "reviewer" ? { ...c, state: "retired" } : c
+    );
+    expect(holds(retiredReviewer, "tester", "ready working idle", live).ok).toBe(false);
   });
 
   test("refuses a tester outside the named states, another claim not suspended, and a listing short of six", () => {
