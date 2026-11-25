@@ -154,7 +154,7 @@ on:
       - 'packages/envoy/internal/cipher/awssdk/**'
       - 'packages/envoy/internal/cipher/config/**'
       - 'packages/envoy/internal/cipher/dispatchread/**'
-      - 'packages/envoy/internal/cipher/enroll/**'
+      - 'packages/envoy/internal/cipher/enroll/*'
       - 'packages/envoy/internal/cipher/exchange/**'
       - 'packages/envoy/internal/cipher/githubname/**'
       - 'packages/envoy/internal/cipher/groups/*'
