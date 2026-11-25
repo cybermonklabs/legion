@@ -12,6 +12,7 @@ import (
 )
 
 func TestAQueuedStatusWriteKeepsPriorityThroughANewRun(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Implementing)
 	child := record.Issue{Key: "LEGION-209", Repo: root.Repo, DefaultBranch: root.DefaultBranch, GitHubRepo: root.GitHubRepo,
@@ -29,6 +30,7 @@ func TestAQueuedStatusWriteKeepsPriorityThroughANewRun(t *testing.T) {
 }
 
 func TestAHeldStatusWriteUsesTheLatestRecordedPriority(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Implementing)
 	root.Status, root.DispatchStatus, root.LastDispatchSeq, root.Priority = "backlog", "todo", 8, record.P2

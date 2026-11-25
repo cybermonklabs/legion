@@ -91,7 +91,7 @@ func TestSetStatusTakesAChildrenArgument(t *testing.T) {
 			} {
 				parent := r.create(asSession, tc.parent, labelled)
 				r.admit(parent.Key)
-				child := r.create(asSession, tc.child, map[string]any{"parent": parent.Key})
+				child := r.create(asPerson, tc.child, map[string]any{"parent": parent.Key})
 				setDispatchStatus(t, r.baseURL, child.Key, "todo")
 				r.quiet(parent.Key, child.Key)
 
@@ -164,9 +164,9 @@ func TestReleaseChildrenRefusesAnIssueWhoseParentStaysOutOfWork(t *testing.T) {
 			r := statusArgumentsRig(t, rule)
 			root := r.create(asSession, "Kelp farm monitor", map[string]any{"labels": []string{"legion"}})
 			grant := r.admit(root.Key)
-			parent := r.create(asSession, "Lagoon dredging plan", map[string]any{"parent": root.Key})
+			parent := r.create(asPerson, "Lagoon dredging plan", map[string]any{"parent": root.Key})
 			setDispatchStatus(t, r.baseURL, parent.Key, "backlog")
-			child := r.create(asSession, "Moraine drainage study", map[string]any{"parent": parent.Key})
+			child := r.create(asPerson, "Moraine drainage study", map[string]any{"parent": parent.Key})
 			setDispatchStatus(t, r.baseURL, child.Key, "backlog")
 			r.quiet(parent.Key, child.Key)
 

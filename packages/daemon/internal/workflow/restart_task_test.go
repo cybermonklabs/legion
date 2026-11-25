@@ -69,6 +69,7 @@ func stopsAtTesting(t *testing.T, pool *pgxpool.Pool, engine *Engine, root recor
 // task again at step 1 all the same. The twin: a todo on a root with no plan rows that a failed
 // claim holds puts back the phase the hold is from and starts its role, as today.
 func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
+	t.Parallel()
 	t.Run("a task stopped at testing starts again at step 1", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
@@ -270,6 +271,7 @@ func restartsAtStepOne(t *testing.T, pool *pgxpool.Pool, engine *Engine, key str
 // TestEachReleaseOutOfHeldQueuesTheReconcileOfNewsItsHoldOwedNothing's. The deployment gates the
 // spec of each root, and the root's gate stands open at version 3 from the start.
 func TestARestartDoesWhatAMoveDoesAfterItsStart(t *testing.T) {
+	t.Parallel()
 	t.Run("an ask of the merge forward made before the stop is dropped", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := gatedStepEngine(config.DesignGateRootIssues, nil)
@@ -300,6 +302,7 @@ func TestARestartDoesWhatAMoveDoesAfterItsStart(t *testing.T) {
 // spec of each root, and no reconcile stands queued before the release, so the count is the
 // release's own.
 func TestEachReleaseOutOfHeldQueuesTheReconcileOfNewsItsHoldOwedNothing(t *testing.T) {
+	t.Parallel()
 	for _, release := range []struct {
 		name string
 		// held seeds LEGION-208 held as the release finds it, and answers it.

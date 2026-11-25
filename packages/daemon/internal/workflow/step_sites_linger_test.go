@@ -15,6 +15,7 @@ import (
 // moved out of work, once Dispatch shows the close done. Calling closeMerged directly would miss
 // the event handler's choice of which phases it closes.
 func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
+	t.Parallel()
 	for _, lingering := range []bool{false, true} {
 		name := "live tree"
 		if lingering {
@@ -48,6 +49,7 @@ func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 // A held issue's step runs through its hold, so the issue's leave ends the step of the phase the
 // hold is from.
 func TestAHeldIssueThatLeavesEndsItsHeldStep(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Held)
 	root.Hold = &record.Hold{From: phase.Testing}
@@ -63,6 +65,7 @@ func TestAHeldIssueThatLeavesEndsItsHeldStep(t *testing.T) {
 
 // A person's move of a running issue out of the workflow stops its step, once.
 func TestAPersonsMoveToDoneEndsTheRunningStep(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Reviewing)
 	stepChild(t, pool, "LEGION-209", phase.Reviewing, nil)
@@ -81,6 +84,7 @@ func TestAPersonsMoveToDoneEndsTheRunningStep(t *testing.T) {
 // a root the workflow holds stops the root's own step alone (leave): its member stays in work, as
 // Dispatch shows it (R20 of dispatch://INFRA-3320).
 func TestAnOperatorsTreeLeavesNoStepRecord(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		operator bool

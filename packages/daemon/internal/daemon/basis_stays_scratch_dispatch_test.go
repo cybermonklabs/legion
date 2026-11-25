@@ -402,15 +402,22 @@ type basisRun struct {
 // basisReason is the reason every registration of these proofs carries.
 const basisReason = "The checks serve the ancestor's requirement; both fresh reviews passed."
 
-// ancestor creates an issue of the rig's project as a session with fields, under title, and
-// writes the requirement blocks ids into its primary document as its next version, which it
-// answers with the issue: a primary document that marks requirements, as requirementsMarkdown's
-// does. The blocks come by an edit rather than the create's spec because Dispatch refuses a
-// create whose text its near-copy gate reads as an open issue's (409 POSSIBLE_DUPLICATE), and the
-// blocks every ancestor of a proof that makes many of them marks read so; an edit is no create.
+// ancestor creates an issue of the rig's project with fields, under title, and writes the
+// requirement blocks ids into its primary document as its next version, which it answers with the
+// issue: a primary document that marks requirements, as requirementsMarkdown's does. A session
+// creates it, unless fields name a parent: Dispatch refuses a session that is no architect a create
+// under a parent Legion runs (403 DOCUMENT_WRITER_NOT_ARCHITECT), so the person files that one, as
+// createBlockersIssue files a child. The blocks come by an edit rather than the create's spec
+// because Dispatch refuses a create whose text its near-copy gate reads as an open issue's (409
+// POSSIBLE_DUPLICATE), and the blocks every ancestor of a proof that makes many of them marks read
+// so; an edit is no create.
 func (r *personHandoverRig) ancestor(title string, fields map[string]any, ids ...string) (scratchIssue, int) {
 	r.t.Helper()
-	issue := r.create(asSession, title, fields)
+	identity := asSession
+	if _, under := fields["parent"]; under {
+		identity = asPerson
+	}
+	issue := r.create(identity, title, fields)
 	return issue, r.editDocument(issue.PrimaryArtifactID, insertAtEnd(requirementBlocks(ids...)))
 }
 
@@ -843,10 +850,10 @@ func (r *personHandoverRig) moveRecord(key string, to phase.Phase) {
 // issues.phase and the task's place are two records of where the issue stands, and every later
 // write of the issue (workflow.Engine.WriteIssue) refuses a record in which they disagree. The task
 // runs at the step that runs as the phase, at its retro or at its merge, and waits at no act at
-// admitted. A run with no plan rows has only its phase. It and seedTransact are the two seams of
-// the approved-version-news seed that its negative control gives an older base a version of
-// (scripts/e2e/approved-version-news.sh, control_compat), so they live here, in a file the control
-// does not copy.
+// admitted. A run with no plan rows has only its phase. It, seedTransact and
+// versionNewsPluginContract are the three seams of the approved-version-news driver that its
+// negative control gives an older base a version of (scripts/e2e/approved-version-news.sh,
+// control_compat), so they live here, in a file the control does not copy.
 func recordTaskAt(ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue) error {
 	stored, err := records.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
@@ -881,6 +888,12 @@ func recordTaskAt(ctx context.Context, tx pgx.Tx, records record.Store, issue re
 func seedTransact(ctx context.Context, pool *store.Pool, write func(ctx context.Context, tx pgx.Tx) error) error {
 	return store.Transact(ctx, pool, write)
 }
+
+// versionNewsPluginContract is the contract the approved-version-news driver's claims register
+// with, this daemon's own. Since dispatch://INFRA-1569 the registry gives it
+// (api.DaemonAPIVersion()), where an older base declares it as a constant, so it is a seam of
+// that driver too (recordTaskAt says why it lives here).
+func versionNewsPluginContract() int { return api.DaemonAPIVersion() }
 
 // requestApprovalWithVerification asks the person, as an architect's session does with
 // `dispatch request-approval --include-verification`, to approve the latest version of
@@ -1011,7 +1024,9 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 		r.openedOnBasis(run.root, run.parent, 1, run.basisVersion)
 		r.dispatchRowsDone(run.root.Key)
 		if opt.member != "" {
-			run.member = r.create(asSession, opt.member, map[string]any{"labels": []string{"legion"}, "parent": run.root.Key})
+			// The person files the member: Dispatch refuses a session that is no architect a create
+			// under a parent Legion runs (403 DOCUMENT_WRITER_NOT_ARCHITECT).
+			run.member = r.create(asPerson, opt.member, map[string]any{"labels": []string{"legion"}, "parent": run.root.Key})
 			r.setStatus(run.member.Key, "todo")
 			// The member is an open Dispatch child of the root, whose own phases have started, so
 			// the admission pass moves the root to awaiting_children, where it holds no slot, for

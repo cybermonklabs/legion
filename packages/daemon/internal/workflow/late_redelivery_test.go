@@ -127,6 +127,7 @@ var lateMerged intake.Fact = intake.PullRequestMerged{Repo: "sjawhar/legion", Nu
 // late redelivery (classify.LateLifecycle). The webhook of the event already recorded, arriving
 // afterwards, changes nothing either.
 func TestALateLifecycleEventAfterTheRecordedOneChangesNothing(t *testing.T) {
+	t.Parallel()
 	read := lateApplied
 	for _, tc := range []struct {
 		name     string
@@ -178,6 +179,7 @@ func TestALateLifecycleEventAfterTheRecordedOneChangesNothing(t *testing.T) {
 // last lifecycle event the record applied, which the clock does not fence, would otherwise move
 // the merged pull request's head and queue a disarm of its merge.
 func TestALateEventOfAMergedPullRequestChangesNothing(t *testing.T) {
+	t.Parallel()
 	merged := lateApplied
 	setups := []struct {
 		name  string
@@ -233,6 +235,7 @@ func TestALateEventOfAMergedPullRequestChangesNothing(t *testing.T) {
 // a review its webhook did not bring as the webhook would). A deciding review submitted before it,
 // delivered late, records nothing: the round keeps the newer decision.
 func TestALateReviewOlderThanTheNewestChangesNothing(t *testing.T) {
+	t.Parallel()
 	submitted := lateApplied
 	webhook := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 12, SubmittedAt: submitted, State: "approved",
 		CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)}
@@ -275,6 +278,7 @@ func TestALateReviewOlderThanTheNewestChangesNothing(t *testing.T) {
 // current head, refusesRound); a footer that names no entry; a person's review with no submission
 // time; and any review submitted after the raise.
 func TestAReviewOfAnEarlierRoundDecidesNoLaterRound(t *testing.T) {
+	t.Parallel()
 	raised := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
 	before, after := raised.Add(-time.Hour), raised.Add(time.Hour)
 	app := func(state, body string, at time.Time) intake.PullRequestReview {
@@ -329,6 +333,7 @@ func TestAReviewOfAnEarlierRoundDecidesNoLaterRound(t *testing.T) {
 // listener's earlier settlement of the head, delivered late - is stale and changes nothing, whether
 // the head stays green and the issue in testing, though the late settlement is red.
 func TestALateSettlementWithLowerRunsChangesNothing(t *testing.T) {
+	t.Parallel()
 	settlement := func(id, generation int64, snapshot string, failing ...string) intake.PullRequestChecks {
 		return intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head", CheckRuns: []record.AttemptRun{{Name: "ci", ID: id}},
 			Generation: generation, Snapshot: snapshot, Failing: append([]string{}, failing...), Cancelled: []string{}}
@@ -360,6 +365,7 @@ func TestALateSettlementWithLowerRunsChangesNothing(t *testing.T) {
 // reopened at head; or a new generation of the issue cleared it. The settlement of head before run
 // 5 then arrives.
 func TestALateSettlementOfAHeadWhoseFenceWasResetChangesNothing(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	settled := func(head string, id, generation int64, failing ...string) intake.PullRequestChecks {
 		return intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: head, CheckRuns: []record.AttemptRun{{Name: "ci", ID: id}},
@@ -452,6 +458,7 @@ func latePushDecidesNothing(t *testing.T, pool *pgxpool.Pool, apply func(string,
 // the read rebuilt: the judgement, the pushes waiting for a link, the phase and the outbox stand,
 // and the record keeps each as its move's push or a repeat of it.
 func TestALatePushAfterTheReadRebuiltItsChainDecidesNothing(t *testing.T) {
+	t.Parallel()
 	const implementer = "legion-implementer[bot]"
 	pr := redRecord(record.PullRequestOpen, "code", lateApplied.Add(-2*time.Hour))
 	pr.Moves = []record.Move{{Before: "base", SHA: "code"}}

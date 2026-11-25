@@ -44,15 +44,16 @@ import "github.com/sjawhar/legion/daemon/internal/record"
 // that states a contract below it in `Legion-Plugin-Contract`, or else one from a pod whose
 // claims record one — the shape its own contract describes, by 193's serving rule, and this
 // entry adds one band and two value strips to that serving, and a word to a third strip, 219's
-// `withoutUnadmittedHeldWords`. The band is the row of `gateBasisContract` in shaping.go's
-// `stateNarrowings` (`withoutGateBasis`): it follows the contract the caller states, else its
+// `withoutUnadmittedHeldWords`. The band is this entry's row of `bands` (`withoutGateBasis`), which
+// the registry appends to `stateNarrowings()` (contracts.go): it follows the contract the caller states, else its
 // pod's highest, and serves every issue without `treeRuns`, and without `gatedSteps` on an
 // issue a step of which carries `basis`. The bands compose, as
 // 193's entry says of them: a caller below 178 is served the state without `paused` and
 // `lastPause` as well, the entry of 178 above (`withoutPause`), a caller below 146 the issues
 // without both entry times and `architectStalls`, the entry of 146 (`withoutEntryTimes`), and so
-// on down `stateNarrowings`. 178's band and this one touch no key of each other's, and the bands
-// of 193, 202, 220, 228, 246, 250, 256 and 275 stand between them (232 adds none), so a caller at 202
+// on down `stateNarrowings()`. 178's band and this one touch no key of each other's, and the bands
+// of 193, 202, 220, 228, 246, 250, 256 and 275 stand between them (232 adds none), with the band of
+// each entry the build ranks before this one, so a caller at 202
 // through 275 is served the pause, the keys 193 added and the repositories block 202 writes, and
 // none of this entry's keys and words (a caller that states 203 or 204 is served 202's records,
 // the nearest recorded contract at or below it, one that states 205 to 212 is served 205's, which
@@ -87,7 +88,7 @@ import "github.com/sjawhar/legion/daemon/internal/record"
 // caller is served no entry of that issue at all rather than a wrong one. The two words are values
 // of an enumerated field, which this entry adds to answers.go's `EnumeratedFields`
 // (`gatedStepStatuses`), so a value strip holds them back too, following the contract the caller
-// states, else its pod's lowest: `withoutUnadmittedStepStatuses`, a row of shaping.go's
+// states, else its pod's lowest: `withoutUnadmittedStepStatuses`, a row of this entry's
 // `valueStrips`, serves an issue any step of which reads a word the caller does not admit with no
 // `gatedSteps`. Every reader from this entry's contract on takes `treeRuns` and `basis` as optional and reads the
 // six words (`packages/contracts/src/legion-api.ts`).
@@ -103,10 +104,11 @@ import "github.com/sjawhar/legion/daemon/internal/record"
 // `LEGION_HELD_REASONS` names. A caller below this entry's contract knows neither word — its phase enum and its held
 // words are the ones before this change — so the daemon serves it that issue's `phase` as
 // `admitted`, the status that names no worker's phase, and that held entry's `reason` as
-// `children_first`, the word a started parent's wait took over. Both are value strips, rows of
-// shaping.go's `valueStrips` that read each word's arrival from answers.go's `EnumeratedFields`
-// (`phases`, `heldReasons`) and follow the contract the caller states, else its pod's lowest:
-// `withoutUnadmittedPhases` and `withoutUnadmittedHeldWords`. `heldFrom` and
+// `children_first`, the word a started parent's wait took over. Both are value strips that read
+// each word's arrival from answers.go's `EnumeratedFields`, to which this entry adds the words
+// (`phases`, `heldReasons`), and follow the contract the caller states, else its pod's lowest:
+// `withoutUnadmittedPhases`, a row of this entry's `valueStrips`, and `withoutUnadmittedHeldWords`,
+// 219's frozen row of shaping.go's `valueStrips`. `heldFrom` and
 // `pendingTask.phase` read `LEGION_WORKFLOW_PHASES` too, so the table declares the word for them
 // as well (`workflowPhases`), and `withoutUnadmittedPhases` leaves either key off where it names
 // the word for a caller below this entry's contract; the daemon writes the word in neither, since `heldFrom` is null
@@ -137,7 +139,7 @@ import "github.com/sjawhar/legion/daemon/internal/record"
 // Each refusal keeps its code and the shape every refusal has, so no reader's parse moves.
 // The forward merge of main at c4196c824b7d brought in 213's `caches`, a third word of a
 // capability row's `source` (dispatch://INFRA-4036, 213's entry above), whose value strip runs
-// beside this entry's two in shaping.go's `valueStrips` and serves it to a caller at 213 and
+// beside this entry's two in `valueStrips()` and serves it to a caller at 213 and
 // above, so this entry's own records name `caches` in the domain of `capabilities.*.source` as
 // 213's do.
 //
@@ -165,47 +167,13 @@ import "github.com/sjawhar/legion/daemon/internal/record"
 // (heldReasons), served as `children_first`, the word a started parent's wait took over
 // (withoutUnadmittedHeldWords, heldReasonStandIn).
 //
-// Of the bands of stateNarrowings, dispatchCredentialContract's stands right below this one,
-// causeTimesContract's below that, priorityContract's below that, podHoldContract's below that, intakeGiveUpsContract's below that,
-// assignmentPlanContract's below that, repositoriesLiveContract's below that and
-// shapedAnswersContract's below that, and this band touches no key of any of theirs:
-// shapedAnswersContract's takes `lowestPluginContract` and the claim views' `updateState` and
-// `wake`, repositoriesLiveContract's writes the `repositories` block in contract 152's shape,
-// assignmentPlanContract's takes each assignment's `plan`, intakeGiveUpsContract's takes the
-// state's `intakeGiveUps`, podHoldContract's takes the issues' `podHold`, priorityContract's takes
-// the issues' `priority` and their waitingLine's `priority`, causeTimesContract's takes the claim
-// views' `lastDeathAt` and `lastStartFailureAt`, dispatchCredentialContract's takes the state's
-// `dispatchCredential`, and this one takes `treeRuns` and some
-// `gatedSteps`. So a caller from 202 up to the number below this contract is served the keys 193
-// added and the block 202 writes and none of this contract's keys and words. One that states a
-// number between 202 and this contract is served the nearest recorded contract at or below it
-// (recordedContractAtOrBelow): one at 203 or 204 is served 202's, one at 205 to 212 is served
-// 205's, whose records are 202's under its own number, as version.go's 205 entry says, one at 213
-// to 216 is served 213's, which are 205's with `caches` among the words of a capability row's
-// `source` (cachesSourceContract), one at 217 or 218 is served 217's, which are 213's under its own
-// number, as version.go's 217 entry says, one at 219 is served OwnerPlanContract's, which are
-// 217's with the owner's plan's routes, fields and words, one at 220 to 227 is served
-// assignmentPlanContract's, which are OwnerPlanContract's with each assignment's `plan`, one at
-// 228 to 231 is served intakeGiveUpsContract's, which are assignmentPlanContract's with
-// `intakeGiveUps` and the two give-up answers, one at 232 to 245 is served 232's, whose answer
-// records are intakeGiveUpsContract's under its own number, as version.go's 232 entry adds two
-// fields to a request and moves no answer's shape, one at 246 to 249 is served podHoldContract's,
-// which are 232's with each issue's `podHold`, one at 250 to 255 is served priorityContract's,
-// which are podHoldContract's with each issue's `priority` and its waitingLine's `priority`, one at
-// 256 to 274 is served causeTimesContract's, which are priorityContract's with each claim view's
-// `lastDeathAt` and `lastStartFailureAt`, and one at 275 is served dispatchCredentialContract's,
-// which are causeTimesContract's with the state's `dispatchCredential`. So a caller below
-// dispatchCredentialContract is served no `dispatchCredential`, one below causeTimesContract no
-// cause times either, one below priorityContract no `priority`
-// either, one below podHoldContract no `podHold` either, one below intakeGiveUpsContract no
-// `intakeGiveUps` either, one below assignmentPlanContract no assignment's `plan` either, and one
-// below OwnerPlanContract neither the owner's plan's additions nor this contract's. A caller from
-// 193 to 201 is served the keys 193 added, the block in contract 152's shape and none of this
-// contract's: one that states a number from 194 to 198 is served 193's shape, and one that states
-// 199, 200 or 201 is served 199's, which is 193's, since 199 moves no shape of an answer a plugin
-// parses.
-// Every such caller states its contract: podContracts leaves out a claim at shapedAnswersContract
-// or above, so a pod reading places no caller there.
+// Of the bands of `stateNarrowings()`, this one composes above every frozen band and above the
+// band of each entry the build ranks before it (contracts.go), and touches no key of any of
+// theirs: it takes `treeRuns` and the `gatedSteps` of an issue a step of which stands on a basis,
+// which no other band takes. Which band stands right below it is the build's order, a stamp and no
+// line of this file, so this text names none; what a caller below it is served of the other bands
+// is the walk above. Every caller from shapedAnswersContract up states its contract: podContracts
+// leaves out a claim at shapedAnswersContract or above, so a pod reading places no caller there.
 const gateBasisContract = 20261125161152
 
 func init() {

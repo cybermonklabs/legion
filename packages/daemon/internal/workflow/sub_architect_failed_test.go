@@ -25,6 +25,7 @@ import (
 // nobody: a done child's claims were closed (retired, sessions kept), and a parked child's were
 // suspended.
 func TestASubArchitectsFailedClaimTellsTheArchitectAboveIt(t *testing.T) {
+	t.Parallel()
 	const sentence = "the architect's process died with its catch-up outstanding, and its relaunches ran out"
 	root := "LEGION-208"
 	liveRoot := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: "root",

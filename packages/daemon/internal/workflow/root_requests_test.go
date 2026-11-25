@@ -31,6 +31,7 @@ func gateRows(t *testing.T, pool *pgxpool.Pool, key string) int {
 // run between, and it acts: the close is queued for Dispatch (writeClose), and the gate is
 // registered.
 func TestARootArchitectsRequestIsJudgedOnTheRecordItsFactReads(t *testing.T) {
+	t.Parallel()
 	for _, request := range []struct {
 		name string
 		fact func(by claim.Token, read record.Issue) intake.Fact

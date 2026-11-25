@@ -25,6 +25,7 @@ import (
 // reports at the rebased head queues the issue's close, which closes it once Dispatch shows it done
 // (closeLanded).
 func TestAStackRebasePastTheReviewSendsNothingBack(t *testing.T) {
+	t.Parallel()
 	rebase := intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208",
 		Before: "head", Sender: "web-flow", HeadSHA: "rebased", Base: "main"}
 	for _, tc := range []struct {

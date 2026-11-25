@@ -28,6 +28,7 @@ import (
 // nobody is told or logged. The twin: an issue given no plan starts planning on the default steps,
 // with no notice and no log line.
 func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
+	t.Parallel()
 	const notTaken = "workflow: a plan of an earlier owner is not taken"
 	earlier, owner := architectOf(t, "LEGION-208"), claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleArchitect))
 	give := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, generation uint64, version int, by claim.Token, words ...string) {
@@ -181,6 +182,7 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 // it deleted, with its generation. The fault caught is a notice that names the version once for
 // each copy.
 func TestAnEarlierOwnersPlanCarriedToSeveralGenerationsIsNamedOnce(t *testing.T) {
+	t.Parallel()
 	const notTaken = "workflow: a plan of an earlier owner is not taken"
 	earlier := architectOf(t, "LEGION-208")
 	pool := migratedPool(t)
@@ -225,6 +227,7 @@ func TestAnEarlierOwnersPlanCarriedToSeveralGenerationsIsNamedOnce(t *testing.T)
 // The fault caught is a notice that keeps the first version alone, which would hide the later one
 // from the new owner.
 func TestTwoVersionsOfAnEarlierOwnerAreBothNamed(t *testing.T) {
+	t.Parallel()
 	earlier := architectOf(t, "LEGION-208")
 	pool := migratedPool(t)
 	engine := returnEngine()

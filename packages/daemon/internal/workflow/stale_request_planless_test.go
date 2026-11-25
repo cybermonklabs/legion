@@ -40,6 +40,7 @@ func walkTodaysLineTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key stri
 // its STALE_ENTRY. Each control is the same request on the same record with nothing between, and
 // it acts.
 func TestAnArchitectsRequestOnARunWithNoPlanRowsIsJudgedOnTheRecordItsFactReads(t *testing.T) {
+	t.Parallel()
 	// window is what commits between the route's read and the fact (between; nil for the
 	// control), and the refusal the fact then answers: its code, and the whole refusal from the
 	// fact, the issue as it stands after between and the run of the step it stands in then.

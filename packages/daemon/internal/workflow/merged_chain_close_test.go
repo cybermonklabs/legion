@@ -15,6 +15,7 @@ import (
 // is past its review (record.KeepsSlot), stands in neither part of the waiting line, and refuses
 // its tree root's sign_off for as long as it stands there.
 func TestAChainOfMergedIssuesClosesWhenTheLastIssueBeneathItIsDone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
 	engine := New(record.NewStore(), Config{Project: "LEGION", ProductionCheckBound: 48 * time.Hour,

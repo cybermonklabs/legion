@@ -54,6 +54,7 @@ func landQueuedClose(t *testing.T, pool *pgxpool.Pool, engine *Engine, key strin
 // merging. A stopped task whose issue's run then ends is left, and keeps why it was stopped. An
 // issue with no plan rows has no task to stop.
 func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
+	t.Parallel()
 	t.Run("at testing", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()

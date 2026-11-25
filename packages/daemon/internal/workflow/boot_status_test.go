@@ -19,6 +19,7 @@ import (
 // (dispatch://INFRA-714/spec R4). The write is the phase's own status, conditional on the status
 // the record held, and the record takes that status with it.
 func TestTheBootWritesTheStatusOfAPhaseAnIssueAlreadyStoodIn(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedBootTree(t, pool)
 	// The child the older daemon left: planning, recorded todo, which is what Dispatch shows.
@@ -77,6 +78,7 @@ func recordedStatus(t *testing.T, pool *pgxpool.Pool, key string) string {
 // leaves such a root, and every issue whose gate root it is, exactly as it stands, since that tree
 // runs nothing yet (record.TreeRuns).
 func TestTheBootCorrectsNoStatusOfATreeWaitingForItsFirstStart(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedBootTree(t, pool)
 	// The waiting root: carried in in implementing at generation 2, recorded todo, which is what

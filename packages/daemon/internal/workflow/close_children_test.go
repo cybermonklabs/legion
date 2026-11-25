@@ -104,6 +104,7 @@ func supervisedOps(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 // its phase, its claims and its slot until Dispatch shows it done: then it moves to phase done and
 // leaves.
 func TestCloseRootWaitsForEveryChildDone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1",
 		Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
@@ -152,6 +153,7 @@ func TestCloseRootWaitsForEveryChildDone(t *testing.T) {
 // phase done and leaves, as it does on a person's done, since the daemon acts on a close once
 // Dispatch shows the issue done (R20 and R24 of dispatch://INFRA-3320).
 func TestTheEchoOfTheDaemonsCloseLandsItWhileItsRowIsStillQueued(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1",
 		Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
@@ -178,6 +180,7 @@ func TestTheEchoOfTheDaemonsCloseLandsItWhileItsRowIsStillQueued(t *testing.T) {
 // whose copy shows each child done, a child the daemon records nothing of included, and the issue
 // leaves merging only when Dispatch shows it done, opening its production check then.
 func TestAMergedIssueWaitsInMergingForEachChildNotDone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1",
 		Project: "LEGION", Title: "Root", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
@@ -225,6 +228,7 @@ func TestAMergedIssueWaitsInMergingForEachChildNotDone(t *testing.T) {
 // each child the issue then has done queues the close again, once; a child a person unlinked
 // since holds it no more. A refusal of a close of an earlier phase entry changes nothing.
 func TestARefusedCloseKeepsItsMarkAndIsQueuedAgainOnceEachChildIsDone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1",
 		Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})

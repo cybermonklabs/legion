@@ -89,6 +89,7 @@ func personHandoverLines(t *testing.T, logged *bytes.Buffer, issue, source strin
 // a person's handover, and tells no architect or controller of it — the root has no tree. The
 // queue is logged once, as admission logs its own, with source approval.
 func TestAPersonsApprovalOfAnUnrecordedParkedRootsSpecIsQueuedByTheDaemon(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{"backlog", "icebox"} {
 		t.Run(status, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -116,6 +117,7 @@ func TestAPersonsApprovalOfAnUnrecordedParkedRootsSpecIsQueuedByTheDaemon(t *tes
 // that is not the issue's primary one, or a root that is not parked is not Legion's handover to
 // queue. Each writes nothing and wakes nobody.
 func TestOnlyAPersonsApprovalOfAParkedLabelledRootsPrimaryDocumentQueuesIt(t *testing.T) {
+	t.Parallel()
 	carried := approvalOf(askPerson, parkedRootView("backlog"))
 	carried.Reason = intake.CarriedApprovalReasonPrefix + " 2: the answer to the decision block was the whole change"
 	changes := approvalOf(askPerson, parkedRootView("backlog"))
@@ -164,6 +166,7 @@ func closedRoot(status string) record.Issue {
 // the re-admission then keeps no stale approval pair before it clears the gate, while the new
 // architect's register_gate reads the approval from Dispatch.
 func TestAPersonsApprovalOfARecordedParkedRootsSpecQueuesItAndRecordsItQuietly(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, closedRoot("backlog"))
 	gate := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2}
@@ -191,6 +194,7 @@ func TestAPersonsApprovalOfARecordedParkedRootsSpecQueuesItAndRecordsItQuietly(t
 // of them would set an approved version the spec has moved past, which the re-admission's
 // keepStaleApproval would then hand the new architect as a stale pair.
 func TestAHandoverApprovalTheGateWouldNotTakeLeavesItAsItWas(t *testing.T) {
+	t.Parallel()
 	two := 2
 	for _, tc := range []struct {
 		name   string
@@ -230,6 +234,7 @@ func TestAHandoverApprovalTheGateWouldNotTakeLeavesItAsItWas(t *testing.T) {
 // — closed as done — is not one the approval queues either, and keeps today's behaviour: its gate
 // takes the approval, so a reopen inside the linger sees it.
 func TestAnApprovalOfALiveOrClosedRootsSpecIsAppliedToItsGateAsToday(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		seed func(t *testing.T, pool *pgxpool.Pool)
@@ -270,6 +275,7 @@ func TestAnApprovalOfALiveOrClosedRootsSpecIsAppliedToItsGateAsToday(t *testing.
 // carried closed and its architect is told carried-gate-opened. The parked owner is queued, and its
 // own gate records the approval with no notice.
 func TestACarriedCopyOfAParkedRootsGateTakesTheApprovalWhileTheOwnerIsQueued(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, closedRoot("backlog"))
 	parent := "LEGION-208"
@@ -308,6 +314,7 @@ func TestACarriedCopyOfAParkedRootsGateTakesTheApprovalWhileTheOwnerIsQueued(t *
 // workflow's other status rows suppress nothing: a re-assertion row pending for the root leaves the
 // person's handover queued beside it.
 func TestAPendingPersonsHandoverSuppressesASecondAndAReassertionRowDoesNot(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{"backlog", "icebox"} {
 		t.Run("a pending marked row at "+status, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -403,6 +410,7 @@ var (
 // queued. The root's issue events are applied before the approval, as the daemon applies them,
 // and they change nothing of the decision, which reads the log.
 func TestALatePersonsApprovalQueuesNoRootAPersonParkedSince(t *testing.T) {
+	t.Parallel()
 	event := func(seq int64, title string) intake.DispatchIssue {
 		return intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: seq, Type: "issue.updated", Status: "icebox",
 			Title: title, Rank: "U", HandedOver: true}
@@ -455,6 +463,7 @@ func TestALatePersonsApprovalQueuesNoRootAPersonParkedSince(t *testing.T) {
 // daemon does not record has no tree to relay for, and is told by the warning alone. An approval
 // no later status change refuses queues the handover and tells nobody, as before.
 func TestARefusedPersonsHandoverIsWarnedAndRelayedToTheControllerOnce(t *testing.T) {
+	t.Parallel()
 	event := func(seq int64, title string) intake.DispatchIssue {
 		return intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: seq, Type: "issue.updated", Status: "icebox",
 			Title: title, Rank: "U", HandedOver: true}

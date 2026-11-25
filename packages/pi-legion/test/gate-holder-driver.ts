@@ -21,7 +21,6 @@
 // and generation) and `call` (the tool's parameters). Output, one JSON object on stdout: `isError`,
 // `text` (the tool's answer as the agent reads it), and `daemonRequests` and `dispatchRequests`,
 // each request as `<METHOD> <path>`, in the order they were sent.
-import { daemonContract } from "@legion/contracts/daemon-contract";
 import { bearerCredential } from "@legion/envoy-client/bearer";
 import { DispatchClient } from "@legion/envoy-client/dispatch-http";
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
@@ -60,11 +59,18 @@ const input = Input.parse(JSON.parse(await Bun.stdin.text()));
 const daemonRequests: string[] = [];
 const dispatchRequests: string[] = [];
 const daemonFetch = recordingFetch(daemonRequests);
+// The plugin's own contract: the `legion.daemonApiVersion` the manifest declares, as every root
+// from before dispatch://INFRA-1569 does, else the number `daemonContract` counts for this
+// checkout, whose manifest declares none. An older root has no such module, so it is loaded only
+// where the manifest declares no number.
+const manifest: { name: string; legion?: { daemonApiVersion?: number } } = pkg;
+const pluginContract =
+  manifest.legion?.daemonApiVersion ??
+  (await import("@legion/contracts/daemon-contract")).daemonContract(pkg, import.meta.dir);
 // One value serves both signatures: a fetch, which the older client calls, carrying the options
-// object this checkout's client reads, the plugin's own contract, read as `extensions/legion.ts`
-// reads it (`daemonContract`).
+// object this checkout's client reads, the plugin's own contract among them.
 const daemonOptions = Object.assign(daemonFetch, {
-  pluginContract: daemonContract(pkg, import.meta.dir),
+  pluginContract,
   fetch: daemonFetch,
 });
 const daemon = (createLegionDaemonClient as (url: string, options: unknown) => LegionDaemonClient)(

@@ -83,6 +83,7 @@ func moveParent(t *testing.T, pool *pgxpool.Pool, engine *Engine, id, parent str
 // repeats the parent queues nothing, a move back to an earlier parent is told anew, and so is a
 // move to no parent; an issue not in Legion's work is told nothing.
 func TestAParentChangeIsSeededOncePerNewParent(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReparentFixture(t, pool)
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -125,6 +126,7 @@ func TestAParentChangeIsSeededOncePerNewParent(t *testing.T) {
 // the architect's, and the row another role holds on the issue, here a planner's, is not what the
 // seed names.
 func TestAReparentSeedOfARootAtAdmittedCarriesItsArchitectsEntry(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedLiveRoot(t, pool, reparentSecond, 1)
 	const admitted = "LEGION-600"
@@ -155,6 +157,7 @@ func TestAReparentSeedOfARootAtAdmittedCarriesItsArchitectsEntry(t *testing.T) {
 // since tells nothing, and a move between two issues under the same architect tells that
 // architect once.
 func TestTheReparentReadTellsEachDistinctArchitectOnce(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReparentFixture(t, pool)
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -194,6 +197,7 @@ func TestTheReparentReadTellsEachDistinctArchitectOnce(t *testing.T) {
 // LEGION-502 stand under LEGION-208, whose architect is the one above the moved issue before the
 // move and after it, and neither has an architect of its own.
 func TestAMoveUnderTheSameArchitectTellsItOnce(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReparentFixture(t, pool)
 	for _, key := range []string{"LEGION-501", "LEGION-502"} {
@@ -219,6 +223,7 @@ func TestAMoveUnderTheSameArchitectTellsItOnce(t *testing.T) {
 // 1 of LEGION-208's spec; LEGION-300's spec stands approved at version 1 too, a version of another
 // document.
 func TestAReparentToAnotherGateRootTellsTheNewsAgain(t *testing.T) {
+	t.Parallel()
 	took := func(t *testing.T, pool *pgxpool.Pool) {
 		t.Helper()
 		seedRecord(t, pool, func(tx pgx.Tx) error {
@@ -284,6 +289,7 @@ func TestAReparentToAnotherGateRootTellsTheNewsAgain(t *testing.T) {
 // read is told as R18 says: its old parent is the record's where the record names another, and
 // what goes on is read from the record.
 func TestAReparentSeedOfTheReleaseBeforeIsToldAsR18Says(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReparentFixture(t, pool)
 	seedRecord(t, pool, func(tx pgx.Tx) error {
@@ -316,6 +322,7 @@ func TestAReparentSeedOfTheReleaseBeforeIsToldAsR18Says(t *testing.T) {
 // the move is read to leave is LEGION-700 itself, not OTHER-9. The seed and the words still name
 // Dispatch's parent it left.
 func TestAMoveFromAParentInAnotherProjectTellsNoArchitectOfThatProject(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	const foreign, moved = "OTHER-9", "LEGION-700"
 	seedLiveRoot(t, pool, reparentFirst, 0)

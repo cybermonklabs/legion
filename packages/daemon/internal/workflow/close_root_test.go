@@ -23,6 +23,7 @@ import (
 // write, ends the run: the root moves to phase done and leaves Legion's work as any close does
 // (leave), its claims close, and no deadline is armed for anything. The journal follows the close.
 func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	var logged bytes.Buffer
@@ -74,6 +75,7 @@ func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
 // close_root refused it as a tree past its first phase, and the only way out was a person's own
 // status write (dispatch://INFRA-545).
 func TestAnArchitectClosesItsRootThatWaitsOnAPerson(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	since := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -103,6 +105,7 @@ func TestAnArchitectClosesItsRootThatWaitsOnAPerson(t *testing.T) {
 // ends through its workflow or a human, and a child leaves by the status its owning architect
 // writes on it in Dispatch.
 func TestCloseRootIsRefusedOnceATreeHasStartedOrForAChild(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		issue record.Issue
@@ -132,6 +135,7 @@ func TestCloseRootIsRefusedOnceATreeHasStartedOrForAChild(t *testing.T) {
 // moved between, the trigger, and the status it now holds. Here the design gate is off, so the
 // architect's registration opens it and the admitted root moves to planning.
 func TestAPhaseChangeIsOneJournalLine(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
 	var logged bytes.Buffer

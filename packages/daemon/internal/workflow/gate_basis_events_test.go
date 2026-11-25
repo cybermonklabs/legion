@@ -812,6 +812,7 @@ func TestThePendingBasisReadOpensNoStepOnAnAcceptedAncestor(t *testing.T) {
 // resting-root notice, which the outbox delivers by the owner walk and finishes undelivered where
 // no architect holds its role; a wait on an ancestor the daemon does not record tells nobody.
 func TestTheEndOfAPendingWaitIsToldToAnAncestorThatLeftLegionsWork(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		leave    func(t *testing.T, pool *pgxpool.Pool)

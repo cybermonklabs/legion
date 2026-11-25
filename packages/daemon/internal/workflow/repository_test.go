@@ -66,6 +66,7 @@ func mirrorChildTodo(t *testing.T, pool *pgxpool.Pool, seq int64) {
 // A child is recorded on the repository its event resolves to, at that repository's default
 // branch, whatever the branch is named.
 func TestAChildIsRecordedOnItsResolvedRepositoryAndItsDefaultBranch(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -84,6 +85,7 @@ func TestAChildIsRecordedOnItsResolvedRepositoryAndItsDefaultBranch(t *testing.T
 // a role App reaches, is not recorded: the daemon says why on the child and tells the architect that
 // owns its parent, once for one resolution, so a repeated event says nothing again.
 func TestAChildOnARepositoryLegionDoesNotServeIsNotRecordedAndSaysWhy(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, resolved, note, reason string
 	}{
@@ -122,6 +124,7 @@ func TestAChildOnARepositoryLegionDoesNotServeIsNotRecordedAndSaysWhy(t *testing
 // another is not applied, which the daemon says on the issue once for that resolution, and a child
 // set back to todo re-enters its tree on its recorded repository.
 func TestARecordedIssueKeepsItsRepositoryAndSaysAnEditIsNotApplied(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"
@@ -156,6 +159,7 @@ func TestARecordedIssueKeepsItsRepositoryAndSaysAnEditIsNotApplied(t *testing.T)
 // of them. With no pair configured the same resolution is a repository change like any other, and
 // says so on the issue once.
 func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		renames ghrepo.Renames
@@ -204,6 +208,7 @@ func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing
 // next event resolving it there says nothing again on the issue. Control: with noteOnce comparing
 // the stored resolution exactly, the second event posts the note again.
 func TestARepositoryNoteTheRenamePassRewroteIsNotSaidAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"
@@ -237,6 +242,7 @@ func TestARepositoryNoteTheRenamePassRewroteIsNotSaidAgain(t *testing.T) {
 // refused, so the event is retried until its repository is read, and nothing is recorded on a
 // repository nobody read.
 func TestARetainedEventIsAppliedWithTheRecordsRepositoryAndNeverRecordsAnUnreadOne(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"

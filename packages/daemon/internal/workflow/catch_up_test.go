@@ -29,6 +29,7 @@ import (
 // it, and that nothing has registered it yet, so the architect knows what to register and
 // whether to ask for approval.
 func TestARootArchitectIsToldItsTreeAtEachLaunchsReady(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		policy config.DesignGate
@@ -94,6 +95,7 @@ func TestARootArchitectIsToldItsTreeAtEachLaunchsReady(t *testing.T) {
 // (closed and reopened) is a root like any other, and its reason names the step it has registered
 // no document for.
 func TestACatchUpMarksAHandedOverRootInEveryPhase(t *testing.T) {
+	t.Parallel()
 	for _, at := range []phase.Phase{phase.Planning, phase.Reviewing, phase.Accepting} {
 		for _, gateCarried := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s, gate carried %t", at, gateCarried), func(t *testing.T) {
@@ -132,6 +134,7 @@ func TestACatchUpMarksAHandedOverRootInEveryPhase(t *testing.T) {
 // whose ready drops it names it again, and only the forget of what a delivered catch-up named (the
 // outbox's notice) leaves nothing for the launch after.
 func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	seedAdmittedTree(t, pool, 1)
@@ -190,6 +193,7 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 // Negative control, run when this was written: with EnqueueNaming claiming over the stored tree,
 // the claim names a decision none of that tree's members holds, and the ready's transaction fails.
 func TestAGateHolderStoredUnderAnotherTreeIsToldWhatWasKeptForIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	const oldRoot, holder, ref = "LEGION-700", "LEGION-701", "dispatch://LEGION-701/ask/ask-1"
@@ -262,6 +266,7 @@ func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 // under it in Legion's work (R18 of dispatch://INFRA-3320), so a child done or on the backlog is
 // not among them.
 func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) {
+	t.Parallel()
 	// Nothing registered the tree's gate, so the reason names its spec step before the issues
 	// waiting in accepting.
 	const base = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says" +
@@ -307,6 +312,7 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 // holds the tree as the spec does, so the catch-up states it as a step of its own, after the
 // spec and gated as the spec is. A root that registered none is told the spec alone, as before.
 func TestACatchUpStatesARegisteredVerificationDocumentAsAGatedStep(t *testing.T) {
+	t.Parallel()
 	spec := record.CatchUpGate{Step: record.DesignStepSpec, Gated: true, Artifact: "artifact-1", Version: 4, Approved: 4, Open: true}
 	for _, tc := range []struct {
 		name     string
@@ -338,6 +344,7 @@ func TestACatchUpStatesARegisteredVerificationDocumentAsAGatedStep(t *testing.T)
 // Legion's work is told nothing, nor is a phase worker on the root; a child's own architect is told
 // the child and the issues under it, with no gate.
 func TestOnlyALiveTreesArchitectsAreToldTheirIssues(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		root  func(*record.Issue)
@@ -436,6 +443,7 @@ func catchUpRows(t *testing.T, pool *pgxpool.Pool) []int64 {
 // whatever the pacing: the launch already took one at the machine's gate. An engine with no
 // limiter at all — the deployment that paces nothing — writes both at once, with no moment.
 func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
 	turn := now.Add(90 * time.Second)
 	for _, tc := range []struct {

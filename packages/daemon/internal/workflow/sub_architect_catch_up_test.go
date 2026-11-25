@@ -80,6 +80,7 @@ func seedArchitectClaimIn(t *testing.T, pool *pgxpool.Pool, tree, issue string, 
 // so the agent is given one, the current one. A child that is out of the workflow or done, and a
 // child of a lingering tree, is told nothing.
 func TestASubArchitectsReadyIsToldItsOwnSubtree(t *testing.T) {
+	t.Parallel()
 	const told = "gen=2 launch=%d gates= issues=LEGION-2,LEGION-3 reason=the issues under LEGION-2, which you own, at generation 2 as the daemon records them now; start or resume your issue as your role says"
 	t.Run("a live child", func(t *testing.T) {
 		ctx := context.Background()
@@ -162,6 +163,7 @@ func TestASubArchitectsReadyIsToldItsOwnSubtree(t *testing.T) {
 // does name a child directly under it whose architect has failed, retired or been suspended, or
 // never started, since that child's acceptance then walks up to the root's.
 func TestARootsCatchUpNamesOnlyTheAcceptancesItsArchitectOwns(t *testing.T) {
+	t.Parallel()
 	// Nothing registered the root's gate, so its reason names its spec step before the issues
 	// waiting in accepting.
 	const root = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says" +

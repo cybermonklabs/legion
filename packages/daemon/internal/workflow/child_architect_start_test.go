@@ -77,6 +77,7 @@ func branchRowsOf(queued []heldRow) []int {
 // entry and no slot mark, so it waits for no slot. A root's first phase start starts no architect:
 // admission started the root's with its tree.
 func TestAChildsFirstPhaseStartQueuesItsArchitectBeforeItsPlanner(t *testing.T) {
+	t.Parallel()
 	t.Run("a child", func(t *testing.T) {
 		pool := migratedPool(t)
 		seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: gateDoc, LatestVersion: 3, ApprovedVersion: new(3)})

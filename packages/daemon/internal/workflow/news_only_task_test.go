@@ -20,6 +20,7 @@ import (
 //     back (StartFor);
 //   - an architect whose untaken task is news alone owes no work it was given (owed).
 func TestAPendingTaskOfNewsAloneIsNoTaskOfItsPhase(t *testing.T) {
+	t.Parallel()
 	silent := aSilentImplementer()
 	phaseTask := supervise.Delivery{ID: "outbox:3", Task: "implement the plan", Generation: silent.issue.Generation,
 		Phase: silent.issue.Phase, Entry: 2, QueuedAt: silentNow.Add(-3 * time.Hour)}

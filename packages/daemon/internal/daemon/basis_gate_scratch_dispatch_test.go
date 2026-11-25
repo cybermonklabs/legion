@@ -1114,7 +1114,7 @@ func TestBasisGateRefusals(t *testing.T) {
 	pv := r.approve(parent.PrimaryArtifactID).Version
 
 	// S, R's sibling under P, marking S1.
-	sibling := r.create(asSession, "Tidal gauge calibration", map[string]any{"parent": parent.Key, "spec": requirementsMarkdown("Gauges", "s1")})
+	sibling := r.create(asPerson, "Tidal gauge calibration", map[string]any{"parent": parent.Key, "spec": requirementsMarkdown("Gauges", "s1")})
 
 	// R under P, its one check serving P2.
 	r.patch(root.Key, asPerson, map[string]any{"parent": parent.Key})
@@ -1274,10 +1274,11 @@ func TestBasisGateRefusals(t *testing.T) {
 
 	// The chain: R under P under G, where only G is approved and marks requirements. The person
 	// moves G and then P into work before R is linked under P, as R24 asks of the parents of an
-	// issue in work; a session labelled both, so neither move is a person's handover.
+	// issue in work. The person creates P under G, since Dispatch refuses a session that is no
+	// architect of G's tree a create under it (DOCUMENT_WRITER_NOT_ARCHITECT).
 	grandparent := r.create(asSession, "Maritime safety initiative", map[string]any{"labels": []string{"legion"}, "spec": requirementsMarkdown("Safety", "g1", "g2")})
 	gv := r.approve(grandparent.PrimaryArtifactID).Version
-	middle := r.create(asSession, "Buoy maintenance roster", map[string]any{"labels": []string{"legion"}, "parent": grandparent.Key})
+	middle := r.create(asPerson, "Buoy maintenance roster", map[string]any{"labels": []string{"legion"}, "parent": grandparent.Key})
 	r.setStatus(grandparent.Key, "in_progress")
 	r.setStatus(middle.Key, "in_progress")
 	chainRoot := r.create(asSession, "Foghorn volume limiter", labelled)

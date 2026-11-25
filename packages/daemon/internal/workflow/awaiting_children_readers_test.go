@@ -48,6 +48,7 @@ func TestASettlementOnAWaitingParentWakesNoRoleAndTellsNone(t *testing.T) {
 // child a person closes both stand in awaiting_children with the start they held, and the moment
 // of the wait stays as it was.
 func TestAWaitingParentThatLeavesTheWorkflowKeepsItsHeldStart(t *testing.T) {
+	t.Parallel()
 	t.Run("a root a person moves to the backlog", func(t *testing.T) {
 		pool := migratedPool(t)
 		waiting := cwSeedWaiting(t, pool, cwParent, phase.Implementing)

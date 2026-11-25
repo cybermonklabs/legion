@@ -22,6 +22,7 @@ import (
 // refused TASK_DONE. A person's todo on such a root then takes the stopped task back to its first
 // step's gate and line (waitForFirstStep).
 func TestAStopBeforeTheFirstStepSettlesThePlanAndStopsItsTask(t *testing.T) {
+	t.Parallel()
 	t.Run("a child whose owner's plan waits at generation 0", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()

@@ -27,6 +27,7 @@ import (
 // end from the roll forward itself, stopped at the moment of the rollback, when Legion stopped
 // recording it, so its record reads ended whether or not its place runs again.
 func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// open is whether the tester's first run, which this release counted, was still running
@@ -118,6 +119,7 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 // again, so the roll forward leaves its counted run ended, and the late completion's report lands
 // on the record this release counted.
 func TestALateReviewersReportLandsOnItsCountedRecordAcrossARollback(t *testing.T) {
+	t.Parallel()
 	const report = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
 	pool := migratedPool(t)
 	seedReview(t, pool, "green")

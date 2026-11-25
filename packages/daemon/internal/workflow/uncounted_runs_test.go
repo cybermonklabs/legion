@@ -28,6 +28,7 @@ import (
 // A fact that writes the issue — its rank, a person's park — writes no record of the run that was
 // not open.
 func TestNoRunTheEndRuleHoldsOverOrNoStartBeganIsOpenedOrRecorded(t *testing.T) {
+	t.Parallel()
 	t.Run("an issue out of Legion's work", func(t *testing.T) {
 		for _, stopped := range []bool{true, false} {
 			pool := migratedPool(t)
@@ -123,6 +124,7 @@ func countStepStarts(t *testing.T, pool *pgxpool.Pool, issue string) int {
 // the operator holds, get no row. The run's end is then the settle's end of an open run, written
 // once, under that count's id.
 func TestTheBootOpensTheRunOfEachIssueInAStepNoStartCounted(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// uncounted marks the tester's counted row uncounted, as the roll forward of a rollback

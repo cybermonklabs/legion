@@ -978,8 +978,8 @@ const shapedAnswersContract = 193
 // served the keys of 256 without this object.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract the key arrived at stays where it is. It moves only with #4392's
-// own number, the entry of answers.go's SupportedContracts that stands before gateBasisContract.
+// that constant, and the contract the key arrived at stays where it is. It is LastNumberedContract,
+// the last number of answers.go's frozenContracts (contracts.go), and it never moves.
 const dispatchCredentialContract = 275
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1208,9 +1208,8 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // 250's keys.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract the keys arrived at stays where it is. It moves only with this
-// change's own number, and it is LastNumberedContract, the last number of answers.go's
-// frozenContracts, which names the constant rather than its number for that reason.
+// that constant, and the contract the keys arrived at stays where it is. It is a number of
+// answers.go's frozenContracts.
 const causeTimesContract = 256
 
 // withoutConvertedAt is state with no `daemon.convertedAt`, the key chainContract added to the

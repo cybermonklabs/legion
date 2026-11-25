@@ -102,6 +102,7 @@ func stepStartCounts(t *testing.T, pool *pgxpool.Pool, key string) []string {
 // its running step stopped. An issue with no plan rows records today's steps under the task
 // default, at their places in today's line, with the ids they always had.
 func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
+	t.Parallel()
 	implementer := func(attempt int64) walkedWrite {
 		return walkedWrite{start: true, task: "a", kind: record.PlaceStep, step: 1, role: "implementer", typ: "implementation", attempt: attempt}
 	}
@@ -236,6 +237,7 @@ func assertRowsName(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, when 
 // retro's start raises it again, at the retro's place 0, and the merger's names the merge, at 0.
 // An issue with no plan rows keeps no task and place 0 on each row, as it always did.
 func TestEachPhaseRowNamesItsStep(t *testing.T) {
+	t.Parallel()
 	t.Run("the plan implementer reviewer", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -276,6 +278,7 @@ func TestEachPhaseRowNamesItsStep(t *testing.T) {
 // start, before the boot, and its end, after it, both carry the id of the first start of task a's
 // step 2; with that count set to 0 between them the end computes another id.
 func TestTheStartAndTheEndOfARunHaveOneIDAcrossABoot(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-208"
 	run := func(t *testing.T, between func(pool *pgxpool.Pool)) (start, end record.StepRecord) {
 		pool := migratedPool(t)
@@ -343,6 +346,7 @@ func ownersNode(version int) record.PlanRecord {
 // with a writes the node of a. An issue whose owner gave no plan writes the source default, with
 // no document and no version, and the project's default_steps as the task default.
 func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T) {
+	t.Parallel()
 	t.Run("the owner's plan: version 1 at the start, and version 2 again when it is taken", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -391,6 +395,7 @@ func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T)
 // An issue with no plan rows runs today's steps at today's places whatever the project names:
 // under the same setting its implementer is step 2 and its tester step 3 of the task default.
 func TestThereIsOneDefinitionOfTheDefaultSteps(t *testing.T) {
+	t.Parallel()
 	t.Run("the plan node holds the project's default_steps", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := engineRunningByDefault(t, "implementer", "reviewer")

@@ -16,6 +16,7 @@ import (
 // runs no step (admitted, held, done, awaiting a person) has none. A run with no plan rows reads
 // its step as every run does (placeOnWalk), on the walk of today's steps (todaysWalk).
 func TestStepOfIsTodaysSequence(t *testing.T) {
+	t.Parallel()
 	type step struct {
 		place record.StepPlace
 		role  stepRole
@@ -64,6 +65,7 @@ func TestStepOfIsTodaysSequence(t *testing.T) {
 // A move back that a role or a report asked for ends the step failed and names the step the work
 // returned to; every other move ends it passed and returns nowhere.
 func TestEndOfReadsTheTrigger(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		trigger TriggerKind
 		result  StepResult
@@ -94,6 +96,7 @@ func TestEndOfReadsTheTrigger(t *testing.T) {
 // held, so transition returns before it names an end, and the moves out of a hold clear it first
 // (retryPhase, closeMerged).
 func TestTheEndOfAMoveReadsWhereTheIssueStands(t *testing.T) {
+	t.Parallel()
 	review := record.PhaseRow{Role: claim.RoleReviewer, HandoffRecord: "6f1d2c3b-review"}
 	end := endOfTransition(todaysWalk(), TriggerReviewRejected, phase.Reviewing, phase.Implementing, review)
 	if end.Result != ResultFailed || end.ReturnedTo == nil || *end.ReturnedTo != 2 || end.Report != review.HandoffRecord {
@@ -106,6 +109,7 @@ func TestTheEndOfAMoveReadsWhereTheIssueStands(t *testing.T) {
 // other: the issue, its run, the task, the kind, the place and the count of starts of that place.
 // The start and the end of one run compute it apart, so it depends on nothing else.
 func TestAStepIDIsStableAndDistinct(t *testing.T) {
+	t.Parallel()
 	first := StepID("LEG-1", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 1)
 	if again := StepID("LEG-1", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 1); again != first {
 		t.Fatalf("StepID twice = %s then %s; one run of one step has one id", first, again)

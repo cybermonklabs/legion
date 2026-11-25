@@ -20,6 +20,7 @@ import (
 // stand it there at the old wait's moment, ahead of returns that came back before it. The leave
 // clears it (leave, whatever the record in hand says).
 func TestAnIssueLeavingTheWorkflowCarriesNoReleasedForWaitMark(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	now := time.Date(2026, 11, 12, 7, 0, 0, 0, time.UTC)

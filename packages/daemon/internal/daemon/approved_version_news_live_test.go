@@ -547,7 +547,7 @@ func (r *versionNewsLive) connect(member *versionNewsIssue, role claim.Role, bef
 		return state == string(supervise.StateShimConnected), "state " + state
 	})
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl", AgentID: session, PluginContract: api.DaemonAPIVersion(),
+		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl", AgentID: session, PluginContract: versionNewsPluginContract(),
 	}, false)
 	if status != http.StatusOK {
 		r.fail("register %s = %d %s, want 200", token, status, body)

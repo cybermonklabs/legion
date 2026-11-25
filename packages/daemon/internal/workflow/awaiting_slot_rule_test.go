@@ -32,6 +32,7 @@ import (
 // the next pass answers the wait as an approval, because the gate is open, which clears what
 // the architect handed to the person.
 func TestARootWhoseGateHasOpenedEntersNoWaitOnAPerson(t *testing.T) {
+	t.Parallel()
 	root := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Phase: phase.Admitted,
 		Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, DeclaredSeq: 9}
 	approved := 1
@@ -65,6 +66,7 @@ const neverStarted = "the daemon has not started it, so it holds no admission sl
 // rule 0 keeps it out of a wait on a person because its gate has opened, and says so, never
 // that the daemon has not started it. The debug log of ReconcileAwaiting prints this reason.
 func TestARootReleasedForAWaitIsNotReadAsNeverStarted(t *testing.T) {
+	t.Parallel()
 	view := awaitRootView()
 	released := time.Date(2026, 9, 22, 22, 0, 0, 0, time.UTC)
 	view.Root.Phase, view.Root.ReleasedForWaitAt = phase.Admitted, &released
@@ -89,6 +91,7 @@ func TestARootReleasedForAWaitIsNotReadAsNeverStarted(t *testing.T) {
 // no running tree and let it linger (admit's releaseUnslotted). (Round 4, the reviewer's
 // medium finding on rule 0.)
 func TestAQueuedRootWithAHandBackEntersNoWaitOnAPerson(t *testing.T) {
+	t.Parallel()
 	view := awaitRootView()
 	view.Root.Generation, view.Root.Status, view.Root.DispatchStatus = 2, "todo", "todo"
 	view.Slotted = false
@@ -108,6 +111,7 @@ func TestAQueuedRootWithAHandBackEntersNoWaitOnAPerson(t *testing.T) {
 // question to a person, it moves the one the daemon started, which holds a row, and leaves the
 // one still waiting in line, which holds none.
 func TestReconcileAwaitingMovesOnlyTheRootHoldingItsSlot(t *testing.T) {
+	t.Parallel()
 	const slottedKey, queuedKey = "LEGION-208", "LEGION-300"
 	pool := migratedPool(t)
 	slotted := askRoot()

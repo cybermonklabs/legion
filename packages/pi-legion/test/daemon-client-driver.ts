@@ -14,10 +14,9 @@
 //
 // Input, one JSON object on stdin: `daemonUrl`, `method` (the client's method: `register`, `ready`,
 // `activity`, `grant`, `handoffComplete` or `exit`) and `input` (the method's request; `register`
-// is given the plugin's own contract from this root's manifest). Output, one JSON object on stdout:
+// is given the plugin's own contract, `pluginContract` below). Output, one JSON object on stdout:
 // `ok` and the method's `answer`, or `ok` false with the daemon's `status`, `code` and `error`, or the
 // contract `error` the client found in an answer it could not read.
-import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   createLegionDaemonClient,
   LegionDaemonApiError,
@@ -36,7 +35,14 @@ const Input = z.object({
 const input = Input.parse(JSON.parse(await Bun.stdin.text()));
 const daemonFetch = ((request: string | URL | Request, init?: RequestInit) =>
   fetch(request, init)) as typeof fetch;
-const pluginContract = daemonContract(pkg, import.meta.dir);
+// The plugin's own contract: the `legion.daemonApiVersion` the manifest declares, as every root
+// from before dispatch://INFRA-1569 does, else the number `daemonContract` counts for this
+// checkout, whose manifest declares none. An older root has no such module, so it is loaded only
+// where the manifest declares no number.
+const manifest: { name: string; legion?: { daemonApiVersion?: number } } = pkg;
+const pluginContract =
+  manifest.legion?.daemonApiVersion ??
+  (await import("@legion/contracts/daemon-contract")).daemonContract(pkg, import.meta.dir);
 const daemonOptions = Object.assign(daemonFetch, {
   pluginContract,
   fetch: daemonFetch,

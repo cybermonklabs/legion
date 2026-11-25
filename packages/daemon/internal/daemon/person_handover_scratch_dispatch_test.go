@@ -464,11 +464,14 @@ func (r *personHandoverRig) reviews(artifactID string) []scratchReview {
 	return listed
 }
 
-// editDocument applies ops to artifactID as a session through Dispatch's edits route, which
-// versions the document in the route's own transaction, and answers the version it wrote.
+// editDocument applies ops to artifactID as the person through Dispatch's edits route, which
+// versions the document in the route's own transaction, and answers the version it wrote. Each
+// document it edits is the spec of a labelled root. Once the daemon's role-holder publications
+// have marked the project, Dispatch refuses such a write from a session that is no architect of
+// the root (403 DOCUMENT_WRITER_NOT_ARCHITECT), and no architect holds these parked roots.
 func (r *personHandoverRig) editDocument(artifactID string, ops ...map[string]string) int {
 	r.t.Helper()
-	return r.editAs(artifactID, asSession, ops...)
+	return r.editAs(artifactID, asPerson, ops...)
 }
 
 // editAs is editDocument as identity: asPerson is the person at a browser.
@@ -486,7 +489,7 @@ func (r *personHandoverRig) editAs(artifactID string, identity scratchIdentity, 
 	return edited.Version.Number
 }
 
-// revise replaces find with with in artifactID as a session and answers the new version.
+// revise replaces find with with in artifactID as the person and answers the new version.
 func (r *personHandoverRig) revise(artifactID, find, with string) int {
 	r.t.Helper()
 	return r.editDocument(artifactID, map[string]string{"op": "replace", "find": find, "with": with})
@@ -552,9 +555,12 @@ func (r *personHandoverRig) approvalRequest(artifactID string, request map[strin
 	return requested.Ask.ID
 }
 
-// writeDocument writes content as key's document name, as a session uploads one: a new document,
+// writeDocument writes content as key's document name, as the person uploads one: a new document,
 // or the next version of the document of that name, whose role Dispatch reads from the name
-// (verification.md, decisions.md). It answers the document's id. An upload that replaces a
+// (verification.md, decisions.md). It answers the document's id. The person writes it because,
+// once the daemon's role-holder publications have marked the project, Dispatch refuses an upload of
+// an issue's spec or Verification document from a session that is no architect of its tree (403
+// DOCUMENT_WRITER_NOT_ARCHITECT), as editDocument says. An upload that replaces a
 // document key already holds names the token of the version it replaces, as Dispatch's upload
 // route requires (PRECONDITION_REQUIRED otherwise), and a first upload names none
 // (documentToken). Dispatch refuses a check whose `serves` names a block its block index does not
@@ -574,10 +580,9 @@ func (r *personHandoverRig) writeDocument(key, name, content string) string {
 	if token := r.documentToken(key, name); token != "" {
 		upload["precondition"] = map[string]string{"document": token}
 	}
-	body := withSessionActor(t, upload)
 	var last []byte
 	testwait.Eventually(t, "Dispatch to take "+name+" on "+key, func() bool {
-		status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", body, asSession)
+		status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", upload, asPerson)
 		last = answer
 		switch {
 		case status == http.StatusOK || status == http.StatusCreated:
@@ -1293,15 +1298,15 @@ func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *
 //  5. the person approves the spec of a parked labelled child, under that root: nothing;
 //  6. the person approves the running root's registered gate document: its gate opens as today,
 //     the state's design gate approved at that version, and no handover is queued;
-//  7. the carried case: on a parked labelled root a session writes a decision block into the spec;
+//  7. the carried case: on a parked labelled root the person writes a decision block into the spec;
 //     the person approves it, which queues the root (todo, waiting), and parks it again; the
 //     person then answers the block, and Dispatch records a carried approval of the version the
 //     answer wrote, in the person's name: the daemon applies it writing nothing;
-//  8. the recorded parked root of step 1, its spec revised by a session, is approved by the person
+//  8. the recorded parked root of step 1, its spec revised by the person, is approved by the person
 //     at the new version: todo within 60 s, admission.waiting names it, and no design-approved
 //     notice is queued for it, since its own gate only records the approval;
-//  9. the root of step 3, parked again by the person and its spec revised by a session, is approved
-//     again by the person at the new version: todo again, a second queue.
+//  9. the root of step 3, parked again by the person and its spec revised by the person, is
+//     approved again by the person at the new version: todo again, a second queue.
 func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
 	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
@@ -1345,8 +1350,10 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	r.applied(r.newestEvent(unlabelled.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == review.Version }))
 	r.notQueued(unlabelled.Key, "backlog", 0)
 
-	// 5. A parked labelled child.
-	child := r.create(asSession, "Subtask beneath undelegated work", map[string]any{"labels": []string{"legion"}, "parent": unlabelled.Key})
+	// 5. A parked labelled child. The person files it: Dispatch refuses a session that is no
+	// architect a create of an issue Legion runs under a parent (403 DOCUMENT_WRITER_NOT_ARCHITECT),
+	// and a person's label hands over a root alone (intake's LabelledTriageRoot).
+	child := r.create(asPerson, "Subtask beneath undelegated work", map[string]any{"labels": []string{"legion"}, "parent": unlabelled.Key})
 	r.setStatus(child.Key, "backlog")
 	review = r.approve(child.PrimaryArtifactID)
 	r.applied(r.newestEvent(child.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == review.Version }))

@@ -289,6 +289,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 // driven, because the step the work stands on is the first of the configured list that is closed,
 // whichever a person approved first.
 func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
+	t.Parallel()
 	orders := []struct {
 		name                   string
 		approvedDoc, closedDoc string
@@ -387,6 +388,7 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 // both steps open, a changes request on the Verification document closes the criteria step,
 // leaves the spec step open, and tells the architect once with the reason the person gave.
 func TestGatedStepsAChangesRequestOnOneStepLeavesTheOtherOpen(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepsEngine(twoSteps(), nil)
 	apply := applyFacts(t, pool, engine)
@@ -445,6 +447,7 @@ func gatesOf(t *testing.T, pool *pgxpool.Pool, issue string) map[record.DesignSt
 // that answered to one reference would replace each other's decision. The spec step keeps the
 // reference it has always had, so a one-step deployment's decisions are keyed as before.
 func TestGatedStepsNameEachStepsOwnDocumentOnItsDecision(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepsEngine([]record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}, nil)
 	apply := applyFacts(t, pool, engine)
@@ -473,6 +476,7 @@ func TestGatedStepsNameEachStepsOwnDocumentOnItsDecision(t *testing.T) {
 // does wait, which is what tells the two apart, and it starts once that step is registered and
 // approved.
 func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
+	t.Parallel()
 	steps := []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}
 	t.Run("the step nobody registered", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -542,6 +546,7 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 // Reading the unregistered step as the step the person has would leave the root with nothing to
 // answer the wait that never began, while the person holds its request.
 func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepsEngine([]record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}, nil)
 	apply := applyFacts(t, pool, engine)
@@ -571,6 +576,7 @@ func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 // document the deployment no longer gates is ignored. Both directions are driven from the one
 // stored tree.
 func TestChangedStepListTakesHoldAtTheNextBoot(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	spec := stepsEngine([]record.DesignStep{record.DesignStepSpec}, nil)
 	seedGatedTree(t, pool)
@@ -635,6 +641,7 @@ func assertRootWaitsOnItsChild(t *testing.T, pool *pgxpool.Pool, root string) {
 // is told once, a changes request is told once with the person's reason, and a carried copy opens
 // on an approval of the old root's document.
 func TestLegacyPolicyRootIssuesBehavesAsItDoesToday(t *testing.T) {
+	t.Parallel()
 	alice := dispatch.Actor{Kind: "user", ID: "alice"}
 	t.Run("the registration opens the one step and tells the architect once", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -694,6 +701,7 @@ func TestLegacyPolicyRootIssuesBehavesAsItDoesToday(t *testing.T) {
 // records the spec step and opens it at once, with no person asked, and the root's first phase
 // starts at the admission pass after it.
 func TestLegacyPolicyOffBehavesAsItDoesToday(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateOff, nil)
 	apply := applyFacts(t, pool, engine)
@@ -720,6 +728,7 @@ func TestLegacyPolicyOffBehavesAsItDoesToday(t *testing.T) {
 // second approval starts the child, and the root's own first phase then waits for that open child
 // (children-first), its row given back for the wait.
 func TestARegisteredVerificationDocumentHoldsTheTreeUntilItsOwnApproval(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		first, second intake.DispatchArtifact
@@ -778,6 +787,7 @@ func TestARegisteredVerificationDocumentHoldsTheTreeUntilItsOwnApproval(t *testi
 // carries it leads with the opening, its told row recording the opening as owed in place of the
 // opened message (openingDelivery).
 func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
@@ -818,6 +828,7 @@ func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 // gate registered before register_gate took criteria is: a version of that document reaches no
 // row, and the spec's approval opens the tree.
 func TestATreeWithNoCriteriaRowIsGatedOnTheSpecAlone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
@@ -842,6 +853,7 @@ func TestATreeWithNoCriteriaRowIsGatedOnTheSpecAlone(t *testing.T) {
 // holds nothing, closed as it stands: the spec's registration opens the tree at once, and a new
 // version of the kept document moves no row and tells nobody.
 func TestUnderOffAKeptCriteriaRowGatesNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateOff, nil)
 	apply := applyFacts(t, pool, engine)
@@ -868,6 +880,7 @@ func TestUnderOffAKeptCriteriaRowGatesNothing(t *testing.T) {
 // Registered after the gate already opened, it joins a tree its gate released: the row is
 // written as ever opened, and the tree reads opened once and closed.
 func TestAVerificationDocumentReadsEverOpenedByWhenItWasRegistered(t *testing.T) {
+	t.Parallel()
 	t.Run("registered before the first opening", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := testEngine(config.DesignGateRootIssues, nil)

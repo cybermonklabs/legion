@@ -49,6 +49,7 @@ func seedRuleSuspendedOwner(t *testing.T, pool *pgxpool.Pool, project string, is
 // The two issues differ in their phase and in the mark their resume carries: each is a root of
 // its own running tree whose phase owner the daemon's rule suspended.
 func TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	project, err := claim.ProjectToken("LEGION")
 	if err != nil {
@@ -107,6 +108,7 @@ func TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow(t *testing
 // no start for one whatever source suspended its claim. The control is a phase worker of a
 // running tree, which the same boot resumes.
 func TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	project, err := claim.ProjectToken("LEGION")
 	if err != nil {

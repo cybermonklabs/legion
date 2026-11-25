@@ -56,6 +56,7 @@ func promotesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine, at ti
 // untimed review always has. The same untimed review naming no entry decides the round and moves
 // nothing, which is the control.
 func TestAReviewWithNoSubmissionTimeMovesTheCommitWhenItNamesItsEntry(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// namesEntry is whether the review's footer names the entry the row holds.
@@ -92,6 +93,7 @@ func TestAReviewWithNoSubmissionTimeMovesTheCommitWhenItNamesItsEntry(t *testing
 // only the number tells the two entries apart. Round 2 here stands at headTwo, and the commit
 // round 1 read is headOne.
 func TestACarriedReviewersReviewMovesTheCommitOnlyWhenItNamesThePromotionsEntry(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// names is the entry the review's footer names: "before" the promotion, the "promoted"
@@ -155,6 +157,7 @@ func TestACarriedReviewersReviewMovesTheCommitOnlyWhenItNamesThePromotionsEntry(
 // App's as production delivers it: the daemon never reads write access for the review App's
 // login (daemon's reviewerCanWrite), so AuthorCanWrite is false.
 func TestOnlyAReviewOfTheEntryThatStandsMovesTheCommit(t *testing.T) {
+	t.Parallel()
 	const why = "workflow: the reviewer's own review moves no reviewed commit: "
 	for _, tc := range []struct {
 		name  string

@@ -121,7 +121,7 @@ func TestAMemberThatBecomesARootIsRelaunchedAndRegisters(t *testing.T) {
 	parent := r.create(asSession, "Harbour crane retrofit", labelled)
 	grant := r.admit(parent.Key)
 	r.registerApprovedGate(parent.Key, parent.PrimaryArtifactID, r.approve(parent.PrimaryArtifactID).Version, grant)
-	member := r.create(asSession, "Quay lighting survey", map[string]any{"parent": parent.Key})
+	member := r.create(asPerson, "Quay lighting survey", map[string]any{"parent": parent.Key})
 	r.setStatus(member.Key, "backlog")
 	r.quiet(member.Key)
 	status, answer := r.d.request(http.MethodPost, "/legion/v1/waves/release", api.WaveReleaseRequest{GrantID: grant(), Issues: []string{member.Key}}, false)

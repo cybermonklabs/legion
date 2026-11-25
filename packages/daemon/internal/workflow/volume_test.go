@@ -121,6 +121,7 @@ func fullSweep() record.VolumeNearFull {
 // with the two age splits that tell a working set from cold bytes and the clause that says what
 // kind of size those are.
 func TestASweepThatLeavesTheVolumeFullTellsTheArchitectOnce(t *testing.T) {
+	t.Parallel()
 	rig := newVolumeRig(t)
 	rig.report(t, fullSweep())
 
@@ -171,6 +172,7 @@ func TestASweepThatLeavesTheVolumeFullTellsTheArchitectOnce(t *testing.T) {
 // A second sweep of the same pod inside the hour tells nobody: a filling pod reports every
 // reading interval, and each notice is a wake of the architect's session.
 func TestASecondSweepInsideTheHourTellsNobody(t *testing.T) {
+	t.Parallel()
 	rig := newVolumeRig(t)
 	rig.report(t, fullSweep())
 	rig.clock.now = volumeAt.Add(59 * time.Minute)
@@ -199,6 +201,7 @@ func TestASecondSweepInsideTheHourTellsNobody(t *testing.T) {
 // Three notices for one trimmer and episode is all an architect hears of that episode, however
 // long it runs: a fourth says nothing the third did not.
 func TestAFourthSweepOfOneTrimmerAndEpisodeTellsNobodyHoweverLongItWaits(t *testing.T) {
+	t.Parallel()
 	rig := newVolumeRig(t)
 	for at := range VolumeNoticeCap {
 		rig.clock.now = volumeAt.Add(time.Duration(at) * 2 * time.Hour)
@@ -222,6 +225,7 @@ func TestAFourthSweepOfOneTrimmerAndEpisodeTellsNobodyHoweverLongItWaits(t *test
 // own: the fourth report of the old trimmer is silent and the first of the new one is told, in
 // the same hour.
 func TestANewTrimmerStartsTheCountOver(t *testing.T) {
+	t.Parallel()
 	rig := newVolumeRig(t)
 	for at := range VolumeNoticeCap {
 		rig.clock.now = volumeAt.Add(time.Duration(at) * 2 * time.Hour)
@@ -252,6 +256,7 @@ func TestANewTrimmerStartsTheCountOver(t *testing.T) {
 // and at no smaller climb (internal/launcher's riseAt), so no rise follows an anchor above 95%, a
 // reading being at most 100%; what this case holds is what the daemon does with the word.
 func TestARiseRaisedSweepIsToldAtOnce(t *testing.T) {
+	t.Parallel()
 	rig := newVolumeRig(t)
 	rig.report(t, fullSweep())
 	rig.clock.now = volumeAt.Add(time.Minute)
@@ -280,6 +285,7 @@ func TestARiseRaisedSweepIsToldAtOnce(t *testing.T) {
 // A recovery — the volume fell under its low mark and filled again — waits for the hour: it is
 // the volume doing what it did before, and the architect already heard it once.
 func TestARecoveryRaisedSweepWaitsForTheHour(t *testing.T) {
+	t.Parallel()
 	rig := newVolumeRig(t)
 	rig.report(t, fullSweep())
 	rig.clock.now = volumeAt.Add(time.Minute)
@@ -306,6 +312,7 @@ func TestARecoveryRaisedSweepWaitsForTheHour(t *testing.T) {
 // reporting. It is told whatever the counts stand at, and it carries the faults with their stacks
 // and the last reading.
 func TestASwitchedOffTrimmerIsToldWhateverTheCountsStandAt(t *testing.T) {
+	t.Parallel()
 	rig := newVolumeRig(t)
 	for at := range VolumeNoticeCap {
 		rig.clock.now = volumeAt.Add(time.Duration(at) * 2 * time.Hour)
@@ -351,6 +358,7 @@ func TestASwitchedOffTrimmerIsToldWhateverTheCountsStandAt(t *testing.T) {
 // engine writes the row and knows nothing of holders; what this drives is that the store's count
 // moved with the row and not with any delivery.
 func TestTheCountIsSpentWithTheRowWhateverBecomesOfIt(t *testing.T) {
+	t.Parallel()
 	rig := newVolumeRig(t)
 	pods := wakePods(t, rig.pool)
 	if counts := counted(t, pods, rig.pool, "trim-1", 1); counts.Notices != 0 {
@@ -372,6 +380,7 @@ func TestTheCountIsSpentWithTheRowWhateverBecomesOfIt(t *testing.T) {
 // is driven as the daemon restarts — a second store handle and a second engine over the same
 // database — and the fourth report of the episode is still silent.
 func TestTheBoundsHoldAcrossARestartOfTheDaemon(t *testing.T) {
+	t.Parallel()
 	rig := newVolumeRig(t)
 	for at := range VolumeNoticeCap {
 		rig.clock.now = volumeAt.Add(time.Duration(at) * 2 * time.Hour)
@@ -405,6 +414,7 @@ func TestTheBoundsHoldAcrossARestartOfTheDaemon(t *testing.T) {
 // An issue the daemon does not record, and one out of Legion's work, closed at done, write
 // nothing: there is nobody running the issue to act on the notice.
 func TestAVolumeReportOfAnIssueNobodyRunsWritesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newVolumeRig(t)
 	rig.reports++
 	rig.apply("volume-unknown", intake.VolumeNearFull{Issue: "LEGION-999", PodUID: volumePod, Report: fullSweep()})
@@ -436,6 +446,7 @@ func TestAVolumeReportOfAnIssueNobodyRunsWritesNothing(t *testing.T) {
 // neither one's contents (shimwire.LauncherVolumeReport.Validate): what keeps them out of the
 // sentence's own voice is this daemon's quoting rather than the sender being that launcher.
 func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
+	t.Parallel()
 	rig := newVolumeRig(t)
 	// What a role could make with one mkdir under /legion/scratch, written as the walk would
 	// read it back and as the daemon would otherwise print it with %s.
@@ -487,6 +498,7 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 // walk's word the sentence as it stood at a3f5d0965f3f, which said "before it reached every
 // directory".
 func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T) {
+	t.Parallel()
 	const pack, under = "/legion/feed/pack", "/legion/feed/pack/under"
 	for _, tc := range []struct {
 		name  string
@@ -566,6 +578,7 @@ func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T)
 // carries no size, as a switched-off trimmer's carries none. The negative control is the
 // sentence at 8ce4ac94, which gave the sizes with no such clause.
 func TestANoticeSaysOnceThatItsSizesAreApparentSizes(t *testing.T) {
+	t.Parallel()
 	const clause = "; each size is the apparent size of the files at or under its path, with a file linked under more than one name counted under each name, so the sizes can sum past the bytes the volume uses"
 	sweep := fullSweep()
 	sweep.PodUID = volumePod
@@ -600,6 +613,7 @@ func TestANoticeSaysOnceThatItsSizesAreApparentSizes(t *testing.T) {
 // bytes. The negative control is the sentence at b7085e21, which read "is still above its low
 // mark after a sweep" in both rows and "-1048576 freed by this sweep" in the second.
 func TestAVolumeNoticeTellsTheSweepInThePastAndAGrowthAsAGrowth(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		freed   int64
@@ -645,6 +659,7 @@ func TestAVolumeNoticeTellsTheSweepInThePastAndAGrowthAsAGrowth(t *testing.T) {
 // control is the sentence at b7085e21, which read `0 bytes used, 0 free, 0 freed by this sweep`
 // and `episode 1 raised by "first"` for a trimmer that made no reading and raised no episode.
 func TestASwitchedOffNoticeNamesNoSweepAndNoEpisode(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		used, free int64

@@ -21,6 +21,7 @@ import (
 // in no part of the waiting line. Its merging phase is finished (PhaseFinished), so nothing but
 // this close moves it on.
 func TestAMergedChildClosesWhenTheIssueBeneathItIsDone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
 	engine := New(record.NewStore(), Config{Project: "LEGION", ProductionCheckBound: 48 * time.Hour,

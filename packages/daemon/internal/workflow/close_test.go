@@ -32,6 +32,7 @@ import (
 // merged child writes none at its close: that role's claim and the pod stay for the production
 // check's first look.
 func TestAChildLeavingTheWorkflowNeverClosesItsTree(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		fact   intake.Fact
@@ -119,6 +120,7 @@ func TestAChildLeavingTheWorkflowNeverClosesItsTree(t *testing.T) {
 // linger, a tree close, a workspace removal or a hand-over is queued, and its children run on:
 // their records, their claims and their statuses are left as they stood.
 func TestNoTreeLingersAndNoIssueIsHandedOver(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{"triage", "done"} {
 		t.Run(status, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -187,6 +189,7 @@ func TestNoTreeLingersAndNoIssueIsHandedOver(t *testing.T) {
 // generation and its pull request, and writes no status of any other issue. A later fact that
 // would start the phase's worker of an issue in work starts none of it.
 func TestAnIssueOutOfWorkGetsNoWorkers(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ status, op string }{
 		{"backlog", "suspend"}, {"icebox", "suspend"}, {"triage", "suspend"}, {"done", "issue_close"},
 	} {
@@ -319,6 +322,7 @@ func issueSuspensions(t *testing.T, pool *pgxpool.Pool, issue string) []record.I
 // nothing of the run the return opened. A caller that holds no fence weighs the row ids alone, and
 // a stop that names no fence (a row of the release before) is fenced by them alone.
 func TestStopActsFencesAnIssueCloseLikeASuspend(t *testing.T) {
+	t.Parallel()
 	at := &record.Fence{Generation: 7, Entry: 4}
 	for _, tc := range []struct {
 		name      string
@@ -354,6 +358,7 @@ func TestStopActsFencesAnIssueCloseLikeASuspend(t *testing.T) {
 // re-admitted generation drops a finished pull request and keeps an open one. A merge in merging
 // queues the close and leaves the issue in merging until Dispatch shows it done (closeMerged).
 func TestTheRecordKeepsWhetherItsPullRequestMergedOrClosed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		at    phase.Phase
@@ -395,6 +400,7 @@ func TestTheRecordKeepsWhetherItsPullRequestMergedOrClosed(t *testing.T) {
 // child's own children and an issue outside the child's subtree are not named, and a child with
 // nothing to name gets the first sentence alone, which every earlier reader of the notice reads.
 func TestTheNoticeOfAChildsMoveNamesItsOpenPullRequestAndEachIssueUnderItNotDone(t *testing.T) {
+	t.Parallel()
 	member := func(key, parent string, at phase.Phase, status string) record.Issue {
 		return record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION",
 			Title: key, Parent: &parent, Phase: at, Generation: 7, Status: status, Rank: "V", LastDispatchSeq: 1}
@@ -474,6 +480,7 @@ func TestTheNoticeOfAChildsMoveNamesItsOpenPullRequestAndEachIssueUnderItNotDone
 // no claim is stopped or started, and no production check opens (dispatch://INFRA-3178/spec R4).
 // The record is the same whoever wrote the done, so a person's done stands in for the owner's here.
 func TestAMergeOfTheOpenPullRequestOfAClosedChildClosesNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
 	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})

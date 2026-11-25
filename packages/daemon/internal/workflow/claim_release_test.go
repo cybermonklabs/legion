@@ -29,6 +29,7 @@ import (
 // how the test shows the release was added to the leave and replaced nothing. No row disarms a
 // pull request, since the daemon changes no merge setting of any (dispatch://INFRA-714 R2).
 func TestLeaveQueuesTheClaimRelease(t *testing.T) {
+	t.Parallel()
 	// A root's leave ends the root alone: six stops and its IssueSuspend.
 	parkedTree := map[string]int{"supervise": 6, "issue_suspend": 1}
 	// A child's leave ends the child alone, and tells the architect above it (here the tree's)

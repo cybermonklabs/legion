@@ -22,6 +22,7 @@ import (
 // (dispatch://INFRA-3276 R3). The rest of the catch-up is what it always was. A ready that carries
 // no sentence — the record told, or nothing recorded — composes the reason as before.
 func TestARelaunchSentenceOpensTheRootArchitectsCatchUp(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedAdmittedTree(t, pool, 1)
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -69,6 +70,7 @@ func TestARelaunchSentenceOpensTheRootArchitectsCatchUp(t *testing.T) {
 // root's wait on a person nor the telling of a person's act after the hand-back, where a task the
 // architect has not taken holds both (owed).
 func TestARelaunchSentenceDeliveryHoldsNoRootsWaitOnAPerson(t *testing.T) {
+	t.Parallel()
 	relaunch := &supervise.Delivery{ID: "relaunch:WORD", Task: "Your previous process ended because its pod was replaced."}
 	if !relaunch.Relaunch() {
 		t.Fatalf("%s reads as no relaunch delivery", relaunch.ID)
@@ -103,6 +105,7 @@ func TestARelaunchSentenceDeliveryHoldsNoRootsWaitOnAPerson(t *testing.T) {
 // read that left the id behind would hand owed every pending delivery as a task the architect had
 // not taken, so a root holding only the relaunch's sentence would never enter its wait.
 func TestARelaunchDeliveryHoldsNoRootsWaitOnAPersonOverTheStore(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		id   string

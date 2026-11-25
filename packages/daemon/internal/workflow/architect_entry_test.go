@@ -78,6 +78,7 @@ func architectStartOf(t *testing.T, pool *pgxpool.Pool, issue string) record.Sup
 // The row is the architect's own: the entry of a phase worker of the same issue stands where it
 // was, because the record counts the entries each role has been handed.
 func TestTheRootArchitectEntryIsRaisedWithItsTaskAndTheMomentItWasRaised(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := architectEntryRoot()
 	seedIssue(t, pool, root)
@@ -126,6 +127,7 @@ func enterArchitect(t *testing.T, pool *pgxpool.Pool, engine *Engine, root recor
 // that entry's work on its way (OwedEntry). A role the daemon holds no claim row of was given
 // nothing, which is the architect of a tree whose first start has not run.
 func TestOwedEntryReadsARootArchitectEntryAsItReadsAPhaseWorkers(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// claimed is whether the daemon holds an architect claim at all, and given the entry it
@@ -204,6 +206,7 @@ func seedArchitectClaimGiven(t *testing.T, pool *pgxpool.Pool, root record.Issue
 // the live architect where it stands (tellInPlace). A row lost at tellInPlace would lose a
 // person's answer, which is what the record is for.
 func TestResumeAwaitedRootRaisesTheArchitectEntryForBothOfItsCallers(t *testing.T) {
+	t.Parallel()
 	answeredAt := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	t.Run("the promotion of an answered root", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -284,6 +287,7 @@ func assertArchitectEntryRaised(t *testing.T, pool *pgxpool.Pool, engine *Engine
 // The resume of a cancelled idle release is the other delivery of this shape (the daemon's
 // releaseResume), which carries no task at all.
 func TestAWakeStartRaisesNoArchitectEntryAndLeavesTheArchitectOwedItsWork(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	token := wakeToken(t, claim.RoleArchitect)
 	// The architect's row as a transition left it, and a claim given the entry before it: the

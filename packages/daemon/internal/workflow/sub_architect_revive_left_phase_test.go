@@ -24,6 +24,7 @@ import (
 // otherwise the architect stays failed through the whole phase, against R2's "the daemon starts
 // it again at the child's next phase start".
 func TestAChildsNextPhaseStartRevivesItsFailedArchitectPastAStartOfAPhaseItLeft(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviveTree(t, pool, phase.Implementing)
 	seedIssue(t, pool, reviveIssue(reviveChild, phase.Planning, PhaseStatus(phase.Planning)))
