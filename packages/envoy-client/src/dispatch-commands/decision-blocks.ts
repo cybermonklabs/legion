@@ -133,6 +133,7 @@ export async function refuseOpenDecisionBlocks(
     if (states.length === 0) return `${named}, which version ${latest} does not hold yet`;
     // kept for one release: release-before-text
     const recordsOpen = states.includes("open");
+    // kept for one release: release-before-text
     const recordsSettled = !recordsOpen && states.every((state) => state !== undefined);
     if (ask !== undefined) {
       const open = ask.state === "open";
@@ -143,6 +144,7 @@ export async function refuseOpenDecisionBlocks(
       if ((!recordsOpen && !recordsSettled) || recordsOpen === open || (await liveText()).served) {
         return open ? named : undefined;
       }
+      // kept for one release: release-before-text
       return recordsOpen ? stillOpen(named, ask.state) : undefined;
     }
     // A copy, judged by its source, which is read off the block's own opening lines alone
