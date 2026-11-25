@@ -76,6 +76,7 @@ func TestBlockPathOfPlacesBlocksInTablesAndContainers(t *testing.T) {
 // A live tree can hold a row wider than its header (the browser pads later); the column past
 // the header has an empty header, not a missing one.
 func TestBlockPathOfNamesAnEmptyHeaderWhereTheHeaderRowIsShort(t *testing.T) {
+	t.Parallel()
 	cell := func(kind, value string) *Node {
 		return &Node{Type: kind, Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: value}}}}}
 	}
@@ -96,6 +97,7 @@ func TestBlockPathOfNamesAnEmptyHeaderWhereTheHeaderRowIsShort(t *testing.T) {
 // the column the cell is written in, while column stays the cell's child index, which
 // delete_column takes.
 func TestBlockPathOfNamesTheHeaderAboveTheColumnASpannedCellIsDrawnIn(t *testing.T) {
+	t.Parallel()
 	cell := func(kind, value string, colspan, rowspan int) *Node {
 		return &Node{Type: kind, Attrs: Attrs{"colspan": colspan, "rowspan": rowspan}, Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: value}}}}}
 	}
@@ -146,6 +148,7 @@ func TestBlockPathOfNamesTheHeaderAboveTheColumnASpannedCellIsDrawnIn(t *testing
 // first, since the widest row raises the grid's width limit past 1,000. Laid out alone, the header
 // row stopped one column short of that, and its last column read as having no header.
 func TestBlockPathOfNamesTheHeaderTheRendererDrawsOverAWideTable(t *testing.T) {
+	t.Parallel()
 	cell := func(kind, value string, colspan int) *Node {
 		return &Node{Type: kind, Attrs: Attrs{"colspan": colspan, "rowspan": 1}, Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: value}}}}}
 	}
@@ -181,6 +184,7 @@ func TestBlockPathOfNamesTheHeaderTheRendererDrawsOverAWideTable(t *testing.T) {
 // BlockPathsAndTableRows places every block in one walk exactly as BlockPathOf places it alone:
 // over the placement documents (placementDocuments). An id no block carries is in neither.
 func TestBlockPathsPlacesEveryBlockAsBlockPathOfDoes(t *testing.T) {
+	t.Parallel()
 	for name, doc := range placementDocuments(t) {
 		t.Run(name, func(t *testing.T) {
 			paths, _, err := BlockPathsAndTableRows(doc)
@@ -278,6 +282,7 @@ func placementDocuments(t *testing.T) map[string]*Node {
 // and cell is listed in child order with its opening words, one the live document has not stamped
 // yet with no id, since its indexes still address it.
 func TestTableRowsPlacesEveryRowAndCellAsBlockPathOfDoes(t *testing.T) {
+	t.Parallel()
 	tables := 0
 	for name, doc := range placementDocuments(t) {
 		listed, err := TableRows(doc)
@@ -343,6 +348,7 @@ func TestTableRowsPlacesEveryRowAndCellAsBlockPathOfDoes(t *testing.T) {
 // control: the markdown the table is written as places that cell at another column, so a column
 // read from the markdown would delete a different one.
 func TestTableRowsColumnIsTheIndexDeleteTableColumnTakes(t *testing.T) {
+	t.Parallel()
 	cell := func(kind, value string, colspan, rowspan int) *Node {
 		return &Node{Type: kind, Attrs: Attrs{"colspan": colspan, "rowspan": rowspan}, Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: value}}}}}
 	}
@@ -390,6 +396,7 @@ func TestTableRowsColumnIsTheIndexDeleteTableColumnTakes(t *testing.T) {
 // listing skips - one with no block id, or a second table under an earlier one's id - still spends
 // what the renderer spends on it.
 func TestTablesShareOneSpanBudgetInDocumentOrder(t *testing.T) {
+	t.Parallel()
 	cell := func(kind, value string, colspan, rowspan int) *Node {
 		return &Node{Type: kind, Attrs: Attrs{"colspan": colspan, "rowspan": rowspan}, Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: value}}}}}
 	}
@@ -465,6 +472,7 @@ func TestTablesShareOneSpanBudgetInDocumentOrder(t *testing.T) {
 // the pmdoc fixtures where laying it out through the anchored row alone put it: the grid of the
 // rows above a cell and the header row alone (prefixColumnHeader, the layout BlockPathOf used).
 func TestBlockPathOfHeadersOfTheFixturesAreThoseOfTheRowsAboveThem(t *testing.T) {
+	t.Parallel()
 	checked := 0
 	for _, fx := range loadFixtures(t) {
 		doc, err := FromJSON(fx.PMJSON)

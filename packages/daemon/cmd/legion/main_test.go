@@ -2115,10 +2115,10 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 // it exists to catch. (INFRA-2554.)
 func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
 	const (
-		returned = "Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back," +
-			" and it takes the free slots first."
-		starting = "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank," +
-			" and 1 issue whose work came back stands ahead of all of them."
+		returned = "Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back," +
+			" and it takes the free slots before the issues at P1 that have not started."
+		starting = "It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank," +
+			" and 1 issue at P1 whose work came back stands ahead of all of them."
 	)
 	waiting := []string{"WIDGETS-14", "WIDGETS-15"}
 	issues := map[string]api.Issue{

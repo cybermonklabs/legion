@@ -334,12 +334,10 @@ func startProbe(t *testing.T, path string) int {
 		_, _ = probe.Process.Wait()
 	})
 
-	if !testwait.Holds(5*time.Second, testwait.Poll, func() bool {
+	testwait.Eventually(t, "the probe at "+path+" to exec", func() bool {
 		cmdline, err := os.ReadFile("/proc/" + strconv.Itoa(probe.Process.Pid) + "/cmdline")
 		return err == nil && len(cmdline) > 0
-	}) {
-		t.Fatalf("the probe at %s never exec'd", path)
-	}
+	})
 	return probe.Process.Pid
 }
 

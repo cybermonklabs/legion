@@ -1,6 +1,7 @@
 name: CI job plugin-pack
 
-# The steps of two jobs of ci.yaml, `plugin-pack` and `step-models-chain`, in one file.
+# The steps of two jobs, `.github/workflows/ci.yaml#plugin-pack` and
+# `.github/workflows/ci.yaml#step-models-chain`, in one file.
 # ci.yaml's job of each id calls this file and passes its own id as `job`. Each caller keeps
 # `needs: changes` and the whole `if:` that decides whether its steps run. So the `if:` each job
 # here carries only picks the job named for the caller
@@ -48,7 +49,7 @@ name: CI job plugin-pack
 #
 # Each job's last step reports ci-ok for its caller. On a merge-group run that job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
@@ -60,7 +61,7 @@ on:
         required: true
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true

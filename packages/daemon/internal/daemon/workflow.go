@@ -116,6 +116,9 @@ type workflowRuntime struct {
 	// totalsRead is plan.totalsRead, a test's seam after each fact's reads (readTotals). nil runs
 	// nothing.
 	totalsRead func(agents []claim.Token, reads workflow.FactReads)
+	// taskConfirmedApplied is plan.taskConfirmedApplied, a test's seam after each confirmation of
+	// a task has been applied (taskConfirmed). nil runs nothing.
+	taskConfirmedApplied func(claim.Token, error)
 	// pauses is the project's pause (projectPause, dispatch://INFRA-3759): the pause service the
 	// API's routes are handed, with the stop transaction, the let-out stamp and the after-commit
 	// steps the machines and the service call. run builds it once this runtime is open and before
@@ -1959,9 +1962,10 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 //
 // Its one reader, keptRepository, asks it of an issue the workflow does not record. IssueSandbox
 // answers a Sandbox its store holds absent only where a release kept it with the issue's volume
-// (ReleaseIssue), and the store authorizes neither the release nor the close of an issue it holds
-// no row of (store.IssueRelease, store.IssueSuspension). So such an issue's Sandbox answers
-// present for as long as it lives.
+// (ReleaseIssue) or where it is going: being deleted, or taken by the runtime's own delete. The
+// store authorizes neither the release nor the close of an issue it holds no row of
+// (store.IssueRelease, store.IssueSuspension). So such an issue's Sandbox answers present for as
+// long as it lives, until a delete takes it with the workspace on it.
 func workspaceHeldBy(rt runtime.Runtime, stateDir string) func(issue string, repo ghrepo.Repository) bool {
 	if pods, ok := rt.(issuePods); ok {
 		return func(issue string, _ ghrepo.Repository) bool {
@@ -2735,8 +2739,12 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 		if p := c.Pending; p != nil {
 			id = fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID)
 		}
-		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...); err != nil {
+		_, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...)
+		if err != nil {
 			w.log.Warn("apply the confirmation of a task", "claim", c.Token, "error", err)
+		}
+		if w.taskConfirmedApplied != nil {
+			w.taskConfirmedApplied(c.Token, err)
 		}
 	}()
 }

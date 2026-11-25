@@ -29,7 +29,7 @@ GATE = gate("step_models_chain", STEP_MODELS_CHAIN_JOB, runs=[
     ]),
 ], reads=reads(
     (".github/actions/install-claude-code/**", at(STEP_MODELS_CHAIN_JOB, "./.github/actions/install-claude-code")),
-    (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin), the release "
+    (".claude-code-pin", "`.github/actions/install-claude-code/action.yml#pin=$(<.claude-code-pin)`, the release "
                          "the chain's tester panes run"),
     (".github/actions/pull-test-images/**", at(STEP_MODELS_CHAIN_JOB, "Pull the NATS test container images")),
     (f"{DAEMON}/internal/testnats/nats.go", f"{at(STEP_MODELS_CHAIN_JOB, 'Pull the NATS test container images')} "
