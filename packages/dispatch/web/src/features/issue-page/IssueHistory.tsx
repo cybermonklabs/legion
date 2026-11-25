@@ -39,6 +39,7 @@ import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { DetailsErrorLine, retryRead } from "./details-error";
+import { ENTRY_CONTROLS, SHOW_MORE_CONTROL, ShowMoreWords } from "./details-leaves";
 import { HistoryHandoff } from "./HistoryHandoff";
 import {
   buildHistory,
@@ -263,7 +264,8 @@ export function IssueHistory({
   // held from the render in which the log and every read the threads come from have answered, so
   // that a thread those reads bring stands among the first entries rather than above them.
   const [end, setEnd] = useState<HistoryPlace | undefined>(undefined);
-  const shownEnd = end ?? placeUnder(days, undefined, HISTORY_PAGE);
+  const firstEnd = useMemo(() => placeUnder(days, undefined, HISTORY_PAGE), [days]);
+  const shownEnd = end ?? firstEnd;
   const settled =
     log.data !== undefined &&
     comments.status !== "pending" &&
@@ -276,7 +278,11 @@ export function IssueHistory({
   const [asked, setAsked] = useState<number | undefined>(undefined);
   // The entry of the thread that holds the turn the address names, which is drawn however far
   // under the entries drawn it stands, with every entry above it.
-  const itemPlace = item === undefined ? undefined : turnPlace(days, item.id);
+  const itemId = item?.id;
+  const itemPlace = useMemo(
+    () => (itemId === undefined ? undefined : turnPlace(days, itemId)),
+    [days, itemId]
+  );
   // Each move of the place is drawn in the render that finds it, before React commits anything.
   let nextEnd = end;
   if (asked !== undefined && pages > asked) {
@@ -291,7 +297,7 @@ export function IssueHistory({
     nextEnd = shownEnd;
   }
   if (nextEnd !== end) setEnd(nextEnd);
-  const drawn = historyDownTo(days, shownEnd);
+  const drawn = useMemo(() => historyDownTo(days, shownEnd), [days, shownEnd]);
   // The address of a turn of a thread that began before the oldest event read so far names an
   // entry the history does not hold yet (`HistoryInput.loadedFrom`), so the log is read on, one
   // page at a time, until that thread is in or the log has ended; the history is then drawn down
@@ -453,7 +459,7 @@ export function IssueHistory({
   const more = useRef<HTMLButtonElement>(null);
   const failure = useRef<HTMLDivElement>(null);
   const controlsOfList = () => [
-    ...(anchorRoot.current?.querySelectorAll<HTMLElement>(CONTROLS) ?? []),
+    ...(anchorRoot.current?.querySelectorAll<HTMLElement>(ENTRY_CONTROLS) ?? []),
   ];
   const entriesOfList = () => [
     ...(anchorRoot.current?.querySelectorAll<HTMLElement>(
@@ -533,7 +539,7 @@ export function IssueHistory({
     const first =
       entriesOfList()
         .find((entry) => !entries.has(entry) && isBelow(entry))
-        ?.querySelector<HTMLElement>(CONTROLS) ?? undefined;
+        ?.querySelector<HTMLElement>(ENTRY_CONTROLS) ?? undefined;
     const target =
       (first !== undefined && inView(first) ? first : undefined) ??
       added.find((control) => isBelow(control) && inView(control)) ??
@@ -660,7 +666,7 @@ export function IssueHistory({
       {log.data !== undefined && (drawn.left > 0 || log.hasNextPage) ? (
         <button
           aria-busy={readsPage || undefined}
-          className={`dispatch-inline-link self-start text-xs font-medium underline ${pageMutedText}`}
+          className={`${SHOW_MORE_CONTROL} self-start`}
           onClick={(event) => {
             // Not disabled while its page is read, since Chromium drops the focus of a focused
             // button that turns disabled to the page: a press then joins the reader's own read of
@@ -686,22 +692,17 @@ export function IssueHistory({
           {readsPage ? (
             ANSWER_LINES.loading_older
           ) : (
-            // One child, so the space before the count holds where every button is a flex box
-            // (`styles.css`, below 1280 px), which drops a space between two of its children.
             // The count is of the entries read and not drawn, with "+" while an older page of
             // the log is unread, and none once every entry read is drawn.
-            <span>
-              {CONTROL_LABELS.show_more}
-              {drawn.left === 0 ? null : (
-                <>
-                  {" ("}
+            <ShowMoreWords
+              count={
+                drawn.left === 0 ? undefined : (
                   <span data-history-left="" {...authorText}>
                     {log.hasNextPage ? `${drawn.left}+` : drawn.left}
-                  </span>{" "}
-                  {CONTROL_LABELS.show_more_left})
-                </>
-              )}
-            </span>
+                  </span>
+                )
+              }
+            />
           )}
         </button>
       ) : null}
@@ -714,9 +715,6 @@ interface HeldParts {
   readonly controls: ReadonlySet<HTMLElement>;
   readonly entries: ReadonlySet<HTMLElement>;
 }
-
-/** The controls of the history a focus can be handed to. */
-const CONTROLS = "a[href], button:not(:disabled)";
 
 /**
  * The key each run of uploads among `days` is drawn under, by the run's id. The model names a

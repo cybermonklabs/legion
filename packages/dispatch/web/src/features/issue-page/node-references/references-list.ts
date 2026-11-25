@@ -47,11 +47,6 @@ export interface ReferenceRow {
    *  `serves`, `needs`, `answers`, `mentions` and the rest. The component draws the page's
    *  word for it, never this token. */
   readonly kind: string;
-  /** What the row draws of the citing item's words, where it is a comment, a message or a
-   *  question of the focused node's own issue and the page holds its words (`issueItemWords`):
-   *  every one of them, with no cut, and each reference they write named (`itemLine`); `""` for
-   *  every other node, which the component names by its word. Never the read's own text. */
-  readonly line: string;
   /** What kind of node cites, as the graph names it: `block`, `comment`, `ask`, `message`,
    *  `artifact`, `issue`, `component`, `session`. A comment, a message or a question whose block
    *  holds the mention reads as that item. The component draws the page's word for it where the
@@ -66,6 +61,11 @@ export interface ReferenceRow {
    *  component draws where the citing node is not of the focused node's own issue (the old
    *  panel's "Comment · LAY-9"); `undefined` where the read names neither. */
   readonly source: string | undefined;
+  /** What the row draws of the citing item's words, where it is a comment, a message or a
+   *  question of the focused node's own issue and the page holds its words (`issueItemWords`):
+   *  every one of them, with no cut, and each reference they write named (`namedWords`); `""`
+   *  for every other node, which the component names by its word. Never the read's own text. */
+  readonly words: string;
 }
 
 /** The reads of an issue that hold its comments, messages and questions, as the outline reads
@@ -132,9 +132,9 @@ function blockItem(node: GraphEdge["node"]): NonNullable<GraphEdge["node"]["pare
  *
  * `itemWords` holds the words of the comments, messages and questions of the focused node's own
  * issue by their ids (`issueItemWords`). A citing item among them carries all of its words, with
- * no cut (`itemLine`), its references named from `names`, the page's one batched read of what its
- * references point at, by reference (`reference-names.tsx`); every other node, and an item whose
- * words the page does not hold yet, carries none.
+ * no cut (`namedWords`), its references named from `names`, the page's one batched read of what
+ * its references point at, by reference (`reference-names.tsx`); every other node, and an item
+ * whose words the page does not hold yet, carries none.
  */
 export function referenceRows(
   itemWords: ReadonlyMap<string, string>,
@@ -157,10 +157,10 @@ export function referenceRows(
       at: held?.at ?? edge.created_at,
       key,
       kind: edge.kind,
-      line: words === undefined ? "" : itemLine(words, names, issues),
       nodeKind,
       ref: item?.ref ?? edge.node.ref,
       source: edge.node.issue_key ?? edge.node.project,
+      words: words === undefined ? "" : namedWords(words, names, issues),
     });
   }
   return [...rows.values()];
@@ -175,20 +175,20 @@ export function referenceRows(
  * typed; words holding a reference the read has not named are `""`, and the row is named by its
  * word, since an address is no name. `issues` is `knownIssueKeys(names)`.
  */
-function itemLine(
+function namedWords(
   words: string,
   names: ReadonlyMap<string, string>,
   issues: readonly string[]
 ): string {
   const whole = words.replace(/\s+/gu, " ").trim();
-  let line = "";
+  let written = "";
   let at = 0;
   for (const one of rowReferences(whole, issues)) {
     if ((names.get(one.reference) ?? "").trim() === "") return "";
     const named = rowReferenceWords(one, names);
-    line += whole.slice(at, one.start);
-    line += named.key === undefined ? named.words : `${named.key} ${named.words}`;
+    written += whole.slice(at, one.start);
+    written += named.key === undefined ? named.words : `${named.key} ${named.words}`;
     at = one.end;
   }
-  return `${line}${whole.slice(at)}`;
+  return `${written}${whole.slice(at)}`;
 }

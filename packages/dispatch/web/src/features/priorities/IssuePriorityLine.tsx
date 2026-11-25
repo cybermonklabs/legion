@@ -107,24 +107,17 @@ export function IssuePriorityLine({
   disabled,
   inRow = false,
   issue,
-  limit,
 }: {
   disabled: boolean;
   /** Whether the line is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
   inRow?: boolean;
   issue: Pick<Issue, "advances" | "advances_revision" | "key">;
-  /** How many of the priorities the line draws, the first ones, for a host that draws the
-   *  control that shows the next ones (the new issue page's Details). With none, it draws every
-   *  one. */
-  limit?: number;
 }): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
   const inDetails = page !== null && inRow;
   const advances = issue.advances ?? [];
-  // With `limit`, the priorities the line draws: the first `limit` of them.
-  const drawnEntries = limit === undefined ? undefined : new Set(advances.slice(0, limit));
   const own = advances.filter((entry) => !entry.inherited).map((entry) => entry.id);
   const [adding, setAdding] = useState(false);
   const [picked, setPicked] = useState("");
@@ -277,7 +270,6 @@ export function IssuePriorityLine({
         </span>
       )}
       {advances.map((entry) => {
-        if (drawnEntries?.has(entry) === false) return null;
         const label = labels.get(entry.id) ?? entry.id;
         return (
           <span

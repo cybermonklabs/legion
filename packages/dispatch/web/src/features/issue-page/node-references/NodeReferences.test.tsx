@@ -12,6 +12,7 @@ import { emulateChromiumFocusFixup } from "../chromium-focus-fixup";
 import { MarginSlotProvider } from "../margin-slot";
 import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-words";
 import { failRefreshOverHeld } from "../refresh-over-held-fixture";
+import { SHOW_MORE, showMoreName } from "../show-more-fixture";
 import { NodeReferences } from "./NodeReferences";
 
 const STATEMENT = "dispatch://LAY-2/spec#b-r1";
@@ -647,7 +648,7 @@ test("a citing comment's words are drawn whole, with no cut, no clamp and no Sho
     expect(link, `the citing comment's words are drawn under ${cut}`).not.toHaveClass(cut);
   }
   expect(
-    screen.queryByRole("button", { name: /^Show more/u }),
+    screen.queryByRole("button", { name: SHOW_MORE }),
     "the row offers more of the citing comment's words"
   ).toBeNull();
 });
@@ -679,8 +680,8 @@ test("the references draw 20 rows at a time, and Show more draws the rest, moves
   );
   const rows = () => screen.getAllByRole("listitem");
   await waitFor(() => expect(rows(), "the list does not draw its first 20 rows").toHaveLength(20));
-  const more = screen.getByRole("button", { name: /^Show more/u });
-  expect(more.textContent).toBe(`${CONTROL_LABELS.show_more} (5 ${CONTROL_LABELS.show_more_left})`);
+  const more = screen.getByRole("button", { name: SHOW_MORE });
+  expect(more.textContent).toBe(showMoreName(5));
 
   act(() => more.focus());
   await userEvent.keyboard("{Enter}");

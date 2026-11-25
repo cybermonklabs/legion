@@ -22,7 +22,7 @@ import {
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { GitHubLink } from "../issue/GitHubLink";
 import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";
-import { IssueComponentsLine } from "../issue/IssueComponentsLine";
+import { componentChipIds, IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
@@ -240,10 +240,7 @@ export function IssueMarginPanel({
   const [referencesOpen, setReferencesOpen] = useState(false);
   // The pages of each list of unbounded length the panel's rows draw (`useListPages`), each with
   // the box its entries are drawn in, where a press of its Show more finds the first entry it
-  // drew. The blockers, the issues that wait on this one and the pins page their own lists.
-  const labelPages = useListPages();
-  const labelsValue = useRef<HTMLDivElement>(null);
-  const advancePages = useListPages();
+  // drew. The issues that wait on this one and the pins page their own lists.
   const pullRequestPages = useListPages();
   const pullRequestsValue = useRef<HTMLDivElement>(null);
   const linkPages = useListPages();
@@ -500,12 +497,8 @@ export function IssueMarginPanel({
   const labels = issue.labels ?? [];
   const advances = issue.advances ?? [];
   const artifacts = issue.artifacts ?? [];
-  // The chips the Components row draws, as one list: the issue's components, then the retired
-  // ones (`IssueComponentsLine`), which an explicit set alone draws.
-  const componentChips =
-    issue.components.mode === "explicit"
-      ? (issue.components.ids ?? []).length + (issue.components.unknown ?? []).length
-      : 0;
+  // The chips the Components row draws, as one list (`componentChipIds`).
+  const componentChips = componentChipIds(issue.components).length;
   const none = (
     <span className={pageQuietText} {...pageChrome}>
       {CONTROL_LABELS.none}
@@ -552,33 +545,25 @@ export function IssueMarginPanel({
             </span>
           )}
         </Row>
-        {/* Every label, with the control that adds and removes one, 20 at a time: the header
-            draws those that fit, and its count opens this row. The chips are the first children
-            of the labels' own box (`IssueLabels`). */}
-        <Row glyph="#" label={PROPERTY_LABELS.labels} row="labels" valueRef={labelsValue}>
+        {/* Every label, with the control that adds and removes one: the header draws those
+            that fit, and its count opens this row. */}
+        <Row glyph="#" label={PROPERTY_LABELS.labels} row="labels">
           {labels.length === 0 ? none : null}
           <IssueLabels
             chipClassName={`rounded-md border px-[7px] text-xs leading-[18px] font-medium ${pageLabelChip}`}
             disabled={isClosed}
             issueKey={issue.key}
             labels={labels}
-            limit={labelPages.drawn}
             onSave={(next) => writes.labels.mutateAsync({ issueKey: issue.key, labels: next })}
             project={issue.project}
             saving={writes.labels.isPending}
             variant="rail"
           />
-          {labelPages.more(
-            labels.length,
-            (index) =>
-              labelsValue.current?.querySelector('[data-testid="issue-labels"]')?.children[index]
-          )}
         </Row>
-        {/* The priorities the issue advances, 20 at a time, with the control that adds and
-            removes one: an issue that advances none draws no such row, and its control stands
-            beside the add control below, where a focus in the row moves on as the reader's own
-            removal of the last one lands (`usePriorityHandOffs`). Each priority drawn is one
-            link, its own. */}
+        {/* The priorities the issue advances, with the control that adds and removes one: an
+            issue that advances none draws no such row, and its control stands beside the add
+            control below, where a focus in the row moves on as the reader's own removal of the
+            last one lands (`usePriorityHandOffs`). */}
         {advances.length === 0 ? null : (
           <Row
             glyph="↗"
@@ -587,17 +572,8 @@ export function IssueMarginPanel({
             valueRef={priority.advancesValue}
           >
             <div className="contents" ref={priority.rowLeft}>
-              <IssuePriorityLine
-                disabled={isClosed}
-                inRow
-                issue={issue}
-                limit={advancePages.drawn}
-              />
+              <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
             </div>
-            {advancePages.more(
-              advances.length,
-              (index) => priority.advancesValue.current?.querySelectorAll("a[href]")[index]
-            )}
           </Row>
         )}
         {/* The parent's own control first, which opens its editor in this row and is marked as

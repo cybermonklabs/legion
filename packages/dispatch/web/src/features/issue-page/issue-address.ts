@@ -32,8 +32,8 @@ export type AddressTarget =
    *  it (`?ask=`, `?comment=`), and the one its own route names (`/asks/<id>`, `/comments/<id>`,
    *  `/messages/<id>`). It is a node of the tree, which the page unfolds the path to and puts
    *  the focus on, wherever the item is anchored (R20), or, for a comment or message agents
-   *  wrote outside every thread a person wrote in, an entry of the panel's history
-   *  (`agentsOnlyItem`). */
+   *  or a person wrote that is a turn of a thread the history holds (`agents-only.ts`), an entry
+   *  of the panel's history (`agentsOnlyItem`). */
   | { readonly kind: "item"; readonly id: string }
   /** The issue's children, by the issue's own key: the children's own address (`/children`,
    *  `t h`) names the first row of their group in the outline, which the page unfolds the path

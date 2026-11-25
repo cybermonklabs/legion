@@ -121,26 +121,6 @@ const TIED = {
   version: 1,
 };
 
-/** The history of `comments`, `messages` and `events`, read whole. */
-function historyOf(
-  comments: readonly Comment[],
-  messages: readonly MessageRead[],
-  events: readonly DispatchEvent[] = []
-): HistoryEntry[] {
-  return flat(
-    buildHistory({
-      artifacts: [],
-      asks: [],
-      blocks: new Map(),
-      comments,
-      events,
-      lastReadSeq: 0,
-      messages,
-      today: "2026-11-15",
-    })
-  );
-}
-
 /** The thread entries of `entries`, newest first: each one's root turn and its replies. */
 function threadsIn(entries: readonly HistoryEntry[]): { replies: string[]; root: string }[] {
   return entries.flatMap((entry) =>
@@ -474,12 +454,12 @@ test("a thread the Legion daemon began is one entry, and stays one when a person
     in_reply_to: "daemon",
   });
 
-  expect(threadsIn(historyOf([], [{ message: root, replies: [agent] }]))).toEqual([
+  expect(threadsIn(flat(daysOf([], 0, [], [{ message: root, replies: [agent] }])))).toEqual([
     { replies: ["planner-reply"], root: "daemon" },
   ]);
-  expect(threadsIn(historyOf([], [{ message: root, replies: [agent, person] }]))).toEqual([
-    { replies: ["planner-reply", "person-reply"], root: "daemon" },
-  ]);
+  expect(threadsIn(flat(daysOf([], 0, [], [{ message: root, replies: [agent, person] }])))).toEqual(
+    [{ replies: ["planner-reply", "person-reply"], root: "daemon" }]
+  );
 });
 
 // The history holds no message thread but the daemon's: an agent's note to the issue's people and
@@ -502,12 +482,16 @@ test("an agent's note, a thread between agents and an agents' comment thread tie
 
   expect(
     threadsIn(
-      historyOf(
-        [tied, tiedReply, post],
-        [
-          { message: note, replies: [] },
-          { message: between, replies: [answer] },
-        ]
+      flat(
+        daysOf(
+          [],
+          0,
+          [tied, tiedReply, post],
+          [
+            { message: note, replies: [] },
+            { message: between, replies: [answer] },
+          ]
+        )
       )
     )
   ).toEqual([{ replies: [], root: "post" }]);
@@ -541,13 +525,16 @@ test("no event that creates, edits, deletes or answers a post is a line, whichev
     event("handoff.recorded", at, {}),
   ];
 
-  const lines = historyOf(
-    [post, mine],
-    [
-      { message: daemon, replies: [daemonReply] },
-      { message: note, replies: [] },
-    ],
-    events
+  const lines = flat(
+    daysOf(
+      events,
+      0,
+      [post, mine],
+      [
+        { message: daemon, replies: [daemonReply] },
+        { message: note, replies: [] },
+      ]
+    )
   ).flatMap((entry) => (entry.kind === "event" ? [entry.event.type] : []));
   expect(lines).toEqual(["handoff.recorded"]);
 });
@@ -567,13 +554,16 @@ test("a delivery of a message is a line in a thread the daemon began, and none o
       target: "session:tester-7",
     });
 
-  const lines = historyOf(
-    [],
-    [
-      { message: daemon, replies: [] },
-      { message: note, replies: [] },
-    ],
-    [delivered("daemon"), delivered("note")]
+  const lines = flat(
+    daysOf(
+      [delivered("daemon"), delivered("note")],
+      0,
+      [],
+      [
+        { message: daemon, replies: [] },
+        { message: note, replies: [] },
+      ]
+    )
   ).flatMap((entry) =>
     entry.kind === "event" && entry.event.type === "message.delivery"
       ? [entry.event.payload.message_id]

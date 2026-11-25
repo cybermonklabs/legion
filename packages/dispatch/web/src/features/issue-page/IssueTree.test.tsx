@@ -9343,13 +9343,13 @@ test("an address naming a turn of a thread the history holds lands on its neares
 });
 
 // The class search of #4205's 6586a4be, on the class of the landing's line held while a document
-// is read: the landing on the nearest drawn ancestor of a turn only agents wrote in was dropped
-// while a document added to the issue had its blocks read, which holds the tree's reads out
-// again (`readsHeld`), since its following settles on no landing of the old page's. The tree was
-// drawn with no address to land on, and once the reads answered the landing's key came back as
-// a new landing's would: a zoom the reader had made after the landing was left, as a following
-// leaves a zoom its node is outside of. The landing stays while the reads are out, so the
-// reader's zoom stands, with the focus where they put it.
+// is read: the landing on the nearest drawn ancestor of a turn of a thread the history holds
+// (`agents-only.ts`) was dropped while a document added to the issue had its blocks read, which
+// holds the tree's reads out again (`readsHeld`), since its following settles on no landing of
+// the old page's. The tree was drawn with no address to land on, and once the reads answered the
+// landing's key came back as a new landing's would: a zoom the reader had made after the landing
+// was left, as a following leaves a zoom its node is outside of. The landing stays while the
+// reads are out, so the reader's zoom stands, with the focus where they put it.
 //
 // The ancestor is the issue, the outline's tab stop, as it is for every agents-only turn the
 // server stores (`agents-only.ts`'s `agentsOnlyIds`). A comment thread is agents-only only where

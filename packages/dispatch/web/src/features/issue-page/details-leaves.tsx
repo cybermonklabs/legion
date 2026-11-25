@@ -1,22 +1,24 @@
 import { type ReactNode, type Ref, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { Link } from "react-router-dom";
 
 import { pageInkText, pageMutedText, pageQuietText, pageRowBorder } from "../../theme/classes";
-import { buildIssuePath } from "../refs/routes";
+import { IssueLine } from "./BlockedByControl";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import { statusGlyph } from "./issue-status";
 import { authorText, MARGIN_SECTION_NAMES, type MarginSection, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
-import { ROW_LINK } from "./row-references";
 import type { MarginSections } from "./useMarginSections";
 
 /** How many entries a list of unbounded length in Details draws at first, and how many more each
  *  press of the Show more under it draws (`useListPages`). */
 export const LIST_PAGE = 20;
 
-/** The controls of an entry a press of Show more can move the focus to. */
-const ENTRY_CONTROLS = "a[href], button:not(:disabled)";
+/** The controls of an entry a press of Show more can move the focus to, and of the history a
+ *  focus can be handed to (`IssueHistory.tsx`). */
+export const ENTRY_CONTROLS = "a[href], button:not(:disabled)";
+
+/** The look of Show more, under a list's entries and under the history's (`IssueHistory.tsx`). */
+export const SHOW_MORE_CONTROL = `dispatch-inline-link text-xs font-medium underline ${pageMutedText}`;
 
 /** The rows of each section that a control elsewhere on the page opens Details at
  *  (`DetailsRow`), each where it is drawn: the section opens for a request of one of them.
@@ -43,29 +45,6 @@ export function IssueList({
       ))}
       {pages.more(issues.length, (index) => list.current?.children[index])}
     </div>
-  );
-}
-
-/** One issue in a row of Details: its key, bold, as the way to it, and its title after it (the
- *  prototype's `.lnkrow`). */
-export function IssueLine({
-  issueKey,
-  title,
-}: {
-  issueKey: string;
-  title: string | undefined;
-}): ReactNode {
-  return (
-    <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
-      <Link
-        className={`dispatch-inline-link mr-1.5 font-semibold ${ROW_LINK} ${pageInkText}`}
-        to={buildIssuePath({ key: issueKey, kind: "issue" })}
-        {...authorText}
-      >
-        {issueKey}
-      </Link>
-      {title === undefined || title === "" ? null : <span {...authorText}>{title}</span>}
-    </span>
   );
 }
 
@@ -153,7 +132,7 @@ function focusEntry(entry: Element | null | undefined): void {
 }
 
 /** Show more, on a line of its own under a list's entries: how many entries are left, "Show more
- *  (25 left)", in the words and the look of the history's own control (`IssueHistory.tsx`). */
+ *  (25 left)" (`ShowMoreWords`), in the look of the history's own control (`IssueHistory.tsx`). */
 function ShowMore({
   className,
   left,
@@ -165,21 +144,28 @@ function ShowMore({
 }): ReactNode {
   return (
     <div className={`w-full ${className}`}>
-      <button
-        className={`dispatch-inline-link text-xs font-medium underline ${pageMutedText}`}
-        onClick={onMore}
-        type="button"
-        {...pageChrome}
-      >
-        {/* One child, so the space before the count holds where every button is a flex box
-            (`styles.css`, below 1280 px), which drops a space between two of its children. */}
-        <span>
-          {CONTROL_LABELS.show_more}
-          {" ("}
-          <span {...authorText}>{left}</span> {CONTROL_LABELS.show_more_left})
-        </span>
+      <button className={SHOW_MORE_CONTROL} onClick={onMore} type="button" {...pageChrome}>
+        <ShowMoreWords count={<span {...authorText}>{left}</span>} />
       </button>
     </div>
+  );
+}
+
+/** The words of Show more, the list's and the history's: "Show more", and where `count` is given,
+ *  the node drawn for how many entries are left, " (25 left)". They are one child of the
+ *  control, so the space before the count holds where every button is a flex box (`styles.css`,
+ *  below 1280 px), which drops a space between two of its children. */
+export function ShowMoreWords({ count }: { count?: ReactNode }): ReactNode {
+  return (
+    <span>
+      {CONTROL_LABELS.show_more}
+      {count === undefined ? null : (
+        <>
+          {" ("}
+          {count} {CONTROL_LABELS.show_more_left})
+        </>
+      )}
+    </span>
   );
 }
 

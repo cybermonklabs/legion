@@ -222,9 +222,9 @@ function ReferenceList({
           // wrap within the row; every other node, and an item whose read has not answered, by
           // its word alone, which is then the link: its stored text is markup, and an address, a
           // slug or an id is no name.
-          const named = row.line !== "";
+          const named = row.words !== "";
           const elsewhere = row.source !== undefined && row.source !== issueKey;
-          const text = named ? row.line : (word ?? "");
+          const text = named ? row.words : (word ?? "");
           return (
             <li className="flex min-w-0 items-baseline gap-2 text-sm" key={row.key}>
               {word === undefined || !named ? null : (

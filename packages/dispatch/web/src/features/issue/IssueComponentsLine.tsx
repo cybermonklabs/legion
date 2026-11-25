@@ -72,6 +72,16 @@ export function componentsControlName(
   return `${drawn} ${words.CONTROL_LABELS.control_name_of} ${issueKey}`;
 }
 
+/** The ids of the chips the components line draws, in its order: an explicit set's components
+ *  and then its retired ones, as one list, and none for any other attachment. */
+export function componentChipIds(
+  components: Pick<IssueComponents, "ids" | "mode" | "unknown">
+): readonly string[] {
+  return components.mode === "explicit"
+    ? [...(components.ids ?? []), ...(components.unknown ?? [])]
+    : [];
+}
+
 /**
  * The `Components:` line of the issue header's metadata rail: the issue's effective
  * attachment as chips. An explicit set lists its live component ids and marks each id a
@@ -109,12 +119,9 @@ export function IssueComponentsLine({
   const page = usePageWords();
   const inDetails = page !== null && inRow;
   const { components } = issue;
-  // With `limit`, the ids whose chips are drawn: the first `limit` of the components and then
-  // of the retired ones.
+  // With `limit`, the ids whose chips are drawn: the first `limit` of `componentChipIds`.
   const drawnChips =
-    limit === undefined
-      ? undefined
-      : new Set([...(components.ids ?? []), ...(components.unknown ?? [])].slice(0, limit));
+    limit === undefined ? undefined : new Set(componentChipIds(components).slice(0, limit));
   const sources = useQuery(projectArchitectureSourcesQuery(issue.project));
   const [pickerOpen, setPickerOpen] = useState(false);
   const namesComponents = components.mode === "explicit" && (components.ids ?? []).length > 0;

@@ -58,6 +58,7 @@ import {
   sentenceCase,
 } from "./page-words";
 import { failRefreshOverHeld } from "./refresh-over-held-fixture";
+import { SHOW_MORE, showMoreName } from "./show-more-fixture";
 import { renderAtBrowserEntry } from "./slots/stage-fixtures";
 
 const KEY = "CORE-1";
@@ -705,20 +706,18 @@ test("the subscribed agents draw 20 at a time under Show more, and an agent read
   const view = renderPeople();
   const agents = () =>
     within(screen.getByRole("region", { name: "Subscribed agents" })).getAllByRole("listitem");
-  const left = (count: number) =>
-    `${CONTROL_LABELS.show_more} (${count} ${CONTROL_LABELS.show_more_left})`;
   try {
     const subscribers = await screen.findByRole("button", { name: SUBSCRIBERS });
     await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:45`));
     await userEvent.click(subscribers);
     expect(agents(), "the list does not draw its first 20 agents").toHaveLength(20);
-    const more = screen.getByRole("button", { name: new RegExp(`^${CONTROL_LABELS.show_more}`) });
-    expect(more.textContent).toBe(left(25));
+    const more = screen.getByRole("button", { name: SHOW_MORE });
+    expect(more.textContent).toBe(showMoreName(25));
 
     act(() => more.focus());
     await userEvent.keyboard("{Enter}");
     expect(agents(), "Show more did not draw the next 20 agents").toHaveLength(40);
-    expect(more.textContent).toBe(left(5));
+    expect(more.textContent).toBe(showMoreName(5));
     expect(
       agents()[20]?.contains(document.activeElement),
       "Show more did not move the focus to the first agent it drew"
@@ -728,7 +727,7 @@ test("the subscribed agents draw 20 at a time under Show more, and an agent read
     await act(() => view.client.invalidateQueries({ queryKey: ["subscribers", KEY] }));
     await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:46`));
     expect(more.textContent, "an agent read after the list's own is not in its count").toBe(
-      left(6)
+      showMoreName(6)
     );
 
     act(() => more.focus());
@@ -1741,12 +1740,12 @@ function agentsThreadClient() {
   return { client, getIssueCoverage, names };
 }
 
-// The address of a turn only agents wrote in opens Details at the history with that turn marked
-// by the outline's own decision (`address-target.ts`'s `useAddressFallback`): once every read the
-// outline's tree is built from has answered, as the outline lands on the turn's nearest drawn
-// ancestor. While one of those reads is out the outline has landed nowhere, and Details stays
-// shut. Details used to decide from the comments and the messages alone, and opened at the turn
-// while the outline still waited.
+// The address of a turn of a thread the history holds (`agents-only.ts`) opens Details at the
+// history with that turn marked by the outline's own decision (`address-target.ts`'s
+// `useAddressFallback`): once every read the outline's tree is built from has answered, as the
+// outline lands on the turn's nearest drawn ancestor. While one of those reads is out the outline
+// has landed nowhere, and Details stays shut. Details used to decide from the comments and the
+// messages alone, and opened at the turn while the outline still waited.
 test("an agents' turn's address opens Details at it once every read the outline lands by has answered", async () => {
   const coverage = Promise.withResolvers<IssueCoverage>();
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);

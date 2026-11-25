@@ -101,6 +101,7 @@ import {
   NODE_TYPE_NAMES,
 } from "./page-words";
 import { architecture, offPageColours } from "./shared-controls-fixture";
+import { SHOW_MORE, showMoreName } from "./show-more-fixture";
 import { DetailsSlot } from "./slots/details";
 import { firstUsableIn, usableControl } from "./usable-control";
 import { blockedByRefusal } from "./useIssueBlockedBy";
@@ -188,14 +189,6 @@ function keysFrom2(count: number): string[] {
  *  Show more draws: 20. It is written here rather than read from the page, so a page that draws
  *  any other number of entries fails the cases below. */
 const PAGE = 20;
-
-/** Show more, under a list of Details, whatever count it says. */
-const SHOW_MORE = new RegExp(`^${CONTROL_LABELS.show_more}`, "u");
-
-/** What Show more says with `left` entries of its list not drawn: "Show more (25 left)". */
-function showMoreLeft(left: number): string {
-  return `${CONTROL_LABELS.show_more} (${left} ${CONTROL_LABELS.show_more_left})`;
-}
 
 /** The row of Details' Files and documents, whose label carries the count of its entries. */
 function filesRow(): HTMLElement {
@@ -1224,13 +1217,11 @@ test("a blocked-by list that would make a loop is the page's sentence about the 
   }
 });
 
-// Blocked by draws the issues this one waits on 20 at a time, as every list of Details does, and
-// its control's name and the list its editor opens with hold every blocker, drawn or not: a save
-// from the editor writes the list the issue holds, never the part of it drawn.
-test("Blocked by draws 20 blockers at a time, and its control's name and its editor's list hold every one", async () => {
-  const user = userEvent.setup();
+// Only a list of unbounded length draws 20 entries at a time under Show more. An issue waits on at
+// most `MAX_ISSUE_BLOCKERS` issues, so the Blocked by row draws every one of them and no Show more.
+test("the blockers never fold", async () => {
   const { getIssue, restore } = stubIssueApi();
-  const blockers = keysFrom2(PAGE + 5);
+  const blockers = keysFrom2(MAX_ISSUE_BLOCKERS);
   getIssue.mockResolvedValue({ ...issue, blocked_by: blockers });
   const { unmount } = renderDetails();
 
@@ -1241,16 +1232,12 @@ test("Blocked by draws 20 blockers at a time, and its control's name and its edi
       within(row)
         .getAllByRole("link")
         .map((link) => link.textContent),
-      "the Blocked by row draws other than the first 20 issues this one waits on"
-    ).toEqual(blockers.slice(0, PAGE));
-    expect(within(row).getByRole("button", { name: SHOW_MORE }).textContent).toBe(showMoreLeft(5));
-    await user.click(
-      within(row).getByRole("button", { name: blockedByControlName("CORE-1", blockers.length) })
-    );
+      "the Blocked by row folds the issues this one waits on"
+    ).toEqual(blockers);
     expect(
-      within(row).getByRole("textbox", { name: "Issues CORE-1 waits on" }),
-      "the editor opened with the blockers drawn, not every one"
-    ).toHaveValue(blockers.join(" "));
+      within(row).queryByRole("button", { name: SHOW_MORE }),
+      "the Blocked by row offers to show a list it already draws whole"
+    ).not.toBeInTheDocument();
   } finally {
     unmount();
     restore();
@@ -2741,17 +2728,11 @@ function numbered(stem: string, count: number): string[] {
   );
 }
 
-/** The fixture's issue with `MANY` entries in each list its rows of Details draw: labels, the
- *  priorities it advances (its own up to the most an issue holds, and its parent's after them),
- *  the issues it waits on, its pull requests, its other links, its components (25 live and the
- *  rest retired, which the row draws after them as one list), and its documents. */
+/** The fixture's issue with `MANY` entries in each list of unbounded length its rows of Details
+ *  draw: its pull requests, its other links, its components (25 live and the rest retired, which
+ *  the row draws after them as one list), and its documents. */
 const MANY_ENTRIES: IssueDetails = {
   ...withNotes(MANY - 1),
-  advances: numbered("PRI-", MANY).map((id, index) => ({
-    id,
-    inherited: index >= MAX_ISSUE_ADVANCES,
-  })),
-  blocked_by: Array.from({ length: MANY }, (_, index) => `CORE-${101 + index}`),
   components: {
     ids: numbered("panel-", 25),
     inherited_from: null,
@@ -2768,7 +2749,6 @@ const MANY_ENTRIES: IssueDetails = {
       url: `https://github.com/acme/web/issues/${number}`,
     })),
   ],
-  labels: numbered("label-", MANY),
 };
 
 /** `MANY` pins of the reader's: comments of CORE-1, and lines of its history after them, which
@@ -2781,8 +2761,8 @@ const MANY_PINS = [
 ];
 
 /** The reads of Details of `MANY_ENTRIES`, with the reader's `MANY_PINS` and `MANY` issues waiting
- *  on it, each link's read of GitHub answered, and the priorities and the project's architecture
- *  read; the call that puts every read back. */
+ *  on it, each link's read of GitHub answered, and the project's architecture read; the call that
+ *  puts every read back. */
 function stubManyEntries(): () => void {
   const { getIssue, getMyState, restore } = stubIssueApi();
   getIssue.mockResolvedValue(MANY_ENTRIES);
@@ -2800,7 +2780,6 @@ function stubManyEntries(): () => void {
           headers: { "Content-Type": "application/json" },
         })
     ),
-    spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities),
     spyOn(api, "getArchitecture").mockResolvedValue(architecture),
   ];
   return () => {
@@ -2809,8 +2788,7 @@ function stubManyEntries(): () => void {
   };
 }
 
-/** The chips drawn of the box of chips with the test id `testId`: the labels', or the
- *  components'. */
+/** The chips drawn of the box of chips with the test id `testId`: the components'. */
 function drawnChips(testId: string): HTMLElement[] {
   return [...screen.getByTestId(testId).querySelectorAll<HTMLElement>(":scope > span")].filter(
     (chip) => !chip.hidden
@@ -2834,15 +2812,6 @@ function linksOfRow(name: string): PagedList {
 
 /** Every list of unbounded length that Details' own rows and Pinned draw. */
 const PAGED_LISTS: readonly (readonly [string, PagedList])[] = [
-  ["Labels", { box: () => rowAt("labels"), entries: () => drawnChips("issue-labels") }],
-  [
-    "Advances",
-    {
-      box: () => screen.getByTestId("issue-advances"),
-      entries: () => within(screen.getByTestId("issue-advances")).getAllByRole("link"),
-    },
-  ],
-  ["Blocked by", linksOfRow(PROPERTY_LABELS.blocked_by)],
   ["Blocks", linksOfRow(PROPERTY_LABELS.blocks)],
   ["Pull request", linksOfRow(PROPERTY_LABELS.pull_request)],
   ["Links", linksOfRow(PROPERTY_LABELS.external_links)],
@@ -2890,12 +2859,12 @@ test.each(
       expect(list.entries(), "the list does not draw its first 20 entries").toHaveLength(PAGE)
     );
     const more = within(list.box()).getByRole("button", { name: SHOW_MORE });
-    expect(more.textContent).toBe(showMoreLeft(MANY - PAGE));
+    expect(more.textContent).toBe(showMoreName(MANY - PAGE));
 
     act(() => more.focus());
     await user.keyboard("{Enter}");
     expect(list.entries(), "Show more did not draw the next 20 entries").toHaveLength(2 * PAGE);
-    expect(more.textContent).toBe(showMoreLeft(MANY - 2 * PAGE));
+    expect(more.textContent).toBe(showMoreName(MANY - 2 * PAGE));
     expect(
       list.entries()[PAGE]?.contains(document.activeElement),
       "Show more did not move the focus to the first entry it drew"

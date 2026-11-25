@@ -23,6 +23,7 @@ import { type AddressedTurn, IssueHistory } from "./IssueHistory";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { failRefreshOverHeld } from "./refresh-over-held-fixture";
+import { SHOW_MORE, showMoreName } from "./show-more-fixture";
 
 const KEY = "CORE-1";
 
@@ -34,9 +35,6 @@ const KEY = "CORE-1";
 const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
 beforeEach(() => setSystemTime(NOON));
 afterEach(() => setSystemTime());
-
-/** Show more, under the last entry of the history drawn, whatever count it says. */
-const SHOW_MORE = new RegExp(`^${CONTROL_LABELS.show_more}`, "u");
 
 /** The entries of the history as it draws them, newest first: a line of an event, a run of
  *  uploads or a thread, and never the line that says what is new. */
@@ -799,9 +797,7 @@ test("the history draws 20 entries at a time, and Show more says how many are le
     unmount = drawHistory(undefined).unmount;
     const more = await screen.findByRole("button", { name: SHOW_MORE });
     expect(drawnEntries(), "the history drew every entry at once").toHaveLength(HISTORY_PAGE);
-    expect(more.textContent).toBe(
-      `${CONTROL_LABELS.show_more} (25 ${CONTROL_LABELS.show_more_left})`
-    );
+    expect(more.textContent).toBe(showMoreName(25));
     expect(more.querySelector("[data-history-left]")?.textContent).toBe("25");
 
     act(() => more.focus());

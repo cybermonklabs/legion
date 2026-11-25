@@ -1,4 +1,5 @@
 import { type FormEvent, type ReactNode, type RefObject, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 
 import type { IssueDetails } from "../../api/types";
 import {
@@ -8,12 +9,13 @@ import {
   pageInkText,
   pageQuietText,
 } from "../../theme/classes";
+import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
-import { IssueLine, useListPages } from "./details-leaves";
 import { blockedByControlName } from "./details-names";
 import { FormActions } from "./IssueFieldForms";
 import { authorText, HELP_LINES, pageChrome } from "./page-structure";
 import { ANSWER_LINES, BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
+import { ROW_LINK } from "./row-references";
 import { firstUsable } from "./usable-control";
 import type { BlockedByWrite } from "./useIssueBlockedBy";
 
@@ -30,10 +32,8 @@ function issueKeysIn(value: string): readonly string[] {
 /**
  * The issues this one waits on, in their row of Details beside the repository and the
  * components, which carries the label: every blocker as a link to it with its title after it,
- * drawn 20 at a time with Show more under them (`useListPages`), and one control that opens the
- * editor for them - the same control whether the issue waits on nothing or on five, so a set
- * value can be changed and cleared and not only set once. The editor's list and the control's
- * name hold every blocker, drawn or not.
+ * and one control that opens the editor for them - the same control whether the issue waits on
+ * nothing or on five, so a set value can be changed and cleared and not only set once.
  *
  * The editor is here, where the value is, as the repository's and the components' are. It
  * stays open until Dispatch answers and says there what it refused - a key it has no issue
@@ -80,10 +80,6 @@ export function BlockedByControl({
   const input = useRef<HTMLInputElement>(null);
   const control = useRef<HTMLButtonElement>(null);
   const row = useRef<HTMLDivElement>(null);
-  // The blockers' line: each blocker drawn, one child each, then Show more and the editor's
-  // control.
-  const line = useRef<HTMLDivElement>(null);
-  const pages = useListPages();
   // Whether the editor was open at the last commit, so that its close - by Cancel, by Escape or
   // by a save that lands - is told apart from the row's first draw, with the editor closed.
   const wasEditing = useRef(editing);
@@ -126,17 +122,14 @@ export function BlockedByControl({
   };
   return (
     <div className={`flex w-full min-w-0 flex-col gap-1 text-sm ${pageInkText}`} ref={row}>
-      <div className="flex min-w-0 flex-wrap items-center gap-2" ref={line}>
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
         {blockers.length === 0 ? (
           <span className={pageQuietText} {...pageChrome}>
             {CONTROL_LABELS.none}
           </span>
         ) : (
-          blockers
-            .slice(0, pages.drawn)
-            .map((key) => <IssueLine issueKey={key} key={key} title={titleOf(key)} />)
+          blockers.map((key) => <IssueLine issueKey={key} key={key} title={titleOf(key)} />)
         )}
-        {pages.more(blockers.length, (index) => line.current?.children[index])}
         {isClosed || editing ? null : (
           <button
             // The name is `blockedByControlName`'s, which the add menu reaches this control by
@@ -213,5 +206,28 @@ export function BlockedByControl({
         </form>
       ) : null}
     </div>
+  );
+}
+
+/** One issue in a row of Details: its key, bold, as the way to it, and its title after it (the
+ *  prototype's `.lnkrow`). */
+export function IssueLine({
+  issueKey,
+  title,
+}: {
+  issueKey: string;
+  title: string | undefined;
+}): ReactNode {
+  return (
+    <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
+      <Link
+        className={`dispatch-inline-link mr-1.5 font-semibold ${ROW_LINK} ${pageInkText}`}
+        to={buildIssuePath({ key: issueKey, kind: "issue" })}
+        {...authorText}
+      >
+        {issueKey}
+      </Link>
+      {title === undefined || title === "" ? null : <span {...authorText}>{title}</span>}
+    </span>
   );
 }

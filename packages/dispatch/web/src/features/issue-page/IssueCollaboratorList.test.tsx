@@ -14,6 +14,7 @@ import { IssueCollaboratorList } from "./IssueCollaboratorList";
 import { PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, EMPTY_STATE_LINES, STATE_LINES } from "./page-words";
 import { failRefreshOverHeld } from "./refresh-over-held-fixture";
+import { SHOW_MORE, showMoreName } from "./show-more-fixture";
 
 // The list says how long ago each one last wrote here and when each Legion agent started, and a
 // live agent's last heartbeat is dated now (`live` below). Each case runs at one fixed midday, so
@@ -535,12 +536,8 @@ test("each list of collaborators draws 20 at a time, Legion's agents as one list
       const group = screen.getByRole("region", { name });
       const rows = () => within(group).getAllByRole("listitem");
       expect(rows(), `${name} does not draw its first 20`).toHaveLength(20);
-      const more = within(group).getByRole("button", {
-        name: new RegExp(`^${CONTROL_LABELS.show_more}`),
-      });
-      expect(more.textContent).toBe(
-        `${CONTROL_LABELS.show_more} (5 ${CONTROL_LABELS.show_more_left})`
-      );
+      const more = within(group).getByRole("button", { name: SHOW_MORE });
+      expect(more.textContent).toBe(showMoreName(5));
       act(() => more.focus());
       await userEvent.keyboard("{Enter}");
       expect(rows(), `${name}: Show more did not draw the rest`).toHaveLength(25);

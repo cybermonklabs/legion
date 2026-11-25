@@ -186,20 +186,20 @@ const HISTORY_DRAWS = 20;
 /**
  * Presses the history's Show more by `press` until it reaches `end`: `uncounted`, where every
  * entry the history has read is drawn and the control says no number, or `gone`, where no
- * control is left under the last entry, so the history draws the whole log of `key`. A press of
- * a control that says how many entries are left draws the next ones, waited for until more are
- * drawn; a press of one that says no number reads the log's next page, waited for until its
- * answer has landed and two frames drew it. Each press draws an entry or reads a page, so a
- * control still offered after as many presses as the log has entries and pages fails as offered
- * past the log's end.
+ * control is left under the last entry, so the history draws the whole log of `key`, which holds
+ * `events` events. A press of a control that says how many entries are left draws the next ones,
+ * waited for until more are drawn; a press of one that says no number reads the log's next page,
+ * waited for until its answer has landed and two frames drew it. Each press draws an entry or
+ * reads a page, so a control still offered after as many presses as the log has entries and
+ * pages fails as offered past the log's end.
  */
 async function readHistoryDown(
   page: Page,
   key: string,
+  events: number,
   press: (control: Locator) => Promise<void>,
   end: "gone" | "uncounted"
 ): Promise<void> {
-  const events = (await allEvents(key)).length;
   const most = Math.ceil(events / HISTORY_DRAWS) + Math.ceil(events / 200) + 1;
   for (let presses = 0; ; presses += 1) {
     const state = await historyShowMoreState(page);
@@ -378,8 +378,8 @@ test("the conversation is the outline and the history is in the panel", async ({
     // The history draws its entries 20 at a time and pages the log 200 events at a time: Show
     // more is pressed until the whole log is read and drawn.
     await newestHistoryEntry(page);
-    await readHistoryDown(page, seeded.key, (control) => control.click(), "gone");
     const events = await allEvents(seeded.key);
+    await readHistoryDown(page, seeded.key, events.length, (control) => control.click(), "gone");
     // With the whole log read and drawn, no turn of a thread the outline draws is drawn here.
     for (const id of turns) {
       await expect(historyItem(page, id), `${id} is drawn in the history too`).toHaveCount(0);
@@ -1334,7 +1334,8 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
   test.setTimeout(120_000);
   // Five more than the history's 200-event page (`IssueHistory.tsx`), so a second page exists.
   const { issue, newest } = await seedMessages("Older events", 205, "Older message");
-  const created = (await allEvents(issue.key)).find((event) => event.type === "issue.created");
+  const events = await allEvents(issue.key);
+  const created = events.find((event) => event.type === "issue.created");
   if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
 
   const context = await reader(browser, "alice");
@@ -1358,7 +1359,13 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
       "Show more does not say that an older page of the log is unread"
     ).toHaveText(new RegExp(`\\(\\d+\\+ ${CONTROL_LABELS.show_more_left}\\)$`, "u"));
     // The reader draws every entry the first page holds, until the control says no number.
-    await readHistoryDown(page, issue.key, (control) => control.click(), "uncounted");
+    await readHistoryDown(
+      page,
+      issue.key,
+      events.length,
+      (control) => control.click(),
+      "uncounted"
+    );
     const loadOlder = historyNextPage(page);
     await expect(loadOlder).toBeVisible();
     await loadOlder.scrollIntoViewIfNeeded();
@@ -1446,6 +1453,7 @@ test("loading older keeps the reader's place on an upload run the older page ext
   }
   const newest = "shot-9.png";
   const upload = await uploadEvent(issue.key, newest);
+  const events = (await allEvents(issue.key)).length;
 
   const context = await reader(browser, "alice");
   try {
@@ -1477,7 +1485,7 @@ test("loading older keeps the reader's place on an upload run the older page ext
     await gotoIssue(page, `/issues/${issue.key}/activity`);
     await withoutScrollAnchoring(page);
     await newestHistoryEntry(page);
-    await readHistoryDown(page, issue.key, dispatched, "uncounted");
+    await readHistoryDown(page, issue.key, events, dispatched, "uncounted");
     await seededHistoryEntry(page, file, upload.created_at);
     await expect(file).toHaveCount(1);
     await expect(loadOlder).toBeVisible();
@@ -1506,7 +1514,7 @@ test("loading older keeps the reader's place on an upload run the older page ext
     // By keyboard: Show more pressed with the focus on it hands the focus to a control in view.
     await gotoIssue(page, `/issues/${issue.key}/activity`);
     await newestHistoryEntry(page);
-    await readHistoryDown(page, issue.key, dispatched, "uncounted");
+    await readHistoryDown(page, issue.key, events, dispatched, "uncounted");
     await seededHistoryEntry(page, file, upload.created_at);
     await expect(file).toHaveCount(1);
     await putFileAtCentre();
@@ -1566,7 +1574,8 @@ test("Show more by keyboard keeps the focus in view when the older page it reads
     await createMessage(issue.key, { body: `Later message ${index}` }, asDaemon);
   }
   const newestUpload = await uploadEvent(issue.key, "shot-9.png");
-  const created = (await allEvents(issue.key)).find((event) => event.type === "issue.created");
+  const events = await allEvents(issue.key);
+  const created = events.find((event) => event.type === "issue.created");
   if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
 
   const context = await reader(browser, "alice");
@@ -1577,6 +1586,7 @@ test("Show more by keyboard keeps the focus in view when the older page it reads
     await readHistoryDown(
       page,
       issue.key,
+      events.length,
       (control) => control.dispatchEvent("click"),
       "uncounted"
     );
@@ -3877,11 +3887,12 @@ async function detailsStandStill(page: Page, after: string): Promise<void> {
     .toBe(0);
 }
 
-/** The reader reading down the history of `key` to its end: Show more focused and pressed by
- *  Enter until no control is left under the last entry (`readHistoryDown`), and Details' box
- *  standing still after. Each focus brings Show more into Details' view, at the foot of what
- *  the history draws. Answers how far Details' box is then scrolled. */
-async function readDownByShowMore(page: Page, key: string): Promise<number> {
+/** The reader reading down the history of `key`, whose log holds `events` events, to its end:
+ *  Show more focused and pressed by Enter until no control is left under the last entry
+ *  (`readHistoryDown`), and Details' box standing still after. Each focus brings Show more into
+ *  Details' view, at the foot of what the history draws. Answers how far Details' box is then
+ *  scrolled. */
+async function readDownByShowMore(page: Page, key: string, events: number): Promise<number> {
   await expect(
     historyShowMore(page),
     "the history offers no Show more to read down by"
@@ -3889,6 +3900,7 @@ async function readDownByShowMore(page: Page, key: string): Promise<number> {
   await readHistoryDown(
     page,
     key,
+    events,
     async (control) => {
       await control.focus();
       await nextFrames(page);
@@ -3910,8 +3922,8 @@ const LONG_HISTORY_NOTES = 205;
 
 /** An issue whose history holds `LONG_HISTORY_NOTES` notes of the daemon's, so Show more reads
  *  on, and which `MANY_AGENTS` Legion agents worked, so the collaborators' row with its list open
- *  is taller than Details' view. */
-async function seedCollaboratorsOverLongHistory(): Promise<string> {
+ *  is taller than Details' view: its key, and how many events its log holds. */
+async function seedCollaboratorsOverLongHistory(): Promise<{ events: number; key: string }> {
   const { issue } = await seedMessages(
     "Collaborators over a long history",
     LONG_HISTORY_NOTES,
@@ -3929,7 +3941,7 @@ async function seedCollaboratorsOverLongHistory(): Promise<string> {
       })
     )
   );
-  return issue.key;
+  return { events: (await allEvents(issue.key)).length, key: issue.key };
 }
 
 /** Below 768 px Details is a sheet, a dialog that masks the page's keys while it is open
@@ -3942,22 +3954,24 @@ async function readyForPageKey(page: Page, size: { readonly width: number }): Pr
 }
 
 /**
- * The reader at `size`'s width reading the history of `key` down to its end
- * (`readDownByShowMore`), then pressing `opener`, Details closed first where it is a sheet
- * (`readyForPageKey`). `landing`, named `what`, is what the key brings into Details' view: the
- * reading must leave it wholly above the view, or the row proves nothing. `t o` puts the focus on
- * the Collaborators control and `t v` on the history. Answers how far the reading scrolled
- * Details' box, and Details' view and `landing`'s box once the box has stood still after the key.
+ * The reader at `size`'s width reading the history of `key`, whose log holds `events` events,
+ * down to its end (`readDownByShowMore`), then pressing `opener`, Details closed first where it is
+ * a sheet (`readyForPageKey`). `landing`, named `what`, is what the key brings into Details' view:
+ * the reading must leave it wholly above the view, or the row proves nothing. `t o` puts the
+ * focus on the Collaborators control and `t v` on the history. Answers how far the reading
+ * scrolled Details' box, and Details' view and `landing`'s box once the box has stood still after
+ * the key.
  */
 async function keyAfterReadingDown(
   page: Page,
   key: string,
+  events: number,
   size: { readonly width: number },
   opener: "t o" | "t v",
   landing: Locator,
   what: string
 ) {
-  const scrolled = await readDownByShowMore(page, key);
+  const scrolled = await readDownByShowMore(page, key, events);
   // One read of the place the reading left: Details' box has stood still for two frames.
   const view = await historyViewport(page);
   const away = await boxOf(landing, what);
@@ -3997,7 +4011,7 @@ test("t o after the history is read down by Show more leaves the focused Collabo
   browser,
 }) => {
   test.setTimeout(240_000);
-  const key = await seedCollaboratorsOverLongHistory();
+  const { events, key } = await seedCollaboratorsOverLongHistory();
   // Each width's place of the control, so one run says every width it was out of view at.
   const outOfView: string[] = [];
   for (const size of [DESKTOP, PHONE]) {
@@ -4028,6 +4042,7 @@ test("t o after the history is read down by Show more leaves the focused Collabo
       const { landed, scrolled, shown } = await keyAfterReadingDown(
         page,
         key,
+        events,
         size,
         "t o",
         collaboratorsControl(page),
@@ -4163,6 +4178,7 @@ test("t v after the history is read down by Show more brings the history's headi
     LONG_HISTORY_NOTES,
     "Older message"
   );
+  const events = (await allEvents(issue.key)).length;
   // Each width's place of the heading, so one run says every width it was out of place at.
   const outOfPlace: string[] = [];
   for (const size of [DESKTOP, PHONE]) {
@@ -4176,6 +4192,7 @@ test("t v after the history is read down by Show more brings the history's headi
       const { landed, scrolled, shown } = await keyAfterReadingDown(
         page,
         issue.key,
+        events,
         size,
         "t v",
         historyHeading(page),

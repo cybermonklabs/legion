@@ -16,6 +16,7 @@ import { DetailsSteps } from "./DetailsSteps";
 import { DetailsHistory } from "./details-more";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { SHOW_MORE, showMoreName } from "./show-more-fixture";
 
 const KEY = "CORE-1";
 
@@ -328,12 +329,8 @@ test("the runs are drawn 20 at a time across their tasks, the heading counts the
         .map((group) => group.textContent),
       "a task none of whose runs is drawn is drawn"
     ).toEqual([`${CONTROL_LABELS.steps_task} docs`, `${CONTROL_LABELS.steps_task} default`]);
-    const more = within(section()).getByRole("button", {
-      name: new RegExp(`^${CONTROL_LABELS.show_more}`),
-    });
-    expect(more.textContent).toBe(
-      `${CONTROL_LABELS.show_more} (10 ${CONTROL_LABELS.show_more_left})`
-    );
+    const more = within(section()).getByRole("button", { name: SHOW_MORE });
+    expect(more.textContent).toBe(showMoreName(10));
 
     act(() => more.focus());
     await userEvent.keyboard("{Enter}");

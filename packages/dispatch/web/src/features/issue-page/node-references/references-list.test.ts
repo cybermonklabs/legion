@@ -85,7 +85,7 @@ test("one row per citing node, in the order the read answers them", () => {
     }),
   ]);
   expect(rows.map((row) => row.key)).toEqual(["comment:c-1", "block:v-1"]);
-  expect(rows.map((row) => row.line)).toEqual(["Thread 1 opens here.", ""]);
+  expect(rows.map((row) => row.words)).toEqual(["Thread 1 opens here.", ""]);
   expect(rows.map((row) => row.ref)).toEqual([
     "dispatch://LAY-2/comment/c-1",
     "dispatch://LAY-2/artifact/verification-md#b-c1",
@@ -111,7 +111,7 @@ test("a node that cites the row twice is one row", () => {
     }),
   ]);
   expect(rows).toHaveLength(1);
-  expect(rows[0]?.line).toBe("It names it here. And again here.");
+  expect(rows[0]?.words).toBe("It names it here. And again here.");
 });
 
 test("a tuple of the model names the row over a mention, and keeps the mention's place", () => {
@@ -175,7 +175,7 @@ test("a node outside this issue's items carries no line of the read's text", () 
       text: "It cites the statement from another issue.",
     }),
   ]);
-  expect(rows.map((row) => [row.key, row.line])).toEqual([
+  expect(rows.map((row) => [row.key, row.words])).toEqual([
     ["issue:LAY-9", ""],
     ["block:v-1", ""],
     ["comment:c-9", ""],
@@ -204,7 +204,7 @@ test("a citing item of this issue is named by the words of its tree, never its s
       text: stored,
     }),
   ]);
-  const line = rows[0]?.line ?? "";
+  const line = rows[0]?.words ?? "";
   expect(line).toBe("Bob checks the cited statement");
   expect(line).not.toContain("**");
   expect(line).not.toContain("dispatch://");
@@ -228,7 +228,7 @@ test("a citing item is named by all of its words, with no cut", () => {
       ref: "dispatch://LAY-2/comment/c-1",
     }),
   ]);
-  expect(rows[0]?.line).toBe(paragraphs.join(" "));
+  expect(rows[0]?.words).toBe(paragraphs.join(" "));
 });
 
 test("a node the read carries no words and no address of is still one row", () => {
@@ -240,10 +240,10 @@ test("a node the read carries no words and no address of is still one row", () =
       at: AT,
       key: "session:s-1",
       kind: "mentions",
-      line: "",
       nodeKind: "session",
       ref: undefined,
       source: undefined,
+      words: "",
     },
   ]);
 });
@@ -296,7 +296,7 @@ test("a block of a comment, a message or a question that mentions the row is tha
       parent: { id: "m-2", kind: "message", ref: "dispatch://LAY-2/message/m-2" },
     }),
   ]);
-  expect(rows.map((row) => [row.key, row.nodeKind, row.ref, row.line])).toEqual([
+  expect(rows.map((row) => [row.key, row.nodeKind, row.ref, row.words])).toEqual([
     [
       "comment:c-1",
       "comment",

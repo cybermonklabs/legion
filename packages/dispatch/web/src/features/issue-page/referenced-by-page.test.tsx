@@ -30,7 +30,7 @@ import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel } from "./IssueMargin";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
-import { CONTROL_LABELS } from "./page-words";
+import { SHOW_MORE, showMoreName } from "./show-more-fixture";
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 // On the new page the outline is the issue's conversation, so Details' list of what references
@@ -422,8 +422,6 @@ test("Details' Referenced by draws 20 rows at a time as one list across its sour
   });
   const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
   const { unmount } = renderDetails(drawer);
-  const left = (count: number) =>
-    `${CONTROL_LABELS.show_more} (${count} ${CONTROL_LABELS.show_more_left})`;
 
   try {
     await user.click(
@@ -440,14 +438,14 @@ test("Details' Referenced by draws 20 rows at a time as one list across its sour
     expect(notes?.children, "the notes' card does not draw its rows before the cut").toHaveLength(
       1
     );
-    const more = within(list).getByRole("button", { name: /^Show more/u });
-    expect(more.textContent).toBe(left(25));
+    const more = within(list).getByRole("button", { name: SHOW_MORE });
+    expect(more.textContent).toBe(showMoreName(25));
 
     act(() => more.focus());
     await user.keyboard("{Enter}");
     expect(rows(), "Show more did not draw the next 20 rows").toHaveLength(40);
     expect(notes?.children, "the notes' card did not draw the rest of its rows").toHaveLength(3);
-    expect(more.textContent).toBe(left(5));
+    expect(more.textContent).toBe(showMoreName(5));
     expect(
       rows()[20]?.contains(document.activeElement),
       "Show more did not move the focus to the first row it drew"

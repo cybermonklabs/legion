@@ -110,10 +110,6 @@ export interface IssueLabelsProps {
    *  else `labels`) or a save is in flight. Outside `NoTooltips` it changes nothing. */
   readonly issueKey?: string;
   readonly labels: readonly string[];
-  /** How many chips the labels draw, the first ones, for a host that draws the control that
-   *  shows the next ones (the new issue page's Details): each chip past them is hidden. With
-   *  none, every label is drawn. */
-  readonly limit?: number;
   readonly onSave: (labels: string[]) => Promise<unknown>;
   readonly project: string;
   readonly saving: boolean;
@@ -128,7 +124,6 @@ export function IssueLabels({
   disabled,
   issueKey,
   labels,
-  limit,
   onSave,
   project,
   saving,
@@ -155,8 +150,6 @@ export function IssueLabels({
     [draft, issues.data, labels]
   );
   const displayLabels = open ? draft : labels;
-  // With `limit`, the labels whose chips are drawn: the first `limit` of them.
-  const drawnLabels = limit === undefined ? undefined : new Set(displayLabels.slice(0, limit));
   // Inside `NoTooltips` the control's name begins with the words it draws: "Add a label" with no
   // label (below), as the priority's "Add a priority to CORE-1" does, and "Saving labels…" while it
   // saves, so a voice user says what they read (WCAG 2.5.3 Label in Name).
@@ -235,7 +228,6 @@ export function IssueLabels({
                   ? `inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 ${pageLabelChip}`
                   : `inline-flex max-w-full items-center [overflow-wrap:anywhere] ${chipClassName}`
             }
-            hidden={drawnLabels?.has(label) === false}
             key={label}
             {...page?.authorText}
           >

@@ -301,7 +301,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
   entries.push(...uploadRuns(uploads.reverse()), ...threadsOf(input, agentsOnly, seqOf));
 
   // Newest first, by when each happened; one instant by the log's own order.
-  entries.sort((one, other) => compareTimestamps(other.at, one.at) || other.seq - one.seq);
+  entries.sort((one, other) => comparePlaces(other, one));
   const read = entries.some((entry) => entry.seq > 0 && entry.seq <= input.lastReadSeq);
   const unread = entries.some((entry) => entry.seq > input.lastReadSeq);
   let marked = !(read && unread);
@@ -382,7 +382,7 @@ export function placeUnder(
   count: number
 ): HistoryPlace | undefined {
   const under = datedIn(days).filter(
-    (entry) => from === undefined || comparePlaces(placeOf(entry), from) < 0
+    (entry) => from === undefined || comparePlaces(entry, from) < 0
   );
   const last = under.slice(0, count).at(-1);
   return last === undefined ? from : placeOf(last);
@@ -410,8 +410,7 @@ export function historyDownTo(
 ): { readonly days: readonly HistoryDay[]; readonly left: number } {
   const dated = datedIn(days);
   // The history is newest first, so the entries at `end` or above it are its first ones.
-  const under =
-    end === undefined ? 0 : dated.findIndex((entry) => comparePlaces(placeOf(entry), end) < 0);
+  const under = end === undefined ? 0 : dated.findIndex((entry) => comparePlaces(entry, end) < 0);
   const count = under === -1 ? dated.length : under;
   let seen = 0;
   const drawn: HistoryDay[] = [];

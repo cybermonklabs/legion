@@ -228,8 +228,8 @@ interface Following {
    *  `errorUpdateCount`), from which the following counts its own failures; undefined until the
    *  following reads it. */
   readonly failedBefore: number | undefined;
-  /** Whether the tree has held the address's node, or the nearest drawn ancestor of a turn only
-   *  agents wrote in, at any time during this following. */
+  /** Whether the tree has held the address's node, or the nearest drawn ancestor of a turn of
+   *  the history, at any time during this following. */
   readonly found: boolean;
   /** The following: the location's key with its address (`useFollowing`). */
   readonly key: string;
@@ -253,8 +253,8 @@ interface Following {
  * (`pending`) with no landing settled since the address was followed.
  *
  * Each following of the address (`useFollowing`) is decided on its own, once: a
- * following whose tree has held the address's node, or the nearest drawn ancestor of a turn only
- * agents wrote in, draws no fallback for the rest of it, whatever the tree holds later - a block
+ * following whose tree has held the address's node, or the nearest drawn ancestor of a turn of
+ * the history, draws no fallback for the rest of it, whatever the tree holds later - a block
  * deleted, the last child unlinked, the comment deleted while the reader is on its row leaves
  * the outline drawn, and the reader in it.
  *
