@@ -755,11 +755,13 @@ const (
 // hold and publishes, so one event is published once however many processes run: every row
 // reaches published_at, the stream holds one retained message per (dedupe key, topic), and the
 // role's holder - a core subscriber that is handed every forward and answers none, as a session
-// does - takes one forward per event. Nothing crosses the role's own topic. The outbox sends an
-// event again when the batch that sent it left it unpublished - a send or a record that failed,
-// or a hold that went to the other process - and each of those writes a line of its own, so a
-// second forward is a failure only where no line of either process's outbox explains it
-// (resendExplanation); two processes publishing at once writes none.
+// does - takes one forward per event. Nothing crosses the role's own topic. The outbox forwards an
+// event to the holder again only where the batch that forwarded it left the role's destination
+// unreached - its forward failed, the event was released, the batch's record failed, or the hold
+// went to the next turn with the batch unrecorded - and each of those writes a line of its own, so
+// the holder takes each event once and once more for each such line or hand-over the two
+// processes' outboxes record (lawfulResends): a forward past that count fails the row, and with
+// no resend recorded that is any count but one. Two processes publishing at once record none.
 func TestTheOutboxPublishesEachEventOnceAcrossBothProcesses(t *testing.T) {
 	pair := startPair(t, nil)
 	rig := newSessionRig(t, pair.nats)
@@ -865,12 +867,14 @@ func TestTheOutboxPublishesEachEventOnceAcrossBothProcesses(t *testing.T) {
 		if count == 1 {
 			continue
 		}
-		if explanation := resendExplanation(logged, eventID, time.Time{}); explanation != "" {
-			t.Logf("event %s reached the role's holder %d times, which the outbox's own lines explain:\n%s", eventID, count, explanation)
+		counted := lawfulResends(logged, eventID, roleDestination(outboxRoleLane), time.Time{})
+		if count <= 1+len(counted) {
+			t.Logf("event %s reached the role's holder %d times: its forward and the %d resends there the outbox's own lines record:\n%s",
+				eventID, count, len(counted), counted)
 			continue
 		}
-		t.Errorf("event %s reached the role's holder %d times, and no line of either process's outbox says its batch left it unpublished; two processes publishing one event is what the publisher hold prevents:\n%v\n%s",
-			eventID, count, perEvent, outboxLinesAround(pair, logged, time.Time{}, time.Now()))
+		t.Errorf("event %s reached the role's holder %d times, and the outbox's own lines record %d resends of it there, so %d of those forwards nothing the product recorded explains; two processes publishing one event is what the publisher hold prevents. The resends counted:\n%s\nEvery event's forwards: %v\n%s",
+			eventID, count, len(counted), count-1-len(counted), counted, perEvent, outboxLinesAround(pair, logged, time.Time{}, time.Now()))
 	}
 	if carried := len(lane); carried != 0 {
 		t.Errorf("the role's topic carried %d envelopes, want none: the outbox forwards to the holder itself", carried)
@@ -925,6 +929,16 @@ const (
 	// statement of the batch failed, its record among them ("record the batch's outcome") - which
 	// names the events that batch sent (event_ids) and leaves them unpublished for the next read.
 	scanFailed = "scan"
+	// eventBackedOff is the line, at ERROR, of an event a send of which NATS answered with a
+	// failure, or whose destination could not be sent to at all: its error names each failed send
+	// by its destination (`publish route "role:…": …`), and the event is read again, its retry
+	// due, for every destination its batch did not reach (outbox's settleEvent, backOff).
+	eventBackedOff = "publish event"
+	// eventReleased is the line of an event whose batch left a send of it lost or unmade - the
+	// connection lost or replaced, the process stopping - due again at once for every destination
+	// its batch did not reach (outbox's settleEvent). Its error names only the sends that failed
+	// some other way, so it does not say which destinations those are.
+	eventReleased = "event released"
 )
 
 // healthReport is what a process's /healthz says of NATS and of the outbox. OutboxPublisher is nil
@@ -1347,65 +1361,106 @@ func openPeriodsRan(periods []publishingPeriod, reads []stampedRead) []publishin
 	return ran
 }
 
-// resendExplanation names the outbox lines that make a second send of event eventID - the
-// outbox's event_id, which a role forward carries as its SourceEventID and a session frame as
-// dispatch-<id> - a lawful one, or answers "" when no line of lines does. The outbox sends an
-// event again only once the batch that sent it left it unpublished, and each way that happens
-// writes a line of its own:
+// resends is what lawfulResends counted, one entry for each lawful resend: the line that records
+// it, or the hand-over of the publisher hold that does.
+type resends []string
+
+// String is the resends one to a line, or "none".
+func (r resends) String() string {
+	if len(r) == 0 {
+		return "none"
+	}
+	return strings.Join(r, "\n")
+}
+
+// roleDestination is how the outbox names role's route in the failures it logs: by the route
+// itself, role:<role> (outbox's addRoute), as in `publish route "role:<role>": …`.
+func roleDestination(role string) string { return "role:" + role }
+
+// lawfulResends is every resend of event eventID - the outbox's event_id, which a role forward
+// carries as its SourceEventID and a session frame as dispatch-<id> - to destination that the
+// outbox's own lines record, one entry for each. destination is what the outbox names that
+// destination by in the failures it logs: `publish route "role:…"` (roleDestination), `publish
+// owner topic "notifications.dispatch.…"`, `publish author route to "ses_…"`. A batch records each
+// destination an event reached, whoever holds the hold when it records them, and no later read
+// sends the event there again (outbox's recordBatch, planChains), so the outbox sends an event to
+// a destination again only where a batch that sent it there left that destination unrecorded, and
+// each way that happens is one of these, each counted once:
 //
-//   - the event's send failed or was released: a line naming the event (event released, publish
-//     event, event waits for its role's holder), after which the event is read again;
-//   - the batch that sent it failed, its record among its statements (outbox's recordTimeout
-//     bounds that one): the scan's failure line (scanFailed), which names the events that batch
-//     sent (event_ids) and so this one, and which leaves them unpublished;
-//   - the publisher hold went from one process to the other: a turn that ended, by its lost or
-//     released line, at or before the other process's next turn began, by the bounds the hold's
-//     own lines carry (the end's stopped_by, the start's started), after a sent batch line of that
-//     turn naming the event, whose batch the hand-over leaves unrecorded for the second turn to
-//     read again.
+//   - a back-off line of the event (eventBackedOff) whose error names the destination's send: that
+//     destination stays unreached, the stream's ErrNotAcknowledged among the failures that leave
+//     it so, and the event's next read sends to it again;
+//   - a release line of the event (eventReleased): the event is read again at once for every
+//     destination its batch did not reach, sends lost or unmade among them, and the line does not
+//     name them, so it counts once for whichever destination is judged;
+//   - a scan-failure line (scanFailed) whose event_ids hold the event: the batch that sent it
+//     returned an error, its record among its statements, which leaves what it sent unrecorded;
+//   - a hand-over of the publisher hold: a turn that ended, by its lost or released line, after a
+//     sent batch line of its own naming the event, where the turn of either process that began
+//     next after it began at or after its end, by the bounds the hold's own lines carry (the
+//     end's stopped_by, the start's started). The ended turn's batch can be unrecorded when the
+//     next turn reads the event - a batch the hold's deadline fenced is never recorded, and a
+//     record can wait past the hand-over - so the next turn sends it again, once per ended turn.
 //
-// An event of another batch, or of another owner, is covered by none of these: each line names
-// the events it explains.
+// Nothing else counts: a line about another event or about another destination of this one, and
+// a line that records no send to be made again - a destination refused, which counts as reached;
+// a stand-in, which is that send reaching it; a forward its holder's resolution held, which never
+// left the process (event waits for its role's holder); a fallback copy waiting behind an earlier
+// event, whose event_id is that earlier event. Two processes publishing at once record none
+// either: the turn that began next after another began before that one ended, which is no
+// hand-over.
 //
-// Two processes publishing at once write none of these: the turn of one begins before the other's
-// ends, which is no hand-over. Only an event's line or a failed record logged at or after since
-// counts, for a row whose lines from before that moment explain nothing it judges; a row that
-// passes one process's lines alone finds no hand-over.
-func resendExplanation(lines map[*dispatchProcess][]outboxLine, eventID string, since time.Time) string {
+// Only lines at or after since count, and only hand-overs whose next turn began at or after it,
+// for a row whose window of sends begins there; a row that passes one process's lines finds only
+// that process's own hand-overs.
+func lawfulResends(lines map[*dispatchProcess][]outboxLine, eventID, destination string, since time.Time) resends {
 	from := since.Truncate(time.Millisecond)
+	names := strconv.Quote(destination) + ": "
+	// turn is one turn as holder and every line of the process whose turn it was.
+	type turn struct {
+		period publishingPeriod
+		lines  []outboxLine
+	}
+	var counted []outboxLine
+	var turns []turn
 	for _, own := range lines {
 		for _, line := range own {
 			if line.at.Before(from) {
 				continue
 			}
-			if line.eventID == eventID || (line.message == scanFailed && slices.Contains(line.eventIDs, eventID)) {
-				return line.text
+			ofEvent := line.eventID == eventID
+			if (ofEvent && line.message == eventBackedOff && strings.Contains(line.failure, names)) ||
+				(ofEvent && line.message == eventReleased) ||
+				(line.message == scanFailed && slices.Contains(line.eventIDs, eventID)) {
+				counted = append(counted, line)
 			}
 		}
-	}
-	for process, own := range lines {
-		for _, ended := range publishingPeriods(own) {
-			// The hand-over leaves unrecorded only the batches the ended turn sent, so it
-			// explains only an event one of that turn's sent batch lines names.
-			if ended.open || !slices.ContainsFunc(own, func(line outboxLine) bool {
-				return line.message == sentBatch && ended.holds(line.at) && slices.Contains(line.eventIDs, eventID)
-			}) {
-				continue
-			}
-			for other, theirs := range lines {
-				if other == process {
-					continue
-				}
-				for _, next := range publishingPeriods(theirs) {
-					if !next.started.Before(ended.stoppedBy) {
-						return fmt.Sprintf("the publisher hold went from instance %s, whose turn ended by %s after a batch that sent the event, to instance %s, whose turn began at %s",
-							ended.instance, ended.stoppedBy.Format(time.RFC3339Nano), next.instance, next.started.Format(time.RFC3339Nano))
-					}
-				}
-			}
+		for _, period := range publishingPeriods(own) {
+			turns = append(turns, turn{period: period, lines: own})
 		}
 	}
-	return ""
+	slices.SortFunc(counted, func(a, b outboxLine) int { return a.at.Compare(b.at) })
+	var found resends
+	for _, line := range counted {
+		found = append(found, line.text)
+	}
+	slices.SortFunc(turns, func(a, b turn) int { return a.period.started.Compare(b.period.started) })
+	for index, ended := range turns {
+		// The hand-over leaves unrecorded only the batches the ended turn sent, so it counts only
+		// for an event one of that turn's sent batch lines names.
+		if ended.period.open || index+1 == len(turns) || !slices.ContainsFunc(ended.lines, func(line outboxLine) bool {
+			return line.message == sentBatch && ended.period.holds(line.at) && slices.Contains(line.eventIDs, eventID)
+		}) {
+			continue
+		}
+		next := turns[index+1].period
+		if next.started.Before(ended.period.stoppedBy) || next.started.Before(from) {
+			continue
+		}
+		found = append(found, fmt.Sprintf("the publisher hold went from instance %s, whose turn ended by %s after a batch that sent the event, to instance %s, whose turn began next, at %s",
+			ended.period.instance, ended.period.stoppedBy.Format(time.RFC3339Nano), next.instance, next.started.Format(time.RFC3339Nano)))
+	}
+	return found
 }
 
 // outboxScene is a project whose issues a row writes comments on through the pair's processes, and
@@ -1683,6 +1738,24 @@ func (s *outboxScene) framesSince(at time.Time) map[*testSession][]sessionFrame 
 		}
 	}
 	return frames
+}
+
+// destination is what the outbox names the destination by, in the failures it logs, through
+// which session received frame (lawfulResends): the scene's role route for the holder, whose agent
+// subject only the role's forwards reach; the author's own session for the author, whose agent
+// subject the author route of each reply reaches (outbox's addAuthorRoutes, which names that
+// route by the session); and the owner's topic the frame came on for the watcher, which follows
+// the issues' topic families alone (outbox's eventDestinations, which names that topic by its
+// subject).
+func (s *outboxScene) destination(session *testSession, frame sessionFrame) string {
+	switch session {
+	case s.holder:
+		return roleDestination(s.role)
+	case s.author:
+		return session.id
+	default:
+		return frame.subject
+	}
 }
 
 // requireTakeOver waits for p to take the publisher hold at or after since, then to log its first
@@ -2648,23 +2721,36 @@ func aFrozenPublisherSendsNothingWhenItResumes(t *testing.T, lane benchtime.Lane
 	if turnEnded {
 		t.Logf("the standby's turn as holder, from its take-over, ended: %s", turnEnd.text)
 	}
+	// Every comment had reached every session it is addressed to before the stopped publisher
+	// resumed (waitDelivered), so each frame a session received since is a send again of an event
+	// it had taken: lawful only as one of the resends to that session the standby's own lines since
+	// its take-over record (lawfulResends), one frame for each, and with none recorded a failure
+	// whatever its count.
 	for session, frames := range scene.framesSince(resumed) {
+		var events []string
+		sent := map[string][]sessionFrame{}
 		for _, frame := range frames {
 			if pastTheTurn(frame.at) {
 				t.Logf("session %s received %s's event %s (%s) %v after the stopped publisher resumed, once the standby's turn as holder had ended",
 					session.id, frame.owner, frame.event, frame.kind, frame.at.Sub(resumed).Round(time.Millisecond))
 				continue
 			}
-			// The standby sends an event again on its own when its batch left it unpublished,
-			// which its lines since the take-over say (resendExplanation).
-			if explanation := resendExplanation(map[*dispatchProcess][]outboxLine{standby: logged[standby]},
-				strings.TrimPrefix(frame.event, "dispatch-"), took.at); explanation != "" {
-				t.Logf("session %s received %s's event %s (%s) %v after the stopped publisher resumed, which the standby's own lines explain:\n%s",
-					session.id, frame.owner, frame.event, frame.kind, frame.at.Sub(resumed).Round(time.Millisecond), explanation)
+			if _, seen := sent[frame.event]; !seen {
+				events = append(events, frame.event)
+			}
+			sent[frame.event] = append(sent[frame.event], frame)
+		}
+		for _, event := range events {
+			again, first := len(sent[event]), sent[event][0]
+			counted := lawfulResends(map[*dispatchProcess][]outboxLine{standby: logged[standby]},
+				strings.TrimPrefix(event, "dispatch-"), scene.destination(session, first), took.at)
+			if again <= len(counted) {
+				t.Logf("session %s received %s's event %s (%s) %d times after the stopped publisher resumed, the first %v after it, within the %d resends to it the standby's own lines record:\n%s",
+					session.id, first.owner, event, first.kind, again, first.at.Sub(resumed).Round(time.Millisecond), len(counted), counted)
 				continue
 			}
-			t.Errorf("session %s received %s's event %s (%s) %v after the stopped publisher resumed, with nothing left to send but what the resumed process sent",
-				session.id, frame.owner, frame.event, frame.kind, frame.at.Sub(resumed).Round(time.Millisecond))
+			t.Errorf("session %s received %s's event %s (%s) %d times after the stopped publisher resumed, the first %v after it, with nothing left to send but what the resumed process sent: the standby's own lines since its take-over record %d resends of it to that session:\n%s",
+				session.id, first.owner, event, first.kind, again, first.at.Sub(resumed).Round(time.Millisecond), len(counted), counted)
 		}
 	}
 	// What the resumed process logged is judged on its own lines' moments alone. Its turn as
@@ -2876,28 +2962,22 @@ func TestARoleHolderWhoseConnectionMovesGetsTheEventOnceAndInOrder(t *testing.T)
 		testwait.Eventually(t, "the new holder taking the event", takes(arriving, first))
 		capturing()
 		requireCommentsPublished(t, pair, arriving, first)
-		// The outbox forwards the event to the new holder again only when the stream did not
-		// acknowledge a forward of it within roleForwardAckTimeout (the outbox's), and each such
-		// attempt writes a line naming the event with the stream's ErrNotAcknowledged (dispatch
-		// outbox: publish event). The event's owner is one lane, so a forward to the new holder
-		// is made only once the one before it, to the session the role left, has settled
-		// (outbox's lanes): a line written at or after the new holder's first frame is the
-		// failure of a forward to it.
+		// The outbox forwards the event to the new holder again only where the batch that
+		// forwarded it left the role's destination unreached, which a line of its own records
+		// (lawfulResends): the stream not acknowledging a forward within roleForwardAckTimeout (the
+		// outbox's) among them, whose back-off line names the role's destination with the stream's
+		// ErrNotAcknowledged. The event's owner is one lane, so a forward to the new holder is made
+		// only once the one before it, to the session the role left, has settled (outbox's lanes):
+		// a line written at or after the new holder's first frame records a resend to it.
 		frames := framesOfComment(arriving, first)
-		unacknowledged := 0
+		var counted resends
 		if len(frames) > 0 {
-			from := frames[0].at.Truncate(time.Millisecond)
-			for _, process := range []*dispatchProcess{pair.a, pair.b} {
-				for _, line := range process.outboxLines(t) {
-					if line.eventID == strconv.FormatInt(row, 10) && strings.Contains(line.failure, bus.ErrNotAcknowledged.Error()) && !line.at.Before(from) {
-						unacknowledged++
-					}
-				}
-			}
+			logged := map[*dispatchProcess][]outboxLine{pair.a: pair.a.outboxLines(t), pair.b: pair.b.outboxLines(t)}
+			counted = lawfulResends(logged, strconv.FormatInt(row, 10), roleDestination(role), frames[0].at)
 		}
-		if len(frames) == 0 || len(frames) > 1+unacknowledged {
-			t.Errorf("the session the role moved to was handed the event %d times, want the one forward that was made once it held the role and one more for each of the %d forwards to it the stream did not acknowledge",
-				len(frames), unacknowledged)
+		if len(frames) == 0 || len(frames) > 1+len(counted) {
+			t.Errorf("the session the role moved to was handed the event %d times, want the one forward that was made once it held the role and one more for each of the %d resends of it there the outbox's own lines record since that forward:\n%s",
+				len(frames), len(counted), counted)
 		}
 		if copies := storedCopiesOf(t, js, head, contracts.LegacyAgentSubject(arriving.id), event); copies != 1 {
 			t.Errorf("the stream holds %d copies of event %s on %s, want the one the new holder's consumer delivers",
@@ -8354,10 +8434,13 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 
 	// A process counts in the document's queue only while its room-sync listener's connection is
 	// up (docs' roomSyncMembers): a listener redials when its ping times out, which a loaded
-	// machine can cause, and while it is down that process's queued edits count for nothing. A
-	// redial is a LISTEN stood up again (docs.RoomCounters.ListenStands), so the count the row
-	// holds the processes to is judged only where neither process's listener stood one up since
-	// the subtest began, as the file's redial-aware waits do (awaitNotifiedCatchUp).
+	// machine can cause, and while it is down the other process's admissions neither count its
+	// queued edits nor keep its row of them (docs' conditionalEditQueueOthers), so they can admit
+	// past the 32-deep bound and none of the 33 need answer 429. A redial is a LISTEN stood up
+	// again (docs.RoomCounters.ListenStands), so the exact count, one 429, is judged only where
+	// neither process's listener stood one up since the subtest began, as the file's redial-aware
+	// waits do (awaitNotifiedCatchUp). Through a redial the product guarantees no 429 at all, and
+	// the row holds it to the bound a redial cannot lift: at most one, and each one EDIT_QUEUE_FULL.
 	t.Run("33 conditional edits across A and B: 32 queue and one answers 429 EDIT_QUEUE_FULL", func(t *testing.T) {
 		_, artifactID := pair.a.createIssueIn(t, project, "Queued on both", "alpha")
 		_, token := pair.a.textAndToken(t, artifactID)
@@ -8450,12 +8533,19 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 				refused++
 			}
 		}
-		if refused != 1 {
-			if redial := redialed(); redial != "" {
-				t.Logf("%d of the 33 conditional edits answered 429 EDIT_QUEUE_FULL, with a process's room-sync listener redialed while they queued, which moves the count: %s", refused, redial)
-			} else {
-				t.Errorf("%d of the 33 conditional edits answered 429 EDIT_QUEUE_FULL, want exactly one: 32 may queue across both processes", refused)
-			}
+		// A redial can take a process's queued edits out of the sum an admission reads, and adds
+		// none to it: each row the sum reads is a count its process admitted at some moment - an
+		// admission writes its count under the document's queue lock, and a release only ever
+		// lowers it (docs' admitConditionalEdit, releaseConditionalEdit) - and the admitting
+		// process adds its own queue as it holds it. So an edit is refused only once 32 of the 33
+		// have been admitted, which leaves at most one to refuse, with a redial or without.
+		switch redial := redialed(); {
+		case redial == "" && refused != 1:
+			t.Errorf("%d of the 33 conditional edits answered 429 EDIT_QUEUE_FULL, want exactly one: 32 may queue across both processes", refused)
+		case refused > 1:
+			t.Errorf("%d of the 33 conditional edits answered 429 EDIT_QUEUE_FULL with a process's room-sync listener redialed while they queued, want at most one: a redial takes a process's queue out of the count and adds none to it, so an edit is refused only once 32 of the 33 were admitted: %s", refused, redial)
+		case redial != "":
+			t.Logf("%d of the 33 conditional edits answered 429 EDIT_QUEUE_FULL, within the one the bound allows, with a process's room-sync listener redialed while they queued, which can take that process's queue out of the count and the refusal with it: %s", refused, redial)
 		}
 	})
 
@@ -10557,12 +10647,17 @@ func TestDashboardBuildsAnswersTheBuildsTheLiveProcessesServe(t *testing.T) {
 
 // The keyword fill (textversions.Run) writes search_text_versions under its hold,
 // search-text-versions-fill, one process at a time: the rows below read which process wrote each
-// of its batches from the cursor row's holder, recorded by a trigger of the row's own
-// (recordKeywordFillWrites), against the holder each process's line names when it takes the hold
-// (keywordFillHolder). None of them needs NATS, so every process here runs without it.
+// of its batches from the cursor row's holder, and what duty_holds said of the hold in that
+// batch's own transaction, both recorded by a trigger of the row's own (recordKeywordFillWrites),
+// against the holder each process's line names when it takes the hold (keywordFillHolder). None
+// of them needs NATS, so every process here runs without it.
 
-// The line a holder logs as it finds its hold lost, which these rows read beside the two lines of
-// main_test.go (keywordFillTookLine, keywordFillStandbyLine).
+// keywordFillHoldName is the fill's hold, textversions' fillHoldName, which that package keeps to
+// itself: the name of the duty_holds row every batch of the fill checks names its holder live.
+const keywordFillHoldName = "search-text-versions-fill"
+
+// The line a holder logs as it finds its hold lost, which the frozen holder's row waits for beside
+// the two lines of main_test.go (keywordFillTookLine, keywordFillStandbyLine).
 const keywordFillLostHoldLine = `msg="dispatch: the keyword fill's hold is lost; it writes nothing more and stands by"`
 
 // keywordFillTakeOverWithin is the service level a standby is held to in taking the hold of a
@@ -10622,7 +10717,7 @@ func keywordFillTakeOverAfterKill(t *testing.T) time.Duration {
 	textversionstest.AwaitRows(t, database, after, nil)
 	t.Logf("the second process took the hold %v and wrote the events written after the kill %v after it", took.Round(time.Millisecond), time.Since(killed).Round(time.Millisecond))
 
-	requireKeywordFillWritersInTurn(t, writes(), keywordFillWriter{firstHolder, first}, keywordFillWriter{secondHolder, second})
+	requireKeywordFillWritersInTurn(t, writes(), firstHolder, secondHolder)
 	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(slices.Concat(before, after)...))
 	return took
 }
@@ -10665,7 +10760,7 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	})
 
 	recorded := writes()
-	requireKeywordFillWritersInTurn(t, recorded, keywordFillWriter{firstHolder, first}, keywordFillWriter{secondHolder, second})
+	requireKeywordFillWritersInTurn(t, recorded, firstHolder, secondHolder)
 	for i, write := range recorded {
 		if write.holder != secondHolder {
 			continue
@@ -10761,7 +10856,7 @@ func keywordFillTakeOverAfterFreeze(t *testing.T) time.Duration {
 	}
 	textversionstest.AwaitRows(t, database, afterResume, nil)
 
-	requireKeywordFillWritersInTurn(t, writes(), keywordFillWriter{frozenHolder, frozen}, keywordFillWriter{standbyHolder, standby})
+	requireKeywordFillWritersInTurn(t, writes(), frozenHolder, standbyHolder)
 	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(slices.Concat(before, whileFrozen, afterResume)...))
 	select {
 	case <-frozen.Exited:
@@ -10771,27 +10866,45 @@ func keywordFillTakeOverAfterFreeze(t *testing.T) time.Duration {
 	return took
 }
 
-// keywordFillWrite is one write of the fill's cursor row: the holder that wrote it and the cursor
-// it left.
+// keywordFillWrite is one write of the fill's cursor row: the holder that wrote it, the cursor it
+// left, and what duty_holds said of the fill's hold in the write's own transaction - holdHolder,
+// the holder its row named ("" where there was no row), and holdLive, whether that row was live as
+// the batch's own check reads it (expires_at > now(), the transaction's clock; textversions'
+// holdCheckQuery).
 type keywordFillWrite struct {
-	holder  string
-	eventID int64
-	// at is when the write's transaction wrote it, on the database's clock (clock_timestamp).
-	at time.Time
+	holder     string
+	eventID    int64
+	holdHolder string
+	holdLive   bool
+}
+
+// held is what the hold's row said at the write.
+func (w keywordFillWrite) held() string {
+	switch {
+	case w.holdHolder == "":
+		return "no row at all"
+	case w.holdLive:
+		return "holder " + w.holdHolder + ", live"
+	default:
+		return "holder " + w.holdHolder + ", lapsed"
+	}
 }
 
 // recordKeywordFillWrites installs a trigger on the fill's cursor row that records each write of it
-// in its own transaction, so a batch that commits is recorded and one that rolls back is not, and
-// answers the reader of what it recorded, in order.
+// in its own transaction, so a batch that commits is recorded and one that rolls back is not, with
+// what duty_holds said of the fill's hold (keywordFillHoldName) in that transaction, and answers
+// the reader of what it recorded, in order.
 func recordKeywordFillWrites(t *testing.T, database *store.Store) func() []keywordFillWrite {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
 		create table keyword_fill_writes (n bigserial primary key, holder text not null, event_id bigint not null,
-			at timestamptz not null default clock_timestamp());
+			hold_holder text not null, hold_live boolean not null);
 		create function keyword_fill_write() returns trigger language plpgsql as $$
 		begin
-			insert into keyword_fill_writes (holder, event_id) values (coalesce(new.holder::text, ''), new.event_id);
+			insert into keyword_fill_writes (holder, event_id, hold_holder, hold_live)
+			select coalesce(new.holder::text, ''), new.event_id, coalesce(h.holder::text, ''), coalesce(h.expires_at > now(), false)
+			from (select 1) as write left join duty_holds h on h.name = '`+keywordFillHoldName+`';
 			return new;
 		end $$;
 		create trigger keyword_fill_write after insert or update on search_text_versions_fill
@@ -10801,13 +10914,13 @@ func recordKeywordFillWrites(t *testing.T, database *store.Store) func() []keywo
 	}
 	return func() []keywordFillWrite {
 		t.Helper()
-		rows, err := database.Pool.Query(ctx, `select holder, event_id, at from keyword_fill_writes order by n`)
+		rows, err := database.Pool.Query(ctx, `select holder, event_id, hold_holder, hold_live from keyword_fill_writes order by n`)
 		if err != nil {
 			t.Fatalf("read the keyword fill's writes: %v", err)
 		}
 		recorded, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (keywordFillWrite, error) {
 			var write keywordFillWrite
-			err := row.Scan(&write.holder, &write.eventID, &write.at)
+			err := row.Scan(&write.holder, &write.eventID, &write.holdHolder, &write.holdLive)
 			return write, err
 		})
 		if err != nil {
@@ -10833,26 +10946,6 @@ func keywordFillHolder(t *testing.T, p *dispatchProcess) string {
 	return holder[1]
 }
 
-// keywordFillWriter is one process of a keyword fill row as its writes of the cursor row name it:
-// the holder it took the fill's hold as (keywordFillHolder), and the process, whose lines say when
-// it found that hold lost (keywordFillLostHoldLine).
-type keywordFillWriter struct {
-	holder  string
-	process *dispatchProcess
-}
-
-// lostHoldBetween reports whether the writer's process logged that it found the fill's hold lost
-// at or after from and at or before by, by the line's own time (slog's, to the millisecond).
-func (w keywordFillWriter) lostHoldBetween(t *testing.T, from, by time.Time) bool {
-	t.Helper()
-	for _, line := range w.process.logLines(keywordFillLostHoldLine) {
-		if at := lineTime(t, line); !at.Before(from.Truncate(time.Millisecond)) && !at.After(by) {
-			return true
-		}
-	}
-	return false
-}
-
 // lineTime is the moment a slog text line carries in its time= attribute.
 func lineTime(t *testing.T, line string) time.Time {
 	t.Helper()
@@ -10869,36 +10962,33 @@ func lineTime(t *testing.T, line string) time.Time {
 	return time.Time{}
 }
 
-// requireKeywordFillWritersInTurn requires that every recorded write of the cursor row is first's
-// until the first of second's, the take-over the row makes, and that the hold never goes back
-// from then on but lawfully: a write by the other process after it is a move of the hold, lawful
-// only where the process whose turn it was had found its hold lost (its keywordFillLostHoldLine)
-// between its own last write and that one. The fill's hold lapses when a loaded machine lets its
-// renewals run late (textversions' hold), and the other process then takes it and writes; a
-// return with no such line is the holder writing without its hold.
-func requireKeywordFillWritersInTurn(t *testing.T, recorded []keywordFillWrite, first, second keywordFillWriter) {
+// requireKeywordFillWritersInTurn requires that every recorded write of the cursor row is by first
+// or second, and by the holder duty_holds named live for the fill's hold in that write's own
+// transaction; and that second writes at least once, the take-over the row makes, every write
+// before its first being first's. It reads the product's own record and nothing else: no process's
+// line, and no line's time. That record is the product's rule: each batch locks the cursor row and
+// then, in the same transaction, checks that duty_holds names its holder live for the hold, and
+// writes nothing otherwise (textversions' lockCursorQuery and holdCheckQuery), and a holder takes
+// the hold only where its row is absent, lapsed or already its own (duty's takeHold). A write by
+// any other holder is a holder writing without its hold. The hold may lawfully move again after
+// the take-over - a loaded machine lets a holder's renewals run late, its hold lapses, and the
+// other process takes it and writes - and each write of such a move is by the holder duty_holds
+// names live then, whenever either process logs what it found.
+func requireKeywordFillWritersInTurn(t *testing.T, recorded []keywordFillWrite, first, second string) {
 	t.Helper()
-	writers := map[string]keywordFillWriter{first.holder: first, second.holder: second}
-	turn, last := first, time.Time{}
 	tookOver := false
 	for i, write := range recorded {
-		if write.holder != turn.holder {
-			writer, known := writers[write.holder]
-			switch {
-			case !known:
-				t.Fatalf("write %d of the cursor row is %+v, by a holder neither %s nor %s: %+v", i, write, first.holder, second.holder, recorded)
-			case !tookOver:
-				tookOver = true
-			case !turn.lostHoldBetween(t, last, write.at):
-				t.Fatalf("write %d of the cursor row is %+v, in %s's turn, which logged no loss of the hold between its last write at %s and it; want every write %s's until %s's first, and the hold moving after that only from a holder that lost it: %+v",
-					i, write, turn.holder, last.Format(time.RFC3339Nano), first.holder, second.holder, recorded)
-			}
-			turn = writer
+		switch {
+		case write.holder != first && write.holder != second:
+			t.Fatalf("write %d of the cursor row is %+v, by a holder neither %s nor %s: %+v", i, write, first, second, recorded)
+		case write.holder != write.holdHolder || !write.holdLive:
+			t.Fatalf("write %d of the cursor row moved it to event %d as %s, while duty_holds held %s for the fill's hold %s in that write's own transaction: a holder wrote without its hold. Want every write by the holder duty_holds names live at it: %+v",
+				i, write.eventID, write.holder, write.held(), keywordFillHoldName, recorded)
 		}
-		last = write.at
+		tookOver = tookOver || write.holder == second
 	}
 	if !tookOver {
-		t.Fatalf("the cursor row was never written by %s, which took the hold: %+v", second.holder, recorded)
+		t.Fatalf("the cursor row was never written by %s, which took the hold: %+v", second, recorded)
 	}
 }
 
