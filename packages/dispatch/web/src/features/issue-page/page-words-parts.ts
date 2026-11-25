@@ -21,6 +21,7 @@ import * as partJ from "./page-words-j";
 import * as partL from "./page-words-l";
 import * as partM from "./page-words-m";
 import * as partN from "./page-words-n";
+import * as partR from "./page-words-r";
 import * as partS from "./page-words-s";
 import * as partT from "./page-words-t";
 import * as partU from "./page-words-u";
@@ -123,6 +124,7 @@ export const WORD_FILES = [
   { file: "page-words-l.ts", module: partL },
   { file: "page-words-m.ts", module: partM },
   { file: "page-words-n.ts", module: partN },
+  { file: "page-words-r.ts", module: partR },
   { file: "page-words-s.ts", module: partS },
   { file: "page-words-t.ts", module: partT },
   { file: "page-words-u.ts", module: partU },
