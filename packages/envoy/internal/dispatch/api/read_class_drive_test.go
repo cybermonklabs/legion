@@ -111,6 +111,8 @@ var readRowDrives = map[string]rowDrive{
 		volatile: []volatileMember{{"computed_at", readTime}}},
 	"GET /api/v1/delivery/runs/{id}": {target: "/api/v1/delivery/runs/$pipelineRun",
 		statement: statementOf(`\bfrom\s+delivery_run_jobs\s+where\s+repo\s*=\s*\$1\s+and\s+run_id\s*=\s*\$2\b`)},
+	"GET /api/v1/delivery/attribution": {target: "/api/v1/delivery/attribution",
+		statement: statementOf(`\bselect\s+count\(\*\)\s+from\s+attributed\s+a\s+where\s+not\s+a\.has_facts\b`)},
 	"GET /api/v1/ci-reconcile/passes": {target: "/api/v1/ci-reconcile/passes", statement: statementOf(`\bci_reconcile_passes\b`)},
 	"GET /api/v1/me/agent-tokens":     {target: "/api/v1/me/agent-tokens", statement: statementOf(`\bfrom\s+agent_read_tokens\s+where\s+owner\s*=\s*\$1\b`)},
 	"GET /api/v1/users":               {target: "/api/v1/users", statement: statementOf(`\bselect\s+email\s+from\s+people\s+order\s+by\s+email\b`)},
