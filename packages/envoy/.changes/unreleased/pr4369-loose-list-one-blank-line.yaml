@@ -5,8 +5,8 @@ body: |-
   Dispatch stores a loose list with one blank line between two of its items, and no blank line
   between items ends in a space. Before, it wrote two blank lines there, so `dispatch artifact`
   refused the usual spelling of a loose list. In a quote, an item that ends in a spread list keeps
-  the two blank lines that the browser editor needs. The renderer version is now 2, so Dispatch
-  renders a stored rendering of version 1 again when it reads it. A text that another renderer
+  the two blank lines that the browser editor needs. The renderer version is now 4, so Dispatch
+  renders a stored rendering of version 1 or 3 again when it reads it. A text that another renderer
   version stored and that reads as the same tree counts as unchanged: no version is written for
   the renderer change alone, the stored-order check reports no mismatch, an approval carries to a
   version that holds the approved text, a kept decision stays kept, and a block keeps its
