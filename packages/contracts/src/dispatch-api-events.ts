@@ -13,6 +13,7 @@ import type {
   ArchitectureSyncFailedEventPayload,
   DisplayTree,
   PriorityUpdatedEventPayload,
+  ProjectAccessChangedEventPayload,
   ProjectDefaultAssigneeUpdatedEventPayload,
   RepoProjectUpdatedEventPayload,
 } from "./dispatch-api-core";
@@ -150,6 +151,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "priority.updated";
       readonly payload: PriorityUpdatedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "project.access_changed";
+      readonly payload: ProjectAccessChangedEventPayload;
     })
   | (DispatchEventBase & { readonly type: "issue.created"; readonly payload: IssueEventPayload })
   | (DispatchEventBase & { readonly type: "issue.updated"; readonly payload: IssueEventPayload })

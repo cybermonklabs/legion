@@ -785,6 +785,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "message.delivery": true,
   "message.edited": true,
   "priority.updated": true,
+  "project.access_changed": true,
   "project.created": true,
   "project.updated": true,
   "result.recorded": true,
