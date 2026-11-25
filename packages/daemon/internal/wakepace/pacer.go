@@ -53,7 +53,7 @@ func (q Queue) String() string {
 type Pacer struct {
 	limiter *Limiter
 	now     func() time.Time
-	at      func(time.Time, func()) (stop func() bool)
+	at      func(time.Time, func())
 
 	mu sync.Mutex
 	// queues holds each queue's waiting places, head first, indexed by Queue.
@@ -73,13 +73,13 @@ type Pacer struct {
 }
 
 // NewPacer builds a pacer over l. now is the caller's clock, and at arms a timer on it that calls f
-// once the clock reaches the moment, at once when it already has, and returns the timer's stop —
-// the shape of supervise's Clock.At, so a caller hands in the clock it already keeps. A limiter
-// whose Interval is zero is the pacing off, and every place is then let out at its Join.
+// once the clock reaches the moment, at once when it already has, so a caller hands in the clock
+// it already keeps. A limiter whose Interval is zero is the pacing off, and every place is then
+// let out at its Join.
 //
-// The pacer never stops a timer it armed: a pending turn has drawn its token, so stopping it would
-// give back nothing.
-func NewPacer(l *Limiter, now func() time.Time, at func(time.Time, func()) (stop func() bool)) *Pacer {
+// The pacer never stops a timer it armed, so at answers nothing: a pending turn has drawn its
+// token, and stopping it would give back nothing.
+func NewPacer(l *Limiter, now func() time.Time, at func(time.Time, func())) *Pacer {
 	return &Pacer{limiter: l, now: now, at: at}
 }
 
@@ -166,53 +166,41 @@ func (p *Pacer) letOut(pl *Place, now time.Time, turns int) {
 	}
 }
 
-// released is a let-out place's release and the Let to call it with, carried out of the lock.
-type released struct {
-	release func(Let)
-	let     Let
-}
-
 // turn is the pending turn come, called on the goroutine of its timer. It lets out the head the
-// share gives the turn to and, while a place still waits, reserves the next turn. A next turn that
-// is already due — a burst still open, or a timer that fired late enough for the bucket to refill —
-// is a turn of its own and lets the next head out in the same call; the first that is not becomes
-// the pending turn. The next timer and the releases are called once the lock is let go, so that a
-// release may Join or Leave.
+// share gives the turn to and, while a place still waits, reserves the next turn and arms its
+// timer. A next turn that is already due — a burst still open, or a timer that fired late enough
+// for the bucket to refill — is armed all the same, for a moment that has come, so it is a turn of
+// its own on a timer of its own: each let-out's release then runs on its own goroutine under a
+// clock that gives every timer one, and no wake waits for the launch of the wake let out a turn
+// before it, which a machine's release holds its goroutine for. The next timer and the release
+// are called once the lock is let go, so that a release may Join or Leave.
 func (p *Pacer) turn() {
 	now := p.now().Round(0)
-	// One release a turn is the usual case, which the array holds without an allocation.
-	var buf [1]released
-	out := buf[:0]
-	var next time.Time
-	arm := false
+	var (
+		release func(Let)
+		let     Let
+		next    time.Time
+		arm     bool
+	)
 
 	p.mu.Lock()
 	p.held = false
-	for {
-		p.turns++
-		if pl := p.head(); pl != nil {
-			p.letOut(pl, now, p.turns-pl.joined)
-			if pl.release != nil {
-				out = append(out, released{pl.release, pl.let})
-				pl.release = nil
-			}
-		}
-		if len(p.queues[First])+len(p.queues[Second]) == 0 {
-			break
-		}
+	p.turns++
+	if pl := p.head(); pl != nil {
+		p.letOut(pl, now, p.turns-pl.joined)
+		release, let, pl.release = pl.release, pl.let, nil
+	}
+	if len(p.queues[First])+len(p.queues[Second]) > 0 {
 		next = p.limiter.Reserve(now)
-		if next.After(now) {
-			p.pending, p.held, arm = next, true, true
-			break
-		}
+		p.pending, p.held, arm = next, true, true
 	}
 	p.mu.Unlock()
 
 	if arm {
 		p.at(next, p.turn)
 	}
-	for _, r := range out {
-		r.release(r.let)
+	if release != nil {
+		release(let)
 	}
 }
 
@@ -285,6 +273,7 @@ func (p *Pacer) remove(pl *Place) bool {
 // and release is never called: the caller goes on with the wake itself. A waiting place returns
 // false, and release is called exactly once, when the place is let out, on the goroutine of the
 // timer whose turn let it out and outside the pacer's lock, so that a release may Join or Leave.
+// One turn lets out one place, so a release that takes long holds back no other place's.
 // Bind may be called again while the place waits, as a machine does when it detaches a waiting
 // wake and takes it up again later at the same place: the newer release replaces the earlier one,
 // which is then never called. A place that left returns false, and release is never called.

@@ -2242,13 +2242,13 @@ func (s *supervision) endRoundALaunchReplaced(ctx context.Context, issue string,
 }
 
 // viewsRecordRound is whether a claim of the issue that has not retired records round, read from
-// each machine's published view (Machine.View) alone: never from Machine.Claim, which waits out
-// the decision in flight, and never from the store. roundPodEndsAtLaunch asks it under a pod's
+// each machine's published claim (Machine.Published) alone: never from Machine.Claim, which waits
+// out the decision in flight, and never from the store. roundPodEndsAtLaunch asks it under a pod's
 // launch turn before it reads the store, and reads the store only where this answers yes.
 func (s *supervision) viewsRecordRound(issue, round string) bool {
 	for _, m := range s.supervisor.supervised() {
-		view := m.View()
-		if view.Issue == issue && view.State != supervise.StateRetired && memberOf(view.Claim, round) {
+		c := m.Published()
+		if c.Issue == issue && c.State != supervise.StateRetired && memberOf(c, round) {
 			return true
 		}
 	}

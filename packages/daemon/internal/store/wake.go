@@ -114,11 +114,14 @@ func MarkClaimMessage(ctx context.Context, pool *Pool, token claim.Token, at tim
 }
 
 // MarkClaimMessageTx marks the claim token for an Envoy message that has waited since at
-// (claims.message_mark_at, dispatch://INFRA-5682 R1), and answers the mark that stands once it has
-// run, the zero time for none. A mark stands while it is later than the claim's last turn start
-// (supervise.Claim.MessageMarked), and of two that stand the earlier is kept, since it is the
-// message that has waited longest and the first one Envoy drops. So at replaces a mark the role
-// has worked past, and never an earlier one that stands.
+// (claims.message_mark_at, dispatch://INFRA-5682 R1), and answers the mark it wrote, or else the
+// mark that stands once it has run, the zero time for neither. A mark stands while it is later
+// than the claim's last turn start (supervise.Claim.MessageMarked), and of two that stand the
+// earlier is kept, since it is the message that has waited longest and the first one Envoy drops.
+// So at replaces a mark the role has worked past, and never an earlier one that stands. Where no
+// mark stands, at is written even when the role has taken a turn since it, and the answer is then
+// a mark that does not stand, which moves no wake (the machine moves one only for a mark that
+// stands, Claim.MessageMarked).
 //
 // A retired claim takes no mark, and neither does a token of no claim. Nothing waits for a
 // retired claim and nothing is coming, and its token's next run is another run's: a mark left on

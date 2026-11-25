@@ -1504,10 +1504,10 @@ type ClaimReady struct {
 	Launch uint64
 	// Paced is the second source alone saying that the catch-up this ready writes stands in place
 	// of a launch, and so is a wake the daemon's pacing holds to its turn like the launch it
-	// replaces (workflow.Config.Reserve). The launch's own ready sets none: that launch took its
-	// turn at the machine's gate (supervise's reserveWake) and the catch-up it leads to is part of
-	// the same wake. A fact applies once for the row that wrote it (ApplyFact's id), so the turn
-	// is taken once per start row however often the row runs.
+	// replaces (workflow.Config.HoldCatchUp). The launch's own ready sets none: that launch took
+	// its turn at the machine's gate (supervise's reserveWake) and the catch-up it leads to is part
+	// of the same wake. A fact applies once for the row that wrote it (ApplyFact's id), so the row
+	// joins the pacing once per start row however often the row runs.
 	Paced bool
 	// Relaunch is the sentence that tells the claim's new process what the last let-go of its
 	// process ended (supervise.RelaunchSentence), while the claim's record of it is untold

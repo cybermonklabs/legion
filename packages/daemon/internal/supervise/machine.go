@@ -2622,12 +2622,14 @@ func (m *Machine) Claim() Claim {
 // as the decision in flight last tried to write it to the store. It never waits, where Claim waits
 // out a decision that holds the machine through its runtime call — a Sandbox relaunch waits minutes
 // for its pods — so a reader of every claim, like the operator's listing, reads View. The waiting
-// wake's moment is the pacer's estimate for its place as of this read (publishedView.wake).
+// wake's moment is the pacer's estimate for its place as of this read (publishedView.due).
 func (m *Machine) View() ClaimView {
 	p := m.view.Load()
 	v := p.ClaimView
 	v.Claim = copyClaim(v.Claim)
-	v.WakeWaiting = p.wake()
+	if p.WakeWaiting != nil {
+		v.WakeWaiting = &WakeWaiting{Kind: p.WakeWaiting.Kind, At: p.due()}
+	}
 	return v
 }
 
@@ -2650,11 +2652,10 @@ func (m *Machine) Published() Claim {
 // outside a wave.
 func (m *Machine) WaitingWake() *WaitingWake {
 	p := m.view.Load()
-	w := p.wake()
-	if w == nil {
+	if p.WakeWaiting == nil {
 		return nil
 	}
-	return &WaitingWake{Claim: p.Token, Issue: p.Issue, Role: p.Role, Kind: w.Kind, At: w.At}
+	return &WaitingWake{Claim: p.Token, Issue: p.Issue, Role: p.Role, Kind: p.WakeWaiting.Kind, At: p.due()}
 }
 
 // AwaitsPod is the live pod the claim's launch waits on as the machine last published it
@@ -2736,18 +2737,19 @@ func StoredClaim(c Claim) Claim {
 
 // publish makes the claim as the machine holds it now the one View reports, with the wake the
 // pacing holds over it, if any: a fresh value each time, since the view is read without mu. The
-// wake is published with its place (publishedView.place), and its moment is read from the pacer
-// when the view is read (publishedView.wake): a let-out, a join, a mark or a leave elsewhere in
-// the queues moves it, and each turn's jitter moves every place behind that turn, so a moment read
-// at the publish would name a turn that has since moved. A launch the project pause's gate holds
-// is no such wake: it has no moment to run and waits in no pacing (wake.pause), so it is published
-// as none. Nor is a launch waiting for its issue pod's start (wake.park): it has no moment either,
-// and the daemon's state does not show that wait (dispatch://INFRA-5297's decision; the start and
-// load-end lines are its record). The caller holds mu.
+// wake is published with its kind and its place (publishedView.place), and no moment: its moment
+// is read from the pacer when the view is read (publishedView.due), since a let-out, a join, a
+// mark or a leave elsewhere in the queues moves it, and each turn's jitter moves every place
+// behind that turn, so a moment read at the publish would name a turn that has since moved. A
+// launch the project pause's gate holds is no such wake: it has no moment to run and waits in no
+// pacing (wake.pause), so it is published as none. Nor is a launch waiting for its issue pod's
+// start (wake.park): it has no moment either, and the daemon's state does not show that wait
+// (dispatch://INFRA-5297's decision; the start and load-end lines are its record). The caller
+// holds mu.
 func (m *Machine) publish() {
 	view := &publishedView{ClaimView: ClaimView{Claim: m.current(), Stopping: m.stopping, SendInFlight: m.send != nil}}
 	if w := m.pacedWake(); w != nil {
-		view.kind, view.place, view.WakeWaiting = w.kind, w.place, &WakeWaiting{Kind: w.kind, At: w.due()}
+		view.place, view.WakeWaiting = w.place, &WakeWaiting{Kind: w.kind}
 	}
 	m.view.Store(view)
 }
@@ -2763,23 +2765,22 @@ func (m *Machine) pacedWake() *wake {
 }
 
 // publishedView is the view publish stores: the claim's view, and for a wake the pacing holds, its
-// kind and its place, nil for a wake that holds none (wake.place), whose moment is the one the
-// publish found (ClaimView.WakeWaiting).
+// kind (ClaimView.WakeWaiting, which holds no moment here) and its place, nil for a wake that
+// holds none (wake.place).
 type publishedView struct {
 	ClaimView
-	kind  WakeKind
 	place *wakepace.Place
 }
 
-// wake is the waiting wake this view names, with its moment read from the pacer now, and nil for
-// none. A place the pacer has let out since the publish is a wake about to run, not one that
-// waits, so it is named at the moment it was let out until the decision that runs it publishes
-// again.
-func (p *publishedView) wake() *WakeWaiting {
-	if p.WakeWaiting == nil || p.place == nil {
-		return p.WakeWaiting
+// due is the moment of the waiting wake this view names, read from the pacer now, and the zero
+// time for a wake that holds no place. A place the pacer has let out since the publish is a wake
+// about to run, not one that waits, so it is named at the moment it was let out until the
+// decision that runs it publishes again.
+func (p *publishedView) due() time.Time {
+	if p.place == nil {
+		return time.Time{}
 	}
-	return &WakeWaiting{Kind: p.kind, At: p.place.Estimate()}
+	return p.place.Estimate()
 }
 
 // stoppingProcess marks the claim's process as being stopped for good, for View, until the runtime

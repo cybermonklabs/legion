@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
@@ -28,12 +29,7 @@ const wakeWriteRetry = 15 * time.Second
 // blocks, so a caller inside a machine's decision, a commit's hook or the pacer's turn runs it on
 // a goroutine of its own.
 func writeAgainUntilMade(ctx context.Context, write func(context.Context) error, failed func(error)) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(wakeWriteRetry):
-		}
+	for backoff.Sleep(ctx, wakeWriteRetry) == nil {
 		err := write(ctx)
 		if err == nil || ctx.Err() != nil {
 			return

@@ -172,19 +172,9 @@ func queueCatchUp(ctx context.Context, tx pgx.Tx, records record.Store, steps []
 		return EnqueueNaming(ctx, tx, records, issue.Key, issue.Tree, notice, kept, now)
 	}
 	notice.PacedAt, notice.PacedFrom = record.CatchUpHeldAt, now
-	// EnqueueNaming's own steps, with the row's id kept for the hold.
-	row, err := queuedRow(ctx, tx, records, issue.Key, notice, record.CatchUpHeldAt)
+	id, err := enqueueNamingID(ctx, tx, records, issue.Key, issue.Tree, notice, kept, record.CatchUpHeldAt)
 	if err != nil {
 		return err
-	}
-	id, err := records.EnqueueID(ctx, tx, row)
-	if err != nil {
-		return err
-	}
-	if kept != nil {
-		if err := records.ClaimKeptDecisions(ctx, tx, issue.Tree, *kept, id); err != nil {
-			return err
-		}
 	}
 	store.OnCommit(ctx, func() { hold(id, issue.Key) })
 	return nil

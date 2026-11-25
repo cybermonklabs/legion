@@ -364,10 +364,11 @@ func catchUpRows(t *testing.T, pool *pgxpool.Pool) []int64 {
 }
 
 // The catch-up a start writes in place of a launch waits its turn in the daemon's wake pacing:
-// the ready carries the mark only that start sets (intake.ClaimReady.Paced). The row has no
-// due moment when it commits, and the daemon's hook then receives its id to queue it.
-// A launch's own ready takes no turn, and without pacing both kinds are due at once.
-func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
+// the ready carries the mark only that start sets (intake.ClaimReady.Paced). The row is written
+// held, with no due moment, and once it has committed the daemon's hook is told its id to join
+// it to the pacing's queue (Config.HoldCatchUp). A launch's own ready holds no catch-up, and
+// without pacing both kinds are due at once.
+func TestAPacedReadysCatchUpIsWrittenHeldForTheWakePacing(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
 	held := record.CatchUpHeldAt
@@ -376,23 +377,23 @@ func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 		paced   bool
 		pacing  bool
 		due     time.Time
-		marked  time.Time
-		reserve int
+		pacedAt time.Time
+		holds   int
 	}{
-		{name: "a start's ready while the pacing is on", paced: true, pacing: true, due: held, marked: held, reserve: 1},
+		{name: "a start's ready while the pacing is on", paced: true, pacing: true, due: held, pacedAt: held, holds: 1},
 		{name: "a launch's ready while the pacing is on", pacing: true, due: now},
 		{name: "a start's ready while the pacing is off", paced: true, due: now},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedAdmittedTree(t, pool, 1)
-			reserved := 0
+			holds := 0
 			var joined int64
 			cfg := Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Repositories: testRepositories,
 				Clock: func() time.Time { return now }}
 			if tc.pacing {
 				cfg.HoldCatchUp = func(id int64, issue string) {
-					reserved++
+					holds++
 					joined = id
 					var due time.Time
 					if err := pool.QueryRow(t.Context(), `select next_at from outbox where id = $1 and issue = $2`, id, issue).Scan(&due); err != nil || !due.Equal(held) {
@@ -412,22 +413,22 @@ func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 
 			var due time.Time
 			var id int64
-			// A catch-up the pacing reserved no moment for carries none at all (omitzero).
+			// A catch-up no pacing holds carries no paced_at at all (omitzero).
 			var marked *time.Time
 			if err := pool.QueryRow(t.Context(), `select id, next_at, (payload->>'paced_at')::timestamptz from outbox
 				where kind = 'notice' and payload->>'kind' = 'catch-up'`).Scan(&id, &due, &marked); err != nil {
 				t.Fatalf("read the catch-up: %v", err)
 			}
-			var reservedAt time.Time
+			var pacedAt time.Time
 			if marked != nil {
-				reservedAt = marked.UTC()
+				pacedAt = marked.UTC()
 			}
-			if !due.UTC().Equal(tc.due) || !reservedAt.Equal(tc.marked) || reserved != tc.reserve {
-				t.Fatalf("the catch-up is due at %s, reserved for %s, after %d reservations; want %s, %s, %d",
-					due.UTC(), reservedAt, reserved, tc.due, tc.marked, tc.reserve)
+			if !due.UTC().Equal(tc.due) || !pacedAt.Equal(tc.pacedAt) || holds != tc.holds {
+				t.Fatalf("the catch-up is due at %s with paced_at %s, after %d holds; want %s, %s, %d",
+					due.UTC(), pacedAt, holds, tc.due, tc.pacedAt, tc.holds)
 			}
-			if tc.reserve != 0 && id != joined {
-				t.Fatalf("joined row %d, want catch-up %d", joined, id)
+			if tc.holds != 0 && id != joined {
+				t.Fatalf("the hold was told row %d, want catch-up %d", joined, id)
 			}
 		})
 	}

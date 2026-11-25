@@ -480,7 +480,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if cfg.WorkerWakesPerMinute > 0 {
 		limiter := wakepace.New(cfg.WorkerWakesPerMinute, cfg.WorkerWakeBurst, rand.N[time.Duration])
 		wakeInterval = limiter.Interval()
-		wakePacer = wakepace.NewPacer(limiter, plan.clock.Now, func(t time.Time, f func()) func() bool { return plan.clock.At(t, f).Stop })
+		wakePacer = supervise.NewPacer(limiter, plan.clock)
 	}
 	// The one gate of the stale-plugin refresh lane, built here because K is that same rate: the
 	// lane may hold one minute of the pacing at a time, and the sweep a minute later admits the

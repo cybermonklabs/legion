@@ -1607,14 +1607,15 @@ Closing the terminal leaves the project without one, and the daemon logs
   it is — `launch`, a role process about to start; `plugin-refresh`, the relaunch of a session
   whose plugin speaks an earlier daemon contract, which the daemon replaces at that one wake and
   asks nothing of first; `catch-up`, the notice a start writes to an
-  architect that is already running — and the moment the pacing estimates for its place in the
-  queue (`wakes waiting: 2 — legion-widgets-widgets-12-implementer launch due
-  2026-10-03T09:13:08Z; …`). A waiting wake holds a place and no moment of its own, so that
-  estimate moves earlier when a wake ahead of it leaves, and later when a wake for a role with a
-  message waiting goes ahead of it.
+  architect that is already running — and the earliest moment the pacing lets it out, by its place
+  in the queue (`wakes waiting: 2 — legion-widgets-widgets-12-implementer launch due
+  2026-10-03T09:13:08Z; …`). A waiting wake holds a place and no moment of its own: it runs at
+  that moment or later, since each turn ahead of it waits a random part of up to one interval more,
+  and the estimate moves earlier when a wake ahead of it leaves, and later when a wake for a role
+  with a message waiting goes ahead of it.
   Nothing waits outside a restart, a re-admission or a stale-plugin wave, which is why an
   ordinary read has no such line.
-  It is what says whether a wave is still going out, and the last `due` on it is when
+  It is what says whether a wave is still going out, and the last `due` on it is the earliest
   the last of that wave goes.
 
   The plain line does not say how much of a stale-plugin wave is still to come, and the JSON body
@@ -1699,8 +1700,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   `heldOutboxRows` ([An issue's stop or start waits behind its own launch](/legion/legion/troubleshooting/#an-issues-stop-or-start-waits-behind-its-own-launch)),
   `strandedClaims` ([A tree does not move after a restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart)),
   `wakesWaiting` (each wake the pacing holds until its turn, in claim order: `claim`, `issue`,
-  `role`, `kind` and `dueAt`, the moment the pacing estimates for its place at the read; an array,
-  never null, and empty at every moment outside a wave),
+  `role`, `kind` and `dueAt`, the earliest moment the pacing lets it out, by its place at the
+  read; an array, never null, and empty at every moment outside a wave),
   `repositories` (`live`, one entry for each repository the project's live records name, sorted:
   its `repo`, as the records keep it; `servedAs`, the other name of its `repository_renames` pair
   where the daemon calls GitHub under that one; `apps` — `{"implement": bool, "review": bool}`,

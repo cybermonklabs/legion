@@ -62,8 +62,10 @@ type Pods interface {
 	ClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error)
 	ClaimBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, bool, error)
 	// MarkMessage marks the claim token for an Envoy message that has waited since at, and
-	// answers the mark that stands once it has: the earliest of the marks the role has taken no
-	// turn since, and the zero time for a claim that takes none (the store's MarkClaimMessageTx).
+	// answers the mark it wrote, or else the mark that stands once it has: the earliest of the
+	// marks the role has taken no turn since, and the zero time for a claim that takes none. A mark
+	// written where none stood can be one the role has taken a turn since, which stands not at all
+	// (the store's MarkClaimMessageTx).
 	MarkMessage(ctx context.Context, tx pgx.Tx, token claim.Token, at time.Time) (time.Time, error)
 	// TakePodWake takes one wake of issue's role and answers whether this call took it; false is
 	// a wake another pass already took, which is already bringing the pod back. pause is the

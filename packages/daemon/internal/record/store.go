@@ -3459,12 +3459,16 @@ func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, no
 
 // ReleaseHeldCatchUp makes the held catch-up row id due at at, the moment the wake pacing let its
 // place out, and records that let-out on the notice for the line its wake writes: PacedAt becomes
-// at, and PacedTurns turns, the turns it waited (Notice.PacedAt). It answers whether the row was
-// held. A row a newer catch-up dropped, or one let out already, is left as it is, so a let-out
-// made twice, or made after the drop, changes nothing.
+// at, and PacedTurns turns, the turns it waited (Notice.PacedAt). A row the pacer let out at its
+// join waited no turn (turns 0), so its PacedAt becomes the moment its hold began instead
+// (PacedFrom): the time from the engine's write to the join is the fact's commit, not a wait of
+// the pacing's, and its line says it waited nothing, as a machine's wake let out at its join
+// does. It answers whether the row was held. A row a newer catch-up dropped, or one let out
+// already, is left as it is, so a let-out made twice, or made after the drop, changes nothing.
 func ReleaseHeldCatchUp(ctx context.Context, tx pgx.Tx, id int64, at time.Time, turns int) (bool, error) {
 	tag, err := tx.Exec(ctx, `update outbox set next_at = $3,
-		payload = payload || jsonb_build_object('paced_at', $3::timestamptz, 'paced_turns', $4::int)
+		payload = payload || jsonb_build_object('paced_turns', $4::int, 'paced_at',
+			case when $4::int = 0 then coalesce(payload->'paced_from', to_jsonb($3::timestamptz)) else to_jsonb($3::timestamptz) end)
 		where id = $1 and next_at = $2 and kind = 'notice' and payload->>'kind' = 'catch-up'`,
 		id, CatchUpHeldAt, at.UTC(), turns)
 	if err != nil {

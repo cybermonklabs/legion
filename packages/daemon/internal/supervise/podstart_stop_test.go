@@ -305,7 +305,7 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 		// the test never reaches that turn.
 		{name: "another park", state: StateLaunching, ended: "failed launch", cut: func(h *harness, r *podRole) error {
 			return h.insideDecision(r.m, func() error {
-				pacer := pacerOn(wakepace.New(1, 1, func(time.Duration) time.Duration { return time.Hour }), h.clock)
+				pacer := NewPacer(wakepace.New(1, 1, func(time.Duration) time.Duration { return time.Hour }), h.clock)
 				pacer.Join(wakepace.Second)
 				place := pacer.Join(wakepace.Second)
 				if _, out := r.m.bindWake(place); out {

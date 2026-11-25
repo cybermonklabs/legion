@@ -431,7 +431,9 @@ type Notice struct {
 	// pair rather than from PacedAt less the row's created_at, which is two clocks subtracted from
 	// each other: created_at is the database's now() at the start of the fact's transaction
 	// (store/migrations/0004_record.up.sql), while the row is held from the engine's clock later
-	// in that same transaction (workflow's claimReady).
+	// in that same transaction (workflow's claimReady). A row the pacer let out at its join waited
+	// no turn, and its let-out writes PacedAt as PacedFrom (ReleaseHeldCatchUp), so the commit
+	// that came between the write and the join is not read as a wait.
 	PacedFrom time.Time `json:"paced_from,omitzero"`
 	// PacedTurns is how many turns the pacing let out between the row's join of its queue and its
 	// own let-out (wakepace.Let.Turns), which the line its wake writes names beside the queue. The

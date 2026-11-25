@@ -1885,11 +1885,12 @@ func (r *outbox) notice(ctx context.Context, row record.OutboxRow, payload recor
 // PacedFrom is what the pacing held this wake for, whatever a retry since has written into
 // next_at (record.Notice.PacedAt, PacedFrom, the store's RetryOutbox). The pair is one clock's:
 // the row's created_at is the database's now() at the start of the fact's transaction, so a wake
-// read against it would be the engine's clock less the database's, and a row the pacer let
-// straight out — the first wake of a wave, let out at the instant it joined — would report the
-// transaction's own duration as a wait. It waited nothing and says so, as supervise's line does;
-// reading the wait from the runner's clock instead would call every such row held, by however
-// long the lane took to pick it up.
+// read against it would be the engine's clock less the database's. A row the pacer let straight
+// out — the first wake of a wave, let out at the instant it joined, after the commit of the fact
+// that wrote it — has PacedAt written as PacedFrom (record.ReleaseHeldCatchUp), so it does not
+// report that transaction's or its commit's duration as a wait. It waited nothing and says so,
+// as supervise's line does; reading the wait from the runner's clock instead would call every
+// such row held, by however long the lane took to pick it up.
 //
 // The pace the line names is the one the daemon holds its machines to (supervise.WakePace, set in
 // openSupervision), the rate and the burst alone. The queue is the pacer's second, which every

@@ -142,6 +142,15 @@ func (c *waveClock) advanceTo(at time.Time) {
 // advance moves the clock on by d.
 func (c *waveClock) advance(d time.Duration) { c.advanceTo(c.Now().Add(d)) }
 
+// advanceUntil moves the clock to due, and on from there to each next timer until done holds or no
+// timer is left (fireNext). due is a moment the state named for a wake, which the jitter of the
+// turns ahead of it can only make later (advanceToLaunch).
+func (c *waveClock) advanceUntil(due time.Time, done func() bool) {
+	c.advanceTo(due)
+	for !done() && c.fireNext() {
+	}
+}
+
 // fireNext moves the clock to the earliest timer still armed, when that is later than now, and
 // runs what falls due there (advanceTo), as a clock that moves on its own reaches its next event.
 // It reports false when no timer is armed.
@@ -170,9 +179,7 @@ func (c *waveClock) fireNext() bool {
 // before, at a turn of the pacer's own.
 func advanceToLaunch(t *testing.T, clock *waveClock, rt *waveRuntime, due time.Time, want int) {
 	t.Helper()
-	clock.advanceTo(due)
-	for len(rt.launches()) < want && clock.fireNext() {
-	}
+	clock.advanceUntil(due, func() bool { return len(rt.launches()) >= want })
 	testwait.Eventually(t, fmt.Sprintf("launch %d, due from %s", want, due), func() bool {
 		return len(rt.launches()) >= want
 	})
@@ -671,17 +678,6 @@ func awaitWave(t *testing.T, d *daemon, count int) []api.WakeWaiting {
 	return waiting
 }
 
-// wakeMoments is the moment each wake of a wave runs at: the first at origin, which the burst let
-// straight out, then every waiting wake's own turn.
-func wakeMoments(origin time.Time, waiting []api.WakeWaiting) []time.Time {
-	moments := make([]time.Time, 0, len(waiting)+1)
-	moments = append(moments, origin)
-	for _, wake := range waiting {
-		moments = append(moments, wake.DueAt)
-	}
-	return moments
-}
-
 // assertSpread is the whole of what c-spread asks of a wave's schedule: the first wake goes at
 // once, every gap is at least one interval and less than two — one interval plus the part of one
 // the daemon jitters each release by — the gaps are not all equal, because that part is drawn
@@ -1055,9 +1051,9 @@ func TestADisplacedWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
 	}
 
 	waiting := awaitWave(t, d, waveSize)
-	moments := wakeMoments(origin, waiting)
-	assertSpread(t, "the displaced wave's launches", moments, origin)
 	launches := runWave(t, clock, rt, waiting, 1)
+	moments := launchMoments(launches)
+	assertSpread(t, "the displaced wave's launches", moments, origin)
 	for _, launch := range launches {
 		if !launch.resumed {
 			t.Fatalf("%s was spawned rather than resumed; a displaced claim comes back on its recorded session", launch.claim)
@@ -1204,8 +1200,14 @@ func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
 			t.Fatalf("the wake of %s is due at %s, want the turn it already held, %s", wake.Claim, wake.DueAt, was)
 		}
 	}
-	assertSpread(t, "the wave the exempt wakes went around", wakeMoments(origin, after), origin)
-	runWave(t, clock, rt, after, rt.launchesOf(controller)+rt.launchesOf(suspended)+1)
+	launches := runWave(t, clock, rt, after, rt.launchesOf(controller)+rt.launchesOf(suspended)+1)
+	var wave []waveLaunch
+	for _, launch := range launches {
+		if slices.Contains(tokens, launch.claim) {
+			wave = append(wave, launch)
+		}
+	}
+	assertSpread(t, "the wave the exempt wakes went around", launchMoments(wave), origin)
 	for _, token := range tokens {
 		if got := rt.launchesOf(token); got != 1 {
 			t.Fatalf("%s launched %d times, want once: the wave kept its own spacing after the exempt wakes", token, got)
@@ -1754,9 +1756,7 @@ func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHo
 	// state names each wake's estimated turn, which the jitter of the turns ahead of it can only
 	// make later (advanceToLaunch), so the clock moves on from there to each next timer.
 	for _, wake := range first {
-		clock.advanceTo(wake.DueAt)
-		for rt.launchesOf(wake.Claim) == 0 && clock.fireNext() {
-		}
+		clock.advanceUntil(wake.DueAt, func() bool { return rt.launchesOf(wake.Claim) != 0 })
 		testwait.Eventually(t, fmt.Sprintf("the relaunch of %s at its turn", wake.Claim), func() bool {
 			return rt.launchesOf(wake.Claim) == 1
 		})
@@ -1937,8 +1937,7 @@ func TestARestartRaisesTheWakesStillWaitingAndEachHappensOnce(t *testing.T) {
 	// The wave the restart finds is exactly the wakes the stop left waiting: the claims already
 	// launched record a process and are re-adopted, never launched again.
 	again := awaitWave(t, second, len(stillWaiting))
-	assertSpread(t, "the restart's own wave", wakeMoments(restartOrigin, again), restartOrigin)
-	runWave(t, restartClock, restarted, again, 1)
+	assertSpread(t, "the restart's own wave", launchMoments(runWave(t, restartClock, restarted, again, 1)), restartOrigin)
 
 	total := map[claim.Token]int{}
 	for token, count := range launchedFirst {
@@ -2019,7 +2018,6 @@ func TestARestartRaisesTheRelaunchOfARecordedDeathInItsOwnWave(t *testing.T) {
 	if !inWave {
 		t.Fatalf("the restart's wave of %d wakes holds no relaunch of %s, whose death the first daemon recorded", waveLeft, dead)
 	}
-	assertSpread(t, "the restart's own wave", wakeMoments(restartOrigin, again), restartOrigin)
 
 	// The launcher reconnects and reports the death again. The relaunch the boot raised is that
 	// death's relaunch, so the report reserves no second wake and moves no turn. Where the burst
@@ -2031,7 +2029,7 @@ func TestARestartRaisesTheRelaunchOfARecordedDeathInItsOwnWave(t *testing.T) {
 		})
 		assertQueueLeft(t, second, "the late report of the recorded death", again)
 	}
-	runWave(t, restartClock, restarted, again, 1)
+	assertSpread(t, "the restart's own wave", launchMoments(runWave(t, restartClock, restarted, again, 1)), restartOrigin)
 
 	for _, token := range append(slices.Clone(tokens), dead) {
 		launches := launchedFirst[token] + restarted.launchesOf(token)
@@ -2110,8 +2108,7 @@ func TestASuspendDecidedWhileTheWakeWaitedSurvivesARestart(t *testing.T) {
 			t.Fatalf("the restart holds a wake for the drained claim, %+v, want none: it is suspended, not an unfinished launch", wake)
 		}
 	}
-	assertSpread(t, "the restart's own wave", wakeMoments(restartOrigin, again), restartOrigin)
-	runWave(t, restartClock, restarted, again, 1)
+	assertSpread(t, "the restart's own wave", launchMoments(runWave(t, restartClock, restarted, again, 1)), restartOrigin)
 
 	total := map[claim.Token]int{}
 	for token, count := range launchedFirst {

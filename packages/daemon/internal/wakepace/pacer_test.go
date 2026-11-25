@@ -21,10 +21,10 @@ type paceClock struct {
 }
 
 type paceTimer struct {
-	at             time.Time
-	order          int
-	f              func()
-	stopped, fired bool
+	at    time.Time
+	order int
+	f     func()
+	fired bool
 }
 
 func newPaceClock() *paceClock { return &paceClock{now: origin} }
@@ -37,21 +37,11 @@ func (c *paceClock) Now() time.Time {
 
 // At arms f for at. A moment the clock has passed fires at the clock's own time on the next move,
 // which is the pacer's "at once".
-func (c *paceClock) At(at time.Time, f func()) func() bool {
+func (c *paceClock) At(at time.Time, f func()) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.armed++
-	timer := &paceTimer{at: at, order: c.armed, f: f}
-	c.timers = append(c.timers, timer)
-	return func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if timer.stopped || timer.fired {
-			return false
-		}
-		timer.stopped = true
-		return true
-	}
+	c.timers = append(c.timers, &paceTimer{at: at, order: c.armed, f: f})
 }
 
 // advance moves the clock d forward, firing each timer that falls due at its own moment.
@@ -72,7 +62,7 @@ func (c *paceClock) move(d time.Duration, late bool) {
 		c.mu.Lock()
 		var next *paceTimer
 		for _, timer := range c.timers {
-			if timer.stopped || timer.fired || timer.at.After(until) {
+			if timer.fired || timer.at.After(until) {
 				continue
 			}
 			if next == nil || timer.at.Before(next.at) || (timer.at.Equal(next.at) && timer.order < next.order) {
@@ -93,13 +83,13 @@ func (c *paceClock) move(d time.Duration, late bool) {
 	}
 }
 
-// waitingTimers is how many timers are armed and have neither fired nor been stopped.
+// waitingTimers is how many timers are armed and have not fired: the pacer stops none.
 func (c *paceClock) waitingTimers() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	n := 0
 	for _, timer := range c.timers {
-		if !timer.stopped && !timer.fired {
+		if !timer.fired {
 			n++
 		}
 	}
@@ -544,9 +534,9 @@ func TestABurstOfTwoLetsTwoOutAtOnceAndThenPaces(t *testing.T) {
 }
 
 // A turn whose timer fires late finds the bucket refilled and lets out a place for each token it
-// holds in the same call, each its own turn, and the pace holds after them. A pacer that let one
-// place out a timer would leave the refilled tokens unspent, and one that let out every waiting
-// place at once would break the rate.
+// holds at the moment it fired, each at a turn of its own on a timer armed for that moment, and
+// the pace holds after them. A pacer that let one place out a timer would leave the refilled
+// tokens unspent, and one that let out every waiting place at once would break the rate.
 func TestALateTurnLetsOutOnePlaceForEachTokenTheBucketRefilled(t *testing.T) {
 	p, clock := newPacer(rate, 2)
 	var log letLog
@@ -560,6 +550,52 @@ func TestALateTurnLetsOutOnePlaceForEachTokenTheBucketRefilled(t *testing.T) {
 		out(other(2), Second, 5, 1), out(other(3), Second, 5, 2), out(other(4), Second, 5, 3),
 		out(other(5), Second, 6, 4),
 	})
+}
+
+// The places a late turn lets out are released each on a timer of its own, so the release of one,
+// which for a machine is its whole launch decision, holds back none of the others: here a's
+// release waits until b's has run. The clock runs each timer on a goroutine of its own, as
+// time.AfterFunc does, and one armed for a moment that has come at once. A pacer that called
+// every release of a late turn one after another on that turn's goroutine never releases b, and
+// the test reports it after ten seconds rather than hang.
+func TestALateTurnReleasesEachPlaceOnATimerOfItsOwn(t *testing.T) {
+	var mu sync.Mutex
+	now := origin
+	var armed []func()
+	at := func(at time.Time, f func()) {
+		mu.Lock()
+		defer mu.Unlock()
+		if at.After(now) {
+			armed = append(armed, f)
+			return
+		}
+		go f()
+	}
+	p := NewPacer(New(rate, 1, nil), func() time.Time { mu.Lock(); defer mu.Unlock(); return now }, at)
+	p.Join(Second) // the burst's one token lets it out at its join
+	a, b := p.Join(Second), p.Join(Second)
+	bReleased, aReleased := make(chan struct{}), make(chan struct{})
+	if _, out := a.Bind(func(Let) { <-bReleased; close(aReleased) }); out {
+		t.Fatal("a was let out at its join, want it waiting behind the burst's place")
+	}
+	if _, out := b.Bind(func(Let) { close(bReleased) }); out {
+		t.Fatal("b was let out at its join, want it waiting behind a")
+	}
+
+	mu.Lock()
+	now = origin.Add(3 * interval)
+	turns := armed
+	armed = nil
+	mu.Unlock()
+	if len(turns) != 1 {
+		t.Fatalf("%d turns armed while a and b wait, want the one pending turn", len(turns))
+	}
+	go turns[0]()
+	select {
+	case <-aReleased:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a's release still waited for b's after 10s: the late turn released its places one after another on one goroutine")
+	}
 }
 
 // A rate of zero is the pacing off: every place, of either queue, is let out at its Join, and no

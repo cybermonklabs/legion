@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -122,7 +121,7 @@ func parkedRelaunchCauses() []parkedRelaunchCause {
 //
 // The pacing is installed before the claim is created, because a machine takes its deps where
 // it is built, and it holds nothing until the verdict below: the launches that make the claim
-// ready run as they are raised. The turn it then gives is a minute away and this harness's clock
+// ready run as they are raised. The turn it then gives is minutes away and this harness's clock
 // fires no timer at all (stillClock), so the wake stays parked for the rest of the test.
 func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.Observation) claim.Token {
 	t.Helper()
@@ -179,15 +178,16 @@ func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.O
 
 // pacedUntilParked sets the harness's wake pacing to a pacer on the machines' own clock that lets
 // every paced launch out at its join until park is called, and parks every one after it: the
-// limiter's burst holds every launch the fixtures make before the park, and park spends what is
-// left of it, so a place joined after waits for a turn a minute out, which a harness clock that
-// fires no timer (stillClock) never gives. It is set before any claim is created, because a
-// machine takes its deps where it is built. The burst is the pace the wake lines name.
+// limiter's burst holds every launch the fixtures make before the park, and park reserves a whole
+// burst more, so every token is spent and a place joined after waits for a turn minutes out (one
+// for each launch the fixtures made, and one more), which a harness clock that fires no timer
+// (stillClock) never gives. It is set before any claim is created, because a machine takes its
+// deps where it is built. The burst is the pace the wake lines name.
 func pacedUntilParked(h *harness) (park func()) {
 	const burst = 64
 	limiter := wakepace.New(1, burst, nil)
 	clock := h.supervisor.deps.Clock
-	pacer := wakepace.NewPacer(limiter, clock.Now, func(at time.Time, f func()) func() bool { return clock.At(at, f).Stop })
+	pacer := supervise.NewPacer(limiter, clock)
 	h.supervisor.deps.WakePace = supervise.WakePace{Pacer: pacer, Interval: limiter.Interval(), Rate: 1, Burst: burst}
 	return func() {
 		for range burst {

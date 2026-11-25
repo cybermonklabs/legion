@@ -428,7 +428,7 @@ func (p *projectPause) Paused(ctx context.Context, held store.Pause, asked []sto
 	}
 	var missed []store.PauseStopClaim
 	for _, m := range p.supervisor.supervised() {
-		c := m.View().Claim
+		c := m.Published()
 		if named[c.Token] || !pausable(c) {
 			continue
 		}
@@ -470,7 +470,7 @@ func (p *projectPause) Paused(ctx context.Context, held store.Pause, asked []sto
 // resume, which the pacing paces as it paces every resume of the rule.
 func (p *projectPause) Resumed(ctx context.Context, ended store.Pause) {
 	for _, m := range p.supervisor.supervised() {
-		token := m.View().Claim.Token
+		token := m.Published().Token
 		p.supervisor.post(token, supervise.ResumePause{Claim: token, Pause: ended.ID})
 	}
 	p.resumeOwedSpawns(ctx, ended)

@@ -132,7 +132,7 @@ func TestTheOperatorsSpawnLaunchesWhileTheWakeQueueIsSpent(t *testing.T) {
 	limiter := wakepace.New(1, 1, nil)
 	clock := stillClock{}
 	limiter.Reserve(clock.Now())
-	pacer := wakepace.NewPacer(limiter, clock.Now, func(at time.Time, f func()) func() bool { return clock.At(at, f).Stop })
+	pacer := supervise.NewPacer(limiter, clock)
 	if waiting := pacer.Join(wakepace.Second); !waiting.Estimate().After(clock.Now()) {
 		t.Fatalf("the pacer lets a place out at %s over a spent queue, want a moment after %s", waiting.Estimate(), clock.Now())
 	}

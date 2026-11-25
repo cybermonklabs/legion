@@ -1961,9 +1961,12 @@ func StrandedByMove(stranded []StrandedClaim, suspended Suspenders) map[Stranded
 
 // WakeWaiting is one wake the daemon's pacing holds until its turn, as the state names it
 // (State.WakesWaiting): the claim it will wake, that claim's issue and role, what kind of wake it
-// is, and the moment the pacing gave it, which is when it runs. The kinds are the three lanes the
-// daemon paces, declared once where the machines reserve them (supervise.WakeKind) and each named
-// on the wire as the line that wake writes names it (supervise's wakeRan, the outbox's):
+// is, and the earliest moment the pacing lets it out, as its queues stand at the read. A waiting
+// wake holds a place in a queue and no moment of its own, so the wake runs at that moment or
+// later, since each turn ahead of it waits a random part of an interval more, and two reads can
+// name two moments. The kinds are the three lanes the daemon paces, declared once where the
+// machines take their places (supervise.WakeKind) and each named on the wire as the line that wake
+// writes names it (supervise's wakeRan, the outbox's):
 //
 //   - `launch`, a role process the daemon is about to start, held by the claim's machine;
 //   - `plugin-refresh`, the relaunch of a process whose plugin speaks an earlier contract than

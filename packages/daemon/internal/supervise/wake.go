@@ -126,13 +126,21 @@ type WakePace struct {
 	Burst int
 }
 
+// NewPacer is the wake pacer a daemon builds over limiter on clock, the clock its machines keep
+// (internal/daemon's run): the pacer reads that clock's now and arms its turns on it (Clock.At),
+// so a paced wake comes due on the clock that times everything else of a machine.
+func NewPacer(limiter *wakepace.Limiter, clock Clock) *wakepace.Pacer {
+	return wakepace.NewPacer(limiter, clock.Now, func(at time.Time, f func()) { clock.At(at, f) })
+}
+
 // WakeWaiting is a machine's waiting wake as its view names it: what kind of wake it is
-// (WakeLaunch or WakePluginRefresh, the two kinds a machine parks) and the moment the pacing
-// estimates it lets the wake's place out (wakepace.Place.Estimate, read from the pacer when the
-// view is read, Machine.View), which is when it runs (wakeNow). A waiting wake holds a place and
-// no moment, so two reads of one wake can name two moments. It is the memory-only `wake` the
-// machine holds, cut down to what a reader outside this package is owed: never the launch itself,
-// and never the state the gate found, which only an operator's request that does not wait reads
+// (WakeLaunch or WakePluginRefresh, the two kinds a machine parks) and the earliest moment the
+// pacing lets the wake's place out, as its queues stand (wakepace.Place.Estimate, read from the
+// pacer when the view is read, Machine.View). The wake runs then or later (wakeNow): each turn
+// ahead of it waits its own jitter, which no estimate draws. A waiting wake holds a place and no
+// moment, so two reads of one wake can name two moments. It is the memory-only `wake` the machine
+// holds, cut down to what a reader outside this package is owed: never the launch itself, and
+// never the state the gate found, which only an operator's request that does not wait reads
 // (dropWakeFor).
 type WakeWaiting struct {
 	Kind WakeKind
@@ -406,20 +414,29 @@ func (m *Machine) placeFor(carried *wakepace.Place, now time.Time) *wakepace.Pla
 
 // bindWake hands place the release that fires this machine's TimerWake when the pacer lets the
 // place out, through the pipeline every other timer of the machine takes: the Timer event is taken
-// first, under the next sequence number (nextTimer), and recorded as TimerWake with the place's
-// estimate as its due and the place itself as its cancel (placeTimer), so that whatever disarms
-// the timer gives the place up, and a release that comes after the timer was replaced or dropped
-// is ignored as a stale timer is (Machine.fence). A place the pacer has let out already reports its
-// Let and true, and nothing is recorded: the caller runs the wake itself (reserveWake,
-// letOutHeldLaunch), or arms TimerWake at the let-out moment so the wake runs at once through its
-// own timer (reparkWake, takeEarlierPlace).
+// first, under the next sequence number (nextTimer), and recorded as TimerWake with the place
+// itself as its cancel (placeTimer), so that whatever disarms the timer gives the place up, and a
+// release that comes after the timer was replaced or dropped is ignored as a stale timer is
+// (Machine.fence). A place the pacer has let out already reports its Let and true, and nothing is
+// recorded: the caller runs the wake itself (reserveWake, letOutHeldLaunch), or arms TimerWake at
+// the let-out moment so the wake runs at once through its own timer (rebindWake).
 func (m *Machine) bindWake(place *wakepace.Place) (wakepace.Let, bool) {
 	ev := m.nextTimer(TimerWake, "")
 	if let, out := place.Bind(func(wakepace.Let) { m.fire(ev) }); out {
 		return let, true
 	}
-	m.timers[TimerWake] = armed{seq: ev.Seq, cancel: placeTimer{place}, due: place.Estimate()}
+	m.timers[TimerWake] = armed{seq: ev.Seq, cancel: placeTimer{place}}
 	return wakepace.Let{}, false
+}
+
+// rebindWake binds TimerWake to place for a wake taken up at a place it did not join in this
+// decision (reparkWake, takeEarlierPlace). A place that still waits fires the timer at its let-out
+// (bindWake). One the pacer has let out meanwhile arms the timer at that let-out's moment, which
+// has come, so the wake runs at once through its own timer, as its let-out would have run it.
+func (m *Machine) rebindWake(place *wakepace.Place) {
+	if let, out := m.bindWake(place); out {
+		m.armAt(TimerWake, let.At, "")
+	}
 }
 
 // placeTimer is TimerWake's cancel while its wake waits in the pacing's queue (bindWake): the
@@ -479,16 +496,14 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake) error {
 // Nothing is told the daemon here: the wake still waits in a queue, which it was told at the end
 // of the decision that parked it (tellWakeQueue), and its let-out is told when it comes (wakeNow).
 func (m *Machine) takeEarlierPlace(carried *wakepace.Place) bool {
-	w := m.wake
-	if carried == nil || w == nil || w.place == nil || w.pause != 0 || w.park != nil || !m.placeBefore(carried, w.place) {
+	w := m.pacedWake()
+	if carried == nil || w == nil || w.place == nil || !m.placeBefore(carried, w.place) {
 		return false
 	}
 	m.log.Info("supervise: the relaunch a report of the recorded death parked takes the place the boot took for it",
 		"due", w.at, "queue", carried.Queue().String())
 	w.place = carried
-	if let, out := m.bindWake(carried); out {
-		m.armAt(TimerWake, let.At, "")
-	}
+	m.rebindWake(carried)
 	w.at = carried.Estimate()
 	return true
 }
@@ -1120,9 +1135,7 @@ func (m *Machine) reparkWake(ctx context.Context, dropped *wake) {
 	if dropped.pause != 0 {
 		err = m.pauseGate(ctx, dropped, dropped.pause)
 	} else {
-		if let, out := m.bindWake(dropped.place); out {
-			m.armAt(TimerWake, let.At, "")
-		}
+		m.rebindWake(dropped.place)
 		err = m.parkWake(ctx, dropped)
 	}
 	if err != nil {

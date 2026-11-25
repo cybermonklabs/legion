@@ -192,13 +192,13 @@ func countedPacer(clock Clock, limiter *wakepace.Limiter, read func()) (*wakepac
 		reads++
 		mu.Unlock()
 		return clock.Now()
-	}, func(at time.Time, f func()) func() bool {
-		return clock.At(at, func() {
+	}, func(at time.Time, f func()) {
+		clock.At(at, func() {
 			mu.Lock()
 			turns++
 			mu.Unlock()
 			f()
-		}).Stop
+		})
 	})
 	return pacer, func() int {
 		mu.Lock()

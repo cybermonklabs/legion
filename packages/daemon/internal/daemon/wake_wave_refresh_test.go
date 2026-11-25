@@ -356,9 +356,7 @@ func claimsLeftToRefresh(t *testing.T, d *daemon, what string) int {
 // moment the limiter handed the wake, and this read the launch run at it exactly.
 func awaitLaunchAtItsTurn(t *testing.T, clock *waveClock, rt *waveRuntime, wake api.WakeWaiting, before int) {
 	t.Helper()
-	clock.advanceTo(wake.DueAt)
-	for rt.launchesOf(wake.Claim) <= before && clock.fireNext() {
-	}
+	clock.advanceUntil(wake.DueAt, func() bool { return rt.launchesOf(wake.Claim) > before })
 	testwait.Eventually(t, fmt.Sprintf("the launch of %s at its turn, from %s", wake.Claim, wake.DueAt), func() bool {
 		return rt.launchesOf(wake.Claim) > before
 	})

@@ -929,11 +929,12 @@ Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launc
 process about to start; `plugin-refresh`, the relaunch of a session whose plugin speaks an
 earlier daemon contract, which the daemon replaces at that one wake and asks nothing of first;
 `catch-up`, the notice a start writes to an architect that is already running)
-and `dueAt`, the moment the pacing estimates it lets that wake out, which is when it runs. The
-estimate moves earlier when a wake ahead of it leaves, and later when a wake for a role with a
-message waiting goes ahead of it.
+and `dueAt`, the earliest moment the pacing lets that wake out. The wake runs then or later: each
+turn ahead of it waits a random part of up to one interval more, so a wake with n wakes ahead of
+it can run up to n intervals after its `dueAt`. The estimate also moves earlier when a wake ahead
+of it leaves, and later when a wake for a role with a message waiting goes ahead of it.
 An empty array says the wave has
-gone out; the last `dueAt` in it says when the last of the wave goes.
+gone out; the last `dueAt` in it is the earliest the last of the wave goes.
 A claim on that list needs
 nothing from you: its wake holds a place and it runs when the pacing lets that place out.
 To run one now: `legion claims retry --claim <token>` runs the launch of a claim that runs no
@@ -943,16 +944,16 @@ behind it move up.
 
 A claim whose process the daemon found dead before the restart is on that list as well.
 Its record says the death was charged, and the boot raises the relaunch that death raised again, in
-the restart's own wave and in one order with the launches the previous daemon did not finish,
-without waiting for the runtime to report the death a second time.
+the restart's own wave and in the pacing's first queue, ahead of the launches the previous daemon
+did not finish, without waiting for the runtime to report the death a second time.
 Until its turn, such a claim reads the state it was in when its process died, most often `working`
 or `shim_connected`, with `lastDeathCause` naming the death (after an issue pod's `roles` container
 was killed for memory and restarted, `launcher reports no child; container roles restarted`), and
 its `wake` (the claim's entry under `.issues` of the same `legion state --json` body) names the
 launch it waits for.
 The controller's `fresh_session` refuses such a claim with `CLAIM_UNSETTLED` while it reads
-`working`, `launching` or `shim_connected`: its launch is already in flight, and runs at the
-`dueAt` the list names.
+`working`, `launching` or `shim_connected`: its launch is already in flight, and runs when the
+pacing lets it out, no earlier than the `dueAt` the list names.
 A claim that reads `registered`, `ready` or `idle` it suspends and starts again in a fresh session
 at once.
 A project pause's stop of such a claim records the relaunch as owed for the pause's end, even when

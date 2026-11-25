@@ -49,14 +49,9 @@ func pacedDeps(rate int) func(*Deps) {
 		d.WakePace = WakePace{Rate: rate, Burst: 1}
 		if rate > 0 {
 			limiter := wakepace.New(rate, 1, func(time.Duration) time.Duration { return wakePart })
-			d.WakePace.Pacer, d.WakePace.Interval = pacerOn(limiter, d.Clock), limiter.Interval()
+			d.WakePace.Pacer, d.WakePace.Interval = NewPacer(limiter, d.Clock), limiter.Interval()
 		}
 	}
-}
-
-// pacerOn is the wake pacer the daemon builds over limiter, on clock (internal/daemon's run).
-func pacerOn(limiter *wakepace.Limiter, clock Clock) *wakepace.Pacer {
-	return wakepace.NewPacer(limiter, clock.Now, func(at time.Time, f func()) func() bool { return clock.At(at, f).Stop })
 }
 
 // pacedHarness is a harness whose machines take their places in one such pacer (pacedDeps), which
@@ -299,11 +294,11 @@ func TestAWakeRunsAtItsTurnWhenTheClockMovesBeforeItsTimerIsArmed(t *testing.T) 
 	var h *harness
 	h = pacedHarness(t, wakeRate, func(d *Deps) {
 		limiter, clock := wakepace.New(wakeRate, 1, func(time.Duration) time.Duration { return wakePart }), d.Clock
-		d.WakePace.Pacer = wakepace.NewPacer(limiter, clock.Now, func(at time.Time, f func()) func() bool {
+		d.WakePace.Pacer = wakepace.NewPacer(limiter, clock.Now, func(at time.Time, f func()) {
 			if at.After(clock.Now()) {
 				h.clock.Advance(moved)
 			}
-			return clock.At(at, f).Stop
+			clock.At(at, f)
 		})
 	})
 	second := h.machineFor(wakeClaim(secondToken, StateQueued))
@@ -472,6 +467,43 @@ func TestAnExemptResumeOfAWaitingClaimLaunchesAtOnce(t *testing.T) {
 	h.clock.Advance(2*wakeInterval + 2*wakePart)
 	third.Wait()
 	h.wantWakeLine(thirdToken, "waitedFor="+(wakeInterval+wakePart).String())
+}
+
+// A message wake that the pacing lets out more than 45 minutes after its mark says so in the line
+// it writes, and writes that line as a warning (dispatch://INFRA-5682 R1): Envoy keeps a role's
+// message for an hour, so a wake that late brings its role back close to the moment the message is
+// dropped, or after it. A message wake let out sooner writes the line as any paced wake does. Both
+// name the message queue and the one turn they waited behind the first claim's launch.
+func TestAMessageWakeLetOutLongAfterItsMarkSaysItCameLate(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		marked time.Duration
+		late   bool
+	}{
+		{name: "marked 45 minutes before it joined", marked: 45 * time.Minute, late: true},
+		{name: "marked 44 minutes before it joined", marked: 44 * time.Minute},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := pacedHarness(t, wakeRate)
+			second := h.machineFor(wakeClaim(secondToken, StateSuspended))
+
+			h.must(RequestSpawn{Claim: h.token})
+			h.mustPostTo(second, MessageMarked{Claim: secondToken, At: h.clock.Now().Add(-row.marked)})
+			h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
+			h.wantStarts(secondToken, 0)
+			h.clock.Advance(wakeInterval + wakePart)
+			second.Wait()
+			h.wantStarts(secondToken, 1)
+
+			line := h.wantWakeLine(secondToken, "queue=message", "turnsWaited=1", "waitedFor="+(wakeInterval+wakePart).String())
+			if late := strings.Contains(line, "lateForMessage=true"); late != row.late {
+				t.Fatalf("the wake's line says it came late for its message: %t, want %t: %s", late, row.late, line)
+			}
+			if warned := strings.Contains(line, "level=WARN"); warned != row.late {
+				t.Fatalf("the wake's line is a warning: %t, want %t: %s", warned, row.late, line)
+			}
+		})
+	}
 }
 
 // An operator's forget-session of a waiting claim is decided rather than refused — parked
