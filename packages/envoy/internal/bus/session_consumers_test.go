@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestReduceFilterSubjects(t *testing.T) {
@@ -634,25 +635,23 @@ func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
 	}
 }
 
-// waitUntil polls ready every 20 ms until it reports true, and fails the test after 5 s naming
-// want, which is what the caller waited for, and the reading ready last took. One bound serves
-// every caller: each waits on a state that follows a publish the server answers nothing to -- an
-// ack, a nak, a delivery -- so the state arrives a moment after the call that caused it rather
-// than with it, and the server it arrives at is in this process.
+// waitUntil polls ready every waitUntilPoll until it reports true, and fails the test naming want,
+// which is what the caller waited for, and the reading ready last took. The wait ends on that
+// state, bounded only by the test binary's deadline (testwait.UntilPolling): each caller waits on
+// a state that follows a publish the server answers nothing to -- an ack, a nak, a delivery -- or
+// a timer of the server's own, so the state arrives a moment after the call that caused it rather
+// than with it, and a loaded machine stretches that moment without anything being wrong. A fixed
+// span (5 s, before) failed rows whose state arrived late.
 func waitUntil(t *testing.T, want string, ready func() (bool, string)) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.UntilPolling(t, waitUntilPoll, want, func() (string, bool) {
 		done, got := ready()
-		if done {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("waited 5s for %s; %s", want, got)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return got, done
+	})
 }
+
+// waitUntilPoll is how often waitUntil asks: the 20 ms its fixed-span loop asked at before.
+const waitUntilPoll = 20 * time.Millisecond
 
 // waitForAckFloor waits for the server to have taken the acks that bring sessionID's ack floor to
 // floor.
@@ -763,11 +762,13 @@ func TestRestartsAtOnceReportEachGap(t *testing.T) {
 	}
 }
 
+// Serial: it holds a wall-clock bound close to what it waits for, the pull's own expiry (1 s) and
+// idle heartbeat (400 ms), which parallel load pushed past (#5217).
+//
 // A pull sends its next pull request once the server has delivered the last one's whole batch or
 // it expired, and an idle heartbeat keeps a pull that waits longer than two heartbeats alive, so it
 // delivers every message in stream order however many requests that takes.
 func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
-	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_pull_requests"

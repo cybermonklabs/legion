@@ -140,10 +140,8 @@ automatic could have caught it: `daemon-api-version.test.ts` pins the two number
 *changed*, and the gate itself only fires at boot against an installed plugin. Two habits now:
 
 - **Any diff that touches `packages/contracts/src/legion-daemon-api.ts` bumps the constant and
-  the manifest in the same commit as the shape change**, and the pull request body says so —
-  the contract number, not a `!` marker, is how this repository signals the incompatibility
-  (Sami's rule). Put "grep the diff for `LegionDaemonApi`" on the planner's checklist and the
-  reviewer's.
+  the manifest in the same commit as the shape change**, and the pull request body says so.
+  Put "grep the diff for `LegionDaemonApi`" on the planner's checklist and the reviewer's.
 - **A serial number claimed on a long-lived branch is re-checked against main at every rebase.**
   Two branches that each change a shape will both bump 1 → 2; see
   `docs/solutions/legion/schema-bump-branch-rechecks-mains-version-at-every-rebase.md`,

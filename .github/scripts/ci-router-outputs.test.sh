@@ -27,6 +27,14 @@
 # CI_FILTERS_FILE names - the test job hands it the file this run's changes job computed - and,
 # with none given, from this tree's, computed here with `check-ci-filters.sh generate`.
 #
+# It also holds the test job's step gates, which read one output, the paths filter's own list of
+# the filters that matched: a step whose filter matched runs, one whose filter did not is skipped,
+# even where another filter's name holds its own, a dispatch of a branch runs the steps its own
+# diff's filters matched, and every one runs on a run that selects every job (a dispatch of main,
+# a tag or every-job), when the filters fell open and when changes did not succeed. Copies with
+# one read misspelt, unquoted, never `all` or `all` on every dispatch show each case fails on what
+# it guards.
+#
 # Run from anywhere: .github/scripts/ci-router-outputs.test.sh
 # CI runs it in ci.yaml's test job.
 set -euo pipefail
@@ -198,13 +206,15 @@ check "names envoy_smoke and the read" \
 
 ci="$repo/.github/workflows/ci.yaml"
 # selecting <outputs>: the outputs that select a job, as `name=value`, one per line: every output
-# but filter_verdicts, the filter's own verdicts as JSON over several lines, and ref_is_main.
-selecting() { grep -E '^[a-z0-9_]+=' <<<"$1" | grep -Ev '^(filter_verdicts|ref_is_main)=' || true; }
+# but filter_verdicts, the filter's own verdicts as JSON over several lines, matched_filters, the
+# list the test job's steps read their gates out of (the cases further down hold it), and
+# ref_is_main.
+selecting() { grep -E '^[a-z0-9_]+=' <<<"$1" | grep -Ev '^(filter_verdicts|matched_filters|ref_is_main)=' || true; }
 # on_of / off_of <outputs>: the selecting outputs that are 'true' / not 'true', space-separated.
 on_of() { selecting "$1" | sed -n 's/=true$//p' | tr '\n' ' '; }
 off_of() { selecting "$1" | grep -v '=true$' | cut -d= -f1 | tr '\n' ' ' || true; }
 # How many outputs select a job, read from the file itself, so a case that reads fewer fails.
-n_selecting=$(python3 -c 'import sys, yaml; print(len(yaml.safe_load(open(sys.argv[1]))["jobs"]["changes"]["outputs"]) - 2)' "$ci")
+n_selecting=$(python3 -c 'import sys, yaml; print(len(yaml.safe_load(open(sys.argv[1]))["jobs"]["changes"]["outputs"]) - 3)' "$ci")
 mapfile -t names < <(python3 -c 'import sys, yaml; print("\n".join(yaml.safe_load(open(sys.argv[1]))))' "$filters")
 old=1111111111111111111111111111111111111111
 new=2222222222222222222222222222222222222222
@@ -398,4 +408,197 @@ set -e
 check "exits 2" "$(is "$status" 2)"
 check "names the output and the context" "$(contains "$err" 'output x: context github.actor is outside the modelled contexts')"
 
-summary "ci.yaml's changes outputs turn on what full-ci, the lane labels and a dispatch's ref and diff name, its filter generation is measured against each diff's base, and its cancel key cancels only a branch's older dispatch"
+# steps_of <workflow> <argument>...: each step of the test job gated on what the changes job hands
+# it, as `step=true|false`, sorted, for one event and set of verdicts (ci_router_outputs.py
+# --steps), the filter names read from the computed filters; steps <argument>... reads this
+# repository's own ci.yaml and ci-job-test.yaml.
+steps_of() {
+  local workflow=$1
+  shift
+  "$script_dir/ci_router_outputs.py" "$workflow" --filters "$filters" --steps test "$@" | sort
+}
+steps() { steps_of "$repo/.github/workflows/ci.yaml" "$@"; }
+# running <steps text>: the steps that run, one per line.
+running() { sed -n 's/=true$//p' <<<"$1"; }
+# list_copy <dir> <workflow file> <text> <replacement>: a copy of this repository's ci.yaml and
+# ci-job-test.yaml under <dir> with <text> changed to <replacement> once in that one workflow file
+# (ci.yaml or ci-job-test.yaml), failing loudly if <text> is not in it.
+list_copy() {
+  mkdir -p "$1/.github/workflows"
+  cp "$repo/.github/workflows/ci.yaml" "$repo/.github/workflows/ci-job-test.yaml" "$1/.github/workflows/"
+  local file="$1/.github/workflows/$2" text
+  text=$(<"$file")
+  if [[ $text != *"$3"* ]]; then
+    echo "list_copy: $2 has no $3" >&2
+  fi
+  printf '%s\n' "${text/"$3"/"$4"}" > "$file"
+  echo "$1/.github/workflows/ci.yaml"
+}
+
+# The test job's harness steps read their gates out of one output, the paths filter's own list
+# of the filters that matched (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates). The
+# cases below read each step's `if:` through ci.yaml's `with:` as GitHub would, so a list that
+# skipped a matched harness, or ran an unmatched one, fails here by step name.
+echo "case: the test job's step gates are read out of the one list"
+none=$(steps --event pull_request --verdicts false --verdict test=true)
+gated=$(grep -c . <<<"$none" || true)
+# Each step of the test job whose `if:` names the list in any spelling, once per filter its
+# quoted `contains` terms name (the step that fetches the computed filters names two), read from
+# ci-job-test.yaml's text and not by the evaluator under test, so a step the evaluator passed over
+# fails the count below by name.
+gates_of_text=$(python3 -c '
+import re, sys, yaml
+jobs = yaml.safe_load(open(sys.argv[1]))["jobs"]
+for step in jobs["test"].get("steps") or []:
+    condition = str(step.get("if", ""))
+    if re.search(r"matched[_-]filters", condition, re.I):
+        for name in re.findall(r"\x27\"([A-Za-z0-9_-]+)\"\x27", condition) or ["?"]:
+            print(step["name"] + "\t" + name)
+' "$repo/.github/workflows/ci-job-test.yaml")
+gated_of_text=$(cut -f1 <<<"$gates_of_text" | sort -u | grep -c . || true)
+check "it finds every step whose if: names the list ($gated_of_text)" "$(is "$gated" "$gated_of_text")"
+check "each of them names a filter" "$(is "$(grep -c $'\t?$' <<<"$gates_of_text" || true)" 0)"
+check "with no step's filter matched, none of them runs" "$(is "$(running "$none")" "")"
+
+echo "case: each filter, matched alone, runs exactly the steps it gates"
+# Every filter of the list, one at a time: the steps that run must be the steps whose `if:` names
+# that filter, so a step that runs on no match (a `!` before its `contains`) or never (an `&&
+# false` after it) fails here by name.
+wrong=""
+while IFS= read -r filter; do
+  want=$(awk -F'\t' -v f="$filter" '$2 == f { print $1 }' <<<"$gates_of_text" | sort)
+  got=$(running "$(steps --event pull_request --verdicts false --verdict test=true --verdict "$filter=true")")
+  [ "$got" = "$want" ] || wrong+="$filter: ran [${got//$'\n'/, }] where [${want//$'\n'/, }]; "
+done < <(cut -f2 <<<"$gates_of_text" | sort -u)
+check "all $(cut -f2 <<<"$gates_of_text" | sort -u | grep -c .) filters run their own steps and no other" "$(is "$wrong" "")"
+
+echo "case: the step that fetches the computed filters runs for either harness that reads them"
+got=$(steps --event pull_request --verdicts false --verdict test=true --verdict check_ci_filters_test=true)
+check "check_ci_filters_test matched: the fetch runs" \
+  "$(is "$(running "$got" | grep -cx "Fetch the filters the changes job selected this run's jobs by" || true)" 1)"
+got=$(steps --event pull_request --verdicts false --verdict test=true --verdict ci_router_outputs_test=true)
+check "ci_router_outputs_test matched: the fetch runs" \
+  "$(is "$(running "$got" | grep -cx "Fetch the filters the changes job selected this run's jobs by" || true)" 1)"
+
+echo "case: a harness whose filter matched runs, and one whose filter did not is skipped"
+got=$(steps --event pull_request --verdicts false --verdict test=true --verdict release_push_test=true)
+check "release_push_test matched: its step alone runs" "$(is "$(running "$got")" "Test release scripts")"
+got=$(steps --event pull_request --verdicts false --verdict test=true --verdict ci_tools_test=true)
+check "ci_tools_test matched: its step alone runs" "$(is "$(running "$got")" "Test the tool fetch helper")"
+got=$(steps --event pull_request --verdicts false --verdict test=true --verdict mirror_ci_tools_test=true)
+check "mirror_ci_tools_test matched: its step alone runs, not ci_tools_test's, whose name its own holds" \
+  "$(is "$(running "$got")" "Test the tool copy filler")"
+
+echo "case: every gated step runs on a run that selects every job and when changes did not succeed"
+got=$(steps --event workflow_dispatch --ref refs/heads/main --verdicts false)
+check "a dispatch of main runs all $gated" "$(is "$(running "$got" | grep -c . || true)" "$gated")"
+got=$(steps --event workflow_dispatch --ref refs/heads/feature --input every-job=true --verdicts false)
+check "a dispatch of a branch given every-job runs all $gated" "$(is "$(running "$got" | grep -c . || true)" "$gated")"
+got=$(steps --event pull_request --verdicts false --changes-result failure)
+check "a run whose changes failed runs all $gated" "$(is "$(running "$got" | grep -c . || true)" "$gated")"
+
+# A dispatch of a branch runs its filter step over its diff with its merge base with main
+# (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job),
+# so the list it hands on is that step's, as a merge group's is; every run that selects every job
+# skips the step and hands on `all`.
+echo "case: a dispatch of a branch hands on the filter step's list; a dispatch of main, a tag and every-job hand on all"
+two=(--verdicts false --verdict test=true --verdict release_push_test=true --verdict ci_tools_test=true)
+got=$(outputs --event workflow_dispatch --ref refs/heads/feature "${two[@]}")
+queued=$(outputs --event merge_group "${two[@]}")
+check "a dispatch of a branch: the list a merge group with the same verdicts hands on" \
+  "$(is "$(value "$got" matched_filters)" "$(value "$queued" matched_filters)")"
+check "  which names the filters that matched, test, release_push_test and ci_tools_test" \
+  "$(is "$(python3 -c 'import json, sys; print(" ".join(sorted(json.loads(sys.argv[1]))))' "$(value "$got" matched_filters)")" \
+    "ci_tools_test release_push_test test")"
+got=$(steps --event workflow_dispatch --ref refs/heads/feature --verdicts false --verdict test=true --verdict release_push_test=true)
+check "  and the test job runs that filter's step alone" "$(is "$(running "$got")" "Test release scripts")"
+check "a dispatch of main: all" \
+  "$(is "$(value "$(outputs --event workflow_dispatch --ref refs/heads/main "${two[@]}")" matched_filters)" all)"
+check "a dispatch of a branch given every-job: all" \
+  "$(is "$(value "$(outputs --event workflow_dispatch --ref refs/heads/feature --input every-job=true "${two[@]}")" matched_filters)" all)"
+check "a dispatch of a tag: all" \
+  "$(is "$(value "$(outputs --event workflow_dispatch --ref refs/tags/v1 "${two[@]}")" matched_filters)" all)"
+
+echo "case: a step whose list read drops its quotes runs on a filter whose name holds its own"
+broken=$(list_copy "$work/no-quotes" ci-job-test.yaml "contains(inputs.matched-filters, '\"ci_tools_test\"')" \
+  "contains(inputs.matched-filters, 'ci_tools_test')")
+got=$(steps_of "$broken" --event pull_request --verdicts false --verdict test=true --verdict mirror_ci_tools_test=true)
+check "ci_tools_test's step runs on mirror_ci_tools_test alone" \
+  "$(is "$(running "$got" | grep -cx 'Test the tool fetch helper' || true)" 1)"
+
+echo "case: a step whose list read names another filter is skipped when its own matched"
+broken=$(list_copy "$work/misnamed" ci-job-test.yaml "'\"release_push_test\"'" "'\"release_push_tset\"'")
+got=$(steps_of "$broken" --event pull_request --verdicts false --verdict test=true --verdict release_push_test=true)
+check "Test release scripts stays skipped" "$(is "$(running "$got")" "")"
+
+echo "case: tooling-checks, the file's other caller, runs its guides step on guide_layout alone"
+# The file holds one job per caller, each `if: inputs.job == '<id>'`: each caller is read for its
+# own job's steps, and the test job's harness gates are none of tooling-checks'.
+tooling=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --filters "$filters" --steps tooling-checks \
+  --event pull_request --verdicts false --verdict tooling_checks=true | sort)
+check "it reads one gated step" "$(is "$(grep -c . <<<"$tooling")" 1)"
+check "skipped when guide_layout did not match" "$(is "$(running "$tooling")" "")"
+tooling=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --filters "$filters" --steps tooling-checks \
+  --event pull_request --verdicts false --verdict tooling_checks=true --verdict guide_layout=true | sort)
+check "and run when it did" "$(is "$(running "$tooling")" "Check the guides' semantic line breaks")"
+got=$(steps --event pull_request --verdicts false --verdict test=true --verdict guide_layout=true)
+check "while the test job runs none of its harnesses on guide_layout" "$(is "$(running "$got")" "")"
+
+echo "case: a list that is not all on a run that selects every job skips every step it gates there"
+broken=$(list_copy "$work/no-all" ci.yaml "steps.scope.outputs.every_job && 'all'" "steps.scope.outputs.every_job && '[]'")
+got=$(steps_of "$broken" --event workflow_dispatch --ref refs/heads/main --verdicts false)
+check "a dispatch of main then runs none of them" "$(is "$(running "$got")" "")"
+
+echo "case: a list still all on every dispatch fails the branch case"
+# The term before the every-job one: a dispatch of a branch would run every harness its diff
+# does not reach, where the merge group runs only those it reaches.
+broken=$(list_copy "$work/list-every-dispatch" ci.yaml "matched_filters: \${{ steps.scope.outputs.every_job && 'all'" \
+  "matched_filters: \${{ github.event_name == 'workflow_dispatch' && 'all'")
+got=$(outputs_of "$broken" --event workflow_dispatch --ref refs/heads/feature "${two[@]}")
+check "a dispatch of a branch then hands on all" "$(is "$(value "$got" matched_filters)" all)"
+got=$(steps_of "$broken" --event workflow_dispatch --ref refs/heads/feature --verdicts false --verdict test=true --verdict release_push_test=true)
+check "  and runs all $gated gated steps, not its filter's alone" "$(is "$(running "$got" | grep -c . || true)" "$gated")"
+
+# When the filters cannot be computed, ci-filters-generate.sh hands the paths filter a fallback
+# file whose every filter is '**', named from the changes job's outputs. No step's filter read out
+# of the list is among them, so the list must be `all` there, which the script's every_filter output
+# makes it. The fallback here is the real script's, over this repository's ci.yaml, in a tree whose
+# check-ci-filters.sh fails on purpose, as one whose go cannot run does.
+fallback_tree="$work/fallback-tree"
+mkdir -p "$fallback_tree/.github/scripts" "$fallback_tree/.github/workflows"
+cp "$script_dir/ci-filters-generate.sh" "$fallback_tree/.github/scripts/"
+printf '#!/bin/sh\necho "check-ci-filters.sh: failing on purpose" >&2\nexit 1\n' > "$fallback_tree/.github/scripts/check-ci-filters.sh"
+chmod +x "$fallback_tree/.github/scripts/check-ci-filters.sh"
+cp "$repo/.github/workflows/ci.yaml" "$fallback_tree/.github/workflows/ci.yaml"
+: > "$work/fallback.out"
+GITHUB_OUTPUT="$work/fallback.out" CI_FILTERS_BASE='' \
+  "$fallback_tree/.github/scripts/ci-filters-generate.sh" "$work/fallback.yaml" >/dev/null 2>&1 || true
+# fallen <workflow> <argument>...: steps_of over the fallback file and the outputs the script wrote.
+fallen() {
+  local workflow=$1
+  shift
+  "$script_dir/ci_router_outputs.py" "$workflow" --filters "$work/fallback.yaml" \
+    --step-outputs generate="$work/fallback.out" "$@" | sort
+}
+
+echo "case: on a merge group whose filters fell open, every step gated on the list runs"
+check "the script wrote a fail-open file" "$(contains "$(head -1 "$work/fallback.yaml")" '^# FAIL-OPEN: ')"
+check "it holds no filter named changes, under which the paths filter writes no list" \
+  "$(is "$(grep -c '^changes:$' "$work/fallback.yaml" || true)" 0)"
+check "and its step output says so" "$(is "$(cat "$work/fallback.out")" "every_filter=true")"
+got=$(fallen "$repo/.github/workflows/ci.yaml" --event merge_group)
+check "the list is all" "$(is "$(value "$got" matched_filters)" all)"
+check "the test job is selected" "$(is "$(value "$got" test)" true)"
+got=$(fallen "$repo/.github/workflows/ci.yaml" --event merge_group --steps test)
+check "the test job runs all $gated of its gated steps" "$(is "$(running "$got" | grep -c . || true)" "$gated")"
+got=$(fallen "$repo/.github/workflows/ci.yaml" --event merge_group --steps tooling-checks)
+check "and tooling-checks its guides step" "$(is "$(running "$got")" "Check the guides' semantic line breaks")"
+got=$(fallen "$repo/.github/workflows/ci.yaml" --event workflow_dispatch --ref refs/heads/feature --steps test)
+check "and so does a dispatch of a branch whose filters fell open" "$(is "$(running "$got" | grep -c . || true)" "$gated")"
+
+echo "case: a list that reads no fall-open term skips every step it gates on a fallback file"
+broken=$(list_copy "$work/no-fall-open" ci.yaml " || steps.generate.outputs.every_filter == 'true' && 'all'" "")
+got=$(fallen "$broken" --event merge_group --steps test)
+check "none of them runs" "$(is "$(running "$got")" "")"
+
+summary "ci.yaml's changes outputs turn on what full-ci, the lane labels and a dispatch's ref and diff name, its filter generation is measured against each diff's base, its cancel key cancels only a branch's older dispatch, and the test job's steps run on what their filters name"

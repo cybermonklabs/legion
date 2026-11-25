@@ -17,6 +17,7 @@ import (
 // session that proved both writes stays proven across the same restart, so the mark is kept where
 // it is earned and not merely dropped.
 func TestAnAuthorIsProvenOnlyWhenEveryWriteMergedIntoItWas(t *testing.T) {
+	t.Parallel()
 	claimed := model.Actor{Kind: "session", ID: "judge-session"}
 	proven := model.Actor{Kind: "session", ID: "judge-session", Proven: true}
 	for _, tc := range []struct {
@@ -57,6 +58,7 @@ func TestAnAuthorIsProvenOnlyWhenEveryWriteMergedIntoItWas(t *testing.T) {
 // written again at the same update keeps the mark only when both writes carried it, so a claimed
 // write is never lifted to proven by the proven one that rewrites its row, nor the other way.
 func TestThePendingAuthorsKeepAnAuthorProvenOnlyWhenEveryRowIs(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	claimed := model.Actor{Kind: "session", ID: "judge-session"}
 	proven := model.Actor{Kind: "session", ID: "judge-session", Proven: true}

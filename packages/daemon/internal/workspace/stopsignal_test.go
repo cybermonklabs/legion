@@ -12,6 +12,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
+// inFlight runs f on a goroutine of its own and answers the channel its answer arrives on, for a
+// row that waits, under a bound of its own (testwait.Receive), for a call that may never return.
+func inFlight[T any](f func() T) <-chan T {
+	answered := make(chan T, 1)
+	go func() { answered <- f() }()
+	return answered
+}
+
 // commandLives keeps a test's command running until a signal ends it. A shell runs a trap when the
 // command it is waiting for ends, so the command waits in a loop of short foreground sleeps rather
 // than in one long one: a SIGTERM it handles is then acted on within one sleep of its arrival,

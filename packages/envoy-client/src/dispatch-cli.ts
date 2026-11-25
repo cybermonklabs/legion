@@ -17,6 +17,8 @@ import {
   parseCommand,
 } from "./dispatch-command";
 import { defined } from "./dispatch-commands/context";
+import { parentStatusConflictLines } from "./dispatch-commands/failures";
+import { printsJson } from "./dispatch-commands/issues";
 import { loginCommand } from "./dispatch-commands/login";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
@@ -252,6 +254,8 @@ export async function runDispatchCli(
   }
   // `dispatch login` logs the machine in, before any session of it exists: a person runs it in a
   // terminal, so it reads no host, no session and no envoy.json (`dispatch-commands/login.ts`).
+  // It refuses while either token file is set, after its own `--help`; `tokenFilesTarget` in
+  // `dispatch-config.ts` says when a call below runs on the files.
   if (argv[0] === "login") {
     return await loginCommand(argv.slice(1), env, {
       print,
@@ -371,7 +375,13 @@ export async function runDispatchCli(
     const settings =
       file.path === null
         ? null
-        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId }).dispatch;
+        : (
+            await sessionDispatchSettings(file, env, {
+              cwd: io.cwd,
+              session: sessionId,
+              tokenFiles: true,
+            })
+          ).dispatch;
     const { problems } = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
@@ -389,13 +399,19 @@ export async function runDispatchCli(
     return refuse(`dispatch: ${file.error}`, USAGE, parsed.tool);
   }
   // The session this call acts as is the session a broker trade writes under, so the token this
-  // call presents names it rather than naming none or another of this machine's.
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
+  // call presents names it rather than naming none or another of this machine's. The command is
+  // the one caller that takes the token files (`tokenFilesTarget`, dispatch-config.ts).
+  const { dispatch: resolution, warnings } = await sessionDispatchSettings(file, env, {
     cwd: io.cwd,
     session: sessionId,
+    tokenFiles: true,
   });
+  // A call whose whole output is one JSON object (`printsJson`) prints the CLI's own lines on
+  // standard error, so its standard output is the object alone.
+  const wholeJson = printsJson(parsed.tool, parsed.args);
+  const note = (line: string): void => (wholeJson ? io.stderr(`${line}\n`) : print(line));
   // A checkout's OpenCode-era file, which is not read, is said on every call while it is there.
-  for (const warning of warnings) print(`dispatch: ${warning}`);
+  for (const warning of warnings) note(`dispatch: ${warning}`);
   if (!resolution.enabled) {
     return refuse(
       resolution.error === null
@@ -546,7 +562,7 @@ export async function runDispatchCli(
   let topics: Promise<readonly string[] | null> | undefined;
   const readTopics = async (): Promise<readonly string[] | null> => {
     try {
-      const envoy = sessionEnvoySettings(file, env, {
+      const envoy = await sessionEnvoySettings(file, env, {
         cwd: io.cwd,
         nats: false,
         session: sessionId,
@@ -620,10 +636,17 @@ export async function runDispatchCli(
     // is never told an issue was filed. Its text is the same either way.
     code = result.refused === true ? REFUSED : OK;
   } catch (error) {
-    text = messageFor(error);
+    // A 409 PARENT_STATUS_CONFLICT names each issue that holds the rule and what the refused
+    // command's caller does next (`parentStatusConflictLines`), as a near copy's refusal names
+    // each open issue. LEGION_ISSUE tells the project of the issue a call with no --issue names.
+    text = (
+      parentStatusConflictLines(error, tool, args, env.LEGION_ISSUE) ?? [messageFor(error)]
+    ).join("\n");
     // The command's write landed but its answer was lost: it is done, so the call succeeded, and
     // its one line says to read back what it made. The executor turns a landing of a write that
-    // was only a step of its command (a picture, a closing reason) into a failure of its own.
+    // was only a step of its command (a picture, a closing reason) into a failure of its own. A
+    // call that writes nothing whose answer Dispatch kept no copy of (`DispatchAnswerNotKeptError`)
+    // made nothing, so it is no landing: it exits 1 below, its line saying to run it again.
     if (error instanceof DispatchWriteLandedError) {
       entry = { tool, details: { landed_without_answer: error.code } };
       code = OK;
@@ -652,12 +675,17 @@ export async function runDispatchCli(
       return `not written, ${messageFor(error)}`;
     }
   };
+  // A cut JSON object is no JSON object, so a call whose output is one is printed whole on every
+  // host, and its kept lines go to standard error.
+  if (wholeJson) for (const line of kept) note(line);
   print(
     fitOutput(
       text,
       pictures,
-      kept,
-      host === "claude" || host === "codex" ? CLAUDE_OUTPUT_MAX : Number.POSITIVE_INFINITY,
+      wholeJson ? [] : kept,
+      (host === "claude" || host === "codex") && !wholeJson
+        ? CLAUDE_OUTPUT_MAX
+        : Number.POSITIVE_INFINITY,
       writeFull
     )
   );

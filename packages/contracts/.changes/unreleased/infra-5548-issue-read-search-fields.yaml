@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  `IssueDetails` carries `blocks`, the keys of the issues whose `blocked_by` names the issue, and
+  `comment_count`, how many comments the issue holds; `SearchResult` carries `author`, who wrote a
+  comment, message or ask hit; and `ToolField` carries `min` and `max`. Each is in
+  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts`, and each is optional, so a
+  value typed before it still type-checks.

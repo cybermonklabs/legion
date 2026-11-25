@@ -135,7 +135,7 @@ func TestAWindowedItemKeepsItsWholeTextRowUntilItsWindowIsCurrent(t *testing.T) 
 	// The hit the newer build already serves for the same comment, so both builds find it while
 	// the row is there. The query shares no word with the comment, so only the meaning leg can
 	// answer it.
-	requireNoKeywordHit(t, "q="+query)
+	requireNoKeywordHit(t, handler, "q="+query)
 	response := searchResponse(t, handler, "q="+query)
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q while the whole-text row stands, want empty", response.Degraded)
