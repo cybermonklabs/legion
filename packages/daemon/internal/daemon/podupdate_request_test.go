@@ -377,7 +377,8 @@ func TestPodUpdateTheControllerAsksForIsRefusedWhereNoRoundCanOpen(t *testing.T)
 }
 
 // podUpdatePostedLine is the line the daemon writes for a round the controller's request opened
-// (postRequestedPodUpdate). Its roles field names the claims the round is posted to.
+// (postRequestedPodUpdate). Its roles field names the claims whose machines record the round
+// (noticeClaims): each claim the round is posted to that has not failed.
 const podUpdatePostedLine = "supervise: the project's controller asked for the replacement of this issue's pod; its update round is posted"
 
 // A claim that records no process and whose launch waits on the issue's pod for that pod's round
