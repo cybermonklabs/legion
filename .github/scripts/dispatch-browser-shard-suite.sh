@@ -145,7 +145,7 @@ case "$lane" in
     # matches the one file of that name under e2e/ and no other. A file added to this
     # list joins the `dispatch_references` filter, kept by hand in
     # .github/ci-gates/dispatch-references.py, which names these files and what they test:
-    # .github/scripts/check-ci-filters.sh (rule 23) fails naming
+    # .github/scripts/check-ci-filters.sh (rule 24) fails naming
     # an entry here that filter does not match, read from the directory of the
     # dispatch-browser.yaml step that runs this script. A reading spec this list does not
     # name runs on no pull request, so the walk's gate reads this arm the same way and
