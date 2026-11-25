@@ -269,13 +269,18 @@ func TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRu
 // its own, so A's store is the recorded old store; for the marked store, B's message marks B's
 // store. C's URL comes to serve the dropped store at 41, with no write of the setting. Work queued
 // on INFRA's runner keeps it busy with no read in flight, 16 messages of C's store wait behind
-// that work, and the dropped store's boot at 41 arrives past the cap. The runner is let go. Within
-// 75 s, a minute on the intake's clock, INFRA's cursor follows the dropped store at 41.
+// that work, and the dropped store's boot at 41 arrives past the cap. The test holds the boot to
+// owing the store read and holding it: the boot goes back to the stream holding that read, at its
+// hold's first hand-back (heldLine), and INFRA's cursor owes the store read alone and names the
+// boot as its holder, while no read is in flight. The runner is then let go. Within 75 s, a
+// minute on the intake's clock, INFRA's cursor follows the dropped store at 41.
 //
 // C serves the store at the boot's sequence, as a daemon that published the boot does: a daemon
 // commits each event before it publishes it. So the cursor reaches 41 whichever delivery makes
-// the store read: the boot's redelivery, or, where the runner stays crowded past the boot's
-// stateMaxHolds hand-backs, the first message that waited on the runner.
+// the store read the boot owes: the boot's redelivery, or the first message that waited on the
+// runner, which makes a read the cursor owes once it is due, whatever message holds it, none
+// included (cursor.readFor). The cursor at 41 so does not show the hold, and the test checks the
+// hold before it lets the runner go.
 //
 // At d69f92b6, judgeCrowded finished the boot as a message of a dropped store (cursor.forgets)
 // while no read was in flight: it owed nothing, and INFRA stayed on C's store.
@@ -335,10 +340,28 @@ func TestABootOfADroppedStorePastTheCapFindsTheSettingsDaemonAgain(t *testing.T)
 				return fmt.Sprintf("control: INFRA holds %+v, want %d messages waiting on its runner", rig.consumerInfo(), stateMaxWaiting)
 			})
 			rig.publishIn("INFRA", bootRun, tc.store, at, false, booted(41, stateSchema, 2))
+			boot := rig.lastStreamSeq()
 			rig.waitFor(20*time.Second, func() bool { return rig.consumerInfo().NumPending == 0 }, func() string {
 				return fmt.Sprintf("control: the boot past the cap was not delivered: %+v", rig.consumerInfo())
 			})
-			time.Sleep(time.Second)
+			var held map[string]any
+			rig.waitFor(20*time.Second, func() bool {
+				for _, record := range rig.logRecords(heldLine) {
+					if record["streamSeq"] == float64(boot) && record["reason"] == ReadReasonStore {
+						held = record
+						return true
+					}
+				}
+				return false
+			}, func() string {
+				return fmt.Sprintf("the boot of %s past the cap (stream sequence %d) never went back to the stream holding the store read: the messages sent back = %v, and INFRA's cursor is %s",
+					tc.store, boot, rig.logRecords(heldLine), cursorOf(t, rig.database, "INFRA"))
+			})
+			if cur := cursorOf(t, rig.database, "INFRA"); held["handBack"] != float64(1) || cur.readHolder == nil || *cur.readHolder != int64(boot) ||
+				!slices.Equal(cur.readReasons, []string{ReadReasonStore}) {
+				t.Fatalf("the boot went back as %v with INFRA's cursor %s, want its hold's first hand-back, and the cursor owing the store read alone with the boot (stream sequence %d) as its holder",
+					held, cur, boot)
+			}
 			if rig.intake.readsNow("INFRA") {
 				t.Fatal("control: a whole read of INFRA is in flight while the boot past the cap is judged")
 			}
@@ -347,7 +370,7 @@ func TestABootOfADroppedStorePastTheCapFindsTheSettingsDaemonAgain(t *testing.T)
 				cur := cursorOf(t, rig.database, "INFRA")
 				return cur.stateID != nil && *cur.stateID == tc.store && cur.lastSeq != nil && *cur.lastSeq == 41
 			}) {
-				t.Errorf("75 s after the boot of %s past the cap, with no read in flight, INFRA's cursor is %s and C's URL served %d reads: the boot owed no read, so the daemon behind the setting's URL was never found in that store",
+				t.Errorf("75 s after the boot of %s past the cap, with no read in flight, INFRA's cursor is %s and C's URL served %d reads: the store read the boot held never found the daemon behind the setting's URL in that store",
 					tc.store, cursorOf(t, rig.database, "INFRA"), c.served())
 			}
 		})

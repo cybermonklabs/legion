@@ -178,10 +178,11 @@ type cursor struct {
 	foreignStateIDs  []string
 	// releasedHolders is the stream sequence of each message whose hold of the owed read a write of
 	// the setting that named another URL, or a delete of the setting, ended (settingWritten),
-	// whatever daemon the cursor followed, none included, and which has not come back since: the
-	// newest last, maxReleasedHolders at the most, and empty, never nil, for none. Each is finished
-	// unapplied at its next delivery, which takes its own sequence out and no other (releases,
-	// endHold). Past maxReleasedHolders the oldest record goes (reset): its message is judged as
+	// whatever daemon the cursor followed, none included: the newest last, maxReleasedHolders at
+	// the most, and empty, never nil, for none. Each is finished unapplied at its next delivery
+	// while the project has a setting, and that delivery takes its own sequence out and no other
+	// (releases, endHold). After a delete, a record can stay until maxReleasedHolders newer records
+	// push it out (reset). Past maxReleasedHolders the oldest record goes: its message is judged as
 	// any other.
 	releasedHolders []int64
 }
@@ -192,8 +193,9 @@ type cursor struct {
 const maxForeignStores = 8
 
 // maxReleasedHolders is how many messages a cursor records as released (releasedHolders): each a
-// message whose hold a write of another URL or a delete of the setting ended, until it comes back.
-// Past it the oldest record goes (reset). That message is judged as any message at its next
+// message whose hold a write of another URL or a delete of the setting ended, until its next
+// delivery while the project has a setting (after a delete, until newer records push it out,
+// reset). Past it the oldest record goes (reset). That message is judged as any message at its next
 // delivery, which applies nothing of a store other than the cursor's, and it may hold a read again
 // from a count of 1.
 const maxReleasedHolders = 8
@@ -493,8 +495,9 @@ func (c cursor) marking(stateID string) []string {
 }
 
 // releases reports whether the message at stream sequence seq is one whose hold of the owed read a
-// write of the setting ended and which has not come back since (releasedHolders). 0, a message
-// with no JetStream metadata, is none.
+// write of the setting ended (releasedHolders). Its record goes at the message's next delivery
+// while the project has a setting, and after a delete can stay until maxReleasedHolders newer
+// records push it out (cursor.reset). 0, a message with no JetStream metadata, is none.
 func (c cursor) releases(seq int64) bool {
 	return seq != 0 && slices.Contains(c.releasedHolders, seq)
 }
