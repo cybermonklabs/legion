@@ -579,7 +579,7 @@ check "fails" "$(is "$status" 1)"
 check "names the filter, the file and the source that gives it" \
   "$(contains "$out" '::error file=pkg/lib/runtime.ts::filter consumer does not select pkg/lib/runtime.ts, which the bundles of filter cli load (consumer loads what app compiles and runs the CLI): the filter must select it, or a change to it starts no job')"
 
-# The browser suite's rows spawn the dispatch command: packages/dispatch/e2e/dispatch-cli.ts:8,58-59
+# The browser suite's rows spawn the dispatch command: `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry`
 # runs `bun packages/envoy-client/bin/dispatch.ts` for the inbox-cli, asked-of-cli, asked-of and
 # doc specs. So the suite loads the contracts modules that dispatch_ui's programs compile and that
 # command's bundle loads, the bundle BUNDLES pairs with dispatch_two_builds_go.

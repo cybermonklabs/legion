@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ci.yaml's `changes` job selects each job through a dorny/paths-filter filter, and a change to a
+# `.github/workflows/ci.yaml#changes` job selects each job through a dorny/paths-filter filter, and a change to a
 # file a job reads but its filter misses skips that job, on the pull request and again on the
 # merge group that lands it, after which nothing runs it. The changes job computes every filter
 # from what ci_job_reads.py says its job reads (`check-ci-filters.sh generate`); for a Go job that
@@ -96,7 +96,7 @@
 # load. dispatch_browser and dispatch_browser_pr take the union of dispatch_ui's set and
 # dispatch_two_builds_go's, the bundle of the dispatch command: their rows run the SPA and the e2e
 # helpers that dispatch_ui's
-# programs compile, and they spawn that command (packages/dispatch/e2e/dispatch-cli.ts:8,58-59).
+# programs compile, and they spawn that command (`packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry`).
 # dispatch_two_builds takes the same union, for its browser half and for the command its Go step
 # runs. LISTED says why for each. check-ci-filters.sh's rule 15 reads a block's files as what the
 # tag step its filter gates loads: it holds the filter of the job that runs that package's
