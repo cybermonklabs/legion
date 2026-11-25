@@ -576,8 +576,6 @@ func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string,
 	}
 	asked := daemon.shown(route)
 	if status := answered.Status(); status/100 != 2 {
-		// Which refusal it is, is decided on the daemon's sentence as it came (Answer.Decode),
-		// and the refusal prints as the rule reads it (refusal).
 		var refused legionclaim.Refusal
 		if status == http.StatusBadRequest && answered.Decode(&refused) == nil &&
 			strings.Contains(refused.Message, `unknown field "pluginContract"`) {

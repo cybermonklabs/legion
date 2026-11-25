@@ -97,10 +97,6 @@ func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOw
 	}
 	asked := daemon.shown(route)
 	if answered.Status()/100 != 2 {
-		// Which refusal it is, is decided on the daemon's code as it came (RemoteText.OneOf), and
-		// never on the rule's reading of it (SendBack), which is "" where a value the request
-		// carried shares a run of characters with the code; the sentence prints as the rule reads
-		// it (oauth2call.CodedRefusal, the shape of api.Failure).
 		var failure oauth2call.CodedRefusal
 		if answered.Decode(&failure) == nil && !failure.Code.IsEmpty() {
 			code, _ := failure.Code.OneOf(controllerCredentialCodes...)

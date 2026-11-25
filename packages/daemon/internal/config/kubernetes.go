@@ -2398,8 +2398,6 @@ func checkPodReachable(cfg Config) error {
 		default:
 			continue
 		}
-		// The URL is named through the URL rule (redact.URLCredentials): a nats_urls entry carries
-		// its credential in its user information.
 		return fmt.Errorf("%s %s %s; name the host pods reach it at when runtime is kubernetes", address.key, redact.URLCredentials(address.value), why)
 	}
 	return nil

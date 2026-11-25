@@ -809,10 +809,6 @@ func readGitRemotes(ctx context.Context) ([]ghRemote, error) {
 		gh := ghRemoteLine.FindStringSubmatch(line)
 		if git == nil || (git[3] == "push" && git[4] != "") || gh == nil ||
 			strings.TrimSpace(gh[1]) != git[1] || strings.TrimSpace(gh[2]) != git[2] || gh[3] != git[3] {
-			// The line is not printed: a URL that holds whitespace is one way to reach this, and
-			// the URL rule, which ends a URL at whitespace, would leave the URL's tail as written.
-			// The URL gh's own reading takes from it is named (ghReadURL): the repository gh
-			// would act on.
 			return nil, fmt.Errorf("git remote -v printed a line that git's shape and gh's reading of it do not agree on, from which gh reads the URL %s (the line is not printed)", ghReadURL(gh))
 		}
 		remotes = append(remotes, ghRemote{name: git[1], url: git[2], push: git[3] == "push"})

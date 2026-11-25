@@ -530,9 +530,7 @@ func decodeDispatchEvent(event dispatch.Event, unread *[]string) (Fact, error) {
 		if comment.Ask == "" {
 			return nil, nil
 		}
-		// A turn the daemon cannot read could be either, so the reply moves nothing. The turn and
-		// the state are named unread by their members alone: either holds whatever Dispatch, or
-		// whatever answers in its place, wrote there.
+		// A turn the daemon cannot read could be either, so the reply moves nothing.
 		switch comment.WaitingOn {
 		case "", "human", "agent":
 		default:
@@ -815,8 +813,7 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 	body, _ := rawString(raw, "body")
 	bodyTruncated, _ := rawString(raw, "body_truncated")
 	// The listener carries GitHub's review id as a decimal string; one that predates it carries
-	// none, and the review is then ordered by when it is processed. A review_id or a submitted_at
-	// that cannot be read is named by its member and never by its value, which is GitHub's word.
+	// none, and the review is then ordered by when it is processed.
 	var id int64
 	if text, ok := rawString(raw, "review_id"); ok && text != "" {
 		parsed, err := strconv.ParseInt(text, 10, 64)
