@@ -60,16 +60,19 @@ var liveHeapServerEnv = []string{
 // mebibytes (the runtime writes "MB" for 1<<20 bytes).
 var gctraceLine = regexp.MustCompile(`gc (\d+) @[^\n]*? (\d+)->(\d+)->(\d+) MB, \d+ MB goal`)
 
-// logLine is one line the server's slog handler writes (main's slog.NewTextHandler): written
-// whole, it can land between the runtime's writes of a collection's line, which collections drops
-// it from before it reads that line.
+// logLine is one line the server's slog handler writes (main's slog.NewTextHandler).
 var logLine = regexp.MustCompile(`time=\d{4}-\d\d-\d\dT[^\n]*\n`)
 
-// collections are the collections output's trace lines report, in order.
+// collections are the collections output's trace lines report, in order. The runtime writes each
+// collection's line in several writes, and a line another goroutine writes whole can land between
+// two of them: one of the server's slog lines (logLine), or the memory test's own report of a
+// collection it asked for (collectedLine). collections drops both kinds of line from output before
+// it reads the trace, so a line that either kind split reads whole again.
 func collections(t *testing.T, output string) []collection {
 	t.Helper()
 	var found []collection
-	for _, match := range gctraceLine.FindAllStringSubmatch(logLine.ReplaceAllString(output, ""), -1) {
+	trace := collectedLine.ReplaceAllString(logLine.ReplaceAllString(output, ""), "")
+	for _, match := range gctraceLine.FindAllStringSubmatch(trace, -1) {
 		number, err := strconv.Atoi(match[1])
 		if err != nil {
 			t.Fatalf("read collection %q: %v", match[1], err)
@@ -81,6 +84,27 @@ func collections(t *testing.T, output string) []collection {
 		found = append(found, collection{number: number, live: live << 20})
 	}
 	return found
+}
+
+// A line the server writes whole can split a collection's trace line. The idle collection's
+// report split collection 64's line in CI once the window was read from before that report, and a
+// slog line can split another. collections reads each split line whole, so it finds every
+// collection in the window, with the heap each found live.
+func TestATraceLineSplitByAReportOrALogLineIsReadWhole(t *testing.T) {
+	t.Parallel()
+	// Collection 64's line split by the report as CI printed it, between collections 63 and 65,
+	// and 65's line split by a slog line; each split falls where two of the runtime's writes meet.
+	window := "gc 63 @1.734s 2%: 0.41+2.2+0.003 ms clock, 1.6+0/3.2/0+0.012 ms cpu, 6->6->6 MB, 7 MB goal, 0 MB stacks, 0 MB globals, 4 P (forced)\n" +
+		"gc 64 @" +
+		"memory test: collection 63 found 6507616 bytes live\n" +
+		"1.738s 2%: 0.48+2.5+0.003 ms clock, 1.9+0/3.6/0+0.015 ms cpu, 7->7->6 MB, 7 MB goal, 0 MB stacks, 0 MB globals, 4 P\n" +
+		"gc 65 @1.743s 2%: " +
+		"time=2026-11-25T06:55:33.700Z level=INFO msg=\"x\"\n" +
+		"0.52+2.7+0.003 ms clock, 2.0+0/3.8/0+0.016 ms cpu, 7->7->7 MB, 7 MB goal, 0 MB stacks, 0 MB globals, 4 P\n"
+	want := []collection{{number: 63, live: 6 << 20}, {number: 64, live: 6 << 20}, {number: 65, live: 7 << 20}}
+	if got := collections(t, window); !slices.Equal(got, want) {
+		t.Fatalf("collections read %+v from the window, want %+v:\n%s", got, want, window)
+	}
 }
 
 // liveHeapAboveIdle runs during on a server started under liveHeapServerEnv and reports the most
