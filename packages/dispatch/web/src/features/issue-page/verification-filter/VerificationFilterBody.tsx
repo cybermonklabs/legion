@@ -538,75 +538,77 @@ export function VerificationFilterBody({
                 total={issue.statements.length}
               />
             </div>
-            <ViewPressContext.Provider value={viewPress}>
-              <div className={TABLE} data-verification-table="">
-                <Headings />
-                {shown.map((statement) => (
-                  <Statement
-                    context={context.has(statement.node.id)}
-                    editingFor={editingFor}
-                    key={statement.node.id}
-                    onEdit={editRow}
-                    onPress={press}
-                    onPressWords={pressWords}
-                    presses={presses}
-                    reportFor={reportFor}
-                    statement={statement}
-                    statementNames={statementNames}
-                    tabIndexFor={tabIndexFor}
-                  />
-                ))}
-                {/* What the table says where it draws no row under its headings, rather than
-                    headings over nothing: the page's line for no match where the query matched
-                    nothing of the issue, whose row still says how the issue stands, and the page's
-                    line for a state where the one the reader narrowed to holds no statement: a chip
-                    whose count is 0 is a press too, as is a chip whose statements the query left
-                    out. */}
-                {!matched || (only !== undefined && shown.length === 0) ? (
-                  <p
-                    className={`${CELL} text-sm leading-5 ${pageQuietText}`}
-                    data-verification-none=""
-                    role="none"
-                    {...pageChrome}
-                  >
-                    {matched ? EMPTY_STATE_LINES.verification_none : EMPTY_STATE_LINES.no_match}
-                  </p>
-                ) : null}
-                {loose.map((check) => (
-                  <Check
-                    check={check}
-                    editing={editingFor(check.node.id)}
-                    kept={table.kept.get(check.node.id) ?? NO_KEPT_RESULTS}
-                    key={check.node.id}
-                    loose={true}
-                    onEdit={() => editRow(check.node.id, check.node)}
-                    onPress={press}
-                    onPressWords={() => pressWords(check.node.id, check.node)}
-                    pressed={presses.get(check.node.id)}
-                    report={reportFor(check.node.id)}
-                    row={check.node.id}
-                    statementNames={statementNames}
-                    tabIndex={tabIndexFor(check.node.id)}
-                  />
-                ))}
-                {others.map((node) => (
-                  <OtherRow
-                    editing={editingFor(node.id)}
-                    key={node.id}
-                    node={node}
-                    onPressWords={() => pressWords(node.id, node)}
-                    report={reportFor(node.id)}
-                    tabIndex={tabIndexFor(node.id)}
-                  />
-                ))}
-              </div>
-            </ViewPressContext.Provider>
+            <div className={TABLE} data-verification-table="">
+              <Headings />
+              {shown.map((statement) => (
+                <Statement
+                  context={context.has(statement.node.id)}
+                  editingFor={editingFor}
+                  key={statement.node.id}
+                  onEdit={editRow}
+                  onPress={press}
+                  onPressWords={pressWords}
+                  presses={presses}
+                  reportFor={reportFor}
+                  statement={statement}
+                  statementNames={statementNames}
+                  tabIndexFor={tabIndexFor}
+                />
+              ))}
+              {/* What the table says where it draws no row under its headings, rather than
+                  headings over nothing: the page's line for no match where the query matched
+                  nothing of the issue, whose row still says how the issue stands, and the page's
+                  line for a state where the one the reader narrowed to holds no statement: a chip
+                  whose count is 0 is a press too, as is a chip whose statements the query left
+                  out. */}
+              {!matched || (only !== undefined && shown.length === 0) ? (
+                <p
+                  className={`${CELL} text-sm leading-5 ${pageQuietText}`}
+                  data-verification-none=""
+                  role="none"
+                  {...pageChrome}
+                >
+                  {matched ? EMPTY_STATE_LINES.verification_none : EMPTY_STATE_LINES.no_match}
+                </p>
+              ) : null}
+              {loose.map((check) => (
+                <Check
+                  check={check}
+                  editing={editingFor(check.node.id)}
+                  kept={table.kept.get(check.node.id) ?? NO_KEPT_RESULTS}
+                  key={check.node.id}
+                  loose={true}
+                  onEdit={() => editRow(check.node.id, check.node)}
+                  onPress={press}
+                  onPressWords={() => pressWords(check.node.id, check.node)}
+                  pressed={presses.get(check.node.id)}
+                  report={reportFor(check.node.id)}
+                  row={check.node.id}
+                  statementNames={statementNames}
+                  tabIndex={tabIndexFor(check.node.id)}
+                />
+              ))}
+              {others.map((node) => (
+                <OtherRow
+                  editing={editingFor(node.id)}
+                  key={node.id}
+                  node={node}
+                  onPressWords={() => pressWords(node.id, node)}
+                  report={reportFor(node.id)}
+                  tabIndex={tabIndexFor(node.id)}
+                />
+              ))}
+            </div>
           </>
         )}
       </div>
     </div>
   );
-  return <PublishedReferenceNames published={published}>{drawnBody}</PublishedReferenceNames>;
+  return (
+    <PublishedReferenceNames published={published}>
+      <ViewPressContext.Provider value={viewPress}>{drawnBody}</ViewPressContext.Provider>
+    </PublishedReferenceNames>
+  );
 }
 
 /** What one part of the body draws of its checks, a statement's or the table's own after its
@@ -1291,9 +1293,7 @@ function Statement({
 /** The press under way anywhere on the page, followed once for every check row the body draws
  *  (`trackPress`, from the `mousedown` whose default moves the focus): whether one is held, from
  *  its start until the task after it ends, and `afterPress`, which has `decide` called once the
- *  press under way has ended - a row's `focusout` that names no element while a press is held is
- *  the reader's act, decided as it ends (`Check`). A row drawn with no body around it sees no
- *  press. */
+ *  press under way has ended (`Check`). A row drawn with no body around it sees no press. */
 interface ViewPress {
   readonly afterPress: (decide: () => void) => void;
   readonly pressing: boolean;
@@ -1423,19 +1423,7 @@ function Check({
   // draws them before the click, and the click must shut only what was drawn before it.
   const drawnAtPress = useRef<boolean | undefined>(undefined);
   // The row's element, whose focus events say whether the focus is inside it, and the press, its
-  // setter and the editing as last drawn, which its listener reads as the focus leaves. A
-  // `focusout` that names an element outside the row is the focus leaving it. One that names none
-  // is told by what dropped the focus. A press under way is the reader's act - one on blank space
-  // drops the focus to the page's body - and the press ending decides whether the focus is in
-  // the row then (the body's one `trackPress` for the view, `ViewPress`), edited or not. With no
-  // press, while the row is edited, the drop is the editing's own: Escape in the editor blurs it
-  // before it focuses the row, and the editor's redraw drops the focus to the page and puts it
-  // back on the block a microtask or a frame later (`useNodeEditing.ts`), neither of which leaves
-  // the row, so the facts the reader shut stay shut; the editing ending decides once whether the
-  // focus is in the row then. With no press on a row not edited, the drop is decided a microtask
-  // later, by whether the focus is in the row then, as the body's box decides whether it holds
-  // the focus (`slots/body.tsx`'s `useFocusHeld`). Nothing is decided after the effect's
-  // cleanup - the row gone, or its id changed.
+  // setter and the editing as last drawn, which its listener reads as the focus leaves.
   const viewPress = useContext(ViewPressContext);
   const rowElement = useRef<HTMLDivElement>(null);
   const pressedNow = useRef(pressed);
@@ -1449,6 +1437,18 @@ function Check({
     // A shut the reader pressed lasts while the focus stays; the next visit opens again.
     if (pressedNow.current === false) onPressNow.current(row, undefined);
   }, [row]);
+  // A `focusout` that names an element outside the row is the focus leaving it. One that names
+  // none is told by what dropped the focus. A press under way is the reader's act - one on blank
+  // space drops the focus to the page's body - and the press ending decides whether the focus is
+  // in the row then, edited or not. With no press, while the row is edited, the drop is the
+  // editing's own: Escape in the editor blurs it before it focuses the row, and the editor's
+  // redraw drops the focus to the page and puts it back on the block a microtask or a frame later
+  // (`useNodeEditing.ts`), neither of which leaves the row, so the facts the reader shut stay
+  // shut; the editing ending decides once whether the focus is in the row then (the effect
+  // below). With no press on a row not edited, the drop is decided a microtask later, by whether
+  // the focus is in the row then, as the body's box decides whether it holds the focus
+  // (`slots/body.tsx`'s `useFocusHeld`). Nothing is decided after the effect's cleanup - the row
+  // gone, or its id changed.
   useLayoutEffect(() => {
     const element = rowElement.current;
     if (element === null) return;
