@@ -940,13 +940,16 @@ Its record says the death was charged, and the boot raises the relaunch that dea
 the restart's own wave and in one order with the launches the previous daemon did not finish,
 without waiting for the runtime to report the death a second time.
 A claim whose pod something outside it ended is on that list too: its record says that end was
-charged nothing, so the boot relaunches it charged nothing, in its own session, and its role is
-told that its pod was ended from outside it.
-Until its turn, such a claim reads the state it was in when its process died, most often `working`
-or `shim_connected`, with `lastDeathCause` naming the death (after an issue pod's `roles` container
-was killed for memory and restarted, `launcher reports no child; container roles restarted`), and
-its `wake` (the claim's entry under `.issues` of the same `legion state --json` body) names the
-launch it waits for.
+charged nothing, so it is relaunched charged nothing, in its own session, whichever of the boot's
+relaunch and the runtime's report of the ended pod reaches it first.
+Where that end cut off its role's work, the role is told that its pod was ended from outside it;
+an end that cut off no work tells the role nothing, on purpose.
+Until its turn, such a claim reads the state it was in when its process ended, most often `working`
+or `shim_connected`, and its `wake` (the claim's entry under `.issues` of the same
+`legion state --json` body) names the launch it waits for.
+For a death, `lastDeathCause` names it (after an issue pod's `roles` container was killed for
+memory and restarted, `launcher reports no child; container roles restarted`); an end from outside
+the pod writes no `lastDeathCause`, so the field keeps whatever an earlier death left there.
 The controller's `fresh_session` refuses such a claim with `CLAIM_UNSETTLED` while it reads
 `working`, `launching` or `shim_connected`: its launch is already in flight, and runs at the
 `dueAt` the list names.

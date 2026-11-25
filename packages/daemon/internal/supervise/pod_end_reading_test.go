@@ -488,21 +488,21 @@ func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
 
 // Which of the claim's reports decides an end from outside the pod: the first report, which a
 // refused relaunch leaves the claim standing on, records the ended process as decided
-// (Claim.DeathCharged) in the store, the daemon restarts, and its orphan sweep reports that same
-// process again. Read again as an end from outside the pod, the second report is the same
-// uncharged continue. Read neither way, as it is once the runtime's reading of the end has
-// expired, it reaches died, which finds the process decided and charges it no death: it
-// relaunches it as it relaunches any death already decided, a launch failure the agent's ready
-// clears. Left undecided, the one eviction would be charged a death against the task the claim
-// holds.
+// (Claim.DeathCharged) and its end as one from outside the pod (EndedWork.FromOutside) in the
+// store, the daemon restarts, and its orphan sweep reports that same process again. Read again as
+// an end from outside the pod, the second report is the same uncharged continue. Read neither
+// way, as it is once the runtime's reading of the end has expired, it is that same end again
+// (judge, decidedFromOutside), never a death, and is continued charged nothing as well: neither
+// a death nor a launch failure. Left undecided, the one eviction would be charged a death against
+// the task the claim holds; sent to died over the decided process, it would be charged a launch
+// failure, which is the control.
 func TestAnEvictionReportedAgainOverTheKeptProcessIsChargedNoDeath(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		again   runtime.PodEndReading
-		charged Budgets
+		name  string
+		again runtime.PodEndReading
 	}{
 		{name: "read again as an end from outside the pod", again: runtime.PodEndNotOurs},
-		{name: "read neither way once the reading expired", charged: Budgets{LaunchFailures: 1}},
+		{name: "read neither way once the reading expired"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := owingTask(t, queuedClaim(), owedTask)
@@ -526,118 +526,11 @@ func TestAnEvictionReportedAgainOverTheKeptProcessIsChargedNoDeath(t *testing.T)
 			}})
 
 			h.wantState(StateLaunching)
-			h.wantBudgets(tc.charged)
+			h.wantNothingCharged("the second report")
 			h.relaunched()
 			h.wantNothingCharged("the relaunch's ready")
 			h.wantOwed(owedTask)
 		})
-	}
-}
-
-// An end from outside the pod whose relaunch the wake pacing parked, then a daemon restart: the
-// claim is restored standing over its process with that process decided (Claim.DeathCharged), and
-// the boot raises again the relaunch the restart lost (RecordedDeath). The end found the agent
-// ready in no turn, holding its task unconfirmed or holding nothing, so it ended nothing worth
-// telling and recordGoneEnd records nothing of it; the record the decision leaves of it tells
-// nothing and says only that the end of that launch was from outside the pod (markFromOutside),
-// and the decision's write carries it. The replay reads that record (relaunchRecordedDeath): it
-// charges nothing, neither a death nor a launch failure, and resumes the claim's own session,
-// which is sent again the task the claim held, and nothing where it held none, as it is where no
-// restart comes.
-//
-// The negative controls are the replay's charged branch alone (relaunchRecordedDeath with no
-// branch for an end from outside the pod) and the claim written before the end is recorded
-// (endedFromOutside, as it was): either way the replay charges the end a launch failure.
-func TestAnEndFromOutsideWhoseRelaunchARestartLostIsRelaunchedUncharged(t *testing.T) {
-	for _, row := range []struct {
-		name string
-		task string
-	}{
-		{name: "holding its task", task: owedTask},
-		{name: "holding nothing"},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			h := pacedHarness(t, wakeRate)
-			h.reach(StateReady)
-			if row.task != "" {
-				h.must(RequestDeliver{Claim: h.token, Task: row.task})
-				h.wantOwed(row.task)
-			}
-			sent := len(h.prompts())
-			queueAhead(h, 1)
-			ended := h.locator()
-			h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
-			h.wantWaitingWake(WakeLaunch)
-
-			h.restart()
-			h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
-
-			h.wantNothingCharged("the boot's replay of the end")
-			if got := h.claim().EndedWork; got.Cause != endFromOutside || got.Tells() {
-				t.Fatalf("the claim records %+v of the end, want a record of an end from outside the pod that tells nothing", got)
-			}
-			waiting := h.wantWaitingWake(WakeLaunch)
-			h.advance(waiting.At.Sub(h.clock.Now()))
-			resume := h.wantCalls("Resume", 1)[0]
-			if resume.Previous == nil || *resume.Previous != ended || resume.Spec.ResumeSessionFile != sessionFile {
-				t.Fatalf("resumed %+v from %+v, want the claim's own recorded session after the ended incarnation",
-					resume.Spec, resume.Previous)
-			}
-			h.relaunched()
-			h.wantNothingCharged("the relaunch's ready")
-			if row.task == "" {
-				h.wantPrompts(sent)
-				return
-			}
-			if resent := h.wantPrompts(sent + 1)[sent]; !strings.HasSuffix(resent.Message, row.task) {
-				t.Fatalf("re-sent %+v, want the task %q the claim held", resent, row.task)
-			}
-		})
-	}
-}
-
-// An end from outside the pod in a turn a message started, whose relaunch the wake pacing parked,
-// then a daemon restart. The claim holds no task, so what the relaunched role is told of the end
-// is the record the end wrote of the turn it cut off (EndedWork), delivered on its own at the
-// relaunch's ready (queueRelaunch). The decision writes the claim after that record
-// (endedFromOutside), so the claim the restart restores carries it, and the boot's replay reads it
-// (relaunchRecordedDeath): the relaunch is charged nothing and resumes the claim's own session, and
-// the record says that its pod was ended from outside it, never that the process died.
-//
-// The negative controls are the claim written before the end is recorded (endedFromOutside, as it
-// was), where the replay charges a launch failure and the let-go at its turn records the end as a
-// death of no account, `the process died: ""`; and the replay's charged branch alone, which charges
-// the launch failure.
-func TestAnEndFromOutsideInAMessageTurnWhoseRelaunchARestartLostIsToldAsAnEndFromOutside(t *testing.T) {
-	h := pacedHarness(t, wakeRate)
-	h.reach(StateIdle)
-	h.advance(time.Minute)
-	h.must(StreamTurnStart{Claim: h.token})
-	h.advance(time.Minute)
-	queueAhead(h, 1)
-	ended := h.locator()
-	h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
-	h.wantWaitingWake(WakeLaunch)
-
-	h.restart()
-	h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
-
-	h.wantNothingCharged("the boot's replay of the end")
-	waiting := h.wantWaitingWake(WakeLaunch)
-	h.advance(waiting.At.Sub(h.clock.Now()))
-	h.wantNothingCharged("the relaunch")
-	if got := h.claim().EndedWork.Cause; got != endFromOutside {
-		t.Fatalf("the record the relaunched role is told reads %q, want %q", got, endFromOutside)
-	}
-	resume := h.wantCalls("Resume", 1)[0]
-	if resume.Previous == nil || *resume.Previous != ended || resume.Spec.ResumeSessionFile != sessionFile {
-		t.Fatalf("resumed %+v from %+v, want the claim's own recorded session after the ended incarnation",
-			resume.Spec, resume.Previous)
-	}
-	sent := len(h.prompts())
-	h.relaunched()
-	if told, says := h.wantPrompts(sent + 1)[sent], "ended because "+endFromOutside+"."; !strings.Contains(told.Message, says) {
-		t.Fatalf("the relaunched role was sent %q, want it to say %q", told.Message, says)
 	}
 }
 
@@ -703,7 +596,8 @@ func TestAnEndFromOutsideThePodIsToldAsSuchAndOnlyTheDaemonsReplacementAsAReplac
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
-			want := EndedWork{Cause: tc.cause, Background: true, Kinds: []string{"subagent"}, Reported: true}
+			want := EndedWork{Cause: tc.cause, FromOutside: tc.reading == runtime.PodEndNotOurs,
+				Background: true, Kinds: []string{"subagent"}, Reported: true}
 			if tc.idle {
 				h.reach(StateIdle)
 			} else {

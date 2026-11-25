@@ -47,20 +47,21 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 
 // displaced is the claim's process found gone, or found to be some other process, through no
 // fault of its own: the daemon itself replaced its pod while it ran, to launch another role there
-// (runtime.Observation.Displaced); something outside the pod ended the pod it ran in — the
-// cluster evicted, preempted or shut that pod down, or something deleted it that no act of the
-// daemon's accounts for (runtime.PodEndNotOurs, which endedFromOutside recovers so each time); or
-// it was another runtime's process — a Sandbox role process a daemon running the project under
-// kubernetes recorded — that this daemon takes over (`runtime.tmux.take_over`) and cannot see. The
-// observation's detail names which. The process did nothing wrong, so it is recovered as repoint
-// recovers a stale one: nothing is charged, neither a launch failure nor a death with work
-// outstanding, and the claim's session is relaunched at once (replaceProcess). A turn the process
-// was in is lost, and its task goes back to waiting, sent again once the session resumes; a held
-// suspension ends in a suspension. The process is gone, so a compaction running over it is dropped
-// before this runs and its end gives the claim back nothing (judge, compactionLostProcess). It is
-// the one recovery that carries an out-of-memory end's note (runtime.Observation.OutOfMemory),
-// since a pod the daemon replaced can also have run out of memory before the replacement landed,
-// and the role whose turn that end cut off is told so wherever the end is recovered.
+// (runtime.Observation.Displaced), or it was another runtime's process — a Sandbox role process a
+// daemon running the project under kubernetes recorded — that this daemon takes over
+// (`runtime.tmux.take_over`) and cannot see. The observation's detail names which. An end that
+// something outside the pod made (runtime.PodEndNotOurs) is no fault of the process either:
+// endedFromOutside recovers it through this one's two steps (recordDisplaced, replaceProcess),
+// with the take-back and its decision between them. The process did nothing wrong, so it is
+// recovered as repoint recovers a stale one: nothing is charged, neither a launch failure nor a
+// death with work outstanding, and the claim's session is relaunched at once (replaceProcess). A
+// turn the process was in is lost, and its task goes back to waiting, sent again once the session
+// resumes; a held suspension ends in a suspension. The process is gone, so a compaction running
+// over it is dropped before this runs and its end gives the claim back nothing (judge,
+// compactionLostProcess). It and endedFromOutside are the recoveries that carry an out-of-memory
+// end's note (runtime.Observation.OutOfMemory), since a pod the daemon replaced can also have run
+// out of memory before the replacement landed, and the role whose turn that end cut off is told
+// so wherever the end is recovered.
 //
 // Every claim the runtime observes is recovered this way, the project controller's included: what
 // decides the recovery is the cause of the end and never the kind of pod or the role in it.
@@ -72,22 +73,25 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // the record says its turn was cut off. A held suspension's stop then finds that record standing
 // and records no suspension in its place (endHeld), so the next process is told what ended it.
 //
-// cause is who ended the process, in the daemon's words, which the record carries and the launch
-// lets the process go with (launch, letGo): endDisplaced for an act of the daemon's own
-// (runtime.Observation.Displaced, judge), endFromOutside for an end something outside the pod
-// made (endedFromOutside), which the daemon must not tell the next process it made.
-func (m *Machine) displaced(ctx context.Context, observation runtime.Observation, cause string) error {
-	m.recordDisplaced(ctx, observation, cause)
-	_, err := m.replaceProcess(ctx, displacedMidTurn, observation.OutOfMemory, cause)
+// The cause it records and lets the process go with (launch, letGo) is endDisplaced, an act of the
+// daemon's own: judge sends an end from outside the pod to endedFromOutside, which hands
+// recordDisplaced its own cause, endFromOutside, so the daemon never tells the next process that
+// it made that end.
+func (m *Machine) displaced(ctx context.Context, observation runtime.Observation) error {
+	m.recordDisplaced(ctx, observation, endDisplaced, false)
+	_, err := m.replaceProcess(ctx, displacedMidTurn, observation.OutOfMemory, endDisplaced)
 	return err
 }
 
 // recordDisplaced is displaced's first step: the line that says the process was displaced, and
 // the record of what that ended (recordGoneEnd), made before the replacement's take-back changes
-// the task the record reads. Its second step is the replacement (replaceProcess). endedFromOutside
-// writes its decision after this step and before that one, so the claim it writes carries the
-// record.
-func (m *Machine) recordDisplaced(ctx context.Context, observation runtime.Observation, cause string) {
+// the task the record reads. Its second step is the replacement (replaceProcess).
+// endedFromOutside takes the task back and writes its decision after this step and before that
+// one, so the claim it writes carries the record. cause is who ended the process, in the
+// daemon's words, and fromOutside whether that was something outside the pod, which the record
+// carries from its making (EndedWork.FromOutside): endDisplaced and false for displaced,
+// endFromOutside and true for endedFromOutside.
+func (m *Machine) recordDisplaced(ctx context.Context, observation runtime.Observation, cause string, fromOutside bool) {
 	// Guarded as repoint's own read is, and for the reason its comment gives
 	// (backstopStalledTurn, noProcessRecorded).
 	incarnation, process := noProcessRecorded, noProcessRecorded
@@ -97,7 +101,7 @@ func (m *Machine) recordDisplaced(ctx context.Context, observation runtime.Obser
 	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon, its pod ended by something outside it, or it another runtime's process this daemon takes over; relaunching it uncharged",
 		"incarnation", incarnation, "process", process, "observed", string(observation.Kind),
 		"podEndReading", string(observation.EndReading), "detail", observation.Detail, "cause", cause)
-	m.recordGoneEnd(ctx, cause, "")
+	m.recordGoneEnd(ctx, cause, "", fromOutside)
 }
 
 // displacedMidTurn is the sentence the replacement of a displaced process logs the take-back of
@@ -107,21 +111,39 @@ const displacedMidTurn = "the process was displaced mid-turn, its pod replaced b
 // endedFromOutside is the claim's process gone with a pod the runtime read as ended by something
 // outside it (runtime.PodEndNotOurs): an eviction the cluster marked a disruption target, a
 // preemption, a node going down, or a delete no act of the daemon's accounts for. Such an end is
-// continued in the claim's own session (displaced), recorded as an end from outside the pod
-// (endFromOutside) and never as the daemon's replacement of it, and charged nothing — neither a
-// death nor a launch failure — however often it comes, whatever the claim's agent was doing and
-// whether it was ready or still starting. Nothing the role in the pod can do fixes a cause
-// outside it, and stopping the role fixes a cause that stays no better: a charge at some count
-// would only turn a loop of restarts into a stall. An end the runtime read neither way is charged
-// as a death (died), as it always was. Three of the kubelet's evictions are such ends: the eviction
-// of a pod over a limit of its own, which carries no DisruptionTarget condition, and the two of a
-// node under pressure whose message names a container over its memory or ephemeral-storage
-// request, which carry it (runtime.DeathMemoryRequest, runtime.DeathDiskRequest; sandbox's
-// clusterEndedReasons and evictedOverRequest say why).
+// continued in the claim's own session as a displacement is (recordDisplaced, replaceProcess),
+// recorded as an end from outside the pod (endFromOutside, EndedWork.FromOutside) and never as
+// the daemon's replacement of it, and charged nothing — neither a death nor a launch failure —
+// however often it comes, whatever the claim's agent was doing and whether it was ready or still
+// starting. Nothing the role in the pod can do fixes a cause outside it, and stopping the role
+// fixes a cause that stays no better: a charge at some count would only turn a loop of restarts
+// into a stall. An end the runtime read neither way, of a process no decision of this kind
+// covers, is charged as a death (died), as it always was. Three of the kubelet's evictions are
+// such ends: the eviction of a pod over a limit of its own, which carries no DisruptionTarget
+// condition, and the two of a node under pressure whose message names a container over its
+// memory or ephemeral-storage request, which carry it (runtime.DeathMemoryRequest,
+// runtime.DeathDiskRequest; sandbox's clusterEndedReasons and evictedOverRequest say why).
 //
-// It records three things all the same, before the relaunch, because a parked relaunch writes
-// nothing until its turn; a write the store would not take is owed and the relaunch goes on
-// under it (died states why):
+// judge sends it every report the runtime read so, and every report of a process whose decided
+// end was one from outside the pod, however that report was read (decidedFromOutside): such a
+// report is this end again, never a death. After a daemon restart the runtime's report usually
+// reaches the claim before the boot's replay (RecordedDeath), read neither way, since the reading
+// went with the old daemon's memory, and died would charge it a launch failure and record it as
+// a death. Here it finds the record of this launch standing and the task already taken back, so
+// it raises the uncharged relaunch, which the replay then finds raised (launchMet).
+//
+// It takes back the task whose turn the end cut off first, after the record of what the end
+// ended (recordDisplaced), which reads the task before the take-back changes it, as died's
+// recordGoneEnd does; and a take-back the store refused returns here with nothing decided, as it
+// does in died. The stored claim then holds the process undecided with its task still confirmed,
+// so no replay after a restart relaunches it past the take-back, settle retires nothing, and the
+// next report of the process decides the end and takes the task back then. Decided before the
+// take-back, the stored claim would hold the decision over a task still confirmed: the replay
+// would relaunch it with no take-back, and settle would retire a task no turn finished.
+//
+// With the task back it records three things, before the relaunch, because a parked relaunch
+// writes nothing until its turn; a write the store would not take is owed and the relaunch goes
+// on under it (died states why):
 //
 //   - the end of the turn the end cut off (Claim.LastTurnEnd), as a charged death records it
 //     (chargeDeath), for the reason chargeDeath gives: the agent that turn belonged to is gone
@@ -129,18 +151,21 @@ const displacedMidTurn = "the process was displaced mid-turn, its pod replaced b
 //     nothing pending, would find the dead turn open and be charged against it;
 //   - that the ended process is decided (Claim.DeathCharged), the record died keeps for one dead
 //     process, so a later report of that same process — the orphan sweep's, over a claim whose
-//     relaunch the lifecycle refused or the wake pacing parked — is charged no death;
+//     relaunch the lifecycle refused or the wake pacing parked, or a restarted daemon's first —
+//     is this end again and charged nothing (judge, decidedFromOutside);
 //   - that the end was from outside the pod, in the record of what that end ended
-//     (Claim.EndedWork, markFromOutside). A daemon restart while the relaunch waits restores the
-//     claim standing over its decided process, and the boot raises the relaunch the restart lost
-//     (RecordedDeath). This record is what tells that replay the end from a charged death, so the
-//     relaunch is charged nothing, resumes the claim's own session and sends its task again, and
-//     the next process is told that its pod was ended from outside it (relaunchRecordedDeath).
+//     (EndedWork.FromOutside, markFromOutside). A daemon restart while the relaunch waits
+//     restores the claim standing over its decided process, and the boot raises the relaunch the
+//     restart lost (RecordedDeath). This typed value is what tells that replay, and a report that
+//     comes before it, the end from a charged death, so the relaunch is charged nothing, resumes
+//     the claim's own session and sends its task again, and the next process is told that its pod
+//     was ended from outside it where the end cut off its work (relaunchRecordedDeath, judge).
 //
-// The write comes after the record (recordDisplaced) and before the replacement, so the stored
-// claim carries that record. Written before it, the store would hold the decided process with no
-// record of this end, which the boot reads as a charged death: one launch failure, its backoff,
-// and a next process told that the process died.
+// The write comes after the record and the take-back and before the replacement, so the stored
+// claim carries that record over a task taken back, and the replacement's own take-back finds
+// nothing confirmed. Written before the record, the store would hold the decided process with
+// no record of this end, which the boot reads as a charged death: one launch failure, its
+// backoff, and a next process told that the process died.
 //
 // Each end writes one line for the claim saying what it got (continuedFromOutsideLine) before
 // recordDisplaced writes displaced's. The runtime's line for the pod's end is written before any
@@ -148,11 +173,14 @@ const displacedMidTurn = "the process was displaced mid-turn, its pod replaced b
 // what each role got.
 func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Observation) error {
 	m.log.Info(continuedFromOutsideLine, "starting", slices.Contains(unready, m.claim.State), "detail", observation.Detail)
+	m.recordDisplaced(ctx, observation, endFromOutside, true)
+	if err := m.interrupted(ctx, displacedMidTurn, observation.OutOfMemory); err != nil {
+		return err
+	}
 	m.claim.DeathCharged = true
 	if m.turnOpen() {
 		m.claim.LastTurnEnd = m.deps.Clock.Now()
 	}
-	m.recordDisplaced(ctx, observation, endFromOutside)
 	m.markFromOutside()
 	decided := m.persist(ctx)
 	_, err := m.replaceProcess(ctx, displacedMidTurn, observation.OutOfMemory, endFromOutside)
@@ -160,10 +188,10 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 }
 
 // markFromOutside leaves on the claim, for the launch it records, a record of its process's end
-// whose cause is endFromOutside (Claim.EndedWork), whatever that end ended, so the decision's
-// write carries it and the boot's replay after a restart reads the end as one from outside the
-// pod (recordedFromOutside, relaunchRecordedDeath). Where recordGoneEnd recorded the end, that
-// record is it, and this leaves it as it stands.
+// from outside the pod (EndedWork.FromOutside), whose cause is endFromOutside, whatever that end
+// ended, so the decision's write carries it and every later read of the decided end reads it as
+// one from outside the pod (decidedFromOutside). Where recordGoneEnd recorded the end, that
+// record is it, typed from its making, and this leaves it as it stands.
 //
 // Where the end ended nothing worth telling — no turn running, no task taken back and no
 // background work reported (recordEnd) — recordGoneEnd records nothing, and the record left here
@@ -182,20 +210,22 @@ func (m *Machine) markFromOutside() {
 	}
 	now := m.deps.Clock.Now()
 	if held.Tells() {
-		held.At, held.Cause, held.Death, held.Generation = now, endFromOutside, "", m.claim.Generation
+		held.At, held.Cause, held.Death, held.FromOutside, held.Generation = now, endFromOutside, "", true, m.claim.Generation
 		m.claim.EndedWork, m.carried.ended = held, false
 		return
 	}
-	m.claim.EndedWork = EndedWork{At: now, Cause: endFromOutside, Generation: m.claim.Generation, Told: true}
+	m.claim.EndedWork = EndedWork{At: now, Cause: endFromOutside, FromOutside: true, Generation: m.claim.Generation, Told: true}
 }
 
-// recordedFromOutside is whether the claim's record of what its process's end ended is the record
-// of an end from outside the pod of the launch the claim records now (markFromOutside): what the
-// boot's replay of a decided end reads to relaunch that end charged nothing
-// (relaunchRecordedDeath).
-func (m *Machine) recordedFromOutside() bool {
+// decidedFromOutside is whether the claim's decided end is one from outside the pod: the process
+// the claim records is decided (Claim.DeathCharged), and the record of the end of the launch the
+// claim records now says the end was from outside the pod (EndedWork.FromOutside). It reads that
+// typed value and never the record's sentence. Every read of a decided end asks it, a report of
+// the ended process (judge) and the boot's replay of the decision (relaunchRecordedDeath), so
+// the end is continued charged nothing whichever of the two reaches the claim first.
+func (m *Machine) decidedFromOutside() bool {
 	e := m.claim.EndedWork
-	return e.Cause == endFromOutside && e.Generation == m.claim.Generation
+	return m.claim.DeathCharged && e.FromOutside && e.Generation == m.claim.Generation
 }
 
 // continuedFromOutsideLine is the line, at Info, of an end from outside the claim's pod: the
@@ -300,17 +330,18 @@ func ProcessEnds() []ProcessEnd {
 func (e ProcessEnd) TellsOwner() bool { return e != EndNotMade }
 
 // replaceProcess is the recovery a process ended or found stale through no fault of its own
-// (repoint's stale address, refreshPlugin's stale plugin contract, displaced's pod replaced or
-// ended from outside it) shares once logged: a task whose turn the process was running goes back
-// to waiting first (interrupted), the same recovery a death in a turn gets; a held suspension ends
-// here as it does for a death (endHeld), suspended rather than relaunched; otherwise the claim is
-// relaunched at once through the launch path a death uses (launch), a Resume of its recorded
-// session or a Spawn over its existing Sandbox when it has not registered yet. interruption is the
-// sentence the turn's recovery is logged with, and outOfMemory says whether the end that cut that
-// turn off was the pod running out of memory: only a displacement can carry one, since the other
-// callers replace a process that is still running. ending is why the process is let go, in the
-// daemon's words, which the launch records with what that process ended (launch, letGo); a held
-// suspension's stop records its own (endHeld).
+// (repoint's stale address, refreshPlugin's stale plugin contract, displaced's pod replaced, and
+// endedFromOutside's pod ended from outside it, whose take-back comes before this) shares once
+// logged: a task whose turn the process was running goes back to waiting first (interrupted),
+// the same recovery a death in a turn gets; a held suspension ends here as it does for a death
+// (endHeld), suspended rather than relaunched; otherwise the claim is relaunched at once through
+// the launch path a death uses (launch), a Resume of its recorded session or a Spawn over its
+// existing Sandbox when it has not registered yet. interruption is the sentence the turn's
+// recovery is logged with, and outOfMemory says whether the end that cut that turn off was the
+// pod running out of memory: only an end of a pod can carry one, since the other callers replace
+// a process that is still running. ending is why the process is let go, in the daemon's words,
+// which the launch records with what that process ended (launch, letGo); a held suspension's
+// stop records its own (endHeld).
 //
 // It answers the end it reached beside its error, for the caller that has somebody to tell
 // (ProcessEnd): every one of these recoveries can end the process and still fail — the launch's

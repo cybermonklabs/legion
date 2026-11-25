@@ -24,9 +24,7 @@ import (
 // since that prompt can be a relaunch, a wake and a daemon restart away.
 //
 // The zero value is a claim whose let-go ended nothing worth telling, or that has been let go of
-// none: Cause is empty. The one exception is an end from outside the pod, which leaves a record of
-// its launch's end whatever that end ended, told already where it ended nothing worth telling, so
-// the boot's replay after a restart reads the end as one from outside the pod (markFromOutside).
+// none: Cause is empty, but for the one exception FromOutside states.
 type EndedWork struct {
 	// At is when the process was let go, and Cause why: a sentence the daemon writes, beginning
 	// with what the decision that let the process go found (the cause constants and functions
@@ -41,6 +39,22 @@ type EndedWork struct {
 	// names the `roles` container's memory limit (outOfMemoryNote). It is stored in the claim's
 	// JSON with the rest of the record, and an earlier daemon reading the row passes over the key.
 	Death runtime.DeathCauseKind `json:"death,omitempty"`
+	// FromOutside is whether the end this record is of was one from outside the pod: the runtime
+	// read it so (runtime.PodEndNotOurs) and the daemon decided it so (endedFromOutside). It is
+	// written where the record is made (recordDisplaced, markFromOutside), never read off Cause,
+	// and it is what every decision reads such an end by (decidedFromOutside): a report of the
+	// ended process and the boot's replay of the decision after a restart. So a reword of
+	// endFromOutside, a sentence told to roles, leaves the records an earlier daemon wrote read
+	// as they were.
+	//
+	// It is the one exception to the rule that a let-go that ended nothing worth telling records
+	// none (recordEnd, Claim.EndedWork, the store's ended_work): an end from outside the pod
+	// always leaves a record of its launch's end, whatever that end ended, so the decision's
+	// write carries this field. Where the end ended nothing worth telling, the record is told
+	// already, by no delivery (Told with ToldBy empty), so no prompt carries it and the next
+	// process is told nothing of that end. It is stored in the claim's JSON with the rest of
+	// the record, and an earlier daemon reading the row passes over the key.
+	FromOutside bool `json:"fromOutside,omitempty"`
 	// Generation is the launch whose process this records the end of, which is what keeps one
 	// process's end to one record: a decision that records the end of a process it already knows
 	// is gone (died, displaced) and the let-go that follows it in the same decision or at a wake's
@@ -85,10 +99,9 @@ type EndedWork struct {
 	Reported bool `json:"reported"`
 	// Told is whether the record has been told to a later process, and ToldBy the delivery whose
 	// confirmation told it, as confirmCarrying states, or "" for an old session's record the
-	// abandonment of that session ended (forgetSession) and for the record an end from outside the
-	// pod leaves of an end that ended nothing worth telling (markFromOutside). A record not yet
-	// told is replaced by a newer one only as the union of the two (joined), so what the earlier
-	// let-go ended is not lost before anyone reads it.
+	// abandonment of that session ended (forgetSession) and for a record told at its making
+	// (FromOutside). A record not yet told is replaced by a newer one only as the union of the
+	// two (joined), so what the earlier let-go ended is not lost before anyone reads it.
 	Told   bool   `json:"told,omitempty"`
 	ToldBy string `json:"toldBy,omitempty"`
 }
@@ -101,8 +114,8 @@ func (e EndedWork) Tells() bool { return e.Cause != "" && !e.Told }
 // cause, death and launch, and the union of what each ended — a turn either cut off, the task's
 // turn either cut off, every background kind either named, and no report where either process
 // left none. What the earlier process ended is still true and still untold, so the newer record
-// keeps it rather than dropping it. The cause and its death are the newer's together, since the
-// death names the cause's opening sentence.
+// keeps it rather than dropping it. The cause, its death and whether the end was from outside the
+// pod are the newer's together, since the last two say what kind of end the cause names.
 func (e EndedWork) joined(newer EndedWork) EndedWork {
 	newer.Turn = newer.Turn || e.Turn
 	newer.TaskTurn = newer.TaskTurn || e.TaskTurn
@@ -142,11 +155,11 @@ type ActivityReport struct {
 // controllerKeeper.keep, RequestRetry) and the workflow's start of a retired worker's phase
 // (daemon's outbox.supervise, RequestRetry) — and that session's next turn reads what the stop
 // ended (dispatch://INFRA-3276 R3). endDisplaced and endFromOutside are the two causes of a process
-// found gone through no fault of its own (displaced), and they say who ended it: endDisplaced an
-// act of the daemon's own (runtime.Observation.Displaced: its replacement of the pod, or its
-// take-over of another runtime's process), and endFromOutside an end that something outside the
-// pod made (runtime.PodEndNotOurs, endedFromOutside), which the daemon did not make and so never
-// tells as a replacement.
+// found gone through no fault of its own, which recordDisplaced records, and they say who ended
+// it: endDisplaced an act of the daemon's own (runtime.Observation.Displaced: its replacement of
+// the pod, or its take-over of another runtime's process; displaced), and endFromOutside an end
+// that something outside the pod made (runtime.PodEndNotOurs, endedFromOutside), which the daemon
+// did not make and so never tells as a replacement.
 //
 // The cause is read into an agent's prompt as it stands (RelaunchSentence), so every word of it
 // that is not the daemon's own — the runtime's account of a death, the failure sentence that can
@@ -234,10 +247,10 @@ func endFailed(why string) string { return "its claim failed: " + strconv.Quote(
 func endNeverReady(never string) string { return "its agent " + never + ", so the daemon retired it" }
 
 // recordEnd records what letting the claim's process go ends, for cause, before anything of the
-// process is cleared: letGo calls it first, and so do the two decisions that find the process
-// already gone (died, displaced), through recordGoneEnd, before they take its task back, since
-// what they find is the whole of what that process's end did and the let-go they lead to can be
-// a wake's turn away.
+// process is cleared: letGo calls it first, and so do the decisions that find the process already
+// gone (died, recordDisplaced), through recordGoneEnd, before they take its task back, since what
+// they find is the whole of what that process's end did and the let-go they lead to can be a
+// wake's turn away.
 //
 // It records nothing for a claim that records no process, for noEnd, and for a launch whose end
 // is recorded already (EndedWork.Generation). Otherwise it reads what it decides on: whether a
@@ -293,7 +306,11 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // without this the record would be skipped. A claim holding no task is left to the rule above:
 // its death is not charged, and a record kept for it would wake a parked agent with a delivery of
 // its own (queueRelaunch).
-func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.DeathCauseKind) {
+//
+// fromOutside is whether the end is one from outside the pod, which the record carries from its
+// making (EndedWork.FromOutside): true where endedFromOutside records it (recordDisplaced), and
+// false for every other let-go.
+func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.DeathCauseKind, fromOutside bool) {
 	m.untellInFlight()
 	if cause == noEnd || m.claim.Locator == nil {
 		return
@@ -302,7 +319,8 @@ func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.Dea
 		return
 	}
 	state := m.endState()
-	ended := EndedWork{Cause: cause, Death: death, Generation: m.claim.Generation, Turn: state == StateWorking}
+	ended := EndedWork{Cause: cause, Death: death, FromOutside: fromOutside, Generation: m.claim.Generation,
+		Turn: state == StateWorking}
 	// The pending task's turn was cut off where this let-go's own decision takes the task back
 	// (interrupted, cutTurnOf), whatever the claim's state: a turn that ended before its prompt's
 	// result came leaves the claim idle with the task confirmed, and a take-back from there sends
@@ -345,21 +363,21 @@ func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.Dea
 	m.claim.EndedWork, m.carried.ended = ended, false
 }
 
-// recordGoneEnd is recordEnd for the two decisions that find the claim's process already gone and
-// record its end before they take its task back (died, displaced). Each takes a confirmed task
-// back whatever the claim's state — died at once, displaced first thing in its replacement
-// (replaceProcess, replaceNow) — so the task is marked here as taken by this decision
-// (Machine.cutTurnOf), under the id it still holds, and the record says its turn was cut off as
-// the record of a let-go that follows its take-back says it. The take-back then moves the mark to
-// the id it gives the task (interrupted), and letGo clears it with the process. A take-back the
-// store refuses leaves the mark on the task it left confirmed, which no later let-go of this
-// process reads: the record of this launch already stands (EndedWork.Generation).
-// death is recordEnd's.
-func (m *Machine) recordGoneEnd(ctx context.Context, cause string, death runtime.DeathCauseKind) {
+// recordGoneEnd is recordEnd for the decisions that find the claim's process already gone and
+// record its end before they take its task back (died, recordDisplaced). Each takes a confirmed
+// task back whatever the claim's state — died and endedFromOutside at once, displaced first thing
+// in its replacement (replaceProcess, replaceNow) — so the task is marked here as taken by this
+// decision (Machine.cutTurnOf), under the id it still holds, and the record says its turn was cut
+// off as the record of a let-go that follows its take-back says it. The take-back then moves the
+// mark to the id it gives the task (interrupted), and letGo clears it with the process. A
+// take-back the store refuses leaves the mark on the task it left confirmed, which no later
+// let-go of this process reads: the record of this launch already stands (EndedWork.Generation).
+// death and fromOutside are recordEnd's.
+func (m *Machine) recordGoneEnd(ctx context.Context, cause string, death runtime.DeathCauseKind, fromOutside bool) {
 	if p := m.claim.Pending; p != nil && !p.ConfirmedAt.IsZero() {
 		m.cutTurnOf = p.ID
 	}
-	m.recordEnd(ctx, cause, death)
+	m.recordEnd(ctx, cause, death, fromOutside)
 }
 
 // endState is the claim's state as a let-go reads it for the turn it cuts off (recordEnd): the

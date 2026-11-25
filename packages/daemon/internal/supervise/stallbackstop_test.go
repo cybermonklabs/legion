@@ -1108,7 +1108,7 @@ func TestTheStallRecoveriesLogAClaimThatRecordsNoProcess(t *testing.T) {
 			act: func(h *harness, m *Machine) error {
 				return h.insideDecision(m, func() error {
 					return m.displaced(h.ctx, runtime.Observation{Kind: runtime.Gone, Displaced: true,
-						At: h.clock.Now(), Detail: "the daemon replaced the pod"}, endDisplaced)
+						At: h.clock.Now(), Detail: "the daemon replaced the pod"})
 				})
 			},
 		},
