@@ -174,13 +174,14 @@ $RUNNER_TEMP, so the checkout stays clean.
 `-ldflags='-s -w'` leaves out the symbol table and the DWARF debug information, which no
 leg reads: a panic's stack trace still names each function, file and line (Go keeps its own
 line table for that), and `go version -m` still reads the build information. Without them the
-artifact every shard and alone leg downloads was 107,567,572 bytes zipped and 248,108,722
-unzipped (run 45062410823); stripped, about half that (the binaries job's upload step logs
-each run's size). The download is where a leg's run has failed
-on the network: on 2026-11-22 five leg downloads of about 4,330 stalled for the step's
-whole 2 minutes, and three legs failed when the second attempt stalled too (shard 4 of
-merge group 45062410823 among them). Half the bytes is half the time a slow connection
-has to be slow in.
+artifact every shard and alone leg downloads was 107,568,042 bytes zipped and 248,108,722
+unzipped (run 45062410823); stripped, it was 55,287,947 bytes zipped (run 45081810035), 49%
+less, both as the run's artifact list gives `size_in_bytes`. The download is where a leg's run
+has failed on the network: on 2026-11-22 five leg downloads of about 4,330 stalled for the
+step's whole 2 minutes, and three legs failed when the second attempt stalled too (shard 4 of
+merge group 45062410823 among them). Fewer bytes shorten a read whose connection slows; they do
+nothing for one whose connection stops, which is the second read's to end and resume (the
+section on why the second read of the binaries is a script).
 
 ## Why the binaries artifact's name holds no run attempt
 
@@ -411,7 +412,8 @@ minutes, twenty times the longest of the other reads. That is not this file's ru
 the measured maximum plus 15 per cent, which the 428 s read would put at 9 minutes: those
 9 minutes are the wait this bound is here to cut, since the same bytes took seconds on
 every other leg. The second attempt runs only when the first did not end in success, and
-a second failure fails the job there, by name.
+a second failure fails the job there, by name. The second attempt is a script and not the
+action again; the section after this one says why.
 
 EACH ATTEMPT INTO A DIRECTORY OF ITS OWN. A step that runs past its budget in a
 `container:` job ends the `docker exec` that started it, and the action's process inside
@@ -419,6 +421,40 @@ the container can outlive it (moby/moby#9098) and go on writing the files it was
 extracting. Into a directory of its own, those writes reach nothing a later step reads:
 the step after the two copies the attempt that succeeded into the directory
 run-broker.sh serves from.
+
+## Why the second read of the binaries is a script
+
+On 2026-11-22, 5 of about 4,330 leg downloads of this artifact stalled for their step's whole 2
+minutes (p50 3 s, p99 8 s): alone legs 137037296561 and 137185227791, shard legs 137092255904,
+137105073720 and 137332367544. In 3 of them the second attempt, which was
+actions/download-artifact again, stalled for its 2 minutes too and the leg failed: two
+pull-request runs, and merge group 45062410823, which took #4234 out of the queue.
+
+The stall was the leg's own connection to blob storage, not the artifact service: the
+action had its answer's headers (it logs a deprecation warning from the unzip stream it
+builds only after them) and then nothing for 120 s, while the other six legs of 45062410823
+read the same blob at the same minute in 3 s. The stalls met three storage accounts and two
+regions. Nor was it the unzip: the action's unzip-stream 0.3.4, fed that run's 107 MB zip in
+random chunk sizes, finished 40 of 40 times in about 3 s on a developer machine.
+
+The action cannot be told to do better. Its download (streamExtract, the same in v8.0.1 and
+v8.0.2) ends a connection only after 30 s with no byte at all, starts again from byte 0, and
+takes no input for either: a connection that goes slow rather than silent is never ended,
+and one that is ended throws away what it read. So the second read is
+.github/scripts/dispatch-browser-fetch-binaries.sh, which reads the same artifact by its REST
+address with curl: an attempt whose connection stays under 1 MiB a second for 10 s ends
+(`--speed-limit`, `--speed-time`), the next one opens a new connection and asks for the bytes
+after the last one's (`--continue-at`), and the whole zip is held to the artifact's sha256
+digest before it is unzipped. Each attempt prints its bytes, its speed and the TCP segments
+the leg retransmitted during it, so the next stall says whether the connection was silent or
+slow. Its first read stays actions/download-artifact, which reads in seconds on all but about
+one leg in a thousand. The script runs in the step's 2 minutes, with the same directory of
+its own as the action's attempt, and reads the artifact the action reads, `<job>-binaries`,
+given the calling job's id (`${{ inputs.job }}`): a pull request labelled full-ci runs both
+callers in one run, and each reads only its own build's binaries. A re-run uploads them again
+under the same name, and the action takes the highest id of the run's artifacts of that name
+(run 45306887784 held three by its attempt 3, and the highest id was not the newest by
+`created_at`), so the script takes that same one and reads its address, size and digest from it.
 
 ## What the shard job places, and what its budget leaves for it
 

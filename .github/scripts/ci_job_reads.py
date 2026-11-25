@@ -1934,6 +1934,8 @@ BROWSER_VERDICT_STEP = "Fail when a leg failed or the merged report holds a fail
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
+# One name, two steps: the shard job's and the alone job's second read of the binaries artifact.
+BROWSER_FETCH_STEP = "Download the binaries again, after a first attempt that did not complete"
 # One name, two steps: the shard job's and the alone job's, each running a script of its own,
 # since the shard job's machine also runs the file store whose log that job collects.
 BROWSER_RECORD_STEP = "What the run left behind"
@@ -2230,6 +2232,9 @@ def browser_gate(filter, job):
          f"{at_browser(BROWSER_PG_STEP)} and {at_browser(BROWSER_PG_STEP, BROWSER_ALONE)} "
          "run it for the reading of the image's PostgreSQL their stacks start"),
         (".github/scripts/dispatch-browser-latest-blobs.sh", at_browser(BROWSER_SELECT_STEP, BROWSER_MERGE)),
+        (".github/scripts/dispatch-browser-fetch-binaries.sh",
+         f"{at_browser(BROWSER_FETCH_STEP)} and {at_browser(BROWSER_FETCH_STEP, BROWSER_ALONE)} run it "
+         "when actions/download-artifact's first read of the binaries did not complete"),
         (".github/scripts/dispatch-browser-run-reads.sh",
          f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} runs its jobs mode over this run's "
          f"own attempt's jobs, and {at_browser(BROWSER_BLOBS_REFUSED_STEP, BROWSER_MERGE)} its "
