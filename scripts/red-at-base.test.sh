@@ -17,12 +17,13 @@
 #   lacks, a package nobody installed, a teardown whose assertion the base breaks, a setup that
 #   fails, two files in one line), e2e (a case that fails in the worktree and would pass in the
 #   checkout, a case that passes, a case the script does not have, two cases in one line, a case
-#   that skips, one that prints its start and no result, one that dies after its start) and cmd (a
-#   script that reads the base and exits non-zero, a command that exits 0, a command and a
-#   directory the base lacks, a script the line does not copy, an interpreter that is not there, a
-#   command that exits 127 itself, a script bash finds on PATH, the line's own TMPDIR, a bash
-#   command string, exported BASHOPTS and SHELLOPTS unchanged by the launcher, PWD and OLDPWD for
-#   a non-shell command);
+#   that skips, one that prints its start and no result, one that dies after its start, a driver
+#   that the line's Go file keeps from building at the base, a base whose own driver does not
+#   build, and a driver that builds after the copy) and cmd (a script that reads the base and exits
+#   non-zero, a command that exits 0, a command and a directory the base lacks, a script the line
+#   does not copy, an interpreter that is not there, a command that exits 127 itself, a script bash
+#   finds on PATH, the line's own TMPDIR, a bash command string, exported BASHOPTS and SHELLOPTS
+#   unchanged by the launcher, PWD and OLDPWD for a non-shell command);
 # - each test that must read red at the base passes in the checkout first, so the base is what
 #   fails;
 # - a list whose every line is red, a BUILD-FAILED among them, exits 0;
@@ -127,6 +128,37 @@ import "testing"
 func TestLiveIsReady(t *testing.T) {
 	if !Ready() {
 		t.Fatal("not ready")
+	}
+}'
+# Two packages whose e2e test binaries are the drivers of scripts/e2e/scratch-driver.sh, as the
+# repository's live proofs build theirs (go test -c -tags e2e): e2edriver builds at the base, and
+# e2ebroken's own e2e test file calls Three, which the base lacks, so its driver does not build there.
+write e2edriver/driver.go 'package e2edriver
+
+func Ready() bool { return true }'
+write e2edriver/ready_e2e_test.go '//go:build e2e
+
+package e2edriver
+
+import "testing"
+
+func TestReady(t *testing.T) {
+	if !Ready() {
+		t.Fatal("not ready")
+	}
+}'
+write e2ebroken/broken.go 'package e2ebroken
+
+func Two() int { return 2 }'
+write e2ebroken/broken_e2e_test.go '//go:build e2e
+
+package e2ebroken
+
+import "testing"
+
+func TestThree(t *testing.T) {
+	if Three() != 3 {
+		t.Fatal("three is not three")
 	}
 }'
 # Programs of the base exercise PATH lookup, a failed exec, and the command's own exit status.
@@ -394,6 +426,69 @@ for case in ${SCRATCH_CASES_E2E_CASES//,/ }; do
     ;;
   esac
 done'
+# The change gives e2edriver Fresh and a test of it, and gives e2ebroken the Three its own e2e test
+# calls, with one more e2e test. The driver script builds the driver of each case's package before
+# the case starts, as a live proof does, and says so when the build fails.
+write e2edriver/driver.go 'package e2edriver
+
+func Ready() bool { return true }
+
+func Fresh() int { return 2 }'
+write e2edriver/fresh_e2e_test.go '//go:build e2e
+
+package e2edriver
+
+import "testing"
+
+func TestFresh(t *testing.T) {
+	if Fresh() != 2 {
+		t.Fatal("fresh is not two")
+	}
+}'
+write e2ebroken/broken.go 'package e2ebroken
+
+func Two() int { return 2 }
+
+func Three() int { return 3 }'
+write e2ebroken/more_e2e_test.go '//go:build e2e
+
+package e2ebroken
+
+import "testing"
+
+func TestBroken(t *testing.T) {
+	if Two() != 2 {
+		t.Fatal("two is not two")
+	}
+}'
+# shellcheck disable=SC2016 # the script's own expansions, run by its bash
+write scripts/e2e/scratch-driver.sh '#!/usr/bin/env bash
+# The cases of SCRATCH_DRIVER_E2E_CASES, commas between them, each run by the e2e test binary of its
+# package, which the script builds before the case starts.
+set -euo pipefail
+root=$(git rev-parse --show-toplevel)
+work=$(mktemp -d "${TMPDIR:-/tmp}/scratch-driver.XXXXXX")
+trap '"'"'rm -rf -- "$work"'"'"' EXIT
+for case in ${SCRATCH_DRIVER_E2E_CASES//,/ }; do
+  case $case in
+  fresh | ready) package=e2edriver ;;
+  broken) package=e2ebroken ;;
+  *)
+    echo "scratch-driver.sh: no case is named $case" >&2
+    exit 2
+    ;;
+  esac
+  go -C "$root/$package" test -c -tags e2e -o "$work/driver" . || {
+    echo "FAIL driver: the driver did not build"
+    exit 1
+  }
+  echo "== $case"
+  "$work/driver" -test.count=1 -test.run "^Test${case^}\$" || {
+    echo "FAIL $case: the driver failed"
+    exit 1
+  }
+  echo "ok $case"
+done'
 # A subtest whose name holds a no-break space (U+00A0), which the testing package rewrites to _ in
 # both the name and the pattern.
 write calc/unicode_test.go 'package calc
@@ -568,6 +663,15 @@ status=$?
 set -e
 output="$(<"${scratch}/out")"
 expect_status 0
+case_name='the e2e driver cases pass in the checkout'
+set +e
+(cd "$repo" && SCRATCH_DRIVER_E2E_CASES=fresh,broken,ready bash scripts/e2e/scratch-driver.sh) >"${scratch}/out" 2>&1
+status=$?
+set -e
+output="$(<"${scratch}/out")"
+expect_status 0
+[[ $output == *"ok fresh"* && $output == *"ok broken"* && $output == *"ok ready"* ]] ||
+  fail 'expected scratch-driver.sh to pass fresh, broken and ready in the checkout'
 checkout_before="$(snapshot)"
 readonly checkout_before
 
@@ -810,6 +914,23 @@ expect_verdict 5 NO-TEST 'skips started and printed no ok'
 expect_verdict 6 NO-TEST 'start-only started and printed no ok'
 expect_verdict 7 RED 'exit 3 after == dies'
 expect_verdict 8 NO-TEST 'skips started and printed no ok'
+expect_nothing_left
+
+case_name='e2e: the driver of the line'"'"'s Go files, built at the base before and after the copy'
+run_tool "$(list e2e-driver \
+  'e2e scripts/e2e/scratch-driver.sh fresh scripts/e2e/scratch-driver.sh e2edriver/fresh_e2e_test.go' \
+  'e2e scripts/e2e/scratch-driver.sh broken scripts/e2e/scratch-driver.sh e2ebroken/more_e2e_test.go' \
+  'e2e scripts/e2e/scratch-driver.sh ready scripts/e2e/scratch-driver.sh e2edriver/ready_e2e_test.go')"
+expect_status 1
+expect_lines 3
+# The base's own driver builds, and with the line's file it does not: the file reads Fresh, which
+# the base lacks. That is the test's failure, read before the script runs, and the line names it.
+expect_verdict 1 BUILD-FAILED 'what the base lacks: Fresh'
+# The base's own driver does not build without the line's file, so no build failure after the copy
+# would be the file's.
+expect_verdict 2 NO-TEST 'does not build in e2ebroken with -tags e2e'
+# A driver that builds after the copy runs the script, and the case decides.
+expect_verdict 3 GREEN 'ok ready'
 expect_nothing_left
 
 case_name='a list of red lines, a BUILD-FAILED among them, exits 0; comments and blank lines are passed over'
