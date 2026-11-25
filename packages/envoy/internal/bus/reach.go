@@ -66,6 +66,11 @@ func LocalNATSURL(raw string) bool {
 // is read as nats://. For a URL it does not vouch for it answers "", so a caller that names the
 // server it checked names nothing of a rejected URL: no user info, path, query or fragment, and
 // no host, which a rejected URL can hold credential text in.
+//
+// raw is one server URL. nats.Connect(string) splits its argument on ",", while this reads a ","
+// before the last "@" as part of the user info: a URL that writes a remote server, a "," and then
+// a user info before a loopback server is that loopback server here and two servers there. So a
+// caller that hands raw to nats.Connect(string) refuses a "," in it first.
 func LoopbackNATSServer(raw string) (string, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.Contains(trimmed, "://") {
@@ -90,11 +95,30 @@ func LoopbackNATSServer(raw string) (string, bool) {
 // the user name, would log a token whole. raw is read as LocalNATSURL reads it. A URL with no "@"
 // carries no userinfo and comes back as written. Any other comes back as nothing that preceded an
 // "@" in it: parsed and rendered without its userinfo when that leaves no "@", and otherwise -
-// a URL that does not parse, or one with an "@" past its authority - as what follows its last "@".
+// a URL that does not parse, or one with an "@" past its authority - as what follows its last "@"
+// (NATSURLUserinfoParses is false for exactly those).
 func NATSURLWithoutUserinfo(raw string) string {
+	rendered, _ := natsURLWithoutUserinfo(raw)
+	return rendered
+}
+
+// NATSURLUserinfoParses reports whether a parse of raw reads its userinfo where it is written:
+// raw holds no "@", or it parses and its userinfo holds every "@" in it. It is false exactly where
+// NATSURLWithoutUserinfo falls back to what follows the last "@": a URL that does not parse, or one
+// whose user or password holds a "/", "?" or "#", which ends the authority before the "@", so the
+// parse reads credential text as the host. nats.go dials that host, and a failure to resolve it
+// names it, so a caller that prints a failed connect refuses such a URL before it dials.
+func NATSURLUserinfoParses(raw string) bool {
+	_, parses := natsURLWithoutUserinfo(raw)
+	return parses
+}
+
+// natsURLWithoutUserinfo is NATSURLWithoutUserinfo's rendering of raw, and whether it came from a
+// parse rather than the fallback.
+func natsURLWithoutUserinfo(raw string) (string, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.Contains(trimmed, "@") {
-		return trimmed
+		return trimmed, true
 	}
 	withScheme := trimmed
 	if !strings.Contains(withScheme, "://") {
@@ -103,8 +127,8 @@ func NATSURLWithoutUserinfo(raw string) string {
 	if parsed, err := url.Parse(withScheme); err == nil {
 		parsed.User = nil
 		if rendered := parsed.String(); !strings.Contains(rendered, "@") {
-			return rendered
+			return rendered, true
 		}
 	}
-	return trimmed[strings.LastIndex(trimmed, "@")+1:]
+	return trimmed[strings.LastIndex(trimmed, "@")+1:], false
 }

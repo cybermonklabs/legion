@@ -3,6 +3,7 @@ package buckets
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -434,26 +435,47 @@ func TestTheCommandNeedsAnInventory(t *testing.T) {
 	}
 }
 
-// A --nats URL nats.go cannot parse fails the connect with a *url.Error, whose text quotes the
-// whole URL, password included; the command reaches nats.go with any URL, since it sets
-// bus.AllowRemoteEnvVar. Both connects, the normal path's and --break-glass's, print fixed text
-// for it: no part of the URL, not even the host. A password that holds `/` is such a URL. The
-// password and user are built at run time, so no literal reads as a URL's user info to a scan.
+// fixtureSecret is a credential a test hands the command: random, so no literal of the source reads
+// as one and no word of it is on a line for any other reason, and tag names it in a failure. Its "+"
+// is no host name character, so a host read from it fails its lookup at once: Go's resolver refuses
+// a name that is no domain name before it asks DNS.
+func fixtureSecret(tag string) string {
+	return tag + "+" + rand.Text()
+}
+
+// A --nats URL whose user info a parse does not read where nats.go does prints no part of itself,
+// and is not dialed. One that does not parse fails nats.go's own parse with a *url.Error, whose text
+// quotes the whole URL, password included; one whose user or password holds a `/` ends its
+// authority there, so it parses with the credential's head as its host, which nats.go dials, and the
+// failed lookup names that head. The command reaches nats.go with any URL, since it sets
+// bus.AllowRemoteEnvVar. Both connects, the normal path's and --break-glass's, refuse each with fixed
+// text: no part of the URL, not even the host. At ff9c03a4a0 the two URLs that parse printed
+// `lookup <the credential's head>: no such host`.
 func TestAConnectToAURLThatDoesNotParsePrintsNoPartOfIt(t *testing.T) {
 	at := string(rune(64))
-	unparsed := "nats://ops-user:pa/ss-word" + at + "db.example:4222"
-	for _, args := range [][]string{
-		{"create", "--nats", unparsed, "--this-machine"},
-		{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--nats", unparsed},
+	user, head, tail := fixtureSecret("user"), fixtureSecret("head"), fixtureSecret("tail")
+	for _, c := range []struct {
+		name, url string
+		secrets   []string
+	}{
+		{"a password holding a slash, which does not parse", "nats://" + user + ":" + head + "/" + tail + at + "db.example:4222", []string{user, head, tail}},
+		{"a token holding a slash, its head read as the host", "nats://" + head + "/" + tail + at + "db.example:4222", []string{head, tail}},
+		{"a password holding a slash after digits, the user read as the host", "nats://" + user + ":2024/" + tail + at + "db.example:4222", []string{user, tail}},
 	} {
-		code, stdout, stderr := runCommand(t, &world{}, nil, args...)
-		const want = "envoy-infra buckets: connect: the --nats URL does not parse, so no part of it is printed: percent-encode every `/`, `@` and `:` in its user and its password\n"
-		if code != 1 || !strings.Contains(stderr, want) {
-			t.Fatalf("%s with a URL that does not parse = %d, want 1 and %q\n%s%s", args[1], code, want, stdout, stderr)
-		}
-		for _, part := range []string{"ops-user", "pa/ss", "ss-word", "db.example"} {
-			if strings.Contains(stdout+stderr, part) {
-				t.Fatalf("%s printed %q of the URL it could not parse:\n%s%s", args[1], part, stdout, stderr)
+		for _, args := range [][]string{
+			{"create", "--nats", c.url, "--this-machine"},
+			{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--nats", c.url},
+		} {
+			code, stdout, stderr := runCommand(t, &world{}, nil, args...)
+			const want = "envoy-infra buckets: connect: the --nats URL does not parse as user info and a server, so no part of it is printed: percent-encode every character of its user and its password but letters, digits and `-._~` (`/`, `?`, `#`, `@` and `:` among them)\n"
+			if code != 1 || !strings.Contains(stderr, want) {
+				t.Errorf("%s, %s = %d, want 1 and %q\n%s%s", c.name, args[1], code, want, stdout, stderr)
+			}
+			for _, part := range append(c.secrets, "db.example") {
+				if strings.Contains(stdout+stderr, part) {
+					tag, _, _ := strings.Cut(part, "+")
+					t.Errorf("%s, %s printed the URL's %s:\n%s%s", c.name, args[1], tag, stdout, stderr)
+				}
 			}
 		}
 	}

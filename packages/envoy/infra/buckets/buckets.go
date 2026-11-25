@@ -314,9 +314,8 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	f.run, f.http, f.pid = run, client, os.Getpid()
 	f.dispatch = slices.Contains(buckets, bus.CIStateBucket)
 
-	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets"), bus.WithEnvironment(operatorEnvironment), bus.WithInboxPrefix(InboxPrefix))
-	if err != nil {
-		fmt.Fprintln(stderr, connectFailure(natsURL, err))
+	nc := connect(stderr, natsURL, bus.WithName("envoy-infra-buckets"), bus.WithEnvironment(operatorEnvironment), bus.WithInboxPrefix(InboxPrefix))
+	if nc == nil {
 		return 1
 	}
 	defer nc.Close()
@@ -464,9 +463,8 @@ func breakGlassUsage(flags *flag.FlagSet, action string, breakGlass bool, operat
 // updating nothing, for a bucket another client made after the read: found by its own lookup, or
 // in the answer to its create. The run then stops there, refused, and creates no bucket after it.
 func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, buckets []string, replicas int) int {
-	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets-break-glass"), bus.WithEnvironment(operatorEnvironment))
-	if err != nil {
-		fmt.Fprintln(stderr, connectFailure(natsURL, err))
+	nc := connect(stderr, natsURL, bus.WithName("envoy-infra-buckets-break-glass"), bus.WithEnvironment(operatorEnvironment))
+	if nc == nil {
 		return 1
 	}
 	defer nc.Close()
@@ -502,15 +500,39 @@ func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, bucket
 	return 0
 }
 
+// unreadableURL is the line a --nats URL whose user info a parse does not read where it is written
+// prints, and that of one nats.go cannot parse: no part of the URL, not even the host, which such a
+// URL can hold credential text in.
+const unreadableURL = "envoy-infra buckets: connect: the --nats URL does not parse as user info and a server, so no part of it is printed: percent-encode every character of its user and its password but letters, digits and `-._~` (`/`, `?`, `#`, `@` and `:` among them)"
+
+// connect is both paths' connect to natsURL, or nil once it has written why there is none. The
+// command hands nats.go any URL, since it sets bus.AllowRemoteEnvVar, so it refuses, before any
+// dial, a URL whose user info a parse does not read where it is written (bus.NATSURLUserinfoParses):
+// a `/`, `?` or `#` in its user or password ends the authority there, nats.go dials the credential's
+// head as the host, and the failed lookup names it. A connect that fails prints connectFailure's line.
+func connect(stderr io.Writer, natsURL string, options ...bus.ConnectOption) *bus.Client {
+	if !bus.NATSURLUserinfoParses(natsURL) {
+		fmt.Fprintln(stderr, unreadableURL)
+		return nil
+	}
+	nc, err := bus.Connect([]string{natsURL}, options...)
+	if err != nil {
+		fmt.Fprintln(stderr, connectFailure(natsURL, err))
+		return nil
+	}
+	return nc
+}
+
 // connectFailure is the line a failed connect to natsURL prints. A URL nats.go cannot parse fails
-// with a *url.Error, whose text quotes the whole URL, password included, and the command hands
-// nats.go any URL, since it sets bus.AllowRemoteEnvVar: that failure prints fixed text, naming no
-// part of the URL, not even the host. Any other failure names the server without the URL's user
-// info (bus.NATSURLWithoutUserinfo) and the error, which then quotes no URL.
+// with a *url.Error, whose text quotes the whole URL: that failure prints unreadableURL. connect
+// refuses each such URL that holds an "@" first; one with none, or one with a space at either end,
+// which nats.go parses as given where bus trims it, still fails here. Any other failure names the
+// server without the URL's user info (bus.NATSURLWithoutUserinfo) and the error, which then quotes
+// no URL.
 func connectFailure(natsURL string, err error) string {
 	var unparsed *url.Error
 	if errors.As(err, &unparsed) {
-		return "envoy-infra buckets: connect: the --nats URL does not parse, so no part of it is printed: percent-encode every `/`, `@` and `:` in its user and its password"
+		return unreadableURL
 	}
 	return fmt.Sprintf("envoy-infra buckets: connect to %s: %v", bus.NATSURLWithoutUserinfo(natsURL), err)
 }
