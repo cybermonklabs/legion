@@ -1745,11 +1745,21 @@ func (p HookPrompt) Message(issue string) string {
 // a publish (the daemon's updateAsk). The daemon marks a claim asked only once its row's publish
 // reached a session, so an ask that finished undelivered is lost, not given, and the daemon's
 // sweep writes the claim a new row of this kind at a later tick.
+//
+// Branch, OwnFix and FixReads are the push the ask told the role to make (supervise.UpdatePush),
+// copied from it so a test reads them: Branch the branch beside a running fix the role pushes to,
+// OwnFix that the branch is the fix's own, and FixReads that the fix still reads its job, so the
+// implementer pushes nothing. An ask of an issue with no fix names none of them, and its row is
+// the release before's; the way back of 20261123134547_fix_beside_steps takes them off each queued
+// ask, since that release decodes strictly.
 type UpdateAsk struct {
-	Role  claim.Role `json:"role"`
-	Round string     `json:"round"`
-	Pod   string     `json:"pod,omitempty"`
-	Text  string     `json:"text"`
+	Role     claim.Role `json:"role"`
+	Round    string     `json:"round"`
+	Pod      string     `json:"pod,omitempty"`
+	Text     string     `json:"text"`
+	Branch   string     `json:"branch,omitempty"`
+	OwnFix   bool       `json:"ownFix,omitempty"`
+	FixReads bool       `json:"fixReads,omitempty"`
 }
 
 func (UpdateAsk) OutboxKind() OutboxKind { return OutboxKindUpdateAsk }
@@ -2633,6 +2643,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Text == "" {
 			return fmt.Errorf("an update ask carries the text the sweep built for its round")
+		}
+		if value.OwnFix && value.Branch == "" {
+			return fmt.Errorf("an update ask to the fix names the fix's own branch")
+		}
+		if value.FixReads && (value.Branch != "" || value.OwnFix) {
+			return fmt.Errorf("an update ask to a fix that reads its job names no branch: it pushes nothing")
 		}
 	case MergeQueueRead:
 		if value.Number < 1 || value.Head == "" {

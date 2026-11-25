@@ -3090,15 +3090,15 @@ func childArchitectFirstStart(issue record.Issue, payload record.SuperviseReques
 // the text the start composed (news.task) and the news it carries, the row's phase, run, entry
 // and check look, the row's own delivery id, and what the row says of the work: the decisions it
 // names (kept, encoded), whether it resends its entry, names the review round or carries news
-// alone, and the fix it is of with the head the fix's working copy is made at and the head the
-// task's working copy moves to (record.SuperviseRequest.Fix, FixFrom, MoveTo). The supervise
-// executor's comment above its one call says why each travels.
+// alone, and the fix it is of with the head the fix's working copy is made at, the fix's own
+// branch and the head the task's working copy moves to (record.SuperviseRequest.Fix, FixFrom,
+// FixBranch, MoveTo). The supervise executor's comment above its one call says why each travels.
 func deliverRequestOf(token claim.Token, row record.OutboxRow, payload record.SuperviseRequest, news startNews, kept []byte) *supervise.RequestDeliver {
 	return &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
 		Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
 		CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
 		ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News,
-		Fix: payload.Fix, FixFrom: payload.FixFrom, MoveTo: payload.MoveTo}
+		Fix: payload.Fix, FixFrom: payload.FixFrom, FixBranch: payload.FixBranch, MoveTo: payload.MoveTo}
 }
 
 // stopElsewhere suspends, as the daemon and keeping its session, every claim of issue that still
