@@ -239,9 +239,10 @@
 # is missing ends the mode exit 2, naming it and, at the end of the line, what provides it.
 # --help prints the same table after this header, from the same function, so the list a
 # reader reads is the list the mode checks.
-# --self-test needs its own lines and every line of --replay, --shape, --citations and
-# --landed, since it runs each of them; check.test.sh checks the lines of --self-test alone
-# before its first case, since each run a case makes checks its own mode's. Before any of
+# --self-test needs its own lines and every line of --replay, --shape, --citations,
+# --landed and --published, since it runs each of them; check.test.sh checks the lines of
+# --self-test alone before its first case, since each run a case makes checks its own
+# mode's. Before any of
 # them, every run checks the tools its ending is written with ("The run's own scratch and
 # record" above), which --help prints first. GNU timeout is the one line read before the
 # mode starts, since the mode itself runs under it (run_mode): a run with no timeout on PATH
@@ -363,9 +364,13 @@
 # program variables of PROGRAM_VARIABLES, IOC_FAKE_RATE_LIMIT, IOC_GITHUB_HEADER_AGE,
 # IOC_CHILD_BOUND, UV_OFFLINE, UV_NO_INDEX and UV_FIND_LINKS), which fixture_run passes
 # on; --self-test, and a shell that sources this script as check.test.sh does, unset the
-# caller's values of them first, so a fixture reads one only from a case. fixture_run
-# prints the directory of each run it makes, which holds the run's text and its ending
-# record (above), and check.test.sh reads each case by that record. A run the self-test
+# caller's values of them first, so a fixture reads one only from a case. --published over
+# the fixture reads the fixture's own Dispatch and not the caller's: fixture_published sets
+# DISPATCH_URL and DISPATCH_TOKEN_FILE on that one run to its address and its token and puts
+# its stub curl first on PATH, which answers the four reads the mode makes from the files of
+# the fixture's dispatch/ (fixture_build, fixture_delivery). fixture_run prints the
+# directory of each run it makes, which holds the run's text and its ending record (above),
+# and check.test.sh reads each case by that record. A run the self-test
 # makes that cannot run, over the fixture or of check.test.sh or --admitted, stops the
 # self-test there, naming the run and its reason, and ends it by the precedence above; it
 # is never counted as an assertion that failed.
@@ -452,6 +457,36 @@
 # request that main does not hold has no ancestry to read against one main holds; otherwise
 # landed-order passes naming the steps that are not landed, and that the order is not judged
 # for that reason.
+#
+# --published reads the default branch and the record of the delivery R13 asks for, both
+# live. published-tree holds the default branch's commit, or the one IOC_PUBLISHED_COMMIT
+# names, to the evidence, the transcript, this script, every path under
+# docs/research/internet-of-cognition/ the judgement names, read over the whole document,
+# front page and pages, as the directory's name and the path characters after it with its
+# trailing dots and slashes taken off, and the sentences each landed step added in its files;
+# a judgement that names no such path fails, by the expected-set rule, and a path of another
+# repository is not read. published-delivery reads this issue, its messages and its comments
+# and the comments of dispatch://INFRA-1098 from the Dispatch API, and holds them to the
+# judgement as Dispatch holds it, each part read by rule: the ranking, every item of the list
+# under "## The ranking", in order; the paragraph, the text under "## Where the authors'
+# account and the checked reading differ"; and each candidate page whose Cost cost_read reads
+# as above one engineer-day, its title and, after it, the text of its "Default if nobody
+# answers" line. Both sides are read after one normalisation: each run of whitespace one
+# space, Markdown emphasis and backticks taken out, and each row citation in square brackets
+# taken out with the space before it. A message reaches the assignee the issue names when
+# the assignee did not write it and it is addressed to no session or role, a reply among
+# them; one such message holds every part, and where none does, a FAIL names each part the
+# newest of them lacks. The gaps R8 found are the rows node-model.md's section "## 3. The
+# gaps" cites on the bold line of each gap: one comment of dispatch://INFRA-1098 names
+# INFRA-3134 and cites each of them, or, where that section cites none, the judgement holds
+# R8's sentence, R8_NO_GAP, after the normalisation. The publication to the controller is
+# judged by its record, as the approved departure of the plan has it, and the mode prints
+# that it reads the record and not the publication: one comment of this issue names the
+# topic CONTROLLER_TOPIC, gives the time of the publication as a UTC time in RFC 3339 form,
+# as 2026-11-25T02:09:09Z, after no digit, and holds every item of the ranking, in order, as
+# the message must; where none does, a FAIL names each of the two the newest comment naming
+# the topic lacks.
+# --self-test runs the mode over its fixture's own Dispatch (fixture_published).
 #
 # --admitted reads the one table of the forms the evaluator admits, ADMITTED in reader_py:
 # it classifies the command of every row of claims.jsonl, prints each entry with the
@@ -904,16 +939,16 @@ landed-no-refusal|landed|no landed step's diff reaches a refusal path of the dae
 landed-third-change|landed|the third change, a refusal of a reviewer completion with no pair result, is not landed in any form|the third change landed as prose in a skill
 landed-coverage|landed|every non-blank line the merge commit of a step merged in another pull request added to a file its published list names is covered by the sentences the merged-in steps publish there, all but whitespace and a list marker|a line the merge commit added that its step's published list leaves out
 landed-proof-holds|landed|the proof the page of each step merged in another pull request writes holds every sentence the step publishes, backticks taken out|a published sentence the page's proof does not grep for
-published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every file a page links to|-
-published-delivery|published|the record of the delivery is on the issue: the message, the comment on dispatch://INFRA-1098 and the comment recording the publication|-
+published-tree|published|the default branch carries the evidence directory, the committed transcript, this script, every path under docs/research/internet-of-cognition/ the judgement names, front page and pages, and the sentences each landed step added in its files|a page that names a file of this directory the default branch's commit lacks
+published-delivery|published|the record of the delivery is on the issue: a message to its assignee carrying each item of the ranking in order, the paragraph on where the two accounts differ and each candidate above one engineer-day with its default after its title; a comment of dispatch://INFRA-1098 naming this issue that cites each gap node-model.md records, or, where it records none, R8's sentence in the judgement; and a comment of this issue naming the controller's topic, the time of the publication as a UTC time in RFC 3339 form and the ranking as published|a delivery message without the paragraph on where the two accounts differ
 admitted-form|admitted|every entry of ADMITTED, the forms the evaluator admits, is used by a row of claims.jsonl|-
 admitted-rows|admitted|every line of claims.jsonl is a row the one parse reads, and the classifier refuses no row that carries a command|-
 admitted-header|admitted|the table of admitted forms in the header above run_recorded is the one --admitted measures, line for line|-
 admitted-reserved|admitted|the header's list of reserved names is the reader's, and every name the runner and the shims record with starts with a reserved prefix|-
-self-test-baseline|self-test|the fixture deliverable passes --replay, --shape, --citations and --landed|-
+self-test-baseline|self-test|the fixture deliverable passes --replay, --shape, --citations, --landed and --published|-
 gate-cases|self-test|every case of check.test.sh, the faults the tester found, passes|-
 admitted-table|self-test|check.sh --admitted passes|-
-coverage-complete|self-test|the coverage report names every assertion family the gate holds|-
+coverage-complete|self-test|the coverage report names every assertion family the gate holds|a coverage report that omits one assertion family
 TABLE
 }
 
@@ -935,7 +970,7 @@ usage() {
 # mode | kind | name | what needs it | what provides it. The one table of what each mode
 # needs before it judges anything: prerequisites reads it before the mode's first live
 # read and first assertion, and --help prints it, so the two cannot drift. --self-test
-# needs its lines and those of the four modes it runs (prerequisite_rows). The last column
+# needs its lines and those of the five modes it runs (prerequisite_rows). The last column
 # is what a reader runs to provide it, and may hold a |. How each kind is checked:
 #   tool       the program is on PATH
 #   variable   the variable is set, one whose name ends _FILE names a readable file, one
@@ -993,8 +1028,9 @@ landed|history|IOC_HISTORY_REF|the commits of this pull request, which the defau
 landed|tool|timeout|ends the mode, and each child of it the mode bounds, proofs among them, at its bound, in a process group of its own|apt-get install coreutils
 landed|pcre|grep|reads each record the Not landed line of a step names as a whole token, with grep -P (whole_token)|GNU grep built with PCRE, as the distribution's grep is: apt-get install grep
 published|tool|git|fetches the default branch into the run's scratch|apt-get install git
-published|tool|jq|reads sources.json|apt-get install jq
+published|tool|jq|reads sources.json and judges the answers of the Dispatch API|apt-get install jq
 published|tool|curl|reads the Dispatch API|apt-get install curl
+published|tool|dispatch|reads the judgement, whose paths published-tree reads and whose ranking, paragraph and pages published-delivery holds the delivery to|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 published|variable|DISPATCH_URL|the address of the Dispatch API|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
 published|variable|DISPATCH_TOKEN_FILE|the bearer the reads of the Dispatch API send|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
 published|tool|timeout|ends the mode, and each child of it the mode bounds, at its bound, in a process group of its own|apt-get install coreutils
@@ -1013,7 +1049,7 @@ TABLE
 # its fixture builder needs; each run a case makes checks the lines of its own mode.
 prerequisite_rows() {
     local modes=" $1 " mode kind name why provides seen=" "
-    [ "$1" = self-test ] && modes=" self-test replay shape citations landed "
+    [ "$1" = self-test ] && modes=" self-test replay shape citations landed published "
     [ "$1" = cases ] && modes=" self-test "
     while IFS='|' read -r mode kind name why provides; do
         case "$modes" in *" $mode "*) ;; *) continue ;; esac
@@ -1123,7 +1159,7 @@ prerequisites_report() {
     printf '\nWhat each mode needs (prerequisite_table). A mode checks its own before it reads or\n'
     printf 'judges anything, and one that is missing ends the mode exit 2, naming it and, last,\n'
     printf 'what provides it. --self-test needs its own and those of --replay, --shape,\n'
-    printf -- '--citations and --landed, which it runs. --coverage and --help need nothing.\n'
+    printf -- '--citations, --landed and --published, which it runs. --coverage and --help need nothing.\n'
     printf '\nevery mode, before anything else (ENDING_TOOLS)\n'
     printf '  %-9s %-20s %s\n' tool "${ENDING_TOOLS// /, }" "make the run's own scratch and write and read its ending record"
     printf '  %-9s %-20s provided by: %s\n' '' '' "$ENDING_TOOLS_FROM"
@@ -2320,6 +2356,18 @@ coverage_report() {
   reads that the page names it, and resolves each dispatch:// record in Dispatch; it reads
   no pull request.
 GAPS
+}
+
+# coverage_missing <script>; each family of the assertion table that the coverage report
+# <script> --coverage prints names on no line, one per line, by the one reading of the
+# report coverage-complete makes: a line that starts with the family and a space.
+# --self-test reads this script's own report by it, and the planted copy's.
+coverage_missing() {
+    local coverage family
+    coverage="$(bash "$1" --coverage)"
+    while IFS='|' read -r family _mode _asserts _fault; do
+        printf '%s\n' "$coverage" | grep -q "^$family " || printf '%s\n' "$family"
+    done < <(assertion_table)
 }
 
 # ---------------------------------------------------------------- --replay
@@ -8072,23 +8120,151 @@ landed_proof_holds() {
 
 # ---------------------------------------------------------------- --published
 
+# R8's sentence where no gap is found, which published-delivery reads in the judgement when
+# node-model.md's section of the gaps cites none, and the topic of the project's controller,
+# the role that gives work to trees, to which R13 has the ranked list published.
+R8_NO_GAP='The node model holds a finding with its evidence and its verdict, and no gap was found.'
+CONTROLLER_TOPIC='notifications.role.legion-infra-controller'
+
+# delivery_parts; prints, as one JSON object, what published-delivery holds the message to,
+# read from the judgement judgement_load read: ranking, the items of the list under "## The
+# ranking", in order, each item's lines joined and its number taken off; differ, the text
+# under "## Where the authors' account and the checked reading differ", every paragraph of
+# it; and candidates, each candidate page whose Cost cost_read reads as above one
+# engineer-day, by its title and the text of its "Default if nobody answers" line. An item
+# runs from its number to the next item, heading or blank line, and on past a blank line
+# only by an indented line; the first other line after a blank line ends the list.
+delivery_parts() {
+    local page cost
+    {
+        judgement_text | awk -v differ="## Where the authors' account and the checked reading differ" '
+            function flush() { if (item != "") print "item\t" item; item = "" }
+            /^#+ / { flush(); ranking = ($0 == "## The ranking"); seen = 0; listed = 0; blank = 0; in_differ = ($0 == differ); next }
+            ranking && !listed {
+                if (match($0, /^[0-9]+[.)][ \t]+/)) { flush(); item = substr($0, RLENGTH + 1); seen = 1; blank = 0; next }
+                if ($0 ~ /^[ \t]*$/) { blank = 1; next }
+                if (!seen) next
+                if (!blank || $0 ~ /^(  |\t)/) { item = item " " $0; blank = 0; next }
+                flush(); listed = 1; next
+            }
+            in_differ { print "differ\t" $0 }
+            END { flush() }'
+        while IFS= read -r -d $'\f' page; do
+            cost="$(printf '%s\n' "$page" | cost_read)"
+            [ "${cost%%$'\t'*}" = high ] || continue
+            printf 'candidate\t%s\t%s\n' "$(printf '%s\n' "$page" | head -1 | sed 's/^### //')" \
+                "$(printf '%s\n' "$page" | grep -m1 -F -- '**Default if nobody answers:**' | sed 's/^.*\*\*Default if nobody answers:\*\*[[:space:]]*//')"
+        done < <(page_blocks)
+    } | jq -Rn '[inputs | split("\t")] | {
+        ranking: [.[] | select(.[0] == "item") | .[1:] | join("\t")],
+        differ: ([.[] | select(.[0] == "differ") | .[1:] | join("\t")] | join("\n")),
+        candidates: [.[] | select(.[0] == "candidate") | {title: .[1], default: (.[2:] | join("\t"))}]}'
+}
+
+# delivery_judge <directory>; judges the record of the delivery from the four reads of
+# Dispatch mode_published wrote into <directory> and the judgement, by the rule of the
+# header's "--published reads", and prints one line per verdict: fail or pass, a tab, and
+# the line published-delivery prints. The gaps are the rows node-model.md's section "## 3.
+# The gaps" cites on the bold line of each gap. It returns non-zero when what it reads
+# could not be read, as an answer of Dispatch that is no JSON.
+delivery_judge() {
+    local work="$1" parts gaps='[]' program
+    parts="$(delivery_parts)" || return 1
+    if [ -r "$EVIDENCE/node-model.md" ]; then
+        gaps="$(awk '/^##? / { on = ($0 ~ /^## ([0-9]+\. )?The gaps$/); next } on && /^\*\*/' "$EVIDENCE/node-model.md" |
+            grep -oE '\[[a-z0-9][a-z0-9-]*(, *[a-z0-9][a-z0-9-]*)*\]' | sed 's/[][ ]//g' | tr ',' '\n' | jq -Rn '[inputs | select(length > 0)] | unique')" || return 1
+    fi
+    program="$(
+        cat <<'JQ'
+def norm: gsub("[ \t\r\n]*\\[[a-z0-9][a-z0-9-]*(, *[a-z0-9][a-z0-9-]*)*\\]"; "")
+    | gsub("[`*]"; "")
+    | gsub("(?<a>^|[^A-Za-z0-9])_+"; "\(.a // "")")
+    | gsub("_+(?<a>[^A-Za-z0-9]|$)"; "\(.a // "")")
+    | gsub("\\s+"; " ") | ltrimstr(" ") | rtrimstr(" ");
+def after($s): split($s) as $p | if ($p | length) > 1 then $p[1:] | join($s) else null end;
+def lacking($items): reduce range(0; $items | length) as $i ({rest: ., lacks: []};
+    (.rest | after($items[$i])) as $r | if $r == null then .lacks += [$i + 1] else .rest = $r end) | .lacks;
+def items: (if length > 1 then "items " else "item " end) + (map(tostring) | join(", "))
+    + " of the list under '## The ranking' " + (if length > 1 then "are" else "is" end);
+def when: (.created_at // "") | rtrimstr("Z") | split(".") | [.[0], ((.[1] // "") + "000000000")[0:9]];
+def list: if type == "array" then .[] | select(type == "object") else empty end;
+def cites($id): (.body // "") | test("(^|[^a-z0-9-])" + $id + "($|[^a-z0-9-])");
+def lacks($p): ((.body // "") | norm) as $b
+    | [(($b | lacking($p.ranking)) as $l | if ($l | length) > 0 then "the ranking: \($l | items) not in it, one after another in the list's order" else empty end),
+       (if ($b | contains($p.differ)) then empty else "the paragraph on where the two accounts differ, the text under '## Where the authors' account and the checked reading differ'" end),
+       ($p.candidates[] as $c | ($b | after($c.title)) as $r
+         | if $r == null then "the candidate '\($c.name)', above one engineer-day, with its default: its title is not in it"
+           elif ($r | contains($c.default)) then empty
+           else "the candidate '\($c.name)', above one engineer-day, with its default: its default does not follow its title" end)];
+# stamp: a UTC time in RFC 3339 form, as 2026-11-25T02:09:09Z, standing after no digit.
+def stamp: "(^|[^0-9])(?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z)";
+# recorded_lacks($p): what a record of the publication lacks of the ranking as published and
+# the time of the publication, one sentence each.
+def recorded_lacks($p): ((.body // "") | norm | lacking($p.ranking)) as $l
+    | [(if ($l | length) > 0 then "the ranked list as published: \($l | items) not in it, one after another in the list's order" else empty end),
+       (if ((.body // "") | test(stamp)) then empty else "the time of the publication, a UTC time in RFC 3339 form, as 2026-11-25T02:09:09Z" end)];
+($parts | {ranking: [.ranking[] | norm | select(length > 0)], differ: (.differ | norm),
+    candidates: [.candidates[] | {name: .title, title: (.title | norm), default: (.default | norm)}]}) as $p
+| ((($issue[0] // {}).assignee // "") | ascii_downcase) as $assignee
+| [$messages[0] | list | (.message, (.replies | list)) | select(type == "object")
+    | select(.target == null and ((.author.kind // "") != "user" or ((.author.id // "") | ascii_downcase) != $assignee))] as $sent
+| [$sent[] | select(lacks($p) | length == 0)] as $holding
+| ($sent | sort_by(when) | last) as $newest
+| [$upstream[0] | list | select((.body // "") | contains("INFRA-3134"))] as $named
+| (if ($gaps | length) > 0 then
+     ([$named[] | select(. as $c | all($gaps[]; . as $g | $c | cites($g)))] | first) as $gapped
+     | if $gapped != null then {pass: "the comment dispatch://INFRA-1098/comment/\($gapped.id) names this issue and cites each of the \($gaps | length) gaps node-model.md records"}
+       elif ($named | length) == 0 then {fail: "no comment of dispatch://INFRA-1098 names INFRA-3134, so none records the gaps node-model.md's section of the gaps lists, the rows \($gaps | join(", "))"}
+       else ($named | sort_by(when) | last) as $c
+         | {fail: "no comment of dispatch://INFRA-1098 that names INFRA-3134 cites each gap node-model.md's section of the gaps lists: the newest, dispatch://INFRA-1098/comment/\($c.id), does not cite \([$gaps[] | . as $g | select($c | cites($g) | not)] | join(", "))"}
+       end
+   elif ($judgement | norm | contains($nogap | norm)) then {pass: "node-model.md's section of the gaps cites no gap, and the judgement says so in R8's words"}
+   else {fail: "node-model.md's section of the gaps cites no gap's row, and the judgement does not say '\($nogap)', the sentence R8 asks for where no gap is found"} end) as $d
+| [$comments[0] | list | select((.body // "") | norm | contains($topic))] as $recorded
+| ([$recorded[] | select(recorded_lacks($p) | length == 0)] | first) as $published
+| (if ($recorded | length) == 0 then {fails: ["no comment of this issue records the publication of the ranked list to the project's controller: none names the topic \($topic)"]}
+   elif $published == null then ($recorded | sort_by(when) | last) as $c
+     | {fails: [($c | recorded_lacks($p))[] | "the comment dispatch://INFRA-3134/comment/\($c.id), the newest of this issue that names the topic \($topic), does not carry \(.)"]}
+   else {pass: "the comment dispatch://INFRA-3134/comment/\($published.id) records the publication of the ranked list to \($topic) at \($published.body | capture(stamp).t), its \($p.ranking | length) items in order"} end) as $e
+| [(if ($p.ranking | length) == 0 then "the judgement's list under '## The ranking' holds no item, so neither the message nor the publication is held to the ranking" else empty end),
+   (if $p.differ == "" then "the judgement carries no text under '## Where the authors' account and the checked reading differ', so no message is held to the paragraph on where the two accounts differ" else empty end),
+   ($p.candidates[] | select(.default == "") | "the candidate page '\(.name)', above one engineer-day, carries no text on its Default if nobody answers line, so no message is held to its default"),
+   (if $assignee == "" then "this issue names no assignee, so no message on it reaches one"
+    elif ($holding | length) > 0 then empty
+    elif $newest == null then "no message on this issue reaches its assignee: none is one the assignee did not write and that is addressed to no session or role"
+    else ($newest | lacks($p))[] as $part | "the newest message on this issue to its assignee, dispatch://INFRA-3134/message/\($newest.id) of \($newest.created_at // "no time"), does not carry \($part)" end),
+   ($d.fail // empty), ($e.fails // [] | .[])] as $fails
+| if ($fails | length) > 0 then $fails[] | "fail\t" + .
+  else "pass\tthe record of the delivery is on the issue: the message dispatch://INFRA-3134/message/\($holding[0].id) carries the \($p.ranking | length) items of the ranking in order, the paragraph on where the two accounts differ and the \($p.candidates | length) candidates above one engineer-day, each with its default; \($d.pass); and \($e.pass)" end
+JQ
+    )"
+    jq -rn --slurpfile issue "$work/issue" --slurpfile messages "$work/messages" --slurpfile comments "$work/comments" \
+        --slurpfile upstream "$work/upstream" --rawfile judgement "$RUN_SCRATCH/judgement.md" --argjson parts "$parts" \
+        --argjson gaps "$gaps" --arg nogap "$R8_NO_GAP" --arg topic "$CONTROLLER_TOPIC" "$program"
+}
+
 mode_published() {
     local remote head work="$RUN_SCRATCH/published-mode"
     remote="$(jq -r '.our_repository.url' "$EVIDENCE/sources.json")"
     mkdir -p "$work"
-    # The live inputs, read through live_read before any assertion judges: the three
-    # Dispatch reads the delivery is judged by, then the default branch from GitHub,
+    # The live inputs, read through live_read before any assertion judges: the four
+    # Dispatch reads the delivery is judged by, the comments and the messages of this issue,
+    # the comments of INFRA-1098 and the issue itself, which names its assignee; the
+    # judgement, whose paths published-tree reads and whose ranking, paragraph and pages
+    # published-delivery holds the delivery to; then the default branch from GitHub,
     # fetched into a clone of this run's scratch and never into this repository's own
     # object store. A source that does not answer ends the mode, exit 2.
     live_read "Dispatch, the read of the comments of INFRA-3134" "$work/comments" dispatch_get '/api/v1/issues/INFRA-3134/comments?limit=200'
     live_read "Dispatch, the read of the messages of INFRA-3134" "$work/messages" dispatch_get '/api/v1/issues/INFRA-3134/messages?limit=200'
     live_read "Dispatch, the read of the comments of INFRA-1098" "$work/upstream" dispatch_get '/api/v1/issues/INFRA-1098/comments?limit=200'
+    live_read "Dispatch, the read of INFRA-3134" "$work/issue" dispatch_get '/api/v1/issues/INFRA-3134'
+    judgement_load
     head="${IOC_PUBLISHED_COMMIT:-}"
     if [ -z "$head" ]; then
         live_read "GitHub, the read of the default branch of $remote" "$work/ls-remote" git ls-remote "$remote" refs/heads/main
         head="$(cut -f1 "$work/ls-remote")"
     fi
-    local clone="$work/clone" missing=0 path landed_steps=0 not_landed=""
+    local clone="$work/clone" missing=0 path landed_steps=0 not_landed="" named=0
     if [ -n "$head" ]; then
         git init --quiet "$clone" 2>/dev/null || cannot_run environment " --published: git init of the scratch clone failed."
         live_read "GitHub, the fetch of $head from $remote" "$work/fetch.log" git -C "$clone" fetch --quiet --depth 1 --no-tags "$remote" "$head"
@@ -8103,6 +8279,22 @@ mode_published() {
                 fail published-tree "the default branch at $head does not carry docs/research/internet-of-cognition/$path"
             }
         done
+        # Every path under this directory the judgement names, read over the whole document,
+        # front page and pages, stands at the commit: each run of the directory's name and the
+        # path characters after it, its trailing dots and slashes taken off, since a sentence
+        # ends a path with them and no path of the directory does. A judgement that names
+        # none is no pass, by the expected-set rule; a path of another repository is not read.
+        while IFS= read -r path; do
+            named=$((named + 1))
+            git -C "$clone" cat-file -e "$head:$path" 2>/dev/null || {
+                missing=$((missing + 1))
+                fail published-tree "the judgement names $path, and the default branch at $head does not carry it"
+            }
+        done < <(judgement_text | grep -oE 'docs/research/internet-of-cognition(/[A-Za-z0-9._+-]+)*' | sed 's#[./]*$##' | sort -u)
+        [ "$named" -gt 0 ] || {
+            missing=$((missing + 1))
+            fail published-tree "the judgement names no path under docs/research/internet-of-cognition/, so no file of this directory a page links to is read"
+        }
         # The files each landed step changed stand there as the step left them, each read
         # by the sentences its own step added and not by a word the file carried before.
         # Each entry of sources.json's landed list whose state is landed lists them as its
@@ -8137,23 +8329,22 @@ mode_published() {
         not_landed="$(jq -r --arg q "'" '[.landed[]? | select(.state != "landed") | $q + (.title // "") + $q] | join(", ")' "$EVIDENCE/sources.json")"
         [ -z "$not_landed" ] || not_landed="; the steps sources.json's landed list commits as not landed or not made changed no file and are not read there: $not_landed"
     fi
-    [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script and the files each of the $landed_steps landed steps changed$not_landed"
+    [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script, every path of this directory the judgement names, $named of them, and the files each of the $landed_steps landed steps changed$not_landed"
 
-    local delivery=0
-    grep -qF 'notifications.role.legion-infra-controller' "$work/comments" || {
-        delivery=$((delivery + 1))
-        fail published-delivery "no comment of this issue records the publication of the ranked list to the project's controller"
-    }
-    grep -qiF 'ranking' "$work/messages" || {
-        delivery=$((delivery + 1))
-        fail published-delivery "no message on this issue carries the ranking to the issue's assignee"
-    }
-    grep -qF 'INFRA-3134' "$work/upstream" || {
-        delivery=$((delivery + 1))
-        fail published-delivery "no comment of dispatch://INFRA-1098 carries this issue's reading of the node model"
-    }
-    [ "$delivery" -eq 0 ] && pass published-delivery "the record of the delivery is on the issue: the message, the comment on dispatch://INFRA-1098 and the comment recording the publication"
-    printf 'This mode reads the record of the publication to the controller, which is the comment above, and not the publication itself: an Envoy publication leaves no record a program can read.\n'
+    # The record of the delivery, held to the judgement by delivery_judge, one line per
+    # verdict.
+    local verdicts verdict line
+    if verdicts="$(delivery_judge "$work" 2>"$work/delivery.err")"; then
+        while IFS=$'\t' read -r verdict line; do
+            case "$verdict" in
+            fail) fail published-delivery "$line" ;;
+            pass) pass published-delivery "$line" ;;
+            esac
+        done <<<"$verdicts"
+    else
+        fail published-delivery "the answers of Dispatch to the reads above, with the judgement, could not be read: $(head -c 240 "$work/delivery.err" | tr '\n' ' ')"
+    fi
+    printf 'This mode reads the record of the publication to the controller, the comment of this issue that names its topic and carries the ranked list as published, and not the publication itself: an Envoy publication leaves no record a program can read.\n'
 }
 
 # ---------------------------------------------------------------- --self-test
@@ -8274,6 +8465,19 @@ PY
     printf '# The table\n\nNine pairs [f-behaviour-1].\n' >"$evidence/similarity/table.md"
     printf 'the quoted sentence of a published page\n' >"$evidence/published/page.txt"
     printf '# The fixture\n' >"$evidence/README.md"
+    # The node model read back, whose section of the gaps --published holds the comment on
+    # INFRA-1098 to: two gaps, each by the row its bold line cites.
+    cat >"$evidence/node-model.md" <<'MD'
+# The node model, read back
+
+## 3. The gaps
+
+**A finding is not a node** [n-gap-finding].
+Evidence: no block type of the fixture names one.
+
+**Evidence has one shape, the record of a command** [n-gap-evidence-kind].
+Evidence: a result carries what a command printed.
+MD
     mkdir -p "$evidence/records"
     cat >"$evidence/records/under-check.md" <<'MD'
 # The fixture record under check
@@ -8323,10 +8527,11 @@ JSON
 ## The ranking
 
 1. Structured metadata on an Envoy message — port — 2 engineer-days.
+2. One definitions record — reject — 4 engineer-days.
 
 ## The one thing to do first
 
-The Envoy field.
+The Envoy field, beside the gaps `docs/research/internet-of-cognition/node-model.md` records.
 
 ## Where the authors' account and the checked reading differ
 
@@ -8354,7 +8559,7 @@ The fixture's count reads 12,617 rows [f-figure-1].
 - **Cost:** 2 engineer-days
 - **Deletes or replaces:** nothing.
 - **Cost of reversing it:** one commit.
-- **Default if nobody answers:** nothing changes.
+- **Default if nobody answers:** the envelope keeps no field of the record a fact came from.
 - **Owner:** the Envoy tree.
 - **Node model:** it survives, read against dispatch://INFRA-1098/spec v97 and dispatch://INFRA-1253/spec v17.
 - **Test:** `printf 'ran once\n'` → ran once.
@@ -8369,7 +8574,7 @@ The fixture's count reads 12,617 rows [f-figure-1].
 - **Cost:** 4 engineer-days
 - **Deletes or replaces:** nothing.
 - **Cost of reversing it:** one commit.
-- **Default if nobody answers:** nothing changes.
+- **Default if nobody answers:** terms stay prose in each issue.
 - **Owner:** the Dispatch tree.
 - **Node model:** it survives, read against dispatch://INFRA-1098/spec v97 and dispatch://INFRA-1253/spec v17.
 - **Test:** `printf 'ran once\n'` → ran once.
@@ -8384,7 +8589,7 @@ The fixture's count reads 12,617 rows [f-figure-1].
 - **Cost:** 6 engineer-days
 - **Deletes or replaces:** nothing.
 - **Cost of reversing it:** one commit.
-- **Default if nobody answers:** nothing changes.
+- **Default if nobody answers:** a run's cost is read from the spend store alone.
 - **Owner:** the daemon tree.
 - **Node model:** it survives, read against dispatch://INFRA-1098/spec v97 and dispatch://INFRA-1253/spec v17.
 - **Test:** `printf 'ran once\n'` → ran once.
@@ -8419,6 +8624,37 @@ MD
     # commit leaves the fixture's working copy clean and a planted fault may check out.
     (cd "$dir/repo" && git add -A && git commit --quiet -m "docs(research): the pinned commits")
     sed -i "s/LANDED_ROWS/$rows/" "$dir/judgement.md"
+
+    # The fixture's own Dispatch, which --published reads (fixture_published): one file per
+    # read the mode makes, this issue, which names its assignee, its messages and its
+    # comments, which fixture_delivery writes, and the comments of INFRA-1098, one naming this
+    # issue and citing each gap of node-model.md; the token the reads send; and a stub curl,
+    # dispatch/bin/curl, which prints the file of each of those addresses at
+    # FIXTURE_DISPATCH_URL and answers no other, reading the files beside itself, so a copy of
+    # the fixture reads its own.
+    mkdir -p "$dir/dispatch/bin"
+    printf 'fixture-token\n' >"$dir/dispatch/token"
+    printf '{"key": "INFRA-3134", "assignee": "assignee@example.org"}\n' >"$dir/dispatch/issue.json"
+    jq -n --arg body 'dispatch://INFRA-3134 read the node model back and found two gaps, each recorded with its evidence in docs/research/internet-of-cognition/node-model.md.
+
+1. A finding is not a node [n-gap-finding].
+2. Evidence has one shape, the record of a command [n-gap-evidence-kind].' \
+        '[{id: "f1f1f1f1-0000-4000-8000-000000000003", issue_key: "INFRA-1098", author: {kind: "session", id: "fixture-session"}, created_at: "2026-11-25T09:00:00Z", body: $body}]' >"$dir/dispatch/upstream.json"
+    fixture_delivery "$dir"
+    cat >"$dir/dispatch/bin/curl" <<STUB
+#!/bin/sh
+here="\${0%/bin/curl}"
+for url; do :; done
+case "\$url" in
+'$FIXTURE_DISPATCH_URL/api/v1/issues/INFRA-3134') exec cat "\$here/issue.json" ;;
+'$FIXTURE_DISPATCH_URL/api/v1/issues/INFRA-3134/messages?limit=200') exec cat "\$here/messages.json" ;;
+'$FIXTURE_DISPATCH_URL/api/v1/issues/INFRA-3134/comments?limit=200') exec cat "\$here/comments.json" ;;
+'$FIXTURE_DISPATCH_URL/api/v1/issues/INFRA-1098/comments?limit=200') exec cat "\$here/upstream.json" ;;
+esac
+printf 'curl: (7) the fixture Dispatch answers no %s\n' "\$url" >&2
+exit 7
+STUB
+    chmod +x "$dir/dispatch/bin/curl"
 }
 
 fixture_run() {
@@ -8462,6 +8698,79 @@ fixture_run() {
     printf '%s\n' "$status" >"$run/status"
     printf '%s\n' "$run"
     return "$status"
+}
+
+# The fixture's own Dispatch, which --published reads over the fixture: FIXTURE_DISPATCH_URL
+# is its address, which no server holds, and the stub curl fixture_build writes beside the
+# fixture's answers, dispatch/bin/curl, answers it.
+FIXTURE_DISPATCH_URL=http://dispatch.fixture.invalid
+
+# fixture_published <dir>; fixture_run <dir> --published over the fixture's own Dispatch:
+# its stub curl first on PATH, DISPATCH_URL its address and DISPATCH_TOKEN_FILE its token, so
+# the run reads the fixture's delivery and never the caller's Dispatch.
+fixture_published() {
+    PATH="$1/dispatch/bin:$PATH" DISPATCH_URL="$FIXTURE_DISPATCH_URL" DISPATCH_TOKEN_FILE="$1/dispatch/token" fixture_run "$1" --published
+}
+
+# fixture_mode <dir> <mode>; the run of the mode over the fixture <dir> that --self-test
+# makes: --published by fixture_published, and every other mode by fixture_run.
+fixture_mode() {
+    if [ "$2" = published ]; then
+        fixture_published "$1"
+    else
+        fixture_run "$1" "--$2"
+    fi
+}
+
+# fixture_delivery <dir> [<part>]; writes the fixture's delivery into its Dispatch: the
+# message to its assignee, dispatch/messages.json, carrying the two items of the fixture's
+# ranking in order, the paragraph on where the two accounts differ and each of the three
+# candidates above one engineer-day with its default, and the comment that records the
+# publication of the ranked list to the controller, dispatch/comments.json, naming its
+# topic, the time of the publication and the ranking. Given <part>, it writes them with
+# that part missing: ranking, the message holds the first item alone; order, the two items in
+# the other order; differ, a sentence in place of the paragraph; default, the candidate 'One
+# definitions record' with no default after its title; publication, the comment holds the
+# first item alone; time, the comment gives its time in words and no UTC time. It returns
+# non-zero when either file could not be written.
+fixture_delivery() {
+    local dir="$1" part="${2:-}" first second ranking differ defaults published at
+    first='1. Structured metadata on an Envoy message — port — 2 engineer-days.'
+    second='2. One definitions record — reject — 4 engineer-days.'
+    case "$part" in
+    ranking) ranking="$first" ;;
+    order) ranking="$second"$'\n'"$first" ;;
+    *) ranking="$first"$'\n'"$second" ;;
+    esac
+    differ="The account describes the problem and the reading describes the artifacts.
+
+The fixture's count reads 12,617 rows [f-figure-1]."
+    [ "$part" != differ ] || differ='The two accounts differ, and the judgement says where.'
+    defaults="- **Structured metadata on an Envoy message:** the envelope keeps no field of the record a fact came from.
+- **One definitions record:** terms stay prose in each issue.
+- **An execution record under the gen_ai. names:** a run's cost is read from the spend store alone."
+    [ "$part" != default ] || defaults="${defaults/ terms stay prose in each issue./ it waits for an owner.}"
+    published="$first"$'\n'"$second" at=' at 2026-11-25T10:05:00Z'
+    [ "$part" != publication ] || published="$first"
+    [ "$part" != time ] || at=' this morning'
+    jq -n --arg body "The reading of this issue is done, and this is what it gives us.
+
+## The ranking
+
+$ranking
+
+## Where the authors' account and the checked reading differ
+
+$differ
+
+## The candidates above one engineer-day, each with its default
+
+$defaults" '[{message: {id: "f1f1f1f1-0000-4000-8000-000000000001", issue_key: "INFRA-3134", author: {kind: "session", id: "fixture-session"}, target: null, created_at: "2026-11-25T10:00:00.5Z", body: $body}, replies: []}]' \
+        >"$dir/dispatch/messages.json" &&
+        jq -n --arg body "The ranked list is published to \`$CONTROLLER_TOPIC\`$at, as:
+
+$published" '[{id: "f1f1f1f1-0000-4000-8000-000000000002", issue_key: "INFRA-3134", author: {kind: "session", id: "fixture-session"}, created_at: "2026-11-25T10:05:00Z", body: $body}]' \
+            >"$dir/dispatch/comments.json"
 }
 
 # gate_run <script> [<mode>]; runs a copy of the gate, or check.test.sh, once, with the
@@ -8787,6 +9096,16 @@ MD
         fixture_merged "$dir" "docs(skills): the reviewer pair is two rows (#4636)" >/dev/null &&
             fixture_merged_prove "$dir" "An execution record under the gen_ai. names" "$(fixture_merged_steps | jq -r '.[0].published[0].sentence')" || return 1
         ;;
+    published-tree)
+        # A page that names a file of this directory the fixture's head does not carry.
+        printf '%s\n' '- The count is kept in `docs/research/internet-of-cognition/coordination/no-such-count.md`.' >>"$dir/judgement.md"
+        ;;
+    published-delivery) fixture_delivery "$dir" differ || return 1 ;;
+    coverage-complete)
+        # The planted copy of this script, whose coverage report leaves out the line of the
+        # family published-delivery.
+        sed -i '/"--\$mode" "\$asserts"$/s/printf/[ "$family" = published-delivery ] || printf/' "$evidence/check.sh"
+        ;;
     *) return 1 ;;
     esac
     return 0
@@ -8809,10 +9128,10 @@ mode_self_test() {
     local work="$RUN_SCRATCH/self-test" baseline
     mkdir -p "$work"
     fixture_build "$work/base"
-    local mode modes="replay shape citations landed"
+    local mode modes="replay shape citations landed published"
     local broken=0
     for mode in $modes; do
-        baseline="$(fixture_run "$work/base" "--$mode")"
+        baseline="$(fixture_mode "$work/base" "$mode")"
         self_test_ran self-test-baseline "--$mode over the fixture deliverable" "$baseline"
         if [ "$RUN_ENDING" != passed ]; then
             broken=$((broken + 1))
@@ -8829,6 +9148,7 @@ mode_self_test() {
         rm -rf "$planted"
         mkdir -p "$planted"
         cp -r "$work/base/repo" "$planted/repo"
+        cp -r "$work/base/dispatch" "$planted/dispatch"
         cp "$work/base/judgement.md" "$planted/judgement.md"
         cp "$work/base/base" "$planted/base"
         cp "$work/base/rows" "$planted/rows"
@@ -8836,8 +9156,21 @@ mode_self_test() {
             fail "$family" "the self-test plants no fault of this kind, so nothing proves the gate reads it"
             continue
         fi
+        # coverage-complete is a row of --self-test itself, and the run that judges it over
+        # the fixture would be the self-test again: its plant is read by coverage_missing, the
+        # one reader coverage-complete reads this script's own report by, over the planted
+        # copy of this script.
+        if [ "$family" = coverage-complete ]; then
+            if [ -n "$(coverage_missing "$planted/repo/docs/research/internet-of-cognition/check.sh")" ]; then
+                pass "$family" "the gate fails the planted fault and names it: $fault"
+            else
+                fail "$family" "the gate passed the planted fault ($fault)"
+            fi
+            rm -rf "$planted"
+            continue
+        fi
         local out
-        out="$(fixture_run "$planted" "--$mode")"
+        out="$(fixture_mode "$planted" "$mode")"
         self_test_ran "$family" "--$mode over the fixture with the planted fault of $family" "$out"
         if printf '%s' "$RUN_FAILED" | grep -qxF "$family"; then
             pass "$family" "the gate fails the planted fault and names it: $fault"
@@ -8876,15 +9209,12 @@ mode_self_test() {
     fi
 
     # --coverage names every family the gate holds, so a mode nothing runs is still read.
-    local missing=0 coverage
-    coverage="$(bash "$EVIDENCE/check.sh" --coverage)"
-    while IFS='|' read -r family _mode _asserts _fault; do
-        printf '%s\n' "$coverage" | grep -q "^$family " || {
-            missing=$((missing + 1))
-            fail coverage-complete "the coverage report does not name the family $family"
-        }
-    done < <(assertion_table)
-    [ "$missing" -eq 0 ] && pass coverage-complete "the coverage report names every assertion family the gate holds"
+    local unnamed
+    unnamed="$(coverage_missing "$EVIDENCE/check.sh")"
+    while IFS= read -r family; do
+        [ -n "$family" ] && fail coverage-complete "the coverage report does not name the family $family"
+    done <<<"$unnamed"
+    [ -n "$unnamed" ] || pass coverage-complete "the coverage report names every assertion family the gate holds"
     rm -rf "$work"
 }
 

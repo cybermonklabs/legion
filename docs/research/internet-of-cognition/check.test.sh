@@ -16,8 +16,8 @@
 # (check.sh's header, "The ending record"), the cases being what it declares, through
 # check.sh's run_ending, and --self-test reads it by that record.
 # It needs what check.sh --self-test needs, which `check.sh --help` prints: the lines of
-# --self-test and of the four modes it runs over its fixture, --replay, --shape, --citations
-# and --landed. A case that needs uv or go prints SKIP when that tool is missing.
+# --self-test and of the five modes it runs over its fixture, --replay, --shape, --citations,
+# --landed and --published. A case that needs uv or go prints SKIP when that tool is missing.
 
 set -u
 
@@ -242,6 +242,7 @@ fresh() {
     local dir="$WORK/$1"
     mkdir -p "$dir"
     cp -r "$WORK/base/repo" "$dir/repo"
+    cp -r "$WORK/base/dispatch" "$dir/dispatch"
     cp "$WORK/base/judgement.md" "$WORK/base/base" "$WORK/base/rows" "$dir/"
     printf '%s' "$dir"
 }
@@ -1763,7 +1764,7 @@ ending_result "--self-test whose fixture's --citations has no Dispatch to read c
 out="$(IOC_HISTORY_REF="$head_commit" DISPATCH_URL=http://127.0.0.1:1 IOC_EVIDENCE="$self_copy" gate_run "$self_copy/check.sh" --self-test)"
 ending_result "--self-test with IOC_HISTORY_REF exported runs its fixture on the fixture's own history, and ends naming Dispatch" 2 "$SELF_CANNOT" "$out"
 out="$(IOC_EVIDENCE="$self_copy" gate_run "$self_copy/check.sh" --self-test)"
-ending_result "--self-test of the copy passes when every run it makes can run" 0 '^all 44 assertions passed$' "$out"
+ending_result "--self-test of the copy passes when every run it makes can run" 0 '^all 46 assertions passed$' "$out"
 
 # 86. --admitted reads the status of the install reader. At 0fdbb24ddf it read the
 # classifier's lines through a process substitution, so no status of python3 reached it:
@@ -1958,7 +1959,7 @@ copy="$(dir_copy parse-self-test "$WORK/cases-stub.sh")"
 printf '%s\n' "$LIST_COMMAND" >>"$copy/claims.jsonl"
 out="$(IOC_EVIDENCE="$copy" gate_run "$copy/check.sh" --self-test)"
 one_failure_result "--self-test over a claims.jsonl holding a row whose command is a list fails admitted-table alone, exit 1" admitted-table \
-    '^1 of 44 assertions failed: admitted-table$' "^FAIL admitted-table: .*admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$out"
+    '^1 of 46 assertions failed: admitted-table$' "^FAIL admitted-table: .*admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$out"
 
 # 89. check.test.sh ends the three ways the gate does, and --self-test reads it by its
 # ending record. At 9c82069807 case_result, passed_result and ending_result read a fixture
@@ -2049,7 +2050,7 @@ if [ "$RUN_CRASH" != 1 ] || [ -e "$out/ending" ] || ! grep -q "syntax error near
 fi
 out="$(IOC_EVIDENCE="$copy" gate_run "$copy/check.sh" --self-test)"
 one_failure_result "--self-test whose check.test.sh ends in a bash syntax error, exit 2 with no ending record, fails gate-cases" gate-cases \
-    '^1 of 44 assertions failed: gate-cases$' '^FAIL gate-cases: check\.test\.sh does not pass, exit 2: ' "$out"
+    '^1 of 46 assertions failed: gate-cases$' '^FAIL gate-cases: check\.test\.sh does not pass, exit 2: ' "$out"
 
 # 90-92 come from the thirteenth review of the pull request and the architect's rulings on
 # it of 2026-11-16T06:40Z and 07:08Z, and the header of check.sh states each rule they hold:
@@ -7399,6 +7400,175 @@ if ! accord_unrun "$cap_case"; then
         case_failed "$cap_case" "the row's flag is '$flag'; with none the script exited $without_status, '$(printf '%s\n' "$without" | head -1 | cut -c1-120)'; over an omp with no flag, $old_status, '$(printf '%s\n' "$old" | head -1 | cut -c1-120)'; with 7, $with_status and handed '$handed'"
     fi
 fi
+
+# 231. The message to the assignee carries the ranking, every item of the list under "## The
+# ranking", in its order (R13 and c-published; the architect's acceptance at 3e1e50ce, item
+# 6). At 3e1e50ce published-delivery read the messages of the issue for the word "ranking"
+# alone, so a message under the heading "## The ranking" that left out an item of the list,
+# or gave the items in another order, passed, exit 0. Cases 231 to 237 run --published over
+# the fixture's own Dispatch (check.sh's fixture_published), whose delivery fixture_delivery
+# writes with one part missing. Here the message holds the first of the fixture's two items
+# alone, and then the two in the other order: each must fail published-delivery alone, exit
+# 1, its one FAIL naming the newest message and item 2 of the ranking.
+DELIVERY_NEWEST="^FAIL published-delivery: the newest message on this issue to its assignee, dispatch://INFRA-3134/message/[^ ]+ of [^ ]+, does not carry "
+# delivery_plant <name> <part>; prints a fresh copy of the fixture whose delivery
+# fixture_delivery writes without <part>, and stops when it could not be written.
+delivery_plant() {
+    local dir
+    dir="$(fresh "$1")" && fixture_delivery "$dir" "$2" && printf '%s' "$dir" && return 0
+    printf 'FAIL the delivery without its %s could not be planted into the fixture\n' "$2" >&2
+    exit 1
+}
+for form in ranking order; do
+    case "$form" in
+    ranking) form_case="a delivery message whose ranking leaves out an item of the list fails published-delivery alone, naming the ranking and the item" ;;
+    order) form_case="a delivery message whose ranking gives the items in another order fails published-delivery alone, naming the ranking and the item" ;;
+    esac
+    dir="$(delivery_plant "delivery-$form" "$form")" || exit 1
+    one_failure_result "$form_case" published-delivery '^1 of 2 assertions failed: published-delivery$' \
+        "${DELIVERY_NEWEST}the ranking: item 2 of the list under '## The ranking' is not in it, one after another in the list's order$" "$(fixture_published "$dir")"
+done
+
+# 232. The message carries the paragraph on where the two accounts differ, the text under
+# "## Where the authors' account and the checked reading differ" (R13, the paragraph R2
+# requires). At 3e1e50ce a message holding the word "ranking" passed whatever else it held,
+# so a message with one sentence in place of the paragraph passed, exit 0. It must now fail
+# published-delivery alone, naming the paragraph. --self-test plants the same fault.
+dir="$(delivery_plant delivery-differ differ)" || exit 1
+one_failure_result "a delivery message without the paragraph on where the two accounts differ fails published-delivery alone, naming the paragraph" published-delivery \
+    '^1 of 2 assertions failed: published-delivery$' "${DELIVERY_NEWEST}the paragraph on where the two accounts differ, " "$(fixture_published "$dir")"
+
+# 233. The message carries each candidate above one engineer-day with its default, the text
+# of the page's "Default if nobody answers" line after the page's title (R13). At 3e1e50ce a
+# message that named the candidate 'One definitions record' with another default passed,
+# exit 0. It must now fail published-delivery alone, naming the candidate and its default.
+dir="$(delivery_plant delivery-default default)" || exit 1
+one_failure_result "a delivery message that names a candidate above one engineer-day without its default fails published-delivery alone, naming the candidate" published-delivery \
+    '^1 of 2 assertions failed: published-delivery$' "${DELIVERY_NEWEST}the candidate 'One definitions record', above one engineer-day, with its default: its default does not follow its title$" "$(fixture_published "$dir")"
+
+# 234. The comment on dispatch://INFRA-1098 records the gaps R8 found, each by the row
+# node-model.md's section "## 3. The gaps" cites for it, or, where that section cites none,
+# the judgement holds R8's sentence (the architect's ruling of 2026-11-25T02:09Z on item 6).
+# At 3e1e50ce published-delivery passed any comment of INFRA-1098 that held the word
+# INFRA-3134, so each of the two ways the part can fail passed, exit 0: a comment naming
+# this issue that cites one of the fixture's two gap rows, and a node-model.md whose section
+# of the gaps cites none beside a judgement without R8's sentence. Each must now fail
+# published-delivery alone, naming what is missing. The honest form of the second way, R8's
+# sentence in the judgement and no comment on INFRA-1098 at all, passes both assertions; at
+# 3e1e50ce it failed, since no comment held the word.
+dir="$(fresh delivery-gap-uncited)"
+jq '.[0].body |= sub("\n2\\. [^\n]*"; "")' "$dir/dispatch/upstream.json" >"$dir/upstream.json" &&
+    mv "$dir/upstream.json" "$dir/dispatch/upstream.json" && ! grep -q 'n-gap-evidence-kind' "$dir/dispatch/upstream.json" || {
+    printf 'FAIL the comment on INFRA-1098 citing one gap could not be planted into the fixture\n'
+    exit 1
+}
+one_failure_result "a comment on INFRA-1098 that names this issue and cites one of node-model.md's two gaps fails published-delivery alone, naming the gap it leaves out" published-delivery \
+    '^1 of 2 assertions failed: published-delivery$' '^FAIL published-delivery: no comment of dispatch://INFRA-1098 that names INFRA-3134 cites each gap .*: the newest, dispatch://INFRA-1098/comment/[^ ]+, does not cite n-gap-evidence-kind$' \
+    "$(fixture_published "$dir")"
+for form in unsaid said; do
+    dir="$(fresh "delivery-no-gap-$form")"
+    sed -i '/^\*\*/d' "$dir/repo/docs/research/internet-of-cognition/node-model.md"
+    if [ "$form" = unsaid ]; then
+        one_failure_result "a node-model.md that records no gap beside a judgement without R8's sentence fails published-delivery alone, naming the sentence" published-delivery \
+            '^1 of 2 assertions failed: published-delivery$' "^FAIL published-delivery: node-model\\.md's section of the gaps cites no gap's row, and the judgement does not say 'The node model holds a finding with its evidence and its verdict, and no gap was found\\.'" \
+            "$(fixture_published "$dir")"
+    else
+        printf '\n%s\n' "$R8_NO_GAP" >>"$dir/judgement.md"
+        printf '[]\n' >"$dir/dispatch/upstream.json"
+        ending_result "a node-model.md that records no gap beside a judgement holding R8's sentence passes --published with no comment on INFRA-1098" 0 '^all 2 assertions passed$' \
+            "$(fixture_published "$dir")"
+    fi
+done
+
+# 235. The publication of the ranked list to the controller is judged by its record, a
+# comment of this issue that names the topic notifications.role.legion-infra-controller, gives
+# the time of the publication as a UTC time in RFC 3339 form, and carries the ranking as
+# published (the approved departure of the plan: "its topic, its time and the ranking as
+# published"). At 3e1e50ce any comment that held the topic passed, so a record whose list
+# leaves out the second item passed, exit 0, and so did a record that gives its time in words,
+# "this morning", and no UTC time. Each must now fail published-delivery alone, naming the
+# comment and what it lacks: item 2 of the ranking, or the time of the publication.
+for form in publication time; do
+    case "$form" in
+    publication)
+        form_case="a record of the publication whose ranked list leaves out an item fails published-delivery alone, naming the item"
+        lacks="the ranked list as published: item 2 of the list under '## The ranking' is not in it"
+        ;;
+    time)
+        form_case="a record of the publication that gives no UTC time fails published-delivery alone, naming the time of the publication"
+        lacks='the time of the publication, a UTC time in RFC 3339 form, as 2026-11-25T02:09:09Z$'
+        ;;
+    esac
+    dir="$(delivery_plant "delivery-$form" "$form")" || exit 1
+    one_failure_result "$form_case" published-delivery '^1 of 2 assertions failed: published-delivery$' \
+        "^FAIL published-delivery: the comment dispatch://INFRA-3134/comment/[^ ]+, the newest of this issue that names the topic notifications\\.role\\.legion-infra-controller, does not carry $lacks" \
+        "$(fixture_published "$dir")"
+done
+
+# 236. The message is one to the issue's assignee: the issue names its assignee, and a message
+# reaches the assignee when the assignee did not write it and it is addressed to no session or
+# role. At 3e1e50ce the gate read neither, so the fixture's delivery message, holding every
+# part, passed as one the assignee wrote, its author's address in capitals where the issue's is
+# not, since an address is read without case, and as one addressed to a session, exit 0. Each
+# must now fail published-delivery alone: no message reaches the assignee.
+for form in author target; do
+    case "$form" in
+    author) edit='.[0].message.author = {kind: "user", id: "Assignee@Example.org"}' form_case="a delivery message the assignee wrote reaches no assignee, and fails published-delivery alone" ;;
+    target) edit='.[0].message.target = {kind: "session", id: "fixture-session"}' form_case="a delivery message addressed to a session reaches no assignee, and fails published-delivery alone" ;;
+    esac
+    dir="$(fresh "delivery-$form")"
+    jq "$edit" "$dir/dispatch/messages.json" >"$dir/messages.json" && mv "$dir/messages.json" "$dir/dispatch/messages.json" || {
+        printf 'FAIL the delivery message could not be planted into the fixture\n'
+        exit 1
+    }
+    one_failure_result "$form_case" published-delivery '^1 of 2 assertions failed: published-delivery$' \
+        '^FAIL published-delivery: no message on this issue reaches its assignee: ' "$(fixture_published "$dir")"
+done
+
+# 237. The honest delivery of cases 231 to 236: the fixture's message holds every part, the
+# comment on INFRA-1098 cites both gaps and the record of the publication carries the
+# ranking, so --published passes both its assertions, exit 0, as it did at 3e1e50ce, and its
+# text says it reads the record of the publication and not the publication.
+dir="$(fresh delivery-honest)"
+out="$(fixture_published "$dir")"
+ending_result "the fixture's honest delivery passes --published" 0 '^all 2 assertions passed$' "$out"
+if grep -qF 'This mode reads the record of the publication to the controller' "$out/text"; then
+    case_passed "--published says it reads the record of the publication to the controller and not the publication"
+else
+    case_failed "--published says it reads the record of the publication to the controller and not the publication" "$(tail -2 "$out/text" | tr '\n' ' ')"
+fi
+
+# 238. The default branch carries every path under docs/research/internet-of-cognition/ the
+# judgement names, front page and pages (the architect's ruling of 2026-11-25T02:09Z). At
+# 3e1e50ce published-tree read seven fixed files and the files of the landed list and no path
+# of the judgement, so a page naming coordination/no-such-count.md, which the fixture's head
+# does not carry, passed, exit 0. The case plants --self-test's fault of published-tree
+# (fixture_plant): it must fail published-tree alone, naming the path.
+dir="$(fresh published-page-path)"
+fixture_plant "$dir" published-tree || {
+    printf 'FAIL the page naming a file the head lacks could not be planted into the fixture\n'
+    exit 1
+}
+one_failure_result "a page that names a file of this directory the default branch's commit lacks fails published-tree alone, naming the path" published-tree \
+    '^1 of 2 assertions failed: published-tree$' '^FAIL published-tree: the judgement names docs/research/internet-of-cognition/coordination/no-such-count\.md, and the default branch at [0-9a-f]+ does not carry it$' \
+    "$(fixture_published "$dir")"
+
+# 239. The default branch carries the files each landed step changed. The case removes
+# skills/legion-worker/references/pr-body.md, the file of the fixture's landed step, in a
+# commit of the fixture's own head, and names the fixture's own repository as our
+# repository's url, so the mode fetches that head: published-tree must fail alone, naming the
+# file. The gate of 3e1e50ce failed it the same way, so this case guards the read and does not
+# bite.
+dir="$(fresh published-landed-file)"
+(cd "$dir/repo" && git rm --quiet skills/legion-worker/references/pr-body.md && git commit --quiet -m "the landed step's file removed") &&
+    jq --arg url "$dir/repo" '.our_repository.url = $url' "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
+    mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json" || {
+    printf 'FAIL the landed step'"'"'s file could not be removed from the fixture'"'"'s head\n'
+    exit 1
+}
+one_failure_result "a landed step's file the default branch's commit lacks fails published-tree alone, naming the file" published-tree \
+    '^1 of 2 assertions failed: published-tree$' '^FAIL published-tree: the default branch at [0-9a-f]+ does not carry skills/legion-worker/references/pr-body\.md$' \
+    "$(fixture_published "$dir")"
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
