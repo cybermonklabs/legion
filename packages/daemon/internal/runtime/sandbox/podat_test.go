@@ -14,6 +14,7 @@ import (
 // passed over, since its address may be a new pod's already; a pod of another project is not in
 // this runtime's watch at all.
 func TestPodAtIsTheRunningPodOfTheProjectThatHoldsTheAddress(t *testing.T) {
+	t.Parallel()
 	project := map[string]string{labelProject: testProject}
 	g := newRig(t, []k8sruntime.Object{
 		podObject("legion-legion-legion-208", "uid-running", "", project, corev1.PodStatus{

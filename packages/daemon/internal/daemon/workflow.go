@@ -1692,6 +1692,21 @@ func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorde
 	return lease.Identity, nil
 }
 
+// knownIdentity is the bot identity role's App commits as where the token source already holds
+// it (appauth.KnownIdentities: the identity a lease of that App fetched), read with no mint and
+// no call to GitHub; false before that App's first lease, and for a token source that answers no
+// such read, a test's fake among them. A bot identity is the App's own and no owner's, so it
+// needs no repository. A launch's table of every role's identity reads it for the roles of the
+// other App than the claim's own (specs.knownIdentity), so it costs that App no mint while the
+// daemon knows its identity.
+func (w *workflowRuntime) knownIdentity(role claim.Role) (runtime.GitIdentity, bool) {
+	known, ok := w.tokens.(appauth.KnownIdentities)
+	if !ok {
+		return runtime.GitIdentity{}, false
+	}
+	return known.KnownIdentity(appauth.AppRoleFor(role))
+}
+
 // ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 // missing or not checked out (outbox.ensureWorkspace), through the outbox, which orders every
 // provision of the shared clones (provisionLocks). The outbox exists from attach on, and attach
@@ -1810,7 +1825,8 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
-// (queueMergeStateFollow). All are set before the records' wake can reach the outbox
+// (queueMergeStateFollow). The outbox's branch create runs the private-name rules boot compiled
+// (privateNameRules). All are set before the records' wake can reach the outbox
 // (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
 // unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
 // and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
@@ -1823,6 +1839,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
+	w.outbox.privateNameRules = supervision.plan.privateNameRules
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outbox.sweepEvery = w.outboxSweep
 	w.outboxWake.Store(w.outbox)

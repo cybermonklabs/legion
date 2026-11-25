@@ -9,9 +9,9 @@
 #
 # <out-dir> is the directory the artifact's files are unzipped into, which the step after it
 # copies from. <job> is the id of the job that calls the workflow, its `${{ inputs.job }}`: the
-# artifact is `<job>-binaries`, as the build job names it, so a run of ci.yaml that runs both of
-# its callers (a pull request labelled full-ci) reads each caller's own artifact and never the
-# other's. GH_TOKEN is the run's own `${{ github.token }}`, a key of the step's `env:` and
+# artifact is `<job>-binaries`, as the build job names it. Each caller reads its own artifact,
+# even when several callers share a run. GH_TOKEN is the run's own `${{ github.token }}`, a key
+# of the step's `env:` and
 # never an argument: an argument is on the process's command line, which every process of the
 # runner can read in /proc, so the token reaches curl through a header file this script writes
 # with mode 0600. The runner sets the other three names it reads for every step:

@@ -1,0 +1,5 @@
+kind: Added
+body: 'For a caller that sends `Dispatch-Trees: 1`, every answer a read gives - `GET /api/v1/me/answers`, a search hit''s and a related item''s ask, one ask and its thread of answers, and an issue''s ask list - carries the display tree of each label it chose, at the label''s own index (`selected_trees`), a label of an option the ask has since renamed or removed included. An `ask.answered` event that replaced an answer carries the tree of each label the replaced answer chose under `payload.previous_answer.selected.<n>` in the envelope''s `trees` map: on the REST event lists only under the header, and always on a live frame.'
+time: 2026-11-16T11:23:16.989689822Z
+custom:
+    Issue: pr3125

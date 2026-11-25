@@ -9,6 +9,7 @@ import (
 // rows unknown, and only them: the boot's resume by rule acts on no unknown claim, so the first
 // upgraded boot never overrides a drain made before the upgrade.
 func TestSuspendedClaimsPredating0038MigrateAsUnknown(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 36)
