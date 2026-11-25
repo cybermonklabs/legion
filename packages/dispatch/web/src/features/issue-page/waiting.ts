@@ -7,8 +7,7 @@ import {
   deletedPostIds,
   inReviewList,
 } from "./decision-review";
-import { isOvertaken } from "./issue-address";
-import { ownStatesOf } from "./tree-read/tree-nodes";
+import { askIdsOf, closedReadIds } from "./node-states/node-states";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -51,8 +50,8 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * Which block a question is written as is read as the tree reads it, through the page's one
  * pairing rule (`decision-nodes.ts`' `askOfNode`) over the issue's open asks and the asks read
  * (`asksRead`, the page's), so a question closes its block with its ask's node whether it is
- * open or answered (`closedReadIds`), and an open ask is not counted where its ask's node or its
- * block is closed.
+ * open or answered (`node-states.ts`' `closedReadIds`), and an open ask is not counted where its
+ * ask's node or its block is closed.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -118,80 +117,6 @@ export function waitingOnReader(
     ).length;
   }
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };
-}
-
-/** One node of the tree read. */
-type AnswerNode = NonNullable<TreeAnswer["nodes"]>[number];
-
-/**
- * The read's own id (`node.id`) of each node of `tree` at or under an overtaken one, as the page
- * closes them: each node overtaken by a state of its own (`ownStatesOf`, which gives the block a
- * question is written as none, so a state its block's node holds closes nothing), each `ask` node
- * that is the ask of an overtaken ask node by the tree's one pairing rule (`decision-nodes.ts`'
- * `askOfNode`, over the issue's open asks and the asks read `reads` holds, open or answered) - the
- * block a question is written as, wherever the read answers it - and each node whose `parent`
- * chain reaches one of these. The tree draws the block and its ask as one row, which takes the
- * ask's state (`node-states.ts`' `stateIdOf`), so the block is closed with its ask's node. The read
- * need not answer an ask's node before its block, nor a parent before its children, so every node
- * that closes a branch is found before any branch is closed, and each node is closed once, even
- * where the read's parents lead round. None while no node of the read is overtaken, or the read
- * has not answered. The header's count reads it (`waitingOnReader`), and so do the browser rows'
- * gates (`e2e/issue-page-x.ts`), so each closes the nodes the page closes.
- */
-export function closedReadIds(
-  tree: TreeAnswer | undefined,
-  reads: DecisionReads
-): ReadonlySet<string> {
-  const nodes = tree?.nodes ?? [];
-  const overtaken = nodes.filter((node) => isOvertaken(ownStatesOf(node)));
-  if (overtaken.length === 0) return new Set();
-  const askOf = askOfNode(reads);
-  // The id of the ask each overtaken ask node is, which every ask node it pairs with is too.
-  const overtakenAsks = askIdsOf(overtaken, askOf);
-  // Each node's children, by the read's own id of the parent, which is what `parent` names.
-  const children = new Map<string, AnswerNode[]>();
-  for (const node of nodes) {
-    if (node.parent === null) continue;
-    const named = children.get(node.parent.id);
-    if (named === undefined) children.set(node.parent.id, [node]);
-    else named.push(node);
-  }
-  const closing = [
-    ...overtaken,
-    ...(overtakenAsks.size === 0
-      ? []
-      : nodes.filter((node) => {
-          const id = askIdOfNode(node, askOf);
-          return id !== undefined && overtakenAsks.has(id);
-        })),
-  ];
-  const closed = new Set<string>();
-  for (let node = closing.pop(); node !== undefined; node = closing.pop()) {
-    if (closed.has(node.id)) continue;
-    closed.add(node.id);
-    closing.push(...(children.get(node.id) ?? []));
-  }
-  return closed;
-}
-
-/** The id of the ask the `ask` node `node` is, by the tree's one pairing rule (`askOfNode`): a
- *  question's conversation node and the block it is written as give the same ask. Undefined for
- *  any other node, and for an ask node no ask of the reads is. */
-function askIdOfNode(node: AnswerNode, askOf: ReturnType<typeof askOfNode>): string | undefined {
-  return node.supertag === "ask" ? askOf(node)?.id : undefined;
-}
-
-/** The id of the ask each `ask` node of `nodes` is (`askIdOfNode`). */
-function askIdsOf(
-  nodes: readonly AnswerNode[],
-  askOf: ReturnType<typeof askOfNode>
-): ReadonlySet<string> {
-  return new Set(
-    nodes.flatMap((node) => {
-      const id = askIdOfNode(node, askOf);
-      return id === undefined ? [] : [id];
-    })
-  );
 }
 
 /** What the count leaves in the address's history entry, which the Decisions filter reads to put

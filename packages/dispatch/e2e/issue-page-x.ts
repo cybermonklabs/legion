@@ -136,8 +136,7 @@ export async function settleNodeApi(
 // ---------------------------------------------------------------------------------------------
 
 /** The reads `treeIdOf` names a node by - the issue read and the asks read - as `login` reads
- *  them, so a row names each node by the id the page draws it under; the same reads pair a
- *  question's block with its ask where the page closes nodes (`closedReadIds`). */
+ *  them, so a row names each node by the id the page draws it under. */
 export async function treeIdReads(key: string, login = "alice"): Promise<TreeIdReads> {
   const [issue, asks] = await Promise.all([
     getIssue(key, { login }),

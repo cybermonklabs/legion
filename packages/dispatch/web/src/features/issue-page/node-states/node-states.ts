@@ -1,8 +1,14 @@
+import {
+  askIdOf,
+  askOfNode,
+  type DecisionReads,
+  type Lookup,
+} from "../decision-nodes/decision-nodes";
 import { isOvertaken, isProposed } from "../issue-address";
 import type { NodeChip, NodeLife, TreeNode } from "../issue-tree";
 import { withoutVersion } from "../tree-keys";
-import { nodeStatesOf } from "../tree-read/tree-nodes";
-import type { TreeAnswer } from "../tree-read/tree-read";
+import { nodeStatesOf, ownStatesOf } from "../tree-read/tree-nodes";
+import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 
 /**
  * A node's life and who may read it, on the issue's tree.
@@ -10,13 +16,17 @@ import type { TreeAnswer } from "../tree-read/tree-read";
  * node's state and visibility by the read's own id (`TreeNode.readId`), a question's row takes
  * them by its ask's (`stateIdOf`), and `closeOvertaken` puts them on every placement of that
  * node and on every chip and parent line that names it, and closes each overtaken node with every
- * node under it, so the rows, the fold and the counts all read one tree.
+ * node under it, so the rows, the fold and the counts all read one tree. A count made from the
+ * tree read itself rather than from the tree, the header's, closes the same nodes by the read's
+ * own ids (`closedReadIds`).
  *
  * `issue-tree.ts` passes the tree it assembles through this module, so this module imports no
  * value of that one, which Biome's `noImportCycles` would refuse: a node's life is read through
  * `issue-address.ts`'s predicates, since that module imports no value of `issue-tree.ts` or of
  * any module that does. The read's own values are read in `tree-read/tree-nodes.ts`
- * (`nodeStatesOf`), which imports no value of this module or of `issue-tree.ts`.
+ * (`nodeStatesOf`, `ownStatesOf`), which imports no value of this module or of `issue-tree.ts`,
+ * and a question's block is paired with its ask in `decision-nodes/decision-nodes.ts`
+ * (`askOfNode`, `askIdOf`), which `tree-read/tree-nodes.ts` imports too.
  */
 
 /** What the tree read says of one node beside its kind: its life, where it has one, and whether
@@ -134,6 +144,77 @@ export function stampStates(
     };
   };
   return stamp(root, false);
+}
+
+/**
+ * The read's own id (`node.id`) of each node of `tree` at or under an overtaken one, as the page
+ * closes them: each node overtaken by a state of its own (`ownStatesOf`, which gives the block a
+ * question is written as none, so a state its block's node holds closes nothing), each `ask` node
+ * that is the ask of an overtaken ask node by the tree's one pairing rule (`decision-nodes.ts`'
+ * `askOfNode`, over the issue's open asks and the asks read `reads` holds, open or answered) - the
+ * block a question is written as, wherever the read answers it - and each node whose `parent`
+ * chain reaches one of these. The tree draws the block and its ask as one row, which takes the
+ * ask's state (`stateIdOf`), so the block is closed with its ask's node. The read need not answer
+ * an ask's node before its block, nor a parent before its children, so every node that closes a
+ * branch is found before any branch is closed, and each node is closed once, even where the
+ * read's parents lead round. None while no node of the read is overtaken, or the read has not
+ * answered. The header's count reads it (`waiting.ts`' `waitingOnReader`), so it closes the nodes
+ * the page closes.
+ */
+export function closedReadIds(
+  tree: TreeAnswer | undefined,
+  reads: DecisionReads
+): ReadonlySet<string> {
+  const nodes = tree?.nodes ?? [];
+  const overtaken = nodes.filter((node) => isOvertaken(ownStatesOf(node)));
+  if (overtaken.length === 0) return new Set();
+  const askOf = askOfNode(reads);
+  // The id of the ask each overtaken ask node is, which every ask node it pairs with is too.
+  const overtakenAsks = askIdsOf(overtaken, askOf);
+  // Each node's children, by the read's own id of the parent, which is what `parent` names.
+  const children = new Map<string, TreeAnswerNode[]>();
+  for (const node of nodes) {
+    if (node.parent === null) continue;
+    const named = children.get(node.parent.id);
+    if (named === undefined) children.set(node.parent.id, [node]);
+    else named.push(node);
+  }
+  const closing = [
+    ...overtaken,
+    ...nodes.filter((node) => {
+      const id = askIdOfNode(node, askOf);
+      return id !== undefined && overtakenAsks.has(id);
+    }),
+  ];
+  const closed = new Set<string>();
+  for (let node = closing.pop(); node !== undefined; node = closing.pop()) {
+    if (closed.has(node.id)) continue;
+    closed.add(node.id);
+    closing.push(...(children.get(node.id) ?? []));
+  }
+  return closed;
+}
+
+/** The id of the ask each `ask` node of `nodes` is (`askIdOfNode`), by the pairing rule `askOf`
+ *  (`decision-nodes.ts`' `askOfNode`). */
+export function askIdsOf(
+  nodes: readonly TreeAnswerNode[],
+  askOf: Lookup["askOf"]
+): ReadonlySet<string> {
+  return new Set(
+    nodes.flatMap((node) => {
+      const id = askIdOfNode(node, askOf);
+      return id === undefined ? [] : [id];
+    })
+  );
+}
+
+/** The id of the ask the `ask` node `node` is, by the page's one rule (`decision-nodes.ts`'
+ *  `askIdOf`) over the tree's one pairing rule (`askOf`): a question's conversation node and the
+ *  block it is written as give the same ask, and a conversation node no ask of the reads is gives
+ *  its own id. Undefined for any other node, and for a block no ask of the reads is. */
+function askIdOfNode(node: TreeAnswerNode, askOf: Lookup["askOf"]): string | undefined {
+  return node.supertag === "ask" ? askIdOf(node, askOf(node)) : undefined;
 }
 
 /**
