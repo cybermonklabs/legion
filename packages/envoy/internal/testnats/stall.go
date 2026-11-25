@@ -119,11 +119,12 @@ func (r *StallRelay) stall(dropServer bool) {
 // it; a client that sends nothing keeps it there.
 func (r *StallRelay) AwaitParked(t testing.TB) {
 	t.Helper()
+	bound := boundOf(t)
 	for _, c := range r.stalledConns() {
 		r.mu.Lock()
 		parked := c.parked
 		r.mu.Unlock()
-		if bound, ok := awaitSignal(t, parked); !ok {
+		if !awaitSignal(bound, parked) {
 			t.Fatalf("a stalled connection's reader did not stop at its stall by %s, short of the test's deadline: its client sent nothing", bound)
 		}
 	}
@@ -185,8 +186,9 @@ func (r *StallRelay) AwaitEnded(t testing.TB) {
 	if len(conns) == 0 {
 		t.Fatal("control: the stall relay stalled no connection")
 	}
+	bound := boundOf(t)
 	for _, c := range conns {
-		if bound, ok := awaitSignal(t, c.ended); !ok {
+		if !awaitSignal(bound, c.ended) {
 			t.Fatalf("a stalled connection had not ended at both ends by %s, short of the test's deadline, after the relay moved", bound)
 		}
 	}

@@ -392,10 +392,11 @@ func (h *Hooks) Events(point Point, match ...Match) []Event {
 }
 
 // Await returns the first event at point that every match accepts, waiting for one until the
-// test's deadline (testDeadline), and fails t naming the point and the matches when none is
-// reported by then.
+// test's deadline (testDeadline, computed once, when Await begins), and fails t naming the point
+// and the matches when none is reported by then, however many other events come meanwhile.
 func (h *Hooks) Await(t testing.TB, point Point, match ...Match) Event {
 	t.Helper()
+	bound := boundOf(t)
 	for {
 		h.mu.Lock()
 		changed := h.changed
@@ -406,7 +407,7 @@ func (h *Hooks) Await(t testing.TB, point Point, match ...Match) Event {
 			}
 		}
 		h.mu.Unlock()
-		if bound, ok := awaitSignal(t, changed); !ok {
+		if bound.over() || !awaitSignal(bound, changed) {
 			t.Fatalf("the hooked server reported no event at %s by %s, short of the test's deadline", describe(point, match), bound)
 		}
 	}
@@ -458,7 +459,7 @@ func (hold *Hold) String() string { return describe(hold.point, hold.match) }
 // point and the matches, when none did.
 func (hold *Hold) Reached(t testing.TB) Event {
 	t.Helper()
-	if bound, ok := awaitSignal(t, hold.reached); !ok {
+	if bound := boundOf(t); !awaitSignal(bound, hold.reached) {
 		t.Fatalf("the hold at %s was not reached by %s, short of the test's deadline", hold, bound)
 	}
 	return hold.event

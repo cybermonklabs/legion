@@ -407,7 +407,7 @@ func AwaitLockFree(t testing.TB, conn *natsgo.Conn) {
 		conn.Status()
 		close(read)
 	}()
-	if bound, ok := awaitSignal(t, read); !ok {
+	if bound := boundOf(t); !awaitSignal(bound, read) {
 		t.Fatalf("nats.go still held its connection lock at %s, short of the test's deadline: no attempt's handshake ended", bound)
 	}
 }

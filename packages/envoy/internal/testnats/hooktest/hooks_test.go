@@ -334,8 +334,11 @@ func TestForcedOrderAStopReleasesTheHoldOnItsServer(t *testing.T) {
 		t.Fatal("the Stop returned and the hold is not released")
 	}
 	hooks.Await(t, testnats.ServerDown, testnats.OnServer(srv))
-	// The stop ends the held request, answered or failed; the request's own bound is the test's
-	// deadline, so a request the stop left waiting ends only there, as a timeout.
+	// The stop ends the held request: nats.go answers it with an error when the server closes the
+	// connection ("nats: connection closed" on v2.15.1). A request the stop left waiting is ended by
+	// whichever comes first of two ends at the same moment, the test's deadline less testwait's
+	// margin: Receive gives up there and fails the row naming this wait, or the request's own context
+	// (testwait.Context) ends and the row fails below as a timeout. Either way the row fails.
 	if err := testwait.Receive(t, "the held request to end with the stop", done); timedOut(err) {
 		t.Fatalf("the held request did not end with the stop: it timed out at the test's deadline (%v)", err)
 	} else {
