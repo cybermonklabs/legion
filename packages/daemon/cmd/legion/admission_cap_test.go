@@ -22,24 +22,27 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// capCommandCeiling is the deployment's cap of the cap commands' test daemon.
-const capCommandCeiling = 6
+// capCommandStart and capCommandCeiling are the starting cap (admission_cap) and the ceiling
+// (admission_ceiling) of the cap commands' test daemon.
+const (
+	capCommandStart   = 4
+	capCommandCeiling = 6
+)
 
-// capState is the state route's source for the cap commands' test daemon: the daemon's own read
-// of the cap on the state's snapshot (api.AdmissionCapStateTx and api.AdmissionCapChangesTx, which
-// the daemon's source.State calls), under the rest of a state that holds nothing.
+// capCommandAt is the clock of the test daemon's admission, the time every change is stamped at.
+var capCommandAt = time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)
+
+// capState is the state route's source for the cap commands' test daemon: the cap keys as the
+// daemon's own source.State fills them (api.FillAdmissionCapTx), under the rest of a state that
+// holds nothing.
 type capState struct{}
 
 func (capState) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
 	state := api.State{
 		Daemon:    api.DaemonInfo{Project: "LEGION", SchemaVersion: 1, Boots: 1},
-		Admission: api.Admission{Ceiling: capCommandCeiling, Active: []string{}, Waiting: []string{}},
+		Admission: api.Admission{Active: []string{}, Waiting: []string{}},
 	}
-	var err error
-	if state.Admission.Cap, state.Admission.Override, err = api.AdmissionCapStateTx(ctx, tx, "LEGION", capCommandCeiling); err != nil {
-		return api.State{}, nil, err
-	}
-	state.Admission.CapChanges, err = api.AdmissionCapChangesTx(ctx, tx, "LEGION")
+	err := api.FillAdmissionCapTx(ctx, tx, "LEGION", capCommandStart, capCommandCeiling, &state.Admission)
 	return state, nil, err
 }
 
@@ -53,10 +56,13 @@ func newCapCommandDaemon(t *testing.T) *pauseCommandDaemon {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "LEGION"}, quiet)
+	admission := admit.New(records, engine, capCommandStart, "LEGION", quiet)
+	admission.UseCeiling(capCommandCeiling)
+	admission.UseClock(func() time.Time { return capCommandAt })
 	server := httptest.NewServer(api.NewServer("127.0.0.1", 0, api.Options{
 		State: capState{}, StateTransactions: st.Pool(), Pool: st.Pool(), Record: records,
-		Handlers:         []intake.Handler{engine, admit.New(records, engine, capCommandCeiling, "LEGION", quiet)},
-		AdmissionCeiling: capCommandCeiling, Now: func() time.Time { return time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC) },
+		Handlers:     []intake.Handler{engine, admission},
+		AdmissionCap: capCommandStart, AdmissionCeiling: capCommandCeiling, Now: func() time.Time { return capCommandAt },
 		Project: "legion", DispatchProject: "LEGION", OperatorToken: pauseOperatorToken, Log: quiet,
 	}).Handler)
 	t.Cleanup(server.Close)
@@ -75,10 +81,11 @@ func capChanges(t *testing.T, st *store.Store) int {
 }
 
 // TestAdmissionCapCommands is the CLI half of dispatch://INFRA-5616: `legion project
-// set-admission-cap --cap <n> --reason <text>` sets the cap with the operator's token and prints
-// the cap in force, the ceiling and the cap set; `legion state` prints the same line; a cap above
-// the ceiling is refused with the daemon's sentence naming it; and `clear-admission-cap` returns the
-// daemon to the ceiling. A missing flag is a usage error that reaches nothing.
+// set-admission-cap --cap <n> --reason <text>` sets the cap with the operator's token, here above
+// the starting cap of 4 and under the ceiling of 6, and prints the cap in force, the ceiling and the
+// cap set with its reason quoted; `legion state` prints the same line; a cap above the ceiling is
+// refused with the daemon's sentence naming it; and `clear-admission-cap` returns the daemon to the
+// starting cap. A missing flag is a usage error that reaches nothing.
 func TestAdmissionCapCommands(t *testing.T) {
 	d := newCapCommandDaemon(t)
 	reach := []string{"--operator-token-file", d.tokenFile}
@@ -99,15 +106,15 @@ func TestAdmissionCapCommands(t *testing.T) {
 		t.Fatalf("the refused commands recorded %d changes, want none", n)
 	}
 
-	const setLine = "admission cap: 3 in force, ceiling 6; set to 3 by the operator at 2026-11-24T06:00:00Z: a pool is down\n"
-	if out := d.succeed(append([]string{"project", "set-admission-cap", "--cap", "3", "--reason", "a pool is down"}, reach...)...); out != setLine {
+	const setLine = `admission cap: 5 in force, ceiling 6; set to 5 by the operator at 2026-11-24T06:00:00Z: "a pool is down\nand a second line"` + "\n"
+	if out := d.succeed(append([]string{"project", "set-admission-cap", "--cap", "5", "--reason", "a pool is down\nand a second line"}, reach...)...); out != setLine {
 		t.Fatalf("set-admission-cap printed %q, want %q", out, setLine)
 	}
 	if lines := stateLines(d.succeed("state"), "admission cap: "); len(lines) != 1 || lines[0]+"\n" != setLine {
 		t.Fatalf("legion state printed %q, want the one line %q", lines, setLine)
 	}
 
-	const clearLine = "admission cap: 6 in force, ceiling 6; no cap set while the daemon runs\n"
+	const clearLine = "admission cap: 4 in force, ceiling 6; no cap set while the daemon runs\n"
 	if out := d.succeed(append([]string{"project", "clear-admission-cap", "--reason", "the pool is back"}, reach...)...); out != clearLine {
 		t.Fatalf("clear-admission-cap printed %q, want %q", out, clearLine)
 	}

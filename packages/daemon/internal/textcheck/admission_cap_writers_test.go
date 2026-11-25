@@ -1,4 +1,4 @@
-package store
+package textcheck
 
 import (
 	"go/ast"
@@ -74,7 +74,7 @@ func capWriters(t *testing.T, root string, extra map[string]string) (sql, record
 			if !ok || fn.Body == nil {
 				continue
 			}
-			here := capWriter{file: name, function: funcName(fn)}
+			here := capWriter{file: name, function: functionName(fn)}
 			ast.Inspect(fn.Body, func(node ast.Node) bool {
 				switch node := node.(type) {
 				case *ast.BasicLit:
@@ -101,21 +101,6 @@ func capWriters(t *testing.T, root string, extra map[string]string) (sql, record
 		*list = slices.Compact(*list)
 	}
 	return sql, recorders, facts
-}
-
-// funcName is fn's name, with its receiver's type where it has one.
-func funcName(fn *ast.FuncDecl) string {
-	if fn.Recv == nil || len(fn.Recv.List) == 0 {
-		return fn.Name.Name
-	}
-	receiver := fn.Recv.List[0].Type
-	if star, ok := receiver.(*ast.StarExpr); ok {
-		receiver = star.X
-	}
-	if ident, ok := receiver.(*ast.Ident); ok {
-		return "(" + ident.Name + ")." + fn.Name.Name
-	}
-	return fn.Name.Name
 }
 
 // calledName is the name a call calls: the function's own, or the selector's.
@@ -146,12 +131,12 @@ func TestEveryWriterOfTheAdmissionCapsTableIsTheOnePath(t *testing.T) {
 	}
 	sql, recorders, facts := capWriters(t, module, nil)
 	wantSQL := []capWriter{{file: "internal/store/admission_cap.go", function: "RecordAdmissionCapChangeTx"}}
-	wantRecorders := []capWriter{{file: "internal/admit/admit.go", function: "(Admission).setAdmissionCap"}}
+	wantRecorders := []capWriter{{file: "internal/admit/admit.go", function: "Admission.setAdmissionCap"}}
 	wantFacts := []capWriter{
-		{file: "internal/api/admission_cap.go", function: "(server).operatorProjectAdmissionCap"},
-		{file: "internal/api/admission_cap.go", function: "(server).operatorProjectAdmissionCapClear"},
-		{file: "internal/api/admission_cap.go", function: "(server).projectAdmissionCap"},
-		{file: "internal/api/admission_cap.go", function: "(server).projectAdmissionCapClear"},
+		{file: "internal/api/admission_cap.go", function: "server.operatorProjectAdmissionCap"},
+		{file: "internal/api/admission_cap.go", function: "server.operatorProjectAdmissionCapClear"},
+		{file: "internal/api/admission_cap.go", function: "server.projectAdmissionCap"},
+		{file: "internal/api/admission_cap.go", function: "server.projectAdmissionCapClear"},
 	}
 	for _, check := range []struct {
 		what      string

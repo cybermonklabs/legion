@@ -1456,10 +1456,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   so a tree of four issues holding a slot holds four of them, and the `live trees` count is the
   trees that run whether or not any issue of theirs holds one.
   The `admission cap` line names the cap the daemon admits under now and its ceiling,
-  `admission_cap`;
-  where the controller or the operator set a lower cap while the daemon runs,
+  `admission_ceiling`;
+  where the controller or the operator set a cap while the daemon runs,
   the line names that cap, who set it, when and why
-  (`admission cap: 2 in force, ceiling 4; set to 2 by the controller (session ses_…) at …: <reason>`).
+  (`admission cap: 2 in force, ceiling 4; set to 2 by the controller (session ses_…) at …: "<reason>"`).
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
   daemon promotes them: by Dispatch priority first, P0, P1, P2 and P3 and then the issues with no

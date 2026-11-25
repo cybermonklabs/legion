@@ -158,13 +158,14 @@ func printAdmissionCapAnswer(w io.Writer, answer []byte) error {
 
 // admissionCapWords is the cap the daemon admits under as `legion state` and a change's answer name
 // it: the cap, the ceiling, and the cap set while the daemon runs where one stands, with who set it,
-// when and why.
+// when and why. The reason is a person's words, quoted, so a newline in it cannot pose as a line of
+// its own.
 func admissionCapWords(capValue, ceiling int, override *api.AdmissionCapOverride) string {
 	words := fmt.Sprintf("%d in force, ceiling %d", capValue, ceiling)
 	if override == nil {
 		return words + "; no cap set while the daemon runs"
 	}
-	return words + fmt.Sprintf("; set to %d by %s at %s: %s", override.Cap, pauseActorWords(override.SetBy), override.SetAt.Format(time.RFC3339), override.Reason)
+	return words + fmt.Sprintf("; set to %d by %s at %s: %q", override.Cap, pauseActorWords(override.SetBy), override.SetAt.Format(time.RFC3339), override.Reason)
 }
 
 // pausedSummary is `legion state`'s line for the project's open pause (api.State.Paused): the
@@ -174,7 +175,7 @@ func pausedSummary(paused *api.PausedView) string {
 	if paused == nil {
 		return ""
 	}
-	line := fmt.Sprintf("paused: pause %d since %s by %s: %s", paused.ID, paused.Since.Format(time.RFC3339),
+	line := fmt.Sprintf("paused: pause %d since %s by %s: %q", paused.ID, paused.Since.Format(time.RFC3339),
 		pauseActorWords(paused.By), paused.Reason)
 	if len(paused.WaitsOn) == 0 {
 		return line + "; waits on no role"
@@ -201,9 +202,10 @@ func lastPauseSummary(last *api.PauseView) string {
 	return "last pause: " + endedPauseWords(*last)
 }
 
-// pauseWords is a pause as these lines name it: its id, since when, who paused and why.
+// pauseWords is a pause as these lines name it: its id, since when, who paused and why. The reason
+// is a person's words, quoted, so a newline in it cannot pose as a line of its own.
 func pauseWords(p api.PauseView) string {
-	return fmt.Sprintf("pause %d since %s by %s: %s", p.ID, p.Since.Format(time.RFC3339), pauseActorWords(p.By), p.Reason)
+	return fmt.Sprintf("pause %d since %s by %s: %q", p.ID, p.Since.Format(time.RFC3339), pauseActorWords(p.By), p.Reason)
 }
 
 // endedPauseWords is an ended pause as these lines name it: the pause, then when and by whom it

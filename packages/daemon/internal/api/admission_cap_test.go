@@ -25,8 +25,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// capCeiling is the deployment's cap these tests run under.
-const capCeiling = 3
+// capStart and capCeiling are the deployment's starting cap (admission_cap) and ceiling
+// (admission_ceiling) these tests run under: a cap set above the start and up to the ceiling is in
+// force, and a clear returns to the start.
+const (
+	capStart   = 2
+	capCeiling = 3
+)
 
 // capChangedAt is the clock of the cap harness's server, the moment every change is made at.
 var capChangedAt = time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)
@@ -40,16 +45,20 @@ const (
 )
 
 // capHarness is the cap routes over the daemon's own handler chain (daemon/workflow.go: the mirror,
-// the engine, admission) under a ceiling of capCeiling, and four roots that wait in todo, so a
-// cap's effect on admission reads in the slots each request leaves.
+// the engine, admission) under a starting cap of capStart and a ceiling of capCeiling, with
+// admission on the harness's clock, and four roots that wait in todo, so a cap's effect on
+// admission reads in the slots each request leaves.
 func capHarness(t *testing.T) *harness {
 	t.Helper()
 	h := newHarness(t)
 	records := record.NewStore()
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(records, workflow.Config{Project: testDispatchProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quiet)
+	admission := admit.New(records, engine, capStart, testDispatchProject, quiet)
+	admission.UseCeiling(capCeiling)
+	admission.UseClock(func() time.Time { return capChangedAt })
 	h.handler = NewServer("127.0.0.1", 8437, capOptions(h, []intake.Handler{blockers.NewMirror(records, testDispatchProject), engine,
-		admit.New(records, engine, capCeiling, testDispatchProject, quiet)})).Handler
+		admission})).Handler
 	for _, key := range []string{"LEGION-901", "LEGION-902", "LEGION-903", "LEGION-904"} {
 		h.recordIssue(record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testDispatchProject,
 			Title: key, Tree: key, Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: key[len(key)-1:], HandedOver: true})
@@ -58,13 +67,13 @@ func capHarness(t *testing.T) *harness {
 }
 
 // capOptions is the daemon a cap harness serves: its store, machines and boot tokens, handlers, and
-// the ceiling.
+// the starting cap and the ceiling.
 func capOptions(h *harness, handlers []intake.Handler) Options {
 	return Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
-		Handlers: handlers, AdmissionCeiling: capCeiling, Now: func() time.Time { return capChangedAt },
+		Handlers: handlers, AdmissionCap: capStart, AdmissionCeiling: capCeiling, Now: func() time.Time { return capChangedAt },
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
@@ -157,10 +166,10 @@ func TestAdmissionCapRoutes(t *testing.T) {
 	operator := PauseActorView{Kind: "operator"}
 
 	// The controller's grant sets the cap, and the request's own admission pass admits under it:
-	// a cap of 1 starts one of the four waiting roots and a raise to the ceiling two more, each
-	// answered with the cap in force, the ceiling and the cap that stands. A clear answers the
-	// ceiling and no cap set. Every change is recorded, newest first, with the caps before and
-	// after it, who, when and why.
+	// a cap of 1 starts one of the four waiting roots, and a raise to the ceiling of 3, above the
+	// starting cap of 2, two more, each answered with the cap in force, the ceiling and the cap
+	// that stands. A clear answers the starting cap and no cap set. Every change is recorded, newest
+	// first, with the caps before and after it, who, when and why.
 	t.Run("the controller's grant sets and clears the cap, in force on the request's own pass", func(t *testing.T) {
 		h := capHarness(t)
 		grant := controllerSessionGrantID(t, h)
@@ -176,13 +185,16 @@ func TestAdmissionCapRoutes(t *testing.T) {
 		grant = controllerSessionGrantID(t, h)
 		capOK(t, h, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: capCeiling, Reason: "the signals are back under their limits"}, nil)
 		if n := slotted(t, h); n != capCeiling {
-			t.Fatalf("slots after a raise to the ceiling = %d, want %d", n, capCeiling)
+			t.Fatalf("slots after a raise to the ceiling of %d, above the starting cap of %d = %d, want %d", capCeiling, capStart, n, capCeiling)
 		}
 
 		grant = controllerSessionGrantID(t, h)
 		cleared := capOK(t, h, capClearRoute, ProjectAdmissionCapClearRequest{GrantID: grant, Reason: "a person asked for the deployment's cap"}, nil)
-		if cleared.Cap != capCeiling || cleared.Ceiling != capCeiling || cleared.Override != nil {
-			t.Fatalf("the clear answered %+v, want the ceiling %d and no cap set", cleared, capCeiling)
+		if cleared.Cap != capStart || cleared.Ceiling != capCeiling || cleared.Override != nil {
+			t.Fatalf("the clear answered %+v, want the starting cap %d under the ceiling %d and no cap set", cleared, capStart, capCeiling)
+		}
+		if n := slotted(t, h); n != capCeiling {
+			t.Fatalf("slots after the clear = %d, want the %d that run: a lower cap stops nothing", n, capCeiling)
 		}
 
 		changes := capChangeViews(t, h)
@@ -190,16 +202,16 @@ func TestAdmissionCapRoutes(t *testing.T) {
 			t.Fatalf("the changes = %+v, want three", changes)
 		}
 		clear, raise, first := changes[0], changes[1], changes[2]
-		if clear.Cap != 0 || clear.CapBefore != capCeiling || clear.CapAfter != capCeiling ||
+		if clear.Cap != 0 || clear.CapBefore != capCeiling || clear.CapAfter != capStart ||
 			clear.SetBy != controller || clear.Reason != "a person asked for the deployment's cap" {
-			t.Errorf("the clear = %+v, want no cap, from %d to %d, by the controller", clear, capCeiling, capCeiling)
+			t.Errorf("the clear = %+v, want no cap, from %d to the starting cap %d, by the controller", clear, capCeiling, capStart)
 		}
 		if raise.Cap != capCeiling || raise.CapBefore != 1 || raise.CapAfter != capCeiling || raise.Reason != "the signals are back under their limits" {
 			t.Errorf("the raise = %+v, want %d from 1, for its reason", raise, capCeiling)
 		}
-		if first.Cap != 1 || first.CapBefore != capCeiling || first.CapAfter != 1 || first.Ceiling != capCeiling ||
+		if first.Cap != 1 || first.CapBefore != capStart || first.CapAfter != 1 || first.Ceiling != capCeiling ||
 			first.SetBy != controller || !first.SetAt.Equal(capChangedAt) || first.ID == 0 || first.ID >= raise.ID || raise.ID >= clear.ID {
-			t.Errorf("the first set = %+v, want 1 from %d by the controller at %s, the lowest id", first, capCeiling, capChangedAt)
+			t.Errorf("the first set = %+v, want 1 from %d by the controller at %s, the lowest id", first, capStart, capChangedAt)
 		}
 	})
 
@@ -229,21 +241,24 @@ func TestAdmissionCapRoutes(t *testing.T) {
 		}
 	})
 
-	// Each refusal changes nothing: a cap below 1, a cap above the ceiling, whose sentence names the
-	// ceiling and where it is raised, a blank reason, a body naming a field
-	// the route does not take, a phase worker's grant, and an operator route with no bearer or a
-	// wrong one. The control is the set at the ceiling after them, which is recorded.
+	// Each refusal changes nothing: a cap below 1, zero included, a cap above the ceiling, whose
+	// sentence names the ceiling and admission_ceiling, a blank reason, a reason one character over
+	// the bound, a body naming a field the route does not take, a phase worker's grant, whose
+	// sentence says what the change requires, and an operator route with no bearer or a wrong one.
+	// The control is the set at the ceiling after them, which is recorded.
 	t.Run("the refusals change nothing", func(t *testing.T) {
 		h := capHarness(t)
 		grant := controllerSessionGrantID(t, h)
-		capRefused(t, h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Reason: "why"}, nil),
-			http.StatusBadRequest, invalidAdmissionCap)
-		capRefused(t, h.request(http.MethodPost, operatorCapRoute, OperatorAdmissionCapRequest{Cap: -2, Reason: "why"}, bearer),
-			http.StatusBadRequest, invalidAdmissionCap)
+		for _, below := range []int{0, -1} {
+			capRefused(t, h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: below, Reason: "why"}, nil),
+				http.StatusBadRequest, invalidAdmissionCap)
+			capRefused(t, h.request(http.MethodPost, operatorCapRoute, OperatorAdmissionCapRequest{Cap: below, Reason: "why"}, bearer),
+				http.StatusBadRequest, invalidAdmissionCap)
+		}
 		above := capRefused(t, h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: capCeiling + 1, Reason: "why"}, nil),
 			http.StatusConflict, admissionCapAboveCeiling)
-		if !strings.Contains(above.Error, "ceiling of 3") || !strings.Contains(above.Error, "admission_cap") {
-			t.Errorf("the refusal above the ceiling says %q, want it to name the ceiling of 3 and admission_cap", above.Error)
+		if !strings.Contains(above.Error, "ceiling of 3") || !strings.Contains(above.Error, "admission_ceiling") {
+			t.Errorf("the refusal above the ceiling says %q, want it to name the ceiling of 3 and admission_ceiling", above.Error)
 		}
 		capRefused(t, h.request(http.MethodPost, operatorCapRoute, OperatorAdmissionCapRequest{Cap: capCeiling + 1, Reason: "why"}, bearer),
 			http.StatusConflict, admissionCapAboveCeiling)
@@ -253,6 +268,12 @@ func TestAdmissionCapRoutes(t *testing.T) {
 			http.StatusBadRequest, admissionCapReasonRequired)
 		capRefused(t, h.request(http.MethodPost, operatorCapClearRoute, OperatorAdmissionCapClearRequest{}, bearer),
 			http.StatusBadRequest, admissionCapReasonRequired)
+		long := strings.Repeat("é", store.AdmissionCapReasonMax+1)
+		tooLong := capRefused(t, h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: 2, Reason: long}, nil),
+			http.StatusBadRequest, admissionCapReasonTooLong)
+		if !strings.Contains(tooLong.Error, "at most 2048") {
+			t.Errorf("the refusal of a long reason says %q, want it to name the bound of 2048", tooLong.Error)
+		}
 		if decided := h.request(http.MethodPost, capRoute, `{"grantId":"`+grant+`","cap":2,"reason":"why","decisionId":"admission:LEGION:2026-11-24T06:00:00Z"}`, nil); decided.Code != http.StatusBadRequest {
 			t.Fatalf("a set naming a decisionId = %d, want 400: the route takes none; body %s", decided.Code, decided.Body)
 		}
@@ -260,8 +281,11 @@ func TestAdmissionCapRoutes(t *testing.T) {
 			t.Fatalf("a set naming a project = %d, want 400: the route takes none; body %s", named.Code, named.Body)
 		}
 		worker := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-		capRefused(t, h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: worker.grant(t), Cap: 2, Reason: "a worker's cap"}, nil),
+		refusal := capRefused(t, h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: worker.grant(t), Cap: 2, Reason: "a worker's cap"}, nil),
 			http.StatusForbidden, "CONTROLLER_REQUIRED")
+		if !strings.Contains(refusal.Error, "requires a controller grant") {
+			t.Errorf("a worker's grant is refused %q, want a sentence saying the change requires a controller grant", refusal.Error)
+		}
 		for _, target := range []string{operatorCapRoute, operatorCapClearRoute} {
 			for _, header := range []http.Header{nil, {"Authorization": {"Bearer not-the-operator"}}} {
 				if recorder := h.request(http.MethodPost, target, OperatorAdmissionCapRequest{Cap: 2, Reason: "x"}, header); recorder.Code != http.StatusForbidden {

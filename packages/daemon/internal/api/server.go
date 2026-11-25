@@ -286,9 +286,13 @@ type Options struct {
 	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
 	// it answers every pause and resume PAUSE_UNAVAILABLE and refuses no turn for one.
 	Pause PauseService
-	// AdmissionCeiling is the deployment's admission cap (config.Config.AdmissionCap, legion.yaml's
-	// admission_cap, else LEGION_ADMISSION_CAP): the cap the daemon admits under where nobody set
-	// one while it runs, the most the cap routes set, and the state's `admission.ceiling`.
+	// AdmissionCap is the deployment's starting admission cap (config.Config.AdmissionCap,
+	// legion.yaml's admission_cap, else LEGION_ADMISSION_CAP): the cap the daemon admits under
+	// where no cap set while it runs stands, and what a clear returns to.
+	AdmissionCap int
+	// AdmissionCeiling is the deployment's admission ceiling (config.Config.AdmissionCeiling,
+	// legion.yaml's admission_ceiling, else LEGION_ADMISSION_CEILING, else AdmissionCap): the most
+	// the cap routes set, and the state's `admission.ceiling`.
 	AdmissionCeiling int
 }
 
@@ -395,7 +399,8 @@ type server struct {
 	claimActivity      ClaimActivityStore
 	// pause is Options.Pause, nil for a daemon with no workflow.
 	pause PauseService
-	// admissionCeiling is Options.AdmissionCeiling.
+	// admissionCap and admissionCeiling are Options.AdmissionCap and Options.AdmissionCeiling.
+	admissionCap     int
 	admissionCeiling int
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
 	// a server that is ready, since a caller that sets no latch is serving already.
@@ -472,6 +477,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
 		pause:              opts.Pause,
+		admissionCap:       opts.AdmissionCap,
 		admissionCeiling:   opts.AdmissionCeiling,
 		readiness:          opts.Ready,
 		log:                opts.Log,

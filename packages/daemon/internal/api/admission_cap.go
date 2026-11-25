@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -17,9 +18,11 @@ import (
 // the controller's set and clear, under a controller grant the controller session or the operator's
 // bearer minted (the `legion` tool's set_admission_cap and clear_admission_cap), and the
 // operator's, under the operator's bearer (`legion project set-admission-cap` and
-// `clear-admission-cap`). None names a project: the daemon changes its own. The deployment's cap
-// (legion.yaml's admission_cap, else LEGION_ADMISSION_CAP) is the ceiling, and a cap above it is
-// refused, so raising the ceiling stays the operator's change of legion.yaml.
+// `clear-admission-cap`). None names a project: the daemon changes its own. The deployment's
+// starting cap (legion.yaml's admission_cap, else LEGION_ADMISSION_CAP) is what the daemon admits
+// under where no set cap stands and what a clear returns to; its admission_ceiling (else
+// LEGION_ADMISSION_CEILING, else the starting cap) is the most a set may name, and a cap above it
+// is refused, so raising the ceiling stays the operator's change of legion.yaml.
 
 // admissionCapContract is version.go's entry for dispatch://INFRA-5616: the four cap routes, the
 // controller's answer (AnswerAdmissionCap), and the state's `admission.ceiling`,
@@ -106,17 +109,16 @@ const (
 	admissionCapAboveCeiling = "ADMISSION_CAP_ABOVE_CEILING"
 	// admissionCapReasonRequired is a change that says nothing of why it is made.
 	admissionCapReasonRequired = "ADMISSION_CAP_REASON_REQUIRED"
+	// admissionCapReasonTooLong is a reason longer than store.AdmissionCapReasonMax characters,
+	// which the sentence names.
+	admissionCapReasonTooLong = "ADMISSION_CAP_REASON_TOO_LONG"
 	// admissionCapUnavailable is a daemon with no workflow, which admits nothing.
 	admissionCapUnavailable = "ADMISSION_CAP_UNAVAILABLE"
 )
 
-// Routes of the cap, as the fact ids name them.
-const (
-	admissionCapRoute              = "/legion/v1/project/admission-cap"
-	admissionCapClearRoute         = "/legion/v1/project/admission-cap/clear"
-	operatorAdmissionCapRoute      = "/legion/v1/operator/project/admission-cap"
-	operatorAdmissionCapClearRoute = "/legion/v1/operator/project/admission-cap/clear"
-)
+// admissionCapGrantRequired is what a grant that is not a controller's is refused with,
+// CONTROLLER_REQUIRED's whole sentence (controllerActor).
+const admissionCapGrantRequired = "a change of the admission cap requires a controller grant: the project's controller session's own, or one the operator's bearer minted"
 
 // projectAdmissionCap is the controller's set_admission_cap: a controller grant, the controller
 // session's or one the operator's bearer minted, sets the cap, and the cap is the operator's when
@@ -127,9 +129,8 @@ func (s *server) projectAdmissionCap(w http.ResponseWriter, r *http.Request) {
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) {
 		return
 	}
-	if by, ok := s.controllerActor(w, r, req.GrantID, "a change of the admission cap"); ok {
-		s.setAdmissionCap(w, r, AnswerAdmissionCap, admissionCapRoute,
-			intake.AdmissionCapSet{Cap: req.Cap, By: by, Reason: req.Reason})
+	if by, ok := s.controllerActor(w, r, req.GrantID, admissionCapGrantRequired); ok {
+		s.setAdmissionCap(w, r, AnswerAdmissionCap, intake.AdmissionCapSet{Cap: req.Cap, By: by, Reason: req.Reason})
 	}
 }
 
@@ -140,9 +141,8 @@ func (s *server) projectAdmissionCapClear(w http.ResponseWriter, r *http.Request
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) {
 		return
 	}
-	if by, ok := s.controllerActor(w, r, req.GrantID, "a change of the admission cap"); ok {
-		s.changeAdmissionCap(w, r, AnswerAdmissionCap, admissionCapClearRoute,
-			intake.AdmissionCapSet{By: by, Reason: req.Reason})
+	if by, ok := s.controllerActor(w, r, req.GrantID, admissionCapGrantRequired); ok {
+		s.changeAdmissionCap(w, r, AnswerAdmissionCap, intake.AdmissionCapSet{By: by, Reason: req.Reason})
 	}
 }
 
@@ -154,7 +154,7 @@ func (s *server) operatorProjectAdmissionCap(w http.ResponseWriter, r *http.Requ
 	if !s.readBody(w, r, &req, nil) {
 		return
 	}
-	s.setAdmissionCap(w, r, answerUnparsed, operatorAdmissionCapRoute,
+	s.setAdmissionCap(w, r, answerUnparsed,
 		intake.AdmissionCapSet{Cap: req.Cap, By: store.PauseActor{Kind: store.PauseByOperator}, Reason: req.Reason})
 }
 
@@ -165,13 +165,13 @@ func (s *server) operatorProjectAdmissionCapClear(w http.ResponseWriter, r *http
 	if !s.readBody(w, r, &req, nil) {
 		return
 	}
-	s.changeAdmissionCap(w, r, answerUnparsed, operatorAdmissionCapClearRoute,
+	s.changeAdmissionCap(w, r, answerUnparsed,
 		intake.AdmissionCapSet{By: store.PauseActor{Kind: store.PauseByOperator}, Reason: req.Reason})
 }
 
 // setAdmissionCap refuses a cap below 1 and one above the deployment's ceiling, naming the ceiling
 // and where it is raised, and otherwise changes the cap to the one set names (changeAdmissionCap).
-func (s *server) setAdmissionCap(w http.ResponseWriter, r *http.Request, answer AnswerID, route string, set intake.AdmissionCapSet) {
+func (s *server) setAdmissionCap(w http.ResponseWriter, r *http.Request, answer AnswerID, set intake.AdmissionCapSet) {
 	if set.Cap < 1 {
 		s.writeFailure(w, r, http.StatusBadRequest, invalidAdmissionCap, fmt.Sprintf(
 			"cap is how many issues the daemon may have started at once, a whole number from 1 to this deployment's ceiling of %d, and %d is not; nothing changed",
@@ -180,22 +180,29 @@ func (s *server) setAdmissionCap(w http.ResponseWriter, r *http.Request, answer 
 	}
 	if set.Cap > s.admissionCeiling {
 		s.writeFailure(w, r, http.StatusConflict, admissionCapAboveCeiling, fmt.Sprintf(
-			"the cap %d is above this deployment's ceiling of %d, legion.yaml's admission_cap (or LEGION_ADMISSION_CAP where the file sets none); a cap above it needs the operator to raise admission_cap and restart the daemon; nothing changed",
+			"the cap %d is above this deployment's ceiling of %d, legion.yaml's admission_ceiling (or LEGION_ADMISSION_CEILING, else admission_cap, where the file sets none); a cap above it needs the operator to raise admission_ceiling and restart the daemon; nothing changed",
 			set.Cap, s.admissionCeiling))
 		return
 	}
-	s.changeAdmissionCap(w, r, answer, route, set)
+	s.changeAdmissionCap(w, r, answer, set)
 }
 
-// changeAdmissionCap refuses a change that says nothing of why, then applies the change as one fact
-// through the workflow's handlers, whose admission records it and makes its pass in the fact's one
+// changeAdmissionCap refuses a change that says nothing of why and one whose reason is longer than
+// store.AdmissionCapReasonMax characters, then applies the change as one fact through the
+// workflow's handlers, whose admission stamps it, records it and makes its pass in the fact's one
 // transaction, so the cap is in force from that pass on, and answers the cap as the state then
 // reads it. A daemon with no workflow (no dispatch_url) has no admission and refuses it
 // ADMISSION_CAP_UNAVAILABLE.
-func (s *server) changeAdmissionCap(w http.ResponseWriter, r *http.Request, answer AnswerID, route string, change intake.AdmissionCapSet) {
+func (s *server) changeAdmissionCap(w http.ResponseWriter, r *http.Request, answer AnswerID, change intake.AdmissionCapSet) {
 	if strings.TrimSpace(change.Reason) == "" {
 		s.writeFailure(w, r, http.StatusBadRequest, admissionCapReasonRequired,
 			"a change of the admission cap needs a reason: say in reason why the cap changes; nothing changed")
+		return
+	}
+	if n := utf8.RuneCountInString(change.Reason); n > store.AdmissionCapReasonMax {
+		s.writeFailure(w, r, http.StatusBadRequest, admissionCapReasonTooLong, fmt.Sprintf(
+			"the reason is %d characters, and a reason of a change of the admission cap holds at most %d; nothing changed",
+			n, store.AdmissionCapReasonMax))
 		return
 	}
 	if s.pool == nil || len(s.handlers) == 0 {
@@ -203,8 +210,7 @@ func (s *server) changeAdmissionCap(w http.ResponseWriter, r *http.Request, answ
 			"this daemon cannot change its admission cap: it runs no workflow (legion.yaml names no dispatch_url), so it admits nothing; nothing changed")
 		return
 	}
-	change.At = s.now().UTC()
-	if _, err := s.apply(r.Context(), "api", requestFactID(route), change); err != nil {
+	if _, err := s.apply(r.Context(), "api", requestFactID("admission-cap"), change); err != nil {
 		s.logRequestFailure(r, err, "api: the change of the admission cap failed", "cap", change.Cap,
 			"by", string(change.By.Kind), "by_session", change.By.Session)
 		s.writeFailure(w, r, http.StatusInternalServerError, "ADMISSION_CAP_FAILED", "the change of the admission cap failed: "+err.Error())
@@ -213,7 +219,7 @@ func (s *server) changeAdmissionCap(w http.ResponseWriter, r *http.Request, answ
 	view := AdmissionCapResponse{Ceiling: s.admissionCeiling}
 	if err := store.TransactWith(r.Context(), s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		view.Cap, view.Override, err = AdmissionCapStateTx(ctx, tx, s.dispatchProject, s.admissionCeiling)
+		view.Cap, view.Override, err = AdmissionCapStateTx(ctx, tx, s.dispatchProject, s.admissionCap, s.admissionCeiling)
 		return err
 	}); err != nil {
 		s.logRequestFailure(r, err, "api: read the admission cap after its change")
@@ -226,20 +232,34 @@ func (s *server) changeAdmissionCap(w http.ResponseWriter, r *http.Request, answ
 
 // AdmissionCapStateTx is, through tx, the cap the daemon admits under and the cap set while it
 // runs, where one stands: the state's `admission.cap` and `admission.override`, and a cap route's
-// answer. ceiling is the deployment's cap and project the Dispatch key. The cap is
-// store.EffectiveAdmissionCap of the project's newest change, the reading every admission pass
-// makes (admit's capAt), so the state says the cap the passes admit under and no other.
-func AdmissionCapStateTx(ctx context.Context, tx pgx.Tx, project string, ceiling int) (int, *AdmissionCapOverride, error) {
-	newest, found, err := store.AdmissionCapTx(ctx, tx, project)
+// answer. start is the deployment's starting cap, ceiling its admission_ceiling and project the
+// Dispatch key. The cap is store.EffectiveAdmissionCap of the project's newest change, the reading
+// every admission pass makes (admit's capAt), so the state says the cap the passes admit under and
+// no other.
+func AdmissionCapStateTx(ctx context.Context, tx pgx.Tx, project string, start, ceiling int) (int, *AdmissionCapOverride, error) {
+	newest, err := store.AdmissionCapTx(ctx, tx, project)
 	if err != nil {
 		return 0, nil, err
 	}
-	effective := store.EffectiveAdmissionCap(ceiling, newest, found)
-	if !found || newest.Cleared() {
+	effective := store.EffectiveAdmissionCap(start, ceiling, newest)
+	if newest.Cleared() {
 		return effective, nil, nil
 	}
 	return effective, &AdmissionCapOverride{Cap: newest.Cap, SetBy: pauseActorViewOf(newest.By), SetAt: newest.At,
 		Reason: newest.Reason}, nil
+}
+
+// FillAdmissionCapTx writes, through tx, the cap keys of admission: `ceiling`, the cap in force,
+// the cap that stands and the newest changes of it. It is the one way the state is given them, so
+// the daemon's state source and every test that builds a state read them alike.
+func FillAdmissionCapTx(ctx context.Context, tx pgx.Tx, project string, start, ceiling int, admission *Admission) error {
+	admission.Ceiling = ceiling
+	var err error
+	if admission.Cap, admission.Override, err = AdmissionCapStateTx(ctx, tx, project, start, ceiling); err != nil {
+		return err
+	}
+	admission.CapChanges, err = AdmissionCapChangesTx(ctx, tx, project)
+	return err
 }
 
 // AdmissionCapChangesTx is, through tx, the state's `admission.capChanges`: project's newest

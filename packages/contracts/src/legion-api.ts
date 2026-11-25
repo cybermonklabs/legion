@@ -1072,8 +1072,9 @@ const legionAdmissionCapOverride = z.object({
  * first change. These names are the record the project's Evals tab reads
  * (dispatch://INFRA-979/spec#b-r39), and the daemon holds them as they stand: `id`, the change's
  * own, rising; `cap`, the cap it set, absent for a clear, which returns the project to the
- * deployment's cap; `capBefore` and `capAfter`, the caps the daemon admitted under before the
- * change and from it on; `ceiling`, the deployment's cap then; `setBy`, who made it; `setAt`,
+ * deployment's starting cap (`admission_cap`); `capBefore` and `capAfter`, the caps the daemon
+ * admitted under before the change and from it on; `ceiling`, the deployment's `admission_ceiling`
+ * then; `setBy`, who made it; `setAt`,
  * when; and `reason`, why. A set of
  * the cap that stands and a clear where none stands change nothing and are no entry. No plugin code
  * reads a change, so every field is optional (LEGION_ANSWER_READS); `setBy` is the actor view, whose
@@ -1136,8 +1137,9 @@ const legionAdmissionCapChange = z.object({
  * whose claims record a contract below that one (`api.stateFor`, `withoutHeld`). A reader that
  * finds it absent has been served that stripped body and learns nothing about what is held.
  * `cap` is the cap the admission passes admit under: since contract 268 the smaller of the cap
- * the controller or the operator set while the daemon runs and `ceiling`, the deployment's cap
- * (legion.yaml's `admission_cap`, else `LEGION_ADMISSION_CAP`), or `ceiling` where none is set.
+ * the controller or the operator set while the daemon runs and `ceiling`, the deployment's
+ * `admission_ceiling`, or legion.yaml's `admission_cap` (else `LEGION_ADMISSION_CAP`) where none
+ * is set.
  * `override` is that cap with who set it, when and why, absent where none stands,
  * and `capChanges` the newest changes of it (`legionAdmissionCapChange`). A daemon at contract 268
  * writes `ceiling` and `capChanges` on every state, the list empty rather than null, and the three
@@ -2083,7 +2085,7 @@ export const LegionProjectResumeResponse = z.object({
 /** `api.AdmissionCapResponse`, the answer to the controller's set or clear of the admission cap
  * (contract 268), `POST /legion/v1/project/admission-cap` and its `/clear`, and to the operator's
  * two routes alike: `cap`, the cap the daemon admits under from the change's own pass on;
- * `ceiling`, the deployment's cap, the most a set may name; and `override`, the cap that stands,
+ * `ceiling`, the deployment's `admission_ceiling`, the most a set may name; and `override`, the cap that stands,
  * absent after a clear. A change that changes nothing (a set of the cap that stands, a clear where
  * none stands) is answered the same and records no change. The controller's `set_admission_cap`
  * and `clear_admission_cap` hand the answer to the agent whole (`pi-legion/src/tools.ts`), so no
@@ -2345,9 +2347,10 @@ export type LegionIntakeDiscardRequestBody = z.output<typeof LegionIntakeDiscard
  * grant, `cap`, a whole number from 1 to the deployment's ceiling, and `reason`, why: the person's
  * words that ask for the change. It names no project: the daemon changes its own. The daemon
  * refuses a grant that is not a controller's (`CONTROLLER_REQUIRED`), a cap below 1
- * (`INVALID_ADMISSION_CAP`), a cap above the ceiling, naming the ceiling
- * (`ADMISSION_CAP_ABOVE_CEILING`), a blank reason (`ADMISSION_CAP_REASON_REQUIRED`), and a daemon
- * with no workflow (`ADMISSION_CAP_UNAVAILABLE`). */
+ * (`INVALID_ADMISSION_CAP`), a cap above the ceiling, naming the ceiling and `admission_ceiling`
+ * (`ADMISSION_CAP_ABOVE_CEILING`), a blank reason (`ADMISSION_CAP_REASON_REQUIRED`), a reason
+ * longer than 2,048 characters (`ADMISSION_CAP_REASON_TOO_LONG`), and a daemon with no workflow
+ * (`ADMISSION_CAP_UNAVAILABLE`). */
 export const LegionProjectAdmissionCapRequest = z.strictObject({
   grantId: nonEmptyString,
   cap: z.number().int().positive(),
@@ -2355,7 +2358,7 @@ export const LegionProjectAdmissionCapRequest = z.strictObject({
 });
 
 /** `api.ProjectAdmissionCapClearRequest`, the controller's clear of the admission cap (contract
- * 268), which returns the daemon to the deployment's cap: its grant and why. The daemon refuses it
+ * 268), which returns the daemon to the deployment's starting cap: its grant and why. The daemon refuses it
  * as it refuses a set, but for the cap's own two codes. */
 export const LegionProjectAdmissionCapClearRequest = z.strictObject({
   grantId: nonEmptyString,

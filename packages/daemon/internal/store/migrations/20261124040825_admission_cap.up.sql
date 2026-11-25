@@ -10,7 +10,10 @@
 -- the deployment's cap at the change (legion.yaml's admission_cap, else LEGION_ADMISSION_CAP), so
 -- each row reads on its own as from what to what. Who changed it has a pause's shape
 -- (project_pauses_by_session): the kind `controller` with the controller's session id, or the kind
--- `operator` with no session. reason is why, which may not be white space alone.
+-- `operator` with no session. reason is why, which may not be white space alone and holds at most
+-- 2,048 characters (store's AdmissionCapReasonMax), since the state serves the newest 50 reasons
+-- on every read. changed_at is stamped inside the fact's transaction, under intake's one lock, so
+-- it never falls as id rises.
 --
 -- The cap in force is read off the project's newest row (store's AdmissionCapTx): its cap where it
 -- set one, and none after a clear. The daemon admits under the smaller of that cap and the
@@ -33,7 +36,7 @@ create table project_admission_cap_changes (
   ceiling integer not null check (ceiling >= 1),
   by_kind text not null check (by_kind in ('controller', 'operator')),
   by_session text not null default '',
-  reason text not null check (reason ~ '[^[:space:]]'),
+  reason text not null check (reason ~ '[^[:space:]]' and char_length(reason) <= 2048),
   changed_at timestamptz not null,
   constraint project_admission_cap_changes_by_session check ((by_kind = 'controller') = (by_session <> ''))
 );

@@ -579,8 +579,10 @@ func (ProjectResumed) namedIssue() (string, bool) { return "", false }
 // changeAdmissionCap) and never decoded from an event. Cap is the cap the controller or the
 // operator set, at least 1 and at most the deployment's ceiling, which the route refused anything
 // else against; 0 is a clear, which returns the project to the deployment's cap. By is who changed
-// it, in a pause's actor shape, Reason why, and At when. Admission is its one handler: it appends
-// the change (store.RecordAdmissionCapChangeTx), unless it changes nothing, and then makes the pass
+// it, in a pause's actor shape, and Reason why. The fact carries no time: admission stamps the
+// change when it applies, under the one lock every fact takes, so a change that waited its turn is
+// never stamped earlier than one applied before it. Admission is its one handler: it appends the
+// change (store.RecordAdmissionCapChangeTx), unless it changes nothing, and then makes the pass
 // every fact that is not a Dispatch issue makes, in the same transaction, so the cap is in force from
 // that pass on (admit.Admission.applyFact). The workflow engine and the blockers mirror do nothing
 // for it.
@@ -588,7 +590,6 @@ type AdmissionCapSet struct {
 	Cap    int
 	By     store.PauseActor
 	Reason string
-	At     time.Time
 }
 
 func (AdmissionCapSet) namedIssue() (string, bool) { return "", false }

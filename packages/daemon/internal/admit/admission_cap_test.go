@@ -26,10 +26,19 @@ var capSetter = store.PauseActor{Kind: store.PauseByController, Session: "ses_co
 func setCap(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string, cap int) {
 	t.Helper()
 	if _, err := intake.ApplyFact(context.Background(), pool, "admission-cap", eventID,
-		intake.AdmissionCapSet{Cap: cap, By: capSetter, Reason: "a person asked for " + eventID, At: fixedNow},
+		intake.AdmissionCapSet{Cap: cap, By: capSetter, Reason: "a person asked for " + eventID},
 		engineStub{}, admission); err != nil {
 		t.Fatalf("set the cap to %d: %v", cap, err)
 	}
+}
+
+// bounded is a quiet admission whose starting cap is start and whose ceiling is ceiling, as the
+// daemon builds one from admission_cap and admission_ceiling.
+func bounded(t *testing.T, start, ceiling int) *Admission {
+	t.Helper()
+	admission := quiet(t, start)
+	admission.UseCeiling(ceiling)
+	return admission
 }
 
 // assertSlotted compares the issues holding a slot, in slot order, with want.
@@ -100,9 +109,9 @@ func TestACapSetAtRunTimeIsInForceFromItsOwnPass(t *testing.T) {
 	}
 }
 
-// A clear returns the project to the deployment's cap on the clear's own pass: under a ceiling of
-// 2 and a cap of 1, one root runs, and the clear admits the second. The clear is recorded with no
-// cap, from 1 to the ceiling.
+// A clear returns the project to the deployment's starting cap on the clear's own pass: under a
+// cap of 2 and a cap set of 1, one root runs, and the clear admits the second. The clear is
+// recorded with no cap, from 1 to the starting cap.
 func TestAClearReturnsTheProjectToTheDeploymentsCap(t *testing.T) {
 	pool := migratedPool(t)
 	for _, key := range []string{"LEGION-A", "LEGION-B", "LEGION-C"} {
@@ -110,12 +119,42 @@ func TestAClearReturnsTheProjectToTheDeploymentsCap(t *testing.T) {
 	}
 	admission := quiet(t, 2)
 	setCap(t, pool, admission, "cap-1", 1)
-	assertSlotted(t, pool, "a cap of 1 under a ceiling of 2", "LEGION-A")
+	assertSlotted(t, pool, "a cap of 1 under a starting cap of 2", "LEGION-A")
 
 	setCap(t, pool, admission, "clear", 0)
 	assertSlotted(t, pool, "the clear", "LEGION-A", "LEGION-B")
 	if changes := capChanges(t, pool); len(changes) != 2 || !changes[0].Cleared() || changes[0].CapBefore != 1 || changes[0].CapAfter != 2 {
-		t.Fatalf("the newest change = %+v, want the clear from 1 to the ceiling 2", changes)
+		t.Fatalf("the newest change = %+v, want the clear from 1 to the starting cap 2", changes)
+	}
+}
+
+// The ceiling is admission_ceiling, not the starting cap (dispatch://INFRA-5616/spec#b-r2-ceiling):
+// under a starting cap of 2 and a ceiling of 4, five roots wait and the first pass admits two; a
+// set of 4 admits two more on its own pass; and a clear returns the cap to 2, not to the ceiling,
+// stopping none of the four that run and admitting nothing on a later tick. The changes record the
+// ceiling of 4 and go from 2 to 4 and from 4 to 2.
+//
+// The controls: a pass that took the starting cap for the ceiling admits no third root at the set,
+// and a clear that returned to the ceiling admits the fifth root at the tick.
+func TestACapAboveTheStartingCapUpToTheCeilingIsInForceAndAClearReturnsToTheStart(t *testing.T) {
+	pool := migratedPool(t)
+	for _, key := range []string{"LEGION-A", "LEGION-B", "LEGION-C", "LEGION-D", "LEGION-E"} {
+		seedWaiting(t, pool, key, key[len(key)-1:])
+	}
+	admission := bounded(t, 2, 4)
+	tick(t, pool, admission, "first-pass")
+	assertSlotted(t, pool, "the starting cap of 2", "LEGION-A", "LEGION-B")
+
+	setCap(t, pool, admission, "raise-to-the-ceiling", 4)
+	assertSlotted(t, pool, "a set of 4 under a ceiling of 4", "LEGION-A", "LEGION-B", "LEGION-C", "LEGION-D")
+
+	setCap(t, pool, admission, "clear", 0)
+	tick(t, pool, admission, "tick-after-the-clear")
+	assertSlotted(t, pool, "the clear back to the starting cap", "LEGION-A", "LEGION-B", "LEGION-C", "LEGION-D")
+	changes := capChanges(t, pool)
+	if len(changes) != 2 || !changes[0].Cleared() || changes[0].CapBefore != 4 || changes[0].CapAfter != 2 ||
+		changes[1].Cap != 4 || changes[1].CapBefore != 2 || changes[1].CapAfter != 4 || changes[1].Ceiling != 4 {
+		t.Fatalf("the changes = %+v, want the set from 2 to 4 under the ceiling 4, then the clear from 4 to 2", changes)
 	}
 }
 
@@ -165,31 +204,33 @@ func TestAChangeThatChangesNothingWritesNoRowAndLogsOneDebugLine(t *testing.T) {
 }
 
 // The cap set is kept in the store, so a daemon that boots again admits under it (an admission
-// built anew on the same database, as the boot builds one): the restart under the same ceiling
-// admits as many roots as the cap set, and a restart under a ceiling a later configuration lowered
-// below that cap admits as many as the ceiling. The cap is set while nothing waits, so no pass of
-// the first admission admits anything, and every slot below is the restarted admission's.
+// built anew on the same database, as the boot builds one), under the bounds of that boot: the
+// same bounds admit as many roots as the cap set; a ceiling a later configuration lowered below
+// that cap admits as many as the ceiling; and a starting cap a later configuration lowered moves
+// nothing while the cap set stands. The cap is set while nothing waits, so no pass of the first
+// admission admits anything, and every slot below is the restarted admission's.
 //
-// The controls: an admission that ignored the stored cap admits four roots in the first case, and
-// one that took the stored cap over the ceiling admits three in the second.
+// The controls: an admission that ignored the stored cap admits two roots in the first case and
+// one in the third, and one that took the stored cap over the ceiling admits three in the second.
 func TestTheCapSetHoldsAcrossARestartUnderTheCeilingThen(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		ceiling int
-		want    []string
+		name           string
+		start, ceiling int
+		want           []string
 	}{
-		{name: "the same ceiling", ceiling: 4, want: []string{"LEGION-A", "LEGION-B", "LEGION-C"}},
-		{name: "a ceiling lowered below the cap", ceiling: 2, want: []string{"LEGION-A", "LEGION-B"}},
+		{name: "the same bounds", start: 2, ceiling: 4, want: []string{"LEGION-A", "LEGION-B", "LEGION-C"}},
+		{name: "a ceiling lowered below the cap", start: 2, ceiling: 2, want: []string{"LEGION-A", "LEGION-B"}},
+		{name: "a starting cap lowered while the cap stands", start: 1, ceiling: 4, want: []string{"LEGION-A", "LEGION-B", "LEGION-C"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			setCap(t, pool, quiet(t, 4), "cap-3", 3)
+			setCap(t, pool, bounded(t, 2, 4), "cap-3", 3)
 			assertSlotted(t, pool, "the cap set while nothing waits")
 			for _, key := range []string{"LEGION-A", "LEGION-B", "LEGION-C", "LEGION-D"} {
 				seedWaiting(t, pool, key, key[len(key)-1:])
 			}
 
-			tick(t, pool, quiet(t, tc.ceiling), "tick-after-the-restart")
+			tick(t, pool, bounded(t, tc.start, tc.ceiling), "tick-after-the-restart")
 			assertSlotted(t, pool, "the restarted daemon's first pass", tc.want...)
 		})
 	}

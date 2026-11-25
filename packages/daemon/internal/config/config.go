@@ -86,6 +86,11 @@ type Config struct {
 	StateDir      string
 	Runtime       Runtime
 	AdmissionCap  int
+	// AdmissionCeiling is the most a cap set while the daemon runs may name (`admission_ceiling`,
+	// else LEGION_ADMISSION_CEILING, else AdmissionCap): at least 1 and at least AdmissionCap.
+	// AdmissionCap is the cap the daemon admits under where no such cap stands, and what a clear
+	// returns to (dispatch://INFRA-5616).
+	AdmissionCeiling int
 
 	// DaemonURL is the API address every pane is told (`LEGION_DAEMON_URL`), with no trailing
 	// slash; the loopback address on Port unless the file names another.
@@ -409,6 +414,7 @@ type fileConfig struct {
 	PostgresDSN      *string
 	StateDir         *string
 	AdmissionCap     *int
+	AdmissionCeiling *int
 	Kubernetes       *Kubernetes
 	Tmux             *Tmux
 	DaemonURL        *string
@@ -1118,6 +1124,25 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	if cfg.AdmissionCap < 1 {
 		return Config{}, errors.New("admission_cap must be a positive integer")
+	}
+	switch {
+	case file.AdmissionCeiling != nil:
+		cfg.AdmissionCeiling = *file.AdmissionCeiling
+	case env("LEGION_ADMISSION_CEILING") != "":
+		parsed, err := strconv.Atoi(env("LEGION_ADMISSION_CEILING"))
+		if err != nil || parsed < 1 {
+			return Config{}, errors.New("LEGION_ADMISSION_CEILING must be a positive integer")
+		}
+		cfg.AdmissionCeiling = parsed
+	default:
+		cfg.AdmissionCeiling = cfg.AdmissionCap
+	}
+	if cfg.AdmissionCeiling < 1 {
+		return Config{}, errors.New("admission_ceiling must be a positive integer")
+	}
+	if cfg.AdmissionCeiling < cfg.AdmissionCap {
+		return Config{}, fmt.Errorf("admission_ceiling is %d, below admission_cap's %d: the ceiling is the most a cap set while the daemon runs may name, so it is at least the cap the daemon starts under",
+			cfg.AdmissionCeiling, cfg.AdmissionCap)
 	}
 
 	if file.WorkerWakesPerMinute != nil {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -28,22 +29,30 @@ type AdmissionCapChange struct {
 	At        time.Time
 }
 
-// Cleared is whether the change is a clear, which returns the project to the deployment's cap.
+// Cleared is whether the change is a clear, which returns the project to the deployment's cap. The
+// zero change, which AdmissionCapTx answers where no change was ever made, is one too.
 func (c AdmissionCapChange) Cleared() bool { return c.Cap == 0 }
 
 // AdmissionCapChangesShown is how many changes the state lists, newest first
 // (AdmissionCapChangesTx). The table keeps every change, and the daemon's log names each.
 const AdmissionCapChangesShown = 50
 
-// EffectiveAdmissionCap is the cap a pass admits under: the deployment's configured cap
-// (legion.yaml's admission_cap, else LEGION_ADMISSION_CAP), which is the ceiling, where no cap set
-// while the daemon runs stands; else the smaller of that cap and the ceiling. The smaller of the
-// two, and not the cap set, because the routes refuse only a cap above the ceiling of their own
-// boot, and a later configuration may have lowered the ceiling under it. standing is the project's
-// newest change (AdmissionCapTx), found false where none was ever made.
-func EffectiveAdmissionCap(ceiling int, standing AdmissionCapChange, found bool) int {
-	if !found || standing.Cleared() {
-		return ceiling
+// AdmissionCapReasonMax is the most characters a change's reason holds, as the give-up discard's
+// reason does: the state serves the reasons of the newest AdmissionCapChangesShown changes on every
+// read, and Dispatch reads a bounded answer of the daemon.
+const AdmissionCapReasonMax = 2048
+
+// EffectiveAdmissionCap is the cap a pass admits under: start, the deployment's starting cap
+// (legion.yaml's admission_cap, else LEGION_ADMISSION_CAP), where no cap set while the daemon
+// runs stands; else the smaller of that cap and ceiling, the deployment's admission_ceiling. The
+// smaller of the two, and not the cap set, because the routes refuse only a cap above the ceiling
+// of their own boot, and a later configuration may have lowered the ceiling under it. standing is
+// the project's newest change (AdmissionCapTx), the zero change where none was ever made. A cap
+// that stands keeps holding when a later configuration changes start, until a person clears it or
+// sets another.
+func EffectiveAdmissionCap(start, ceiling int, standing AdmissionCapChange) int {
+	if standing.Cleared() {
+		return start
 	}
 	return min(standing.Cap, ceiling)
 }
@@ -62,19 +71,19 @@ func scanAdmissionCapChange(row pgx.Row) (AdmissionCapChange, error) {
 	return c, nil
 }
 
-// AdmissionCapTx is, through tx, project's newest change of the cap, and whether one was ever
-// made: the cap set while the daemon runs where it set one (EffectiveAdmissionCap reads it), and
-// none where it was a clear. project is the Dispatch key.
-func AdmissionCapTx(ctx context.Context, tx pgx.Tx, project string) (AdmissionCapChange, bool, error) {
+// AdmissionCapTx is, through tx, project's newest change of the cap: the cap set while the daemon
+// runs where it set one (EffectiveAdmissionCap reads it), a clear where it was one, and the zero
+// change, a clear too, where no change was ever made. project is the Dispatch key.
+func AdmissionCapTx(ctx context.Context, tx pgx.Tx, project string) (AdmissionCapChange, error) {
 	c, err := scanAdmissionCapChange(tx.QueryRow(ctx, `select `+admissionCapColumns+` from project_admission_cap_changes
 		where project = $1 order by id desc limit 1`, project))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return AdmissionCapChange{}, false, nil
+		return AdmissionCapChange{}, nil
 	}
 	if err != nil {
-		return AdmissionCapChange{}, false, fmt.Errorf("read the admission cap of %s: %w", project, err)
+		return AdmissionCapChange{}, fmt.Errorf("read the admission cap of %s: %w", project, err)
 	}
-	return c, true, nil
+	return c, nil
 }
 
 // AdmissionCapChangesTx is, through tx, project's newest changes of the cap, newest first, at most
@@ -102,16 +111,20 @@ func AdmissionCapChangesTx(ctx context.Context, tx pgx.Tx, project string, limit
 
 // RecordAdmissionCapChangeTx appends change through tx and answers it with its id. It is the one
 // writer of project_admission_cap_changes, and admission's setAdmissionCap its one caller
-// (admission_cap_writers_test.go holds both). Every fact applies under intake's one lock
-// (intake.SerializeFacts), so two changes of one project never read the same cap before. It
-// refuses a cap below 0, a reason that is only white space and an actor of neither shape before
-// the table's checks would.
+// (internal/textcheck's admission_cap_writers_test.go holds both). Every fact applies under
+// intake's one lock (intake.SerializeFacts), so two changes of one project never read the same cap
+// before. It refuses a cap below 0, a reason that is only white space or longer than
+// AdmissionCapReasonMax characters, and an actor of neither shape before the table's checks would.
 func RecordAdmissionCapChangeTx(ctx context.Context, tx pgx.Tx, change AdmissionCapChange) (AdmissionCapChange, error) {
 	if change.Cap < 0 {
 		return AdmissionCapChange{}, fmt.Errorf("change the admission cap of %s to %d: a cap is at least 1, and a clear names none", change.Project, change.Cap)
 	}
 	if strings.TrimSpace(change.Reason) == "" {
 		return AdmissionCapChange{}, fmt.Errorf("change the admission cap of %s: a change says why it is made", change.Project)
+	}
+	if n := utf8.RuneCountInString(change.Reason); n > AdmissionCapReasonMax {
+		return AdmissionCapChange{}, fmt.Errorf("change the admission cap of %s: the reason is %d characters, and a reason holds at most %d",
+			change.Project, n, AdmissionCapReasonMax)
 	}
 	if err := change.By.validate(); err != nil {
 		return AdmissionCapChange{}, fmt.Errorf("change the admission cap of %s: %w", change.Project, err)

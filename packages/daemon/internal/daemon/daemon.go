@@ -758,16 +758,16 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			err = nil
 			listener.Close()
 		case err == nil:
-			log.Info("legion daemon started",
+			log.Info("legion daemon started", append([]any{
 				"project", cfg.Project,
 				"address", listener.Addr().String(),
 				"workerStream", s.stream.Addr(),
 				"runtime", cfg.Runtime.Name,
-				"admissionCap", cfg.AdmissionCap,
+			}, append(bootAdmissionCap(ctx, st, cfg),
 				"migrationsApplied", applied,
 				"claims", s.supervisor.count(),
 				"boot", bootID,
-			)
+			)...)...)
 			if workflow != nil {
 				log.Info("legion workflow boot stage", "stage", "api")
 			}
@@ -2725,6 +2725,31 @@ func (l *servingLatch) reach() { l.served.Store(true) }
 // on whatever goroutine a probe's request runs on.
 func (l *servingLatch) serving() bool { return l.served.Load() }
 
+// bootAdmissionCap is the boot line's words for the admission cap (dispatch://INFRA-5616):
+// admissionStart, the deployment's starting cap; admissionCeiling, its admission_ceiling;
+// admissionCap, the cap the passes admit under, which a cap set while an earlier boot ran keeps
+// apart from the starting cap until a person clears it or sets another; and, where such a cap
+// stands, who set it, when and why. A change of admission_cap leaves a cap that stands in force,
+// and this line is where an operator who changed it sees why. A failed read logs the bounds and
+// the error, and never stops the boot.
+func bootAdmissionCap(ctx context.Context, st *store.Store, cfg config.Config) []any {
+	words := []any{"admissionStart", cfg.AdmissionCap, "admissionCeiling", cfg.AdmissionCeiling}
+	var standing store.AdmissionCapChange
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		standing, err = store.AdmissionCapTx(ctx, tx, cfg.Project)
+		return err
+	}); err != nil {
+		return append(words, "admissionCapReadError", err.Error())
+	}
+	words = append(words, "admissionCap", store.EffectiveAdmissionCap(cfg.AdmissionCap, cfg.AdmissionCeiling, standing))
+	if standing.Cleared() {
+		return words
+	}
+	return append(words, "admissionCapSet", standing.Cap, "admissionCapSetBy", string(standing.By.Kind),
+		"admissionCapSetAt", standing.At.Format(time.RFC3339), "admissionCapReason", standing.Reason)
+}
+
 // serve runs the API on the listener the daemon already took until ctx is done or the server
 // fails, and returns once it is closed: one goroutine serves, the other shuts down, and the
 // shutdown runs on a context of its own so a cancelled ctx still drains the connections it has.
@@ -2791,7 +2816,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			project:          cfg.Project,
 			projectToken:     p.project,
 			runtime:          cfg.Runtime.Name,
-			admissionCeiling: cfg.AdmissionCap,
+			admissionCap:     cfg.AdmissionCap,
+			admissionCeiling: cfg.AdmissionCeiling,
 			startedAt:        startedAt,
 			now:              p.clock.Now,
 			secretsLogin:     p.secretsLogin,
@@ -2856,7 +2882,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
 		Pause:              pauses,
-		AdmissionCeiling:   cfg.AdmissionCap,
+		AdmissionCap:       cfg.AdmissionCap,
+		AdmissionCeiling:   cfg.AdmissionCeiling,
 	})
 
 	group, serving := errgroup.WithContext(ctx)
@@ -2957,8 +2984,10 @@ type source struct {
 	project      string
 	projectToken string
 	runtime      string
-	// admissionCeiling is the deployment's admission cap (config.Config.AdmissionCap), the ceiling
-	// of the cap the controller or the operator sets while the daemon runs.
+	// admissionCap is the deployment's starting admission cap (config.Config.AdmissionCap), and
+	// admissionCeiling its admission_ceiling (config.Config.AdmissionCeiling), the most a cap the
+	// controller or the operator sets while the daemon runs may name.
+	admissionCap     int
 	admissionCeiling int
 	startedAt        time.Time
 	// now is the daemon's one clock (overrides.clock, the wall clock in production), the moment
@@ -3472,12 +3501,8 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	}
 	state.Settings = s.settings
 	// The cap the passes admit under, the ceiling, the cap set while the daemon runs and the
-	// newest changes of it, read through tx as the passes read the cap (api.AdmissionCapStateTx).
-	state.Admission.Ceiling = s.admissionCeiling
-	if state.Admission.Cap, state.Admission.Override, err = api.AdmissionCapStateTx(ctx, tx, s.project, s.admissionCeiling); err != nil {
-		return api.State{}, nil, err
-	}
-	if state.Admission.CapChanges, err = api.AdmissionCapChangesTx(ctx, tx, s.project); err != nil {
+	// newest changes of it, read through tx as the passes read the cap (api.FillAdmissionCapTx).
+	if err := api.FillAdmissionCapTx(ctx, tx, s.project, s.admissionCap, s.admissionCeiling, &state.Admission); err != nil {
 		return api.State{}, nil, err
 	}
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)

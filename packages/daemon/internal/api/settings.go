@@ -36,7 +36,9 @@ type Settings struct {
 	AdvertiseHost string          `json:"advertise_host,omitempty"`
 	StateDir      string          `json:"state_dir"`
 	Runtime       RuntimeSettings `json:"runtime"`
-	// AdmissionCap is the cap; `admission.cap` carries the same value, read from the same configuration.
+	// AdmissionCap is the configured cap: the cap the daemon boots under and the ceiling of a cap
+	// set while it runs. `admission.cap` is the cap in force, the same value until a cap is set
+	// (dispatch://INFRA-5616), and `admission.ceiling` repeats this one.
 	AdmissionCap     int    `json:"admission_cap"`
 	DaemonURL        string `json:"daemon_url"`
 	WorkerStreamPort int    `json:"worker_stream_port"`

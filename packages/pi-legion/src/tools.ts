@@ -142,9 +142,11 @@ const pauseActorWords = (session: string | undefined): string =>
   session === undefined ? "the operator" : `the controller (session ${session})`;
 
 /** A pause as the summary's line names it: its id, since when, who paused and why (`pauseWords`
- * in `packages/daemon/cmd/legion/project.go`). */
+ * in `packages/daemon/cmd/legion/project.go`). The reason is a person's words, quoted as JSON, so
+ * a newline or an instruction in it reads as the text it is and cannot pose as a line of the
+ * summary. */
 const pauseWords = (id: number, since: string, by: string, reason: string): string =>
-  `pause ${id} since ${since} by ${by}: ${reason}`;
+  `pause ${id} since ${since} by ${by}: ${JSON.stringify(reason)}`;
 
 /**
  * The summary's line on the project's pause, in the words `legion state` prints for an operator
@@ -289,7 +291,9 @@ function stateSummary(state: LegionState): string {
       const by = pauseActorWords(
         override.setBy.kind === "controller" ? override.setBy.session : undefined
       );
-      lines.push(`cap set ${override.cap} by ${by} at ${override.setAt}: ${override.reason}`);
+      lines.push(
+        `cap set ${override.cap} by ${by} at ${override.setAt}: ${JSON.stringify(override.reason)}`
+      );
     }
     lines.push(
       `active ${admission.active?.join(" ") || "(none)"}`,
@@ -754,16 +758,17 @@ export function createLegionTool(deps: {
         "of a record a replay closed and a discard of a closed record, naming how and when it closed (GIVE_UP_CLOSED), an " +
         "id a running replay holds (GIVE_UP_BEING_REPLAYED), and every call to a daemon that runs no intake (NO_INTAKE). " +
         "set_admission_cap (cap, reason) sets how many issues the daemon may have started at once, from 1 to the " +
-        "deployment's ceiling (admission.ceiling, legion.yaml's admission_cap), and clear_admission_cap (reason) " +
-        "returns the project to that ceiling; neither takes an issue. Each is in force from the change's own admission pass " +
-        "on, with no restart: a raise starts the issues waiting for the slots it adds, and a lower cap stops nothing that " +
-        "runs, only starting nothing new until fewer issues hold a slot than it allows. Change the cap only where a " +
-        "person's words, which you cite in reason, ask for it. The " +
-        "daemon records each change with who made it, when, why, and the cap before and after it " +
-        "(admission.capChanges in read_state), and a set of the cap that stands or a clear where none stands records " +
-        "nothing. The answer is the cap in force, the ceiling and the cap set that stands. The daemon refuses a cap below 1 " +
-        "(INVALID_ADMISSION_CAP), a cap above the ceiling (ADMISSION_CAP_ABOVE_CEILING, naming the ceiling: only the " +
-        "operator raises it, in legion.yaml), a change with no reason (ADMISSION_CAP_REASON_REQUIRED), and a daemon with " +
+        "deployment's ceiling (admission.ceiling, legion.yaml's admission_ceiling), and clear_admission_cap (reason) " +
+        "returns the project to its starting cap, legion.yaml's admission_cap; neither takes an issue. Each is in force " +
+        "from the change's own admission pass on, with no restart: a raise starts the issues waiting for the slots it " +
+        "adds, and a lower cap stops nothing that runs, only starting nothing new until fewer issues hold a slot than it " +
+        "allows. Change the cap only where a person's words, which you cite in reason, ask for it. The daemon records " +
+        "each change with who made it, when, why, and the cap before and after it (admission.capChanges in read_state), " +
+        "and a set of the cap that stands or a clear where none stands records nothing. The answer is the cap in force, " +
+        "the ceiling and the cap set that stands. The daemon refuses a cap below 1 (INVALID_ADMISSION_CAP), a cap above " +
+        "the ceiling (ADMISSION_CAP_ABOVE_CEILING, naming the ceiling: only the operator raises it, in legion.yaml), a " +
+        "change with no reason (ADMISSION_CAP_REASON_REQUIRED), a reason longer than 2,048 characters " +
+        "(ADMISSION_CAP_REASON_TOO_LONG), a grant that is not a controller's (CONTROLLER_REQUIRED), and a daemon with " +
         "no workflow (ADMISSION_CAP_UNAVAILABLE). ",
     }),
     defaultInactive: true,
@@ -844,20 +849,21 @@ export function createLegionTool(deps: {
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(await client.intakeDiscard({ grantId, ...selection, reason }));
           }
-          // The cap's set and clear name no issue either, and are validated whole before the
-          // grant is minted; each answer is the daemon's own: the cap in force after the change.
-          if (operation === "set_admission_cap" || operation === "clear_admission_cap") {
+          // The cap's set and its clear name no issue either, and each is validated whole before
+          // its grant is minted; each answer is the daemon's own: the cap in force after the change.
+          if (operation === "set_admission_cap") {
             const reason = requiredString(parameters, operation, "reason");
-            if (operation === "clear_admission_cap") {
-              const { grantId } = await controllerGrant(active.sessionID);
-              return jsonSuccess(await client.admissionCapClear({ grantId, reason }));
-            }
             const cap = parameters.cap;
-            if (typeof cap !== "number" || !Number.isSafeInteger(cap) || cap < 1) {
+            if (!isWholeFromOne(cap)) {
               throw new Error("set_admission_cap requires cap, a whole number of at least 1");
             }
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(await client.admissionCap({ grantId, cap, reason }));
+          }
+          if (operation === "clear_admission_cap") {
+            const reason = requiredString(parameters, operation, "reason");
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.admissionCapClear({ grantId, reason }));
           }
           // The controller's three writes of one issue: each validated whole before its grant is
           // minted.

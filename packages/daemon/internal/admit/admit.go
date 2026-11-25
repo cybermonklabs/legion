@@ -34,9 +34,12 @@ import (
 type Admission struct {
 	store  record.Store
 	engine *workflow.Engine
-	// ceiling is the deployment's cap (legion.yaml's admission_cap, else LEGION_ADMISSION_CAP): the
-	// cap every pass admits under while nobody set one at run time, and the most a cap set at run
-	// time admits under (capAt).
+	// start is the deployment's starting cap (legion.yaml's admission_cap, else
+	// LEGION_ADMISSION_CAP): the cap every pass admits under while no cap set at run time stands,
+	// and what a clear returns to. ceiling is the deployment's admission_ceiling, the most a cap set
+	// at run time admits under (capAt). New sets both to one number, and UseCeiling raises the
+	// ceiling.
+	start   int
 	ceiling int
 	project string
 	log     *slog.Logger
@@ -160,31 +163,41 @@ func (a *Admission) UseWorkerSilence(silence, background time.Duration) {
 
 var _ intake.Handler = (*Admission)(nil)
 
-// New creates an admission handler for one Dispatch project, admitting under ceiling, the
-// deployment's cap, or under a lower cap the controller or the operator set while it runs
-// (capAt). engine is the workflow's own, shared with intake's other handler:
-// reenterStrandedChildren calls its exported ReenterChild rather than keeping a second copy of
-// re-entry and gate-open behavior.
-func New(store record.Store, engine *workflow.Engine, ceiling int, project string, log *slog.Logger) *Admission {
+// New creates an admission handler for one Dispatch project, admitting under cap, the deployment's
+// starting cap, or under the cap the controller or the operator set while it runs (capAt), at
+// most the ceiling, which is cap until UseCeiling raises it. engine is the workflow's own, shared
+// with intake's other handler: reenterStrandedChildren calls its exported ReenterChild rather than
+// keeping a second copy of re-entry and gate-open behavior.
+func New(store record.Store, engine *workflow.Engine, cap int, project string, log *slog.Logger) *Admission {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Admission{store: store, engine: engine, ceiling: ceiling, project: project, log: log, now: time.Now,
+	return &Admission{store: store, engine: engine, start: cap, ceiling: cap, project: project, log: log, now: time.Now,
 		pending: make(map[string]heldSummary), unclassifiedLogged: make(map[string]uint64)}
 }
 
+// UseCeiling sets the most a cap set at run time admits under: the deployment's
+// admission_ceiling (config.Config.AdmissionCeiling), which the configuration holds at least at
+// the starting cap. The daemon calls it once, before the first fact.
+func (a *Admission) UseCeiling(ceiling int) { a.ceiling = ceiling }
+
+// UseClock sets the clock admission stamps its records with, in place of time.Now: a caller
+// outside this package whose test reads a stamped time, such as api's goldens, gives it a fixed
+// one.
+func (a *Admission) UseClock(now func() time.Time) { a.now = now }
+
 // capAt is the cap this pass admits under, read through tx: the smaller of the cap the controller
-// or the operator set while the daemon runs and the deployment's own, or the deployment's own where
-// nobody set one or the last change was a clear (store.EffectiveAdmissionCap). It is read on every
-// pass rather than held, so a cap set while the daemon runs is in force from the pass of its own
-// fact on (setAdmissionCap), with no restart, and one set before a restart is in force from the
-// boot's first pass.
+// or the operator set while the daemon runs and the deployment's ceiling, or the deployment's
+// starting cap where nobody set one or the last change was a clear (store.EffectiveAdmissionCap).
+// It is read on every pass rather than held, so a cap set while the daemon runs is in force from
+// the pass of its own fact on (setAdmissionCap), with no restart, and one set before a restart is
+// in force from the boot's first pass.
 func (a *Admission) capAt(ctx context.Context, tx pgx.Tx) (int, error) {
-	standing, found, err := store.AdmissionCapTx(ctx, tx, a.project)
+	standing, err := store.AdmissionCapTx(ctx, tx, a.project)
 	if err != nil {
 		return 0, err
 	}
-	return store.EffectiveAdmissionCap(a.ceiling, standing, found), nil
+	return store.EffectiveAdmissionCap(a.start, a.ceiling, standing), nil
 }
 
 // Apply records root and orphan todo observations of issues handed to Legion and every newer
@@ -488,27 +501,28 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // setAdmissionCap appends the change the fact makes (store.RecordAdmissionCapChangeTx) with the cap
 // the passes admitted under before it and the one they admit under from it on, and logs it once it
 // commits: who made it, why, the cap it set or that it cleared, the caps before and after it and
-// the deployment's ceiling. A change that changes nothing writes no row and logs one Debug line: a
-// set of the cap that stands, and a clear where no cap stands. It refuses nothing: the routes
-// refused a cap above the ceiling before the fact, and capAt admits under the smaller of the two
-// whatever the row holds.
+// the deployment's ceiling. It stamps the change's time itself, from admission's clock, inside the
+// fact's transaction and so under intake's one lock: a change that waited for its turn is stamped
+// when it applies, so no record's time is earlier than the time of a record before it. A change
+// that changes nothing writes no row and logs one Debug line: a set of the cap that stands, and a
+// clear where no cap stands. It refuses nothing: the routes refused a cap above the ceiling before
+// the fact, and capAt admits under the smaller of the two whatever the row holds.
 func (a *Admission) setAdmissionCap(ctx context.Context, tx pgx.Tx, change intake.AdmissionCapSet) error {
-	standing, found, err := store.AdmissionCapTx(ctx, tx, a.project)
+	standing, err := store.AdmissionCapTx(ctx, tx, a.project)
 	if err != nil {
 		return err
 	}
-	stands := found && !standing.Cleared()
-	before := store.EffectiveAdmissionCap(a.ceiling, standing, found)
+	before := store.EffectiveAdmissionCap(a.start, a.ceiling, standing)
 	args := []any{"by", string(change.By.Kind), "by_session", change.By.Session, "reason", change.Reason,
-		"ceiling", a.ceiling}
-	if (change.Cap == 0 && !stands) || (stands && change.Cap == standing.Cap) {
+		"start", a.start, "ceiling", a.ceiling}
+	if change.Cap == standing.Cap {
 		args = append(args, "set", capWords(change.Cap), "cap", before)
 		store.OnCommit(ctx, func() { a.log.Debug("admission: the cap change changes nothing, so no change is recorded", args...) })
 		return nil
 	}
 	recorded := store.AdmissionCapChange{Project: a.project, Cap: change.Cap, CapBefore: before, Ceiling: a.ceiling,
-		By: change.By, Reason: change.Reason, At: change.At}
-	recorded.CapAfter = store.EffectiveAdmissionCap(a.ceiling, recorded, true)
+		By: change.By, Reason: change.Reason, At: a.now().UTC()}
+	recorded.CapAfter = store.EffectiveAdmissionCap(a.start, a.ceiling, recorded)
 	if recorded, err = store.RecordAdmissionCapChangeTx(ctx, tx, recorded); err != nil {
 		return err
 	}
@@ -1697,7 +1711,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 // no slot-free wake follows for these rows. A member arriving from another tree keeps the row it
 // held there (Waiting's queued-root loop), so only the tree's own root coming back reaches this.
 // Each release is logged with the slots the project holds after it, lowered in slot order, as
-// releaseSlots logs its own; the count is read here, where every caller of logSlot counts, and
+// releaseSlots logs its own; the count is read here, where every caller of logSlotReleased counts, and
 // only when something was released.
 func (a *Admission) releaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) error {
 	released, err := a.store.ReleaseTreeSlots(ctx, tx, tree)
@@ -1708,12 +1722,8 @@ func (a *Admission) releaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string
 	if err != nil {
 		return err
 	}
-	cap, err := a.capAt(ctx, tx)
-	if err != nil {
-		return err
-	}
 	for i, key := range released {
-		a.logSlot(ctx, "released", key, len(own)+len(released)-1-i, cap)
+		a.logSlotReleased(ctx, key, len(own)+len(released)-1-i)
 	}
 	return nil
 }
@@ -1793,7 +1803,7 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // mark would say the issue stands in the line waiting for its slot
 // back when nothing of it is waiting, and its work coming back later would take its place in
 // the line from the moment before the park (record.Waiting).
-func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts, cap int) ([]string, error) {
+func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]string, error) {
 	own, err := a.store.SlottedIssues(ctx, tx, a.project)
 	if err != nil {
 		return nil, fmt.Errorf("list this project's slotted issues: %w", err)
@@ -1817,7 +1827,7 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 		}
 		inUse--
 		released = append(released, issue.Key)
-		a.logSlot(ctx, "released", issue.Key, inUse, cap)
+		a.logSlotReleased(ctx, issue.Key, inUse)
 	}
 	for _, issue := range issues {
 		if issue.ReleasedForWaitAt == nil {
@@ -1852,7 +1862,7 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 // the controller's free-slot wake is about the capacity of the project and not about the reason
 // a row came free.
 func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue,
-	slots []record.Slot, facts record.LineFacts, cap int,
+	slots []record.Slot, facts record.LineFacts,
 ) ([]string, error) {
 	own := ownSlots(issues, slots)
 	inUse := len(own)
@@ -1866,15 +1876,22 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 		}
 		inUse--
 		released = append(released, slot.Issue)
-		a.logSlot(ctx, "released", slot.Issue, inUse, cap)
+		a.logSlotReleased(ctx, slot.Issue, inUse)
 	}
 	return released, nil
 }
 
-// logSlot logs a slot released or taken once the fact commits: the issue, the slots the project
-// holds after the change, and cap, the cap the pass admits under (capAt).
-func (a *Admission) logSlot(ctx context.Context, change, issue string, inUse, cap int) {
-	store.OnCommit(ctx, func() { a.log.Info("admission: slot "+change, "issue", issue, "slots", inUse, "cap", cap) })
+// logSlotTaken logs a slot taken once the fact commits: the issue, the slots the project holds
+// after it, and cap, the cap the pass admits under (capAt), which is what let it take the slot.
+func (a *Admission) logSlotTaken(ctx context.Context, issue string, inUse, cap int) {
+	store.OnCommit(ctx, func() { a.log.Info("admission: slot taken", "issue", issue, "slots", inUse, "cap", cap) })
+}
+
+// logSlotReleased logs a slot released once the fact commits: the issue and the slots the project
+// holds after it. It names no cap: no release reads one, since a lower cap frees no slot, and the
+// re-admission's release (releaseTreeSlots) runs outside any pass that read it.
+func (a *Admission) logSlotReleased(ctx context.Context, issue string, inUse int) {
+	store.OnCommit(ctx, func() { a.log.Info("admission: slot released", "issue", issue, "slots", inUse) })
 }
 
 // logOnCommit writes one Info line once the transaction commits (store.OnCommit), for a line that
@@ -1965,7 +1982,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, nil, err
 		}
 	}
-	released, err := a.releaseSlots(ctx, tx, issues, facts, cap)
+	released, err := a.releaseSlots(ctx, tx, issues, facts)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -2000,7 +2017,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// so this pass's own line and its ownSlots read the state after the release: an issue that
 	// waits holds none of the cap's slots, and the slot it gives back is offered to the line on
 	// this very pass rather than the next one.
-	waiting, err := a.releaseSlotsForWaits(ctx, tx, issues, slots, facts, cap)
+	waiting, err := a.releaseSlotsForWaits(ctx, tx, issues, slots, facts)
 	if err != nil {
 		return 0, append(released, waiting...), err
 	}
@@ -2197,7 +2214,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					}
 				}
 				slots, own = append(slots, slot), append(own, slot)
-				a.logSlot(ctx, "taken", issue.Key, len(own), cap)
+				a.logSlotTaken(ctx, issue.Key, len(own), cap)
 			}
 			switch candidate.Kind {
 			case record.LineReturning:

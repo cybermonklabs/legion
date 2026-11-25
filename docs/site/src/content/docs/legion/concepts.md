@@ -252,10 +252,13 @@ The cap the daemon admits under can move while it runs.
 The project's controller sets it with its `legion` tool's `set_admission_cap`
 and clears it with `clear_admission_cap`,
 and the operator with `legion project set-admission-cap` and `clear-admission-cap`.
-A cap is a whole number from 1 to `admission_cap`, which is the ceiling:
+A cap is a whole number from 1 to `admission_ceiling`, which is the ceiling:
 a cap above it is refused, so raising the ceiling is a change of `legion.yaml` and a restart.
+A clear returns the daemon to `admission_cap`, the cap it starts under.
 A set or a clear is in force from its own admission pass on, with no restart,
 and the daemon keeps it in its store, so it holds across one.
+So a change of `admission_cap` moves nothing while a cap set stands:
+clear it with `legion project clear-admission-cap` to return to the new number.
 A lower cap stops nothing that runs:
 it starts no new issue until fewer issues hold a slot than it allows.
 Each change records who made it, when, why and the cap before and after it;

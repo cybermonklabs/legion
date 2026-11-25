@@ -376,10 +376,10 @@ Check, in order:
    `active` lists the issues holding a slot, roots and children alike, `waiting` the issues in
    line, `trees` the roots of the trees that run,
    and `cap` the slots the daemon admits under now, which count the issues it has started, not trees.
-   `ceiling` is `admission_cap`, the most `cap` can be;
+   `ceiling` is `admission_ceiling`, the most `cap` can be, and `cap` is `admission_cap` while no cap set stands;
    `override` is the cap the controller or the operator set while the daemon runs, with who set it, when and why,
    and `capChanges` the newest changes of it, each with the cap before and after it.
-   A `cap` below `ceiling` is such a cap, not a fault: read its `override.reason`.
+   A `cap` other than `admission_cap` is such a cap, not a fault: read its `override.reason`.
    A parent whose own first phase waits for its open children
    is in `blocked`, with each child it waits for.
 

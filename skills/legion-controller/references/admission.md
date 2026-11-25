@@ -64,12 +64,12 @@ A root architect whose claim on its root was refused waits, and nothing tells it
 
 ## The admission cap
 
-`admission.cap` is the cap in force: `admission.ceiling` (legion.yaml's `admission_cap`) unless a cap set while the daemon runs stands in `admission.override`, with who set it, when and why.
+`admission.cap` is the cap in force: the smaller of `admission.override.cap`, the cap set while the daemon runs that stands, with who set it, when and why, and `admission.ceiling` (legion.yaml's `admission_ceiling`); or legion.yaml's `admission_cap` where nothing stands.
 
 Change it only where a person's words ask for the change, and cite those words in `reason`: `set_admission_cap` (`cap`, `reason`) or `clear_admission_cap` (`reason`).
 
-The change is in force at the next admission pass with no restart, and a lower cap stops nothing that runs.
+The change is in force from the change's own admission pass on, with no restart, and a lower cap stops nothing that runs.
 
-A cap above `admission.ceiling` is refused: ask the operator to raise `admission_cap` in legion.yaml.
+A cap above `admission.ceiling` is refused: ask the operator to raise `admission_ceiling` in legion.yaml.
 
 `admission.capChanges` lists the newest changes, each with the cap before and after it.
