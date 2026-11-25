@@ -474,7 +474,7 @@ echo "fake broker: cmdline=$(tr '\0' ' ' </proc/$$/cmdline)" >&2
 echo "fake broker: machine-login=${BROKER_MACHINE_LOGIN_URL:-} sign-in-client=${BROKER_SIGNIN_CLIENT_ID:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 echo "fake broker: service-logins=${BROKER_SERVICE_LOGINS:-} project-access=${BROKER_PROJECT_ACCESS_URL:-} project-access-token=${BROKER_PROJECT_ACCESS_TOKEN_FILE:-}" >&2
 echo "fake broker: profiles=${BROKER_PROFILES_FILE:-} airlock-ca=${BROKER_AIRLOCK_CA_CERT_FILE:-} airlock-proxy=${BROKER_AIRLOCK_PROXY_URL:-} airlock-resolve=${BROKER_AIRLOCK_TEST_RESOLVE:-} airlock-dial=${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}" >&2
-echo "fake broker: nats=${BROKER_NATS_URLS:-} seeds=${BROKER_NATS_SEED_FILE:-},${BROKER_NATS_ISSUER_SEED_FILE:-},${BROKER_NATS_XKEY_SEED_FILE:-} nats-audience=${BROKER_NATS_K8S_AUDIENCE:-} services=${BROKER_NATS_SERVICES:-}" >&2
+echo "fake broker: nats=${BROKER_NATS_URLS:-} seeds=${BROKER_NATS_SEED_FILE:-},${BROKER_NATS_ISSUER_SEED_FILE:-},${BROKER_NATS_XKEY_SEED_FILE:-} nats-audience=${BROKER_NATS_K8S_AUDIENCE:-} services=${BROKER_NATS_SERVICES:-} nats-google-audience=${BROKER_NATS_GOOGLE_AUDIENCE:-}" >&2
 echo "fake broker: pod-registrars=${BROKER_POD_REGISTRARS:-}" >&2
 echo "fake broker: airlock-listen=${BROKER_AIRLOCK_LISTEN_ADDR:-}" >&2
 # The proxy binds the address it was given, as the real one does, and only when the profiles file
@@ -1092,7 +1092,7 @@ printf "PASS: instance 1 started every process and took each port from that proc
   "${port1[dev-oidc-issuer]}" "${port1[broker]}" "${port1[natsd]}" "${port1[listener]}" "${port1[dispatch]}" "$kept_port1"
 # The control for (j): a run without --callout runs natsd with no callout and one broker that runs
 # no auth service, gives the listener and Dispatch no NATS token, and exports nothing of a callout.
-grep -q 'fake broker: nats= seeds=,, nats-audience= services=$' "${work_dir1}/logs/broker.log" ||
+grep -q 'fake broker: nats= seeds=,, nats-audience= services= nats-google-audience=$' "${work_dir1}/logs/broker.log" ||
   fail "instance 1, run without --callout, gave its broker NATS auth service settings"
 [[ ! -e "${work_dir1}/logs/broker-2.log" ]] || fail "instance 1, run without --callout, started a second broker"
 grep -q -- '-callout-keys' "${work_dir1}/logs/natsd.log" && fail "instance 1, run without --callout, ran natsd with -callout-keys"
@@ -1799,9 +1799,9 @@ second_broker_port="$(broker_log_port "${work_dir}/logs/broker-2.log")"
 if [[ -z "$second_broker_port" ]] || ! kill -0 "$second_broker_port" 2>/dev/null; then
   fail "the --callout run started no second broker"
 fi
-want_services="listener/dev-stack-${run_suffix}/*=system:serviceaccount:example-ns:example-listener dispatch/dev-stack-dispatch/*=system:serviceaccount:example-ns:example-dispatch"
+want_services="listener/dev-stack-${run_suffix}/*=system:serviceaccount:example-ns:example-listener dispatch/dev-stack-dispatch/*=system:serviceaccount:example-ns:example-dispatch dispatch/dev-stack-vm/*=google:example-fleet@example-project.iam.gserviceaccount.com"
 for broker_log in broker.log broker-2.log; do
-  grep -qF "fake broker: nats=nats://127.0.0.1:${process_port[natsd]} seeds=${callout_dir}/service.seed,${callout_dir}/issuer.seed,${callout_dir}/xkey.seed nats-audience=envoy-nats services=${want_services}" \
+  grep -qF "fake broker: nats=nats://127.0.0.1:${process_port[natsd]} seeds=${callout_dir}/service.seed,${callout_dir}/issuer.seed,${callout_dir}/xkey.seed nats-audience=envoy-nats services=${want_services} nats-google-audience=dev-stack-machine" \
     "${work_dir}/logs/${broker_log}" || fail "the --callout run's ${broker_log} was not given the auth service's settings: $(grep 'fake broker: nats' "${work_dir}/logs/${broker_log}")"
   grep -qF "fake broker: database=${server_url}/dev_stack_broker_${run_suffix}?pool_max_conns=10 issuer=" "${work_dir}/logs/${broker_log}" ||
     fail "the --callout run's ${broker_log} was not given its database URL with pool_max_conns=10: $(grep 'fake broker: database' "${work_dir}/logs/${broker_log}")"

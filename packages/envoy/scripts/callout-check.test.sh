@@ -62,6 +62,11 @@ trap cleanup EXIT
 
 readonly stack_broker="http://127.0.0.1:7001"
 readonly session="example-worker-session"
+# The machine the stack's metadata stand-in answers for (DEV_STACK_MACHINE_ACCOUNT) and the Google
+# audience its brokers verify a service's identity token at (DEV_STACK_NATS_GOOGLE_AUDIENCE), as
+# dev-stack.sh --callout exports them.
+readonly machine_account="example-fleet@example-project.iam.gserviceaccount.com"
+readonly nats_google_audience="dev-stack-machine"
 
 # fake writes the fake command $1 from the body on stdin, after the header every fake shares: the
 # control directory it reads. The fakes call one another by name, through the PATH the check runs
@@ -117,21 +122,38 @@ EOF
 # --- Fake natsprobe: answers as the hub behind the auth service does. A connection with no
 # credential, or with a token from any token endpoint but the stack's broker, is not admitted; the
 # session's own channel is served; another session's is refused in nats-server's words, unless the
-# control directory says the service grants every channel (grant-all). While the hub still lists
-# the killed broker's connection, a session is routed to that replica, which never answers, and
-# is not admitted at the hub's authorization timeout. A probe takes 50 ms of the fake clock; with
-# silent, it prints nothing; with slow, it takes 2.5 s once the second broker is gone; with
-# other-words, a connection the hub does not admit exits 4 in words that are not the server's, as
-# natsprobe once did for any failure to connect. ---
+# control directory says the service grants every channel (grant-all). A service naming the
+# stack's Google audience (--service-google-audience) is admitted as the machine its metadata
+# stand-in answers for, and one naming another audience, or run with no metadata server to read
+# its token from, is not: those are the two ways the broker's google entry could be missing.
+# While the hub still lists the killed broker's connection, a session is routed to that replica,
+# which never answers, and is not admitted at the hub's authorization timeout. A probe takes 50 ms
+# of the fake clock; with silent, it prints nothing; with slow, it takes 2.5 s once the second
+# broker is gone; with other-words, a connection the hub does not admit exits 4 in words that are
+# not the server's, as natsprobe once did for any failure to connect; with google-refused the
+# Google service is not admitted, and with google-silent it prints nothing. ---
 fake natsprobe <<'EOF'
-subject="" none=false
+subject="" none=false google=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --subscribe) subject="$2"; shift 2 ;;
     --no-credential) none=true; shift ;;
+    --service-google-audience) google="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
+if [ -n "$google" ]; then
+  [ -e "$control/google-silent" ] && exit 1
+  tick 50
+  if [ -e "$control/google-refused" ] || [ "$google" != "$(cat "$control/nats-google-audience")" ] ||
+    [ -z "${GCE_METADATA_HOST:-}" ]; then
+    echo "not admitted: Authorization Violation"
+    exit 4
+  fi
+  echo "connected as service $(cat "$control/machine-account")"
+  echo "served $subject"
+  exit 0
+fi
 [ -e "$control/silent" ] && exit 1
 state="$(hub-state)"
 if [ -e "$control/slow" ] && [ "$state" != alive ]; then
@@ -198,6 +220,26 @@ EOF
 printf '%s' "$stack_broker" >"${control_dir}/stack-broker"
 printf '300' >"${control_dir}/drop-ms"
 : >"${temporary_dir}/exchange-token"
+printf '%s' "$machine_account" >"${control_dir}/machine-account"
+printf '%s' "$nats_google_audience" >"${control_dir}/nats-google-audience"
+
+# --- The metadata stand-in the check starts for the Google service line: dev-stack.sh writes a
+# real one (DEV_STACK_METADATA_SCRIPT), which mints the machine's identity token; the check only
+# starts it, waits for its port file and hands its address to natsprobe, so this one writes a port
+# nothing listens on and then waits to be stopped. A script that never wrote the file would leave
+# the check waiting, which is the case the UNKNOWN below is for. ---
+readonly metadata_script="${temporary_dir}/dev-metadata.py"
+cat >"$metadata_script" <<'PY'
+import os, socket, sys, time
+
+holder = socket.socket()
+holder.bind(("127.0.0.1", 0))
+with open(os.environ["DEV_STACK_METADATA_PORT_FILE"], "w") as handle:
+    handle.write(str(holder.getsockname()[1]))
+sys.stdout.flush()
+while True:
+    time.sleep(3600)
+PY
 
 # fail ends the test, printing the last check's whole output after the reason, so a red run in CI
 # says which line failed and how.
@@ -216,7 +258,7 @@ output=""
 status=0
 run_check() {
   local name
-  for name in grant-all no-connections silent slow other-words no-drop connz-down-after-kill connz-down-late read-after-kill one-broker built-names; do
+  for name in grant-all no-connections silent slow other-words no-drop connz-down-after-kill connz-down-late read-after-kill one-broker built-names google-refused google-silent; do
     rm -f "${control_dir}/${name}"
   done
   if [ "${CALLOUT_CHECK_GRANT_ALL:-}" = 1 ]; then
@@ -243,6 +285,9 @@ run_check() {
     DEV_STACK_EXCHANGE_SESSION="$session" \
     DEV_STACK_BROKER_PIDS="1 $broker_stand_in" \
     DEV_STACK_NATS_MONITOR_URL="http://127.0.0.1:7003" \
+    DEV_STACK_MACHINE_ACCOUNT="$machine_account" \
+    DEV_STACK_METADATA_SCRIPT="$metadata_script" \
+    DEV_STACK_NATS_GOOGLE_AUDIENCE="$nats_google_audience" \
     bash "$check" 2>&1)" || status=$?
 }
 line() { printf '%s\n' "$output" | sed -n "${1}p"; }
@@ -255,24 +300,25 @@ want=(
   "PASS a connection with no credential is refused: Authorization Violation"
   "PASS a token another broker issued is refused: Authorization Violation"
   "PASS the listener is connected by its service token: the hub lists a connection authorized as listener/dev-stack-test"
+  "PASS a service connects by its Google identity token: connected as service ${machine_account}"
 )
 for index in "${!want[@]}"; do
   [ "$(line $((index + 1)))" = "${want[$index]}" ] || fail "line $((index + 1)) is '$(line $((index + 1)))', want '${want[$index]}'"
 done
-line6="$(line 6)"
-[[ "$line6" =~ ^"PASS one broker killed and a new session admitted within 2 s: the hub dropped the killed broker's connection after "([0-9]+)" ms; three sessions, the slowest "([0-9]+)" ms, the first counted from the kill"$ ]] ||
-  fail "line 6 is '$line6'"
+line7="$(line 7)"
+[[ "$line7" =~ ^"PASS one broker killed and a new session admitted within 2 s: the hub dropped the killed broker's connection after "([0-9]+)" ms; three sessions, the slowest "([0-9]+)" ms, the first counted from the kill"$ ]] ||
+  fail "line 7 is '$line7'"
 [ "${BASH_REMATCH[1]}" -ge 300 ] && [ "${BASH_REMATCH[2]}" -ge "${BASH_REMATCH[1]}" ] ||
-  fail "line 6 has the hub drop the killed broker's connection after ${BASH_REMATCH[1]} ms and its slowest session at ${BASH_REMATCH[2]} ms: the fake hub keeps that connection for 300 ms, so the check did not wait for the drop, or did not count the first session from the kill"
-[ "$(line 7)" = "all 6 assertions passed" ] && [ "$status" -eq 0 ] || fail "want 'all 6 assertions passed' and exit 0, got exit $status"
+  fail "line 7 has the hub drop the killed broker's connection after ${BASH_REMATCH[1]} ms and its slowest session at ${BASH_REMATCH[2]} ms: the fake hub keeps that connection for 300 ms, so the check did not wait for the drop, or did not count the first session from the kill"
+[ "$(line 8)" = "all 7 assertions passed" ] && [ "$status" -eq 0 ] || fail "want 'all 7 assertions passed' and exit 0, got exit $status"
 [ "$("${fake_bin_dir}/hub-state")" != alive ] || fail "the check did not kill the second broker $broker_stand_in"
-echo "PASS: a hub that answers as the auth service does passes all six lines, the second broker is killed, and no session is opened before the hub drops its connection"
+echo "PASS: a hub that answers as the auth service does passes all seven lines, the second broker is killed, and no session is opened before the hub drops its connection"
 
 # (b) The negative control: a service that grants every session's delivery channel.
 CALLOUT_CHECK_GRANT_ALL=1 run_check
 [ "$(line 2)" = "FAIL a session is refused another session's delivery channel: it was served notifications.envoy.deliver.${session}-other" ] ||
   fail "with CALLOUT_CHECK_GRANT_ALL=1 line 2 is '$(line 2)'"
-[ "$status" -eq 1 ] && [ "$(line 7)" = "1 of 6 assertions failed" ] || fail "with CALLOUT_CHECK_GRANT_ALL=1: exit $status, last line '$(line 7)'"
+[ "$status" -eq 1 ] && [ "$(line 8)" = "1 of 7 assertions failed" ] || fail "with CALLOUT_CHECK_GRANT_ALL=1: exit $status, last line '$(line 8)'"
 echo "PASS: CALLOUT_CHECK_GRANT_ALL=1 FAILs line 2, naming the channel it was served, and the run exits 1"
 
 # (c) A connection list that names nothing.
@@ -289,9 +335,9 @@ echo "PASS: a probe that prints nothing reads UNKNOWN and fails the run"
 
 # (e) An admission slower than 2 s once a broker is killed.
 run_check slow
-[[ "$(line 6)" == "FAIL one broker killed and a new session admitted within 2 s: attempt 1 took "*" ms" ]] || fail "a slow admission: line 6 is '$(line 6)'"
+[[ "$(line 7)" == "FAIL one broker killed and a new session admitted within 2 s: attempt 1 took "*" ms" ]] || fail "a slow admission: line 7 is '$(line 7)'"
 [ "$status" -eq 1 ] || fail "a slow admission: exit $status"
-echo "PASS: an admission slower than 2 s after the kill FAILs line 6"
+echo "PASS: an admission slower than 2 s after the kill FAILs line 7"
 
 # (f) An exported stack missing a variable.
 status=0
@@ -306,33 +352,33 @@ echo "PASS: an exported stack missing DEV_STACK_NATS_MONITOR_URL is refused with
 # (g) A hub that never drops the killed broker's connection. Each read of the list takes 20 ms of
 # the fake clock and nothing else moves it, so the check gives up at exactly its 2 s bound.
 run_check no-drop
-[ "$(line 6)" = "FAIL one broker killed and a new session admitted within 2 s: the hub still listed 2 connections named envoy-broker-callout 2000 ms after the kill" ] ||
-  fail "a hub that never drops the killed broker's connection: line 6 is '$(line 6)'"
+[[ "$(line 7)" == "FAIL one broker killed and a new session admitted within 2 s: the hub still listed 2 connections named envoy-broker-callout "*" ms after the kill" ]] ||
+  fail "a hub that never drops the killed broker's connection: line 7 is '$(line 7)'"
 [ "$status" -eq 1 ] || fail "a hub that never drops the killed broker's connection: exit $status"
-echo "PASS: a hub that never drops the killed broker's connection FAILs line 6"
+echo "PASS: a hub that never drops the killed broker's connection FAILs line 7"
 
 # (h) A connection list that cannot be read once the broker is killed.
 run_check connz-down-after-kill
-[ "$(line 6)" = "UNKNOWN one broker killed and a new session admitted within 2 s: the hub's connection list (http://127.0.0.1:7003/connz) could not be read after the kill" ] ||
-  fail "a connection list unreadable after the kill: line 6 is '$(line 6)'"
+[ "$(line 7)" = "UNKNOWN one broker killed and a new session admitted within 2 s: the hub's connection list (http://127.0.0.1:7003/connz) could not be read after the kill" ] ||
+  fail "a connection list unreadable after the kill: line 7 is '$(line 7)'"
 [ "$status" -eq 1 ] || fail "a connection list unreadable after the kill: exit $status"
-echo "PASS: a connection list that cannot be read after the kill reads UNKNOWN on line 6 and fails the run"
+echo "PASS: a connection list that cannot be read after the kill reads UNKNOWN on line 7 and fails the run"
 
 # (i) One auth service connection before the kill: the check cannot see a drop, so it kills nothing.
 run_check one-broker
-[ "$(line 6)" = "UNKNOWN one broker killed and a new session admitted within 2 s: the hub lists 1 connection named envoy-broker-callout before the kill, not one for each of the two brokers" ] ||
-  fail "one auth service connection before the kill: line 6 is '$(line 6)'"
+[ "$(line 7)" = "UNKNOWN one broker killed and a new session admitted within 2 s: the hub lists 1 connection named envoy-broker-callout before the kill, not one for each of the two brokers" ] ||
+  fail "one auth service connection before the kill: line 7 is '$(line 7)'"
 [ "$status" -eq 1 ] || fail "one auth service connection before the kill: exit $status"
 [ "$("${fake_bin_dir}/hub-state")" = alive ] || fail "with one auth service connection listed the check killed the second broker anyway"
-echo "PASS: a hub listing one auth service connection before the kill reads UNKNOWN on line 6, and nothing is killed"
+echo "PASS: a hub listing one auth service connection before the kill reads UNKNOWN on line 7, and nothing is killed"
 
 # (j) A list read once after the kill, naming both connections still, that then cannot be read:
 # the check saw the hub keep the killed broker, so it is a FAIL with that count, not an UNKNOWN.
 run_check no-drop connz-down-late
-[ "$(line 6)" = "FAIL one broker killed and a new session admitted within 2 s: the hub still listed 2 connections named envoy-broker-callout 2000 ms after the kill" ] ||
-  fail "a list read once after the kill and then unreadable: line 6 is '$(line 6)'"
+[[ "$(line 7)" == "FAIL one broker killed and a new session admitted within 2 s: the hub still listed 2 connections named envoy-broker-callout "*" ms after the kill" ]] ||
+  fail "a list read once after the kill and then unreadable: line 7 is '$(line 7)'"
 [ "$status" -eq 1 ] || fail "a list read once after the kill and then unreadable: exit $status"
-echo "PASS: a list read once after the kill and then unreadable FAILs line 6 with the count it last read"
+echo "PASS: a list read once after the kill and then unreadable FAILs line 7 with the count it last read"
 
 # (k) A probe that says "not admitted" in words that are not the server's: lines 3 and 4 hold the
 # refusal to nats-server's own "Authorization Violation", as line 2 holds its refusal to the
@@ -380,7 +426,47 @@ echo "PASS: a --database-url reaches dev-stack.sh as LEGION_TEST_PG_DSN in eithe
 # every connection of a binary built from a clean checkout (the stack's own go build): the check
 # counts both before the kill and sees the drop, as for the bare name.
 run_check built-names
-[[ "$(line 6)" =~ ^"PASS one broker killed and a new session admitted within 2 s: the hub dropped the killed broker's connection after "[0-9]+" ms" ]] ||
-  fail "brokers that name their build: line 6 is '$(line 6)'"
-[ "$(line 7)" = "all 6 assertions passed" ] && [ "$status" -eq 0 ] || fail "brokers that name their build: exit $status, last line '$(line 7)'"
-echo "PASS: brokers whose connections name their build after envoy-broker-callout pass line 6"
+[[ "$(line 7)" =~ ^"PASS one broker killed and a new session admitted within 2 s: the hub dropped the killed broker's connection after "[0-9]+" ms" ]] ||
+  fail "brokers that name their build: line 7 is '$(line 7)'"
+[ "$(line 8)" = "all 7 assertions passed" ] && [ "$status" -eq 0 ] || fail "brokers that name their build: exit $status, last line '$(line 8)'"
+echo "PASS: brokers whose connections name their build after envoy-broker-callout pass line 7"
+
+# (n) A hub that does not admit the Google service: the broker's BROKER_NATS_SERVICES names no
+# entry for the machine, or its BROKER_NATS_GOOGLE_AUDIENCE is another audience, so the service's
+# identity token proves nothing to the auth service and the hub refuses it in its own words.
+run_check google-refused
+[ "$(line 6)" = "FAIL a service connects by its Google identity token: natsprobe exit 4: not admitted: Authorization Violation" ] ||
+  fail "a Google service the hub refuses: line 6 is '$(line 6)'"
+[ "$status" -eq 1 ] || fail "a Google service the hub refuses: exit $status"
+echo "PASS: a Google service the hub does not admit FAILs line 6"
+
+# (o) A probe that prints nothing for the Google service: UNKNOWN, never a pass, as a silent probe
+# is on every other line.
+run_check google-silent
+[[ "$(line 6)" == "UNKNOWN a service connects by its Google identity token: natsprobe printed nothing"* ]] ||
+  fail "a silent Google probe: line 6 is '$(line 6)'"
+[ "$status" -eq 1 ] || fail "a silent Google probe: exit $status"
+echo "PASS: a Google service probe that prints nothing reads UNKNOWN"
+
+# (p) A stack from before this line, whose banner exports no DEV_STACK_NATS_GOOGLE_AUDIENCE: the
+# check has no audience to name, so line 6 is UNKNOWN naming the variable, never a pass, and the
+# run fails.
+status=0
+sleep 600 &
+broker_stand_in=$!
+disown "$broker_stand_in"
+printf '%s' "$broker_stand_in" >"${control_dir}/second-broker"
+printf '1700000000000' >"${control_dir}/clock"
+output="$(env PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" DEV_STACK_CALLOUT=1 \
+  AGENT_SECRETS_URL="$stack_broker" NATS_URLS="nats://127.0.0.1:7002" \
+  DEV_STACK_EXCHANGE_TOKEN_FILE="${temporary_dir}/exchange-token" \
+  DEV_STACK_EXCHANGE_SESSION="$session" \
+  DEV_STACK_BROKER_PIDS="1 $broker_stand_in" \
+  DEV_STACK_NATS_MONITOR_URL="http://127.0.0.1:7003" \
+  DEV_STACK_MACHINE_ACCOUNT="$machine_account" \
+  DEV_STACK_METADATA_SCRIPT="$metadata_script" \
+  bash "$check" 2>&1)" || status=$?
+[ "$(printf '%s\n' "$output" | sed -n 6p)" = "UNKNOWN a service connects by its Google identity token: the stack's banner exports no DEV_STACK_NATS_GOOGLE_AUDIENCE" ] ||
+  fail "a banner with no DEV_STACK_NATS_GOOGLE_AUDIENCE: line 6 is '$(printf '%s\n' "$output" | sed -n 6p)'"
+[ "$status" -eq 1 ] || fail "a banner with no DEV_STACK_NATS_GOOGLE_AUDIENCE: exit $status"
+echo "PASS: a stack whose banner names no Google audience reads UNKNOWN on line 6"

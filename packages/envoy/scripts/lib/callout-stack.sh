@@ -10,9 +10,13 @@
 # database, in one queue group, as two replicas do. The brokers admit a session by its broker
 # access token and a proof of its key, and the listener and Dispatch by the platform token the
 # issuer writes each of them for the NATS audience (envoy-nats), listed in BROKER_NATS_SERVICES
-# under their own machine ids. Neither holds a seed. The banner then also exports
+# under their own machine ids. A third service of that list is a machine: the stack's metadata
+# stand-in's account, listed under google:, which the brokers verify by its Google identity token
+# at BROKER_NATS_GOOGLE_AUDIENCE, the one audience that stand-in mints for. Neither of the two
+# platform services holds a seed. The banner then also exports
 # DEV_STACK_CALLOUT=1, NATS_AUTH=broker, DEV_STACK_NATS_SERVICE_TOKEN_FILE (the listener's NATS
-# token), DEV_STACK_EXCHANGE_SESSION (the session this run registered the pod for),
+# token), DEV_STACK_NATS_GOOGLE_AUDIENCE (the Google audience a service connects by),
+# DEV_STACK_EXCHANGE_SESSION (the session this run registered the pod for),
 # DEV_STACK_BROKER_PIDS, the two brokers' pids, and DEV_STACK_NATS_MONITOR_URL, natsd's monitor.
 # The second broker is the one replica the stack outlives: killing it stops nothing else, which is
 # how scripts/callout-check.sh proves a stopped replica delays no connection. Without --callout
@@ -81,8 +85,12 @@ callout_after_natsd() {
     BROKER_NATS_SEED_FILE="$callout_dir/service.seed"
     BROKER_NATS_ISSUER_SEED_FILE="$callout_dir/issuer.seed"
     BROKER_NATS_XKEY_SEED_FILE="$callout_dir/xkey.seed"
-    BROKER_NATS_SERVICES="listener/$LISTENER_MACHINE_ID/*=$LISTENER_ACCOUNT dispatch/dev-stack-dispatch/*=$API_ACCOUNT"
+    BROKER_NATS_SERVICES="listener/$LISTENER_MACHINE_ID/*=$LISTENER_ACCOUNT dispatch/dev-stack-dispatch/*=$API_ACCOUNT dispatch/dev-stack-vm/*=google:$FLEET_ACCOUNT"
     BROKER_NATS_K8S_AUDIENCE="$callout_audience"
+    # The machine of that third entry connects by its Google identity token, which the stand-in
+    # metadata server mints for this one audience (dev-stack.sh's MACHINE_CLIENT_ID), the same
+    # audience the broker already verifies a machine's token at on the exchange.
+    BROKER_NATS_GOOGLE_AUDIENCE="$MACHINE_CLIENT_ID"
   )
 }
 
@@ -109,5 +117,6 @@ callout_after_first_broker() {
   export DEV_STACK_NATS_SERVICE_TOKEN_FILE=$callout_listener_token
   export DEV_STACK_EXCHANGE_SESSION=$EXCHANGE_SESSION
   export DEV_STACK_BROKER_PIDS=\"$BROKER_PID $BROKER2_PID\"
+  export DEV_STACK_NATS_GOOGLE_AUDIENCE=$MACHINE_CLIENT_ID
   export DEV_STACK_NATS_MONITOR_URL=$callout_monitor_url"
 }

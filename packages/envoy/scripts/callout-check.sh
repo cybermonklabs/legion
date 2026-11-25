@@ -15,7 +15,11 @@
 #      endpoint, which answers every trade with a token of its own, plays the other broker;
 #   5. the listener is connected by its own service token: the hub's connection list names a
 #      connection authorized as the listener's service user, listener/<its machine id>;
-#   6. with one of the two brokers killed, a new session is admitted within 2 s of the kill, three
+#   6. a service connects by its Google identity token: natsprobe, with the stack's metadata
+#      stand-in as its machine's metadata server, mints that machine's Google identity token for
+#      the stack's NATS Google audience (DEV_STACK_NATS_GOOGLE_AUDIENCE) and is admitted as the
+#      machine BROKER_NATS_SERVICES lists under google:, serving a subject of its own;
+#   7. with one of the two brokers killed, a new session is admitted within 2 s of the kill, three
 #      times over: the hub drops the killed replica's connection, and with it the replica's place in
 #      the auth service's queue group, so no request waits on it. A session opened before the hub
 #      has read that connection's close can be routed to the dead replica and is refused at the
@@ -53,6 +57,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/callout-check.XXXXXX")"
 STACK_PID=""
 FOREIGN_PID=""
+METADATA_PID=""
 
 stop() {
   local rc="$1"
@@ -61,6 +66,10 @@ stop() {
   if [ -n "$FOREIGN_PID" ] && kill -0 "$FOREIGN_PID" 2>/dev/null; then
     kill "$FOREIGN_PID" 2>/dev/null || true
     wait "$FOREIGN_PID" 2>/dev/null || true
+  fi
+  if [ -n "$METADATA_PID" ] && kill -0 "$METADATA_PID" 2>/dev/null; then
+    kill "$METADATA_PID" 2>/dev/null || true
+    wait "$METADATA_PID" 2>/dev/null || true
   fi
   if [ -n "$STACK_PID" ] && kill -0 "$STACK_PID" 2>/dev/null; then
     kill -TERM "$STACK_PID" 2>/dev/null || true
@@ -264,6 +273,54 @@ else
   fail "the listener is connected by its service token: the hub lists none authorized as listener/..., only: $(printf '%s' "$users" | tr '\n' ' ')"
 fi
 
+# 6. A service of a machine, connecting by that machine's Google identity token: the stack's own
+# metadata stand-in (DEV_STACK_METADATA_SCRIPT) answers for the machine BROKER_NATS_SERVICES lists
+# under google:, and natsprobe reads its token from it (GCE_METADATA_HOST) for the stack's NATS
+# Google audience. The probe is run with those variables alone, so nothing of this shell's
+# environment, and no broker token, can stand in for that identity.
+GOOGLE_PROPERTY="a service connects by its Google identity token"
+google_subject="_INBOX.probe"
+if [ -z "${DEV_STACK_NATS_GOOGLE_AUDIENCE:-}" ]; then
+  unknown "$GOOGLE_PROPERTY: the stack's banner exports no DEV_STACK_NATS_GOOGLE_AUDIENCE"
+elif [ -z "${DEV_STACK_METADATA_SCRIPT:-}" ] || [ -z "${DEV_STACK_MACHINE_ACCOUNT:-}" ]; then
+  unknown "$GOOGLE_PROPERTY: the stack's banner exports no DEV_STACK_METADATA_SCRIPT or DEV_STACK_MACHINE_ACCOUNT, so no machine can present its token"
+else
+  metadata_port_file="$WORK_DIR/metadata-port"
+  rm -f "$metadata_port_file"
+  DEV_STACK_METADATA_PORT_FILE="$metadata_port_file" \
+    python3 "$DEV_STACK_METADATA_SCRIPT" >"$WORK_DIR/metadata.log" 2>&1 &
+  METADATA_PID=$!
+  for _ in $(seq 1 100); do
+    [ -s "$metadata_port_file" ] && break
+    kill -0 "$METADATA_PID" 2>/dev/null || break
+    sleep 0.1
+  done
+  if [ ! -s "$metadata_port_file" ]; then
+    unknown "$GOOGLE_PROPERTY: the stack's metadata stand-in never wrote its port: $(cat "$WORK_DIR/metadata.log")"
+  else
+    google_rc=0
+    google_out="$(env -i PATH="$PATH" HOME="$WORK_DIR" \
+      GCE_METADATA_HOST="127.0.0.1:$(cat "$metadata_port_file")" \
+      natsprobe --servers "$NATS_URLS" \
+      --service-google-audience "$DEV_STACK_NATS_GOOGLE_AUDIENCE" \
+      --subscribe "$google_subject" --wait 1s 2>&1)" || google_rc=$?
+    google_connected="$(printf '%s\n' "$google_out" | sed -n 's/^connected as service //p' | head -n1)"
+    google_served="$(printf '%s\n' "$google_out" | sed -n 's/^served //p' | head -n1)"
+    if [ "$google_rc" -eq 0 ] && [ "$google_connected" = "$DEV_STACK_MACHINE_ACCOUNT" ] && [ "$google_served" = "$google_subject" ]; then
+      pass "$GOOGLE_PROPERTY: connected as service $google_connected"
+    elif [ -z "$google_out" ]; then
+      unknown "$GOOGLE_PROPERTY: natsprobe printed nothing (exit $google_rc)"
+    else
+      fail "$GOOGLE_PROPERTY: natsprobe exit $google_rc: $google_out"
+    fi
+  fi
+  if [ -n "$METADATA_PID" ] && kill -0 "$METADATA_PID" 2>/dev/null; then
+    kill "$METADATA_PID" 2>/dev/null || true
+    wait "$METADATA_PID" 2>/dev/null || true
+  fi
+  METADATA_PID=""
+fi
+
 # callout_connections prints how many connections the hub's connection list names as the auth
 # service's (natscallout's connectionName, with the broker's build after it, internal/bus's
 # connectionName, when the binary names one), or nothing when the list cannot be read inside 2 s.
@@ -275,7 +332,7 @@ callout_connections() {
     jq -r '[.connections[]? | select((.name // "") | . == "envoy-broker-callout" or startswith("envoy-broker-callout "))] | length' 2>/dev/null || true
 }
 
-# 6. One of the two brokers killed, then three new sessions, each admitted within 2 s: the first
+# 7. One of the two brokers killed, then three new sessions, each admitted within 2 s: the first
 # counted from the kill, so the wait for the hub to drop the killed replica is inside its 2 s.
 read -r _ second_broker <<<"$DEV_STACK_BROKER_PIDS"
 killed_property="one broker killed and a new session admitted within 2 s"

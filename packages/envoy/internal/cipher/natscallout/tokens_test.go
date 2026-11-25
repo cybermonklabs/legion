@@ -111,6 +111,34 @@ func TestNATSPicksTheVerifierByTheTokensExactIssuer(t *testing.T) {
 	require.Zero(t, k8s.asked, "the Kubernetes verifier was asked about a Google token")
 }
 
+// TestTwoProvidersOfOneIssuerAreEachTried: two providers may hold the same issuer — a local stack
+// where one stand-in issuer mints both a cluster's and a machine's tokens, and a cluster whose
+// tokens Google's workload identity federation also issues — and a token of that issuer is
+// whichever kind verifies it, not whichever provider the registry lists first. Each matching
+// verifier is asked in rank order until one answers; when none does, the refusal is the first
+// one's, in its own words, so a broker with a single verifier reads exactly as it did.
+func TestTwoProvidersOfOneIssuerAreEachTried(t *testing.T) {
+	const shared = "http://127.0.0.1:8080"
+	k8s := &stubVerifier{kind: kubernetes.Kind, issuer: shared, err: &identity.NoAccountError{
+		Reason: "the token's subject is no ServiceAccount", Brief: "names no ServiceAccount",
+	}}
+	googleTokens := &stubVerifier{kind: google.Kind, issuer: shared, caller: identity.Caller{
+		Account: identity.Account{Kind: google.Kind, Address: measureAccount}, Expiry: time.Now().Add(time.Hour),
+	}}
+	tokens := PlatformTokens{Verifiers: []identity.CallerVerifier{k8s, googleTokens}}
+
+	caller, err := tokens.Verify(t.Context(), issuedBy(shared))
+	require.NoError(t, err, "a machine's token of the shared issuer must reach the Google verifier")
+	require.Equal(t, identity.Account{Kind: google.Kind, Address: measureAccount}, caller.Account)
+	require.Equal(t, 1, k8s.asked, "the first verifier of that issuer is asked first")
+	require.Equal(t, 1, googleTokens.asked)
+
+	googleTokens.err = errors.New("signature")
+	_, err = tokens.Verify(t.Context(), issuedBy(shared))
+	require.EqualError(t, err, "natscallout: names no ServiceAccount",
+		"with every verifier of the issuer refusing, the refusal is the first one's own words")
+}
+
 // TestAGoogleTokenNamingNoVerifiedEmailIsRefusedInTodaysWords pins the refusal the auth service
 // logs for a sound Google identity token that names no verified account, byte for byte as it read
 // before the identity registry, through the google provider's own verifier.

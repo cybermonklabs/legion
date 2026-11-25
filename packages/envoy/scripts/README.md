@@ -579,14 +579,17 @@ nats-server's own words (`Permissions Violation for Subscription to "..."`); a c
 with no credential is refused, and a token neither broker issued is refused (a stand-in token
 endpoint plays the other broker), each in nats-server's own `Authorization Violation`, the only
 answer `natsprobe` exits 4 for; the hub lists the listener's connection authorized as
-`listener/<its machine id>`; and with one broker killed, three new sessions are each
+`listener/<its machine id>`; a service of a machine connects by that machine's Google identity
+token, read from the stack's own metadata stand-in and minted for
+`DEV_STACK_NATS_GOOGLE_AUDIENCE`, and is admitted as the account `BROKER_NATS_SERVICES` lists
+under `google:`; and with one broker killed, three new sessions are each
 admitted within 2 s, the first counted from the kill. A session opened before the hub has
 read the killed broker's close can be routed to the dead replica and refused at the hub's
 authorization timeout, so the check opens the first session once the hub lists one
 `envoy-broker-callout` connection fewer (both brokers' connections carry that name, with the
 broker's build after it when the binary names one), and says how long the drop took. The last
-line is `all 6 assertions passed` (exit 0) or `<k> of 6 assertions failed` (exit 1); a probe that
-reports nothing reads `UNKNOWN` and fails.
+line is `all 7 assertions passed` (exit 0) or `<k> of 7 assertions failed` (exit 1); a probe that
+reports nothing reads `UNKNOWN` and fails, as does a stack whose banner names no Google audience.
 
 ```bash
 LEGION_TEST_PG_DSN=postgres://... bash scripts/callout-check.sh   # starts and stops its own stack
@@ -599,10 +602,13 @@ arguments (`--database-url`, `--binaries`), and stops it on exit, which drops it
 databases; against an exported stack it kills that stack's second broker, which the stack
 outlives. Each probe is `natsprobe` (`cmd/natsprobe`), which tries any one subject by
 hand too: as a session it trades the stack's pod token for a broker token, as a service
-it presents `--service-token-file`, and `--no-credential` presents nothing.
+it presents `--service-token-file`, or `--service-google-audience` for a machine's own Google
+identity token read from the metadata server `GCE_METADATA_HOST` names, and `--no-credential`
+presents nothing.
 `callout-check.test.sh` holds the verdicts to fakes, including the negative control:
-`CALLOUT_CHECK_GRANT_ALL=1`, a service granting every session's channel, fails line 2, and
-a hub that never drops the killed broker's connection fails line 6.
+`CALLOUT_CHECK_GRANT_ALL=1`, a service granting every session's channel, fails line 2; a hub
+that does not admit the Google service fails line 6; and a hub that never drops the killed
+broker's connection fails line 7.
 
 ## backend-count.sh
 
