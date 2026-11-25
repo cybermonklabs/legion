@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The `legion-worker` skill says that a before-merge result stands at each open head, and an after-merge result at a commit that holds the merge.'
+time: 2026-11-24T18:15:50Z
+custom:
+    Issue: pr5416

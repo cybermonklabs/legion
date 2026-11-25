@@ -428,6 +428,24 @@ func withoutHeldKey(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutDispatchCredentialKey is a state body with no `dispatchCredential`, which is what a
+// caller below dispatchCredentialContract is served of a state that carries it (api's
+// withoutDispatchCredential). It serves the table below as withoutQuietKeys does: a row's baseline
+// is the full state with exactly the keys that row's own contract holds back taken out of it.
+func withoutDispatchCredentialKey(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	delete(served, "dispatchCredential")
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its Dispatch credential: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutIntakeGiveUpsKey is a state body with no `intakeGiveUps`, which is what a caller below
 // intakeGiveUpsContract is served (api's withoutIntakeGiveUps). It serves the table below as
 // withoutQuietKeys does: a row's baseline is the full state with exactly the keys that row's own
@@ -682,6 +700,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// `repositories.refused` (repositoryAppsContract, the contract that added it), so a pod
 		// at it or above is served the key and every older pod is not.
 		apps bool
+		// credential is whether the caller is served `dispatchCredential`, the daemon's Dispatch
+		// credential under dispatch_token_broker (dispatchCredentialContract, the contract that
+		// added it). No pod is placed at it, since a plugin at shapedAnswersContract or later states
+		// its contract (podContracts), so every pod the table places is served no object, and a
+		// caller served this daemon's own body is served it.
+		credential bool
 		// pause is whether the caller is served the project's pause, `paused` here
 		// (pauseContract, the contract that added it beside `lastPause`), so a pod at it or above
 		// is served the key and every older pod is not.
@@ -812,9 +836,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// shapedAnswersContract has landed, so the two are no longer equal. A caller at 193 is
 		// served the state without `intakeGiveUps` where it states its contract in the header
 		// (TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
-		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true},
+		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, credential: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, credential: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, credential: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -904,6 +928,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if !tc.pause {
 					want = withoutPausedKey(t, want)
 				}
+				if !tc.credential {
+					want = withoutDispatchCredentialKey(t, want)
+				}
 				if !tc.plans {
 					want = withoutAssignmentPlanKeys(t, want)
 				}
@@ -967,9 +994,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// repositoriesLiveContract replaced (withoutRepositoriesLive), with `apps` gone from
 			// every entry of `repositories.mapped` and `repositories.refused`, the key
 			// repositoryAppsContract added (withoutRepositoryApps), with the project's pause gone,
-			// the `paused` contract 178 added (withoutPause), and with the repository caches'
+			// the `paused` contract 178 added (withoutPause), with the repository caches'
 			// capability row without its `source`, the value cachesSourceContract added
-			// (withoutUnadmittedCapabilitySources, stripCachesSources above).
+			// (withoutUnadmittedCapabilitySources, stripCachesSources above), and with
+			// `dispatchCredential` gone, the key dispatchCredentialContract added
+			// (withoutDispatchCredential).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
 			// this fixture stands no member of that kind.
@@ -988,6 +1017,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			delete(want, "intakeGiveUps")
 			delete(want, "contract")
 			delete(want, "paused")
+			delete(want, "dispatchCredential")
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])

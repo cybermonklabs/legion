@@ -605,6 +605,11 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		// compares each check's results with. Dispatch appends the event on each issue the move
 		// concerns, so this one is the event's issue.
 		return DispatchResultChanged{Key: event.IssueKey, Seq: event.Seq}, nil
+	case "deploy.recorded":
+		// A new deploy of a program: Dispatch appends it on each open issue that holds a result,
+		// not retracted, of a live check that reads that program or names none, so this one is the
+		// event's issue. It can turn a pass of such a check into unknown, or unknown into a pass.
+		return DispatchResultChanged{Key: event.IssueKey, Seq: event.Seq}, nil
 	default:
 		return nil, nil
 	}
@@ -814,7 +819,9 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 		merged, _ := rawString(raw, "merged")
 		if merged == "true" {
 			mergeSHA, _ := rawString(raw, "merge_commit_sha")
-			return PullRequestMerged{Repo: repo, Number: number, MergeSHA: mergeSHA, HeadSHA: sha}, nil
+			// A merged_at that is absent or does not parse is left zero (rawTimestamp).
+			mergedAt, _ := rawTimestamp(raw, "merged_at")
+			return PullRequestMerged{Repo: repo, Number: number, MergeSHA: mergeSHA, HeadSHA: sha, MergedAt: mergedAt}, nil
 		}
 		return PullRequestClosed{Repo: repo, Number: number, HeadSHA: sha, UpdatedAt: updatedAt}, nil
 	case "dequeued":

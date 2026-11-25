@@ -1722,6 +1722,22 @@ test("a recorded result refreshes the results of the check's issue and of the re
   ]);
 });
 
+test("a recorded deploy refreshes the receiving issue's verification results", () => {
+  const incoming = event("deploy.recorded", {
+    repo: "acme/widgets",
+    program: "worker",
+    commit: "c".repeat(40),
+    deployed_at: "2026-10-25T00:00:00Z",
+    source: "route",
+  });
+  expect(eventRefreshTargets(incoming, "alice").map((target) => target.queryKey)).toEqual([
+    ["issue", "CORE-1"],
+    ["events", "CORE-1"],
+    ["issues", "project", "CORE"],
+    ["issue", "CORE-1", "results"],
+  ]);
+});
+
 // A retraction moves exactly the two reads a record moves, for the same reason: the result
 // stays in both listings and stops counting as evidence there. A tab that did not refetch would
 // keep showing a retracted result as proof.
@@ -1875,6 +1891,13 @@ test("a priority.updated of a deleted priority refetches no issue read that does
   ]);
 });
 
+// No read of the dashboard carries a project's owner, visibility or access list yet, so a change of
+// them refreshes nothing. The feed knows the type, so it is no unknown one, which would refresh
+// every query.
+test("a project.access_changed refreshes no read", () => {
+  expect(refreshedReads(eventsByType["project.access_changed"])).toEqual([]);
+});
+
 /** One event of every type the feed can carry, keyed by type so a new one fails to compile here
  *  until it has a row. */
 const eventsByType: Record<EventType, DispatchEvent> = {
@@ -1935,6 +1958,13 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   "issue.closed": event("issue.closed", issue({ status: "done" })),
   "issue.created": event("issue.created", issue()),
   "issue.deployed": event("issue.deployed", { number: 1, repo: "acme/widgets" }),
+  "deploy.recorded": event("deploy.recorded", {
+    repo: "acme/widgets",
+    program: "worker",
+    commit: "c".repeat(40),
+    deployed_at: "2026-10-25T00:00:00Z",
+    source: "route",
+  }),
   "issue.released": event("issue.released", { key: "CORE-1" }),
   "issue.updated": event("issue.updated", issue()),
   "message.accepted": event("message.accepted", { target: "session:planner" }),
@@ -1947,6 +1977,11 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     "priority.updated",
     { change: "updated", id: "linkage-closure" },
     { issue_key: null, project: undefined }
+  ),
+  "project.access_changed": event(
+    "project.access_changed",
+    { change: "owner", project: "PROJ" },
+    { issue_key: null, project: "PROJ" }
   ),
   "project.created": event("project.created", {}, { issue_key: null }),
   "project.updated": event("project.updated", {}, { issue_key: null }),

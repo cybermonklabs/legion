@@ -967,6 +967,42 @@ const RESULT_SHAPE_RULE =
   `${RESULT_RETRACT_RULE} A call with retract takes reason and no other argument. A call ` +
   "without retract records a result, and it takes issue, check, role, verdict and commit.";
 
+const DEPLOY_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const DEPLOY_PROGRAM = /^[a-z0-9-]{1,64}$/;
+const DEPLOY_COMMIT = /^[0-9a-f]{40}$/;
+const DEPLOY_TIME =
+  /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+
+function deployRepoProblem(value: unknown): string | undefined {
+  const input = value as Record<string, unknown>;
+  return typeof input.repo !== "string" || !DEPLOY_REPO.test(input.repo)
+    ? "repo must be owner/repo"
+    : undefined;
+}
+
+function deployProblem(value: unknown): string | undefined {
+  const input = value as Record<string, unknown>;
+  const repo = deployRepoProblem(input);
+  if (repo !== undefined) return repo;
+  if (typeof input.program !== "string" || !DEPLOY_PROGRAM.test(input.program))
+    return "program must be 1 to 64 lowercase letters, digits or hyphens";
+  if (typeof input.commit !== "string" || !DEPLOY_COMMIT.test(input.commit))
+    return "commit must be 40 lowercase hexadecimal characters";
+  if (input.deployed_at !== undefined) {
+    const value = input.deployed_at;
+    if (typeof value !== "string") return "deployed_at must be RFC3339";
+    const parts = DEPLOY_TIME.exec(value);
+    const timestamp = Date.parse(value);
+    if (parts === null || !Number.isFinite(timestamp)) return "deployed_at must be RFC3339";
+    const calendar = new Date(`${parts[1]}-${parts[2]}-${parts[3]}T00:00:00Z`);
+    if (calendar.toISOString().slice(0, 10) !== value.slice(0, 10))
+      return "deployed_at must be a valid calendar date";
+    if (timestamp > Date.now() + 5 * 60 * 1000)
+      return "deployed_at must not be more than five minutes in the future";
+  }
+  return undefined;
+}
+
 /** The refusal of the first rule a result call breaks, or undefined when it keeps them. The two
  *  shapes are one command because a retraction answers for one recorded result: the reader of
  *  `dispatch results` sees the result and its retraction together. */
@@ -1046,6 +1082,37 @@ const projectKeyValidation: NonNullable<DispatchToolSpec["validation"]> = {
  *  managed user's login ends in `_<shortcode>` (`mona-cat_octo`): the server saves a source in
  *  such an account, and a refusal here would leave it saved and never synced. */
 const ARCHITECTURE_SOURCE_REPO_PATTERN = /^[A-Za-z0-9_-]+\/(?!\.\.?$)[A-Za-z0-9._-]+$/;
+
+/** A route `dispatch api` reads: the API's root, which lists every route, or a route under it,
+ *  with a query or none. */
+const API_ROUTE_PATTERN = /^\/api\/v1(?=[/?]|$)/;
+
+const API_PATH_RULE =
+  "path is a route under /api/v1: it begins /api/v1 and names no scheme or host, every character is printable ASCII other than a space, a backslash and #, and no segment before the query is . or ..";
+
+/**
+ * Why `path` is no route `dispatch api` may read, naming the path, or undefined for one it may.
+ * Beginning `/api/v1` keeps the read on the client's own server and under the API. The rest keeps
+ * it there once a URL parser has read it: the parser drops a tab or a newline, reads `\` as `/`
+ * and resolves a `.` or `..` segment, spelled plainly or percent-encoded (`%2e`), and each of
+ * those could move the read outside `/api/v1`.
+ */
+function apiPathProblem(value: unknown): string | undefined {
+  const { path } = value as { readonly path?: unknown };
+  if (typeof path !== "string") return undefined;
+  const named = JSON.stringify(path);
+  if (!API_ROUTE_PATTERN.test(path)) {
+    return `path ${named} is no route under /api/v1: give the route alone, beginning /api/v1, with no scheme or host (dispatch api --path /api/v1 lists every route).`;
+  }
+  if (!/^[!-~]*$/.test(path) || /[\\#]/.test(path)) {
+    return `path ${named} holds a space, a backslash, a # or a character outside printable ASCII: percent-encode it.`;
+  }
+  const route = path.split("?", 1)[0] ?? "";
+  if (route.split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment))) {
+    return `path ${named} holds a . or .. segment: name the route itself.`;
+  }
+  return undefined;
+}
 
 /** Issue lifecycle statuses the Dispatch server accepts (`model.IssueStatuses`), in lifecycle order. */
 export const ISSUE_STATUSES = [
@@ -2307,33 +2374,74 @@ export const dispatchToolSpecs = [
     },
   },
   {
+    name: "dispatch_deploy",
+    example: {
+      repo: "acme/widgets",
+      program: "worker",
+      commit: "1111111111111111111111111111111111111111",
+    },
+    description:
+      "Record a deployed program's build. Dispatch records the credential's writer; the body cannot choose one. A repeat of the current commit changes nothing, including its time. An older time at another commit is DEPLOY_NOT_NEWEST and names the current build. The repository must hold the commit. A project-scoped credential cannot write a deployment-wide fact. --dry-run checks the arguments and sends nothing; --json prints the complete wire answer.",
+    arguments: (z) => ({
+      repo: z.string().describe("The deployed repository, owner/repo."),
+      program: z
+        .string()
+        .describe("The deployed program, 1 to 64 lowercase letters, digits or hyphens."),
+      commit: z.string().describe("The deployed build, 40 lowercase hexadecimal characters."),
+      deployed_at: z
+        .string()
+        .describe(
+          "The deployment time in RFC3339. Omit it for the server's clock; a time over five minutes ahead is refused."
+        )
+        .optional(),
+      url: z.string().describe("The deployment's URL, if it has one.").optional(),
+      json: z.boolean().describe("Print the complete wire answer as JSON.").optional(),
+    }),
+    validation: {
+      check: (value) => deployProblem(value) === undefined,
+      message: "Name repo, program and commit.",
+      refusal: (value) => deployProblem(value) ?? "Name repo, program and commit.",
+    },
+  },
+  {
+    name: "dispatch_deploys",
+    example: { repo: "acme/widgets" },
+    description:
+      "Read the current deploy of each program in a repository, in program order, with its commit, deployment time, source and URL. --json prints the complete wire answer, including the writer and a known workflow attempt or null for an unknown attempt.",
+    arguments: (z) => ({
+      repo: z.string().describe("The deployed repository, owner/repo."),
+      json: z.boolean().describe("Print the complete wire answer as JSON.").optional(),
+    }),
+    validation: {
+      check: (value) => deployRepoProblem(value) === undefined,
+      message: "repo must be owner/repo",
+      refusal: (value) => deployRepoProblem(value) ?? "repo must be owner/repo",
+    },
+  },
+  {
     name: "dispatch_results",
     example: { issue: "DSP-1" },
     description:
       "Print each check of an issue's Verification document with every result recorded against " +
       "it, newest first. " +
       "Each check prints what Dispatch compared its results with. A before_merge check is " +
-      "compared with the head of each pull request Dispatch holds for the check's issue, open " +
-      "or merged. An after_merge check is compared with the branch that issue's pull request " +
-      "merged into and with the repository's default branch, and with the default branch alone " +
-      "where Dispatch holds no merge of the issue. A default_branch check is compared with the " +
-      "repository's default branch alone, whatever branch the pull request merged into. Where " +
-      "a check compared with nothing, it says which of three things happened: the issue has no " +
-      "pull request and no branch to compare with, Dispatch cannot read the repository, or a " +
-      "read Dispatch made did not answer. " +
-      "Each check then prints one line that answers the gate: whether a pass of it stands, and " +
-      "from which roles. A pass stands when its commit is one of the commits the check " +
-      "compared with, the check's words did not move after the result was recorded, and no " +
-      "retraction stands against it. " +
+      "compared with every open pull request head, or the final head of the last to merge when " +
+      "none is open. An after_merge result counts only at a commit that holds the work's merge " +
+      "on the compared branch. A default_branch check names the default branch alone. " +
+      "With no known merge, an after_merge check compares with nothing and says so. " +
+      "A read that failed is not known, never a pass or a fail. The newest branch result decides " +
+      "and names its id and commit. A pass and fail at that commit are not known until retraction. " +
+      "Production and graph checks count only results recorded for the current deploy of the " +
+      "program they read. The output names that deploy and says why an excluded result counts " +
+      "for nothing. The check's words must be unchanged and the result unretracted. " +
       "The check's own words print once, under the check. Each result then prints its verdict, " +
       "its role, its whole 40-character commit, where that commit stands, whether the check's " +
       "words moved after it was recorded, the time, its id, and the reading the role recorded. " +
       "A result nobody gave a reading says so. A retracted result prints as retracted, with " +
       "the reason and the caller that retracted it. A check with no result says so. " +
       `${CHECK_PROVED_BY_CI}: ` +
-      "no role records its result, and Dispatch reads it from GitHub at the head of the " +
-      "issue's open pull request of the highest number, else at the head of its merged one of " +
-      "the highest number. Its one result prints as `- <id> (before_merge): <verdict> at " +
+      "no role records its result. Dispatch reads GitHub at every open head, or the final head " +
+      "of the last pull request to merge when none is open. Its result prints as `- <id> (before_merge): <verdict> at " +
       "<commit> by ci (CI run <name>, <conclusion>), <where that commit stands>. <the check's " +
       "words>`, then the `A pass stands:` line a recorded check prints, then `Pull request line:` " +
       "and the line to write into the pull-request body unchanged, then the reading: the " +
@@ -2355,7 +2463,7 @@ export const dispatchToolSpecs = [
       at: z
         .string()
         .describe(
-          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at the issue's newest pull request head as on every read, so that check's result stands at this commit only where it is that head."
+          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at each open pull request head, or with none open the final head of the newest merged one, as on every read, so that check's result stands at this commit only where it is the head it was read at."
         )
         .optional(),
       brief: z
@@ -2364,6 +2472,7 @@ export const dispatchToolSpecs = [
           "Cut each reading whose result stands at none of the compared commits to its first 200 characters. Every other reading prints whole."
         )
         .optional(),
+      json: z.boolean().describe("Print the complete results wire answer as JSON.").optional(),
     }),
   },
   {
@@ -2816,6 +2925,25 @@ export const dispatchToolSpecs = [
     description:
       "The bounds this Dispatch server holds a write to, read from the server itself: how long one block of a body may be and how many blocks a body may hold, how many options an ask may have and how long an ask's question and options are together, how long a body an event carries whole may be, and how many bytes a request, a document and a handoff body may hold. Dispatch refuses a text over a bound and names the block or the field it passed; no tool and no command cuts or refuses your text before the server reads it, so these numbers are what decides whether a write is taken.",
     arguments: () => ({}),
+    strict: true,
+  },
+  {
+    name: "dispatch_api",
+    example: { path: "/api/v1/issues/DSP-1/events?limit=200" },
+    description:
+      "Read one route of Dispatch's HTTP API that no other command reads, with this session's own credential, and print Dispatch's JSON answer, for jq to read. It sends one GET of path: a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. It only reads: it takes no method and no body, and every write goes through the command named for it (dispatch --help lists them). When Dispatch refuses the read, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint, and exits 1. Under Claude Code, an answer longer than the output limit is written to a file the output names.",
+    arguments: (z) => ({
+      path: z
+        .string({ min: 1 })
+        .describe(
+          "The route to read, beginning /api/v1, with its query after ?, such as /api/v1/issues/ACME-12/events?limit=200. No scheme or host, and no . or .. segment."
+        ),
+    }),
+    validation: {
+      check: (value) => apiPathProblem(value) === undefined,
+      message: API_PATH_RULE,
+      refusal: (value) => apiPathProblem(value) ?? API_PATH_RULE,
+    },
     strict: true,
   },
   {

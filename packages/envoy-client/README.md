@@ -400,7 +400,14 @@ attempt was refused: the message may or may not have arrived. The error names it
 (`agent.<target>.<key>`) is one a repeat is recognised by (`MINTED_DEDUPE_KEY_PATTERN`); when it
 is, a resend under that key inside the 72-hour duplicate window is dropped as a repeat if the
 first copy arrived (`DELIVERY_DUPLICATE_WINDOW_MS` names the rare cases a recipient that restarted
-still sees it twice). A send
+still sees it twice). One 5xx is not such an attempt: the listener's `503` whose `error` opens
+with `MESSAGE_NOT_SENT_PREFIX` (`@legion/contracts`), which says the message bus refused the
+message before anything went out, because the deployed stream does not capture its topic for
+now, as during a hub move. It is sent again like any 5xx, under the same key, and a send or a
+publish that gets it on every attempt throws that `EnvoyApiError`, whose `notSent` is true and
+whose message is the listener's: nothing was stored, so the message may be sent again later.
+After an earlier attempt that got no answer or another 5xx, a send is unconfirmed as above, and a
+publish's error says that attempt may have stored the message, with `notSent` false. A send
 refused with a 4xx on every attempt stays an `EnvoyApiError`. An `EnvoyApiError` keeps the
 listener's `error` as its message, with ` (reason: <reason>)` after it where the body names one,
 and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
@@ -542,7 +549,10 @@ runs; `dispatch` then takes host `claude` and Claude Code's rule, so `CLAUDE_CON
 session's own directory, comes ahead of any `ENVOY_CONFIG_FILE` an outer session exported.
 
 `readEnvoyConfig(path, env, { cwd })` reads that file and a checkout's `<cwd>/.envoy/envoy.json`
-as written, running no command. Each section is strict: an unknown key is refused naming it, and
+as written, running no command, and resolves to the result: every file it reads or looks for is
+read through `fs/promises`, so a read waiting on a loaded disk holds the read alone and never the
+process's event loop, as do `askgateSetting` and the files the `*_FILE` variables name
+(`readSecretFile`). Each section is strict: an unknown key is refused naming it, and
 so is a top-level `natsUrls`, which belongs in `envoy.natsUrls`. JSON that does not parse is
 refused at its line and column, never with the parser's message, which quotes the text it stopped
 at. A missing chosen file contributes nothing and sets `missing`: each section is then on only when
@@ -616,18 +626,30 @@ A `token` or `natsSeed` value starting with `!` is a command (`fileValue`): it r
 `/bin/sh -c` in the directory of the envoy.json that names it, never the session's working
 directory, so `./bin/token` or a directory-configured shim (mise, direnv) resolves against that
 file and not whatever repository the session started in. It runs in its own process group for at
-most 10 s, and its trimmed stdout is the value. Its
-exit status decides: a command that exited 0 has printed its value even when a process it left
-running holds stdout open; a timeout kills the whole group. It runs only when its section's
-resolver is about to use the value (the section on, no variable overriding the field). Its value
+most 10 s, and its trimmed stdout is the value. The read waits for it without holding the process:
+every resolver that can run one (`fileValue`, `fileBearer`, `dispatchSettings`, `envoySettings`,
+`sessionSettings`, `sessionDispatchSettings`, `sessionEnvoySettings`) returns a Promise, so the
+session's timers, deliveries and NATS pings are served while it runs, and `sessionSettings` runs
+the two sections' commands at once. The command's exit status decides: a command that exited 0
+has printed its value even when a process it left running holds stdout open; a timeout kills the
+whole group. The group also ends with the process however the process ends: its own exit, a
+signal it handles through `process.reallyExit` (as Oh My Pi's SIGINT, SIGTERM, SIGHUP and
+fatal-error handlers do), or a SIGKILL. A watch in the group (`spawnWatched` in
+`src/process-group.ts`) reads a pipe the process holds and kills the group once the kernel has
+closed it. The command's stdout goes to a file whose name is removed before the command starts,
+so no exit leaves the value on disk under a name. It runs only when its section's resolver is
+about to use the value (the section on, no variable overriding the field). Its value
 is kept for the process, shared across module instances (one map on `globalThis` under
 `Symbol.for("legion.envoy-config.commands.v1")`, since Oh My Pi loads each extension instance, a
 `task` subagent's included, as a fresh module, and pi-envoy and pi-legion, released separately,
 each bundle this module; a change to an entry's shape takes a new key), and keyed by the command,
-its file and its working directory. A command that ran out of time is kept as failed for the life
-of the process: a hanging
-command never runs again in that process, since each run would block it for the whole 10 s. A
-failure that ended on its own (a non-zero exit, empty output, more than one line) is kept for 60 s
+its file and its working directory. A read that starts while the same command runs, in any of
+those instances at or after this change, waits for that run rather than starting another (a second
+map, of the runs under way, under `Symbol.for("legion.envoy-config.command-runs.v1")`); a bundle
+from before it keeps no such map, so a read in it starts a run of its own. A command that ran out
+of time is kept as failed for the life of the process: a hanging command never runs again in that
+process, since each run would hold every read waiting on it for the whole 10 s. A failure that
+ended on its own (a non-zero exit, empty output, more than one line) is kept for 60 s
 and then the command runs again, so a cause that clears (a keyring unlocked after the session
 started) needs no restart. The `dispatch` command is one process per call, and each Claude Code
 hook one per event, so a `!` token runs once for each. A non-zero
@@ -709,19 +731,19 @@ server is named (below), or a section's own error (`Dispatch is off: <error>`,
 that an Envoy that is on takes no inbound messages: `Envoy's inbound messages are off:
 <inbound.off>; the Envoy tools still work`. Otherwise a file that turns a section off, or holds no
 section for it, says nothing.
-`askgateSetting(file)` reads the session file's top-level `askgate` section now, on its own, so a
-section that does not parse never fails the Dispatch or Envoy read: `{"askgate":{"enabled":false}}`
-turns AskGate off (`{ enabled: false, error: null }`); no file, no section or `enabled: true`
-leaves it on. A section that does not parse, or a file that cannot be read or is not JSON, leaves
-it on with an `error` naming the file and `askgate.enabled` and ending `AskGate stays on`. A
-checkout's `.envoy/envoy.json` cannot set it.
+`askgateSetting(file)` resolves to the session file's top-level `askgate` section, read now, on
+its own, so a section that does not parse never fails the Dispatch or Envoy read:
+`{"askgate":{"enabled":false}}` turns AskGate off (`{ enabled: false, error: null }`); no file, no
+section or `enabled: true` leaves it on. A section that does not parse, or a file that cannot be
+read or is not JSON, leaves it on with an `error` naming the file and `askgate.enabled` and ending
+`AskGate stays on`. A checkout's `.envoy/envoy.json` cannot set it.
 `sessionDispatchSettings(file, env, { cwd })` reads
 Dispatch alone, now: `{ dispatch, warnings, missing }`, Dispatch's resolution beside the files the
 read found and did not read and the missing-file record, for a command, which says the `warnings`
 itself, and for a plugin whose Dispatch calls follow a file that changes. `activeDispatchSettings`
 turns its `dispatch` into the configuration a caller uses, null when nothing configures Dispatch,
-or a `dispatch config: <reason>` throw. `sessionDispatchUrl(file, env, { cwd })` is the URL alone
-(`dispatchUrl`), resolved without reading the token, so no `!` command runs, or undefined when
+or a `dispatch config: <reason>` throw. `sessionDispatchUrl(file, env, { cwd })` resolves to the
+URL alone (`dispatchUrl`), without the token's value, so no `!` command runs, or undefined when
 Dispatch is off before its token is read: what a caller on a deadline names to
 `readSessionAnswers` as `dispatchUrl` while a kept resolution is off with an error, so only the list
 read from that URL stands in. `sessionEnvoySettings(file, env, { cwd, nats })` reads
@@ -1073,10 +1095,14 @@ registration at that deadline fails with `RegistrationPendingError`, which names
 Once a renewal has failed, a call made while the token in hand is live goes on with that token.
 
 The identity the client trades depends on the sign-ins on the machine (`brokerTokenClient`). With
-no sign-in, the client trades the machine. The machine's identity is the subject, the DPoP key is
-one this process makes, and the session name is the caller's own session, else
-`AGENT_SECRETS_SESSION`. Where a person ran `agent-secrets login` on the machine, the client
-trades that person, as the Go client does:
+no sign-in, the client trades the machine. The machine's identity is the subject, and the session
+name is the caller's own session, else `AGENT_SECRETS_SESSION`. In a pod, where
+`AGENT_SECRETS_MACHINE_IDENTITY` is `kubernetes` and `AGENT_SECRETS_KEY_DIR` names the role's own
+directory, the DPoP key is the role's own agent-secrets key, the `key.pem` that
+`agent-secrets keygen` wrote there, which the broker holds the pod session's trade to; when that
+file cannot be read, the call fails naming the path. Everywhere else the DPoP key is one this
+process makes. Where a person ran `agent-secrets login` on the machine, the client trades that
+person, as the Go client does:
 
 - The subject is the person's Google identity token. The client renews it at every trade, from
   the refresh token the sign-in keeps, at the sign-in issuer (`person-identity.ts`).
@@ -1148,10 +1174,11 @@ since is kept; the next presentation uses the token the client holds now, tradin
 where it holds none. A write goes again under the same `Idempotency-Key`. A read does this once
 for each send, and a write once for the call: a second such answer is a refusal Dispatch's auth
 made before its keyed layer ran, so it is the write's refusal while nothing may have landed and
-the write is `DispatchWriteUnsettledError` once something may have (`write-outcome.ts`). If the
-broker refuses the new trade, the call fails in the broker's words, unless an attempt of the
-write may have landed: then the write asks again on its pacing, and with no ask left it is
-`DispatchWriteUnsettledError`.
+the write is `DispatchWriteUnsettledError` once something may have (`write-outcome.ts`).
+`dispatch api`'s read is one send, which Dispatch's answer of no route does not repeat, and the
+command prints that refusal as it came. If the broker refuses the new trade, the call fails in
+the broker's words, unless an attempt of the write may have landed: then the write asks again
+on its pacing, and with no ask left it is `DispatchWriteUnsettledError`.
 
 A sign-in reaches the sessions that start after it. The broker holds a session name for one
 identity for 90 days after the name's last token. So a session that traded as the machine cannot
@@ -1511,3 +1538,13 @@ answers that request and records the same verdict on every document the request 
 the version the request names. The output names the state, the version and the actor that
 Dispatch recorded, and says when the review also answered an open request. A refusal starts with
 Dispatch's code.
+
+`dispatch api --path <route>` sends one GET of a route under `/api/v1` that no other command
+reads (`apiCommand`, `src/dispatch-commands/api.ts`, through `DispatchClient.readRoute`), with the
+session's own credential as every command presents it, and prints Dispatch's JSON answer for
+`jq`. It takes no method and no body: a write goes through the command named for it. The spec
+refuses, before anything is sent, a path that does not begin `/api/v1`, one that holds a space, a
+backslash, a `#` or a character outside printable ASCII, and one with a `.` or `..` segment,
+plain or percent-encoded, since a URL parser would resolve any of those out of `/api/v1`. A
+refusal of the read is Dispatch's error with its code and, where Dispatch gives one, its hint,
+exit 1.

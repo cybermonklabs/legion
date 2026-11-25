@@ -76,11 +76,12 @@ func (s *shim) sinceCommandsEnded() time.Duration {
 // daemon asked for is still running, seconds after it returned, which is the line a person reads
 // while diagnosing that very stop. A shim that answered no such frame has nothing in flight either.
 //
-// The wait is bounded by that stop's own span, procgroup.StopGrace plus the procgroup.WaitDelay
-// exec then waits for anything still holding the command's pipes — counted from the moment the
-// commands were ended, not from here. On the daemon's `shutdown` those are not the same moment:
-// terminate ends the commands and then the agent has its whole grace, which this wait would
-// otherwise follow with a span the command has already spent. Counting the difference into
+// The wait is bounded by that stop's own span, the stop's grace (procgroup.StopGraceNow) plus the
+// WaitDelay exec then waits for anything still holding the command's pipes (procgroup.WaitDelayNow)
+// — counted from
+// the moment the commands were ended, not from here. On the daemon's `shutdown` those are not the
+// same moment: terminate ends the commands and then the agent has its whole grace, which this wait
+// would otherwise follow with a span the command has already spent. Counting the difference into
 // MinStopGrace instead would raise the smallest `worker_stop_timeout_seconds` the daemon accepts
 // (internal/config refuses one under it, and its refusal names the number), which is a change to
 // which deployments are accepted and not this wait's to make. A command still running past the
@@ -105,7 +106,7 @@ func (s *shim) drainCommands() {
 		close(returned)
 	}()
 	spent := s.sinceCommandsEnded()
-	bound := max(procgroup.StopGrace+procgroup.WaitDelay-spent, 0)
+	bound := max(procgroup.StopGraceNow()+procgroup.WaitDelayNow()-spent, 0)
 	select {
 	case <-returned:
 	case <-s.clock.After(bound):

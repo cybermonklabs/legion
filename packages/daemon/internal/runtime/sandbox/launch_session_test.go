@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -30,8 +31,9 @@ func launchSessions(r *Runtime) map[claim.Token]launchedSession {
 // runtime chose a Claude Code launch's session before the role started (claudeInputs), and it
 // answers that session for the incarnation the launch started as — the very id the role's start
 // command names — so the daemon can register it for the pod at the shim's hello
-// (runtime.LaunchSessionNamer). It answers nothing for an Oh My Pi launch, whose agent mints its
-// own id, and nothing for any incarnation but the launch's own.
+// (runtime.LaunchSessionNamer). It answers nothing for any incarnation but the launch's own. An
+// Oh My Pi launch beside it, whose pod trades, is answered the id its own start command names
+// (ompInputs, TestAnOhMyPiRoleStartsUnderTheIdItsDaemonChose), never the Claude launch's.
 func TestAClaudeLaunchNamesItsSessionToTheDaemon(t *testing.T) {
 	g := newRig(t, nil, exchangeKeyed())
 	loc := g.spawn(claudeWorkerSpec(t))
@@ -49,8 +51,9 @@ func TestAClaudeLaunchNamesItsSessionToTheDaemon(t *testing.T) {
 	}
 
 	omp := g.spawn(testSpec(t, otherToken, claim.RoleReviewer, testTree))
-	if session, named := g.r.LaunchSession(omp); named {
-		t.Errorf("LaunchSession of an Oh My Pi launch = %q, want none: its agent mints its id", session)
+	ompStart := lastStart(t, g, otherToken)
+	if session, named := g.r.LaunchSession(omp); !named || session == started || !slices.Equal(sessionWords(ompStart.Argv), []string{"--session-id", session}) {
+		t.Errorf("LaunchSession of an Oh My Pi launch whose pod trades = %q, %t; want the id its start's %q names", session, named, sessionWords(ompStart.Argv))
 	}
 }
 

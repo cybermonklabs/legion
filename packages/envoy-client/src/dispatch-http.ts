@@ -33,6 +33,9 @@ import type {
   CreateProjectInput,
   CreateVersionInput,
   CredentialPendingResponse,
+  DeployInput,
+  DeployResponse,
+  DeploysResponse,
   DispatchEvent,
   DispatchLimits,
   DispatchServiceErrorShape,
@@ -140,6 +143,9 @@ export class DispatchServiceError extends Error {
   readonly issues: DispatchServiceErrorShape["issues"] | undefined;
   /** A status change's refusal: the entry of each step that wrote before it. */
   readonly changed: DispatchServiceErrorShape["changed"] | undefined;
+  /** Dispatch's `hint`, where to look next, which only its answer to a path no route serves
+   *  carries (`DispatchServiceErrorShape["hint"]`); `messageFor` prints it after the message. */
+  readonly hint: string | undefined;
 
   constructor(
     readonly code: string,
@@ -148,7 +154,7 @@ export class DispatchServiceError extends Error {
     /** The members of Dispatch's refusal beside its message that a caller reads off the error:
      *  its answer's JSON, or another refusal whose members it keeps. */
     details: {
-      readonly [Member in "candidates" | "changed" | "current" | "issues" | "mismatches"]?:
+      readonly [Member in "candidates" | "changed" | "current" | "hint" | "issues" | "mismatches"]?:
         | DispatchServiceErrorShape[Member]
         | undefined;
     } = {}
@@ -159,6 +165,7 @@ export class DispatchServiceError extends Error {
     this.mismatches = details.mismatches;
     this.issues = details.issues;
     this.changed = details.changed;
+    this.hint = details.hint;
   }
 }
 
@@ -1411,6 +1418,22 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "limits"]);
   }
 
+  /** `GET <path>`, for `dispatch api`: one read of a route no method here names. `path` begins
+   *  `/api/v1` and may carry a query, and the contract's rule for it (`dispatch_api`) refuses a
+   *  scheme, a host and a dot segment, so it resolves under this client's server as every other
+   *  route does (`#url`). Answers Dispatch's JSON as `#response` reads it.
+   *
+   *  It sends the GET once (one `#send`) and throws a refusal as `#response` throws it, an answer
+   *  of no route (`404 NOT_FOUND`, "no route for …") included: unlike every other request this
+   *  client makes, it skips `#noRoute`, so it neither sends that request again nor turns the
+   *  answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written path
+   *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
+   *  so Dispatch's own refusal, which names the route, is printed as it came. */
+  async readRoute(path: string): Promise<unknown> {
+    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
+    return this.#response("GET", url, await this.#send("GET", url));
+  }
+
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
    *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
    *  which no reader re-sorts. `me` is the caller, and keeps the rows waiting on them — the asks
@@ -1652,11 +1675,10 @@ export class DispatchClient {
     }
   }
 
-  /** Each check of an issue's Verification document with every result recorded against it, and
-   *  for a check CI proves the one result Dispatch derives from its check run.
-   *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
-   *  hex characters. Dispatch then reads GitHub for nothing but the check runs of a check CI
-   *  proves, at the issue's newest pull request head as on every read. */
+  /** Each check's complete results, compared with each open head or the final head of the last
+   *  pull request to merge. A branch result must hold its work's merge. The newest such result
+   *  decides, unless a pass and a fail both count at that commit. A live check reads its
+   *  program's current deploy. `at` names one 40-hex commit and leaves today's deploy out. */
   async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
     return this.#json(
       "GET",
@@ -1664,6 +1686,16 @@ export class DispatchClient {
       undefined,
       at === undefined ? undefined : { at }
     );
+  }
+
+  /** Record a build using the credential's own writer, never an actor selected in the body. */
+  async recordDeploy(input: DeployInput): Promise<DeployResponse> {
+    return this.#json("POST", ["api", "v1", "deploys"], input);
+  }
+
+  /** Each program's current deploy, including its source and the GitHub attempt when known. */
+  async deploys(repo: string): Promise<DeploysResponse> {
+    return this.#json("GET", ["api", "v1", "deploys"], undefined, { repo });
   }
 
   /**
@@ -2868,7 +2900,7 @@ export class DispatchClient {
           error.code ?? `HTTP_${response.status}`,
           response.status,
           error.error,
-          error
+          { ...error, hint: typeof error.hint === "string" ? error.hint : undefined }
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");
