@@ -11100,3 +11100,197 @@ test("a click that puts the focus on the body while a Board move's dry run is ou
     }
   }
 });
+
+// INFRA-3135, round 27 (the tester's), by the architect's ruling of 2026-11-25 13:01Z: "a count is
+// drawn once every read it counts has answered; a read that a count does not count never hides it
+// (the architect, 2026-11-25 13:01Z)". Measured in builds Jobs infra-3135-c-h-kwghj and
+// infra-3135-c2-h-qmwvp (head 7deb75af) and infra-3135-c-b-pcmr9 and infra-3135-c2-b-25xqq
+// (5ae79d88), in Chromium, Firefox and WebKit at 1440x900: with the agent list
+// (`GET /api/v1/agents`) answered 500 every time and Nobody or lapsed picked, 7deb75af draws no
+// count in any header filter for good, after the page has said that it could not check which
+// claims have lapsed. Over three issues that no one claims, Assignee offers "alice" where 5ae79d88
+// offers "alice, 3 issues", and Claimed by offers "Nobody" where 5ae79d88 offers "Nobody, 3
+// issues". Those counts read the issues alone, which answered. The header filters wait for the
+// agent registry whenever Claimed by asks for it (`readsRegistry`, IssuesTable.tsx:197), the
+// registry's `known` stays false after a read that failed (features/refs/agent-registry.ts:160),
+// and `filterCounted = counted && (!readsRegistry || registry.known)` (IssuesTable.tsx:449) then
+// hides every count of every filter: the ones the registry decides and the ones it does not.
+// 5ae79d88 draws both kinds, the registry's own among them ("Nobody or lapsed, 1 issue" over a
+// claim whose session had gone, which it could not judge), so this row holds the counts the
+// registry decides to none while it is refused. The control: with the agent list answered, the
+// same pages draw every count, Nobody or lapsed and a holder's among them.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-27 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): two projects on the List, each read with the agent list refused and then answered.
+test("with the agent list refused, the project List's header filters draw each count the list does not decide once the issues answer, and none that it decides @firefox @webkit", async ({
+  page,
+}) => {
+  // Two projects, each read refused and then answered, five filters each.
+  test.setTimeout(180_000);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  /** One project's three issues: the first and the third for alice at P1 labelled `alpha`, the
+   *  second for bob at P2. No title shares a word with another, so none reads as a duplicate. */
+  const seed = async (key: string, name: string, titles: readonly [string, string, string]) => {
+    await createProject({ key, name });
+    const alice = await createIssue({ project: key, title: titles[0] });
+    await patchIssue(alice.key, { assignee: "alice", labels: ["alpha"], priority: 1 });
+    const bob = await createIssue({ project: key, title: titles[1] });
+    await patchIssue(bob.key, { assignee: "bob", priority: 2 });
+    const more = await createIssue({ project: key, title: titles[2] });
+    await patchIssue(more.key, { assignee: "alice", labels: ["alpha"], priority: 1 });
+    return { alice: alice.key, bob: bob.key, more: more.key };
+  };
+  // CORE: no issue is claimed. HELD: one issue is claimed by a session that runs, so the answered
+  // agent list keeps that claim held, and Nobody or lapsed lists the same two issues it lists
+  // while the list is refused, where the page counts every claim as held.
+  const core = await seed("CORE", "Core", ["Harbour crane", "Signal tower", "Ferry ramp"]);
+  const held = await seed("HELD", "Held", ["Granite quarry", "Orchard fence", "Lantern repair"]);
+  const holder = { session_id: "e2e-claim-running", title: "Running holder" };
+  await setLiveSessions([holder]);
+  const token = await mintAgentToken("claim-running", "alice");
+  await claimIssue(held.more, {
+    actor: { id: holder.session_id, kind: "session", origin: { session_title: holder.title } },
+    as: "agent",
+    token,
+  });
+  // The agent list answers 500 every time it is asked while `refusing`, and goes through after.
+  let refusing = true;
+  let served = 0;
+  await page.route(
+    (url) => url.pathname === "/api/v1/agents",
+    async (route) => {
+      if (refusing) {
+        await route.fulfill({
+          body: '{"error":{"code":"INTERNAL","message":"agent list refused"}}',
+          contentType: "application/json",
+          status: 500,
+        });
+        return;
+      }
+      served += 1;
+      await route.continue();
+    }
+  );
+  /** Each option of one header filter, by its accessible name, read once it holds `count`, in
+   *  sorted order: an option that draws a count is named by its `aria-label` (`alice, 2 issues`),
+   *  and one that draws none by its label's own text (`alice`), its check mark left out. */
+  const headerFilterOptions = async (header: string, count: number): Promise<string[]> => {
+    const trigger = page.getByRole("button", {
+      name: new RegExp(`^Filter ${header}(?:: \\d+ picked)?$`, "u"),
+    });
+    await trigger.click();
+    const options = listOf(trigger).getByRole("option");
+    await expect(options).toHaveCount(count);
+    const names = await options.evaluateAll((elements) =>
+      elements.map(
+        (element) =>
+          element.getAttribute("aria-label") ??
+          Array.from(element.children)
+            .filter((child) => child.getAttribute("aria-hidden") !== "true")
+            .map((child) => child.textContent ?? "")
+            .join("")
+            .trim()
+      )
+    );
+    await page.keyboard.press("Escape");
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    return names.sort();
+  };
+  /** An option's value, with its count taken off where it draws one. */
+  const optionValue = (name: string) => name.replace(/, \d+ issues?$/u, "");
+  /** Each of `wanted` that `offered` does not hold as it is written. */
+  const missing = (offered: readonly string[], wanted: readonly string[]) =>
+    wanted.filter((want) => !offered.includes(want));
+  // Each filter's counts that read the issues alone, once Nobody or lapsed is picked: Status lists
+  // every status, so only the one these issues stand in is named, and Claimed by's Nobody counts
+  // the issues no one claims. `claimed` is everything Claimed by offers with the list answered.
+  const cases = [
+    {
+      key: "CORE",
+      listed: [core.alice, core.bob, core.more],
+      hidden: [] as string[],
+      filters: [
+        { count: 2, header: "Assignee", wanted: ["alice, 2 issues", "bob, 1 issue"] },
+        { count: 2, header: "Priority", wanted: ["P1, 2 issues", "P2, 1 issue"] },
+        { count: 9, header: "Status", wanted: ["Triage, 3 issues"] },
+        { count: 1, header: "Labels", wanted: ["alpha, 2 issues"] },
+        { count: 2, header: "Claimed by", wanted: ["Nobody, 3 issues"] },
+      ],
+      claimed: ["Nobody or lapsed, 3 issues", "Nobody, 3 issues"],
+    },
+    {
+      key: "HELD",
+      listed: [held.alice, held.bob],
+      hidden: [held.more],
+      filters: [
+        { count: 2, header: "Assignee", wanted: ["alice, 1 issue", "bob, 1 issue"] },
+        { count: 2, header: "Priority", wanted: ["P1, 1 issue", "P2, 1 issue"] },
+        { count: 9, header: "Status", wanted: ["Triage, 2 issues"] },
+        { count: 1, header: "Labels", wanted: ["alpha, 1 issue"] },
+        { count: 3, header: "Claimed by", wanted: ["Nobody, 2 issues"] },
+      ],
+      claimed: [
+        "Nobody or lapsed, 2 issues",
+        "Nobody, 2 issues",
+        "Running holder (for alice), 1 issue",
+      ],
+    },
+  ];
+  const wrong: string[] = [];
+  for (const { key, listed, hidden, filters, claimed } of cases) {
+    const at = `${key}, agent list refused`;
+    refusing = true;
+    await page.goto(`/projects/${key}/issues?unclaimed=1`);
+    for (const row of listed) await expect(page.locator(`[data-issue-row="${row}"]`)).toBeVisible();
+    for (const row of hidden)
+      await expect(page.locator(`[data-issue-row="${row}"]`)).toHaveCount(0);
+    // The page says the agent list's read failed after its retries, so every read these filters
+    // count has answered or been refused.
+    await expect(page.getByTestId("unclaimed-unchecked")).toBeVisible();
+    for (const { count, header, wanted } of filters) {
+      await expect
+        .poll(async () => missing(await headerFilterOptions(header, count), wanted), {
+          timeout: 5_000,
+        })
+        .toEqual([])
+        .catch(() => undefined);
+      // The poll above waited up to five seconds for these counts after every read they count had
+      // answered, so this reads what the filter settled on.
+      const offered = await headerFilterOptions(header, count);
+      wrong.push(
+        ...missing(offered, wanted).map(
+          (want) =>
+            `${at}: ${header} offers "${offered.find((name) => optionValue(name) === optionValue(want)) ?? "no such value"}" where it should offer "${want}"`
+        )
+      );
+    }
+    // Read after Claimed by's own poll above, so the panel has drawn whatever it will draw: every
+    // value but Nobody counts what the refused agent list decides, and draws no count.
+    const claimedOffered = await headerFilterOptions("Claimed by", claimed.length);
+    wrong.push(
+      ...claimedOffered
+        .filter((name) => optionValue(name) !== "Nobody" && optionValue(name) !== name)
+        .map((name) => `${at}: Claimed by offers "${name}", a count the refused agent list decides`)
+    );
+    // The control: with the agent list answered, the same page draws every count, the ones the
+    // list decides right.
+    served = 0;
+    refusing = false;
+    await page.goto(`/projects/${key}/issues?unclaimed=1`);
+    for (const row of listed) await expect(page.locator(`[data-issue-row="${row}"]`)).toBeVisible();
+    await expect.poll(() => served).toBeGreaterThan(0);
+    for (const { count, header, wanted } of filters) {
+      await expect
+        .poll(async () => missing(await headerFilterOptions(header, count), wanted), {
+          message: `${key}, agent list answered: ${header} draws ${wanted.join(" and ")}`,
+        })
+        .toEqual([]);
+    }
+    await expect
+      .poll(() => headerFilterOptions("Claimed by", claimed.length), {
+        message: `${key}, agent list answered: Claimed by draws ${claimed.join(" and ")}`,
+      })
+      .toEqual(claimed);
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
