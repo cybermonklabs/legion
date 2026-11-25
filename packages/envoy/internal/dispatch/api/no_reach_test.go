@@ -1019,7 +1019,7 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 //   - {number} beside either: 1, the first version, which each of the two documents holds;
 //   - {id} of /issues/{key}/messages/{id}: the issue's message;
 //   - {id} of /issues/{key}/steps/{id}: the run of a step of the issue its project's daemon
-//     wrote;
+//     wrote, which the experiment write's path, /issues/{key}/steps/{id}/experiment, takes too;
 //   - {id} of /issues/{key}/steps/{id}/rating: the run of the issue's retro its project's daemon
 //     wrote, the one kind of run the rating write rates;
 //   - {id} of /issues/{key}/plans/{id}: the plan of a run of the issue its project's daemon
@@ -1093,12 +1093,13 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 // object, so what refuses it is the object and not the caller or the body. Every route is sent
 // as alice, a person, with its probe body (routeProbeBody), but these:
 //
-//   - the step write, its rating and the plan write each record only for the session of the
-//     Legion daemon of the key's project and refuse any other writer 403 STEP_WRITER before they
-//     read the id (putIssueStep, the rating's and putIssuePlan's requireIssueDaemon), so each is
-//     sent over the deployment's shared agent credential, which proves no session, naming the
-//     session of the other project's daemon, with a body each accepts: the rating carries one,
-//     and the plan write the default plan of a run (defaultPlanBody);
+//   - the step write, its rating, its experiment and the plan write each record only for the
+//     session of the Legion daemon of the key's project and refuse any other writer 403
+//     STEP_WRITER before they read the id (putIssueStep, the rating's, the experiment's and
+//     putIssuePlan's requireIssueDaemon), so each is sent over the deployment's shared agent
+//     credential, which proves no session, naming the session of the other project's daemon, with
+//     a body each accepts: the rating carries one, the experiment write an experiment and its
+//     variant, and the plan write the default plan of a run (defaultPlanBody);
 //   - a named version requires a summary and refuses a body without one 400 INVALID_VERSION before
 //     it reads the slug (createNamedVersion), so its body carries one.
 func crossProjectRequest(t *testing.T, handler http.Handler, route apiRoute, target string, owned crossProject) *httptest.ResponseRecorder {
@@ -1109,6 +1110,10 @@ func crossProjectRequest(t *testing.T, handler http.Handler, route apiRoute, tar
 	case "PUT /api/v1/issues/{key}/steps/{id}/rating":
 		return sessionRequest(t, handler, route.Method, target, map[string]any{
 			"actor": daemonSessionOf(owned.otherKey), "rating": 3, "rating_reason": "A rating under another project's key.",
+		})
+	case "PUT /api/v1/issues/{key}/steps/{id}/experiment":
+		return sessionRequest(t, handler, route.Method, target, map[string]any{
+			"actor": daemonSessionOf(owned.otherKey), "experiment": "planning", "variant": "b",
 		})
 	case "PUT /api/v1/issues/{key}/plans/{id}":
 		return sessionRequest(t, handler, route.Method, target, defaultPlanBody(daemonSessionOf(owned.otherKey), 1))

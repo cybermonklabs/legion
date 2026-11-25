@@ -715,6 +715,52 @@ DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http:/
   bash packages/dispatch/e2e/acceptance/graph-sizing.sh
 ```
 
+`e2e/acceptance/priority-list-production.sh` is the driver of the check `c-both-plans-production`:
+it measures how long production's server takes to answer the issue list filtered by a priority, as
+the p90 of the access log's `elapsed_ms` over 200 reads of each of three requests.
+The three are the page of 50 (`page`), `&open=true` (`open`) and the whole list (`whole`) of the
+priority with the most open issues.
+The script sends them itself, one at a time, 200 of each form in turn, each with the User-Agent
+`priority-list-production/<probe id>/<form>`, and stops after 21 reads of one form took over
+1,000 ms by curl's clock.
+It then reads their lines back from the deployment's container logs with `gcloud logging read`,
+again every 30 s for at most 10 minutes until the log holds every line the probe sent.
+A form's p90 is the value at rank ceil(0.9 n) of its lines' `elapsed_ms` in ascending order, and
+the form passes at 200 ms or under.
+Before it sends a read, the fleet must have served a commit carrying `MERGE_SHA` for three hours:
+`/healthz`'s `fleet_commit`, the commit every live server process serves, must carry it by
+GitHub's compare (`identical` or `ahead`).
+A look that has to wait ends on the line `read again at or after <time> with ...`, which names the
+values the next look takes, and exits 3.
+
+Its inputs are `DISPATCH_URL`, the deployed Dispatch; the bearer, in `DISPATCH_TOKEN` or
+`DISPATCH_TOKEN_FILE`; `MERGE_SHA`, the merge commit's 40 hex digits; and `LOGGING_PROJECT`, the
+Google Cloud project that holds the deployment's container logs.
+This public repository names no such project, so the driver refuses to start without it (exit 2).
+Each time it takes or prints is UTC to the second, `YYYY-MM-DDTHH:MM:SSZ`.
+A later look also takes the values the line of an earlier one names: `FLEET_SINCE` and
+`FLEET_COMMIT`, the time the three hours started and the commit they count for, so a deploy in
+between starts them over; or `PROBE_ID`, `PROBE_AT` and `PROBE_STOPPED`, all three or none, with
+which the look sends nothing and reads back that probe's lines.
+`BEFORE_DEPLOY=1` is for the check's negative control alone: the look then requires a commit that
+does not carry `MERGE_SHA`, and skips the three-hour wait.
+`gh` and `gcloud` run as the accounts they are signed in with.
+It exits 0 when every form's p90 is at most 200 ms; 1 when a form's p90 is over 200 ms, a line's
+status is not 200 or the first answer of a form holds no issue; 2 when the look cannot measure (an
+input unset or malformed, a first answer that is not 200, no line of the probe in the log after 10
+minutes, or a probe id of another build); and 3 for a look that waits.
+A look that finds a failure exits 1 even where it would also wait.
+The first look, from the repository root; each later one adds the values the last one named:
+
+```bash
+DISPATCH_URL=https://dispatch.internal.example DISPATCH_TOKEN_FILE=<file holding the bearer> \
+  MERGE_SHA=<merge commit> LOGGING_PROJECT=<project> \
+  bash packages/dispatch/e2e/acceptance/priority-list-production.sh
+```
+
+`cd packages/dispatch && bun test e2e/__tests__/priority-list-production.test.ts` runs it against
+stand-ins of `curl`, `gh`, `gcloud` and `sleep` that reach nothing past the host.
+
 `e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
 names blocks: a list written over a paragraph's whole text, a list written over the text of a
 nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
@@ -783,7 +829,7 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All nine drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
+All ten drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
 share: it refuses an unset input or a missing command with exit 2, reads the bearer from
 `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
 script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
