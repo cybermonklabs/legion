@@ -131,6 +131,9 @@ export interface AgentRegistry {
   lastSeen(sessionId: string): number | undefined;
   /** Every listed session's registry title, for the contracts naming functions. */
   readonly titles: ReadonlyMap<string, string>;
+  /** A read of the registry has answered and the latest one succeeded: until then every state
+   *  is `unknown`, so a view judging what the states decide judges nothing yet. */
+  readonly known: boolean;
   /** The latest read failed: every state is `unknown`, and a view that would judge an absence
    *  says it could not check instead. */
   readonly isError: boolean;
@@ -159,6 +162,7 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
   return useMemo(
     () => ({
       isError,
+      known,
       lastSeen: (sessionId: string) => lookup.byId.get(sessionId)?.last_seen,
       refilling,
       // A listed row's own `state` decides: the listener judged it from the session's last

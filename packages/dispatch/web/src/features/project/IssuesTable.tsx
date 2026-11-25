@@ -196,7 +196,8 @@ export function IssuesTable({
   // Which claims have lapsed is the agent registry's answer, read only while the Claimed by
   // filter asks for it: because it is picked, or because its panel is open and counting.
   const wantsFree = claimPicked.includes(UNCLAIMED_FACET);
-  const registry = useAgentRegistry(wantsFree || openFilter === "claim");
+  const readsRegistry = wantsFree || openFilter === "claim";
+  const registry = useAgentRegistry(readsRegistry);
   const {
     all,
     allItems,
@@ -437,6 +438,12 @@ export function IssuesTable({
     () => (openFilter ? facetCounts(items, openFilter, filters, search) : EMPTY_FACETS),
     [items, openFilter, filters, search]
   );
+  // The header filters count what the table shows once the rows it waits on are in, as the
+  // chip does (`counted`): never the open issues alone while the closed ones it asked for are
+  // out. While the Claimed by filter reads the registry, they also wait on its answer: before
+  // it, no session's claim reads lapsed (`claimIsTakeable`), so Nobody or lapsed would leave out
+  // each claim whose session has gone, in its own count and, picked, in every other filter's.
+  const filterCounted = counted && (!readsRegistry || registry.known);
 
   const visibleColumns = table.getVisibleLeafColumns().length + 1;
   // A column filter's panel hangs off its header and goes with the table: it is closed then, as
@@ -593,6 +600,7 @@ export function IssuesTable({
         <>
           <DataTable
             empty="No issues match these filters."
+            filterCounted={filterCounted}
             filterCounts={openFacets}
             filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
             label={`${name} table`}
