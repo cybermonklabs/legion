@@ -1150,6 +1150,44 @@ driverRow(
   rowLimit("stoppedLeg")
 );
 
+driverRow(
+  "a leg stopped in a file whose other rows skip under the repeat marker names the row it was in",
+  async () => {
+    // The lie: the tool sets DISPATCH_UNIT_REPEAT=1 for the leg's run, so the rows that wait out
+    // real time skip there and never begin, but the run that reads the rows' names runs them, so
+    // a skipped row's name stands where the row the leg was in should. Here eight rows skip under
+    // the marker and one spins: under this file's seed a skipped row runs first in a names run
+    // without the marker, so only a names run that sets it too names the row that spun.
+    const directory = scratch();
+    const mark = join(directory, "row-began");
+    const skipped = Array.from(
+      { length: 8 },
+      (_, index) =>
+        `realTimeRow(${JSON.stringify(`waits out real time ${index + 1}`)}, () => {});\n`
+    ).join("");
+    const { code, report, left } = await stoppedLeg(
+      directory,
+      {
+        "repeated.test.ts": `${spinningHead}const realTimeRow = process.env.DISPATCH_UNIT_REPEAT === "1" ? test.skip : test;\n${skipped}${spinningRow("spins in the leg", mark)}`,
+      },
+      [mark],
+      { graceMs: 120_000, namesMs: 120_000 }
+    );
+    expect(code).toBe(1);
+    expect(report.stop?.running).toEqual([
+      expect.objectContaining({
+        file: "e2e/__tests__/repeated.test.ts",
+        run: 1,
+        place: "row",
+        rowsBegun: 1,
+        rowName: "spins in the leg",
+      }),
+    ]);
+    expect(left).toEqual([]);
+  },
+  rowLimit("stoppedLeg")
+);
+
 /** A preload of the tool's own process that holds it between Bun's end and its report: at the
  *  tool's first read of bun.log, which comes once Bun has ended, it writes `mark` and waits until
  *  `release` exists, which the driver writes once it has sent its SIGTERM. Wrapping the module's

@@ -122,9 +122,11 @@ const lanes: Readonly<Record<Lane, LaneScript>> = {
  *  60 s hold, 15 s release, 10 s flush, 30 s reopen and its rows on short tokens and a short
  *  lapse, each a process of its own on the real clock, and e2e/__tests__/outside-edge.test.ts's
  *  rows that wait out one of the outside driver's own bounds (a page's 30 s, a revoke's list read,
- *  a device login's deadline). Twenty reruns of them would spend about half an hour of a harness
- *  leg waiting, past the 30-minute step dispatch-unit-repeat.yaml gives it, and the waits find no
- *  fault a single run does not; each runs once a run where the rest of its file runs. */
+ *  a device login's deadline). Twenty reruns of them would add about half an hour of waiting to a
+ *  harness leg, which the leg's deadline in dispatch-unit-repeat.yaml, set from legs measured
+ *  without them, does not count, and the waits find no fault a single run does not; each runs once
+ *  a run where the rest of its file runs. The run that reads a file's rows' names after a stop
+ *  (`rowNamesOf`) sets it too, so it skips the rows the leg's run skipped. */
 const repeatMarker = { DISPATCH_UNIT_REPEAT: "1" } as const;
 
 const laneNames = Object.keys(lanes);
@@ -1578,7 +1580,9 @@ function killGroup(leader: number): void {
  *  included, can take as long as it likes, or hang. The run runs the file's own code and hooks,
  *  so it runs in a process group of its own, which the tool kills whole once it has read the
  *  names it needs, when `boundMs` passes if it has not, and again once the run has ended, so that
- *  no process of it outlives the report. */
+ *  no process of it outlives the report. It sets `repeatMarker` as the leg's run does: a row the
+ *  leg's run skipped under it never began there, so this run must skip it too, or its names would
+ *  not be the names of the rows the leg began. */
 async function rowNamesOf(
   script: string,
   file: string,
@@ -1599,7 +1603,7 @@ async function rowNamesOf(
     {
       cwd: packageDirectory,
       detached: true,
-      env: { ...environment, DISPATCH_UNIT_REPEAT_NAMES_ONLY: "1" },
+      env: { ...environment, ...repeatMarker, DISPATCH_UNIT_REPEAT_NAMES_ONLY: "1" },
       stdin: "ignore",
       stdout: "ignore",
       stderr: "pipe",
