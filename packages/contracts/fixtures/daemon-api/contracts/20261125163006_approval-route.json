@@ -1,0 +1,67 @@
+{
+  "answers": [
+    {
+      "answer": "claim-approval",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": [
+        "approval",
+        "approval.document",
+        "approval.message",
+        "approval.version"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "addValues": {
+        "why.state": [
+          "held"
+        ]
+      }
+    },
+    {
+      "answer": "state",
+      "addValues": {
+        "issues.*.why.state": [
+          "held"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/claims/approval",
+      "change": "add",
+      "addFieldPaths": [
+        "claimToken",
+        "secret",
+        "sessionId"
+      ]
+    }
+  ],
+  "answerRows": [
+    {
+      "id": "claim-approval",
+      "routes": [
+        "POST /legion/v1/claims/approval"
+      ],
+      "noBody": false
+    }
+  ],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "issues.*.why.state",
+      "values": [
+        "held"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "why.state",
+      "values": [
+        "held"
+      ]
+    }
+  ]
+}

@@ -41,26 +41,30 @@ import (
 const ServingFloor = 46
 
 // SupportedContracts is every contract this daemon describes a shape for: each number version.go
-// carries a numbered entry for, from ServingFloor up to DaemonAPIVersion, and nothing else. A
-// number in that range with no entry is in no list, and a caller at it takes the nearest recorded
-// contract below it (recordedContractAtOrBelow).
+// carries a numbered entry for, from ServingFloor up to LastNumberedContract (frozenContracts),
+// and then each number from LastNumberedContract+1 up to DaemonAPIVersion(), one for each entry
+// this build registers (contracts.go), and nothing else. A number in that range with no entry is
+// in no list, and a caller at it takes the nearest recorded contract below it
+// (recordedContractAtOrBelow). The list is the registry's own, which no caller writes to.
+func SupportedContracts() []int { return registry().supported }
+
+// frozenContracts is SupportedContracts' numbered half: each number version.go carries a numbered
+// entry for, from ServingFloor up to LastNumberedContract, which no entry moves.
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
-// headers out of version.go and holds this list to them in both directions.
+// headers out of version.go and holds this list to them in both directions, and
+// TestReleasedContractsGolden writes it as `released-contracts.json`.
 //
-// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256, 275 and 290 are constants rather than their
+// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256 and 275 are constants rather than their
 // numbers, because the entries that added them name them (shapedAnswersContract, the shaped
 // answers' entry; repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; OwnerPlanContract, the
-// owner's plan's; assignmentPlanContract, the experiment group's; priorityContract, the waiting
-// line's priority's; intakeGiveUpsContract, dispatch://INFRA-1575's; podHoldContract, the pod
-// hold's; causeTimesContract, the claim views' cause times, #5349's; dispatchCredentialContract,
-// the Dispatch credential's; and approvalRouteContract, the entry that added the approval route
-// and the work hold's `held`): a renumber of any of those entries moves its constant and this
-// list with it, and moving one alone would describe a shape at a contract no entry declares. The
-// other entries above 193 follow them as
-// numbers: 199 is version.go's entry for INFRA-4605, 217 its entry for dispatch://INFRA-3531 and
-// dispatch://INFRA-4567, and 232 its entry for dispatch://INFRA-4508.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract, dispatchCredentialContract, approvalRouteContract}
+// owner's plan's; assignmentPlanContract, the experiment group's; intakeGiveUpsContract,
+// dispatch://INFRA-1575's 228; podHoldContract, the pod hold's 246; priorityContract, the waiting
+// line's priority's 250; causeTimesContract, the claim views' cause times, #5349's 256; and
+// dispatchCredentialContract, the Dispatch credential's, #4392's 275). The other entries above 193
+// are written as numbers: 199 is version.go's entry for INFRA-4605, 217 its entry for
+// dispatch://INFRA-3531 and dispatch://INFRA-4567, and 232 its entry for dispatch://INFRA-4508.
+var frozenContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract, dispatchCredentialContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -89,7 +93,6 @@ const (
 	AnswerPlanRegister       AnswerID = "plan-register"
 	AnswerIntakeReplay       AnswerID = "intake-replay"
 	AnswerIntakeDiscard      AnswerID = "intake-discard"
-	AnswerClaimApproval      AnswerID = "claim-approval"
 )
 
 // Answer is one response schema a plugin parses, with every route that answers it and the
@@ -124,9 +127,11 @@ type TypedSetting struct {
 }
 
 // typedSettings is every top-level key of `settings` that a plugin's reader types, and the
-// contracts whose reader types it. The state's row of Answers carries it, so answers.json writes
-// it, and a record holds a settings key path at a contract exactly where this list types that
-// key there, and no settings path below a key at all (contract_shapes_test.go's settingsTyped).
+// contracts whose reader types it: the rows of the numbered entries (frozenTypedSettings) and
+// then each entry's, in number order (contracts.go). The state's row of Answers carries it, so
+// answers.json writes it, and a record holds a settings key path at a contract exactly where this
+// list types that key there, and no settings path below a key at all (contract_shapes_test.go's
+// settingsTyped).
 //
 // Only typed keys are recorded because a reader refuses the body for no key it does not type,
 // present or absent, so a record that held such a key would tie every new legion.yaml key to a
@@ -139,19 +144,29 @@ type TypedSetting struct {
 // SupportedContracts (version.go's 193). A key a later reader types is a row here from that
 // reader's contract on, and pi-shared's census (`daemon-client.test.ts`) holds the rows typed at
 // this daemon's own contract equal to the keys `legionSettings` types.
-var typedSettings = []TypedSetting{
+func typedSettings() []TypedSetting { return registry().typedSettings }
+
+// frozenTypedSettings is the rows of typedSettings that the numbered entries typed.
+var frozenTypedSettings = []TypedSetting{
 	{Key: "max_fix_attempts", Since: ServingFloor, Until: fixAttemptsContract - 1},
 	{Key: "worker_boot_timeout_seconds", Since: ServingFloor},
 	{Key: "review_round_cap", Since: stateMachineContract},
 }
 
-// Answers is one row per answer a plugin parses. The operator's claim answers, the operator's
-// pause and resume answers (`legion project pause|resume`), the operator's replay and discard of
-// the intake's give-ups (`legion intake replay|discard`) and the controller's secret and
-// credential answers are no rows: no plugin parses them.
-var Answers = []Answer{
+// Answers is one row per answer a plugin parses: the rows of the numbered entries
+// (frozenAnswers) and then each entry's, in number order, with the routes an entry adds to an
+// older answer and the state's row typing typedSettings (contracts.go). The operator's claim
+// answers, the operator's pause and resume answers (`legion project pause|resume`), the
+// operator's replay and discard of the intake's give-ups (`legion intake replay|discard`) and the
+// controller's secret and credential answers are no rows: no plugin parses them.
+func Answers() []Answer { return registry().answers }
+
+// frozenAnswers is the rows of Answers that the numbered entries wrote. Its state's row types the
+// numbered entries' settings alone (frozenTypedSettings), which the registry's copy replaces with
+// typedSettings.
+var frozenAnswers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
-	{ID: AnswerState, Routes: []string{"GET /legion/v1/state"}, Since: ServingFloor, TypedSettings: typedSettings},
+	{ID: AnswerState, Routes: []string{"GET /legion/v1/state"}, Since: ServingFloor, TypedSettings: frozenTypedSettings},
 	// version.go's 193: the per-issue record route a role reads in place of the whole state.
 	// dispatch://INFRA-2694 added the route, so no contract below 193 records it.
 	{ID: AnswerIssueRecord, Routes: []string{"GET /legion/v1/issues/{key}/record"}, Since: shapedAnswersContract},
@@ -226,11 +241,6 @@ var Answers = []Answer{
 	// version.go's 228: the ids the controller's discard of the intake's give-ups closed
 	// (`api.IntakeDiscardResponse`), arrived with its route as the replay's answer did.
 	{ID: AnswerIntakeDiscard, Routes: []string{"POST /legion/v1/intake/discard"}, Since: intakeGiveUpsContract},
-	// version.go's 290: whether a person's approval of a spec stands for a root architect's claim
-	// (`api.ClaimApprovalResponse`), which pi-legion reads before a model call of that
-	// architect's own conversation. The route arrives with the answer, so no contract below 290
-	// records either.
-	{ID: AnswerClaimApproval, Routes: []string{"POST /legion/v1/claims/approval"}, Since: approvalRouteContract},
 }
 
 // EnumeratedField is one field of one answer that a plugin parses with a strict enumeration,
@@ -254,7 +264,9 @@ type EnumeratedValue struct {
 }
 
 // EnumeratedFields is one row per field of an answer that a plugin reads with a strict
-// enumeration, with each value and the contract it arrived at.
+// enumeration, with each value and the contract it arrived at: the rows of the numbered entries
+// (enumeratedFields) and then each entry's, in number order, with the values an entry adds to an
+// older field (contracts.go).
 //
 // It is here because a value a contract does not admit refuses that contract's reader as surely
 // as a key it does not know: `packages/contracts/src/legion-api.ts` reads `answeredBy` as
@@ -293,32 +305,24 @@ type EnumeratedValue struct {
 // `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56,
 // `waitingLine.kind`, which gained `waiting_on_issue` at 132, `capabilities.*.source`, which
 // gained `caches` at dispatch://INFRA-4036's contract (cachesSourceContract), `holdReason`, which
-// gained `task-stopped` and `children` at OwnerPlanContract, `admission.held.*.reason`, which
-// gained `children_before_retro` and `task_stopped` there, and `why.state`, which gained `held`
-// at 290, so every other list is recorded whole at its own field's arrival. (`suspendedBy` gained
-// `released` at 48 and `hold` at 290 and is no row here: the operator claim answers carry it and
-// no plugin parses them.)
-var EnumeratedFields = enumeratedFields()
+// gained `task-stopped` and `children` at OwnerPlanContract, and `admission.held.*.reason`, which
+// gained `children_before_retro` and `task_stopped` there. (`suspendedBy` gained `released` at
+// 48 and `hold` in the approval route's entry; the operator claim answers carry it and no plugin
+// parses them.) Later entries add values through the registry.
+func EnumeratedFields() []EnumeratedField { return registry().enumeratedFields }
 
-// enumeratedFields is every row the table holds: the state's own, the record's taken from them,
-// the registration's and the replay's, in that order.
+// enumeratedFields is every row the numbered entries wrote: the state's own, the record's taken
+// from them, the registration's and the replay's, in that order.
 //
 // The record's rows are taken rather than written, because the record route answers the very
 // value the whole-project body holds under `issues.<key>` (shaping.go's shapeIssue): every
 // enumerated field of an issue is the one field at two key paths, and the record's path is the
 // state's with the issue map's own prefix gone. Written out a second time, the two lists part
 // company the day a per-issue field is added to one of them: the record route would answer that
-// field with no domain recorded and no gate on its values.
+// field with no domain recorded and no gate on its values. So an entry's rows of the state take
+// their record's rows the same way (withIssueRecordRows).
 func enumeratedFields() []EnumeratedField {
-	fields := slices.Clone(stateEnumeratedFields)
-	for _, field := range stateEnumeratedFields {
-		path, ofAnIssue := strings.CutPrefix(field.KeyPath, issueKeyPath)
-		if !ofAnIssue {
-			continue
-		}
-		fields = append(fields, EnumeratedField{Answer: AnswerIssueRecord, KeyPath: path, Values: field.Values})
-	}
-	return append(fields,
+	return append(withIssueRecordRows(stateEnumeratedFields),
 		// `role` of the claim a registration issued (claim.RegisterResponse.Role). The
 		// controller's registration answers `controller` under a `z.literal` and is no row.
 		EnumeratedField{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles},
@@ -326,6 +330,20 @@ func enumeratedFields() []EnumeratedField {
 		// (api.ReplayedGiveUpView.Outcome, intake.ReplayOutcome). The answer arrived whole at
 		// intakeGiveUpsContract, so no older caller is served a value of it.
 		EnumeratedField{Answer: AnswerIntakeReplay, KeyPath: "replayed.*.outcome", Values: replayOutcomes})
+}
+
+// withIssueRecordRows is rows followed by the record's row of each row of the state under
+// issueKeyPath: the same field at the record's key path, with the same values.
+func withIssueRecordRows(rows []EnumeratedField) []EnumeratedField {
+	fields := slices.Clone(rows)
+	for _, field := range rows {
+		path, ofAnIssue := strings.CutPrefix(field.KeyPath, issueKeyPath)
+		if field.Answer != AnswerState || !ofAnIssue {
+			continue
+		}
+		fields = append(fields, EnumeratedField{Answer: AnswerIssueRecord, KeyPath: path, Values: field.Values})
+	}
+	return fields
 }
 
 // issueKeyPath is the path the whole-project body writes one issue's fields under. The record
@@ -441,10 +459,8 @@ var stateEnumeratedFields = []EnumeratedField{
 	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.part", Values: lineParts},
 	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.kind", Values: lineKinds},
 	// `state` of the one rendered answer an issue that is not working now carries, which of the
-	// five facts holds it (api.WhyView.State). It arrived beside the line's own fields and is
-	// served down with them. Its list grew: `held` arrived at workHoldContract, after the field,
-	// and an issue whose answer carries it is served without its `why` below that contract
-	// (shaping.go's withoutUnadmittedWhy).
+	// four facts originally held it (api.WhyView.State). It arrived beside the line's own fields
+	// and is served down with them.
 	{Answer: AnswerState, KeyPath: "issues.*.why.state", Values: whyStates},
 	// All three words of `architectStalls` arrived with the key at 146, riding its band: no strip.
 	{Answer: AnswerState, KeyPath: "issues.*.architectStalls.*", Values: valuesFrom(entryTimesContract, record.ArchitectTookNothing, record.ArchitectClaimUnreachable, record.ArchitectSlowBeforeGate)},
@@ -550,23 +566,12 @@ var failureCauses = valuesFrom(recordFieldsContract,
 	supervise.CauseStalePlugin, supervise.CausePromptRetiresExhausted, supervise.CauseProviderError,
 	supervise.CauseUnrecorded)
 
-// lineParts is every part of the admission's waiting line a member can stand in. It arrived at
-// whyAndLineFieldsContract, so the list is recorded there. It stays literal: record.LinePart is a
-// numbered constant (`int`) whose words come from its String method, so no string constant of
-// the tree spells them.
+// lineParts is every part of the admission's waiting line a member can stand in, and whyStates
+// holds the four words that arrived with why.state. Both lists arrived at whyAndLineFieldsContract.
+// lineParts stays literal: record.LinePart is a numbered constant (`int`) whose words come from
+// its String method, so no string constant of the tree spells them.
 var lineParts = valuesFrom(whyAndLineFieldsContract, "returned", "starting")
-
-// whyStates is every fact that holds an issue that is not working now. The field arrived at
-// whyAndLineFieldsContract with four words, and its list grew once: `held`, an issue whose work
-// the work hold holds (`gates.hold: work`), arrived at workHoldContract (version.go's 290,
-// WhyHeld). So it is written out value by value, sorted by value, as lineKinds is.
-var whyStates = []EnumeratedValue{
-	{Value: string(WhyBlocked), Since: whyAndLineFieldsContract},
-	{Value: string(WhyClaimStopped), Since: whyAndLineFieldsContract},
-	{Value: string(WhyHeld), Since: workHoldContract},
-	{Value: string(WhyUnlisted), Since: whyAndLineFieldsContract},
-	{Value: string(WhyWaiting), Since: whyAndLineFieldsContract},
-}
+var whyStates = valuesFrom(whyAndLineFieldsContract, WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted)
 
 // lineKinds is every reason a member stands in the waiting line. The field arrived at
 // whyAndLineFieldsContract with four words, and its list grew once: `waiting_on_issue`, a

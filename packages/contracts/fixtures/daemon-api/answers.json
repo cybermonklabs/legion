@@ -181,13 +181,5 @@
     ],
     "since": 228,
     "noBody": false
-  },
-  {
-    "id": "claim-approval",
-    "routes": [
-      "POST /legion/v1/claims/approval"
-    ],
-    "since": 290,
-    "noBody": false
   }
 ]

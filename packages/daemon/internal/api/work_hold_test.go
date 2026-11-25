@@ -24,10 +24,8 @@ func workHeldIssue() Issue {
 		Why: &WhyView{State: WhyHeld, Reason: workHeldReason}}
 }
 
-// workHeldState is the state golden with the held issue beside every answer it already carries.
-func workHeldState(t *testing.T) State {
-	t.Helper()
-	state := populatedState(t)
+// withWorkHeldIssue adds the held issue without changing the original state's issues.
+func withWorkHeldIssue(state State) State {
 	issues := make(map[string]Issue, len(state.Issues)+1)
 	maps.Copy(issues, state.Issues)
 	issues["LEGION-214"] = workHeldIssue()
@@ -35,9 +33,15 @@ func workHeldState(t *testing.T) State {
 	return state
 }
 
+// workHeldState is the state golden with the held issue beside every answer it already carries.
+func workHeldState(t *testing.T) State {
+	t.Helper()
+	return withWorkHeldIssue(populatedState(t))
+}
+
 // whyBeforeTheWorkHold is every word `why.state` takes at the contracts before the work hold's:
 // one word more and that reader refuses the whole state (packages/contracts/src/legion-api.ts's
-// legionWhyView before contract 290).
+// legionWhyView before the work hold entry).
 var whyBeforeTheWorkHold = []WhyState{WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted}
 
 // H36, decision 16: a caller whose plugin is below the contract that added `why: held` reads the
@@ -52,14 +56,10 @@ var whyBeforeTheWorkHold = []WhyState{WhyClaimStopped, WhyWaiting, WhyBlocked, W
 // The record route serves the held issue as the state does, at the contract before and at the
 // contract. The state carries no suspension source on any body a plugin reads
 // (TestNoSessionFacingBodyCarriesSuspendedBy), so `hold` reaches no such caller either.
-//
-// The contract is pinned rather than bounded, as supervise.PodUpdateContract is
-// (TestPodUpdateContractIsTheContractThatIntroducedTheOp): a renumber of version.go's entry that
-// left workHoldContract behind would serve the word to the readers of the contracts between.
 func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
-	if workHoldContract != 290 || workHoldContract > DaemonAPIVersion {
-		t.Fatalf("workHoldContract = %d, want 290, the contract whose entry in version.go added `why: held`, at or below DaemonAPIVersion %d",
-			workHoldContract, DaemonAPIVersion)
+	number := entryNumber(workHoldContract)
+	if number > DaemonAPIVersion() {
+		t.Fatalf("the work hold entry is not registered: number %d, daemon contract %d", number, DaemonAPIVersion())
 	}
 	full := issueViews(t, stateFrom(t, workHeldState(t), "192.0.2.1:41000", podClaims(shapedAnswersContract-1)))
 	if held, _ := full["LEGION-214"]["why"].(map[string]any); held["state"] != string(WhyHeld) {
@@ -76,12 +76,12 @@ func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 		answers bool
 		lines   []string
 	}{
-		{name: "a plugin stating the contract before", remote: statePodAddr + ":41000", claims: DaemonAPIVersion,
-			stated: workHoldContract - 1, answers: true, lines: []string{droppedWhy}},
+		{name: "a plugin stating the contract before", remote: statePodAddr + ":41000", claims: DaemonAPIVersion(),
+			stated: number - 1, answers: true, lines: []string{droppedWhy}},
 		{name: "a pod whose plugin states no contract", remote: statePodAddr + ":41000", claims: shapedAnswersContract - 1,
 			answers: true, lines: []string{droppedWhy}},
 		{name: "a pod below the contract that added why", remote: statePodAddr + ":41000", claims: whyAndLineFieldsContract - 1},
-		{name: "a plugin stating the contract", remote: statePodAddr + ":41000", claims: DaemonAPIVersion, stated: workHoldContract,
+		{name: "a plugin stating the contract", remote: statePodAddr + ":41000", claims: DaemonAPIVersion(), stated: number,
 			held: true, answers: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: 0, held: true, answers: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: shapedAnswersContract - 1, held: true, answers: true},
@@ -95,7 +95,7 @@ func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 				case carries && !tc.answers:
 					t.Errorf("%s carries why %v, which the reader before whyAndLineFieldsContract refuses", key, why)
 				case carries && !tc.held && !slices.Contains(whyBeforeTheWorkHold, WhyState(why["state"].(string))):
-					t.Errorf("%s carries why %v, a word the reader before %d refuses", key, why, workHoldContract)
+					t.Errorf("%s carries why %v, a word the reader before %d refuses", key, why, number)
 				case tc.answers && key != "LEGION-214" && !reflect.DeepEqual(view["why"], full[key]["why"]):
 					t.Errorf("%s's why is %v, want the source's %v: only the held answer is taken", key, view["why"], full[key]["why"])
 				}
@@ -121,13 +121,13 @@ func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 	// The record route answers the issue the state holds for the same caller (shapeIssue): a caller
 	// stating the contract before reads the held issue with no `why`, and one at the contract reads
 	// the source's.
-	records := stateServer(t, workHeldState(t), podClaims(DaemonAPIVersion))
-	for _, contract := range []int{workHoldContract - 1, workHoldContract} {
+	records := stateServer(t, workHeldState(t), podClaims(DaemonAPIVersion()))
+	for _, contract := range []int{number - 1, number} {
 		var record map[string]any
 		if err := json.Unmarshal(recordOf(t, records, "192.0.2.1:41000", "LEGION-214", contract), &record); err != nil {
 			t.Fatalf("decode the record of LEGION-214 at contract %d: %v", contract, err)
 		}
-		if held := contract >= workHoldContract; (record["why"] != nil) != held ||
+		if held := contract == number; (record["why"] != nil) != held ||
 			(held && !reflect.DeepEqual(record["why"], full["LEGION-214"]["why"])) {
 			t.Errorf("the record of LEGION-214 at contract %d carries why %v, want it served %v, as the source's %v",
 				contract, record["why"], held, full["LEGION-214"]["why"])
@@ -136,9 +136,9 @@ func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 
 	// The narrowing writes a copy: the next caller of the same daemon, at the contract, is served
 	// the answer the source gave.
-	handler := stateServer(t, workHeldState(t), podClaims(DaemonAPIVersion))
-	if served := issueViews(t, stateStating(t, handler, statePodAddr+":41000", workHoldContract-1)); served["LEGION-214"]["why"] != nil {
-		t.Fatalf("the caller stating %d is served the held issue's why %v; the copy below proves nothing", workHoldContract-1, served["LEGION-214"]["why"])
+	handler := stateServer(t, workHeldState(t), podClaims(DaemonAPIVersion()))
+	if served := issueViews(t, stateStating(t, handler, statePodAddr+":41000", number-1)); served["LEGION-214"]["why"] != nil {
+		t.Fatalf("the caller stating %d is served the held issue's why %v; the copy below proves nothing", number-1, served["LEGION-214"]["why"])
 	}
 	again := issueViews(t, stateAsked(t, handler, "192.0.2.1:41000"))
 	if !reflect.DeepEqual(again["LEGION-214"]["why"], full["LEGION-214"]["why"]) {

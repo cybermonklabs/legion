@@ -23,7 +23,13 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     # envoy-client's sources, and cipher-client's with them, are the shared read below.
     (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
     (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
-    (f"{FIX}/daemon-api/**", "`packages/pi-legion/extensions/legion.test.ts#/legion-claim-controller in a phase worker's pane calls no daemon route and does not exit` and `packages/pi-legion/extensions/legion.test.ts#launchedController`, `packages/pi-legion/extensions/legion-role-claim.test.ts#registered`, `packages/pi-legion/src/daemon-api-version.test.ts#package.json declares the daemon API contract version the daemon requires`"),
+    (f"{FIX}/daemon-api/**", "`packages/pi-legion/extensions/legion.test.ts#/legion-claim-controller in a phase worker's pane calls no daemon route and does not exit` and `packages/pi-legion/extensions/legion.test.ts#launchedController`, `packages/pi-legion/extensions/legion-role-claim.test.ts#registered`; "
+                             "`packages/pi-legion/src/daemon-api-version.test.ts#package.json names no daemon API contract, and the plugin speaks this tree's` reads released-contracts.json and lists contracts/*.json; "
+                             "and `packages/contracts/src/daemon-contract.ts#lastReleased` and `packages/contracts/src/daemon-contract.ts#entryFixtures` read and list the same two for "
+                             "`packages/contracts/src/daemon-contract.ts#daemonContract` of the committed manifest, which names no contract, as "
+                             "`packages/pi-legion/extensions/legion.ts#PLUGIN_CONTRACT`, `packages/pi-legion/src/claim-session.ts#PLUGIN_CONTRACT` and `packages/pi-legion/src/controller-session.ts#PLUGIN_CONTRACT` "
+                             "and `packages/pi-shared/src/legion-phase-ops.ts#pluginBuildOf` for `packages/pi-legion/src/tools.ts#BUILD` take it when a test imports them, "
+                             "and as the tests' own PLUGIN_CONTRACT takes it"),
     (f"{FIX}/capability-redaction.json", "`packages/pi-legion/src/capability-report.test.ts#redaction`"),
     (f"{FIX}/capability-redaction-plugin-report.json", "`packages/pi-legion/src/capability-report.test.ts#every row passes cleanDetail: each branch that quotes upstream text carries it redacted` and `packages/pi-legion/src/capability-report.test.ts#PLUGIN_REPORT`"),
     ("packages/dispatch/e2e/**", "`packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts#packages/dispatch/e2e/run-server.sh` and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts#packages/pi-legion/scripts/skill-scenarios/seed.ts` names packages/dispatch/e2e/run-server.sh and seed.ts in the checkout it builds, and `packages/pi-legion/scripts/skill-scenarios/seed.ts#../../../dispatch/e2e/api` imports packages/dispatch/e2e/api.ts"),

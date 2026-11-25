@@ -1475,12 +1475,6 @@ func TestWorkHoldShowsWhyInTheState(t *testing.T) {
 	}
 }
 
-// beforeTheWorkHold is the contract before api's workHoldContract (290), the contract whose entry
-// added `why: held`. It is pinned rather than read from api.DaemonAPIVersion, as api's own test of
-// the strip pins it, so the next contract does not make this row read a contract that is served
-// the word.
-const beforeTheWorkHold = 289
-
 // H36: a caller whose plugin is below the contract that added `why: held` reads the state without
 // it, through the state route's own narrowing, while a caller at the contract is served it. The
 // state is the one the record projects, served by the route the daemon serves it from. A plugin
@@ -1488,6 +1482,12 @@ const beforeTheWorkHold = 289
 // contract of the shaped answers (193) does, and the route places it by that; a caller in no pod
 // that states nothing, the operator's `legion state`, is served the daemon's own shape.
 func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
+	entries := api.NumberedEntries()
+	at := slices.IndexFunc(entries, func(entry api.NumberedEntry) bool { return entry.Slug == "approval-route" })
+	if at < 0 {
+		t.Fatal("the approval-route entry is not registered")
+	}
+	workHoldNumber := entries[at].Number
 	rig := newHoldRig(t)
 	rig.close(rig.engine(config.HoldWork), 4)
 	rig.stopsMade(legionStops...)
@@ -1499,9 +1499,9 @@ func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 		remote   string
 		held     bool
 	}{
-		{name: "a pod whose plugin is the contract before", contract: beforeTheWorkHold, stated: true, remote: podAddr + ":41000"},
-		{name: "a pod at the contract", contract: api.DaemonAPIVersion, stated: true, remote: podAddr + ":41000", held: true},
-		{name: "a caller in no pod", contract: beforeTheWorkHold, remote: "192.0.2.1:41000", held: true},
+		{name: "a pod whose plugin is the contract before", contract: workHoldNumber - 1, stated: true, remote: podAddr + ":41000"},
+		{name: "a pod at the contract", contract: workHoldNumber, stated: true, remote: podAddr + ":41000", held: true},
+		{name: "a caller in no pod", contract: workHoldNumber - 1, remote: "192.0.2.1:41000", held: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			token := claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleArchitect))

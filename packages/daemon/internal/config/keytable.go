@@ -563,7 +563,7 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: "projects.<KEY>.experiments.<NAME>", Members: []member{
 		{Name: "mode", Default: "`off`", RequiredBy: "no",
-			Description: "Which of the project's new units the experiment draws: `off` none, `on` every one into `on_variant`, `random` a draw among the variants by weight; the draw is made once and the unit keeps it."},
+			Description: "The arm each of the project's new units is given: `off` no arm, `on` the one `on_variant` names, `random` one drawn among the variants by weight; the draw is made once and the unit keeps it."},
 		{Name: "unit", Default: "`tree`", RequiredBy: "no",
 			Description: "What the experiment draws one at a time: a whole `tree`, or each `issue` on its own."},
 		{Name: "roles", Default: "every issue role", RequiredBy: "no",

@@ -568,15 +568,15 @@ const legionWaitingLineView = z.object({
 
 /** `api.WhyView` — the one rendered answer an issue that is not working now carries: `state`,
  * which of the five facts holds it — its claim has stopped (`claim_stopped`), the work hold holds
- * its tree's work (`held`, `gates.hold: work`, contract 290), it waits in the admission line
+ * its tree's work (`held`, `gates.hold: work`), it waits in the admission line
  * (`waiting`), something holds it where it stands (`blocked`), or it stands in neither the line
  * nor the work at all (`unlisted`) — and `reason`, the sentence a person reads; a `held` issue's
  * names the version that closed its tree's design gate. The projection reads the five in one
  * order over the facts the pass already holds and renders the sentence of whichever holds the
  * issue, so an issue carries one answer and never two. `state` is a `z.enum` for the reason `part`
  * and `kind` above are, and it arrives with the line's own `partPlace` and the rest of its fields
- * at contract 85. `held` is the one word that arrived later, at 290: a caller below 290 is served
- * a `held` issue with no `why` at all (the daemon's `withoutUnadmittedWhy`), since its enum
+ * at contract 85. `held` arrived in entry `20261125163006`. The daemon serves a caller below
+ * that entry's contract a `held` issue without `why` (`withoutUnadmittedWhy`), since its enum
  * refuses the word. */
 const legionWhyView = z.object({
   state: z.enum(["claim_stopped", "held", "waiting", "blocked", "unlisted"]).optional(),
@@ -1769,9 +1769,9 @@ export const LegionReleaseRecordsResponse = z.object({
 
 export type LegionReleaseRecords = z.output<typeof LegionReleaseRecordsResponse>;
 
-/** `api.ClaimApprovalRequest`, the body of `POST /legion/v1/claims/approval` (contract 290): the
- * claim a root architect's session holds, that session, and the claim's secret, as
- * `claims/activity` sends them. The route answers for the claim's own issue alone. */
+/** `api.ClaimApprovalRequest`, the body of `POST /legion/v1/claims/approval` (entry `20261125163006`).
+ * It carries the claim a root architect's session holds, that session, and the claim's secret,
+ * as `claims/activity` does. The route answers for the claim's own issue alone. */
 export const LegionClaimApprovalRequest = z.strictObject({
   claimToken: nonEmptyString,
   sessionId: nonEmptyString,

@@ -1042,10 +1042,6 @@
         "since": 85
       },
       {
-        "value": "held",
-        "since": 290
-      },
-      {
         "value": "unlisted",
         "since": 85
       },
@@ -1972,10 +1968,6 @@
       {
         "value": "claim_stopped",
         "since": 85
-      },
-      {
-        "value": "held",
-        "since": 290
       },
       {
         "value": "unlisted",

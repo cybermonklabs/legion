@@ -1618,15 +1618,24 @@ func (f CheckReport) namedIssue() (string, bool) { return f.Issue, true }
 // look the check stood at when the wake was named, so a row of a look the check has since left
 // starts nothing, and OpenedAt the check instance it was named for, so a row of a check a later
 // merge of the same issue replaced — whose looks count from one again — starts nothing either; a
-// zero OpenedAt names none.
+// zero OpenedAt names none. WakeAt is the wake the row was queued for, so a row whose wake the
+// check no longer records — a failure between looks named the next look later — starts nothing;
+// a zero WakeAt, a row a release before the field queued, is not fenced.
 type CheckWakeDue struct {
 	Issue    string
 	Look     int
 	OpenedAt time.Time
+	WakeAt   time.Time
 	Reason   string
 }
 
 func (f CheckWakeDue) namedIssue() (string, bool) { return f.Issue, true }
+
+// CheckWakeOf is the fact a check_wake row of issue applies when it comes due (the daemon's
+// outbox), made here alone so that every field the row carries reaches the fact.
+func CheckWakeOf(issue string, wake record.CheckWakeDue) CheckWakeDue {
+	return CheckWakeDue{Issue: issue, Look: wake.Look, OpenedAt: wake.OpenedAt, WakeAt: wake.WakeAt, Reason: wake.Reason}
+}
 
 // CheckLookEnded is a look of issue Issue's production check ending with no report: Cause is
 // `look bound` (the check_look row due at the look's bound), `operator hold` (a check start the
