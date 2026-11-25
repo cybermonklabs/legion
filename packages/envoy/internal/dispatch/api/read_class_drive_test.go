@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -71,6 +72,19 @@ const readTime = "the moment the read was answered, which each read takes from i
 // searchTook is why a search's took_ms is volatile: it is how long that search ran.
 const searchTook = "how long the search ran, which each read times on its own clock"
 
+// evalWindowNow is why an eval read's window is volatile: a read that names no `to` reads the
+// window ending at the moment it is answered (parseDeliveryWindow), on its own clock.
+const evalWindowNow = "the default window ends at the moment the read was answered, which each read takes from its own clock"
+
+// evalWindowVolatile is the window of an eval read's answer, which ends at the moment it was
+// answered; evalReadVolatile is that and the refresher's age the list and detail reads state,
+// counted to that moment (evals.RefresherAgeIn).
+var (
+	evalWindowVolatile = []volatileMember{{"window.from", evalWindowNow}, {"window.to", evalWindowNow}}
+	evalReadVolatile   = []volatileMember{{"window.from", evalWindowNow}, {"window.to", evalWindowNow},
+		{"freshness.refresher_age_seconds", "the refresher's age, counted to the moment the read was answered"}}
+)
+
 // postHistoryStatement is the one read of a post's kept bodies (postHistory): the lateral page of
 // post_body_history, in SQL the statement writes itself, which both history rows run on the
 // post the seed corrected once.
@@ -90,6 +104,19 @@ var readRowDrives = map[string]rowDrive{
 		target:    "/api/v1/projects/$relatedProject/related?title=Drive+every+row&text=The+issue+page+lists+every+open+ask",
 		statement: statementOf(`\btext_lexemes\s+as\s*\(`),
 	},
+	// Every project the seed makes holds its evals (the project write seeds them, evals.Store's
+	// EnsureTx); each read counts the page of them, or the versions or the readings of one.
+	"GET /api/v1/projects/{key}/evals": {target: "/api/v1/projects/$project/evals",
+		statement: statementOf(`\bselect\s+count\(\*\)\s+from\s+evals_current\s+where\s+project_key\s*=\s*any\(\$1::text\[\]\)`),
+		volatile:  evalReadVolatile},
+	"GET /api/v1/projects/{key}/evals/{slug}": {target: "/api/v1/projects/$project/evals/" + evals.SlugDeployFrequency,
+		statement: statementOf(`\bfrom\s+eval_versions\s+where\s+eval_id\s*=\s*\$1\s+order\s+by\s+version\s+desc\b`),
+		volatile:  evalReadVolatile},
+	"GET /api/v1/projects/{key}/evals/{slug}/items": {target: "/api/v1/projects/$project/evals/" + evals.SlugDeployFrequency + "/items",
+		statement: statementOf(`\bselect\s+count\(\*\)\s+from\s+eval_readings\s+where\s+eval_id\s*=\s*\$1\s+and\s+superseded_at\s+is\s+null\b`),
+		volatile:  evalWindowVolatile},
+	"GET /api/v1/evals": {target: "/api/v1/evals?project=$project", statement: statementOf(`\bselect\s+key\s+from\s+projects\s+order\s+by\s+key\b`),
+		volatile: evalReadVolatile},
 	"GET /api/v1/settings/repo-projects": {target: "/api/v1/settings/repo-projects", statement: statementOf(`\bfrom\s+repo_projects\s+order\s+by\s+repo\b`)},
 	// The handler asks GitHub; its one statement is the GitHub client's read of the rate limit
 	// GitHub last answered, which it reads before it asks.
