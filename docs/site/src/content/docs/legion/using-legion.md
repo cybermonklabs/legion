@@ -40,8 +40,8 @@ every slot is taken, the issue waits in `todo` for a free slot, in the order the
 A slot is one issue the daemon has started, a root or a child, so a tree of four issues at work
 holds four of them. An issue keeps its slot through a wait on you or on a review, and its
 agents stay live beside it. A started issue that waits on another issue gives its slot back, and
-nothing of its work stops; in `accepting`, `retro` and `merging` an issue holds no slot at all,
-and a step after `accepting` whose phase keeps a slot waits for one again
+nothing of its work stops; in `accepting`, `retro`, `merging` and `verifying` an issue holds no
+slot at all, and a step after `accepting` whose phase keeps a slot waits for one again
 ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
 decides whether to admit it or leave it for you, and parks it only when a person asked for that or
@@ -120,11 +120,11 @@ template, and the later phases fill in their own lines:
 - **Look at first** and **Not proven / risk**: written by Legion's reviewer, or by its implementer
   on a task whose plan has no reviewer step, naming where a wrong decision would hurt and, where
   one stands, a risk.
-- The `after_merge` check, recorded after the merge closes the issue by the role your project's
-  `production_check` names — the tester, unless the setting is `off`, where no production check
-  opens — once your deploy carries the change; its line reads `not yet run` until then, or a `fail`
-  at the check's last look for a requirement only the deploy can show that is still unobserved,
-  whether or not production carries the merge.
+- Each check that runs after the merge, recorded by the role your project's `production_check`
+  names — the tester, unless the setting is `off`, where no production check opens — once your
+  deploy carries the change. Its line reads `not yet run` until then. On the production check's
+  last look, a requirement still unobserved is `pending`, which closes the production check as not
+  run, and one observed as not met is a `fail`.
 - Any line your repository's own instructions derive from the paths the change touches, such as a
   checklist named for each kind of path: after the task's last step, the retro recomputes it for
   the whole change, the way those instructions say.
@@ -150,23 +150,31 @@ The repository's branch protection and code-owner rules decide when it lands: a 
 only you can give is waited for. Legion turns auto-merge on nowhere, approves no pull request on
 your behalf and changes nobody's right to merge.
 
-The merge closes the issue: it moves to `done` the moment GitHub reports the pull request merged.
-A root with work still running beneath it is the exception: its merge is recorded and the issue
-waits until the last other issue of its tree is done or parked, so no child's finished work is cut
-off, and then it closes. Where the issue's task has the architect's acceptance step, the architect
-accepted the change before that (on the default steps, once the reviewer approved it), with a comment on the issue summarizing the evidence, the issue's goal and each requirement of
-its spec among it; the daemon refuses that acceptance while an issue beneath it is still being
-worked, so a parent is accepted after its children. After the close the role your project's
-`production_check` names — the tester, unless the setting is `off` — checks the change in
-production and records what it saw
-as the result of the issue's `after_merge` check, with that result's line on the pull request; a
-closed issue takes a result for such a check or a `default_branch` one, a comment and a message,
-so look in both places.
+The merge does not close the issue by itself. Once GitHub reports the pull request merged, the
+issue moves to `verifying`, with the status `testing`, and holds no slot. It closes when each check
+of its Verification document passes at the newest merge, its production check passes where your
+project runs one, no issue or open child beneath it is in the workflow, no defect waits and no
+next change is open. So a root with work still running beneath it waits there until the rest of
+its tree is done, and no child's finished work is cut off. The issue's document `close-wait.md`
+says what its close waits for: Legion writes it again at each change of the wait, and its last
+version says when the issue closed. A check that fails after the merge, or a failed production
+check, starts the next change of the same issue by itself: a new pull request on the same branch,
+for which nobody asks you to approve the design again. Only a new version of the Verification
+document that you approve removes or rewords a check. Where the issue's task has the architect's
+acceptance step, the architect accepted the change before the merge (on the default steps, once
+the reviewer approved it), with a comment on the issue summarizing the evidence, the issue's goal
+and each requirement of its spec among it; the daemon refuses that acceptance while an issue
+beneath it is still being worked, so a parent is accepted after its children. After the merge the
+role your project's `production_check` names — the tester, unless the setting is `off` — checks
+the change in production and records what it saw as results of the issue's checks that run after
+the merge, with each result's line on the pull request, so look in both places.
 Each look that finds the deploy missing says when it wants to look again; besides that, only the
-check's bound and the retry of a look nobody reported bring it back.
-The tree lingers for three days (`linger_hours`, 72 by default) in case the work resumes: its
-sessions are kept, and under Kubernetes its pods and their disks go at the close, and a re-admission
-makes them afresh.
+check's bound and the retry of a look nobody reported bring it back. On its last look a requirement
+still unobserved is `pending`, which closes the check as not run and leaves the issue open; after
+that, each result recorded for a check without a pass brings it back once more.
+After the close the tree lingers for three days (`linger_hours`, 72 by default) in case the work
+resumes: its sessions are kept, and under Kubernetes its pods and their disks go at the close, and
+a re-admission makes them afresh.
 
 ## Stop, park or rerun
 
@@ -187,7 +195,8 @@ makes them afresh.
 The daemon sets back a status that an agent session of the tree writes on a running issue, with
 one exception. The architect that owns a child can write `done`, `backlog`, `icebox` or `triage`
 on that child, and the daemon takes that write as it takes a person's move: the child leaves the
-workflow. The root's architect owns every issue of its tree, and a child's architect owns the issues
+workflow. Its `done` on a child whose pull request merged is set back: such a child closes by its
+checks. The root's architect owns every issue of its tree, and a child's architect owns the issues
 under its own issue. Every other status that a session of the tree writes is set back: a status
 that moves the workflow, `todo`, any status on the root, any status that a phase worker writes, and
 an architect's status on an issue that it does not own. A root keeps its own rule. Only a person's
@@ -210,7 +219,7 @@ of the phase the issue stands in, at each boot and then every `controller_wake_i
 | `backlog` | a person, the controller, or the architect that owns a child | Should not run now: a person asked for that, for example while it waits on a decision or a deploy. A root also goes here when its work is done, folded into another issue or no longer needed. The architect that owns a child writes `backlog` on it only when a person asked for that, or as the first step of a restart (`backlog`, then `rerun_child`), and it closes a child whose work is done, folded or no longer needed with `done`. Legion does not run it. |
 | `todo` | a person, the controller, or the daemon for a person's handover | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into its first step sets it to `in_progress`. |
 | `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test or a review returns here. A head that conflicts with its base keeps the status it has: until every step of the task has run the implementer merges the base forward, and then the merger does when it merges, while the issue stays in its phase. |
-| `testing` | the daemon | The implementer opened the pull request and finished; the tester is checking the change. |
+| `testing` | the daemon | The implementer opened the pull request and finished; the tester is checking the change. After the merge the issue shows `testing` again while it stands in `verifying`, until its checks pass: its document `close-wait.md` names what its close waits for. |
 | `needs_review` | the daemon | A step that reviews the change runs: Legion's reviewer, or the architect's acceptance, where the task's plan places it. Your GitHub review counts now. |
-| `retro` | the daemon | The task's last step passed: on the default steps, the architect accepted. The issue stays here through retro and the merge — and, for a root whose tree still runs, through the wait between its merge and its close. |
-| `done` | the daemon at the merge, a person, or the architect that owns a child | Finished: the pull request merged, or, for a child, the architect that owns it closed it because its work is done, folded into another issue or no longer needed. A root whose tree is still running waits in `retro` until the last of it is done or out of the workflow, then closes. The production check that your project's `production_check` opens after a merge — the tester's, unless the setting is `off` — follows on the pull request; the tree lingers, then closes. |
+| `retro` | the daemon | The task's last step passed: on the default steps, the architect accepted. The issue stays here through retro and the merge. |
+| `done` | the daemon when the checks pass, a person, or the architect that owns a child whose pull request has not merged | Finished: the pull request merged and the checks of the issue passed, with its production check where your project runs one ([Merge](#merge)), or a person closed it, or, for a child whose pull request has not merged, the architect that owns it closed it because its work is done, folded into another issue or no longer needed. The tree lingers, then closes. |

@@ -149,12 +149,16 @@ business.
    approves), the architect reads the evidence and accepts the change (or sends it back); once the
    plan's last step passes, the retrospective runs. The merger then reads the pull request and merges it
    itself, at the head it read, under a message it writes rather than GitHub's default; it lands
-   under the repository's own rules, and the coordinator closes the issue when it reads that
-   merge: it is Done.
-7. After the close, the role `projects.<KEY>.production_check` names — the tester, by default —
-   drives the change in production and records what it observed on the pull request. The merge
-   itself starts the first look; after that the agent names its own next look on each `pending`
-   report, and nothing a deployment publishes wakes it. A project that sets `off` opens no check.
+   under the repository's own rules. The merge closes nothing by itself: the issue waits for its
+   checks, with the status Testing.
+7. After the merge, the role `projects.<KEY>.production_check` names — the tester, by default —
+   drives the change in production and records what it observed, as results of the issue's checks
+   and on the pull request. The first read of the issue's checks after the merge starts the first
+   look; after that the agent names its own next look on each `pending` report, and nothing a
+   deployment publishes wakes it. A project that sets `off` opens no check.
+8. The coordinator closes the issue when each check of its Verification document passes, with its
+   production check: it is Done. A check that fails after the merge starts the next change of the
+   same issue, a new pull request on the same branch.
 
 Read on in [Legion](/legion/legion/), [Dispatch](/legion/dispatch/) and the
 [Secrets Broker](/legion/broker/).

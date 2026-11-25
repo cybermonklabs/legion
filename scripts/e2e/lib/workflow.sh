@@ -233,10 +233,11 @@ claim_pending_phase() {
 }
 # claim_states_are ISSUE ROLE STATES OTHERS: ISSUE has its six claims, the architect's and the five
 # phase roles', ROLE's in one of the states STATES names (space-separated) and every other in one of
-# OTHERS: how a close leaves an issue, whose production check keeps the role the project's
-# `production_check` names apart from the rest (live at a look, suspended between looks, retired
-# once the check closed). An empty ROLE spares none and holds all six to OTHERS, which is how the
-# close of an issue of a project whose `production_check` is off leaves them.
+# OTHERS: how an issue's claims stand while its production check runs in `verifying`, where the
+# check keeps the role the project's `production_check` names apart from the rest (live at a look,
+# suspended between looks, retired once the check closed) and the move to `verifying` retired no
+# other claim, and how a close leaves them. An empty ROLE spares none and holds all six to OTHERS,
+# which is how a close leaves the six of an issue whose project's `production_check` is off.
 claim_states_are() {
   claims_list | jq -e --arg issue "$1" --arg role "$2" --arg states "$3" --arg others "$4" '
     ($states | split(" ")) as $s | ($others | split(" ")) as $o
@@ -619,7 +620,7 @@ approve_as_reviewer() {
 # inherits the descriptor and holds it until that child exits; between the merge and the clean the
 # run starts none that outlives its step (gh, jq, sleep). A run that finds the lock held names the
 # holder and says every minute how long it has waited, up to 45 minutes (a holder's window spans the
-# close the merge makes and the first look of the production check after it), then fails. Each line
+# move to verifying the merge makes and the first look of the production check after it), then fails. Each line
 # reads the holder from the lock file when it is written, so after a handoff it names the run that
 # holds the lock then, not the one that held it when the wait began.
 smoke_main_lock="/tmp/legion-e2e-smoke-main.${repo//\//-}.lock"
@@ -1234,8 +1235,8 @@ assert_review_of_head() {
   note "the reviewer's round $2 $3 review names $head, the pull request's head, with nothing pushed above it"
 }
 # retro_reported ISSUE: the daemon applied the implementer's retro completion, the one way out of
-# retro.
-retro_reported() { [ -n "$(role_handoff "$1" implementer merging done)" ]; }
+# retro, read while the issue stands in a phase after it: merging, or verifying or done once merged.
+retro_reported() { [ -n "$(role_handoff "$1" implementer merging verifying done)" ]; }
 # assert_round_handoff ISSUE ROUND: the issue reached testing on the implementer's own completion
 # of that implementing round (its pushed tip reported beside its record), never on a push alone.
 assert_round_handoff() {
@@ -1244,24 +1245,40 @@ assert_round_handoff() {
   fi
 }
 
-# ---- the production check after the close ---------------------------------------------------------
+# ---- the production check and the close after the merge -------------------------------------------
 
-# The merge closes the issue (the daemon's read of the merged pull request writes done), and the
-# production check is work after the close, opened only where the project's `production_check`
-# names the role that works it (`off` opens none; `tester` is the key's other word and its
-# default): the daemon opens the check on the merge commit, hands that role its first look, and
-# `legion state --json` shows it as `.issues[KEY].check` (repo, pullRequest, mergeCommit, openedAt,
+# A merge closes nothing by itself: the daemon's read of the merged pull request moves the issue to
+# `verifying` (Dispatch status `testing`), where it stays until the checks of its goal pass, and
+# `legion state --json` shows what its close waits for as `.issues[KEY].closeWait`. Where the
+# project's `production_check` names the role that works it (`off` opens none; `tester` is the
+# key's other word and its default), the close also waits for the production check: the first read
+# of the issue's checks after the merge opens it on the merge commit and hands that role its first
+# look, and the state shows it as `.issues[KEY].check` (repo, pullRequest, mergeCommit, openedAt,
 # role, looks, lookOpen, lastWake{kind, detail, at}, nextWakeAt, last) while it is open, and omits
 # it once it has closed. A look's report is that role's `handoff_complete` with a verdict and no
-# commit: `pending` before the last look ends the look and suspends the role's claim with the
-# issue's Sandbox, so the check stays open with `lookOpen` false. That report carries `wake_at`,
-# when the agent wants its next look, and the daemon starts the next look then (`nextWakeAt`): it
-# is the only thing that starts a look before the bound, since no deploy, no Dispatch notice and
-# no boot of the daemon's own wakes a check any more. A wake at or past the check's bound starts
-# no look of its own, and the bound (`production_check_hours`) starts the last look, whose
-# `pending` closes the check as not_run and retires that role's claim (`issue_close`). Every
-# reader over daemon_state is a jq predicate, so a wait polls it as it polls issue_phase; the
-# readers over daemon.log parse each line on its own, since the log carries the daemon's stderr too.
+# commit: `pending` before the last look ends the look and suspends the role's claim, so the check
+# stays open with `lookOpen` false; in `verifying` the report deletes nothing of the issue's pod,
+# which the idle release frees. That report carries `wake_at`, when the agent wants its next look,
+# and the daemon starts the next look then (`nextWakeAt`): it is the only thing that starts a look
+# before the bound, since no deploy, no Dispatch notice and no boot of the daemon's own wakes an
+# open check. A wake at or past the check's bound starts no look of its own, and the bound
+# (`production_check_hours`) starts the last look, whose `pending` closes the check as not_run and
+# retires that role's claim (`issue_close`). A check closed as not run is no pass, so the issue
+# stays in `verifying`: the close follows the checks. Every reader over daemon_state is a jq
+# predicate, so a wait polls it as it polls issue_phase; the readers over daemon.log parse each
+# line on its own, since the log carries the daemon's stderr too.
+# close_waits ISSUE: the issue stands in `verifying` and the state names what its close waits for
+# (`closeWait`).
+close_waits() {
+  daemon_state | jq -e --arg issue "$1" '.issues[$issue] | .phase == "verifying" and .closeWait != null' >/dev/null
+}
+# tree_lingered TREE: the daemon log records `workflow: tree lingers` for the tree TREE roots, which
+# only the root's close or park writes.
+tree_lingered() {
+  jq -R -s -e --arg tree "$1" \
+    'any(split("\n")[] | fromjson? | select(.msg == "workflow: tree lingers"); .tree == $tree)' \
+    "$evidence/logs/daemon.log" >/dev/null
+}
 # check_open ISSUE: the issue's production check is open.
 check_open() { daemon_state | jq -e --arg issue "$1" '.issues[$issue].check != null' >/dev/null; }
 # check_opened_on ISSUE MERGE: the check is open on the merge commit MERGE, at its first look, still
@@ -1285,9 +1302,10 @@ check_look_reported() {
   daemon_state | jq -e --arg issue "$1" --argjson n "$2" '.issues[$issue].check
     | . != null and .looks == $n and .lookOpen == false' >/dev/null
 }
-# check_closed ISSUE: the check has closed, so the state omits it, and the issue is done. How it
-# closed is the daemon log's (check_closed_as).
-check_closed() { daemon_state | jq -e --arg issue "$1" '.issues[$issue] | .phase == "done" and .check == null' >/dev/null; }
+# check_closed ISSUE: the check has closed, so the state omits it, and the issue still stands in
+# `verifying`: a check closed as not run passes nothing, so the close still waits. How it closed is
+# the daemon log's (check_closed_as).
+check_closed() { daemon_state | jq -e --arg issue "$1" '.issues[$issue] | .phase == "verifying" and .check == null' >/dev/null; }
 # check_closed_as ISSUE OUTCOME: the daemon log records the check's close with OUTCOME (recorded,
 # defect or not_run). daemon.log carries the daemon's stderr too, so each line is parsed on its own.
 check_closed_as() {
@@ -1404,15 +1422,19 @@ expect_failure() {
 }
 # An issue event's payload is the whole issue after the write, so a status write is an event whose
 # status differs from the issue event before it (`issue.closed` for done). Every lifecycle
-# transition must carry the daemon's actor, and all five lifecycle statuses must appear, so the
-# check cannot pass on a history the workflow never wrote.
+# transition must carry the daemon's actor. The four statuses of a merged issue whose close still
+# waits must appear, the last of them `testing`, the daemon's write at the move to `verifying`
+# after the retro, and no `done`: the merge closes nothing, and the issue's production check closed
+# as not run. So the check passes neither on a history the workflow never wrote nor on one in which
+# the merge closed the issue.
 assert_status_actors() {
   local file=$1
   jq -e --arg daemon "legion-daemon:$project" '
     [ .[] | select(.type | IN("issue.created", "issue.updated", "issue.closed")) ] | sort_by(.seq)
     | [ range(1; length) as $i | select(.[$i].payload.status != .[$i - 1].payload.status) | .[$i] ]
     | map(select(.payload.status | IN("in_progress", "testing", "needs_review", "retro", "done")))
-    | (map(.payload.status) | unique) == ["done", "in_progress", "needs_review", "retro", "testing"]
+    | (map(.payload.status) | unique) == ["in_progress", "needs_review", "retro", "testing"]
+      and (map(.payload.status) | last) == "testing"
       and all(.actor.id == $daemon)
   ' "$file" >/dev/null
 }

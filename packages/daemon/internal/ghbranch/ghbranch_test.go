@@ -22,20 +22,31 @@ import (
 
 const baseCommit = "c0ffee0123456789abcdef0123456789abcdef01"
 
-// github is a repository's REST API as Create and DefaultBranch call it: the repository itself,
-// naming defaultBranch, each branch of refs by its exact name, and a create of a ref answered with
-// create's status and body. It records each read and each create; any other request fails the
-// test, so a Create that reads the base's tree, or posts a tree or a commit of its own, is caught
-// by name.
+// github is a repository's REST API as Create, Reset and DefaultBranch call it: the repository
+// itself, naming defaultBranch, each branch of refs by its exact name, a create of a ref answered
+// with create's status and body, a move of a ref answered with patch's (200 when patch is nil), and
+// a compare of two commits answered with the status compared names for "base...head". It records
+// each read, each create, each move and each compare; any other request fails the test, so a Create
+// that reads the base's tree, or posts a tree or a commit of its own, is caught by name.
 type github struct {
 	refs          map[string]string
 	defaultBranch string
 	fullName      string
 	create        func() (int, string)
+	patch         func() (int, string)
+	compared      map[string]string
 	mu            sync.Mutex
 	read          []string
 	creates       []map[string]string
+	patches       []patched
+	compares      []string
 	authorized    []string
+}
+
+// patched is one move of a ref the fake answered: the branch its path named and the body sent.
+type patched struct {
+	branch string
+	body   map[string]any
 }
 
 func (g *github) serve(t *testing.T) string {
@@ -46,6 +57,8 @@ func (g *github) serve(t *testing.T) string {
 		g.mu.Unlock()
 	}, Handle: func(w http.ResponseWriter, r *http.Request) {
 		branch, isRef := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/git/ref/heads/")
+		moved, isMove := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/git/refs/heads/")
+		basehead, isCompare := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/compare/")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets":
 			g.reading(r.URL.Path)
@@ -74,6 +87,31 @@ func (g *github) serve(t *testing.T) string {
 			status, answer := g.create()
 			w.WriteHeader(status)
 			_, _ = io.WriteString(w, answer)
+		case r.Method == http.MethodPatch && isMove:
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode the move: %v", err)
+			}
+			g.mu.Lock()
+			g.patches = append(g.patches, patched{branch: moved, body: body})
+			g.mu.Unlock()
+			status, answer := http.StatusOK, `{}`
+			if g.patch != nil {
+				status, answer = g.patch()
+			}
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, answer)
+		case r.Method == http.MethodGet && isCompare:
+			g.mu.Lock()
+			g.compares = append(g.compares, basehead+"?"+r.URL.RawQuery)
+			g.mu.Unlock()
+			status, found := g.compared[basehead]
+			if !found {
+				t.Errorf("unexpected compare %s", basehead)
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = io.WriteString(w, `{"status":"`+status+`","ahead_by":1,"behind_by":1}`)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)

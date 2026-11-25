@@ -46,6 +46,11 @@ var _ supervise.Store = (*Store)(nil)
 // drop the mark. What the prompt a confirmation answers carried of that news
 // (supervise.Delivery.Carried), and whether that turn's result said it ran (supervise.Delivery.Ran),
 // are read beside both (carried_news and carried_ran, design_news_told.go).
+//
+// Where a next change's first task starts the working copy, and what that start answered
+// (supervise.Delivery.StartAt), is the delivery's start_at, null for every other task: a restart
+// between the queue and the send still starts the working copy first, and one after the start
+// neither moves it again nor loses what moved.
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
 	c.session_file, c.locator, c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
@@ -68,7 +73,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
 	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.design_news, d.carried_news,
-	coalesce(d.carried_ran, false), coalesce(d.news_only, false), d.round_named
+	coalesce(d.carried_ran, false), coalesce(d.news_only, false), d.round_named, d.start_at
 	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
 
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
@@ -751,6 +756,14 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
 	}
 	kept, news, carried := keptDecisions(d.Kept), designNews(d.News), designNews(d.Carried)
+	var startAt []byte
+	if d.StartAt.Set() {
+		encoded, err := json.Marshal(d.StartAt)
+		if err != nil {
+			return fmt.Errorf("put delivery %s on %s: encode its start at the branch: %w", d.ID, token, err)
+		}
+		startAt = encoded
+	}
 	unconfirmed := d.ConfirmedAt.IsZero()
 	if unconfirmed {
 		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
@@ -765,9 +778,9 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		confirmed_at, interrupted, prompted, out_of_memory,
 		send_failures, last_send_failure_at, last_send_error, kept_decisions,
 		provider_error_retries, provider_error_note, design_news, carried_news, carried_ran, news_only,
-		round_named)
+		round_named, start_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22::jsonb, $23::jsonb, $24, $25, $26)
+		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22::jsonb, $23::jsonb, $24, $25, $26, $27::jsonb)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
 		entry = excluded.entry, check_look = excluded.check_look,
@@ -780,12 +793,12 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		provider_error_retries = excluded.provider_error_retries,
 		provider_error_note = excluded.provider_error_note, design_news = excluded.design_news,
 		carried_news = excluded.carried_news, carried_ran = excluded.carried_ran, news_only = excluded.news_only,
-		round_named = excluded.round_named`,
+		round_named = excluded.round_named, start_at = excluded.start_at`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
 		instant(d.ConfirmedAt), d.Interrupted, d.Prompted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
-		d.ProviderErrorRetries, d.ProviderErrorNote, news, carried, d.Ran, d.NewsOnly, d.RoundNamed,
+		d.ProviderErrorRetries, d.ProviderErrorNote, news, carried, d.Ran, d.NewsOnly, d.RoundNamed, startAt,
 	)
 	if err != nil {
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
@@ -918,6 +931,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		retries                     *int64
 		note                        *string
 		roundNamed                  *bool
+		startAt                     []byte
 		stepAt, turnStarted         *time.Time
 		stepStarted, stepEnded      *time.Time
 		reportedAt, reminderAt      *time.Time
@@ -944,7 +958,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
 		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &news, &carried, &ran, &newsOnly,
-		&roundNamed)
+		&roundNamed, &startAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, err
 	}
@@ -1054,6 +1068,12 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			// A delivery a release before this one wrote takes the column's default, false: its
 			// task names no review round (supervise's Delivery.message).
 			RoundNamed: orFalse(roundNamed),
+		}
+		// Null is a task that starts no working copy (putDelivery).
+		if startAt != nil {
+			if err := json.Unmarshal(startAt, &c.Pending.StartAt); err != nil {
+				return supervise.Claim{}, fmt.Errorf("read claim %s: decode its delivery's start at the branch: %w", token, err)
+			}
 		}
 	}
 	return c, nil

@@ -2666,6 +2666,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
 				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
 				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}
+			// The first task of a next change starts the working copy at the branch its merge
+			// moved before it is sent (record.SuperviseRequest.StartAt, supervise.Delivery.StartAt).
+			if at := payload.StartAt; at != nil {
+				task.StartAt = runtime.StartAt{Bookmark: at.Bookmark, Base: at.Base}
+			}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
@@ -4451,7 +4456,8 @@ func (r *outbox) phaseEntry(ctx context.Context, issue string, role claim.Role) 
 // ordering rule, record.Store.DueRows and ClaimRow), so a create GitHub refuses holds back the
 // issue's roles, each attempt logged with GitHub's answer, until one passes. A row of a generation
 // the issue has left, or of a tree that lingers, finishes without acting: the starts it held back
-// act on neither.
+// act on neither. The row of a next change carries where its branch starts (record.IssueBranch.From),
+// and moves the branch there instead (startBranchAtBase).
 func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload record.IssueBranch) error {
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
@@ -4470,6 +4476,9 @@ func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload 
 		r.log.Info("outbox issue branch of a member of a lingering tree; finished without acting", "row", row.ID, "issue", issue.Key, "tree", issue.Tree)
 		return nil
 	}
+	if payload.From != nil {
+		return r.startBranchAtBase(ctx, row, issue, *payload.From)
+	}
 	if err := r.createBranch(ctx, issue); err != nil {
 		return fmt.Errorf("create the branch of %s, which its roles' starts wait for: %w", issue.Key, err)
 	}
@@ -4486,16 +4495,72 @@ func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload 
 func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
 	ctx, cancel := context.WithTimeout(ctx, issueBranchTimeout)
 	defer cancel()
-	recorded, err := issue.Repository()
+	github, repo, err := r.branchClient(ctx, issue)
 	if err != nil {
 		return err
+	}
+	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch)
+}
+
+// branchClient is the implement App's client for the repository GitHub holds issue's under now
+// (serving), which every write of an issue's branch is made as (createBranch, startBranchAtBase).
+func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubrest.Client, ghrepo.Repository, error) {
+	recorded, err := issue.Repository()
+	if err != nil {
+		return githubrest.Client{}, ghrepo.Repository{}, err
 	}
 	repo := r.repositories.serving(recorded)
 	github, err := implementClient(ctx, r.tokens, r.githubAPI, repo)
 	if err != nil {
-		return fmt.Errorf("mint the implement App token for %s: %w", repo, err)
+		return githubrest.Client{}, ghrepo.Repository{}, fmt.Errorf("mint the implement App token for %s: %w", repo, err)
 	}
-	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch)
+	return github, repo, nil
+}
+
+// startBranchAtBase moves the branch of issue's next change to the head of the base its last pull
+// request merged into (ghbranch.Reset), as the implement App, as createBranch writes a branch: from
+// the merged head alone, a missing branch made there, a tip that already holds the base left. A
+// base GitHub no longer has, or one the merge snapshot does not name, is the recorded default
+// branch. A tip that is neither the merged head nor holds the base is left where it stands: its
+// commits are someone's work. The owning architect is told so (`next-change-workspace`), and has
+// the base merged forward before the change's first task, which the start of the working copy
+// also says to its role where the branch is behind the base (supervise's startedNote).
+func (r *outbox) startBranchAtBase(ctx context.Context, row record.OutboxRow, issue record.Issue, from record.BranchFrom) error {
+	base := from.Base
+	if base == "" {
+		base = issue.DefaultBranch
+	}
+	moving, cancel := context.WithTimeout(ctx, issueBranchTimeout)
+	defer cancel()
+	github, repo, err := r.branchClient(moving, issue)
+	if err != nil {
+		return err
+	}
+	result, err := ghbranch.Reset(moving, github, repo, workspace.Bookmark(issue.Key), base, issue.DefaultBranch, from.MergedHead)
+	if err != nil {
+		return fmt.Errorf("move the branch of %s to %s for its next change, which its roles' starts wait for: %w", issue.Key, base, err)
+	}
+	r.log.Info("outbox issue branch of a next change", "row", row.ID, "issue", issue.Key, "outcome", string(result.Outcome),
+		"base", result.Base, "head", result.Head, "tip", result.Tip, "mergedHead", from.MergedHead)
+	if result.Outcome != ghbranch.Left {
+		return nil
+	}
+	notice, err := record.NewOutboxRow(issue.Key, branchLeftNotice(issue.Key, from, result), r.now().UTC())
+	if err != nil {
+		return err
+	}
+	return store.TransactWith(ctx, r.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.Enqueue(ctx, tx, notice)
+	})
+}
+
+// branchLeftNotice is the owning architect's notice of a next change's branch left where it
+// stands (startBranchAtBase): where its tip is, why Legion did not move it, and what to do first.
+func branchLeftNotice(issue string, from record.BranchFrom, result ghbranch.Result) record.Notice {
+	branch := workspace.Bookmark(issue)
+	return record.Notice{Kind: "next-change-workspace", Role: claim.RoleArchitect,
+		Reason: fmt.Sprintf("Legion left branch %s where it stands, at %s. Its tip is not the merged head %s and does not hold the head %s of %s, so Legion did not move it. Merge %s into %s before the next change's first task.",
+			branch, result.Tip, from.MergedHead, result.Head, result.Base, result.Base, branch)}
 }
 
 // removeWorkspace removes the workspace of the row's issue once its tree's linger expired. The

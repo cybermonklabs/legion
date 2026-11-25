@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The read, after the merge, of the step records of one issue a deployed Legion ran to done: it
+# The read, after the close, of the step records of one issue a deployed Legion ran to done: it
 # runs `dispatch steps --issue <ISSUE>` once and prints what the command printed, then runs
 # `dispatch plans --project <PROJECT>` once, <PROJECT> the key's part before its number, and
 # prints the line of <ISSUE> alone, and judges the records by that plan. It reads an issue that is

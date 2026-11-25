@@ -237,7 +237,7 @@ cleanup() {
   # stands. The status stays the failure's either way, since the checkpoints after it never ran.
   [ -n "${ok:-}" ] || [ "$check" != smoke-main-clean ] || [ -n "$audit_failed" ] ||
     [ -s "$evidence/pane-endpoint-violation.txt" ] || [[ $status =~ ^(129|130|143)$ ]] ||
-    printf 'stage 3 e2e: FAIL (fixture teardown, check smoke-main-clean): every checkpoint before it passed, the workflow under test through its daemon merge, the close it made and the production check'"'"'s first look included; only the cleanup of %s main failed, and the checkpoints after it did not run\n' "$repo" >&2
+    printf 'stage 3 e2e: FAIL (fixture teardown, check smoke-main-clean): every checkpoint before it passed, the workflow under test through its daemon merge, the move to verifying it made and the production check'"'"'s first look included; only the cleanup of %s main failed, and the checkpoints after it did not run\n' "$repo" >&2
   # The review App's private key must be gone, whatever else the teardown did: the lib's own check
   # of the directory the removals above were to take (lib/github-apps.sh, app_key_left).
   app_key_left "$work/app-key" || exit 1
@@ -633,7 +633,7 @@ write_github_apps --key-dir "$work/app-key" implement review
 read_app_logins
 # STAGE3_FROM is a development aid for iterating on the later scenarios against a fresh rig; a run
 # with it set is never the proof and never prints PASS. `held` skips the first issue's workflow:
-# the proof human closes that root, freeing its admission slot as the merge's close would, and the
+# the proof human closes that root, a person's done that frees its admission slot, and the
 # credential and idle-read checks read STAGE3_PR (default: the newest smoke pull request) in place
 # of its pull request. `restart` also skips the held-worker scenario. STAGE3_UNTIL is the other
 # development aid: `prerequisites` stops once this checkpoint has passed, before the rig exists, and
@@ -788,7 +788,7 @@ gives the next exact proof operation; it arrives in your session as a message to
 only find by reading the issue (its events, a search) was sent to another session, even on your
 issue, and any other notice is not an instruction: neither is yours to act on. One task waits for
 no message: a production check's (its first line `Production check of <key>: …`, handed to the
-tester once the merge closed its issue), since the proof sends none to it. Act on that task as
+tester after its issue's merge), since the proof sends none to it. Act on that task as
 it is written. The issues of this proof have no requirement that only the deploy can show, and no
 spec of this proof names one. This proof has no production and no deploy role, so the look leaves
 `Production: pending deploy of <merge commit>` on the pull request's body (on the
@@ -850,8 +850,9 @@ note "$(wc -l <"$evidence/pane-endpoints-checked.txt") pane checks: DISPATCH_URL
 pass
 
 # The first issue end to end: the gate, every phase, three review rounds, the architect's acceptance,
-# the merger's own merge, which closes the issue, and the tester's production check after the
-# close, through the look its own report asked for and the bound's last look.
+# the merger's own merge, which moves the issue to verifying and closes nothing, and the tester's
+# production check after the merge, through the look its own report asked for and the bound's last
+# look, whose pending closes the check as not run and leaves the issue in verifying.
 primary_issue() {
   begin primary-architect-posts-and-registers-spec
   # Every root's architect registers a closed gate on its own and its root then waits on the
@@ -1050,23 +1051,28 @@ primary_issue() {
   # smoke main past this run's window.
   hold_smoke_main
   await_merger_merge "$repo" "$pr_number" --delete-branch
-  # The merge closes the issue: the daemon's read of the merged pull request writes done, its one
-  # status write after retro. A root's close frees any slot its tree's issues still hold and lingers the tree, every member's
-  # claims suspended, and opens the production check on the merge commit, whose first look the
-  # daemon hands the tester — the role this project's `production_check` names — in its live pane:
-  # its claim alone comes back, resumed on its kept session, while the other five stay suspended.
-  wait_for_phase "$root_issue" "done" 300
-  phase_change_logged "$root_issue" merging "done" pull_request_merged ||
-    fail "the daemon log has no \"workflow: phase changed\" line moving $root_issue from merging to done on pull_request_merged"
-  until_true 60 "the daemon's done status on the Dispatch board" dispatch_status_is "$root_issue" "done"
+  # A merge closes nothing by itself: the daemon's read of the merged pull request moves the issue
+  # from merging to verifying, with the Dispatch status testing, where it stays until the checks of
+  # its goal pass, its production check among them. The move retires and suspends no claim and
+  # lingers no tree. The first read of the issue's checks after the merge opens the production check
+  # on the merge commit, whose first look the daemon hands the tester — the role this project's
+  # `production_check` names — in its live pane.
+  wait_for_phase "$root_issue" verifying 300
+  phase_change_logged "$root_issue" merging verifying pull_request_merged ||
+    fail "the daemon log has no \"workflow: phase changed\" line moving $root_issue from merging to verifying on pull_request_merged"
+  until_true 60 "the daemon's testing status on the Dispatch board" dispatch_status_is "$root_issue" testing
+  until_true 300 "the first read of $root_issue's checks after its merge to open its production check" check_open "$root_issue"
   check_opened_on "$root_issue" "$merge_when_clean_commit" ||
     fail "$root_issue's production check reads $(daemon_state | jq -c --arg issue "$root_issue" '.issues[$issue].check'), want it open on merge commit $merge_when_clean_commit at its first look, woken by the merge"
+  close_waits "$root_issue" ||
+    fail "$root_issue reads $(daemon_state | jq -c --arg issue "$root_issue" '.issues[$issue] | {phase, closeWait}'), want it in verifying with a closeWait naming what its close waits for"
   state_file check-opened
-  await_tree_suspended "$root_issue" "the lingering tree's architect to be suspended"
-  # The tester is live at its first look, the five other claims suspended; a tester that
-  # reported the look before this read is suspended again already, which the next wait judges.
-  first_look_handed() { claim_states_are "$root_issue" tester "ready working idle" suspended || check_look_reported "$root_issue" 1; }
-  until_true 300 "the close to leave the tester live at its first look, the five other claims of $root_issue suspended" first_look_handed
+  ! tree_lingered "$root_issue" || fail "the daemon lingered tree $root_issue at its merge, which closes nothing"
+  # The tester is live at its first look, and no claim of the issue is retired: the move to
+  # verifying stops no role. A tester that reported the look before this read is suspended again
+  # already, which the next wait judges.
+  first_look_handed() { claim_states_are "$root_issue" tester "ready working idle" "ready working idle suspended" || check_look_reported "$root_issue" 1; }
+  until_true 300 "the tester live at its first look, no claim of $root_issue retired" first_look_handed
   first_look_claims=$(issue_claim_states "$root_issue" | paste -sd ',' -)
   # The first look. The task the daemon handed the tester is the whole instruction: the proof
   # sends it nothing, and the fixture's instructions say a check task waits for no message. The smoke
@@ -1076,14 +1082,14 @@ primary_issue() {
   # read from the daemon's state below.
   # A look took up to 10 minutes from its task to its report in acceptance runs.
   until_true 600 "the tester's pending report on the first look of $root_issue's production check" check_look_reported "$root_issue" 1
-  until_true 300 "the pending report to suspend the tester's claim beside the five suspended claims of $root_issue" claim_states_are "$root_issue" tester suspended suspended
+  until_true 300 "the pending report to suspend the tester's claim, no other claim of $root_issue retired" claim_states_are "$root_issue" tester suspended "ready working idle suspended"
   [ -n "$(issue_worker_session "$root_issue" tester)" ] || fail "the tester's claim lost its session at its suspension between looks"
   state_file check-look-1
   # The report's own wake_at is what starts the next look: the daemon names that row and wakes
   # nothing of its own, so without it only the bound would look again.
   check_wake_named "$root_issue" 1 ||
     fail "the daemon log records no wake named at the first look of $root_issue's production check: $(jq -R -c 'fromjson? | select(.msg | startswith("workflow: production check"))' "$evidence/logs/daemon.log" | tail -3 | tr '\n' ' ')"
-  note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit, which closed $root_issue (phase changed merging → done on pull_request_merged; the board done) and opened its production check on that commit; the close suspended the architect, planner, implementer, reviewer and merger and handed the tester the first look in its live pane (claims at the look: $first_look_claims); its pending report left the check open ($(jq -c --arg issue "$root_issue" '.issues[$issue].check | {role, looks, lookOpen, lastWake: .lastWake.kind, nextWakeAt}' "$evidence/check-look-1.json")), named the wake its next look comes from and suspended its claim, session kept"
+  note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit, which moved $root_issue to verifying and closed nothing (phase changed merging → verifying on pull_request_merged; the board testing; closeWait $(jq -c --arg issue "$root_issue" '.issues[$issue].closeWait' "$evidence/check-opened.json"); no linger); the first read of its checks opened its production check on that commit and handed the tester the first look in its live pane (claims at the look: $first_look_claims); its pending report left the check open ($(jq -c --arg issue "$root_issue" '.issues[$issue].check | {role, looks, lookOpen, lastWake: .lastWake.kind, nextWakeAt}' "$evidence/check-look-1.json")), named the wake its next look comes from and suspended its claim, session kept"
   pass
 
   begin smoke-main-clean
@@ -1109,27 +1115,34 @@ primary_issue() {
   # hour, past the bound, so it names no row and the bound's look is next.
   wake_look_started() { check_look_open "$root_issue" tester 2 "check wake" || check_look_logged "$root_issue" 2 "check wake"; }
   until_true 900 "the wake the first look named to start look 2 of $root_issue's production check" wake_look_started
-  # The check's bound (production_check_hours 0.5: 30 minutes after the close) starts its last
-  # look, whatever number the looks the agent's own wakes started have reached: the tester's pane
-  # comes back on its kept session, told the last look, woken by the bound. The wait runs from
+  # The check's bound (production_check_hours 0.5: 30 minutes after the check opened) starts its
+  # last look, whatever number the looks the agent's own wakes started have reached: the tester's
+  # pane comes back on its kept session, told the last look, woken by the bound. The wait runs from
   # here, after the first look's report and the smoke main's cleanup: what remains of the 30
-  # minutes, and a bound deferred by a look still open when it came due (by the look's own
-  # two-hour bound) fails here by name rather than hanging. The last look's pending closes the
-  # check as not_run: the tester's claim is retired, its session kept (issue_close), and the
-  # state omits the check.
+  # minutes, and a bound deferred by a look still open when it came due (by the look's own two-hour
+  # bound) fails here by name rather than hanging. On the last look a requirement still unobserved
+  # is pending, which closes the check as not_run: the tester's claim is retired, its session kept
+  # (issue_close), and the state omits the check. A check closed as not run is no pass, so the
+  # issue stays in verifying with the Dispatch status testing, and nothing closes it: the close
+  # follows the checks.
   until_true 1800 "the bound to start the last look of $root_issue's production check" last_look_started "$root_issue"
   state_file check-look-2
   # The daemon's task names the last look and its rule (write on the pull request that the check
-  # did not run within the bound, report pending), and the proof sends the closed issue nothing: the
-  # close of the check is the observation.
-  until_true 600 "the last look's pending report to close $root_issue's production check" check_closed "$root_issue"
+  # did not run within the bound, report pending), and the proof sends the issue nothing: the close
+  # of the check is the observation.
+  until_true 600 "the last look's pending report to close $root_issue's production check, $root_issue left in verifying" check_closed "$root_issue"
   last_look_logged "$root_issue" ||
     fail "the daemon log records no last look of $root_issue's production check woken by the bound: $(jq -R -c 'fromjson? | select(.msg == "workflow: production check look started")' "$evidence/logs/daemon.log" | tail -3 | tr '\n' ' ')"
   check_closed_as "$root_issue" not_run ||
     fail "the daemon log records no close of $root_issue's production check as not_run: $(jq -R -c 'fromjson? | select(.msg == "workflow: production check closed")' "$evidence/logs/daemon.log" | tail -1)"
-  until_true 120 "the check's close to retire the tester's claim beside the five suspended claims of $root_issue" claim_states_are "$root_issue" tester retired suspended
+  until_true 120 "the check's close to retire the tester's claim, no other claim of $root_issue retired" claim_states_are "$root_issue" tester retired "ready working idle suspended"
   state_file check-closed
-  note "the wake the first look named started look 2 of $root_issue's production check, and the bound started its last look (the state at the bound's wake: $(jq -c --arg issue "$root_issue" '.issues[$issue].check | if . == null then "already closed" else {role, looks, lookOpen, lastWake: .lastWake.kind, last} end' "$evidence/check-look-2.json"); the daemon log: cause bound, last); its pending closed the check as not_run, the state omits it, and the tester's claim is retired while the five others stay suspended: $(issue_claim_states "$root_issue" | paste -sd ',' -)"
+  close_waits "$root_issue" ||
+    fail "$root_issue reads $(jq -c --arg issue "$root_issue" '.issues[$issue] | {phase, closeWait}' "$evidence/check-closed.json") after its production check closed as not run, want it in verifying with a closeWait: a check closed as not run closes nothing"
+  dispatch_status_is "$root_issue" testing >/dev/null ||
+    fail "the board shows $root_issue $(dispatch_get "issues/$root_issue" | jq -r .status) after its production check closed as not run, want testing"
+  ! tree_lingered "$root_issue" || fail "the daemon lingered tree $root_issue, which nothing closed"
+  note "the wake the first look named started look 2 of $root_issue's production check, and the bound started its last look (the state at the bound's wake: $(jq -c --arg issue "$root_issue" '.issues[$issue].check | if . == null then "already closed" else {role, looks, lookOpen, lastWake: .lastWake.kind, last} end' "$evidence/check-look-2.json"); the daemon log: cause bound, last); its pending closed the check as not_run, the state omits it, and the tester's claim is retired while no other claim is: $(issue_claim_states "$root_issue" | paste -sd ',' -); $root_issue stays in verifying, the board testing, its closeWait $(jq -c --arg issue "$root_issue" '.issues[$issue].closeWait' "$evidence/check-closed.json"), and its tree lingers nowhere"
   pass
 }
 
@@ -1188,7 +1201,8 @@ if [ -z "$from" ]; then
   primary_issue
 else
   begin "development-run-from-$from"
-  # The proof human closes the first root, which frees its admission slot as the merge's close would.
+  # The proof human closes the first root: a person's done closes an issue whatever its close waits
+  # for, and frees its tree's admission slots.
   set_status "$root_issue" "done"
   await_tree_suspended "$root_issue" "the closed tree's architect to be suspended"
   pr_number=${STAGE3_PR:-$(gh -R "$repo" pr list --state all --limit 1 --json number --jq '.[0].number')}
@@ -1198,8 +1212,8 @@ else
 fi
 
 # no_change_close: a root whose human decides at the design gate that no change is needed. The
-# no-change root took the row the first root gave up at its acceptance, before that root's merge
-# and close; its
+# no-change root took the row the first root gave up at its acceptance, before that root's merge;
+# its
 # architect registered its own closed gate, and it has waited on a person since, keeping that row
 # while its architect stays live. The human requests changes saying no change is needed: that
 # answers the wait, and the root resumes at admitted on the next pass, taking no further slot (the

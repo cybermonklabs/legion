@@ -36,6 +36,15 @@ var ErrPromptRefused = errors.New("runtime: the agent refused the prompt")
 // fault the measured incident was.
 var ErrAdoptRefused = errors.New("runtime: the shim refused to adopt the working copy")
 
+// ErrStartAtRefused is the agent's shim answering StartAtBranch with `ok: false`: the working copy
+// could not be started at the issue's branch — a bookmark in conflict, a fetch that failed, a jj
+// that ran out of its time — and a shim built before the start, whose Oh My Pi refuses the frame as
+// an unknown command. StartAtBranch wraps it for a refusal and for nothing else. The supervisor
+// charges it nothing and holds the task: what resolves it is a person's or the owning architect's
+// act on the bookmark, which a charge that fails the claim would not wait for, and the architect is
+// told once with the refusal's words.
+var ErrStartAtRefused = errors.New("runtime: the shim refused to start the working copy at the branch")
+
 // ErrIdentityUnavailable is the daemon failing to mint the role's GitHub App identity for the
 // working copy it is about to adopt: supervise's Machine.adopt wraps it around the error its
 // Identity dep gave, and around nothing else. Like a lost frame it is charged nothing — the token
@@ -107,6 +116,9 @@ type Conn interface {
 	// AdoptWorkingCopy makes the agent's side set the author of its working copy, for a
 	// workspace the daemon cannot reach itself.
 	AdoptWorkingCopy(ctx context.Context, id GitIdentity, timeout time.Duration) error
+	// StartAtBranch makes the agent's side start the working copy of its workspace at the
+	// issue's branch, within timeout, and answers what it did (Runtime.StartAtBranch).
+	StartAtBranch(ctx context.Context, at StartAt, timeout time.Duration) (StartedAt, error)
 	// Compact asks Oh My Pi to compact its session's context, writing the summary to
 	// customInstructions, and returns when it answers or bound runs out. Nil is a session
 	// compacted. A compaction Oh My Pi refused or skipped — a session too small, one already

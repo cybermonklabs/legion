@@ -2877,6 +2877,7 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
+	"next-change-workspace",
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left

@@ -150,6 +150,21 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			AdoptWorkingCopyResult{ID: "r4", OK: false, Error: "no workspace"},
 		},
 		{
+			"start-at-branch",
+			`{"type":"start-at-branch","id":"s1","bookmark":"legion/ACME-1","base":"main","timeoutMs":120000}`,
+			StartAtBranch{ID: "s1", Bookmark: "legion/ACME-1", Base: "main", TimeoutMs: 120_000},
+		},
+		{
+			"start-at-branch-result",
+			`{"type":"start-at-branch-result","id":"s1","ok":true,"moved":true,"from":"` + strings.Repeat("a", 40) + `","at":"` + strings.Repeat("b", 40) + `","behindBase":true}`,
+			StartAtBranchResult{ID: "s1", OK: true, Moved: true, From: strings.Repeat("a", 40), At: strings.Repeat("b", 40), BehindBase: true},
+		},
+		{
+			"failed start-at-branch-result",
+			`{"type":"start-at-branch-result","id":"s1","ok":false,"error":"Bookmark legion/ACME-1 is conflicted.","moved":false,"behindBase":false}`,
+			StartAtBranchResult{ID: "s1", Error: "Bookmark legion/ACME-1 is conflicted."},
+		},
+		{
 			"rpc_chunk",
 			`{"type":"rpc_chunk","chunkId":"agent-end-1","index":0,"count":2,"byteLength":1048577,"data":"eA=="}`,
 			RPCChunk{ChunkID: "agent-end-1", Index: 0, Count: 2, ByteLength: 1_048_577, Data: "eA=="},
@@ -543,6 +558,50 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 	}{
 		{"no trimmer", LauncherVolumeReport{Episode: 1, RaisedBy: VolumeEpisodeFirst}},
 		{"an episode below the first", LauncherVolumeReport{Trimmer: report.Trimmer, RaisedBy: VolumeEpisodeFirst}},
+	} {
+		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
+			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
+		}
+	}
+}
+
+// The daemon is the one sender of a start at the branch, and the shim the one writer of its answer,
+// so a malformed one is a bug to name. The answer's two commits come from the role's jj and go into
+// the task the daemon sends, so each must be a commit id and nothing else.
+func TestStartAtBranchFramesRefuseTheirMalformedForms(t *testing.T) {
+	if err := (StartAtBranch{ID: "s1", Bookmark: "legion/ACME-1", Base: "main", TimeoutMs: 1}).Validate(); err != nil {
+		t.Fatalf("StartAtBranch.Validate: %v", err)
+	}
+	for _, tc := range []struct {
+		name  string
+		frame StartAtBranch
+	}{
+		{"no id", StartAtBranch{Bookmark: "legion/ACME-1", Base: "main", TimeoutMs: 1}},
+		{"no bookmark", StartAtBranch{ID: "s1", Base: "main", TimeoutMs: 1}},
+		{"no base", StartAtBranch{ID: "s1", Bookmark: "legion/ACME-1", TimeoutMs: 1}},
+		{"no timeout", StartAtBranch{ID: "s1", Bookmark: "legion/ACME-1", Base: "main"}},
+	} {
+		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
+			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
+		}
+	}
+	commit := strings.Repeat("c", 40)
+	for _, good := range []StartAtBranchResult{
+		{ID: "s1", OK: true, Moved: true, From: commit, At: commit},
+		{ID: "s1", Error: "Bookmark legion/ACME-1 is conflicted."},
+	} {
+		if err := good.Validate(); err != nil {
+			t.Fatalf("StartAtBranchResult %+v: Validate = %v", good, err)
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		frame StartAtBranchResult
+	}{
+		{"no id", StartAtBranchResult{OK: true, From: commit, At: commit}},
+		{"a refusal with no reason", StartAtBranchResult{ID: "s1"}},
+		{"no commit before", StartAtBranchResult{ID: "s1", OK: true, At: commit}},
+		{"a commit after that is no commit id", StartAtBranchResult{ID: "s1", OK: true, From: commit, At: "main; rm -rf /"}},
 	} {
 		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
 			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
