@@ -2758,6 +2758,63 @@ func (f blockFirst) maker() ([]model.Actor, *time.Time, error) {
 	return authors, f.createdAt, nil
 }
 
+// zeroActorSQL recognizes the recorded encoding of model.Actor{}, and the empty object
+// in older rows. A SQL null is a missing row, not a stored zero actor.
+func zeroActorSQL(column string) string {
+	return `coalesce(` + column + ` in ('{"kind":"","id":""}'::jsonb, '{}'::jsonb), false)`
+}
+
+// roomBlockMakerJoin probes, for a block of an artifact of kind tree, the block's graph_nodes row
+// by primary key for whether made_by is the zero actor and its made_at. For a non-tree artifact
+// the probe stops at artifacts' primary key and answers nulls.
+func roomBlockMakerJoin(room, address string) string {
+	return `left join lateral (
+		select ` + zeroActorSQL("n.made_by") + ` as zero_maker, n.made_at
+		from (select id from artifacts where id = ` + room + ` and kind = 'tree' offset 0) tree
+		cross join lateral (
+			select n.made_by, n.made_at from graph_nodes n
+			where n.kind = '` + BlockNodeKind + `' and n.id = ` + address + ` and tree.id = ` + room + `
+			limit 1
+		) n
+		limit 1
+	) maker on true`
+}
+
+// blockMaker resolves a block node's MadeBy and MadeAt by one rule across the walk
+// (readBlockNodeRows), the removed-block read (RemovedBlockNode) and the head projection
+// (HeadRow.BlockNode):
+//
+// For a block whose document_blocks row is a tree artifact's and whose node the store holds
+// (treeBlock && nodeMadeAt != nil):
+//  1. authors is the node's current authored_by actors in seq order (recorded), or [] when none.
+//  2. Where the node's made_by is the zero actor (zeroMaker): MadeBy is authors, MadeAt is nil.
+//  3. Else, where it states an authored_by (recorded != nil): MadeBy is authors, MadeAt is nodeMadeAt.
+//  4. Else (states no authored_by and holds a maker, such as a decision): first.maker().
+//
+// For every other block (a document that is not a tree artifact, or a block with no stored node):
+// first.maker(), with MadeBy replaced by storedActors(recorded) when recorded != nil.
+func blockMaker(treeBlock bool, nodeMadeAt *time.Time, zeroMaker bool, recorded []byte, first blockFirst) ([]model.Actor, *time.Time, error) {
+	if treeBlock && nodeMadeAt != nil {
+		if zeroMaker {
+			authors, err := storedActors(recorded)
+			return authors, nil, err
+		}
+		if recorded != nil {
+			authors, err := storedActors(recorded)
+			return authors, nodeMadeAt, err
+		}
+		return first.maker()
+	}
+	madeBy, madeAt, err := first.maker()
+	if err != nil {
+		return nil, nil, err
+	}
+	if recorded != nil {
+		madeBy, err = storedActors(recorded)
+	}
+	return madeBy, madeAt, err
+}
+
 // RemovedBlockNode is the node nodeID of block blockID of document (its resolved artifact node),
 // which no current version holds since version removedVersion deleted it, built as loadBlockNodes
 // builds a current block's but with no text or changed version: made as a current block is
@@ -2775,20 +2832,29 @@ func RemovedBlockNode(ctx context.Context, q Queryer, document model.GraphNode, 
 	var removedAt *time.Time
 	var held *int
 	var stored StoredNode
+	var recorded []byte
+	var roomZeroMaker *bool
+	var roomMadeAt *time.Time
 	documentID := document.ID
 	storedJoin, storedColumns := storedNode(BlockNodeKind, "$4")
 	if err := q.QueryRow(ctx, `
 		select `+blockFirstColumns("first")+`, removed.authors, removed.created_at,
 		       `+indexedBelowSQL("b.artifact_id", "$3")+`,
-		       `+storedColumns+`
+		       `+storedColumns+`, maker.zero_maker, maker.made_at,
+		       (select jsonb_agg(held.who order by held.seq)
+		        from (`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.who, t.seq, t.asserted`,
+		`t.from_kind = 'block' and t.from_id = $4 and t.kind = 'authored_by' and t.to_kind <> 'value'`)+`
+		        ) held where held.asserted and maker.made_at is not null)
 		from (select $1::uuid as artifact_id, `+DocumentRoomSQL("$1::uuid")+` as room, $2::text as block_id) b
 		`+blockFirstVersionOr("first", "b.room", "b.block_id", "b.artifact_id")+`
 		left join artifact_versions removed on removed.artifact_id = b.artifact_id and removed.number = $3
 		`+storedJoin+`
-	`, documentID, blockID, removedVersion, nodeID).Scan(append(first.targets(), &removedBy, &removedAt, &held, &stored.State, &stored.Visibility)...); err != nil {
+		`+roomBlockMakerJoin("b.room", "$4")+`
+	`, documentID, blockID, removedVersion, nodeID).Scan(append(first.targets(), &removedBy, &removedAt, &held, &stored.State, &stored.Visibility, &roomZeroMaker, &roomMadeAt, &recorded)...); err != nil {
 		return model.GraphNode{}, fmt.Errorf("read the facts of removed block %q of %s: %w", blockID, documentID, err)
 	}
-	madeBy, madeAt, err := first.maker()
+	zeroMaker := roomZeroMaker != nil && *roomZeroMaker
+	madeBy, madeAt, err := blockMaker(roomMadeAt != nil, roomMadeAt, zeroMaker, recorded, first)
 	if err != nil {
 		return model.GraphNode{}, fmt.Errorf("decode the maker of removed block %q of %s: %w", blockID, documentID, err)
 	}

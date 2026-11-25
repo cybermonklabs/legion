@@ -1480,13 +1480,18 @@ func (s *Service) Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger
 // whose transaction is one issue's restore and no more: a background pass under the step's own
 // advisory lock (takeRestoreLock) whose reads must see its own writes - an ask row it moved, a
 // version it wrote before the event that names it, a node it stated - and which no request waits
-// on, as the block-id backfill is (backfillBlockIDs). Every other caller joins with Join.
+// on, as the block-id backfill is (backfillBlockIDs). The issue room conversion also joins this way:
+// its final writes queue together once its earlier steps have run (queueRemainingWrites).
 //
 // kept for one release: decisions-step
 func (s *Service) joinAtOnce(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger) {
 	ledger := &Ledger{service: s, tx: tx}
 	return withLedger(ctx, ledger), ledger
 }
+
+// queueRemainingWrites switches an immediate ledger to queued writes. The preceding writes
+// are already visible inside the transaction. Commit runs the remaining writes as one batch.
+func (l *Ledger) queueRemainingWrites() { l.writer = l.tx }
 
 // inTransaction reports whether the operations recording into l run inside an open database
 // transaction that this ledger knows about: one a caller joined, or a writer's own, a

@@ -59,6 +59,10 @@ type HeadRow struct {
 	// stored is, for a row that holds an Item, the graph_nodes row's state and visibility as a
 	// loader selects them (StoredRowOf), each nil where the store holds no row of the node.
 	stored StoredNode
+	// zeroMaker says the node's graph_nodes.made_by is the zero actor; treeBlock says the block's
+	// document_blocks row belongs to an artifact of kind tree (readHeadDocuments).
+	zeroMaker bool
+	treeBlock bool
 }
 
 // HeadItem is what a head row holds of a comment's row (issue_head_nodes' item_ columns), as the
@@ -100,9 +104,9 @@ type HeadItem struct {
 // visibility and its document, and none of its text, its authors, its document_blocks row or its
 // other values and relations. Of every other row it sends all of them, but the text sum and the
 // changed version of a block only where a check may type it (headCheckSQL), and the authors of the
-// version that first held a block only where the block states no authored_by of its own, whose
-// authors are its maker (HeadRow.BlockNode). Of a comment and of a current block of one it sends
-// the conversation columns too (headItemSQL).
+// version that first held a block only where the block states no authored_by of its own
+// (HeadRow.BlockNode's fallback). It also sends a boolean for a block node's zero maker.
+// Of a comment and of a current block of one it sends the conversation columns (headItemSQL).
 //
 // The test is a column of the rows, computed once a row in a subquery Postgres keeps (`offset
 // 0`): as a lateral it was inlined into each column that reads it, and run fourteen times a row.
@@ -120,6 +124,7 @@ func headRowsStatement(rows string) string {
 	       case when not heads.prose and heads.authors is null then heads.first_authors end, ` + whole(`heads.first_at`) + `,
 	       heads.document_id::text, ` + whole(`heads.block_type`) + `, ` + checked(`heads.text_sha256`) + `, ` + checked(`heads.changed_version`) + `,
 	       heads.made_at is null or ` + VisibleKindRow(BlockNodeKind, "heads", "$2") + `,
+	       case when not heads.prose and heads.document_id is not null then ` + zeroActorSQL("heads.made_by") + ` else false end,
 	       case when not heads.prose then heads.value_kinds when ` + state + ` = any(heads.value_kinds) then array[` + state + `] else '{}' end,
 	       case when not heads.prose then heads.value_texts
 	            when ` + state + ` = any(heads.value_kinds) then array[heads.value_texts[array_position(heads.value_kinds, ` + state + `)]]
@@ -207,16 +212,17 @@ const headCheckSQL = `(heads.supertag = '` + graphstore.BlockTypeCheck + `' or p
 
 // headDocumentsStatement is, of each document $1 names, its slug, its issue and its band, and what a
 // conversation item's node reads of its document (documentColumns: its project, its session, its
-// kind and whether it is primary); and of each issue $2 names, its project: the documents the head
-// rows of a read name, by their blocks' rows and by their comments' and comment blocks' items
+// kind and whether it is primary), plus whether its blocks are in a tree artifact. It also reads
+// the project of each issue $2 names. The documents and issues come from the head rows
 // (HeadItem), and the issues those items belong to, each read by its key once. The two were two
 // statements, the second sent by the read of the comment page (ConversationPageNodesOfHeads).
 var headDocumentsStatement = `
-	select 'artifact', a.id::text, a.slug, a.issue_key, ` + DocumentBandSQL("a") + `, a.project_key, a.session_id, a.kind, a.is_primary
+	select 'artifact', a.id::text, a.slug, a.issue_key, ` + DocumentBandSQL("a") + `, a.project_key, a.session_id, a.kind, a.is_primary,
+	       a.kind = 'tree' or exists (select 1 from document_rooms r where r.artifact_id = a.id)
 	from artifacts a
 	where a.id = any($1::uuid[])
 	union all
-	select 'issue', i.key, null, null, null, i.project_key, null, null, null
+	select 'issue', i.key, null, null, null, i.project_key, null, null, null, false
 	from issues i
 	where i.key = any($2::text[])`
 
@@ -344,7 +350,7 @@ func HeadRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, 
 		var valueKinds, valueTexts, relationKinds, relationToKinds, relationToIDs []string
 		destinations := []any{&head.Node.Kind, &head.Node.ID, &parentKind, &parentID, &head.Rank, &head.Text,
 			&head.Stored, &head.Supertag, &state, &visibility, &madeAt, &head.Authors, &head.FirstAuthors, &head.FirstAt,
-			&document, &blockType, &textSHA256, &changedVersion, &head.Seen}
+			&document, &blockType, &textSHA256, &changedVersion, &head.Seen, &head.zeroMaker}
 		if plans == nil {
 			plans = make([]pgtype.ScanPlan, len(destinations))
 			for index, destination := range destinations {
@@ -460,7 +466,7 @@ func drainHeadRows(rows pgx.Rows) ([]pgconn.FieldDescription, [][][]byte, error)
 
 // headFirstArray is the column of headRowsStatement's first text[], value_kinds, which the four
 // others follow: value_texts, relation_kinds, relation_to_kinds and relation_to_ids.
-const headFirstArray = 19
+const headFirstArray = 20
 
 // headArraysAsText asks Postgres for the head rows' text arrays in its text form, and every column
 // of another type that a client reads apart from its text - timestamps, booleans, integers, jsonb
@@ -613,17 +619,22 @@ func readHeadDocuments(ctx context.Context, q Queryer, issueKey string, read []H
 		return nil, fmt.Errorf("read the documents of the head rows of %s: %w", issueKey, err)
 	}
 	bands := make(map[string]string, len(documents))
+	inTree := make(map[string]bool, len(documents))
 	for rows.Next() {
 		var kind, id string
 		var band *string
 		var owner headItemOwner
-		if err := rows.Scan(&kind, &id, &owner.slug, &owner.issueKey, &band, &owner.project, &owner.session, &owner.kind, &owner.primary); err != nil {
+		var treeDoc bool
+		if err := rows.Scan(&kind, &id, &owner.slug, &owner.issueKey, &band, &owner.project, &owner.session, &owner.kind, &owner.primary, &treeDoc); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read a document of the head rows of %s: %w", issueKey, err)
 		}
 		owners[[2]string{kind, id}] = owner
 		if band != nil {
 			bands[id] = *band
+		}
+		if treeDoc {
+			inTree[id] = true
 		}
 	}
 	rows.Close()
@@ -645,6 +656,7 @@ func readHeadDocuments(ctx context.Context, q Queryer, issueKey string, read []H
 			row.Band = band[0]
 		}
 		head.Block = &row
+		head.treeBlock = inTree[block.row.Document]
 	}
 	return owners, nil
 }
@@ -792,13 +804,13 @@ func (head *HeadRow) BlockNode() (node ExcerptedNode, seen, ok bool, err error) 
 	first := blockFirst{authors: head.FirstAuthors, createdAt: head.FirstAt}
 	known := head.FirstAt != nil || head.FirstAuthors != nil
 	first.known = &known
-	if built.MadeBy, built.MadeAt, err = first.maker(); err != nil {
-		return ExcerptedNode{}, false, false, fmt.Errorf("decode the maker of block %s: %w", head.Node.ID, err)
+	var nodeMadeAt *time.Time
+	if head.Stored {
+		madeAt := head.MadeAt
+		nodeMadeAt = &madeAt
 	}
-	if head.Authors != nil {
-		if built.MadeBy, err = storedActors(head.Authors); err != nil {
-			return ExcerptedNode{}, false, false, fmt.Errorf("decode the authors block %s records: %w", head.Node.ID, err)
-		}
+	if built.MadeBy, built.MadeAt, err = blockMaker(head.treeBlock, nodeMadeAt, head.zeroMaker, head.Authors, first); err != nil {
+		return ExcerptedNode{}, false, false, fmt.Errorf("decode the maker of block %s: %w", head.Node.ID, err)
 	}
 	stored := StoredNode{}
 	if head.Stored {

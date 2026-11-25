@@ -1,12 +1,13 @@
 package docs
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -14,6 +15,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // unconvertedIssue is an issue of the test store as the release before the issue room stores it
@@ -140,6 +143,15 @@ func TestTheConversionConvertsAnIssueWholeOrNotAtAll(t *testing.T) {
 	issue := createUnconvertedIssue(t, database, service, 1, "",
 		"The spec's opening paragraph.\n\n:::requirement{#r1}\nThe requirement.\n:::\n",
 		"The verification's paragraph.\n", "The plan's paragraph.\n")
+	// Advance the old room's cursor without changing any text.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into doc_updates (artifact_id, version, update, content_changed)
+		select $1::uuid, head.version + n, $2, false
+		from (select max(version) as version from doc_updates where artifact_id = $1::uuid) head
+		cross join generate_series(1, 8) n
+	`, issue.spec, emptyUpdateV1); err != nil {
+		t.Fatal(err)
+	}
 	for _, statement := range []string{
 		`create function conversion_refuses_the_spec() returns trigger language plpgsql as $$
 		begin
@@ -188,14 +200,21 @@ func TestTheConversionConvertsAnIssueWholeOrNotAtAll(t *testing.T) {
 	for _, document := range []string{issue.spec, issue.verification, issue.plan} {
 		var number int
 		var markdown string
+		var cursor int64
+		var seedExists bool
 		if err := database.Pool.QueryRow(ctx, `
-			select number, markdown from artifact_versions where artifact_id = $1 order by number desc limit 1
-		`, document).Scan(&number, &markdown); err != nil {
+			select v.number, v.markdown, v.doc_update_version,
+			       exists (select 1 from doc_updates u where u.artifact_id = $2 and u.version = v.doc_update_version)
+			from artifact_versions v where v.artifact_id = $1 order by v.number desc limit 1
+		`, document, tree).Scan(&number, &markdown, &cursor, &seedExists); err != nil {
 			t.Fatalf("read the newest version of %s: %v", document, err)
 		}
 		if number != 2 || markdown != issue.markdown[document] {
 			t.Errorf("the newest version of %s is %d holding %q, want the conversion's version 2 holding the text its room held, %q",
 				document, number, markdown, issue.markdown[document])
+		}
+		if cursor != 1 || !seedExists {
+			t.Errorf("version %d of %s points at update %d (exists in the new room: %t), want the seed at 1", number, document, cursor, seedExists)
 		}
 	}
 	old := refs.BlockAddress(graphstore.ArtifactRefKey(issue.key, "DOC", "", "spec"), "r1")
@@ -295,63 +314,180 @@ func TestTheConversionWritesItsRowInTheIssuesRecord(t *testing.T) {
 // each, and a later tick takes neither again.
 func TestTheIssueRoomStepConvertsOnlyWhileEveryLiveProcessListsTheIssueRoom(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	database := storetest.Open(t)
-	service := newTestServiceOn(t, database)
-	inFlight := createUnconvertedIssue(t, database, service, 1, "", "The spec in flight.\n", "Its verification.\n", "Its plan.\n")
-	done := createUnconvertedIssue(t, database, service, 2, "", "The done spec.\n", "Its verification.\n", "Its plan.\n")
-	if _, err := database.Pool.Exec(ctx, `update issues set status = 'done', closed_at = now() where key = $1`, done.key); err != nil {
-		t.Fatalf("close %s: %v", done.key, err)
-	}
+	t.Run("backfill and convert in key order", func(t *testing.T) {
+		ctx, database, issue, exec, step, tick, logged := issueRoomStepFixture(t)
+		second, first, done := issue(2), issue(1), issue(3)
+		exec(`update issues set status = 'done', closed_at = now() where key = $1`, done.key)
+		instance := issueRoomOldProcess(ctx, database)
+		if instance == "" {
+			t.Fatal("no earlier process was inserted")
+		}
+		tick(step)
+		requireUnconverted(t, database, first)
+		requireUnconverted(t, database, second)
+		if !strings.Contains(logged.String(), instance) || !strings.Contains(logged.String(), "an-earlier-build") {
+			t.Fatalf("blocked tick did not log the earlier process: %s", logged.String())
+		}
+		exec(`insert into issue_links (issue_key, kind, target_key) values ($1, 'blocked_by', $2)`, first.key, done.key)
+		exec(`delete from server_processes where instance = $1`, instance)
+		tick(step)
+		treeOfIssue(t, database, first.key)
+		treeOfIssue(t, database, second.key)
+		requireUnconverted(t, database, done)
+		if count := conversionCount(t, database, "backfilled issue links", `
+			select count(*) from issue_links where issue_key = $1 and target_key = $2 and node_address is not null`,
+			first.key, done.key); count != 1 {
+			t.Fatalf("the step backfilled %d issue links, want 1", count)
+		}
+		firstLog := strings.Index(logged.String(), "issue="+first.key+" ")
+		secondLog := strings.Index(logged.String(), "issue="+second.key+" ")
+		if firstLog < 0 || secondLog <= firstLog || strings.Count(logged.Lines("the issue is done"), "\n") != 1 {
+			t.Fatalf("the step did not convert %s then %s and pass over %s: %s", first.key, second.key, done.key, logged.String())
+		}
+		tick(step)
+		if strings.Count(logged.Lines("converted an issue"), "\n") != 2 || strings.Count(logged.Lines("the issue is done"), "\n") != 1 {
+			t.Fatalf("the later tick did not leave the settled issues alone: %s", logged.String())
+		}
+	})
+
+	t.Run("a process joins between issues", func(t *testing.T) {
+		_, database, issue, exec, step, tick, logged := issueRoomStepFixture(t)
+		first, second := issue(1), issue(2)
+		var instance string
+		step.gate = func(ctx context.Context, tx pgx.Tx) error {
+			if err := IssueRoomGate(ctx, tx); err != nil {
+				return err
+			}
+			if instance == "" {
+				instance = issueRoomOldProcess(ctx, database)
+				if instance == "" {
+					return fmt.Errorf("insert the earlier process")
+				}
+			}
+			return nil
+		}
+		tick(step)
+		treeOfIssue(t, database, first.key)
+		requireUnconverted(t, database, second)
+		if !strings.Contains(logged.String(), instance) {
+			t.Fatalf("the second issue's gate did not log the earlier process: %s", logged.String())
+		}
+		exec(`delete from server_processes where instance = $1`, instance)
+		tick(step)
+		treeOfIssue(t, database, second.key)
+	})
+
+	t.Run("failed conversion waits for next boot", func(t *testing.T) {
+		_, database, issue, exec, step, tick, logged := issueRoomStepFixture(t)
+		failed, other := issue(1), issue(2)
+		exec(`create function reject_join() returns trigger language plpgsql as $$
+			begin if new.artifact_id = '` + failed.spec + `'::uuid then raise exception 'join refused'; end if; return new; end $$`)
+		exec(`create trigger reject_join before insert on document_rooms for each row execute function reject_join()`)
+		tick(step)
+		requireUnconverted(t, database, failed)
+		treeOfIssue(t, database, other.key)
+		if strings.Count(logged.Lines("join refused"), "\n") != 1 {
+			t.Fatalf("the step did not log the failing issue: %s", logged.String())
+		}
+		exec(`drop trigger reject_join on document_rooms`)
+		tick(step)
+		requireUnconverted(t, database, failed)
+		tick(NewIssueRoomStep(step.service, database, step.logger))
+		treeOfIssue(t, database, failed.key)
+	})
+
+	t.Run("only the deferred issue waits", func(t *testing.T) {
+		_, database, issue, exec, step, tick, logged := issueRoomStepFixture(t)
+		deferred, other, unrelated := issue(1), issue(2), issue(3)
+		exec(`update issues set status = 'done', closed_at = now() where key = $1`, unrelated.key)
+		exec(`update document_block_versions set store_owed_at = now(), store_owed_rule = $2
+			where artifact_id = $1`, deferred.plan, refs.BlockIndexMarkingRule)
+		exec(`update document_block_versions set version = null where artifact_id = $1`, unrelated.spec)
+		tick(step)
+		requireUnconverted(t, database, deferred)
+		treeOfIssue(t, database, other.key)
+		tick(step) // The scan after converting the other issue.
+		if step.owed {
+			t.Fatal("the deferred issue kept the whole list owed")
+		}
+		tick(step) // A probe of the deferred issue only.
+		if lines := logged.Lines("deferred an issue"); strings.Count(lines, "\n") != 1 || !strings.Contains(lines, deferred.plan) {
+			t.Fatalf("the step did not log the exact waiting document once: %s", logged.String())
+		}
+		exec(`update document_block_versions set store_owed_at = null, store_owed_rule = null where artifact_id = $1`, deferred.plan)
+		tick(step)
+		treeOfIssue(t, database, deferred.key)
+		requireUnconverted(t, database, unrelated)
+	})
+
+	t.Run("concurrent steps take one lock", func(t *testing.T) {
+		ctx, database, issue, _, step, tick, logged := issueRoomStepFixture(t)
+		first, second := issue(1), issue(2)
+		other := NewIssueRoomStep(step.service, database, step.logger)
+		inside, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+		step.gate = func(ctx context.Context, tx pgx.Tx) error {
+			if len(logged.Lines("converted an issue")) == 0 {
+				close(inside)
+				<-release
+			}
+			return IssueRoomGate(ctx, tx)
+		}
+		go func() { finished <- step.Tick(ctx) }()
+		testwait.Receive(t, "the first step to hold its lock", inside)
+		func() {
+			defer close(release)
+			tick(other)
+			requireUnconverted(t, database, second)
+		}()
+		if err := testwait.Receive(t, "the first step to convert", finished); err != nil {
+			t.Fatal(err)
+		}
+		tick(other)
+		treeOfIssue(t, database, first.key)
+		treeOfIssue(t, database, second.key)
+		if strings.Count(logged.Lines("converted an issue"), "\n") != 2 {
+			t.Fatalf("expected two conversions across both steps: %s", logged.String())
+		}
+	})
+}
+
+func issueRoomOldProcess(ctx context.Context, database *store.Store) string {
 	var instance string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into server_processes (instance, commit, signing_keys, schema_version, schema_creatable, heartbeat_at, owner_lock_protocol)
 		values (gen_random_uuid(), 'an-earlier-build', '{fingerprint}', $1, $2, now() + interval '1 day', $3)
 		returning instance::text
 	`, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol).Scan(&instance); err != nil {
-		t.Fatalf("add a live process that lists no issue room: %v", err)
+		return ""
 	}
-	var logged bytes.Buffer
-	step := NewIssueRoomStep(service, database, slog.New(slog.NewTextHandler(&logged, nil)))
-	if err := step.Tick(ctx); err != nil {
-		t.Fatalf("tick beside a process that lists no issue room: %v", err)
+	return instance
+}
+
+func issueRoomStepFixture(t *testing.T) (context.Context, *store.Store, func(int) unconvertedIssue,
+	func(string, ...any), *IssueRoomStep, func(*IssueRoomStep), *logtest.Buffer) {
+	t.Helper()
+	ctx := t.Context()
+	database := storetest.Open(t)
+	service := newTestServiceOn(t, database)
+	logged := new(logtest.Buffer)
+	step := NewIssueRoomStep(service, database, slog.New(slog.NewTextHandler(logged, nil)))
+	issue := func(n int) unconvertedIssue {
+		t.Helper()
+		return createUnconvertedIssue(t, database, service, n, "", "The spec.\n", "Its verification.\n", "Its plan.\n")
 	}
-	if !strings.Contains(logged.String(), instance) || !strings.Contains(logged.String(), "an-earlier-build") {
-		t.Fatalf("the tick beside the process %s logged %q, want a line naming it and its build", instance, logged.String())
-	}
-	requireUnconverted(t, database, inFlight)
-	if _, err := database.Pool.Exec(ctx, `delete from server_processes where instance = $1::uuid`, instance); err != nil {
-		t.Fatalf("take the live process away: %v", err)
-	}
-	if err := step.Tick(ctx); err != nil {
-		t.Fatalf("tick with every live process listing the issue room: %v", err)
-	}
-	treeOfIssue(t, database, inFlight.key)
-	requireUnconverted(t, database, done)
-	lines := func(words ...string) int {
-		count := 0
-		for _, line := range strings.Split(logged.String(), "\n") {
-			held := true
-			for _, word := range words {
-				held = held && strings.Contains(line, word)
-			}
-			if held {
-				count++
-			}
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
 		}
-		return count
 	}
-	converted, passed := lines("converted an issue", "issue="+inFlight.key+" "), lines("passed over", "issue="+done.key+" ", "done")
-	if converted != 1 || passed != 1 {
-		t.Fatalf("the step logged %d lines converting %s and %d passing %s over, want one each: %s",
-			converted, inFlight.key, passed, done.key, logged.String())
+	tick := func(step *IssueRoomStep) {
+		t.Helper()
+		if err := step.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := step.Tick(ctx); err != nil {
-		t.Fatalf("tick once more: %v", err)
-	}
-	if again, over := lines("converted an issue", "issue="+inFlight.key+" "), lines("passed over", "issue="+done.key+" "); again != 1 || over != 1 {
-		t.Fatalf("a later tick took the settled issues again: %d lines converting %s and %d passing %s over", again, inFlight.key, over, done.key)
-	}
+	return ctx, database, issue, exec, step, tick, logged
 }
 
 // The command's gate (BuildGate) refuses an unstamped binary, a live process of another build,
@@ -406,5 +542,137 @@ func TestTheBuildGateRefusesAnotherBuildAndAnotherAnnouncement(t *testing.T) {
 	}
 	if err := run(BuildGate(own)); err != nil {
 		t.Fatalf("the gate refused once the fleet and the newest announcement are of %s: %v", own, err)
+	}
+}
+
+func TestTheConversionWritesEachCarriedApprovalBeforeItsVersion(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	database := storetest.Open(t)
+	service := newTestServiceOn(t, database)
+	issue := createUnconvertedIssue(t, database, service, 1, "",
+		":::requirement{#shared}\nKeep the requirement's words.\n:::\n",
+		":::check{#shared}\nKeep the check's words.\n:::\n", "The plan.\n")
+	approveStoredVersion(t, database, issue.spec, 1, "alice")
+	// The previous row shape predates the pin-on-insert trigger.
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	for _, statement := range []string{
+		`alter table artifact_reviews disable trigger artifact_reviews_content_sha256_insert`,
+		`insert into artifact_reviews (artifact_id, version, state, actor)
+		 values ('` + issue.verification + `', 1, 'approved', '{"kind":"user","id":"bob"}')`,
+		`alter table artifact_reviews enable trigger artifact_reviews_content_sha256_insert`,
+	} {
+		if _, err := tx.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if filled, err := FillReviewContentHashes(ctx, database.Pool); err != nil || filled.Filled != 1 {
+		t.Fatalf("pin the legacy approval: %+v, %v", filled, err)
+	}
+	result, err := service.ConvertIssue(ctx, issue.key, IssueRoomGate, false)
+	if err != nil || result.Outcome != IssueConverted {
+		t.Fatalf("convert %s: %+v, %v", issue.key, result, err)
+	}
+	for _, document := range []struct{ name, id, reviewer string }{
+		{"spec", issue.spec, "alice"}, {"verification", issue.verification, "bob"},
+	} {
+		order := readCarriedOrder(t, database, document.name, document.id, 2)
+		requireApprovalFirst(t, document.name, order)
+		if order.reviewSeq == nil || *order.reviewSeq != order.approvedSeq ||
+			order.reviewDigest == nil || order.approvedDigest == nil || *order.reviewDigest != *order.approvedDigest {
+			t.Errorf("%s: the carried review and approval event disagree: %+v", document.name, order)
+		}
+		review, err := NewestReview(ctx, database.Pool, document.id)
+		if err != nil || review == nil || review.Actor.ID != document.reviewer || review.Version != 2 ||
+			review.CarriedFromVersion == nil || *review.CarriedFromVersion != 1 {
+			t.Errorf("%s: want the carry from version 1 to 2 in %s's name, got %+v, %v", document.name, document.reviewer, review, err)
+		}
+	}
+}
+
+func TestTheConversionPassesOverUnreadableOrRewordedDocuments(t *testing.T) {
+	t.Parallel()
+	const original = ":::requirement{#r1}\nThe original words.\n:::\n"
+	for _, tc := range []struct{ name, stored, reason string }{
+		{"unreadable", "- x\n  :::callout{}\n\n  [^g]: d\n", "does not read back"},
+		{"reworded", ":::requirement{#r1}\nOther words.\n:::\n", "would change"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			database := storetest.Open(t)
+			service := newTestServiceOn(t, database)
+			issue := createUnconvertedIssue(t, database, service, 1, "", original, "Verification.\n", "Plan.\n")
+			if _, err := database.Pool.Exec(ctx, `update artifact_versions set markdown = $2 where artifact_id = $1`, issue.spec, tc.stored); err != nil {
+				t.Fatal(err)
+			}
+			result, err := service.ConvertIssue(ctx, issue.key, func(context.Context, pgx.Tx) error {
+				return &ConvertRefusal{Reason: "gate must not run"}
+			}, false)
+			if err != nil || result.Outcome != IssuePassedOver || !strings.Contains(result.Reason, tc.reason) {
+				t.Fatalf("conversion answered %+v, %v, want pass-over naming %q before the gate", result, err, tc.reason)
+			}
+			requireUnconverted(t, database, issue)
+		})
+	}
+}
+
+func TestTheConversionReportsACensusDifferenceAndRollsBack(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	database := storetest.Open(t)
+	service := newTestServiceOn(t, database)
+	issue := createUnconvertedIssue(t, database, service, 1, "",
+		":::requirement{#r1}\nKeep the requirement.\n:::\n", "Verification.\n", "Plan.\n")
+	for _, statement := range []string{
+		`create function omit_redirect() returns trigger language plpgsql as $$
+		begin if new.kind = 'moved_to' and new.from_id = 'DOC-1/spec#r1' then return null; end if; return new; end $$`,
+		`create trigger omit_redirect before insert on graph_tuples for each row execute function omit_redirect()`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := service.ConvertIssue(ctx, issue.key, IssueRoomGate, false)
+	if err != nil || result.Outcome != IssuePassedOver || !strings.Contains(result.Reason, "block redirects: 1 difference(s), first at DOC-1/spec#r1") {
+		t.Fatalf("conversion answered %+v, %v, want the missing redirect reported", result, err)
+	}
+	requireUnconverted(t, database, issue)
+	if version := latestVersionNumber(t, service, issue.spec); version != 1 {
+		t.Errorf("the failed census left spec version %d, want only version 1", version)
+	}
+}
+
+func TestTheConversionKeepsRepeatedTypedBlockIDs(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	database := storetest.Open(t)
+	service := newTestServiceOn(t, database)
+	issue := createUnconvertedIssue(t, database, service, 1, "",
+		":::requirement{#same}\nFirst requirement words.\n:::\n\n:::requirement{#same}\nOther requirement words.\n:::\n",
+		"Verification.\n", "Plan.\n")
+	if strings.Count(issue.markdown[issue.spec], "#same") != 2 {
+		t.Fatal("the old room must contain two typed blocks with the same ID")
+	}
+	result, err := service.ConvertIssue(ctx, issue.key, IssueRoomGate, false)
+	if err != nil || result.Outcome != IssueConverted {
+		t.Fatalf("convert a document whose ID repeats: %+v, %v", result, err)
+	}
+	tree, _ := treeOfIssue(t, database, issue.key)
+	var indexed, markdown string
+	if err := database.Pool.QueryRow(ctx, `
+		select t.text, v.markdown
+		from document_block_texts t join artifact_versions v on v.artifact_id = $2 and v.number = t.version
+		where t.artifact_id = $1 and t.block_id = 'same'`, tree, issue.spec).Scan(&indexed, &markdown); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(indexed, "First requirement words.") || strings.Contains(indexed, "Other requirement words.") || markdown != issue.markdown[issue.spec] {
+		t.Errorf("the conversion indexed %q and wrote %q, want the first block indexed and the full text unchanged", indexed, markdown)
 	}
 }

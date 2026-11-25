@@ -906,10 +906,14 @@ func Nodes(ctx context.Context, q Queryer, who model.Actor, targets []Target) (m
 }
 
 // ExcerptedNode is one node ExcerptedNodes resolves: the node, and the excerpt an edge at it
-// shows (excerptOf), nil for a node that has no text.
+// shows (excerptOf), nil for a node that has no text. AskKind is what a read of an issue's
+// conversation alone (ConversationNodes) answers beside each ask: the kind the ask's row holds
+// (asks.kind), `question`, or `approval` for a request of a document's approval. It is empty on
+// every other node and on every other read.
 type ExcerptedNode struct {
 	Node    model.GraphNode
 	Excerpt *model.GraphExcerpt
+	AskKind string
 }
 
 // ExcerptedNodes is Nodes with each node's excerpt beside it, cut as an edge at the node cuts it:
@@ -1377,13 +1381,15 @@ func readBlockNodeRows(ctx context.Context, q Queryer, who model.Actor, ids []st
 		var changedVersion int
 		var changedAt time.Time
 		var changedBy, recorded []byte
+		var roomZeroMaker *bool
+		var roomMadeAt *time.Time
 		var document documentParent
 		var first blockFirst
 		var stored StoredNode
 		var row blockNodeRow
 		targets := append([]any{&nodeID, &blockID, &excerpt, &changedVersion, &changedAt, &changedBy}, document.targets()...)
 		targets = append(append(targets, first.targets()...), &recorded, &stored.State, &stored.Visibility)
-		if err := rows.Scan(append(targets, &row.block.Type, &row.block.TextSHA256, &band, &row.seen)...); err != nil {
+		if err := rows.Scan(append(targets, &row.block.Type, &row.block.TextSHA256, &band, &row.seen, &roomZeroMaker, &roomMadeAt)...); err != nil {
 			return fmt.Errorf("scan block node: %w", err)
 		}
 		changers, err := storedActors(changedBy)
@@ -1405,13 +1411,10 @@ func readBlockNodeRows(ctx context.Context, q Queryer, who model.Actor, ids []st
 			Parent:         parent,
 			ParentVersion:  &changedVersion,
 		}
-		if node.MadeBy, node.MadeAt, err = first.maker(); err != nil {
+		zeroMaker := roomZeroMaker != nil && *roomZeroMaker
+		node.MadeBy, node.MadeAt, err = blockMaker(roomMadeAt != nil, roomMadeAt, zeroMaker, recorded, first)
+		if err != nil {
 			return fmt.Errorf("decode the maker of block %s: %w", nodeID, err)
-		}
-		if recorded != nil {
-			if node.MadeBy, err = storedActors(recorded); err != nil {
-				return fmt.Errorf("decode the authors block %s records: %w", nodeID, err)
-			}
 		}
 		setStored(&node, stored)
 		row.node = resolvedNode{GraphNode: node, text: excerpt}
@@ -1483,7 +1486,7 @@ func blockNodesStatement(named blockNodesNamed, seenOnly bool) string {
 		         select 1 from document_indexed_versions i where i.artifact_id = d.owner_id and i.version = first_text.version - 1
 		       ), first_version.authors, first_version.created_at,
 		       recorded.authors, ` + storedColumns + `,
-		       d.type, d.text_sha256, ` + DocumentBandSQL("a") + `, ` + seen + `
+		       d.type, d.text_sha256, ` + DocumentBandSQL("a") + `, ` + seen + `, maker.zero_maker, maker.made_at
 		from owned d
 		join artifacts a on a.id = d.owner_id
 		left join artifact_versions changed on changed.artifact_id = d.owner_id and changed.number = d.changed_version
@@ -1496,6 +1499,7 @@ func blockNodesStatement(named blockNodesNamed, seenOnly bool) string {
 		left join artifact_versions first_version on first_version.artifact_id = d.owner_id and first_version.number = first_text.version
 		left join recorded on recorded.from_id = d.node_id
 		` + storedJoin + `
+		` + roomBlockMakerJoin("d.artifact_id", "d.node_id") + `
 		` + where
 }
 
