@@ -177,21 +177,26 @@ type RefresherDeps struct {
 }
 
 // refresherSchedule is the loop's pace and the clock a pass builds as of, which a test replaces:
-// gap is RefresherGap, page refresherPage, batch walkBatch, and now answers the moment whose UTC
-// day is today.
+// gap is RefresherGap, page refresherPage, batch walkBatch, refoldBudget refoldBatchBudget, and now
+// answers the moment whose UTC day is today. refoldBudget is about how long each batch of a stale
+// cut's refold after the pass's first takes (refoldBatchDays); none, which a test's schedule
+// leaves, bounds no batch by time, and each such batch folds batch end days.
 type refresherSchedule struct {
-	gap   time.Duration
-	page  int
-	batch int
-	now   func() time.Time
+	gap          time.Duration
+	page         int
+	batch        int
+	refoldBudget time.Duration
+	now          func() time.Time
 }
 
-// serverRefresherSchedule is the pace the server runs the loop at.
+// serverRefresherSchedule is the pace the server runs the loop at, which holds each batch of a
+// stale cut's refold to about 250 ms (refoldBatchBudget).
 var serverRefresherSchedule = refresherSchedule{
-	gap:   RefresherGap,
-	page:  refresherPage,
-	batch: walkBatch,
-	now:   func() time.Time { return time.Now().UTC() },
+	gap:          RefresherGap,
+	page:         refresherPage,
+	batch:        walkBatch,
+	refoldBudget: refoldBatchBudget,
+	now:          func() time.Time { return time.Now().UTC() },
 }
 
 // RunRefresher keeps every project's day rows true to their inputs (the refresher's rules above)
@@ -323,7 +328,10 @@ const refreshThroughPasses = 100
 // seeded. It takes no lease, so it is for a database no refresher of a running server writes: a
 // caller that loads one and then reads it, such as the tests of the eval routes, which so read the
 // rows production writes. The event log is read through everything committed before the call
-// (events.Horizon.Await).
+// (events.Horizon.Await). Its schedule is the server's with no refold budget, so each batch of a
+// stale cut's refold after a pass's first folds walkBatch end days however long it takes: the
+// budget spares a readings write a long wait on a batch's locks (refoldBatchBudget), and no
+// production code calls RefreshThrough, whose caller writes nothing while it runs.
 func (s *Store) RefreshThrough(ctx context.Context, deps RefresherDeps, now time.Time) error {
 	if deps.Build == "" {
 		return errors.New("evals: RefresherDeps.Build is empty, and the refresher needs the build it writes as")
@@ -333,6 +341,7 @@ func (s *Store) RefreshThrough(ctx context.Context, deps RefresherDeps, now time
 	}
 	now = now.UTC()
 	sched := serverRefresherSchedule
+	sched.refoldBudget = 0
 	sched.now = func() time.Time { return now }
 	seeds := &seeding{}
 	for range refreshThroughPasses {
@@ -404,7 +413,7 @@ func (r refreshed) sorted() []string {
 // would otherwise wait for an unrelated wake or the next UTC midnight.
 func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresherSchedule, seeds *seeding, batch *gapBatch) (refreshed, time.Time, error) {
 	r := s.newRefresh(deps.Build, sched.now().UTC(), sched.batch)
-	r.clock = sched.now
+	r.clock, r.refoldBudget = sched.now, sched.refoldBudget
 	if _, err := delivery.DrainPending(ctx, s.database.Pool); err != nil {
 		return r.report, time.Time{}, err
 	}
@@ -468,7 +477,8 @@ func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresher
 // newRefresh is the state of one pass that builds as build, as of now, batch days of each walk,
 // with a batch of its own (gapBatch), which refresh replaces with the loop's. Its clock stands at
 // now, which a caller that runs a page on its own keeps or replaces; refresh gives it the loop's
-// (refresherSchedule.now), so each page reads the time it runs at.
+// (refresherSchedule.now), so each page reads the time it runs at. It has no refold budget, which
+// refresh gives it from the schedule (refresherSchedule.refoldBudget).
 func (s *Store) newRefresh(build string, now time.Time, batch int) *refresh {
 	return &refresh{
 		store: s, build: build, now: now, today: measures.Midnight(now), batch: batch,

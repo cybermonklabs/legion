@@ -579,37 +579,40 @@ func markStaleCuts(ctx context.Context, tx pgx.Tx, cuts []staleCut) error {
 	return nil
 }
 
-// refoldBatchBudget is about how long one batch of a stale cut's refold takes (refoldStaleCuts,
-// refoldBatchDays). refoldCut holds the locks of the project's logged evals (lockLogged) for the
-// whole batch, and a readings write of such an eval waits on that lock, so a batch is kept well
-// inside R14's 2 s: a batch of 28 end days of INFRA's late history, 5.7 s on the build farm, would
-// hold the write past it.
+// refoldBatchBudget is about how long the server's schedule holds one batch of a stale cut's refold
+// to (serverRefresherSchedule, refoldStaleCuts, refoldBatchDays). refoldCut holds the locks of the
+// project's logged evals (lockLogged) for the whole batch, and a readings write of such an eval
+// waits on that lock, so the server's batch is kept well inside R14's 2 s: a batch of 28 end days
+// of INFRA's late history, 5.7 s on the build farm, would hold the write past it. A schedule with
+// no budget, a test's or RefreshThrough's, has no readings write beside it to keep waiting short.
 const refoldBatchBudget = 250 * time.Millisecond
 
 // refoldBatchDays is how many end days the next batch of a stale cut's refold folds, after a batch
-// of days end days whose transaction took took: as many as refoldBatchBudget holds at that batch's
-// time per end day, at least one and at most most (the pass's batch size, refresh.batch). A batch
-// that took no time the clock can tell asks for most.
-func refoldBatchDays(days int, took time.Duration, most int) int {
+// of days end days whose transaction took took: as many as budget (the schedule's,
+// refresherSchedule.refoldBudget) holds at that batch's time per end day, at least one and at most
+// most (the pass's batch size, refresh.batch). A batch that took no time the clock can tell asks
+// for most, and so does every batch where budget is none, which bounds no batch by time.
+func refoldBatchDays(days int, took, budget time.Duration, most int) int {
 	most = max(most, 1)
-	if took <= 0 {
+	if budget <= 0 || took <= 0 {
 		return most
 	}
-	return min(max(int(refoldBatchBudget*time.Duration(days)/took), 1), most)
+	return min(max(int(budget*time.Duration(days)/took), 1), most)
 }
 
 // refoldStaleCuts folds again each stale cut to its end, whichever build's process runs it, the
 // cuts in the byte order of their keys, batch after batch until the cut's mark is cleared, each
 // batch a transaction of its own (refoldStaleBatch). The pass's first batch folds one end day,
 // short wherever the refold stands (a pass that goes on after a stop begins where the mark left it,
-// however late in the cut's history), and each later one as many as refoldBatchBudget holds at the
-// time per end day of the batch before it (refoldBatchDays), so no batch holds the locks of the
-// project's logged evals for long. It stops between two batches for an owed wake (yields), so a
-// pass folds at least one batch and a change waits behind one batch rather than the whole refold;
-// the owed pass, which the loop starts at once, goes on from where the marks stand. It answers
-// whether a mark is left, which only a stop for a wake leaves: so the pass that publishes a move
-// begins the refold of the cuts it marks once its pages are done, and no gap paces it
-// (RefresherGap).
+// however late in the cut's history), and each later one as many as the schedule's budget
+// (refresh.refoldBudget) holds at the time per end day of the batch before it (refoldBatchDays):
+// the server's schedule holds a batch to about 250 ms (refoldBatchBudget), so none holds the locks
+// of the project's logged evals for long, and one with no budget folds the pass's batch size in
+// each later batch. It stops between two batches for an owed wake (yields), so a pass folds at
+// least one batch and a change waits behind one batch rather than the whole refold; the owed
+// pass, which the loop starts at once, goes on from where the marks stand. It answers whether a
+// mark is left, which only a stop for a wake leaves: so the pass that publishes a move begins the
+// refold of the cuts it marks once its pages are done, and no gap paces it (RefresherGap).
 func (r *refresh) refoldStaleCuts(ctx context.Context) (bool, error) {
 	rows, err := r.store.database.Pool.Query(ctx, `select project_key, repo from eval_figure_cuts_stale order by project_key collate "C", repo collate "C"`)
 	if err != nil {
@@ -634,7 +637,7 @@ func (r *refresh) refoldStaleCuts(ctx context.Context) (bool, error) {
 			}
 			folded = true
 			r.walkBuilt++
-			days = refoldBatchDays(days, took, r.batch)
+			days = refoldBatchDays(days, took, r.refoldBudget, r.batch)
 		}
 	}
 	return false, nil

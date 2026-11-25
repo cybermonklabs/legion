@@ -109,7 +109,11 @@ type refresh struct {
 	build      string
 	now, today time.Time
 	clock      func() time.Time
-	batch      int
+	// batch is how many days of each walk the pass builds, and how many end days a batch of a
+	// stale cut's refold folds at most; refoldBudget is about how long each such batch after the
+	// pass's first takes, none where no time bounds it (refresherSchedule, refoldBatchDays).
+	batch        int
+	refoldBudget time.Duration
 	// projects is every project's key, in key order, and known holds them; owners is the delivery
 	// family's owners, every project and every owner key (owners.go) the store holds rows of or
 	// the pass's reads build rows of (noteOwners), whose delivery and CI days the walks, pages,

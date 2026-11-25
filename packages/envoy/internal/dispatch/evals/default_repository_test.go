@@ -634,28 +634,35 @@ func TestThePassThatPublishesAMoveFoldsItsStaleCutsToTheEnd(t *testing.T) {
 }
 
 // TestARefoldBatchFoldsAtLeastOneEndDayAndAtMostThePassBatch: the next batch of a stale cut's
-// refold (refoldBatchDays) folds one end day after a batch far past refoldBatchBudget, whether it
-// folded one end day or a whole batch, so a refold whose every end day takes longer than the
-// budget still moves on; it folds the pass's batch size after a batch that took next to no time or
-// none the clock could tell, never more; and it folds one end day where the pass's batch size is
-// none. Red where the sizing rounds a slow batch down to no end day, which folds nothing and never
-// ends, or lets a fast one grow past the pass's batch size.
+// refold (refoldBatchDays) folds one end day after a batch far past the server's budget
+// (refoldBatchBudget), whether it folded one end day or a whole batch, so a refold whose every end
+// day takes longer than the budget still moves on; it folds the pass's batch size after a batch
+// that took next to no time or none the clock could tell, never more; it folds one end day where
+// the pass's batch size is none; it folds as many end days as the budget it is given holds; and,
+// given no budget, as a test's schedule and RefreshThrough's give it, it folds the pass's batch
+// size however long the batch before took. Red where the sizing rounds a slow batch down to no end
+// day, which folds nothing and never ends, lets a fast one grow past the pass's batch size, sizes
+// by the server's budget whatever budget it is given, or holds a refold with no budget to one end
+// day after each slow batch, which on a slow database folds every end day in a transaction of its
+// own.
 func TestARefoldBatchFoldsAtLeastOneEndDayAndAtMostThePassBatch(t *testing.T) {
 	for _, tc := range []struct {
-		what       string
-		days, most int
-		took       time.Duration
-		want       int
+		what         string
+		days, most   int
+		took, budget time.Duration
+		want         int
 	}{
-		{"one end day far past the budget", 1, walkBatch, time.Hour, 1},
-		{"a whole batch far past the budget", walkBatch, walkBatch, time.Hour, 1},
-		{"a whole batch in next to no time", walkBatch, walkBatch, time.Nanosecond, walkBatch},
-		{"one end day in no time the clock could tell", 1, walkBatch, 0, walkBatch},
-		{"one end day with a pass batch of none", 1, 0, time.Nanosecond, 1},
+		{"one end day far past the budget", 1, walkBatch, time.Hour, refoldBatchBudget, 1},
+		{"a whole batch far past the budget", walkBatch, walkBatch, time.Hour, refoldBatchBudget, 1},
+		{"a whole batch in next to no time", walkBatch, walkBatch, time.Nanosecond, refoldBatchBudget, walkBatch},
+		{"one end day in no time the clock could tell", 1, walkBatch, 0, refoldBatchBudget, walkBatch},
+		{"one end day with a pass batch of none", 1, 0, time.Nanosecond, refoldBatchBudget, 1},
+		{"four end days in twice a budget of four times the server's", 4, walkBatch, 8 * refoldBatchBudget, 4 * refoldBatchBudget, 2},
+		{"one end day far past no budget", 1, walkBatch, time.Hour, 0, walkBatch},
 	} {
-		if got := refoldBatchDays(tc.days, tc.took, tc.most); got != tc.want {
-			t.Errorf("%s: the next batch of %d end days at most after %d end days in %s folds %d end days, want %d",
-				tc.what, tc.most, tc.days, tc.took, got, tc.want)
+		if got := refoldBatchDays(tc.days, tc.took, tc.budget, tc.most); got != tc.want {
+			t.Errorf("%s: under a budget of %s, the next batch of %d end days at most after %d end days in %s folds %d end days, want %d",
+				tc.what, tc.budget, tc.most, tc.days, tc.took, got, tc.want)
 		}
 	}
 }
