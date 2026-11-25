@@ -71,7 +71,7 @@ func (d *heldDurable) readDurable(ctx context.Context) (*natsgo.ConsumerInfo, er
 // end inside this one lease (finishTakeOver, which says what a lease given up with the durable
 // absent leaves behind).
 func (d *heldDurable) takeOver(ctx context.Context) {
-	wanted := d.config()
+	wanted := d.config(d.tuning)
 	name := wanted.Durable
 	create := wanted
 	deleteFirst := false
@@ -210,7 +210,7 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 	}
 	if d.retryHeld(finish, "create NATS consumer", func(call context.Context) error {
 		_, err := onConnection(call, d.nats, func(request context.Context) (*natsgo.ConsumerInfo, error) {
-			return createDurable(d.nats.JS(), &create, natsgo.Context(request))
+			return d.tuning.createDurable(d.nats.JS(), &create, natsgo.Context(request))
 		})
 		return err
 	}, "subject", create.FilterSubject, "start_seq", create.OptStartSeq) != nil {
@@ -292,10 +292,4 @@ func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(
 func (d *heldDurable) failedStep(doing string, err error, attributes []any) error {
 	slog.Error("dispatch delivery: "+doing, append(append([]any{"name", d.name}, attributes...), "error", err)...)
 	return err
-}
-
-// createDurable creates the durable config describes on the notification stream. A var so a test
-// can make a take-over's create fail after its delete.
-var createDurable = func(js natsgo.JetStreamContext, config *natsgo.ConsumerConfig, opts ...natsgo.JSOpt) (*natsgo.ConsumerInfo, error) {
-	return js.AddConsumer(bus.Stream, config, opts...)
 }

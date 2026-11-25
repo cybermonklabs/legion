@@ -9,13 +9,14 @@
 // ServerConnections plus the reserve, as a literal that testlimits_test.go holds to
 // ServerConnections: one connection per process short of FullSizeServerConnections, so each
 // process there runs its pools scaled to a budget one connection under production's. And every
-// start of a Dispatch server process in cmd/dispatch's tests is checked against MaxProcessesAtOnce
-// and against the server it meets (cmd/dispatch/connection_ceiling_test.go): a server smaller than
-// FullSizeServerConnections gives each process a connection budget its pools scale to
-// (PoolBudget), and a server too small for even the smallest pools refuses the start by name,
-// rather than as a 53300 refusal inside a room, a lease or a socket. Two runs of the binary are
-// not checked: TestDispatchRefusesAListenFDThatIsNotASocketAndBindsNothing, which exits before it
-// reads its database, and startRedeliverWebhooks (cmd/dispatch/multiprocess_test.go), whose
+// start of a Dispatch server process in cmd/dispatch's tests first takes one of MaxProcessesAtOnce
+// slots (cmd/dispatch/process_slots_test.go) and is then fitted to the server it meets
+// (connection_ceiling_test.go): a server smaller than FullSizeServerConnections gives each process
+// a connection budget its pools scale to (PoolBudget), and a server too small for even the
+// smallest pools refuses the start by name, rather than as a 53300 refusal inside a room, a lease
+// or a socket. Two runs of the binary are not checked:
+// TestDispatchRefusesAListenFDThatIsNotASocketAndBindsNothing, which exits before it reads its
+// database, and startRedeliverWebhooks (cmd/dispatch/multiprocess_test.go), whose
 // redeliver-webhooks run opens store.Open at production's sizes and is counted by nothing.
 package testlimits
 
@@ -28,18 +29,16 @@ import (
 // MaxProcessesAtOnce is the most Dispatch server processes one test binary runs at once against
 // one Postgres. The count is the binary's, not one test's: one `go test` binary is what one lane's
 // server serves, and parallel root tests in it share that server. A process counts from its start
-// until it exits, which is what it holds connections for. cmd/dispatch/connection_ceiling_test.go
-// refuses the start of one more process than this and names this constant.
+// until it exits, which is what it holds connections for. Every start takes one of this many slots
+// first (dispatchSlots, cmd/dispatch/process_slots_test.go, says how), and a test that asks for
+// more at once is refused by name.
 //
-// It is the limit the guard enforces, measured with that same count over the cmd/dispatch test
-// binaries whose rows ran: the twobuild binary reaches 4, in TestTwoBuildsAnswerEachOthersCLI, and
-// so do the binaries with no tag and with multiprocess, in
-// TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget, which runs this many on purpose;
-// their other rows reach 3. The memory binary's measured 1 is a floor, not its peak: in a gVisor
-// pod each of its rows fails at /proc/<pid>/clear_refs after its first start, and its code bounds it
-// at two, a writer and a reader (cmd/dispatch/memory_test.go,
-// TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound). A binary that comes to run more is
-// refused by name, and this number is raised to what it runs.
+// The peak of each binary of cmd/dispatch: 4 with no tag, in
+// TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget (connection_budget_test.go),
+// which runs this many on purpose, and with the memory tag, and in both binaries parallel tests
+// share the slots; 3 with multiprocess (TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables);
+// 2 with twobuild and with basebuild. A test that comes to need more is refused by name, and this
+// number is raised to what it runs.
 const MaxProcessesAtOnce = 4
 
 // RequiredConnections is what MaxProcessesAtOnce Dispatch processes would open together at

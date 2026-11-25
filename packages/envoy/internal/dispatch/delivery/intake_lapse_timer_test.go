@@ -435,7 +435,7 @@ func holdElsewhere(t *testing.T, ctx context.Context, pool *store.Pool, left tim
 // (heldDurable.boundElsewhere).
 func bindAsPreviousBuild(t *testing.T, client *bus.Client) {
 	t.Helper()
-	config := deliveryConsumerConfig()
+	config := deliveryConsumerConfig(tuningFor(t))
 	if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {
 		t.Fatalf("create the durable a process of the build before holds binds: %v", err)
 	}

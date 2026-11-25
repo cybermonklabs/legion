@@ -27,11 +27,11 @@ import (
 // are reserved for roles with the SUPERUSER attribute` (SQLSTATE 53300) in its own log, and nothing
 // in the failure names the cause.
 //
-// So every start checks two things, against constants rather than numbers written here. It refuses
-// a start that would run more processes at once than testlimits.MaxProcessesAtOnce. And it fits
-// the process to the server it meets (testlimits.PoolBudget). A server that allows
-// testlimits.FullSizeServerConnections beyond its superuser reserve runs every process at
-// production's pool sizes; every CI lane's server is sized to it
+// So the count never passes testlimits.MaxProcessesAtOnce, which every CI lane's server is sized
+// from: every start first takes one of that many slots (dispatchSlots), where a first start waits
+// for a free one. And every start fits the process to the server it meets (testlimits.PoolBudget).
+// A server that allows testlimits.FullSizeServerConnections beyond its superuser reserve runs every
+// process at production's pool sizes; every CI lane's server is sized to it
 // (.github/scripts/pg-connection-ceiling.sh), so CI tests the pools production runs. A smaller
 // server, such as a pod's test server (legion-testpg's, testlimits.ServerConnections, one
 // connection per process short) or a Postgres at its default of 100, gives each process its share
@@ -54,26 +54,19 @@ import (
 var dispatchProcessesRunning atomic.Int64
 
 // requireConnectionCeiling counts one more Dispatch process running in this test binary, refuses
-// its start when the count is over testlimits.MaxProcessesAtOnce or the server cannot serve the
-// suite's smallest pools, and answers the connection budget the process's pools scale to: zero
-// where the server allows production's sizes, and otherwise the value the start sets as
-// DISPATCH_TEST_POOL_BUDGET. It answers too the release that takes the process off the count,
+// its start when the server cannot serve the suite's smallest pools, and answers the connection
+// budget the process's pools scale to: zero where the server allows production's sizes, and
+// otherwise the value the start sets as DISPATCH_TEST_POOL_BUDGET. Every start takes a slot of
+// dispatchSlots first (dispatchSlots.take), so the count never passes
+// testlimits.MaxProcessesAtOnce. It answers too the release that takes the process off the count,
 // which the caller runs once the process has exited; the test's cleanup runs it too, for a start
 // that never ran a process, and only the first call counts.
 func requireConnectionCeiling(t *testing.T, databaseURL string) (release func(), budget int) {
 	t.Helper()
-	processes := int(dispatchProcessesRunning.Add(1))
+	dispatchProcessesRunning.Add(1)
 	var once sync.Once
 	release = func() { once.Do(func() { dispatchProcessesRunning.Add(-1) }) }
 	t.Cleanup(release)
-
-	if processes > testlimits.MaxProcessesAtOnce {
-		release()
-		t.Fatalf("this start would run %d Dispatch processes at once in this test binary, and "+
-			"testlimits.MaxProcessesAtOnce is %d. Every CI lane's Postgres is sized from that constant, and "+
-			"every smaller server's share for each process too: raise it, so both grow with it, rather than "+
-			"leaving this row to meet a server that cannot serve it.", processes, testlimits.MaxProcessesAtOnce)
-	}
 	return release, serverPoolBudget(t, databaseURL)
 }
 

@@ -235,10 +235,14 @@ type heldDurable struct {
 	holder uuid.UUID
 	// throttle is this intake's own standby-log state (bindThrottle).
 	throttle *bindThrottle
-	// config is the durable's config in this build; each call draws a fresh deliver subject.
-	config func() natsgo.ConsumerConfig
+	// config is the durable's config in this build, timed by tuning; each call draws a fresh
+	// deliver subject.
+	config func(*intakeTuning) natsgo.ConsumerConfig
 	// name is the durable's name: config's Durable, which every call returns alike.
 	name string
+	// tuning is what this intake times its work by and the steps a test hooks (intakeTuning),
+	// shared with every delivery it makes.
+	tuning *intakeTuning
 	// key reads whether this intake wants a message at all and the key whose goroutine handles it
 	// (intakeKey for the delivery intake, jobKey for the job intake).
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool)
@@ -277,13 +281,13 @@ type heldDurable struct {
 }
 
 // newHeldDurable builds the delivery from config's durable on natsClient, taking its hold and
-// consumer lease on leases, routing each message by key and handing it to handle.
-func newHeldDurable(natsClient *bus.Client, leases intakeLeases, config func() natsgo.ConsumerConfig,
+// consumer lease on leases, routing each message by key and handing it to handle, timed by tuning.
+func newHeldDurable(tuning *intakeTuning, natsClient *bus.Client, leases intakeLeases, config func(*intakeTuning) natsgo.ConsumerConfig,
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(*intakeDelivery, intakeMessage),
 ) heldDurable {
 	return heldDurable{
 		nats: natsClient, leases: leases, holder: uuid.New(), throttle: &bindThrottle{},
-		config: config, name: config().Durable, key: key, handle: handle,
+		config: config, name: config(tuning).Durable, tuning: tuning, key: key, handle: handle,
 	}
 }
 
@@ -305,7 +309,7 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 	// Armed before the first attempt, so a take-over under way as ctx ends -- a standby's poll,
 	// whose JetStream calls take their own time -- spends the stop's budget rather than starting
 	// it late.
-	stopping, release := stopContext(ctx)
+	stopping, release := stopContext(ctx, d.tuning.stopBudget)
 	defer release()
 	defer d.stop(stopping)
 	binds := time.NewTicker(cmp.Or(d.bindEvery, durableBindInterval))
@@ -577,7 +581,7 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 	defer retry.Stop()
 	for {
 		if d.handBacksSettled() {
-			if before := finalizerBeforeRelease.Load(); before != nil {
+			if before := d.tuning.beforeRelease.Load(); before != nil {
 				(*before)()
 			}
 			select {
@@ -724,10 +728,6 @@ func (d *heldDurable) confirmHandBacks(delivery *intakeDelivery) <-chan bool {
 	}()
 	return confirmed
 }
-
-// finalizerBeforeRelease is nil outside the shutdown row. It holds a settled finalizer before it
-// releases, so the row sees that stopIntakes waits for it.
-var finalizerBeforeRelease atomic.Pointer[func()]
 
 // waitFinalizers waits for hand-backs a stopped durable left running to settle after its NATS
 // client closes. They can then no longer wait for that client, and release their holds through the
