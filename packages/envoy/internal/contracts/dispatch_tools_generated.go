@@ -91,8 +91,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "route", Kind: ToolFieldString, Description: "Route the issue to role:<name> or session:<id>; an empty string clears it."},
 			{Name: "parent", Kind: ToolFieldString, Description: "Parent issue key, in any project; an empty string clears the parent. A parent in another project passes on no repository, components or legion label."},
 			{Name: "blocked_by", Kind: ToolFieldArray, Description: "Replacement list of issue keys this issue waits on, of any project; [] clears it. Dispatch refuses a dependency cycle.", Max: new(float64(20)), Item: &ToolField{Kind: ToolFieldString, Required: true, Min: new(float64(1))}},
-			{Name: "advances", Kind: ToolFieldArray, Description: "Replacement list of priority ids this issue advances, which dispatch priorities lists; [] clears the issue's own, leaving every priority it inherits from the issues above it. A set that moves two or more relations is a whole-set write and carries advances_revision; the call reads the issue and sends the revision that read answered, so pass advances_revision only to answer a 409 ADVANCES_REVISION.", Max: new(float64(20)), Item: &ToolField{Kind: ToolFieldString, Required: true, Min: new(float64(1))}},
-			{Name: "advances_revision", Kind: ToolFieldNumber, Description: "The advances_revision the read this set answers returned, sent with advances and alone changing nothing. Omit it and the call sends the revision of its own read; pass the revision a 409 ADVANCES_REVISION named to write the set you mean against it."},
+			{Name: "advances", Kind: ToolFieldArray, Description: "Replacement list of priority ids this issue advances, which dispatch priorities lists; [] clears the issue's own, leaving every priority it inherits from the issues above it. Without advances_revision, Dispatch takes a list that adds or removes one priority, and refuses a list that changes two or more with 409 ADVANCES_REVISION, which names the issue's revision.", Max: new(float64(20)), Item: &ToolField{Kind: ToolFieldString, Required: true, Min: new(float64(1))}},
+			{Name: "advances_revision", Kind: ToolFieldNumber, Description: "The issue's advances revision, which the Advances line of dispatch read --issue <KEY> prints and a 409 ADVANCES_REVISION names. To change two or more priorities, read the issue, then send this revision with the whole list you mean. Alone it changes nothing."},
 			{Name: "components", Kind: ToolFieldObject, Description: "Attach the issue to architecture components. Attach the root before decomposing it; children inherit unless they choose. components mode explicit names ids, and mode none names a reason.", Fields: []ToolField{
 				{Name: "mode", Kind: ToolFieldEnum, Required: true, Description: "inherit: take the parent chain's attachment within the issue's own project (the default; deletes this issue's own). explicit: attach to ids, which it requires. none: not architectural work, with the reason it requires.", Values: []string{"inherit", "explicit", "none"}},
 				{Name: "ids", Kind: ToolFieldArray, Description: "Required for mode explicit: bare component ids from the project's architecture model (web, dispatch-server), not external ones.", Min: new(float64(1)), Max: new(float64(50)), Item: &ToolField{Kind: ToolFieldString, Required: true, Min: new(float64(1))}},
@@ -511,6 +511,14 @@ var DispatchTools = []DispatchTool{
 		Description: "The bounds this Dispatch server holds a write to, read from the server itself: how long one block of a body may be and how many blocks a body may hold, how many options an ask may have and how long an ask's question and options are together, how long a body an event carries whole may be, and how many bytes a request, a document and a handoff body may hold. Dispatch refuses a text over a bound and names the block or the field it passed; no tool and no command cuts or refuses your text before the server reads it, so these numbers are what decides whether a write is taken.",
 		Arguments:   []ToolField{},
 		Example:     json.RawMessage("{}"),
+	},
+	{
+		Name:        "dispatch_api",
+		Description: "Read one route of Dispatch's HTTP API that no other command reads, with this session's own credential, and print Dispatch's JSON answer, for jq to read. It sends one GET of path: a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. It only reads: it takes no method and no body, and every write goes through the command named for it (dispatch --help lists them). When Dispatch refuses the read, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint, and exits 1. Under Claude Code, an answer longer than the output limit is written to a file the output names.",
+		Arguments: []ToolField{
+			{Name: "path", Kind: ToolFieldString, Required: true, Description: "The route to read, beginning /api/v1, with its query after ?, such as /api/v1/issues/ACME-12/events?limit=200. No scheme or host, and no . or .. segment.", Min: new(float64(1))},
+		},
+		Example: json.RawMessage("{\"path\":\"/api/v1/issues/DSP-1/events?limit=200\"}"),
 	},
 	{
 		Name:        "dispatch_handoff_write",

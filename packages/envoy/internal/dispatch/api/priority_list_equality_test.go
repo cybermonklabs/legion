@@ -22,18 +22,20 @@ import (
 // issue_list_equality_test.go writes out main's laterals: built from them, both sides would agree
 // however the term changed. It is the one part of the statements that change moved, into the
 // `matched` and `filtered` terms, so the merge base's text of a statement is that statement with
-// this term in place of those two (mainListStatement). Its `advances` filter joins `advancing` to
-// every issue, where the change tests each key's membership in it, and it is read straight from
-// its scan, where the change reads it back by its places in an array.
+// this term in place of those two (mainListStatement). Its `advances` filter joins `advancing`
+// and `advances_originating` to every issue, where the change tests each key's membership in
+// them, and it is read straight from its scan, where the change reads it back by its places in an
+// array.
 func mainListFilteredTerm(pinned bool) string {
 	pinnedJoin := ""
 	if pinned {
-		pinnedJoin = "\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $15 and s.pinned"
+		pinnedJoin = "\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $16 and s.pinned"
 	}
 	return `filtered as (
 		select i.key, i.status, i.rank, i.created_at
 		from issues i` + pinnedJoin + `
 		left join advancing on advancing.key = i.key
+		left join advances_originating originating on originating.key = i.key
 		where ($1 = '' or i.project_key = $1)
 		  and (cardinality($2::text[]) = 0 or i.status = any($2::text[]))
 		  and ($3 = '' or i.parent_key = $3)
@@ -46,9 +48,11 @@ func mainListFilteredTerm(pinned bool) string {
 		  and ($9::timestamptz is null or i.closed_at >= $9)
 		  and ($10::timestamptz is null or i.closed_at < $10)
 		  and ((cardinality($11::text[]) = 0 and not $12::boolean and not $13::boolean)
-		       or coalesce(advancing.named, false)
-		       or ($12::boolean and advancing.key is null)
-		       or ($13::boolean and advancing.key is not null))
+		       or (not $15::boolean and (coalesce(advancing.named, false)
+		           or ($12::boolean and advancing.key is null)
+		           or ($13::boolean and advancing.key is not null)))
+		       or ($15::boolean and (coalesce(originating.named, false)
+		           or ($13::boolean and originating.key is not null))))
 	)`
 }
 
@@ -137,6 +141,10 @@ func TestAPriorityListAnswersAsTheMergeBaseAnswers(t *testing.T) {
 		{query: "pinned=true&advances=" + largest},
 		{query: "pinned=true&advances=none"},
 		{query: "moved=true&status=backlog&advances=" + largest},
+		{query: "advances=" + largest + "&own=true"},
+		{query: "advances=any&own=true"},
+		{query: "advances=none&own=true", empty: true},
+		{query: "advances=any&own=true&status=backlog&status=icebox&moved=true"},
 	} {
 		for _, paging := range []string{"", "limit=50", "limit=50&offset=100"} {
 			if filter.query == "" && paging == "" {
