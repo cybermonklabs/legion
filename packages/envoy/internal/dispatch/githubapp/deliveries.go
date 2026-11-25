@@ -720,7 +720,8 @@ func nextLink(header string, origin *url.URL) (string, error) {
 // is link, and its name the link as the URL rule names a URL a request asked (redact.AskedURL),
 // its scheme, host and path. It is GitHub's text, not a route Dispatch built (Client.target), and
 // its query, which holds GitHub's cursor, can repeat the API origin's own, a credential in it
-// among them; the cursor names nothing a reader of the listing's error looks for.
+// among them; the cursor names nothing a reader of the listing's error looks for. nextLink
+// follows only a link url.Parse reads, and AskedURL names a nil URL redact.NotPrinted.
 func nextCall(link string) call {
 	if link == "" {
 		return call{}

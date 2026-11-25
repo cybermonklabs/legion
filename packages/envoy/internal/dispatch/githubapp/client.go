@@ -1029,10 +1029,9 @@ func (c *Client) request(ctx context.Context, scope, method string, target call,
 // name holds names Dispatch keeps and text GitHub gave (a blob's sha from a tree answer, a next
 // page link's path), so none of them passes the bound in send's words. A request that got no
 // answer also names the URL it asked as redact.Unanswered names it, whose path is not cut: a next
-// page link's is at most nextLinkMaxBytes. The build of a request names no more of url than the
-// call's name: url is a URL urljoin.JoinURL wrote or a link nextLink parsed, which
-// http.NewRequestWithContext parses as url.Parse does, so its error is never url.Parse's, which
-// would quote url whole.
+// page link's is at most nextLinkMaxBytes. Building a request never fails on url, so the build's
+// error quotes none of it: url is a URL urljoin.JoinURL wrote or a link nextLink parsed, and
+// http.NewRequestWithContext parses it as url.Parse does.
 func (c *Client) send(ctx context.Context, scope, method string, target call, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) (redact.Answer, int, http.Header, error) {
 	if c.limits != nil && scope != "" {
 		wait, recorded, err := c.limits.Wait(ctx, scope)
@@ -1138,11 +1137,11 @@ func (f *failedAnswer) Error() string {
 	return f.method + " " + ShownBody(f.name) + ": " + StatusText(f.status, f.detail)
 }
 
-// limitNoted is the client's note of limited, a limit GitHub answered method's request to the call
-// named name with (request, GraphQL), worded by limited's own text: GitHub's refusal, or at a 2xx
-// GitHub's wording of the limit and nothing of the answer's data (RateLimitError). It notes no
-// held limit, which is noted as its own error (send, GraphQL), and none of the limits a loop
-// words itself (failedAnswer).
+// limitNoted is the client's note of limited, a limit GitHub answered method's request with, the
+// request named name (target), from request or GraphQL, worded by limited's own text: GitHub's
+// refusal, or at a 2xx GitHub's wording of the limit and nothing of the answer's data
+// (RateLimitError). It notes no held limit, which is noted as its own error (send, GraphQL), and
+// none of the limits a loop words itself (failedAnswer).
 func limitNoted(method, name string, limited *RateLimitError) *failedAnswer {
 	return &failedAnswer{method: method, name: name, limit: limited}
 }
