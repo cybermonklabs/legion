@@ -849,22 +849,23 @@ func TestAReplyThatNamesACreditedSessionWhoseMentionFailedStillReachesIt(t *test
 // person's reply in B's thread (B live) names @role:R, whose claim the outbox cannot read, and its
 // sender holds the attempt past unnamedForwardBound, so A's copy of the reply is a credit's row
 // (creditHeldAsARow). Where the sender has pinned the attempt to A when the person deletes the
-// reply, the receipt of that attempt, which the delete failed, reopens no row
-// (mentionComment.reopenCreditRow): A's row stays settled with nothing published, and A never
-// gets the withdrawn text. Where the reply stands, a person's failed Retry pinned to A still
-// reopens the row the pass settled with nothing sent once the first attempt failed with no
-// session, and the row gives A the reply (reopenOnReceipt).
-func TestADeletesFailedAttemptReopensNoCreditRowWhileAFailedRetryStillDoes(t *testing.T) {
+// reply, the receipt of that attempt, which the delete failed, can reopen A's row
+// (reopenOnReceipt), and the withdrawal check refuses its publish (fallbackCopyWithdrawn): A's
+// row ends settled with nothing published, and A never gets the withdrawn text. Where the reply
+// stands, a person's failed Retry pinned to A still reopens the row the pass settled with nothing
+// sent once the first attempt failed with no session, and the row gives A the reply
+// (reopenOnReceipt).
+func TestADeletesFailedAttemptPublishesNoCreditRowWhileAFailedRetryStillDoes(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		steps func(w *replyOrder)
-		// reopened is whether A's row publishes the reply, which then reaches A once.
-		reopened bool
+		// published is whether A's row publishes the reply, which then reaches A once.
+		published bool
 	}{
 		{
-			name:     "a failed Retry of the standing reply",
-			steps:    func(w *replyOrder) { w.do("read"); w.do("fail"); w.do("read"); w.do("retry A") },
-			reopened: true,
+			name:      "a failed Retry of the standing reply",
+			steps:     func(w *replyOrder) { w.do("read"); w.do("fail"); w.do("read"); w.do("retry A") },
+			published: true,
 		},
 		{
 			name:  "the delete of the reply while its attempt pinned to A is being sent",
@@ -874,31 +875,21 @@ func TestADeletesFailedAttemptReopensNoCreditRowWhileAFailedRetryStillDoes(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			w := creditRowReply(t)
 			tc.steps(w)
-			if !tc.reopened {
-				// Read the receipt before the fallback pass. The pass now also refuses deleted
-				// comments, so the final state alone cannot show whether the receipt reopened A's row.
-				if _, err := scanBatch(w.ctx, w.deps, unfenced{}, w.instance); err != nil {
-					t.Fatalf("scan the delete's receipt: %v", err)
-				}
-				if row := readHeldCopy(t, w.database, w.reply, contracts.LegacyAgentSubject(w.issue.a.ID)); !row.settled || row.published {
-					t.Fatalf("A's row after the delete's receipt = %+v; want settled and unpublished", row)
-				}
-			}
 			w.settle()
 			wantCopies := 0
-			if tc.reopened {
+			if tc.published {
 				wantCopies = 1
 			}
 			row := readHeldCopy(t, w.database, w.reply, contracts.LegacyAgentSubject(w.issue.a.ID))
-			if got := copiesOf(w.publisher.all(), w.created, w.issue.a.ID); len(got) != wantCopies || !row.settled || row.published != tc.reopened {
+			if got := copiesOf(w.publisher.all(), w.created, w.issue.a.ID); len(got) != wantCopies || !row.settled || row.published != tc.published {
 				t.Fatalf("A got %d copies of the reply, and its credit row is settled %v and published %v; want %d copies, the row settled and published %v",
-					len(got), row.settled, row.published, wantCopies, tc.reopened)
+					len(got), row.settled, row.published, wantCopies, tc.published)
 			}
 		})
 	}
 }
 
-// creditRowReply is the world of TestADeletesFailedAttemptReopensNoCreditRowWhileAFailedRetryStillDoes:
+// creditRowReply is the world of TestADeletesFailedAttemptPublishesNoCreditRowWhileAFailedRetryStillDoes:
 // the person's reply in B's thread on T-1, B live, names @role:R, whose claim the outbox cannot
 // read, and its one attempt names no session yet and is held by a live sender past
 // unnamedForwardBound, so the first read holds A's and C's copies of the reply as credits' rows.

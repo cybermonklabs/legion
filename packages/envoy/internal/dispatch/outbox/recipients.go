@@ -521,19 +521,22 @@ func registryUnanswered(err error) bool {
 // attempt be pinned to that session and fail - the first attempt, or a Retry, whose failed
 // receipt reopens the row the pass settled meanwhile (creditHeldAsARow,
 // mentionDeliveries.creditCopyOf, reopenOnReceipt).
-// The comment's edit, and its delete, follow the comment's copy: each reaches such a session where
-// that session's mention failed, and waits while that mention, or the comment's copy that follows
-// it, is still to be decided, within that same bound and holding nothing of the owner's later
-// events; past the bound each reaches the session that got, or is owed, the comment's copy by the
-// failed-mention rule, and no other credit (mentionDeliveries.editCreditCopyOf), and a session
-// whose copy of the comment is a credit's row gets its missed edits from that row
-// (creditRowEdits). A withdrawn row sends no comment. addPrimaryDocumentAuthors and
-// addAuthorRoutes both ask this filter.
+// The comment's edit follows the comment's copy, and its delete does too where the thread rule
+// takes the delete (takesThreadRule): each reaches such a session where that session's mention
+// failed, and waits while that mention, or the comment's copy that follows it, is still to be
+// decided, within that same bound and holding nothing of the owner's later events; past the
+// bound each reaches the session that got, or is owed, the comment's copy by the failed-mention
+// rule, and no other credit (mentionDeliveries.editCreditCopyOf), and a session whose copy of the
+// comment is a credit's row gets its missed edits from that row (creditRowEdits). A delete the
+// thread rule does not take reads none of the comment's mentions (newCreditFilter): where the
+// claimant route leaves the credits out, it leaves out every one of them. A withdrawn row sends
+// no comment. addPrimaryDocumentAuthors and addAuthorRoutes both ask this filter.
 type creditFilter struct {
 	leavesOut bool
 	// mentions is what the comment's mentions did, as the batch read them: the reading the
-	// destination build holds for a new comment (eventDestinations), and for an edit or a delete
-	// the reading of the comment it changes, which only this filter reads (edit).
+	// destination build holds for a new comment (eventDestinations), and for an edit, or a delete
+	// the thread rule takes, the reading of the comment it changes, which only this filter reads
+	// (followsComment).
 	mentions mentionDeliveries
 	// followsComment selects the original comment's failed-mention decision for a correction.
 	followsComment bool

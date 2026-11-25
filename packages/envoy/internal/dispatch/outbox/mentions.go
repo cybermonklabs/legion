@@ -462,8 +462,9 @@ func (d mentionDeliveries) resolvedAlonePastItsLease(sessionID string) bool {
 // or the comment never named it. The copy carries the event's own key: the edit's destinations
 // read no mention of the comment (eventDestinations). What the comment's mentions did is read
 // from the store, never from the edit's payload, which names none (newCreditFilter). The
-// comment's delete follows the comment's copy by this same rule (creditFilter.followsComment): what is
-// said below of the edit holds for the delete too.
+// comment's delete follows the comment's copy by this same rule only where the thread rule takes
+// the delete (takesThreadRule, creditFilter.followsComment): there, what is said below of the
+// edit holds for the delete too.
 //
 // It waits (creditWaits) while that is still to be decided: while a mention bound for that
 // session is being sent (mentionSending, for that attempt's lease) or is past that lease
@@ -1446,19 +1447,15 @@ func (c mentionComment) dropCreditRow(destination string) (dropped bool, err err
 // destination unsettled and due at once, where the pass settled it having published nothing
 // (mentionDeliveries.reopensCreditRowOf): the pass that follows decides it again by the attempts
 // as they stand then (decideFallbackCopy). A row the pass published, an unsettled one, and one
-// deleted since the batch read it are left as they are. So is every row of a deleted comment: the
-// delete settles each unsettled copy of the comment with nothing published, since the text the
-// copy carries is withdrawn, and fails each attempt still pending in the same write (deleteComment
-// in internal/dispatch/api), so the receipt of such an attempt, pinned to the row's session, must
-// not publish that text after the delete. It runs inside the statement gate, as holdFallbackCopy
-// does.
+// deleted since the batch read it are left as they are. A row of a deleted comment is reopened
+// too, and the withdrawal check refuses its publish (fallbackCopyWithdrawn). It runs inside the
+// statement gate, as holdFallbackCopy does.
 func (c mentionComment) reopenCreditRow(destination string) error {
 	if err := c.deps.lanes.statement(func() error {
 		_, err := c.deps.Store.Pool.Exec(c.ctx, `
 		update comment_fallback_copies f set settled_at = null, next_attempt_at = null
 		where f.comment_id = $1 and f.destination = $2 and f.target is not null and not f.published
 		  and f.settled_at is not null
-		  and not exists (select 1 from comments c where c.id = f.comment_id and c.deleted_at is not null)
 	`, c.id, destination)
 		return err
 	}); err != nil {
@@ -2286,9 +2283,11 @@ const fallbackWithdrawnQuery = `
 // reads this after every other read of its decision, the attempts' among them, so a delete that
 // one of those reads saw is a commit this later statement sees too. It reads the comment and not
 // the row: a batch that read the mention before the delete can hold the row after it
-// (holdFallbackCopy), a row the delete never settled. A delete that commits after this read finds
-// the pass's decision made: the copy is a send in flight and goes as recorded, while the row
-// reads published = false, since the pass's record writes no settled row (recordFallbackCopies).
+// (holdFallbackCopy), a row the delete never settled, and the receipt of an attempt the delete
+// failed can reopen a row the delete settled (reopenOnReceipt). A delete that commits after this
+// read finds the pass's decision made: the copy is a send in flight and goes as recorded, while
+// the row reads published = false, since the pass's record writes no settled row
+// (recordFallbackCopies).
 func fallbackCopyWithdrawn(ctx context.Context, deps Deps, held fallbackCopy) (bool, error) {
 	var withdrawn bool
 	if err := deps.Store.Pool.QueryRow(ctx, fallbackWithdrawnQuery, held.commentID).Scan(&withdrawn); err != nil {

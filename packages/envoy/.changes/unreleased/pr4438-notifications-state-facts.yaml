@@ -17,8 +17,8 @@ body: |-
   store, and wait for a mention of the reply still to settle no longer than that bound. Each then
   goes to each session that got, or is owed, the reply through a failed mention, and to no other
   session that only a document credits. A late copy of a live reply includes edits that the
-  recipient missed. A deleted reply is not sent from a held copy. The failed attempts that the
-  delete records do not reopen that copy. A copy of the
+  recipient missed. A deleted reply is not sent from a held copy, also where a failed attempt that
+  the delete records reopens that copy. A copy of the
   reply, of its edit or of its delete, that waits to learn whether such a mention names that
   session holds back none of the issue's later events, so a person's later comment reaches that
   session without waiting for any of them. A copy kept for a session that only a document credits

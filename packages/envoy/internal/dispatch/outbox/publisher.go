@@ -1389,9 +1389,10 @@ func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lo
 // and the outbox's own settle of an abandoned one (mentionComment.settleAbandoned): where the
 // attempt failed pinned to a session, and that session's credit's row of the comment settled with
 // nothing sent while every mention of the comment naming that session failed
-// (mentionDeliveries.reopensCreditRowOf), it reopens that row unless the comment was deleted
-// (mentionComment.reopenCreditRow). The fallback pass publishes a reopened row under the failed
-// mention's key (decideFallbackCopy). That is the Retry's road to a session a document credits alone, which the
+// (mentionDeliveries.reopensCreditRowOf), it reopens that row (mentionComment.reopenCreditRow).
+// The fallback pass publishes a reopened row under the failed mention's key (decideFallbackCopy),
+// unless the comment was deleted, when the withdrawal check refuses it (fallbackCopyWithdrawn).
+// That is the Retry's road to a session a document credits alone, which the
 // credits filter left out of the comment (creditFilter): a person's Retry of an @role: mention
 // re-resolves the role and may be pinned to that session long after the comment's event was
 // published and the pass settled the session's row with nothing sent, nothing having named the
