@@ -181,8 +181,10 @@ var stepStopped = StepEnd{Result: ResultStopped}
 // before this start. The record never makes the start wait: the row reaches Dispatch on a lane of
 // its own (record.LaneRecord). A phase that runs no step and a record key that is no issue key are
 // no step its callers find (standingStep). fixCheck is the check a fix's run is of, which its
-// record names, "" for a run of no fix.
-func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, agent claim.Token, fixCheck string) error {
+// record names, "" for a run of no fix. beside is the role whose branch a step that starts beside a
+// fix of its task pushes to, which the start binds to that one start (bindBesideFix), "" for a start
+// that binds none, a fix's own among them.
+func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, agent claim.Token, fixCheck string, beside claim.Role) error {
 	if err := e.settleStart(ctx, tx, issue.Key, step.place); err != nil {
 		return err
 	}
@@ -194,7 +196,9 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 	// The moment is the one the count of starts keeps, which PostgreSQL holds to the microsecond
 	// and the end reads back, so the start and the end write one moment (endRun).
 	now := e.now().Truncate(time.Microsecond)
+	var counted int64
 	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, step.place, func(starts int64) record.StepRecord {
+		counted = starts
 		write := stepWrite(issue, step.place, step.role, step.typ, string(agent), starts)
 		write.StartedAt = new(now)
 		if head != "" {
@@ -206,6 +210,9 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 		return write
 	})
 	if err != nil {
+		return err
+	}
+	if err := e.bindBesideFix(ctx, tx, issue, step.place, counted, beside); err != nil {
 		return err
 	}
 	return e.enqueue(ctx, tx, issue.Key, write)
@@ -420,13 +427,22 @@ func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue reco
 // that step names (startAgent), the one place that decides who runs a start no phase worker's entry
 // names: a move into accepting, whose role is the architect, for which start starts no worker, or
 // into a merge GitHub has already made, which nobody runs and whose close ends it (transition), and
-// admission's promotion of a member whose worker it does not start (StartStepRecord).
+// admission's promotion of a member whose worker it does not start (StartStepRecord). The owner's
+// acceptance that starts beside a fix of its task that reads its job or runs is bound to the
+// owner's branch beside it, as any step's start is (bindBesideFix), and, having no task of its own,
+// is told of the fix by one fix-started row (tellOwnerOfFix).
 func (e *Engine) startNamedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing) error {
 	agent, err := e.startAgent(ctx, tx, issue, step.at)
 	if err != nil {
 		return err
 	}
-	return e.startStep(ctx, tx, issue, step, agent, "")
+	if step.at != phase.Accepting {
+		return e.startStep(ctx, tx, issue, step, agent, "", "")
+	}
+	if err := e.startStep(ctx, tx, issue, step, agent, "", claim.RoleArchitect); err != nil {
+		return err
+	}
+	return e.tellOwnerOfFix(ctx, tx, issue, step)
 }
 
 // stepClaim is the claim token of role on key, in issue's project.

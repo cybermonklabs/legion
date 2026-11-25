@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -89,5 +90,75 @@ func TestAnUpdateRoundNamesEachBoundStepByTheRoleOfItsPhase(t *testing.T) {
 			claim.RoleArchitect:   {Branch: owner},
 			claim.RoleImplementer: {Branch: own, OwnFix: true},
 		})
+	})
+}
+
+// beside is the branch of each fix-started row of LEGION-208 by the role it is to, "" for a row
+// that names none.
+func (r *fixRig) beside() map[claim.Role]string {
+	r.t.Helper()
+	branches := map[claim.Role]string{}
+	for _, n := range r.newsOf() {
+		if n.Purpose == record.CINewsFixStarted {
+			branches[roleOf(r.t, n.Role)] = n.Branch
+		}
+	}
+	return branches
+}
+
+// A step beside a fix is told to push to its own branch wherever it is told anything. Fix 1 starts
+// while the tester runs: the tester's fix-started row names its own branch beside fix 1, which is
+// no branch of the issue (claim.IsBesideBranch); a tester that starts during the fix holds fix 1
+// and that branch in its start facts; and the update round's ask names that branch for the tester,
+// F with OwnFix for the implementer and no branch for the reviewer. While the fix reads its job, the
+// ask names FixReads and no branch for the implementer. The owner in accepting gets its own branch,
+// under the architect, in both its notice and the ask. The control: an issue with no fix finds no
+// branch beside a fix in any row, start or answer.
+func TestAStepBesideAFixIsToldToPushToItsOwnBranch(t *testing.T) {
+	own := besideFix1(t, claim.RoleImplementer)
+	t.Run("a tester that runs beside fix 1", func(t *testing.T) {
+		r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+		r.fails(fixHead, "k-ci")
+		r.assertPushes("while the fix reads its job", map[claim.Role]supervise.UpdatePush{claim.RoleImplementer: {FixReads: true}})
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		tester := besideFix1(t, claim.RoleTester)
+		if told := r.beside(); !claim.IsBesideBranch(told[claim.RoleTester]) || !reflect.DeepEqual(told, map[claim.Role]string{claim.RoleTester: tester}) {
+			t.Fatalf("the fix-started rows' branches = %v, want the tester's own branch %s alone", told, tester)
+		}
+		if facts := r.startFactsIn(phase.Testing); facts.Fix != 1 || facts.Branch != tester {
+			t.Fatalf("a tester's start facts during the fix = %+v, want fix 1 on %s", facts, tester)
+		}
+		r.assertPushes("while the fix runs", map[claim.Role]supervise.UpdatePush{
+			claim.RoleTester:      {Branch: tester},
+			claim.RoleImplementer: {Branch: own, OwnFix: true},
+		})
+	})
+
+	t.Run("the owner in accepting", func(t *testing.T) {
+		r := newFixRig(t, returnEngine(), []string{"implementer", "reviewer", "acceptance:owner"}, TriggerImplementationReady)
+		r.approves()
+		r.fails(fixHead, "k-ci")
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		owner := besideFix1(t, claim.RoleArchitect)
+		if told := r.beside(); told[claim.RoleArchitect] != owner || told[claim.RoleReviewer] != "" {
+			t.Fatalf("the fix-started rows' branches = %v, want the owner's own branch %s and none for the reviewer", told, owner)
+		}
+		r.assertPushes("while the fix runs", map[claim.Role]supervise.UpdatePush{
+			claim.RoleArchitect:   {Branch: owner},
+			claim.RoleImplementer: {Branch: own, OwnFix: true},
+		})
+	})
+
+	t.Run("the control: no fix", func(t *testing.T) {
+		r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+		r.assertPushes("with no fix", map[claim.Role]supervise.UpdatePush{})
+		if told := r.beside(); len(told) != 0 {
+			t.Fatalf("the fix-started rows' branches with no fix = %v, want none", told)
+		}
+		for _, at := range []phase.Phase{phase.Testing, phase.Reviewing} {
+			if facts := r.startFactsIn(at); facts.Branch != "" {
+				t.Fatalf("the start facts in %s with no fix = %+v, want no branch", at, facts)
+			}
+		}
 	})
 }

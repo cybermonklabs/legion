@@ -73,14 +73,15 @@ func assertReviewersStart(t *testing.T, start record.SuperviseRequest) {
 }
 
 // assertFixResumed fails unless start resumes fix 1: the implementer's start in implementing,
-// carrying the fix's number and the head its working copy is made at, waiting for no slot, with
-// the fix's stored task (the implementer's row's) at entry.
+// carrying the fix's number, the head its working copy is made at and the fix's own branch, whether
+// or not a push of it is recorded, waiting for no slot, with the fix's stored task (the
+// implementer's row's) at entry.
 func (r *fixRig) assertFixResumed(start record.SuperviseRequest, entry int64) {
 	r.t.Helper()
 	row := roleRowOf(r.t, r.pool, r.engine, "LEGION-208", claim.RoleImplementer)
 	if start.Role != claim.RoleImplementer || start.Phase != phase.Implementing || start.Fix != 1 || start.FixFrom != fixHead ||
-		start.NeedsSlot || start.Entry != entry || start.Generation != 1 {
-		r.t.Fatalf("the implementer's start = %+v, want fix 1's in implementing from %s at entry %d, waiting for no slot", start, fixHead, entry)
+		start.FixBranch != besideFix1(r.t, claim.RoleImplementer) || start.NeedsSlot || start.Entry != entry || start.Generation != 1 {
+		r.t.Fatalf("the implementer's start = %+v, want fix 1's in implementing from %s on its own branch at entry %d, waiting for no slot", start, fixHead, entry)
 	}
 	if row.EntryTask == "" || start.Task != row.EntryTask {
 		r.t.Fatalf("the implementer's start carries task %q, want the fix's stored task %q", start.Task, row.EntryTask)

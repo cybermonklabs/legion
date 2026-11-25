@@ -210,10 +210,23 @@ type Engine struct {
 	noAskAtWay                 bool
 	askAtWayWithNoRules        bool
 	wayFromRecordedHead        bool
+	// For the branches beside a fix (fix_branches.go), each the fault its test plants first:
 	// noEndBesideDelete takes out the deletion of the branches beside a task's fixes that its move
 	// into the retro with no hold queues, at a transition and at the release of an end hold
-	// (queueTaskEnd). Only a test sets it.
-	noEndBesideDelete bool
+	// (queueTaskEnd); besideDeleteAsBefore queues the deletion after every way 2 or 3 and at a stop,
+	// and deleteAfterEveryCompletion after every way 2 or 3 of the fix's own completion, commits or
+	// none (afterFix, dropFixWay); toldByClock takes a step as told of a fix where its start is no
+	// earlier than the fix's opening by the clock, and tellEveryStepOfFix tells each step whatever its
+	// start named (tellStepsOfFix); updateByRunningFix reads no step's binding at an update round's
+	// ask (UpdatePushes); and fixBranchFromRecordedPush names the fix's own branch on its start and
+	// resume only where a push of it is recorded (fixBranchOf). Only a test sets any of them.
+	noEndBesideDelete          bool
+	besideDeleteAsBefore       bool
+	deleteAfterEveryCompletion bool
+	toldByClock                bool
+	tellEveryStepOfFix         bool
+	updateByRunningFix         bool
+	fixBranchFromRecordedPush  bool
 
 	// For a task's CI news (ci_news.go), each the fault its test plants first: assignFromSettlement
 	// gives the implementer a repair assignment of each failed run of a settlement (reportRuns);

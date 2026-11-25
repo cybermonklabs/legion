@@ -705,9 +705,10 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // resume task is the fix's stored task, the one its start wrote on the implementer's row
 // (record.PhaseRow.EntryTask, startFix), as each resume sends a row's stored task, at entry: the
 // row's for a claim behind it, 0 for a claim level with it, whose start marks say it is a resume
-// task. The start stands where the fix's work does (WorkStanding) and carries the fix's number
-// and the head its working copy is made at (startMarks.fix, fixFrom), so started writes it beside
-// the line of starts that wait for a slot (record.Store.EnqueueFixStart) and never into it. It is a
+// task. The start stands where the fix's work does (WorkStanding) and carries the fix's number,
+// the head its working copy is made at and the fix's own branch (startMarks.fix, fixFrom,
+// fixBranch), so started writes it beside the line of starts that wait for a slot
+// (record.Store.EnqueueFixStart) and never into it. It is a
 // re-assertion, as every resume is (startMarks.reasserts). A fix still reading its failed job has
 // raised no entry, and no path resumes it: the issue record names no running fix then.
 func (e *Engine) resumeFix(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow, entry int64,
@@ -722,7 +723,7 @@ func (e *Engine) resumeFix(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 	if row.EntryTask == "" {
 		return false, fmt.Errorf("resume fix %d of %s: the %s's row holds no task of it", fix.Fix, issue.Key, role)
 	}
-	marks.fix, marks.fixFrom, marks.stored, marks.reasserts = fix.Fix, fix.Head, true, true
+	marks.fix, marks.fixFrom, marks.fixBranch, marks.stored, marks.reasserts = fix.Fix, fix.Head, e.fixBranchOf(issue, *fix), true, true
 	return true, e.started(ctx, tx, WorkStanding(issue, role), role, row.EntryTask, entry, marks)
 }
 
@@ -814,13 +815,15 @@ type startMarks struct {
 	// operator's own request brings (restart).
 	reasserts bool
 	// fix is the number of the fix the start is of (record.SuperviseRequest.Fix), 0 for a start of
-	// the phase's own step, and fixFrom the head the fix's working copy is made at. A fix's start
-	// is written beside the line of starts that wait for a slot (record.Store.EnqueueFixStart),
-	// never through it (startOrOwe): it runs beside the step of the phase, whose own start keeps
-	// its place in that line. moveTo is the head the task's working copy moves to before the task
+	// the phase's own step, fixFrom the head the fix's working copy is made at, and fixBranch the
+	// fix's own branch (record.SuperviseRequest.FixBranch, fixBranchOf), which every start and
+	// resume of a fix names whether or not a push of it is recorded. A fix's start is written
+	// beside the line of starts that wait for a slot (record.Store.EnqueueFixStart), never through
+	// it (startOrOwe): it runs beside the step of the phase, whose own start keeps its place in that
+	// line. moveTo is the head the task's working copy moves to before the task
 	// (record.SuperviseRequest.MoveTo), "" for none.
-	fix             int
-	fixFrom, moveTo string
+	fix                        int
+	fixFrom, fixBranch, moveTo string
 }
 
 // started enqueues the start each of its six callers makes, each of which has held role to one
@@ -856,10 +859,10 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	start := record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
 		RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume, FreshSession: marks.freshSession,
-		Fix: marks.fix, FixFrom: marks.fixFrom, MoveTo: marks.moveTo}
+		Fix: marks.fix, FixFrom: marks.fixFrom, FixBranch: marks.fixBranch, MoveTo: marks.moveTo}
 	if start.Fix > 0 {
 		if e.fixStartInLine {
-			start.Fix, start.FixFrom = 0, ""
+			start.Fix, start.FixFrom, start.FixBranch = 0, "", ""
 			return startOrOwe(ctx, tx, e.store, issue.Key, start, e.now(), move)
 		}
 		return enqueueFixStart(ctx, tx, e.store, issue.Key, start, e.now(), move)
@@ -1170,13 +1173,18 @@ func (e *Engine) enterAt(ctx context.Context, tx pgx.Tx, issue record.Issue, w *
 	}
 	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
 	// and the promotion's start of a mid-phase member (StartPromotedWorker). The architect's own
-	// entry, which answered above, is no step of the issue's task.
+	// entry, which answered above, is no step of the issue's task. A step that starts beside an open
+	// fix of its task pushes to a branch of role's beside it; a fix's own start pushes to the fix's.
 	if step, ok := stepAt(*w, issue, at); ok && !planHold(issue, w.Stored) {
 		agent, err := stepClaim(issue, issue.Key, role)
 		if err != nil {
 			return 0, "", err
 		}
-		if err := e.startStep(ctx, tx, issue, step, agent, fixCheck); err != nil {
+		beside := role
+		if fixCheck != "" {
+			beside = ""
+		}
+		if err := e.startStep(ctx, tx, issue, step, agent, fixCheck, beside); err != nil {
 			return 0, "", err
 		}
 	}
