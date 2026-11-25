@@ -1088,7 +1088,7 @@ func (l *Ledger) commit(ctx context.Context) error {
 	// (roomShadow.measure), before the publish or after it.
 	for _, artifactID := range l.order {
 		write := l.live[artifactID]
-		if l.service.checkRendering != nil && !write.finished {
+		if l.service.checkRendering != nil {
 			l.service.checkRendering("commit", write)
 		}
 		if shadow := write.newShadow(); shadow != nil {

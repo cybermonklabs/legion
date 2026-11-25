@@ -768,11 +768,11 @@ func TestForkReadsEveryReuseOfAWritesRenderingDescribesItsFork(t *testing.T) {
 	// The room stores the browser's commit only once the write's commit drops the document's
 	// advisory lock, which the transaction holds from its read to its end, and it measures that
 	// commit on the room's shadow, whose document is the write's fork (roomShadow.measure): from
-	// the write's commit on, the fork holds more than the write. Here the publish is held after
-	// the commit (PauseAfterCommit) until the room has stored the browser's commit and the fork
-	// holds its text, the order envoy-go-race-docs job 138988277423 met by chance; the write's
-	// rendering, checked as the commit hands the fork on, still describes the write's own state,
-	// as its version does.
+	// the write's commit on, the fork can come to hold more than the write. Here the publish is
+	// held after the commit (PauseAfterCommit) until the room has stored the browser's commit and
+	// the fork holds its text, the order envoy-go-race-docs job 138988277423 met by chance; the
+	// write's rendering, checked as the commit hands the fork on, still describes the write's own
+	// state, as its version does.
 	t.Run("warm/a browser commit the room stores before the publish", func(t *testing.T) {
 		const section = 45
 		if err := service.ArmLiveWritePause(artifactID, PauseAfterCommit); err != nil {
@@ -807,20 +807,15 @@ func storeBeforePublish(service *Service, artifactID, text string, wait time.Dur
 	if err == nil {
 		err = shadowHolds(service, artifactID, text)
 	}
-	if _, released := service.ReleaseLiveWritePause(artifactID, PauseAfterCommit); err == nil {
-		err = released
+	if _, releaseErr := service.ReleaseLiveWritePause(artifactID, PauseAfterCommit); err == nil {
+		err = releaseErr
 	}
 	return err
 }
 
 // shadowHolds fails unless artifactID's room holds a shadow whose rendering holds text.
 func shadowHolds(service *Service, artifactID, text string) error {
-	state := service.lockExistingState(artifactID)
-	if state == nil {
-		return errors.New("the document has no room record")
-	}
-	shadow := state.shadow
-	service.unlockState(artifactID, state)
+	shadow := residentShadow(service, artifactID)
 	if shadow == nil {
 		return errors.New("the room holds no shadow")
 	}
