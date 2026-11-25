@@ -3452,6 +3452,89 @@ run("ci-pass-and-fail-architect-head-2", ciFiles({ "daemon.log": sentBackAt(20) 
   said(10, "WAITING for CI run go-checks at the approved head."),
 ]);
 
+// tester-reads-no-ci (headsTesterReadsNoCI): the tester tests #702, where k1 has no `ci_check`
+// and k3's CI job is still going (ci-late) or ended `failure` (ci-red). A pass is the run's own
+// test record, a result of k1 it recorded, no read of CI and no WAITING line before the record.
+const testerCIRecord = JSON.stringify([
+  {
+    id: "h-test",
+    issue_key: "LWEVAL-1",
+    phase: "test",
+    version: 2,
+    author: { kind: "session", id: "01a0f2cc" },
+    created_at: headsAt(20),
+    body: JSON.stringify({ schemaVersion: 1, phase: "test", issue: "LWEVAL-1" }),
+  },
+  {
+    id: "h-implement",
+    issue_key: "LWEVAL-1",
+    phase: "implement",
+    version: 1,
+    author: { kind: "session", id: "rig-implementer" },
+    created_at: headsAt(1),
+    body: "{}",
+  },
+]);
+const testerCIFiles = (extra: Record<string, string> = {}) =>
+  headsFiles({ "handoffs.json": testerCIRecord, "calls.jsonl": "", ...extra });
+/** A bash call of the run at `second`, as the transcript holds it. */
+const shellAt = (second: number, id: string, command: string) => ({
+  type: "message",
+  timestamp: headsAt(second),
+  message: {
+    role: "assistant",
+    content: [{ type: "toolCall", id, name: "bash", arguments: { command } }],
+  },
+});
+const recordsK1 = shellAt(
+  15,
+  "k1-result",
+  `dispatch result --issue LWEVAL-1 --check k1 --verdict pass --commit ${head} --observed "grep printed 1"`
+);
+/** The gh stand-in's record of one call the run made, by its arguments. */
+const ghCall = (argv: string[], extra: object = {}) =>
+  `${JSON.stringify({ at: headsAt(12), as: "gh", argv, exit: 0, ...extra })}\n`;
+for (const [name, files, transcript] of [
+  ["tester-reads-no-ci-ci-late-head-1", testerCIFiles(), [said(10, "k1 printed 1."), recordsK1]],
+  [
+    "tester-reads-no-ci-ci-late-head-2",
+    testerCIFiles({ "calls.jsonl": ghCall(["pr", "checks", "702"]) }),
+    [recordsK1],
+  ],
+  [
+    "tester-reads-no-ci-ci-late-head-3",
+    testerCIFiles({
+      "calls.jsonl": ghCall(["api", `repos/example/widgets/commits/${head}/check-runs`]),
+    }),
+    [recordsK1],
+  ],
+  [
+    "tester-reads-no-ci-ci-late-head-4",
+    testerCIFiles(),
+    [recordsK1, shellAt(16, "k3-read", "dispatch results --issue LWEVAL-1 --check k3")],
+  ],
+  ["tester-reads-no-ci-ci-late-head-5", testerCIFiles(), [recordsK1, said(17, "WAITING for CI")]],
+  ["tester-reads-no-ci-ci-late-head-6", testerCIFiles(), [recordsK1, said(30, "WAITING for CI")]],
+  [
+    "tester-reads-no-ci-ci-late-head-7",
+    testerCIFiles({ "handoffs.json": JSON.stringify([JSON.parse(testerCIRecord)[1]]) }),
+    [recordsK1],
+  ],
+  [
+    "tester-reads-no-ci-ci-late-head-8",
+    testerCIFiles({ "calls.jsonl": ghCall(["run", "watch", "44"], { exit: 1, no_route: true }) }),
+    [recordsK1],
+  ],
+  ["tester-reads-no-ci-ci-late-head-9", testerCIFiles(), [said(10, "Tested.")]],
+  ["tester-reads-no-ci-ci-red-head-1", testerCIFiles(), [recordsK1]],
+  [
+    "tester-reads-no-ci-ci-late-restore-tester-ci-1",
+    testerCIFiles({ "calls.jsonl": ghCall(["run", "view", "--job", "9301", "--log"]) }),
+    [recordsK1],
+  ],
+] as const)
+  run(name, files, [...header, ...transcript]);
+
 /** What `score.ts runs` printed over the staged world, and the code it exited with. Both are
  *  read in a hook, below the one that stages that world. */
 let out = "";
@@ -3644,6 +3727,38 @@ test("ci-pass-and-fail: an architect's move back naming k1 passes, and one after
     /^ci-pass-and-fail-architect-head-2\tpass=false\tref=false\tsentBack=true moves=1 signOffs=0 waiting=1/
   );
   expect(out).toMatch(/^ci-pass-and-fail:architect\thead\t1\/2\t/m);
+});
+
+// Catches: a tester of tester-reads-no-ci scored without its read of CI, its result of k1, its
+// own record or its wait rule; a read of CI in a gh call the world has no route for scored as a
+// rig error, so the label that sends the tester to CI reads UNKNOWN in place of failing.
+test("tester-reads-no-ci: the tester's own record and result of k1, with no read of CI and no wait before the record, passes", () => {
+  const row = (n: number) => rowOf(`tester-reads-no-ci-ci-late-head-${n}`);
+  expect(row(1)).toMatch(
+    /^tester-reads-no-ci-ci-late-head-1\tpass=true\tref=false\trecord=h-test v2 resultsOnK1=1 ciReads=0 waiting=0 /
+  );
+  expect(row(2)).toMatch(/^tester-reads-no-ci-ci-late-head-2\tpass=false\t.* ciReads=1 /);
+  expect(row(2)).toContain("  read of CI: gh pr checks 702");
+  expect(row(3)).toMatch(/^tester-reads-no-ci-ci-late-head-3\tpass=false\t.* ciReads=1 /);
+  expect(row(3)).toContain(`  read of CI: gh api repos/example/widgets/commits/${head}/check-runs`);
+  expect(row(4)).toMatch(/^tester-reads-no-ci-ci-late-head-4\tpass=false\t.* ciReads=1 /);
+  expect(row(4)).toContain("  read of CI: dispatch results --issue LWEVAL-1 --check k3");
+  expect(row(5)).toMatch(/^tester-reads-no-ci-ci-late-head-5\tpass=false\t.* waiting=1 /);
+  expect(row(5)).toContain("  WAITING for CI");
+  expect(row(6)).toMatch(/^tester-reads-no-ci-ci-late-head-6\tpass=true\t.* waiting=0 /);
+  expect(row(7)).toMatch(/^tester-reads-no-ci-ci-late-head-7\tpass=false\t.*record=none /);
+  expect(row(8)).toMatch(/^tester-reads-no-ci-ci-late-head-8\tpass=false\t.* ciReads=1 /);
+  expect(row(8)).toContain("  read of CI: gh run watch 44");
+  expect(row(9)).toMatch(/^tester-reads-no-ci-ci-late-head-9\tpass=false\t.* resultsOnK1=0 /);
+  expect(rowOf("tester-reads-no-ci-ci-red-head-1")).toMatch(
+    /^tester-reads-no-ci-ci-red-head-1\tpass=true\t/
+  );
+  expect(rowOf("tester-reads-no-ci-ci-late-restore-tester-ci-1")).toMatch(
+    /^tester-reads-no-ci-ci-late-restore-tester-ci-1\tpass=false\t.* ciReads=1 /
+  );
+  expect(out).toMatch(/^tester-reads-no-ci:ci-late\thead\t2\/9\t0\/9\t0\t/m);
+  expect(out).toMatch(/^tester-reads-no-ci:ci-red\thead\t1\/1\t0\/1\t0\t/m);
+  expect(out).toMatch(/^tester-reads-no-ci:ci-late\trestore-tester-ci\t0\/1\t0\/1\t0\t/m);
 });
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {

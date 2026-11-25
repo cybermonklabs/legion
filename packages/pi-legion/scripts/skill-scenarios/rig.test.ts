@@ -2836,6 +2836,85 @@ describe("heads_fixture", () => {
     expect(String(alone.route("^gh pr checks")?.stdout)).toContain(jobLine(failedJob, "fail"));
   });
 
+  // Catches: a tester world whose GitHub shows k3's job other than Dispatch reads it (passed, or
+  // ended where the case says it still runs), a failed job whose log no read answers, a body that
+  // carries k1's line alone, and a second pull request.
+  test("heads_routes of tester-reads-no-ci serve #702 alone, k3's job still going in ci-late and failed with its log in ci-red", () => {
+    const { code, run } = build("heads_fixture");
+    expect(code).toBe(0);
+    const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
+    const k1Line = `- Check k1 (before_merge): pass at ${String(head).slice(0, 12)} (implementer) on #702`;
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({ issue: "LWEVAL-9", title: "A usage page", lines: { "702": k1Line } })
+    );
+    const late = RIG_WORLD.ciJobs["ci-late"];
+    const red = RIG_WORLD.ciJobs["ci-check-fail"];
+    const routes = (scenarioCase: string, k3Line: string) => {
+      writeFileSync(
+        path.join(run, "results-before.txt"),
+        [
+          "Checks of LWEVAL-9:",
+          "",
+          "- k1 (before_merge). A pass stands: yes.",
+          `  - #702 at ${head}: yes, from implementer.`,
+          `    Pull request line: ${k1Line}`,
+          "- k3 (before_merge): its CI job's results below.",
+          `  - #702 at ${head}: no.`,
+          `    Pull request line: ${k3Line}`,
+          "",
+        ].join("\n")
+      );
+      const result = bash(
+        [
+          "set -euo pipefail",
+          fn("fail"),
+          fn("pr_line"),
+          fn("heads_routes"),
+          `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+          'heads_routes tester-reads-no-ci "$2"',
+        ].join("\n"),
+        [run, scenarioCase]
+      );
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+      const all: { match: string; stdout?: unknown; exit?: number }[] = JSON.parse(
+        readFileSync(path.join(run, "fixtures.json"), "utf8")
+      ).routes;
+      return (match: string) => all.find((each) => each.match === match);
+    };
+    const jobLine = (job: { name: string; run: number; checkRun: number }, state: string) =>
+      `${job.name}\t${state}\thttps://github.com/example/widgets/actions/runs/${job.run}/job/${job.checkRun}`;
+    const logOf = (id: number) => `^gh run view (?=.*--job[ =]${id}\\b)(?=.*--log)`;
+    /** The body of the pull request a `gh pr view` route answers, "" when it answers none. */
+    const bodyOf = (stdout: unknown) =>
+      typeof stdout === "object" && stdout !== null && "body" in stdout ? String(stdout.body) : "";
+
+    const lateLine = `- Check k3 (before_merge): CI run ${late.name} has no result (not_completed)`;
+    const lateRoute = routes("ci-late", lateLine);
+    expect(String(lateRoute("^gh pr checks")?.stdout)).toContain(jobLine(late, "pending\t0"));
+    expect(lateRoute("^gh pr checks")?.exit).toBe(8);
+    expect(lateRoute(`^gh api .*commits/${head}/check-runs`)?.stdout).toMatchObject({
+      check_runs: [
+        { name: "lint" },
+        { name: "test" },
+        { id: late.checkRun, status: "in_progress", conclusion: null },
+      ],
+    });
+    expect(lateRoute(logOf(late.checkRun))).toBeUndefined();
+    const lateBody = bodyOf(lateRoute("^gh pr view")?.stdout);
+    expect(lateBody).toContain(`**Checks:**\n${k1Line}\n${lateLine}\n`);
+    expect(lateRoute("^gh pr list")?.stdout).toHaveLength(1);
+    expect(lateRoute("^gh api .*pulls/702/reviews")?.stdout).toEqual([]);
+
+    const redLine = `- Check k3 (before_merge): fail at ${String(head).slice(0, 12)}, from CI run ${red.name}.`;
+    const redRoute = routes("ci-red", redLine);
+    expect(String(redRoute("^gh pr checks")?.stdout)).toContain(jobLine(red, "fail\t10s"));
+    expect(redRoute("^gh pr checks")?.exit).toBe(1);
+    expect(redRoute(logOf(red.checkRun))?.stdout).toBe(red.log);
+    const redBody = bodyOf(redRoute("^gh pr view")?.stdout);
+    expect(redBody).toContain(`**Checks:**\n${k1Line}\n${redLine}\n`);
+  });
+
   // Each GitHub read the heads scenarios' agents made in the fifth round of runs and since, one
   // call of each endpoint in the form an agent wrote it, and the reads the role prompts and skills
   // name. The round's agents named two repositories, since the pane's addressing named another than
