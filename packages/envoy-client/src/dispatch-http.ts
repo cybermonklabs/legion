@@ -2309,8 +2309,9 @@ export class DispatchClient {
   }
 
   /** `GET /api/v1/projects/{key}/plans`: each finished issue of the project, newest close first,
-   *  with its plan, each retro's rating, its time and its count of failed steps. `since` and
-   *  `until` bound the close to `[since, until)`, and a bound left out is not sent. */
+   *  with its plan, each retro's rating, its time, its count of failed steps, and the experiment
+   *  and the variant the step records of its newest run name, null where they name none. `since`
+   *  and `until` bound the close to `[since, until)`, and a bound left out is not sent. */
   async listProjectPlans(
     project: string,
     window: { readonly since?: string | undefined; readonly until?: string | undefined } = {}

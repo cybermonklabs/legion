@@ -341,8 +341,8 @@ type Assignment struct {
 	// record.DesignStep), so an import of config here would close a cycle.
 	Unit string
 	// Variant is the arm drawn (config.Variant.Name), "" for no variant: an experiment at mode
-	// off, which draws for no unit, and the answer a hand-over settles a child at for an
-	// experiment the tree it left held no row for.
+	// off, which gives every new unit no arm, and the answer a hand-over settles a child at for
+	// an experiment the tree it left held no row for.
 	Variant string
 	// Mode is the experiment's mode when the draw was made (a config.ExperimentMode word), "" where
 	// a hand-over settled the row and the old tree held none, so no draw was ever made under any
