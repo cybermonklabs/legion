@@ -16,7 +16,10 @@
 # string, a template literal, a conditional on one line or wrapped as Biome wraps it, a call or a
 # concatenation, while with a message a matcher, a property of the focused element, a read nested
 # in a call and a read inside an array or an object, a conditional after it included, are still
-# not counted; a kept site passes only with a
+# not counted; a `getAttribute` or `hasAttribute` read with a `??` or `||` fallback after it inside
+# `expect` fails as the bare read does, with a message or without one and wrapped, and passes under
+# its marker, while such a read passed to a call or held in an array or an object is not counted;
+# a kept site passes only with a
 # `// jest-dom: <reason>` line of at least four words, each holding a letter, on the line directly
 # above its `expect(`, so an ordinary comment there fails, and so do a marker with code or a blank
 # line between it and the read, a block comment, a marker on the read's own line or wrapped onto a
@@ -414,6 +417,77 @@ EOF
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "counts no read at all" "$(contains "$out" 'every one of the 0 hand-written focus and attribute assertions')"
+
+# A `??` or `||` fallback leaves the read the value `expect` compares: a pattern that wanted the
+# read, or its message, to close `expect(` straight after it saw none of these, and
+# useFootInset.test.tsx's, Margin.landing.test.tsx's and shared-controls.options.test.tsx's came
+# in unmarked.
+echo "case: an attribute read with a ?? or || fallback inside its expect is refused at its line"
+root=$(fixture fallback)
+rows "$root" <<'EOF'
+test("a row", () => {
+  expect(box.getAttribute("style") ?? "").not.toContain("80px");
+  expect(card?.getAttribute("aria-expanded") ?? "false").toBe("false");
+  expect(row.hasAttribute("hidden") || open).toBe(true);
+  expect(row.getAttribute("aria-current") || "none", "the row is not current").toBe("true");
+  expect(shown?.hasAttribute("tabindex") ?? false, `${name} lost its tab stop`).toBe(false);
+  expect(
+    card?.getAttribute("aria-expanded") ?? "false",
+    open ? "the card opened" : "the card stayed shut"
+  ).toBe("false");
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts all six" "$(contains "$out" '6 of 6 hand-written focus and attribute assertions')"
+check "names the ?? read compared with .not.toContain" "$(contains "$out" 'rows.test.tsx:2:')"
+check "names the ?. read with a ?? fallback" "$(contains "$out" 'rows.test.tsx:3:')"
+check "names the hasAttribute read with a || fallback" "$(contains "$out" 'rows.test.tsx:4:')"
+check "names the || read with a string message" "$(contains "$out" 'rows.test.tsx:5:')"
+check "names the hasAttribute ?? read with a template message" "$(contains "$out" 'rows.test.tsx:6:')"
+check "names the wrapped ?? read with a conditional message at its expect" "$(contains "$out" 'rows.test.tsx:7:')"
+
+echo "case: a fallback read passed to a call or held in an array or an object is not counted"
+root=$(fixture fallback_left_out)
+rows "$root" <<'EOF'
+test("a row", () => {
+  expect(document.getElementById(text.getAttribute("aria-describedby") ?? "")?.textContent).toBe(
+    "acme/web"
+  );
+  expect(ids(row.getAttribute("aria-owns") ?? "")).toEqual(["a", "b"]);
+  expect([row.getAttribute("data-a") ?? "", "2"]).toEqual(["1", "2"]);
+  expect({ a: row.getAttribute("data-a") ?? "", b: "2" }).toEqual({ a: "1", b: "2" });
+  expect([row.hasAttribute("hidden") || open, "1"]).toEqual([false, "1"]);
+});
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts no read at all" "$(contains "$out" 'every one of the 0 hand-written focus and attribute assertions')"
+
+echo "case: a fallback read under its marker passes"
+root=$(fixture fallback_marked)
+rows "$root" <<'EOF'
+test("a row", () => {
+  // jest-dom: the case reads an absent style as one without the room.
+  expect(box.getAttribute("style") ?? "").not.toContain("80px");
+  // jest-dom: a missing card reads as collapsed, and the matcher fails on no element.
+  expect(card?.getAttribute("aria-expanded") ?? "false").toBe("false");
+  // jest-dom: an open sheet counts the row as shown whatever it holds.
+  expect(row.hasAttribute("hidden") || open).toBe(true);
+  // jest-dom: the message names the path a failure needs.
+  expect(row.getAttribute("aria-current") || "none", `${path} is not current`).toBe("true");
+  // jest-dom: a missing link has no tab stop to lose.
+  expect(shown?.hasAttribute("tabindex") ?? false, `${name} lost its tab stop`).toBe(false);
+  // jest-dom: the message names which sheet a failure drew.
+  expect(
+    card?.getAttribute("aria-expanded") ?? "false",
+    open ? "the card opened" : "the card stayed shut"
+  ).toBe("false");
+});
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "reports the clean scan" "$(contains "$out" 'every one of the 6 hand-written focus and attribute assertions')"
 
 echo "case: a kept site with its marker on the line above passes"
 root=$(fixture kept)

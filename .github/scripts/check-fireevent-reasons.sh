@@ -40,7 +40,13 @@
 # `expect(el).toHaveAttribute(name, expect.stringContaining(part))` (`expect.stringMatching(re)`),
 # not `expect(el.getAttribute(name))` compared by hand with `.toBe(`, `.toBeNull(`, `.toContain(`
 # or `.toMatch(`. Wherever `.toBe(` is named here, `.toEqual(` and `.toStrictEqual(` count too,
-# since on a string, a boolean or an element they compare what `.toBe(` does. Each shape counts
+# since on a string, a boolean or an element they compare what `.toBe(` does. A `getAttribute` or
+# `hasAttribute` read with a `??` or `||` fallback after it inside `expect(` is the same read,
+# whatever expression the fallback is: `expect(el.getAttribute(name) ?? "").not.toContain(part)`
+# is `expect(el).not.toHaveAttribute(name, expect.stringContaining(part))`, and
+# `expect(el?.getAttribute(name) ?? "false").toBe("false")` and
+# `expect(el.hasAttribute(name) || other).toBe(true)` count as the bare reads do. When the fallback
+# was first counted, 4 such sites in 3 files had come in unseen. Each shape counts
 # whether or not `expect` carries a message after the value it reads, whatever expression that
 # message is: `expect(document.activeElement, "why").toBe(el)` and
 # `expect(document.activeElement, open ? "why" : "how").toBe(el)` are the same site as
@@ -82,9 +88,11 @@
 # inside a call there, so `expect(rows.map((row) => row.getAttribute(name))).toEqual(…)` is not
 # one, and neither is a read of a property of the focused element (`document.activeElement?.id`)
 # or a call it is passed to (`pane.contains(document.activeElement)`), with a message or without
-# one. A locator holding an unbalanced parenthesis inside a string hides its site from this, and so
-# does a message where a pattern reads the whole argument list (the focused element named in
-# `.toBe(`, or compared with `===`).
+# one, nor an attribute read passed to a call with its fallback, as in
+# `expect(document.getElementById(el.getAttribute(name) ?? "")?.textContent)`. A locator holding
+# an unbalanced parenthesis inside a string hides its site from this, and so does a message where
+# a pattern reads the whole argument list (the focused element named in `.toBe(`, or compared
+# with `===`).
 #
 # A `fireEvent` call's reason is a comment within the five lines above the call: the site's own
 # one-line reason, or the `biome-ignore` comment where the call sits beside the import. The window
@@ -142,7 +150,15 @@ for _ in range(4):
 # or the next key of an object reaches the `]` or `}` that closes it before `expect`'s own `)`, and
 # is not the whole value `expect` reads.
 LITERAL = "|".join((r'"(?:[^"\\\n]|\\.)*"', r"'(?:[^'\\\n]|\\.)*'", r"`(?:[^`\\]|\\.)*`"))
-MESSAGE = rf"(?:\s*,(?:{LITERAL}|\({BALANCED}*\)|[^()\[\]{{}},\"'`])*(?:,\s*)?)?"
+EXPRESSION = rf"(?:{LITERAL}|\({BALANCED}*\)|[^()\[\]{{}},\"'`])*"
+MESSAGE = rf"(?:\s*,{EXPRESSION}(?:,\s*)?)?"
+# A `??` or `||` fallback after an attribute read (`expect(el.getAttribute(name) ?? "")`) leaves
+# the read the value `expect` compares, so it may follow the read, before any message, and it is
+# any expression, ending where a message does. A read passed to a call with its fallback
+# (`document.getElementById(el.getAttribute(name) ?? "")`) sits inside that call's group, where a
+# read never matches, and a read with its fallback inside an array or an object reaches the `]`
+# or `}` that closes it before `expect`'s own `)`, so neither counts.
+FALLBACK = rf"(?:\s*(?:\?\?|\|\|){EXPRESSION})?"
 # The focused element compared by hand: read as `expect`'s whole argument and compared with
 # `.toBe(`; named as what `.toBe(` compares with; or compared with `===`, `!==`, `==` or `!=`, on
 # either side, at the top level of `expect`'s argument. A read of a property of the focused element
@@ -164,11 +180,11 @@ FOCUS = (
 )
 ATTRIBUTE = (
     re.compile(
-        rf"\bexpect\({BALANCED}*?\.getAttribute\({BALANCED}*\){MESSAGE}\s*\)"
+        rf"\bexpect\({BALANCED}*?\.getAttribute\({BALANCED}*\){FALLBACK}{MESSAGE}\s*\)"
         r"\s*(?:\.not\s*)?\.(?:toBe|toEqual|toStrictEqual|toBeNull|toContain|toMatch)\("
     ),
     re.compile(
-        rf"\bexpect\({BALANCED}*?\.hasAttribute\({BALANCED}*\){MESSAGE}\s*\)"
+        rf"\bexpect\({BALANCED}*?\.hasAttribute\({BALANCED}*\){FALLBACK}{MESSAGE}\s*\)"
         rf"\s*(?:\.not\s*)?\.{COMPARE}\("
     ),
 )

@@ -176,6 +176,7 @@ test("a phone comment deep link highlights its card without expanding it or open
     expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument();
     expect(screen.getByTestId("margin-sheet")).toHaveAttribute("data-expanded", "false");
     const card = screen.queryByTestId(`margin-comment-${comment.id}`);
+    // jest-dom: a missing card reads as collapsed, and the matcher fails on no element.
     expect(card?.getAttribute("aria-expanded") ?? "false").toBe("false");
   } finally {
     view.unmount();

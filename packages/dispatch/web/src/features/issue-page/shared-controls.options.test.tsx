@@ -6533,6 +6533,7 @@ function expectAskControlRefusedHoldingFocus(control: HTMLElement): void {
 function expectAskControlDisabledAsOnMain(control: HTMLElement): void {
   expectDisabledAsOnMain(control);
   expect(control).not.toHaveAttribute("readonly");
+  // jest-dom: a control outside any fieldset passes here, and the matcher fails on no element.
   expect(control.closest("fieldset")?.hasAttribute("aria-disabled") ?? false).toBe(false);
 }
 
@@ -6542,6 +6543,7 @@ function expectAskControlFree(control: HTMLElement): void {
   expect(control).not.toHaveAttribute("disabled");
   expect(control).not.toHaveAttribute("aria-disabled");
   expect(control).not.toHaveAttribute("readonly");
+  // jest-dom: a control outside any fieldset passes here, and the matcher fails on no element.
   expect(control.closest("fieldset")?.hasAttribute("aria-disabled") ?? false).toBe(false);
 }
 

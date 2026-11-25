@@ -539,6 +539,7 @@ How a unit test acts on the page and reads it:
   never `expect(el.getAttribute(name))` with `.toBe()`, `.toBeNull()`, `.toContain()` or `.toMatch()`,
   and never `expect(el.hasAttribute(name))` with `.toBe()`.
   Each form named with `.toBe()` counts with `.toEqual()` and `.toStrictEqual()` too.
+  A read with a `??` or `||` fallback after it, such as `expect(el.getAttribute(name) ?? "")`, is the same form.
   `expect.stringContaining` and `expect.stringMatching` give `toHaveAttribute` a part of the value.
   A read of a property of the focused element, such as its `tagName`, is not one of these forms.
   Bun 1.4.4 prints no `expect` message for a matcher that `expect.extend` registered, jest-dom's among them.
