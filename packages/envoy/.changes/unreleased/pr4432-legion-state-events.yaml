@@ -87,9 +87,8 @@ body: |-
   before it calls the daemon, and which a `PUT` and a `DELETE` keep), the highest sequence of each
   store that Dispatch acknowledged past the cap of 16, the store and the URL of the daemon that the
   setting named before, the stores that are no daemon of the project, and each message whose hold
-  a `PUT` or a `DELETE` ended, the newest 8 (`released_holders`). A record goes at its message's
-  next delivery while the project has a setting. After a `DELETE` it can stay until 8 newer
-  records push it out. `legion_event_parts` holds the parts of a split transaction, and
+  a `PUT` or a `DELETE` ended (`released_holders`, kept by the rule of legion's `cursor.reset`).
+  `legion_event_parts` holds the parts of a split transaction, and
   `server_processes.legion_state_intake` tells a process of this build from one of an earlier
   build (migration `20261118212431_legion_events`).
   Dispatch's NATS grant names the new durable, and on a VM hub the changed grant replaces the

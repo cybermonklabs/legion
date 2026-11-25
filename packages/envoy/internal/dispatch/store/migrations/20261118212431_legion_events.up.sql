@@ -134,17 +134,14 @@
 --   in such a store is found again. A read that finds the row's store unchanged leaves the mark,
 --   and never marks previous_state_id. Empty for none.
 -- - released_holders is the stream sequence of each state message whose hold of the owed read a
---   reset of the row ended (legion's cursor.reset; read-rule-cases rows 6.3b and 6.5): the newest
---   last, 8 at the most (legion's maxReleasedHolders). At such a message's next delivery while the
---   project has a setting, the intake acknowledges it unapplied, it holds no read, its store goes
---   into foreign_state_ids as above, and the intake takes its sequence out of the array, and no
---   other. So a write that names another URL ends the hold of the message before it within one
---   read's 60 s and a second, however many such writes come before that message comes back, and a
---   message of the newly named daemon may hold the read from a count of 1. While the project has
---   no setting after a delete, the intake drops the message before it reads the row, so its entry
---   can stay until 8 newer entries push it out. Past 8 the oldest entry goes: its message is
---   judged as any message at its next delivery, which applies nothing of a store other than
---   state_id, and it can hold a read again from a count of 1. Empty for none.
+--   reset of the row ended (read-rule-cases rows 6.3b and 6.5), the newest last. At such a
+--   message's next delivery while the project has a setting, the intake acknowledges it
+--   unapplied, it holds no read, its store goes into foreign_state_ids as above, and the intake
+--   takes its sequence out of the array, and no other. So a write that names another URL ends the
+--   hold of the message before it within one read's 60 s and a second, however many such writes
+--   come before that message comes back, and a message of the newly named daemon may hold the
+--   read from a count of 1. When an entry is added and when it goes is the rule of legion's
+--   cursor.reset. Empty for none.
 -- - skipped_state_ids and skipped_seqs are, pair by pair (the check holds them to one length), a
 --   store and the highest seq of a state message of that store that the intake acknowledged
 --   unapplied because it arrived while legion's stateMaxWaiting messages of the project waited,
