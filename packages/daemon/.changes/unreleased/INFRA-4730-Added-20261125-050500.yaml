@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  Each controller tick writes one info line, `the controller tick re-read a blocker of another
+  project`, for each blocker of another project it reads: the blocker, the issues of this project
+  waiting on it, the status and `last_seq` Dispatch served or why the read failed, and what the
+  daemon's copy did with the reading (`applied`, `kept` with the status and sequence the copy
+  holds, `read failed` or `not written`). No event of another project reaches a daemon, so that
+  read is the one way it learns of such a blocker's close, and a successful read used to log
+  nothing: a root held for hours on a blocker of another project that was done left no line to
+  say whether the daemon read the blocker or what it did with the answer.
+time: 2026-11-25T05:05:00Z
+custom:
+  Issue: INFRA-4730
