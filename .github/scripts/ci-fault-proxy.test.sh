@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Tests for `ci-fault-proxy.py`: each of its three modes over plain HTTP and over CONNECT, a
-# host outside --hosts passed on in every one of them, --bind, and the window of its own that
-# --per-host-window gives each host under --mode recover; the counts by host that
+# host outside --hosts passed on in every one of them, --bind, the window of its own that
+# --per-host-window gives each host under --mode recover, and the outages --coalesce-outage-gap
+# makes the hosts of one call share, with its --probe-host; the counts by host that
 # download-retry-proof.sh's `report` makes of the requests the proxy logged as passed on and as
-# faulted; and, for a run that faults one host, the window the rig's probe opens and the report's
-# faulted-host and attempt checks.
+# faulted; for a run that faults one host, the window the rig's probe opens and the report's
+# faulted-host and attempt checks; and for an image build, the attempt check `report` reads from
+# a build log, the Dockerfiles' retry() attempt lines and curl's own `curl: (N)` lines.
 #
 # Nothing here touches the real internet. The host that is passed on is an origin this test
 # starts, a `python3 -m http.server` on a loopback port, and the host that is faulted is either
@@ -245,6 +247,196 @@ set -e
 check "--per-host-window is refused with a mode that has no window, as a usage error" \
   "$(is "$refused:$(contains "$(cat "$work/refused.out")" 'has no window')" 2:true)"
 
+# The --coalesce-outage-gap cases below drive the proxy's Fault directly, in a python process of
+# their own, on a clock this harness sets by hand, so each decision is read at the exact second
+# it names and no case waits on a real clock. The driver builds the Fault the proxy builds for
+# --mode recover --hosts fetch.invalid --recover-after 10 --coalesce-outage-gap 5, sets the
+# clock to each <second> before that request, and prints a transcript: the lines the proxy
+# logged, in the order it logged them, and after each request `at <second> <host>: 504` for a
+# fault or `pass` for a request passed on. The clock starts at 0, so each line's seconds after
+# the proxy started are the seconds the case names.
+cat > "$work/coalesce.py" <<'COALESCE'
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("ci_fault_proxy", sys.argv[1])
+proxy = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(proxy)
+sys.stderr = sys.stdout
+now = 0.0
+probe = None if sys.argv[2] == "-" else sys.argv[2]
+fault = proxy.Fault("recover", ["fetch.invalid"], 10.0, coalesce_gap=5.0, probe_host=probe, clock=lambda: now)
+for event in sys.argv[3:]:
+    second, _, host = event.partition("=")
+    now = float(second)
+    print(f"at {second} {host}: {'504' if fault.faults(host) else 'pass'}")
+COALESCE
+# coalesce <probe host, or - for none> <second>=<host>...: the driver's transcript, in $out.
+coalesce() {
+  set +e
+  out=$(python3 "$work/coalesce.py" "$proxy_script" "$@" 2>&1)
+  set -e
+}
+# transcript <line>...: the lines as one text, to compare with $out.
+transcript() { printf '%s\n' "$@"; }
+
+echo "case: --coalesce-outage-gap: a host first reached while an outage is open joins it, answers 504 until that outage ends, and is passed on after"
+# a opens outage 1 at 0 s, which ends at 10 s, and b, first reached 4 s in, joins it. A window of
+# b's own would end at 14 s, so b's answer at 10 s tells the two apart; 9.9 s is inside outage 1.
+coalesce - 0=a.fetch.invalid 4=b.fetch.invalid 9.9=b.fetch.invalid 10=b.fetch.invalid
+indent "$out"
+check "b's first request logs its first-request line and that it joined outage 1, and b answers 504 until 10 s and is passed on at 10 s" \
+  "$(is "$out" "$(transcript \
+    'ci-fault-proxy: window a.fetch.invalid opened 0.0s after the proxy started' \
+    'ci-fault-proxy: outage 1 opened 0.0s after the proxy started, ending 10.0s after' \
+    'ci-fault-proxy: host a.fetch.invalid joined outage 1' \
+    'at 0 a.fetch.invalid: 504' \
+    'ci-fault-proxy: window b.fetch.invalid opened 4.0s after the proxy started' \
+    'ci-fault-proxy: host b.fetch.invalid joined outage 1' \
+    'at 4 b.fetch.invalid: 504' \
+    'at 9.9 b.fetch.invalid: 504' \
+    'at 10 b.fetch.invalid: pass')")"
+
+echo "case: --coalesce-outage-gap: a host first reached within the gap after an outage ended is passed on and named, and is not faulted later"
+# Outage 1 ends at 10 s and the gap is 5 s, so c, first reached at 10 s exactly, and d, at 14.9 s,
+# are in the gap. c is asked for again at 20 s, after the gap, where a host decided anew would
+# open outage 2 and answer 504.
+coalesce - 0=a.fetch.invalid 10=c.fetch.invalid 14.9=d.fetch.invalid 20=c.fetch.invalid
+indent "$out"
+check "c and d are passed on at their first requests and logged as after outage 1, within 5s, and c is passed on again at 20 s" \
+  "$(is "$out" "$(transcript \
+    'ci-fault-proxy: window a.fetch.invalid opened 0.0s after the proxy started' \
+    'ci-fault-proxy: outage 1 opened 0.0s after the proxy started, ending 10.0s after' \
+    'ci-fault-proxy: host a.fetch.invalid joined outage 1' \
+    'at 0 a.fetch.invalid: 504' \
+    'ci-fault-proxy: window c.fetch.invalid opened 10.0s after the proxy started' \
+    'ci-fault-proxy: host c.fetch.invalid not faulted: after outage 1, within 5s' \
+    'at 10 c.fetch.invalid: pass' \
+    'ci-fault-proxy: window d.fetch.invalid opened 14.9s after the proxy started' \
+    'ci-fault-proxy: host d.fetch.invalid not faulted: after outage 1, within 5s' \
+    'at 14.9 d.fetch.invalid: pass' \
+    'at 20 c.fetch.invalid: pass')")"
+
+echo "case: --coalesce-outage-gap: the first host reached at or after the gap's end opens outage 2 and answers 504"
+# d, in the gap at 14.9 s, does not move the gap's end: e, first reached at 15 s, the end of
+# outage 1 and the 5 s gap exactly, opens outage 2, 10 s long from its request.
+coalesce - 0=a.fetch.invalid 14.9=d.fetch.invalid 15=e.fetch.invalid
+indent "$out"
+check "e opens outage 2 at 15 s, joins it and answers 504" \
+  "$(is "$out" "$(transcript \
+    'ci-fault-proxy: window a.fetch.invalid opened 0.0s after the proxy started' \
+    'ci-fault-proxy: outage 1 opened 0.0s after the proxy started, ending 10.0s after' \
+    'ci-fault-proxy: host a.fetch.invalid joined outage 1' \
+    'at 0 a.fetch.invalid: 504' \
+    'ci-fault-proxy: window d.fetch.invalid opened 14.9s after the proxy started' \
+    'ci-fault-proxy: host d.fetch.invalid not faulted: after outage 1, within 5s' \
+    'at 14.9 d.fetch.invalid: pass' \
+    'ci-fault-proxy: window e.fetch.invalid opened 15.0s after the proxy started' \
+    'ci-fault-proxy: outage 2 opened 15.0s after the proxy started, ending 25.0s after' \
+    'ci-fault-proxy: host e.fetch.invalid joined outage 2' \
+    'at 15 e.fetch.invalid: 504')")"
+
+echo "case: --coalesce-outage-gap: a host that joined outage 1 is passed on while outage 2 is open"
+# a opened outage 1 and b joined it; e opens outage 2 at 15 s, and at 16 s, inside outage 2, a
+# and b are asked for again.
+coalesce - 0=a.fetch.invalid 4=b.fetch.invalid 15=e.fetch.invalid 16=a.fetch.invalid 16=b.fetch.invalid
+indent "$out"
+check "a and b are passed on at 16 s, and neither logs a line again" \
+  "$(is "$out" "$(transcript \
+    'ci-fault-proxy: window a.fetch.invalid opened 0.0s after the proxy started' \
+    'ci-fault-proxy: outage 1 opened 0.0s after the proxy started, ending 10.0s after' \
+    'ci-fault-proxy: host a.fetch.invalid joined outage 1' \
+    'at 0 a.fetch.invalid: 504' \
+    'ci-fault-proxy: window b.fetch.invalid opened 4.0s after the proxy started' \
+    'ci-fault-proxy: host b.fetch.invalid joined outage 1' \
+    'at 4 b.fetch.invalid: 504' \
+    'ci-fault-proxy: window e.fetch.invalid opened 15.0s after the proxy started' \
+    'ci-fault-proxy: outage 2 opened 15.0s after the proxy started, ending 25.0s after' \
+    'ci-fault-proxy: host e.fetch.invalid joined outage 2' \
+    'at 15 e.fetch.invalid: 504' \
+    'at 16 a.fetch.invalid: pass' \
+    'at 16 b.fetch.invalid: pass')")"
+
+echo "case: --coalesce-outage-gap: a host off --hosts is passed on and opens no outage"
+coalesce - 0=localhost 2=a.fetch.invalid
+indent "$out"
+check "localhost is passed on with no line, and a, at 2 s, opens outage 1" \
+  "$(is "$out" "$(transcript \
+    'at 0 localhost: pass' \
+    'ci-fault-proxy: window a.fetch.invalid opened 2.0s after the proxy started' \
+    'ci-fault-proxy: outage 1 opened 2.0s after the proxy started, ending 12.0s after' \
+    'ci-fault-proxy: host a.fetch.invalid joined outage 1' \
+    'at 2 a.fetch.invalid: 504')")"
+
+echo "case: --coalesce-outage-gap: the --probe-host answers 504 at every request and opens no outage, so the first faulted host opens outage 1 at its own first request"
+# The probe host is a name under fetch.invalid, as the rig's is. It is asked for at 0 s and again
+# at 30 s, where a host in an outage opened at 0 s, or in its gap, would be passed on; a is first
+# reached at 40 s.
+coalesce download-retry-probe.fetch.invalid \
+  0=download-retry-probe.fetch.invalid 30=download-retry-probe.fetch.invalid 40=a.fetch.invalid
+indent "$out"
+check "the probe host answers 504 both times with no line, and a opens outage 1 at 40 s" \
+  "$(is "$out" "$(transcript \
+    'at 0 download-retry-probe.fetch.invalid: 504' \
+    'at 30 download-retry-probe.fetch.invalid: 504' \
+    'ci-fault-proxy: window a.fetch.invalid opened 40.0s after the proxy started' \
+    'ci-fault-proxy: outage 1 opened 40.0s after the proxy started, ending 50.0s after' \
+    'ci-fault-proxy: host a.fetch.invalid joined outage 1' \
+    'at 40 a.fetch.invalid: 504')")"
+
+echo "case: --coalesce-outage-gap in the proxy itself: its first line says so, its --probe-host answers 504 with no outage, and the first faulted host opens outage 1"
+# --probe-host is given in capitals and the request names it in lower case, as the rig's probe
+# does: the proxy compares the two lower-cased. The 60 s outage outlasts the case.
+start_proxy coalesced --mode recover --recover-after 60 --coalesce-outage-gap 5 --hosts fetch.invalid \
+  --probe-host Download-Retry-Probe.Fetch.Invalid
+run_curl -x "$proxy" -o /dev/null -w '%{http_code}' http://download-retry-probe.fetch.invalid/
+coalesced_probe=$out
+run_curl -x "$proxy" -o /dev/null -w '%{http_code}' http://a.fetch.invalid/tool.tar.gz
+coalesced_first=$out
+run_curl -x "$proxy" "http://127.0.0.1:$origin_port/hello.txt"
+coalesced_pass=$out
+coalesced_log=$(cat "$work/coalesced.log")
+indent "$coalesced_log"
+check "its first line says it runs coalesced outages, with the gap" \
+  "$(contains "$coalesced_log" '^ci-fault-proxy: mode=recover window=coalesced gap=5s bind=127\.0\.0\.1 ')"
+check "the probe host answers 504, and so does a.fetch.invalid after it" \
+  "$(is "$coalesced_probe:$coalesced_first" 504:504)"
+check "and a host off --hosts reaches the origin" "$(is "$coalesced_pass" 'the origin answered')"
+check "the probe's one line is its 504, and outage 1 opens at a.fetch.invalid's first request, its lines before that request's 504" \
+  "$(is "$(sed -n -E '/^ci-fault-proxy: (window|outage|host|504|pass) /{s/ [0-9]+\.[0-9]s after/ <t>s after/g;p;}' <<<"$coalesced_log")" \
+    "$(transcript \
+      'ci-fault-proxy: 504 GET http://download-retry-probe.fetch.invalid/' \
+      'ci-fault-proxy: window a.fetch.invalid opened <t>s after the proxy started' \
+      'ci-fault-proxy: outage 1 opened <t>s after the proxy started, ending <t>s after' \
+      'ci-fault-proxy: host a.fetch.invalid joined outage 1' \
+      'ci-fault-proxy: 504 GET http://a.fetch.invalid/tool.tar.gz' \
+      "ci-fault-proxy: pass GET http://127.0.0.1:$origin_port/hello.txt")")"
+check "no handler failed" "$(is "$(contains "$coalesced_log" 'handler failed')" false)"
+
+echo "case: --coalesce-outage-gap and --probe-host are refused where they mean nothing, as usage errors"
+# run_proxy <arguments...>: the proxy run with them in the foreground, bounded, so a proxy that
+# took them and served ends here; its exit status in $status and its output in $out.
+run_proxy() {
+  set +e
+  out=$(timeout 10 python3 "$proxy_script" "$@" 2>&1)
+  status=$?
+  set -e
+}
+run_proxy --mode recover --per-host-window --coalesce-outage-gap 5 --hosts fetch.invalid
+check "--coalesce-outage-gap with --per-host-window" \
+  "$(is "$status:$(contains "$out" 'and --per-host-window gives each host a window of its own: pass one of them$')" 2:true)"
+run_proxy --mode fail --coalesce-outage-gap 5 --hosts fetch.invalid
+check "--coalesce-outage-gap with a mode that has no window" \
+  "$(is "$status:$(contains "$out" 'coalesce-outage-gap joins the windows of --mode recover into outages, and --mode fail has no window$')" 2:true)"
+run_proxy --mode recover --coalesce-outage-gap 5
+check "--coalesce-outage-gap with no --hosts" \
+  "$(is "$status:$(contains "$out" 'coalesce-outage-gap needs a --hosts list')" 2:true)"
+run_proxy --mode recover --coalesce-outage-gap 0 --hosts fetch.invalid
+check "--coalesce-outage-gap of 0 s" \
+  "$(is "$status:$(contains "$out" 'coalesce-outage-gap is a number of seconds more than 0, not 0$')" 2:true)"
+run_proxy --mode recover --hosts fetch.invalid --probe-host download-retry-probe.fetch.invalid
+check "--probe-host without --coalesce-outage-gap" \
+  "$(is "$status:$(contains "$out" 'probe-host keeps one host out of the outages of --coalesce-outage-gap, and this run does not pass that flag$')" 2:true)"
+
 echo "case: --mode stall sends nothing, so each attempt ends at the client's own bound"
 start_proxy stall --mode stall --hosts fetch.invalid
 # The body file is created here, not left to curl: a curl that receives nothing writes no file
@@ -456,5 +648,126 @@ check "and so does a call that passed on its first attempt, with no retry" \
 onehost_report - fetch.invalid
 check "and so does a site that logged no attempt at all" \
   "$(is "$rig_report:$(contains "$rig_out" '::error::download-retry: the one-host case: the attempt check: the attempt log .* holds no attempt that passed')" 1:true)"
+
+echo "case: an image build's log: the report reads each retried call's attempt lines and each RUN's curl lines, and checks them"
+# The rig as the download-retry-images jobs use it, without the build: `report --build-log`
+# reads a log written here as BuildKit's plain progress writes one. A RUN's header is
+# `#<step> [<stage> k/m] RUN <command>`, the command the Dockerfile's text with its continuations
+# joined, and each line the RUN prints is `#<step> <seconds> <text>`. The proxy faults
+# fetch.invalid under --per-host-window; the site asks it once, refused, and 127.0.0.1 once,
+# passed on, so the recover mode's own checks pass and each case reads the attempt check alone.
+rig_state="$work/rig/download-retry/image.state"
+image_log="$work/rig/download-retry/image.log"
+image_build_log="$work/image.build.log"
+set +e
+rig start image --mode recover --per-host-window --hosts fetch.invalid > "$work/rig-image-start.out" 2>&1
+rig_start=$?
+set -e
+[ ! -f "$rig_state" ] || pids+=("$(sed -n 's/^pid=//p' "$rig_state")")
+indent "$(cat "$work/rig-image-start.out")"
+check "the rig's start exits 0" "$(is "$rig_start" 0)"
+set +e
+rig probe image > "$work/rig-image-probe.out" 2>&1
+rig_probe=$?
+set -e
+indent "$(cat "$work/rig-image-probe.out")"
+check "and its probe reads the pair as it must" "$(is "$rig_probe" 0)"
+rig_proxy=$(sed -n 's/^proxy=//p' "$rig_state" 2> /dev/null || true)
+run_curl -x "$rig_proxy" http://fetch.invalid/tool.tar.gz
+run_curl -x "$rig_proxy" "http://127.0.0.1:$origin_port/hello.txt"
+# The probe's own refusal and the site's one, and the site's one pass, waited for as above.
+for _ in $(seq 100); do
+  [ "$(grep -c 'ci-fault-proxy: 504 ' "$image_log" 2> /dev/null || true)" -lt 2 ] ||
+    [ "$(grep -c 'ci-fault-proxy: pass ' "$image_log" 2> /dev/null || true)" -lt 1 ] || break
+  sleep 0.05
+done
+# image_report <build log line>...: the report against a build log of those lines, its output in
+# rig_out, its exit in rig_report and its ::error:: lines in rig_errors.
+image_report() {
+  printf '%s\n' "$@" > "$image_build_log"
+  set +e
+  rig_out=$(rig report image --what "the image case" --outcome success --attempts 5 --floor 0 --budget 600 \
+    --build-log "$image_build_log" 2>&1)
+  rig_report=$?
+  set -e
+  rig_errors=$(sed -n '/^::error::/p' <<<"$rig_out")
+  indent "$rig_out"
+}
+# The header of a RUN that opens with the canonical retry(), as BuildKit prints it: its command
+# holds the attempt line's echo, `$i` and all. A RUN is named in a refusal by the first 80
+# characters of its header, which hold no URL here, so none is taken out.
+apt_header='#12 [build 2/5] RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; echo "retry: $what: attempt $i of 5 failed" >&2; [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }     && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any'
+apt_run=${apt_header:0:80}
+# apt_attempts <k>: the apt-get update call's attempt lines for attempts 1 to k, each failed.
+apt_attempts() {
+  local k
+  for k in $(seq "$1"); do printf '#12 %d.5 retry: apt-get update: attempt %d of 5 failed\n' "$((k * 10))" "$k"; done
+}
+
+image_report '#1 [internal] load build definition from worker.Dockerfile' '#1 DONE 0.0s' "$apt_header" \
+  '#12 0.512 E: Failed to fetch http://deb.debian.org/debian/dists/trixie/InRelease  504  Gateway Timeout' \
+  "$(apt_attempts 3)" '#12 71.20 Get:1 http://deb.debian.org/debian trixie InRelease [140 kB]' '#12 DONE 75.3s'
+check "a call whose highest failed attempt is 3 of 5 passes the report" "$(is "$rig_report:$rig_errors" 0:)"
+check "which prints the call, and that call alone, with its step, its stage and the attempt it reached, 4 of 5, after 3 failed" \
+  "$(is "$(sed -n '/^  the retried calls of .* that failed an attempt, /,/^  the `curl: (N)` lines of each RUN, /p' <<<"$rig_out" | sed '1d;$d')" \
+    '    #12 (build 2/5) apt-get update: attempt 4 of 5 reached, 3 failed')"
+
+image_report "$apt_header" "$(apt_attempts 4)" '#12 151.2 Get:1 http://deb.debian.org/debian trixie InRelease [140 kB]'
+check "a call whose attempt 4 of 5 failed fails the attempt check, naming the call, its step and its RUN" \
+  "$(is "$rig_report:$rig_errors" "1:::error::download-retry: the image case: the attempt check: apt-get update in #12 (build 2/5) failed attempt 4 of 5, so attempt 5 of 5, its last, ran: it passed with no attempt to spare or ran out; its RUN: $apt_run")"
+
+image_report "$apt_header" "$(apt_attempts 5)" '#12 300.9 apt-get update failed after 5 attempts (last exit 100)' \
+  '#12 ERROR: process "/bin/sh -c retry() { ..." did not complete successfully: exit code: 100'
+check "a call that printed \`failed after 5 attempts\` fails the attempt check by that line, beside its attempt 5 of 5" \
+  "$(is "$rig_report:$rig_errors" "1:$(printf '%s\n' \
+    "::error::download-retry: the image case: the attempt check: apt-get update in #12 (build 2/5) failed attempt 5 of 5, its last, so it ran out; its RUN: $apt_run" \
+    "::error::download-retry: the image case: the attempt check: apt-get update in #12 (build 2/5) failed after 5 attempts, its ladder run out; its RUN: $apt_run")")"
+
+image_report "$apt_header" '#12 DONE 4.2s'
+check "a RUN header that holds the attempt line's echo is not read as an attempt, so a log of it alone holds none and fails" \
+  "$(is "$rig_report:$rig_errors" '1:::error::download-retry: the image case: the attempt check: the build log holds no `retry: <what>: attempt <k> of <n> failed` line and no `curl: (N)` line at all, so the fault reached no retried call of this build')"
+image_report "$apt_header" 'retry: apt-get update: attempt 4 of 5 failed' \
+  "#12 0.4 + echo 'retry: apt-get update: attempt 4 of 5 failed'" "$(apt_attempts 1)"
+check "nor is a line with no step prefix or the shell's xtrace of the echo: the call reads attempt 1 of 5 failed and passes" \
+  "$(is "$rig_report:$rig_errors:$(sed -n '/^  the retried calls of .* that failed an attempt, /{n;p;}' <<<"$rig_out")" \
+    '0::    #12 (build 2/5) apt-get update: attempt 2 of 5 reached, 1 failed')"
+
+image_report '#1 [internal] load build definition from worker.Dockerfile' '#1 DONE 0.0s' "$apt_header" \
+  '#12 3.1 Get:1 http://deb.debian.org/debian trixie InRelease [140 kB]' '#12 DONE 4.2s'
+check "a log with no attempt line and no curl line at all fails: the fault reached no retried call" \
+  "$(is "$rig_report:$rig_errors" '1:::error::download-retry: the image case: the attempt check: the build log holds no `retry: <what>: attempt <k> of <n> failed` line and no `curl: (N)` line at all, so the fault reached no retried call of this build')"
+
+# A RUN of curl's own `--retry 7` reads, as the worker image's notices stage holds them: each
+# failed attempt prints one `curl: (N)` line and no attempt line follows it.
+notices_header='#20 [notices 3/4] RUN set -eu;     fetch() { curl -fsSL --retry 7 --retry-all-errors --max-time 60 "$(gh_raw_url "$1" "$2" "$3")" -o "/in/$4"; }'
+notices_run=${notices_header:0:80}
+# curl_lines <step> <count>: that many `curl: (22)` lines of the step.
+curl_lines() {
+  local k
+  for k in $(seq "$2"); do printf '#%s %d.1 curl: (22) The requested URL returned error: 504\n' "$1" "$k"; done
+}
+image_report "$notices_header" "$(curl_lines 20 7)" '#20 DONE 130.4s'
+check "a RUN with 7 \`curl: (N)\` lines that no attempt line follows fails the attempt check, naming the RUN" \
+  "$(is "$rig_report:$rig_errors" "1:::error::download-retry: the image case: the attempt check: #20 (notices 3/4) printed 7 \`curl: (N)\` lines that no retry() attempt line accounts for, and curl --retry 7 prints one for each failed attempt of its 8, so a curl call of that RUN may have reached attempt 8 of 8, its last (read by RUN, which is exact where one curl call of the RUN meets the fault and fails closed where several do); its RUN: $notices_run")"
+image_report "$notices_header" "$(curl_lines 20 6)" '#20 DONE 66.4s'
+check "and one with 6 passes, its count printed" \
+  "$(is "$rig_report:$rig_errors:$(grep -c '^    #20 (notices 3/4): 6 counted toward the 7, and 0 that retry() attempt lines account for$' <<<"$rig_out")" 0::1)"
+
+# A RUN of seven curls each wrapped in retry(), as the worker image's toolchain stage writes
+# them: each failed attempt prints curl's `curl: (N)` line and then retry()'s attempt line, the
+# shell's xtrace between the two where the RUN runs under `set -x`. Each `what` names the URL
+# it fetches, which the report prints as <url>.
+toolchain_header='#14 [toolchain 3/9] RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?;'
+toolchain_lines=()
+for tool in uv node awscli go kubectl yq chromium; do
+  toolchain_lines+=("#14 1.0 curl: (56) CONNECT tunnel failed, response 504" "#14 1.0 + s=56" \
+    "#14 1.0 + echo 'retry: $tool download from https://fetch.invalid/$tool.tar.gz: attempt 1 of 5 failed'" \
+    "#14 1.0 retry: $tool download from https://fetch.invalid/$tool.tar.gz: attempt 1 of 5 failed")
+done
+image_report "$toolchain_header" "${toolchain_lines[@]}" '#14 DONE 98.0s'
+check "7 \`curl: (N)\` lines each followed by a retry() attempt line do not count toward the 7, and the RUN passes" \
+  "$(is "$rig_report:$rig_errors:$(grep -c '^    #14 (toolchain 3/9): 0 counted toward the 7, and 7 that retry() attempt lines account for$' <<<"$rig_out")" 0::1)"
+check "and each call is printed with the URL its \`what\` names taken out" \
+  "$(is "$(grep -c '^    #14 (toolchain 3/9) [a-z]* download from <url>: attempt 2 of 5 reached, 1 failed$' <<<"$rig_out"):$(contains "$rig_out" 'download from https://')" 7:false)"
 
 summary "ci-fault-proxy.py and download-retry-proof.sh's counts by host"

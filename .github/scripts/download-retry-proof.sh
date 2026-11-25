@@ -5,22 +5,28 @@
 # and prints and checks what the retry did (dispatch://INFRA-1545, T7). Five verbs:
 #
 #   start <name> --mode <recover|stall> [--hosts <csv>] [--recover-after <s>] [--per-host-window]
-#         [--bind <address>] [--attempt-log]
+#         [--coalesce-outage-gap <s>] [--bind <address>] [--attempt-log]
 #       Starts a proxy of its own for the step that follows, waits for its port, and writes
 #       `proxy`, `port`, `started` and `attempt_log` to $GITHUB_OUTPUT, so the step names the proxy
 #       in its own `env:` and nowhere else. One proxy per step and not one per job, because a
 #       recovery window is counted from the proxy's first moment: a second step under the first
 #       step's proxy would run after the window closed and prove nothing. --per-host-window is
 #       passed to the proxy as it is: each faulted host then gets a window of its own from its own
-#       first request (ci-fault-proxy.py's header), which is what a docker build needs, since it
-#       first reaches the hosts of a late RUN long after one window from the start has closed.
+#       first request (ci-fault-proxy.py's header), which a sites run that faults one host needs.
+#       --coalesce-outage-gap <s> is passed on as it is too, with --probe-host naming the probe's
+#       host (`probe` below): the first request of a listed host opens an outage, the hosts first
+#       reached while it is open join it, and a host first reached less than <s> seconds after it
+#       ended is passed on. That is what an image build needs, since one retried call reaches its
+#       later hosts only after its first ones recover. The gap goes into the state file, where
+#       `report` reads it. The two flags are refused together, by name, and the second needs a
+#       --hosts list.
 #       --attempt-log names a file under this rig's state directory as `attempt_log`, empty
 #       without the flag, for the site's step to pass on as CI_RETRY_ATTEMPT_LOG: the retry helpers
 #       append a line there for each attempt they make (.github/scripts/ci-retry.sh's header), and
 #       `report` reads from it which attempt passed.
 #
 #   report <name> --what <phrase> --outcome <the step's outcome> --attempts <n> --floor <s>
-#          --budget <s> [--faulted <host>]
+#          --budget <s> [--faulted <host>] [--build-log <file>]
 #       Reads that proxy's log and says, in lines a person reading the run can count, which site
 #       it was, how many attempts reached the proxy, the offset of each from the first, the
 #       seconds between the first attempt and the last, the requests it passed on counted by
@@ -28,12 +34,25 @@
 #       came after the proxy started, and the step's own elapsed seconds against its budget.
 #       --faulted names the one host a run faults, and the site's own refused requests for it are
 #       counted apart; a proxy started with --attempt-log has the site's attempt lines printed.
-#       Then it checks what the mode promises (below) and stops the proxy. The two counts by host
-#       are printed and checked against nothing.
+#       A proxy started with --coalesce-outage-gap has each outage it opened printed, and one line
+#       for each host it decided on: the host, the second of its first request, the outage it
+#       joined or `not faulted: after outage <N>, within <G> s`, and its faulted requests. A build
+#       log, --build-log or else `build`'s own $state_dir/<name>.build.log where it exists, has
+#       each retried call that failed an attempt printed with its RUN and the last attempt it
+#       reached, read from the `retry: <what>: attempt <k> of <n> failed` lines the Dockerfiles'
+#       inline retry() prints, and each RUN's count of `curl: (N)` lines. Then it checks what the
+#       mode promises (below) and stops the proxy. The two counts by host and the hosts' decisions
+#       are checked against nothing.
 #
 #   build <name|none> --file <Dockerfile> --tag <tag> [--build-arg K=V]... [--secret <spec>]...
-#       `docker buildx build` of one Dockerfile, with <name>'s proxy passed in as the build's
-#       http_proxy and https_proxy build arguments, and `none` for a build that gets no proxy.
+#       `docker buildx build` of one committed Dockerfile, the file itself and never a copy of it,
+#       with <name>'s proxy passed in as the build's http_proxy and https_proxy build arguments,
+#       and `none` for a build that gets no proxy. Each inline retry() of the four Dockerfiles
+#       prints `retry: <what>: attempt <k> of 5 failed` on stderr for each attempt that fails
+#       (.github/scripts/check-download-retry.sh's CANONICAL, the one text the gate's rule 3 holds
+#       every definition to), and those lines are what `report` reads. BuildKit's plain progress
+#       goes to the job log and to $state_dir/<name>.build.log both, and the verb ends with
+#       docker's own exit status.
 #       The build is here, in a script, rather than in the job's `run:` because
 #       .github/scripts/check-image-trigger-paths.sh refuses any image build it can read in a
 #       run step and cannot be told otherwise, and docker/build-push-action — the one form it
@@ -63,15 +82,16 @@
 #       this runner image may carry"); this verb is what proves the clearing worked, per site.
 #
 #       The faulted target is the first host of that proxy's own `--hosts`, so the probe reads
-#       the fault the site will meet and not some other one; under --per-host-window it is a name
-#       under that host instead (below). The unfaulted target is that same host under the
-#       reserved `.invalid` suffix (RFC 2606): it is derived from `--hosts`
-#       rather than named anew, it can never match the fault's list — `github.com.invalid`
-#       neither equals `github.com` nor ends in `.github.com` — nobody owns it, and no resolver
-#       answers for it, so only the proxy can answer it. Through the proxy it reads HTTP 502
-#       (the proxy's own answer, having failed to resolve it), and through a bypass it reads
-#       nothing at all. A proxy started with an empty `--hosts` faults every host, so it has no
-#       unfaulted host to read: there the verb says so and the faulted reading stands alone.
+#       the fault the site will meet and not some other one; under --per-host-window and
+#       --coalesce-outage-gap it is a name under that host instead (below). The unfaulted target
+#       is that same host under the reserved `.invalid` suffix (RFC 2606): it is derived
+#       from `--hosts` rather than named anew, it can never match the fault's list —
+#       `github.com.invalid` neither equals `github.com` nor ends in `.github.com` — nobody
+#       owns it, and no resolver answers for it, so only the proxy can answer it. Through the
+#       proxy it reads HTTP 502 (the proxy's own answer, having failed to resolve it), and
+#       through a bypass it reads nothing at all. A proxy started with an empty `--hosts` faults
+#       every host, so it has no unfaulted host to read: there the verb says so and the faulted
+#       reading stands alone.
 #
 #       The probe's own two requests are the proxy's first lines, and `report` leaves them out
 #       of the site's counts: the state file carries the line count they reached. Under
@@ -81,7 +101,11 @@
 #       under that flag the faulted request names PROBE_LABEL under the first entry,
 #       `download-retry-probe.github.com` for `github.com`: the entry covers it, so it is refused
 #       as the site's host is, and no site fetches it, so the window it opens is its own, and each
-#       host the site fetches gets its window from the site's own first request to it.
+#       host the site fetches gets its window from the site's own first request to it. Under
+#       --coalesce-outage-gap the faulted request asks the same name, which `start` passed to the
+#       proxy as --probe-host: the proxy answers that host 504 at every request and leaves it out
+#       of every outage, which it opens, joins and logs no line of, so the probe leaves the
+#       proxy's outages as it found them and outage 1 opens at the site's own first request.
 #
 #       Two things here are worth reusing in any fault rig, and both are about not depending on
 #       a client's behaviour. Read every probe twice — what the client read, and whether the
@@ -111,7 +135,16 @@
 #            reached --attempts (THE ATTEMPT CHECK): the call passed on a retry and with an
 #            attempt to spare, where a call that passed at once met no fault it had to retry,
 #            and one that passed on its last attempt would have failed had its fault lasted one
-#            attempt longer.
+#            attempt longer. With a build log (`report` above), no retried call of the build
+#            failed attempt n-1 of its n, so none ran its last attempt; no ladder printed `<what>
+#            failed after <n> attempts`; and no RUN printed 7 `curl: (N)` lines that are not a
+#            retry() attempt's own (THE ATTEMPT CHECK of an image build). A call that ran its
+#            last attempt passed with none to spare or ran out, and the log cannot tell which.
+#            curl's own --retry 7 ladders print one such line for each of their 8 attempts that
+#            fails and are counted by RUN, which is exact for the two RUNs that hold them and
+#            fails closed elsewhere (the comment above `report`'s reading of the log says why). A
+#            build log that holds no attempt line and no `curl: (N)` line at all fails too, since
+#            then the fault reached no retried call of the build.
 #   stall    the step failed, which is the retry exhausting its five attempts against a host
 #            that answers nothing; the proxy was reached at least once per attempt; the step
 #            took at least --floor, the loop's own sleeps, so every attempt really happened
@@ -159,9 +192,11 @@ PROBE_BOUND=10
 # request for it, and a request that was not made through the proxy reads as nothing at all.
 RESERVED_SUFFIX=".invalid"
 
-# The label the probe puts before the first --hosts entry under --per-host-window (the probe
-# paragraph of the header): a name the entry covers and no site fetches, so the window the
-# probe's request opens is that name's own and never the window of a host the site reaches.
+# The label the probe puts before the first --hosts entry under --per-host-window and
+# --coalesce-outage-gap (the probe paragraph of the header): a name the entry covers and no site
+# fetches, so the window the probe's request opens is that name's own and never the window of a
+# host the site reaches, and under the second flag the proxy's --probe-host, which no outage
+# holds.
 PROBE_LABEL="download-retry-probe"
 
 die() {
@@ -199,6 +234,7 @@ state_read() {
       probe_lines) probe_lines=$value ;;
       probe_pair) value=${value#\'}; probe_pair=${value%\'} ;;
       per_host_window) per_host_window=$value ;;
+      coalesce_gap) coalesce_gap=$value ;;
       attempt_log) attempt_log=$value ;;
     esac
   done < "$file"
@@ -214,8 +250,17 @@ docker_bridge_gateway() {
   printf '%s\n' "$address"
 }
 
+# The host the probe's faulted request names under --per-host-window and --coalesce-outage-gap,
+# which `start` passes to the proxy as --probe-host under the second: PROBE_LABEL under the first
+# --hosts entry, its leading dot taken off.
+probe_host_for() {
+  local entry=${1%%,*}
+  printf '%s.%s\n' "$PROBE_LABEL" "${entry#.}"
+}
+
 start() {
-  local name=$1 mode="" hosts="" recover_after=60 per_host_window="" bind=127.0.0.1 attempt_log=""
+  local name=$1 mode="" hosts="" recover_after=60 per_host_window="" coalesce_gap="" bind=127.0.0.1
+  local attempt_log=""
   shift
   while [ "$#" -gt 0 ]; do
     case $1 in
@@ -223,18 +268,31 @@ start() {
       --hosts) hosts=$2; shift 2 ;;
       --recover-after) recover_after=$2; shift 2 ;;
       --per-host-window) per_host_window=$1; shift ;;
+      --coalesce-outage-gap) coalesce_gap=$2; shift 2 ;;
       --bind) bind=$2; shift 2 ;;
       --attempt-log) attempt_log="$state_dir/$name.attempts"; shift ;;
       *) die "start: unknown argument '$1'" ;;
     esac
   done
   [ -n "$mode" ] || die "start: --mode is required"
+  # The flags that time a host's fault under --mode recover, each passed on as the proxy takes it.
+  local window=() probe_host=""
+  [ -z "$per_host_window" ] || window=(--per-host-window)
+  if [ -n "$coalesce_gap" ]; then
+    [ -z "$per_host_window" ] ||
+      die "start: --coalesce-outage-gap gives the hosts of one call one outage they share and --per-host-window gives each host a window of its own: pass one of them"
+    [ -n "$hosts" ] ||
+      die "start: --coalesce-outage-gap needs --hosts: the probe's host is a name under its first entry, and with every host faulted any request would open an outage"
+    probe_host=$(probe_host_for "$hosts")
+    window=(--coalesce-outage-gap "$coalesce_gap" --probe-host "$probe_host")
+  fi
   [ "$bind" != docker-bridge ] || bind=$(docker_bridge_gateway)
 
   mkdir -p "$state_dir"
   local log="$state_dir/$name.log" port_file="$state_dir/$name.port" port="" pid=""
-  # An attempt log a step of an earlier run of this name left would be read as this site's.
-  rm -f "$log" "$port_file" ${attempt_log:+"$attempt_log"}
+  # An attempt log or a build log a step of an earlier run of this name left would be read as
+  # this site's.
+  rm -f "$log" "$port_file" "$state_dir/$name.build.log" ${attempt_log:+"$attempt_log"}
   # Each line of the proxy's log is stamped with the second it was written, which is what makes
   # the attempts countable afterwards: the proxy prints one line per request it refuses or
   # stalls, and the stamps turn those lines into a schedule. The stamping is a bash `read` loop
@@ -244,7 +302,7 @@ start() {
   # a process.
   (
     python3 "$root/.github/scripts/ci-fault-proxy.py" \
-      --mode "$mode" --hosts "$hosts" --recover-after "$recover_after" ${per_host_window:+"$per_host_window"} \
+      --mode "$mode" --hosts "$hosts" --recover-after "$recover_after" "${window[@]}" \
       --bind "$bind" --port 0 --port-file "$port_file" 2>&1 \
       | while IFS= read -r line; do printf '%s %s\n' "$EPOCHSECONDS" "$line"; done > "$log"
   ) &
@@ -252,7 +310,8 @@ start() {
   started=$(date +%s)
   # The port file is written whole, by rename, before the proxy serves a request, and the
   # recovery window starts the moment it appears (ci-fault-proxy.py's header); under
-  # --per-host-window the proxy's clock starts then, and each host's window at its first request.
+  # --per-host-window the proxy's clock starts then, and each host's window at its first request,
+  # and under --coalesce-outage-gap each outage at the request that opens it.
   local waited=0
   while [ ! -s "$port_file" ]; do
     sleep 0.1
@@ -279,6 +338,7 @@ start() {
     echo "started=$started"
     echo "proxy=http://$bind:$port"
     echo "per_host_window=${per_host_window:+1}"
+    echo "coalesce_gap=$coalesce_gap"
     echo "attempt_log=$attempt_log"
   } > "$(state_file "$name")"
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -289,7 +349,7 @@ start() {
       echo "attempt_log=$attempt_log"
     } >> "$GITHUB_OUTPUT"
   fi
-  echo "download-retry: the $name fault proxy is http://$bind:$port (--mode $mode${per_host_window:+ $per_host_window}, faulting ${hosts:-every host})${attempt_log:+, logging the attempts of its site to $attempt_log}"
+  echo "download-retry: the $name fault proxy is http://$bind:$port (--mode $mode${per_host_window:+ $per_host_window}${coalesce_gap:+ --coalesce-outage-gap $coalesce_gap, its probe host $probe_host}, faulting ${hosts:-every host})${attempt_log:+, logging the attempts of its site to $attempt_log}"
 }
 
 # One request through the proxy, made the way the site makes its own fetch: the two variables
@@ -325,13 +385,14 @@ spent_its_bound() {
 # `start`'s stamping loop, a line at a time, so a line lands a moment after the answer it belongs
 # to and is waited for rather than missed; a request that never reached the proxy leaves none
 # however long this waits, which is the reading that catches a bypass whatever caused it. A
-# `window` line is passed over: under --per-host-window the proxy writes one as the faulted
-# host's window opens, just before the request's own line, and waiting for that request's own
-# line is what keeps it from being read as the line of the request made after it.
+# `window`, `outage` or `host` line is passed over: the proxy writes them as a faulted host's
+# first request opens its window (--per-host-window), or opens an outage and decides the host
+# (--coalesce-outage-gap), just before that request's own line, and waiting for that request's
+# own line is what keeps it from being read as the line of the request made after it.
 proxy_line_after() {
   local log=$1 skip=$2 waited=0 line=""
   while [ -z "$line" ] && [ "$waited" -lt 50 ]; do
-    line=$(awk -v skip="$skip" 'NR > skip && $3 != "window" { print; exit }' "$log")
+    line=$(awk -v skip="$skip" 'NR > skip && $3 != "window" && $3 != "outage" && $3 != "host" { print; exit }' "$log")
     [ -n "$line" ] || sleep 0.1
     waited=$((waited + 1))
   done
@@ -345,8 +406,8 @@ probe() {
   local file
   file=$(state_file "$name")
   [ -f "$file" ] || die "probe: no proxy named $name was started"
-  local mode hosts log proxy per_host_window=""
-  state_read "$file" mode hosts log proxy per_host_window
+  local mode hosts log proxy per_host_window="" coalesce_gap=""
+  state_read "$file" mode hosts log proxy per_host_window coalesce_gap
 
   local faulted control entry
   if [ -n "$hosts" ]; then
@@ -354,9 +415,11 @@ probe() {
     entry=${entry#.}
     control="$entry$RESERVED_SUFFIX"
     # Under --per-host-window a name under the entry rather than the entry itself, so the window
-    # this request opens is no host's the site reaches (the header's probe paragraph).
+    # this request opens is no host's the site reaches; under --coalesce-outage-gap the same
+    # name, the proxy's --probe-host, which opens and joins no outage (the header's probe
+    # paragraph).
     faulted=$entry
-    [ -z "$per_host_window" ] || faulted="$PROBE_LABEL.$entry"
+    [ -z "$per_host_window$coalesce_gap" ] || faulted=$(probe_host_for "$hosts")
   else
     # This proxy names no host, so it faults every one of them and has no unfaulted host left to
     # read. A name nobody owns is as faulted here as any other, and it is one no bypass can
@@ -437,7 +500,7 @@ probe() {
 }
 
 report() {
-  local name=$1 what="" outcome="" attempts=1 floor=0 budget=0 faulted=""
+  local name=$1 what="" outcome="" attempts=1 floor=0 budget=0 faulted="" build_log=""
   shift
   while [ "$#" -gt 0 ]; do
     case $1 in
@@ -447,16 +510,23 @@ report() {
       --floor) floor=$2; shift 2 ;;
       --budget) budget=$2; shift 2 ;;
       --faulted) faulted=$2; shift 2 ;;
+      --build-log) build_log=$2; shift 2 ;;
       *) die "report: unknown argument '$1'" ;;
     esac
   done
   local file
   file=$(state_file "$name")
   [ -f "$file" ] || die "report: no proxy named $name was started"
-  local mode log pid started probe_pair probe_lines attempt_log=""
-  state_read "$file" mode log pid started probe_pair probe_lines attempt_log
+  local mode log pid started probe_pair probe_lines attempt_log="" coalesce_gap=""
+  state_read "$file" mode log pid started probe_pair probe_lines attempt_log coalesce_gap
   [ -n "${probe_pair:-}" ] ||
     die "report: no probe ran before $name's site, so this result would carry no reading of its own. Every fault drive records the pair a probe read through the proxy before the site (dispatch://INFRA-1545, the Verification document's proxy clauses): run \`download-retry-proof.sh probe $name\` in the step that starts the proxy."
+  # The build's log, which `build` writes for this name; a site's step builds nothing, so it has
+  # none and the attempt lines are not read at all.
+  if [ -z "$build_log" ] && [ -f "$state_dir/$name.build.log" ]; then
+    build_log="$state_dir/$name.build.log"
+  fi
+  [ -z "$build_log" ] || [ -f "$build_log" ] || die "report: --build-log names $build_log, and there is no such file"
   local now elapsed
   now=$(date +%s)
   elapsed=$((now - started))
@@ -502,14 +572,14 @@ report() {
     LC_ALL=C sort | uniq -c | awk '{ printf "    %s %s\n", $1, $2 }')
   # The requests it faulted, counted the same way, each host with the second its first request
   # reached the proxy, counted from the proxy's start: what shows whether a host the site first
-  # reached late met its fault at all. Under --per-host-window that second is the proxy's own,
-  # from the line it writes as the host's window opens, read from the whole log, so a window
-  # opened before the site ran would show its true second; the probe's own request names a host
-  # of its own under that flag (the header's probe paragraph), and only the site's refused
-  # requests are counted, so the probe's window is never printed. The proxy names that host
-  # lower-cased, so the request's host is too. With one window for every host a faulted host's
-  # first request is its first refused one, as no request is refused after one is passed, so it
-  # is that line's stamp. Printed beside the passes and checked against nothing.
+  # reached late met its fault at all. Under --per-host-window and --coalesce-outage-gap that
+  # second is the proxy's own, from the line it writes at the host's first request, read from the
+  # whole log, so a window opened before the site ran would show its true second; the probe's own
+  # request names a host of its own under either flag (the header's probe paragraph), and only
+  # the site's refused requests are counted, so the probe's host is never printed. The proxy
+  # names that host lower-cased, so the request's host is too. With one window for every host a
+  # faulted host's first request is its first refused one, as no request is refused after one is
+  # passed, so it is that line's stamp. Printed beside the passes and checked against nothing.
   fault_hosts=$(awk -v t="$started" -v skip="${probe_lines:-0}" "$request_host"'
                   $3 == "window" { opened[$4] = $6; sub(/s$/, "", opened[$4]) }
                   NR > skip && ($3 == "504" || $3 == "stall") {
@@ -538,6 +608,152 @@ report() {
     passed_on=$(awk '$1 == "attempt" && $3 == "exit" && $4 == "0" { print $2; exit }' <<<"$attempt_lines")
     highest=$(awk '$1 == "attempt" && $2 + 0 > n { n = $2 + 0 } END { print n + 0 }' <<<"$attempt_lines")
   fi
+  # Under --coalesce-outage-gap, each outage the proxy opened, from its `outage <N> opened <t>s
+  # after the proxy started, ending <u>s after` line, and each host it decided on, from the lines
+  # it writes at that host's first request: `window <host> opened <t>s ...`, then `host <host>
+  # joined outage <N>` or `host <host> not faulted: after outage <N>, within <G>s`. Each host
+  # comes with the site's requests for it the proxy refused, counted from its 504 lines as the
+  # counts above count them. The probe's host joins no outage and logs only its 504, so it is
+  # never one of them. Hosts only, never a request's URL; printed and checked against nothing.
+  local outages="" decided=""
+  if [ -n "$coalesce_gap" ]; then
+    outages=$(awk '$3 == "outage" && $5 == "opened" {
+                     from = $6; to = $12; sub(/s$/, "", from); sub(/s$/, "", to)
+                     printf "%soutage %s from %s s to %s s", (n++ ? "; " : ""), $4, from, to
+                   }' "$log")
+    decided=$(awk -v skip="${probe_lines:-0}" "$request_host"'
+                $3 == "window" { opened[$4] = $6; sub(/s$/, "", opened[$4]) }
+                $3 == "host" && $5 == "joined" { decision[$4] = "outage " $7 }
+                $3 == "host" && $5 == "not" {
+                  after = $9; gap = $11; sub(/,$/, "", after); sub(/s$/, "", gap)
+                  decision[$4] = "not faulted: after outage " after ", within " gap " s"
+                }
+                NR > skip && $3 == "504" { count[tolower(request_host())]++ }
+                END {
+                  for (host in decision)
+                    printf "%s\t    %s, first request at %s s, %s, %d request(s) faulted\n",
+                      opened[host], host, opened[host], decision[host], count[host]
+                }' "$log" |
+      LC_ALL=C sort -t $'\t' -k1,1n | cut -f2-)
+  fi
+  # The build log's attempt lines (THE ATTEMPT CHECK of an image build, the header's `report`
+  # checks). Each inline retry() of the Dockerfiles prints `retry: <what>: attempt <k> of <n>
+  # failed` on stderr when an attempt fails, and `<what> failed after <n> attempts (last exit
+  # <s>)` when its last one does (.github/scripts/check-download-retry.sh's CANONICAL). BuildKit's
+  # plain progress writes each line a RUN prints as `#<step> <seconds> <text>`, and the RUN's own
+  # header as `#<step> [<stage> k/m] RUN <command>`, whose command is the recipe's text, the
+  # attempt line's echo among it. So an attempt line is read only where `retry: ` opens the text
+  # after a step's number and seconds and `: attempt <k> of <n> failed` ends it: never in a
+  # header line, never in a line with no step prefix, and never in the `+ echo ...` line the
+  # shell's xtrace prints in a RUN under `set -x`. Each call is a step and a `what`, and its
+  # reading is the highest k that failed: attempts 1 to k failed, so attempt k + 1 ran, unless k
+  # was its last. Where k is n - 1 or more, attempt n of n ran, and the call passed with no
+  # attempt to spare or ran out. Each step's stage and the first 80 characters of its header name
+  # it in what this prints. A `what` can hold the URL it fetches (`"uv download from $u"`), so
+  # every URL in a `what` or a header is printed as <url>.
+  #
+  # curl's own `--retry 7` ladders (the worker image's mise download and its notices stage's
+  # reads) print no attempt line: under -sS curl prints one `curl: (N)` line for each attempt
+  # that fails and none for the one that passes. The log does not say which call printed a line,
+  # so they are counted by RUN, and 7 in one RUN fails. 7 is the limit because curl's own backoff
+  # (1, 2, 4, 8, 16, 32 s) starts its 7th attempt about 63 s after its first, so one 60 s outage
+  # costs a `curl --retry 7` call about 6 failed lines, under the limit; a 7th line means attempt
+  # 8 of 8, its last, may have run. Counting by RUN is exact for those two RUNs: the mise download
+  # is the one curl call of its RUN, and the notices stage's 24 calls run one after another
+  # against one host. In a RUN where several curl calls fail it fails closed. A curl that retry()
+  # wraps is -sS too, so each of its failed attempts prints a `curl: (N)` line, just before the
+  # attempt line retry() prints for it. A `curl: (N)` line that is its step's line directly
+  # before a `retry: <what>: attempt <k> of <n> failed` line of the same step, xtrace's `+ `
+  # lines passed over, is that attempt's own failure, read above as its attempt line, and it is
+  # counted apart and not toward the 7. Without that, the worker image's toolchain RUN, seven
+  # retried curls most of whose hosts meet a window of their own under the worker arm's
+  # --per-host-window, would print well over 7 and fail every build. No `curl --retry 7` of the
+  # tree runs inside retry().
+  #
+  # Each line out of the awk opens with P, an attempt line to print, C, a count of curl's lines
+  # to print, or F, a failure for `fail` below.
+  local build_read="" attempt_prints="" curl_counts="" attempt_failures=""
+  if [ -n "$build_log" ]; then
+    build_read=$(awk '
+      function where(step) {
+        return "#" step " (" ((step in stage) ? stage[step] : "a step whose RUN header this log does not hold") ")"
+      }
+      function run_of(step) {
+        return (step in head) ? head[step] : "its header is not in this log"
+      }
+      function plain(text) {
+        gsub(/[A-Za-z][A-Za-z0-9+.-]*:\/\/[^ "]*/, "<url>", text)
+        return text
+      }
+      function settle(step) {
+        if (pending[step]) bare[step]++
+        pending[step] = 0
+      }
+      !/^#[0-9]+ / { next }
+      { step = substr($1, 2); rest = substr($0, length($1) + 2) }
+      substr(rest, 1, 1) == "[" && (closed = index(rest, "] RUN ")) > 0 {
+        if (!(step in stage)) {
+          stage[step] = substr(rest, 2, closed - 2)
+          head[step] = plain(substr($0, 1, 80))
+        }
+        next
+      }
+      rest !~ /^[0-9]+(\.[0-9]+)? / { next }
+      { text = substr(rest, index(rest, " ") + 1) }
+      text ~ /^\+ / { next }
+      substr(text, 1, 7) == "retry: " && match(text, /: attempt [0-9]+ of [0-9]+ failed$/) {
+        call = step SUBSEP substr(text, 8, RSTART - 8)
+        split(substr(text, RSTART + 10), number, " ")
+        if (!(call in failed)) order[++calls] = call
+        if (number[1] + 0 > failed[call]) failed[call] = number[1] + 0
+        of[call] = number[3] + 0
+        if (pending[step]) wrapped[step]++
+        pending[step] = 0
+        next
+      }
+      text ~ /^curl: \([0-9]+\)/ {
+        settle(step)
+        if (!(step in counted)) { counted[step] = 1; curl_order[++curl_steps] = step }
+        pending[step] = 1
+        next
+      }
+      { settle(step) }
+      match(text, / failed after [0-9]+ attempts \(last exit [0-9]+\)$/) {
+        split(substr(text, RSTART + 14), number, " ")
+        ran_out[++outs] = step SUBSEP substr(text, 1, RSTART - 1) SUBSEP number[1]
+      }
+      END {
+        for (step in pending) settle(step)
+        for (i = 1; i <= calls; i++) {
+          split(order[i], part, SUBSEP)
+          k = failed[order[i]]; n = of[order[i]]
+          printf "P     %s %s: attempt %d of %d reached, %d failed\n", where(part[1]), plain(part[2]), (k < n ? k + 1 : n), n, k
+          if (k >= n)
+            printf "F the attempt check: %s in %s failed attempt %d of %d, its last, so it ran out; its RUN: %s\n",
+              plain(part[2]), where(part[1]), k, n, run_of(part[1])
+          else if (k >= n - 1)
+            printf "F the attempt check: %s in %s failed attempt %d of %d, so attempt %d of %d, its last, ran: it passed with no attempt to spare or ran out; its RUN: %s\n",
+              plain(part[2]), where(part[1]), k, n, n, n, run_of(part[1])
+        }
+        for (i = 1; i <= outs; i++) {
+          split(ran_out[i], part, SUBSEP)
+          printf "F the attempt check: %s in %s failed after %d attempts, its ladder run out; its RUN: %s\n",
+            plain(part[2]), where(part[1]), part[3], run_of(part[1])
+        }
+        for (i = 1; i <= curl_steps; i++) {
+          step = curl_order[i]
+          printf "C     %s: %d counted toward the 7, and %d that retry() attempt lines account for\n", where(step), bare[step], wrapped[step]
+          if (bare[step] >= 7)
+            printf "F the attempt check: %s printed %d `curl: (N)` lines that no retry() attempt line accounts for, and curl --retry 7 prints one for each failed attempt of its 8, so a curl call of that RUN may have reached attempt 8 of 8, its last (read by RUN, which is exact where one curl call of the RUN meets the fault and fails closed where several do); its RUN: %s\n",
+              where(step), bare[step], run_of(step)
+        }
+        if (!calls && !curl_steps)
+          print "F the attempt check: the build log holds no `retry: <what>: attempt <k> of <n> failed` line and no `curl: (N)` line at all, so the fault reached no retried call of this build"
+      }' "$build_log")
+    attempt_prints=$(sed -n 's/^P //p' <<<"$build_read")
+    curl_counts=$(sed -n 's/^C //p' <<<"$build_read")
+    attempt_failures=$(sed -n 's/^F //p' <<<"$build_read")
+  fi
 
   echo "download-retry: $what, under --mode $mode"
   echo "  the step's own outcome: $outcome"
@@ -559,6 +775,17 @@ report() {
   if [ -n "$attempt_log" ]; then
     echo "  the attempts the site's call logged, of the $attempts it may make:"
     if [ -n "$attempt_lines" ]; then sed 's/^/    /' <<<"$attempt_lines"; else echo "    none at all"; fi
+  fi
+  if [ -n "$coalesce_gap" ]; then
+    echo "  the outages the proxy opened, in seconds after it started: ${outages:-none at all}"
+    echo "  the hosts it decided on, each with its first request in seconds after the proxy started, the outage it joined or the ${coalesce_gap} s after an outage it was passed on in, and its requests the proxy refused:"
+    [ -z "$decided" ] || printf '%s\n' "$decided"
+  fi
+  if [ -n "$build_log" ]; then
+    echo "  the retried calls of $build_log that failed an attempt, each with its RUN, the last attempt it reached and how many failed (a call that passed on its first attempt prints no line):"
+    if [ -n "$attempt_prints" ]; then printf '%s\n' "$attempt_prints"; else echo "    none at all"; fi
+    echo "  the \`curl: (N)\` lines of each RUN, one for each failed attempt of a curl call: curl's own (curl --retry 7: the worker image's mise archive and its notices stage's reads), held under 7 a RUN, and a retry() attempt's own, which its attempt line above accounts for:"
+    if [ -n "$curl_counts" ]; then printf '%s\n' "$curl_counts"; else echo "    none at all"; fi
   fi
 
   kill "$pid" 2> /dev/null || true
@@ -595,6 +822,10 @@ report() {
     elif [ "$highest" -ge "$attempts" ]; then
       fail "the attempt check: the call reached attempt $highest of the $attempts it may make, its last, so it passed with no attempt to spare"
     fi
+  fi
+  if [ -n "$attempt_failures" ]; then
+    local message
+    while IFS= read -r message; do fail "$message"; done <<<"$attempt_failures"
   fi
   [ "$elapsed" -le "$budget" ] || fail "it took ${elapsed}s, over its ${budget}s budget"
   [ "$problems" -eq 0 ] || exit 1
@@ -636,11 +867,20 @@ build() {
     args+=(--build-arg "http_proxy=$proxy" --build-arg "https_proxy=$proxy" \
       --build-arg "no_proxy=$TRUST_PROBE_HOSTS" --build-arg "NO_PROXY=$TRUST_PROBE_HOSTS")
   fi
-  echo "download-retry: building $file as $tag${proxy:+ through $proxy}"
+  local build_log="$state_dir/$name.build.log"
+  mkdir -p "$state_dir"
+  echo "download-retry: building $file as $tag${proxy:+ through $proxy}, its output in $build_log too"
   # --no-cache: the layers this build must run are the ones that fetch, and a cached layer
   # fetches nothing, so a build that reused one would meet no fault. --load puts the result in
-  # the runner's daemon; nothing is pushed and no registry is logged in to.
-  docker buildx build --no-cache --load --file "$file" --tag "$tag" "${args[@]}" "$root"
+  # the runner's daemon; nothing is pushed and no registry is logged in to. --progress plain
+  # writes every line each RUN prints, prefixed with the RUN's step number and its seconds, which
+  # is what `report` reads the attempt lines from; tee keeps that in the build log, and pipefail
+  # keeps docker's own exit status as this build's.
+  (
+    set -o pipefail
+    docker buildx build --progress plain --no-cache --load --file "$file" --tag "$tag" "${args[@]}" "$root" 2>&1 |
+      tee "$build_log"
+  )
   # The tag exists only once the last stage is exported, so this is the build reaching it.
   docker image inspect "$tag" --format 'download-retry: {{.RepoTags}} reached its last stage, {{.Id}}'
 }

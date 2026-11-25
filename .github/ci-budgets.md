@@ -302,7 +302,7 @@ The stall half's reports hold that cleaning to account — a site that fetched n
 No matrix, though two lanes would halve the wall time:
 ci-ok's report is one artifact per job id (`ci-ok-<job>-<run attempt>-<status>`, .github/actions/ci-ok-report), so two lanes would upload one name twice, and ci-ok.sh refuses a reported job CI_OK_SELECTED_BY does not map, which a lane's name can never be (check-ci-filters.sh holds that map to ci.yaml's jobs).
 
-The recover half of the job's derivation moved from 3640 s to 6740 s in round 30, when its arms were priced at the ladder their retry guarantees rather than at two bounds, to 7020 s in round 63, when three of them took 70 s for each host they first reach late, a figure that bounds only a host met on a call's first attempt, and to 5962 s in round 64, when those three became seven runs of one faulted host each.
+The recover half of the job's derivation moved from 3640 s to 6740 s in round 30, when its arms were priced at the ladder their retry guarantees rather than at two bounds, to 7020 s in round 63, when three of them took 70 s for each host they first reach late, a figure that bounds only a host met on a call's first attempt, to 5962 s in round 64, when those three became seven runs of one outage each, and to 5652 s in round 65, when the Go download's sum.golang.org run was dropped, since that download never asks sum.golang.org while proxy.golang.org answers.
 THE JOB'S KEY READ 221 UNTIL ROUND 28 OF dispatch://INFRA-1545, where that 221 came from 11310 + 1932 = 13242 s
 — the measured term before the stall arm's budget grew by 20 s, and install-jj's two ladders before each `ci_tools_fetch` went from 741 s to 1281 s.
 The lane is the one job whose cancellation this whole issue exists to prevent, and its derivation is written above the job's id in `.github/workflows/ci-job-download-retry.yaml` rather than above its key.
@@ -317,12 +317,12 @@ Only a stalling fault spends a whole bound
 
 A recover site's budget is the ladder its own retry guarantees, the same figure its stall twin carries:
 every attempt at its bound, the sleeps between them, the probe and a minute.
-The seven runs of one faulted host each, install-changie's two, install-omp's two and the Go download's three, carry their ladder's sleeps, the call measured at fbcc6647 and the probe instead (153, 178 and 310 s).
+The six runs of one outage each, install-changie's two, install-omp's two and the Go download's two, carry their ladder's sleeps, the call measured at fbcc6647 and the probe instead (153, 178 and 310 s).
 THE RECOVER ARM CHECKS THAT THE RETRY RECOVERS - the step succeeds through the fault - AND NOT HOW FAST A SITE RECOVERS, nor that each attempt holds its bound, which the stall arms check;
 each run of one faulted host also checks that its site met that host and that the call passed on a retry, before its last attempt.
 Its report also holds the step's time to this budget, and in the four arms that carry their stall twin's figure that can never fire:
 the faulted step's own `timeout-minutes` and the 20 s probe come to no more than the budget (install-claude-code and the workspace install 1100 s against 1130 s; Playwright 1700 s against 1730 s; the gh read 380 s against 380 s), so the step's own key ends it first.
-The seven runs' budgets are under their steps' keys with the probe, install-changie's 1760 s, install-omp's 500 s and the Go download's 1100 s, so their reports can fail them first.
+The six runs' budgets are under their steps' keys with the probe, install-changie's 1760 s, install-omp's 500 s and the Go download's 1100 s, so their reports can fail them first.
 
 The rule the recover arms' budgets were written to until round 30 of dispatch://INFRA-1545 was that an attempt in flight when the window closes runs to its bound and the next one succeeds, so each carried two bounds.
 Two readings of the workspace install broke it:
@@ -330,7 +330,7 @@ Two readings of the workspace install broke it:
 — attempts 2 and 3 having started after the fault had cleared, on a healthy network
 — and attempt 4 installed.
 The step succeeded both times, so the retry held; what was false was the arm's model of recovery.
-All seven recover arms carried that rule; four now carry their stall twin's budget, and the other three are the seven runs of one faulted host each.
+All seven recover arms carried that rule; four now carry their stall twin's budget, and the other three are the six runs of one outage each.
 
 Each stall site ends at its own bound instead of hanging: five attempts of the helper's loop, or curl's eight, and then the step fails.
 The floor is what the sleeps between the attempts cost on their own (10 + 20 + 40 + 80 for the helper, curl's 127 for its eight), so a step that ended under it did not make its attempts;
@@ -384,6 +384,12 @@ Each build's proxy runs ci-fault-proxy.py's `--per-host-window`, so each host it
 with one window from the proxy's start, a host a build first reached after its first minute met no fault at all, as the worker image's model-catalog hosts did in its last RUN.
 A call that meets listed hosts one after another, each first on a later attempt, spends its ladder on them in turn, so three in a row fail its arm although its retry works: that note states the limit and the calls run 45383555145 saw pass only on their last attempt.
 Each report prints, beside the requests its proxy passed on by host, the requests it faulted by host, with the second each host's first request came after the proxy started.
+Each report also reads its build's own log, BuildKit's plain progress, which `build` keeps beside the job log, and the rig builds the committed Dockerfiles themselves, never a copy of them:
+each inline retry() prints `retry: <what>: attempt <k> of 5 failed` on stderr for each attempt that fails, from an echo in the canonical text .github/scripts/check-download-retry.sh holds every definition to, and the report prints each call that failed an attempt with the last attempt it reached.
+THE ATTEMPT CHECK OF AN IMAGE BUILD fails a build where a call's attempt 4 of 5 failed, since its last attempt then ran, and where a ladder printed `<what> failed after 5 attempts`;
+where a RUN printed 7 `curl: (N)` lines of curl's own `--retry 7` (curl's 7th attempt starts about 63 s after its first, so a 60 s outage costs a call about 6, and a 7th means attempt 8 of 8 may have run), the lines a retry() attempt line follows being that attempt's own and not counted;
+and where the log holds neither kind of line, since then the fault reached no retried call of the build.
+download-retry-proof.sh's comment above that reading says why the curl lines are counted by RUN and where that fails closed.
 A build reads none of the runner's environment, so each one is passed the proxy as http_proxy and https_proxy build arguments:
 those are Docker's own predefined build arguments, which BuildKit sets as environment variables of every RUN and keeps out of the cache key, so no Dockerfile names a proxy anywhere.
 

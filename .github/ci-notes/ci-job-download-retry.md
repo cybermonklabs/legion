@@ -198,17 +198,26 @@ outage's host in a way only the call's retry passes:
   after an error, so a run whose direct sources answered would pass with no retry at all (check
   #0946ed09). The proxy.golang.org run faults every host in one window from the proxy's start,
   as recover-go did before round 63: the proxy and every direct source are down together for
-  60 s, and the hosts first reached after that window have runs of their own. The sum.golang.org
-  run lists that host alone: go 1.27.3 asks it itself about a module go.sum does not hold, and its
-  504 fails the attempt (driven on this issue's pod in round 64, with proxy.golang.org answering).
-  The storage.googleapis.com run lists the zips' host and the direct sources of packages/envoy's
-  modules under `--per-host-window`: the module path hosts of its go.sum and the workspace's, and
-  the repository hosts their go-get pages name (github.com, go.googlesource.com, gitlab.com).
+  60 s, sum.golang.org among them, and storage.googleapis.com, first reached after that window,
+  has a run of its own. The storage.googleapis.com run lists the zips' host and the direct
+  sources of packages/envoy's modules under `--per-host-window`: the module path hosts of its
+  go.sum and the workspace's, and the repository hosts their go-get pages name (github.com,
+  go.googlesource.com, gitlab.com).
   A module's direct host is first asked a second or so after its zip's 504, in the same attempt,
   so the windows overlap into one outage. golang.org cannot be listed without faulting
   proxy.golang.org and sum.golang.org, so go.googlesource.com, where its modules' repositories
   are, stands for it; a module whose direct host is not listed is fetched directly, and the call
   still needs its retry for the others.
+- No run faults sum.golang.org alone (round 65, INFRA-1310's architect's ruling). This download
+  runs on a complete go.sum, and with proxy.golang.org answering it asks no checksum database:
+  round 64's sum.golang.org run, in job 138666740400 of run 45455967236 (at e3e586f3), after the
+  step before it emptied the module cache, passed 4 tunnels to proxy.golang.org and 1 to
+  storage.googleapis.com, refused nothing, and passed on attempt 1, so its three checks failed it
+  as built. sum.golang.org is asked only after a `|direct` fall-through, which the
+  proxy.golang.org run already faults, so an outage of sum.golang.org alone cannot fail this
+  download. The round-64 text here said go asks it about a module go.sum does not hold, which is
+  true and is not this download's case: a run that fetched such a module would drive a download
+  CI does not make.
 
 Round 63 faulted each chain's hosts together, each in a window of its own, after job 138228769946
 of run 45329962650 (at f3e50c3f) showed one window from the proxy's start closing before the call
@@ -252,13 +261,37 @@ n of 5 failed" line, for each attempt that failed.
 - install-omp: recover-omp ran 158 s and failed four attempts, which slept 10 + 20 + 40 + 80 =
   150 s, so the call took 8 s. Each of its two runs: 150 + 8 + 20 = 178 s.
 - the Go download: recover-go ran 290 s and failed four attempts, which slept 150 s, so the call
-  took 140 s. Each of its three runs: 150 + 140 + 20 = 310 s. That arm faulted every host, each
-  in a window of its own, so it is the measured call of all three runs, and the change of round
+  took 140 s. Each of its two runs: 150 + 140 + 20 = 310 s. That arm faulted every host, each
+  in a window of its own, so it is the measured call of both runs, and the change of round
   64 to how each run faults its hosts leaves the figure where it was.
 
 The steps' own keys are unchanged, and each is above its runs' budget, so a run's report can now
 fail it first: install-changie's 29 minutes, install-omp's 8 and the Go download's 18.
 Between the Go runs a step empties the module cache, so no run reads what an earlier one fetched.
-The job's key moves with the recover half's sum, from 7020 s to 5962 s:
-.github/workflows/ci-job-download-retry.yaml's comment above the job's id derives
-13652 + 3416 = 17068 s and 285 minutes, where it read 303.
+The job's key moves with the recover half's sum, from 7020 s to 5962 s in round 64 and to 5652 s
+in round 65, which dropped the sum.golang.org run: .github/workflows/ci-job-download-retry.yaml's
+comment above the job's id derives 13342 + 3416 = 16758 s and 280 minutes, where it read 303
+before round 64 and 285 after it.
+
+## Report verdict
+
+Each report uses `continue-on-error: true` so a failed report does not skip later arms.
+GitHub Actions includes only steps with an `id` in the `steps` context. Each report has an
+ID of the form `report-<arm>`, where `<arm>` is its proxy name. The verdict checks all steps
+with that prefix. It reads `outcome`, the result before `continue-on-error` changes a failed
+report's `conclusion` to `success`.
+
+The verdict does not count failures of the tested downloads or image builds directly.
+A stalled download is expected to fail, and each report checks the site's outcome against
+what its fault mode requires. Proxy start, probe, and cache clearing do not use
+`continue-on-error`. A setup failure must fail the job and stop dependent steps.
+
+Proxy cleanup runs even after a failure. It stops proxies a report did not stop and checks
+that no proxy reaches the ci-ok report or its artifact upload. The only proxy-related entries
+the jobs write to `$GITHUB_ENV` are the empty `no_proxy` and `NO_PROXY` values. Cleanup accepts
+those empty values and rejects nonempty proxy or bypass values.
+
+The verdict runs after cleanup unless the job is cancelled. The final step sends
+`job.status`, which includes the verdict, to the caller's ci-ok reporter. The `ci-ok-changes`
+input carries `ci.yaml`'s `toJSON(needs.changes)`. The reporter can post a failing ci-ok
+immediately in a merge group, but neither lane runs in merge groups.
