@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 
 import type { WriteMethod } from "../../api/client";
+import { newSendKey } from "../../lib/send-key";
 import { textMutedOnSurface } from "../../theme/classes";
 import { SendStoppedError } from "../writes/keyed-write";
 import { type Attempt, plainWrite, type Writes } from "../writes/write-store";
@@ -49,22 +50,28 @@ export const barNoteClassName = `shrink-0 px-3 py-2 text-xs ${textMutedOnSurface
  *  indicator while it is out: `method` is the request's, which `write` makes. A filing is four
  *  of these rather than one, because one write makes one request (`OneRequestPerWriteError`):
  *  Dispatch would refuse a second request under a key it has already decided. `inline` because
- *  the bar says a refusal itself. */
+ *  the bar says a refusal itself. `waitOn` is told the key the write goes out under as it is
+ *  made, which the offer reads the write's lateness in the store by (`useLateWrites`). */
 export function press<T>(
   writes: Writes,
   label: string,
   method: WriteMethod,
-  write: Attempt<T>
+  write: Attempt<T>,
+  waitOn: (key: string) => void
 ): Promise<T | null> {
-  return writes.run({
+  const key = newSendKey();
+  const made = writes.run({
     detail: null,
     inline: true,
+    key,
     kind: plainWrite,
     label,
     method,
     presentation: "indicator",
     write,
   });
+  waitOn(key);
+  return made;
 }
 
 /** Where a write of an offer stands once it threw - the create or the send, or a write onto the

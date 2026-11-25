@@ -310,9 +310,10 @@ export function IssueTableToolbar({
 
 /**
  * The bar over the List's marked rows. While a table action is out (`busy`, which holds until
- * the list read again after its writes has drawn what they changed) every action is held rather
- * than disabled - each `StepButton`, and the Move to epic list through its `ariaDisabled` - so
- * the press that makes a control inert keeps the focus on it, and a confirm or a name dialog
+ * the list read again after its writes has drawn what they changed, and lets go while every write
+ * the action waits on is past its deadline) every action is held rather than disabled - each
+ * `StepButton`, and the Move to epic list through its `ariaDisabled` - so the press that makes a
+ * control inert keeps the focus on it, and a confirm or a name dialog
  * hands the focus back to an opener that can take it. A held Move to epic opens no list and
  * stages no pick; a pick stages the epic, and Move, held until one is staged, writes it. The bar
  * and its steps take the List's compact size, as its control row does.

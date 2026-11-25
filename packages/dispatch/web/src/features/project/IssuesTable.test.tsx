@@ -7,12 +7,13 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { drawnSize } from "../../__tests__/control-size";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { drawOver, layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
 import { panelOf, pickNamed } from "../../__tests__/list-picks";
 import { endWindowScroll, installResizeObserver } from "../../__tests__/scroll-box";
 import { answerIssuePatches, answerRoute } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
@@ -2825,6 +2826,91 @@ test("offline, Take out of epic whose list read never settles hands the focus to
     await tick(0);
   } finally {
     onlineManager.setOnline(online);
+    realClock();
+  }
+});
+
+// Offline, the List's Take out of epic sends a write that never answers: each try fails at the
+// network, and the store tries it again under its key. The action waits on it, and holds the bar
+// until the write's deadline and no longer: past it the write is still tried, and a press then
+// takes the issue out again, behind it on the issue's line.
+test("offline, Take out of epic whose write never answers lets the bar go at its deadline, and a press then goes behind it", async () => {
+  const send = spyOn(api, "send").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-2", new TypeError("Failed to fetch"))
+  );
+  restores.push(() => send.mockRestore());
+  const { client } = table(
+    [
+      issue("CORE-1", { labels: ["epic"], title: "Table epic" }),
+      issue("CORE-2", { parent: "CORE-1" }),
+    ],
+    "",
+    { inMain: true }
+  );
+  await userEvent.setup().click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+  const takeOut = within(bar).getByRole<HTMLButtonElement>("button", { name: "Take out of epic" });
+  const label = "Update CORE-2 from the issues table";
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await heldUntilLate(user, takeOut, {
+      label,
+      name: "Take out of epic",
+      queryClient: client,
+      sent: () => pressesOf([send]),
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(
+      writesOf(client)
+        .rows()
+        .filter((row) => row.label === label)
+        .map((row) => row.status),
+      "a press past the deadline takes the issue out again, behind the late write"
+    ).toEqual(["late", "queued"]);
+    expect(takeOut, "Take out of epic, behind the late write").not.toHaveAttribute("aria-disabled");
+  } finally {
+    realClock();
+  }
+});
+
+// Offline, a row's Start next sends a rank write that never answers. The action holds the row's
+// Start next until the write's deadline and no longer, but it is still out, and its record with
+// it: the List offers no Finish of it beside it, which would make its steps a second time, and a
+// press of an action that keeps a record says the first is still being sent, and sends nothing.
+test("offline, a row's Start next whose write never answers is free at its deadline, offers no Finish while it is out, and a press then says so", async () => {
+  const send = spyOn(api, "send").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-2", new TypeError("Failed to fetch"))
+  );
+  restores.push(() => send.mockRestore());
+  const { client } = table([
+    issue("CORE-1", { labels: ["legion"], rank: "B" }),
+    issue("CORE-2", { labels: ["legion"], rank: "C" }),
+  ]);
+  const row = await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const startNext = within(row).getByRole<HTMLButtonElement>("button", { name: "Start next" });
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([send]);
+    await heldUntilLate(user, startNext, {
+      label: "Update CORE-2 from the issues table",
+      name: "Start next",
+      queryClient: client,
+      sent,
+    });
+    expect(
+      screen.queryByRole("region", { name: "Interrupted table action" }),
+      "the interrupted action's Finish, while the action is out past its deadline"
+    ).toBeNull();
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(screen.getByRole("alert").textContent).toBe(
+      "An action is still being sent. Start another once it ends."
+    );
+    expect(sent(), "a press while the action is out sends nothing").toBe(1);
+  } finally {
     realClock();
   }
 });

@@ -344,3 +344,56 @@ test("Un-snooze lets go at the snooze write deadline and saves again", async () 
     unsnooze.mockRestore();
   }
 });
+
+// The bar's Snooze write over a row that never answers - offline, each try failing at the network
+// - holds that row's Snooze until its deadline and no longer: past it the bar's write is still
+// tried, and a pick from the row then saves a snooze of its own.
+test("a row's Snooze lets go at the bar's snooze write deadline and saves again", async () => {
+  const reads = readsOf(ROWS);
+  const snoozeAsk = answerAskSnoozes().mockRejectedValue(
+    new NetworkError("/api/v1/me/asks/ask-a/snooze", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <Inbox />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await screen.findByTestId("ask-ask-a");
+    await userEvent
+      .setup()
+      .click(within(shortRow("ask-a")).getByRole("checkbox", { name: /^Select / }));
+    await screen.findByText("1 selected");
+    const bar = screen.getByRole("button", { name: "Snooze selected asks" });
+    const trigger = screen.getByRole<HTMLButtonElement>("button", {
+      name: /^Snooze CORE-1: Which approach\?/,
+    });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([snoozeAsk]);
+    // The bar's list opens on its first choice, which Enter picks.
+    await heldUntilLate(user, trigger, {
+      label: "Ask snoozed",
+      name: "the row's Snooze",
+      press: "{Enter}{Enter}",
+      queryClient,
+      sent,
+      start: bar,
+    });
+    await user.keyboard("{Enter}{Enter}");
+    await tick(1_000);
+    expect(sent(), "a pick from the row past the deadline saves again").toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    reads();
+  }
+});

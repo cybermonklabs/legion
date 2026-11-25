@@ -16,18 +16,27 @@ import { InboxHandOffContext, RowAsideContext } from "./pane-selection";
 import { isIndefinite, snoozeChoices, snoozeOf } from "./snooze";
 import { type AskSnoozePress, type SnoozeSettled, useAskSnooze } from "./useAskSnooze";
 
+/** The selection bar's own Snooze write as every Snooze of an Inbox reads it
+ *  (`BulkSnoozingContext`). */
+export interface BulkSnoozing {
+  /** The asks the write is over while it is out (`useInboxSelection`'s `snoozing`), which the bar
+   *  empties once the write settles - refused or stopped included. */
+  readonly asks: ReadonlySet<string>;
+  /** Whether the write is past its deadline (`useInboxSelection`'s `snoozeLate`): still out over
+   *  `asks`, and still tried under its keys, but the controls it holds are let go. */
+  readonly late: boolean;
+}
+
 /** No ask: a control drawn outside an Inbox has no selection bar over it. */
-const NO_BULK_SNOOZING: ReadonlySet<string> = new Set();
+const NO_BULK_SNOOZING: BulkSnoozing = { asks: new Set(), late: false };
 
 /**
- * The asks the selection bar's own Snooze write is over while that write is out
- * (`useInboxSelection`'s `snoozing`), which the bar empties once the write settles - refused or
- * stopped included. The Inbox provides it over every control it draws, a row's and the reading
- * column's head alike. It is a context, as `AskHandOnWritesContext` is, so that neither the row
- * nor the column's bodies and head pass down one more prop of the list's. With no provider no
- * ask is under the bar.
+ * The selection bar's own Snooze write (`BulkSnoozing`). The Inbox provides it over every control
+ * it draws, a row's and the reading column's head alike. It is a context, as
+ * `AskHandOnWritesContext` is, so that neither the row nor the column's bodies and head pass down
+ * one more prop of the list's. With no provider no ask is under the bar.
  */
-export const BulkSnoozingContext = createContext<ReadonlySet<string>>(NO_BULK_SNOOZING);
+export const BulkSnoozingContext = createContext<BulkSnoozing>(NO_BULK_SNOOZING);
 
 /** Every choice the list can offer - the presets, and Un-snooze on a snoozed item - which the
  *  list's digits and words are read from. */
@@ -198,7 +207,10 @@ export function SnoozePick({
  * which the bar lets go of the row, which is the commit the Inbox moves the row in; a refused or
  * stopped bar write leaves the row where it was, with the reason on the bar, and its ordinary
  * control back in the commit after. One hold covers both writes, so no pick and no press of
- * Snooze or Un-snooze writes while either is out.
+ * Snooze or Un-snooze writes while either is out within its deadline. Each write is tried under
+ * its key until Dispatch decides it, so past its deadline (`late`, `BulkSnoozing.late`) the
+ * hold lets go, the list's Un-snooze among its choices, and a press then sends a save of its own:
+ * a write that never answers - offline - holds the row no longer than that.
  *
  * The badge's `Snoozing…` is drawn for the eye alone (`aria-hidden`) and the list's trigger keeps
  * its name, so the write is said to a screen reader by a polite status of its own while it is
@@ -227,13 +239,14 @@ export function SnoozeControl({
   const write = useAskSnooze(askId);
   const handOff = useContext(InboxHandOffContext);
   const aside = useContext(RowAsideContext);
-  const bulkSnoozing = useContext(BulkSnoozingContext).has(askId);
+  const bulk = useContext(BulkSnoozingContext);
+  const bulkSnoozing = bulk.asks.has(askId);
   // A snooze out over this row: its own pick's write, whose variable is a moment where an
   // un-snooze's is null, or the bar's.
   const snoozing = typeof write.pendingUntil === "string" || bulkSnoozing;
-  // The row's own write holds the controls until its deadline, past which a pick or Un-snooze
-  // sends a save of its own (`late`); the bar's write holds them until it is decided.
-  const held = useHeldThroughAnswer((write.pending && !write.late) || bulkSnoozing);
+  // Either write holds the controls until its deadline, past which a pick or Un-snooze sends a
+  // save of its own (`late`, `BulkSnoozing.late`).
+  const held = useHeldThroughAnswer((write.pending && !write.late) || (bulkSnoozing && !bulk.late));
   const pickHeld = useHeldThroughAnswer(snoozing);
   const unsnoozeHeld = useHeldThroughAnswer(write.pendingUntil === null);
   /** Begins the hand-off a snooze press makes, at the press, before its optimistic write moves
@@ -266,7 +279,7 @@ export function SnoozeControl({
   };
   // `basis-full` inside the header's wrapping row: a refusal is wider than the badge it
   // replaces, so it takes a line of its own rather than drawing over the issue key. Its Retry is
-  // held while either write is out, the bar's included, so a Retry cannot race the bar's snooze.
+  // held while either write is out within its deadline, the bar's included, as the controls are.
   const failure = write.failed ? (
     <div className="basis-full">
       <QueryError

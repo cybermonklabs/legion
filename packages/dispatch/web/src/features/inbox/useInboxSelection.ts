@@ -94,6 +94,10 @@ export interface InboxSelection {
   /** The thread rows a **Dismiss** press names, each with what the page drew in it, which is
    *  what the bar counts for that press. */
   readonly selectedThreads: readonly InboxDismissRow[];
+  /** Whether the snooze now in flight is past its deadline (`AskSnoozeManyWrite.late`): still out
+   *  over `snoozing`, and still tried, but the controls it holds - the bar's Snooze and each
+   *  row's - are let go. */
+  readonly snoozeLate: boolean;
   /** One pick over the marked asks the view is drawing; resolves with the ids the server took,
    *  once the whole pick has settled. */
   readonly snoozePick: (until: string) => Promise<readonly string[]>;
@@ -275,6 +279,7 @@ export function useInboxSelection({
     },
     selectedAsks,
     selectedThreads,
+    snoozeLate: bulkWrite.late,
     snoozePick,
     snoozeRefusal,
     snoozing,

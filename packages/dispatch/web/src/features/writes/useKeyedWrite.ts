@@ -14,6 +14,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -207,6 +208,31 @@ function lateIn(rows: readonly Write[], key: string): boolean {
       (row) => row.target === own.target && row.joined < own.joined && row.status === "late"
     )
   );
+}
+
+/** The keys among `keys` whose write the store holds late, or waiting its turn on its target's
+ *  line behind a write that is (`lateIn`), as `KeyedWriteResult.late` reads a keyed write's. For
+ *  a surface that makes its writes with `Writes.run` under keys of its own rather than through
+ *  this hook, and holds a control while it waits on them: it lets the control go once each write
+ *  it waits on is late, so a write that never answers - offline, its tries waiting out the
+ *  network - locks nothing. A key the store holds no write under - not joined yet, or decided -
+ *  is not late. The set is the same object while the same keys are late, and the store is
+ *  followed only while `keys` names any. */
+export function useLateWrites(keys: readonly string[]): ReadonlySet<string> {
+  const writes = useWrites();
+  const following = keys.length > 0;
+  const subscribe = useCallback(
+    (listener: () => void) => (following ? writes.subscribe(listener) : () => undefined),
+    [following, writes]
+  );
+  // One string of the late keys, so a change of the store that turns none of them late draws
+  // nothing again.
+  const late = useSyncExternalStore(subscribe, () => {
+    if (!following) return "";
+    const rows = writes.rows();
+    return keys.filter((key) => lateIn(rows, key)).join(" ");
+  });
+  return useMemo(() => new Set(late === "" ? [] : late.split(" ")), [late]);
 }
 
 /** The pending press of a keyed write shared by exact mutation key. A surface that mounts
@@ -421,20 +447,20 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
               method: methodOf(variables),
               write: (bounds) => write(variables, bounds),
             })
-      )
-        .then(
-          (answer) => {
-            if (answer === null) setUnanswered({ at: Date.now(), variables });
-            return answer;
-          },
-          (error: unknown) => {
-            if (retriesUnderItsKey(error instanceof Error ? error : undefined)) {
-              held.current = [press, ...held.current];
-            }
-            throw error;
+      ).then(
+        (answer) => {
+          out.current.delete(key);
+          if (answer === null) setUnanswered({ at: Date.now(), variables });
+          return answer;
+        },
+        (error: unknown) => {
+          out.current.delete(key);
+          if (retriesUnderItsKey(error instanceof Error ? error : undefined)) {
+            held.current = [press, ...held.current];
           }
-        )
-        .finally(() => out.current.delete(key));
+          throw error;
+        }
+      );
     },
     networkMode: "always",
     onError:

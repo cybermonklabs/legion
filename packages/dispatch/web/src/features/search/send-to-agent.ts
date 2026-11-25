@@ -37,8 +37,13 @@ export type SendToAgentOutcome =
   | { readonly kind: "sent" | "queued" }
   | { readonly kind: "refused"; readonly refusal: string };
 
-/** How the offer sends; the tests pass their own. */
-export type SendToAgent = (writes: Writes, write: SendToAgentWrite) => Promise<SendToAgentOutcome>;
+/** How the offer sends, telling `waitOn` the key the send goes out under (`press`); the tests
+ *  pass their own. */
+export type SendToAgent = (
+  writes: Writes,
+  write: SendToAgentWrite,
+  waitOn: (key: string) => void
+) => Promise<SendToAgentOutcome>;
 
 /**
  * Sends the person's words to the session on the issue, through the route every other client
@@ -60,7 +65,8 @@ export type SendToAgent = (writes: Writes, write: SendToAgentWrite) => Promise<S
  */
 export async function sendToAgent(
   writes: Writes,
-  { block, issue, session, words }: SendToAgentWrite
+  { block, issue, session, words }: SendToAgentWrite,
+  waitOn: (key: string) => void
 ): Promise<SendToAgentOutcome> {
   const write: Attempt<Message> = (bounds) =>
     api.createAgentMessage(
@@ -68,7 +74,7 @@ export async function sendToAgent(
       { body: handoffBody(issue, block, words), delivery: "aside" },
       bounds
     );
-  const message = await press(writes, `“${words}” to the agent on ${issue}`, "POST", write);
+  const message = await press(writes, `“${words}” to the agent on ${issue}`, "POST", write, waitOn);
   const attempt = message?.deliveries?.at(-1);
   if (attempt === undefined) return { kind: "sent" };
   const state = deliveryOutcomeState(attempt.state);

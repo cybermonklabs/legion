@@ -217,9 +217,15 @@ export function useTableRecovery(project: string, report: (text: string) => void
      *  `resend` lets its step go: what the kind's guard, where it has one, has let through
      *  (`ResumableAction.guard` in `issues-table-actions.ts`). A step is a key of `record.writes`:
      *  an issue's key for its parent or rank write, `create`, `intoWork` or `reason`. A refused
-     *  write `resend` holds back stays as it is in Pending changes. Throws the first refusal of a
-     *  write it waited on or sent. */
-    settle: async (record: TableAction, resend: (step: string) => boolean) => {
+     *  write `resend` holds back stays as it is in Pending changes. Tells `waitOn` the key each
+     *  write it waits on goes out under, as it starts to wait on it - a Retry made under a new key
+     *  by that new one - so the caller can read the write's lateness in the store. Throws the
+     *  first refusal of a write it waited on or sent. */
+    settle: async (
+      record: TableAction,
+      resend: (step: string) => boolean,
+      waitOn: (key: string) => void
+    ) => {
       const stepOf = stepsByWriteKey(record.writes);
       const rows = writes.rows().filter((row) => stepOf.has(row.key));
       const outcome = (row: (typeof rows)[number]) => {
@@ -238,7 +244,12 @@ export function useTableRecovery(project: string, report: (text: string) => void
       // A write still in flight is only waited on; a refused one `resend` lets go is sent again,
       // and no more of those run at once than a bulk action sends, so Finish after a 250-row
       // refusal is the same bounded stream the action itself was.
-      const waiting = rows.filter((row) => row.status !== "refused").map(outcome);
+      const waiting = rows
+        .filter((row) => row.status !== "refused")
+        .map((row) => {
+          waitOn(row.key);
+          return outcome(row);
+        });
       const retried = settledWithLimit(
         rows.filter((row) => {
           const step = stepOf.get(row.key);
@@ -252,11 +263,14 @@ export function useTableRecovery(project: string, report: (text: string) => void
           const now = writes.rows().find((current) => current.id === row.id);
           if (now === undefined) return;
           if (now.status !== "refused") {
+            waitOn(now.key);
             await outcome(row);
             return;
           }
           const landed = outcome(row);
           writes.retry(row.id);
+          const again = writes.rows().find((current) => current.id === row.id);
+          if (again !== undefined) waitOn(again.key);
           await landed;
         }
       );

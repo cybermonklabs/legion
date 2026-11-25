@@ -6,8 +6,9 @@ import { inboxQuery } from "../../api/queries";
 import { holdBackReads } from "../../api/query-client";
 import type { InboxRow } from "../../api/types";
 import { snoozeWritten } from "../../api/write-events";
+import { newSendKey } from "../../lib/send-key";
 import { refusedByDispatch, SendStoppedError } from "../writes/keyed-write";
-import { stoppedNote } from "../writes/useKeyedWrite";
+import { stoppedNote, useLateWrites } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
 import { useAskWrites, useInboxWrites } from "./ask-writes";
 
@@ -217,6 +218,11 @@ export type AskSnoozeFailure =
 export interface AskSnoozeManyWrite {
   /** True while a bulk save is in flight. */
   pending: boolean;
+  /** Whether every ask's write of the bulk saves out is past its deadline, or waits its turn
+   *  behind one that is (`useLateWrites`): still tried under its key until Dispatch decides it,
+   *  so the saves are still `pending`, but the controls they hold are let go. False while no
+   *  write of theirs is out. */
+  late: boolean;
   /** Snoozes every id until `until` (RFC3339); resolves with the asks the server refused. */
   submit: (
     ids: readonly string[],
@@ -238,21 +244,34 @@ export interface AskSnoozeManyWrite {
  * landed. A read of the Inbox asked while the set is out waits until the last of them is decided,
  * or until as many snooze events as asks have come, as a row's own snooze's does; an ask
  * Dispatch refused with no earlier attempt of its snooze that may have landed unseen publishes no
- * event, and the hold waits for none of it.
+ * event, and the hold waits for none of it. Since a write that never answers - offline - is
+ * tried until the reader stops it, the set's writes are read in the store under the keys they
+ * were made with (`late`), so the controls the set holds let go once every one of them still out
+ * is past its deadline.
  */
 export function useAskSnoozeMany(): AskSnoozeManyWrite {
   const queryClient = useQueryClient();
   const writes = useWrites();
   const inboxKey = inboxQuery().queryKey;
   const [pending, setPending] = useState(0);
+  /** The key of each ask's write of the bulk saves out, from the press until it is decided. */
+  const [out, setOut] = useState<readonly string[]>([]);
+  const lateKeys = useLateWrites(out);
   return {
+    late: out.length > 0 && out.every((key) => lateKeys.has(key)),
     pending: pending > 0,
     submit: async (ids, until) => {
       // Built before anything is written down: the builder refuses an id the route's pattern has
       // no value for, and a refusal here, inside `ids.map` below, would escape `submit` after the
       // optimistic write with `pending` raised and no row rolled back. No caller sends an empty
       // id, so this is where that stays true rather than a case to handle.
-      const writeOf = ids.map((id) => ({ id, request: askSnoozeRequest(id, until) }));
+      const writeOf = ids.map((id) => ({
+        id,
+        key: newSendKey(),
+        request: askSnoozeRequest(id, until),
+      }));
+      const keys = new Set(writeOf.map(({ key }) => key));
+      setOut((current) => [...current, ...keys]);
       setPending((count) => count + 1);
       const release = holdBackReads(queryClient, {
         endsOn: snoozeWritten,
@@ -271,17 +290,23 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
           current?.map((row) => (marked.has(row.id) ? { ...row, snoozed_until: until } : row))
         );
         const results = await Promise.allSettled(
-          writeOf.map(({ id, request }) =>
-            writes.run({
+          writeOf.map(({ id, key, request }) => {
+            const run = writes.run({
               detail: null,
               inline: true,
+              key,
               kind: plainWrite,
               label: "Ask snoozed",
               presentation: "indicator",
               request,
               target: `ask-snooze:${id}`,
-            })
-          )
+            });
+            // Each ask's write leaves `out` as it is decided, beside the set's own wait for all
+            // of them, which this branch does not lengthen.
+            const decided = () => setOut((current) => current.filter((each) => each !== key));
+            run.then(decided, decided);
+            return run;
+          })
         );
         failed = ids.flatMap((askId, index): AskSnoozeFailure[] => {
           const result = results[index];
@@ -309,8 +334,10 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
           );
         }
       } finally {
-        // Whatever happens above: a hold left on would keep every read of the Inbox waiting.
+        // Whatever happens above: a hold left on would keep every read of the Inbox waiting, and
+        // a key left in `out` would keep the bulk's lateness read.
         release(refusals);
+        setOut((current) => current.filter((each) => !keys.has(each)));
       }
       void queryClient.invalidateQueries({ queryKey: inboxKey });
       setPending((count) => count - 1);

@@ -2,9 +2,10 @@ import type { IssuePriority } from "../../api/types";
 import { type IssueFieldWrite, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 /** The priority's write, without `error`: a refused one shows a fixed line (`PriorityControl`),
- *  not the server's reason, and a stopped one what it may have done (`stopped`). `submit` takes a
- *  priority, or null to unset it. */
-export type IssuePriorityWrite = Omit<IssueFieldWrite<IssuePriority | null>, "error">;
+ *  not the server's reason, and a stopped one what it may have done (`stopped`). Without `held`
+ *  too: no control holds on a priority's pick, since a pick made while one is out goes behind it
+ *  on the issue's line. `submit` takes a priority, or null to unset it. */
+export type IssuePriorityWrite = Omit<IssueFieldWrite<IssuePriority | null>, "error" | "held">;
 
 /**
  * The one way the SPA writes an issue's priority. Every surface that renders it (issue header,

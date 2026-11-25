@@ -1797,8 +1797,9 @@ const SWITCHES: AgentStreamCommand[] = [
   { name: "effort", source: "builtin" },
 ];
 
-/** The live view of a session reporting `replay`, once its model picker is on screen. */
-async function renderWithPickers(replay: AgentStreamFrame[]): Promise<LiveView> {
+/** The live view of a session reporting `replay`, once its model picker is on screen, with the
+ *  query client it is drawn over (`renderLiveView`), whose write store a row reads. */
+async function renderWithPickers(replay: AgentStreamFrame[]): Promise<QueryClient & LiveView> {
   const view = renderLiveView({
     agentState: {},
     messages: [],

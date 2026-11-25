@@ -18,6 +18,7 @@ import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-r
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldNotDisabled } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
@@ -3910,6 +3911,57 @@ test("the bar's Snooze keeps its rows in their band until its write lands", asyn
     expect(headings()).toEqual(["Waiting on you (1)", "Later (2)"]);
   } finally {
     unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// The bar's Snooze write that never answers - offline, each try failing at the network - holds the
+// bar's Snooze until its deadline and no longer: past it the write is still tried, and the bar
+// still counts it, and a pick over another marked ask then snoozes that one.
+test("the bar's Snooze lets go at its write deadline and snoozes again", async () => {
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const snoozeAsk = answerAskSnoozes().mockRejectedValue(
+    new NetworkError("/api/v1/me/asks/ask-a/snooze", new TypeError("Failed to fetch"))
+  );
+  const getAsk = mockAskReads(rows);
+  const { queryClient, unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Which format?");
+    await userEvent
+      .setup()
+      .click(within(rowOf("ask-a")).getByRole("checkbox", { name: /^Select / }));
+    await screen.findByText("1 selected");
+    const picker = screen.getByRole<HTMLButtonElement>("button", { name: "Snooze selected asks" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    // The bar's list opens on its first choice, which Enter picks.
+    await heldUntilLate(user, picker, {
+      label: "Ask snoozed",
+      name: "the bar's Snooze",
+      press: "{Enter}{Enter}",
+      queryClient,
+      sent: () => pressesOf([snoozeAsk]),
+    });
+    expect(screen.getByText("Snoozing 1…"), "the bar, past the deadline").toBeTruthy();
+    await user.click(within(rowOf("ask-b")).getByRole("checkbox", { name: /^Select / }));
+    act(() => picker.focus());
+    await user.keyboard("{Enter}{Enter}");
+    await tick(1_000);
+    expect(
+      snoozeAsk.mock.calls.map(([id]) => id),
+      "a pick past the deadline snoozes the ask marked since"
+    ).toContain("ask-b");
+    expect(pressesOf([snoozeAsk]), "a pick past the deadline sends a write of its own").toBe(2);
+  } finally {
+    realClock();
+    unmount();
+    queryClient.clear();
     getAsk.mockRestore();
     getInbox.mockRestore();
     snoozeAsk.mockRestore();

@@ -6,6 +6,7 @@ import {
   type RefObject,
   useCallback,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -132,7 +133,13 @@ import { useFoldedGroups } from "./preferences";
 import { questionLine } from "./question-line";
 import { ReadingPane } from "./ReadingPane";
 import { RowKindIcon, RowPriorityTag, RowUrgencyMark } from "./RowMarks";
-import { BULK_PICKER_MARKS, BulkSnoozingContext, SnoozeControl, SnoozePick } from "./SnoozeControl";
+import {
+  BULK_PICKER_MARKS,
+  type BulkSnoozing,
+  BulkSnoozingContext,
+  SnoozeControl,
+  SnoozePick,
+} from "./SnoozeControl";
 import {
   EVERYONE_FILTER_VALUE,
   type InboxSection,
@@ -1223,6 +1230,7 @@ function InboxBody({
     selectAll,
     selectedAsks,
     selectedThreads,
+    snoozeLate,
     snoozePick,
     snoozeRefusal,
     snoozing: bulkSnoozing,
@@ -1343,8 +1351,15 @@ function InboxBody({
   // (`useHeldThroughAnswer`), as a row's own Snooze is, and the hold keeps the armed hand-off of
   // the pick that made the write live (`holdHandOff`). So the bar's going when the write lands,
   // with the rows it snoozed, is the reader's doing, and its hand-off lands the focus: at the
-  // reading column's width the short rows draw no Snooze of their own to hold the pick.
-  const bulkSnoozeHeld = useHeldThroughAnswer(bulkSnoozing.size !== 0);
+  // reading column's width the short rows draw no Snooze of their own to hold the pick. Its
+  // writes are tried under their keys until Dispatch decides them, so once every one still out is
+  // past its deadline (`snoozeLate`) the bar's Snooze, and each row's under it, is let go: offline
+  // the pick holds them no longer than that.
+  const bulkSnoozeHeld = useHeldThroughAnswer(bulkSnoozing.size !== 0 && !snoozeLate);
+  const bulkSnoozingShown = useMemo<BulkSnoozing>(
+    () => ({ asks: bulkSnoozing, late: snoozeLate }),
+    [bulkSnoozing, snoozeLate]
+  );
 
   if (inbox.isPending || whoAmI.isPending) {
     return <LoadingSkeleton label="Loading your inbox" />;
@@ -1978,8 +1993,8 @@ function InboxBody({
       }}
     >
       {/* Every Snooze this list draws - a row's, and the column head's - is held while the
-            bar's own Snooze write is out over its ask (`SnoozeControl`). */}
-      <BulkSnoozingContext value={bulkSnoozing}>
+            bar's own Snooze write is out over its ask within its deadline (`SnoozeControl`). */}
+      <BulkSnoozingContext value={bulkSnoozingShown}>
         {/* Every Snooze this list draws - on a row, and in the column's head - hands the reader
             on to the item after the one it snoozed once the server has taken it (R8). */}
         <InboxHandOffContext value={paneSelection}>

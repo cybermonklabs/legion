@@ -25,6 +25,7 @@ import {
   optionInput,
 } from "../issue/parent-status/useParentStatusMove";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { useLateWrites } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
 import { IN_WORK_STATUSES, statusText } from "./board-model";
 import { type IssueListing, listingName } from "./issues-table-data";
@@ -175,7 +176,26 @@ export function useIssueTableActions({
 }) {
   const client = useQueryClient();
   const writes = useWrites();
-  const [busy, setBusy] = useState(false);
+  /** How many actions are out - each from its press through the read of the list after it - and
+   *  dry runs of an epic's move into work (`askTarget`). */
+  const [running, setRunning] = useState(0);
+  /** The key of each write of the page's store an action waits on now, from the moment it waits
+   *  on it until Dispatch decides it (the listener below). */
+  const [waiting, setWaiting] = useState<readonly string[]>([]);
+  const lateKeys = useLateWrites(waiting);
+  /** Notes that an action waits on the write the store holds under `key`. */
+  const waitOn = (key: string) => setWaiting((keys) => [...keys, key]);
+  // A write an action waits on that Dispatch decides - landed, refused, stopped or discarded - is
+  // waited on no longer.
+  useEffect(
+    () =>
+      writes.onOutcome(({ write }) =>
+        setWaiting((keys) =>
+          keys.includes(write.key) ? keys.filter((key) => key !== write.key) : keys
+        )
+      ),
+    [writes]
+  );
   const [notice, setNotice] = useState<Notice>();
   // Why the list read after an action has not settled, once its hold ran out (`useReadBound`).
   const [unsettled, holdThrough] = useReadBound();
@@ -217,6 +237,7 @@ export function useIssueTableActions({
     // Every write is watched, so a refusal names its issue; only a write of a recorded action
     // belongs to it, so a refused Move or Rename retries with the ordinary wording.
     recovery.watch(key, issue);
+    waitOn(key);
     return answer;
   };
   const apply = async (operations: readonly Patch[], id?: string, minted?: Keys) => {
@@ -299,7 +320,7 @@ export function useIssueTableActions({
     // this hold the press could end before the action did, and the bar's going would read as no
     // doing of the reader's.
     const endHold = holdHandOff();
-    setBusy(true);
+    setRunning((count) => count + 1);
     setNotice(undefined);
     setMoved(new Set());
     // Whether the action may have changed what the list draws: it answered what it changed, or a
@@ -362,7 +383,7 @@ export function useIssueTableActions({
       // the bar goes, before the press ends.
       flushSync(() => {
         if (answered) clearSelection();
-        setBusy(false);
+        setRunning((count) => count - 1);
       });
       endHold();
     }
@@ -378,7 +399,12 @@ export function useIssueTableActions({
     if (!recovery.current.current) return true;
     setNotice({
       kind: "error",
-      text: "Finish or Dismiss the interrupted action before starting another one.",
+      // An action still out keeps the List's controls only until each write it waits on is late
+      // (`busy`), and the List offers no Finish of a record while one is out (`interrupted`).
+      text:
+        running > 0
+          ? "An action is still being sent. Start another once it ends."
+          : "Finish or Dismiss the interrupted action before starting another one.",
     });
     return false;
   };
@@ -484,16 +510,16 @@ export function useIssueTableActions({
       go(false);
       return;
     }
-    setBusy(true);
+    setRunning((count) => count + 1);
     setNotice(undefined);
     targetQuestion(target, rows, action).then(
       (question) => {
-        setBusy(false);
+        setRunning((count) => count - 1);
         if (question === undefined) go(false);
         else setConfirming({ ...question, run: () => go(true) });
       },
       (error: unknown) => {
-        setBusy(false);
+        setRunning((count) => count - 1);
         setNotice({ kind: "error", text: checkFailed(target, error) });
       }
     );
@@ -734,6 +760,7 @@ export function useIssueTableActions({
             ),
         });
         recovery.watch(key, `Create epic “${title}”`);
+        waitOn(key);
         // A create the reader stopped in Pending changes may have made the epic, which its words
         // say in place of the error's own, a composer's; its Retry there makes that very create
         // again under its key.
@@ -940,7 +967,7 @@ export function useIssueTableActions({
       if (!(await goOnFinish(record, question))) return false;
       // With no issue in work, the create goes again with the action's other refused writes.
       if (question === undefined) return true;
-      await recovery.settle(record, (step) => step === "create");
+      await recovery.settle(record, (step) => step === "create", waitOn);
       if (!recovery.active(record.id)) return false;
       const made = recovery.current.current?.target;
       if (made === undefined) throw new Error(unknownKey);
@@ -1055,7 +1082,7 @@ export function useIssueTableActions({
     const interrupted = recovery.current.current;
     if (!interrupted) return;
     void perform("Finished the interrupted action.", async () => {
-      await recovery.settle(interrupted, () => false);
+      await recovery.settle(interrupted, () => false, waitOn);
       // The record while it is still the one in hand, as the writes waited on left it: a create
       // that landed names its epic.
       const held = () => (recovery.active(interrupted.id) ? recovery.current.current : undefined);
@@ -1072,7 +1099,7 @@ export function useIssueTableActions({
       }
       const guarded = held();
       if (!guarded) return undefined;
-      await recovery.settle(guarded, resend);
+      await recovery.settle(guarded, resend, waitOn);
       const settled = held();
       if (!settled) return undefined;
       const current = await listAll();
@@ -1083,7 +1110,15 @@ export function useIssueTableActions({
       return record.keys;
     });
   };
-  const interrupted = busy ? undefined : recovery.action;
+  // An action holds the List's controls from its press through the read of the list after it,
+  // that read's hold bounded by the request deadline (`useReadBound`), but not while every write
+  // it waits on is past its deadline: each is tried under its key until Dispatch decides it, so
+  // offline an action holds them no longer than that, and a press then goes behind those writes
+  // on their issues' lines. An action still out keeps its record, and the List offers no Finish
+  // or Dismiss of it until it ends, late or not (`interrupted`): a Finish then would run its
+  // steps a second time beside it.
+  const busy = running > 0 && !(waiting.length > 0 && waiting.every((key) => lateKeys.has(key)));
+  const interrupted = running > 0 ? undefined : recovery.action;
   return {
     busy,
     // A list read that has not settled is said after what the action did, in the words the List
@@ -1097,13 +1132,13 @@ export function useIssueTableActions({
           },
     moved,
     // Whether the press of this action is taking row `key` out of the view: a row the action
-    // changed, while the action is out (`busy`), and while the list read after it is still out
-    // once its hold ran out (`unsettled`). The commit that lets the action go draws that read at
-    // the latest, and a read that outlived the hold is drawn in the commit that ends `unsettled`.
-    // The List's anchor asks the render before a commit as well (`ViewportAnchor`'s `leaving`), so
-    // the rows are named in that commit. A row a later live update takes away is not named. With
-    // no action out, `leaving` is undefined and names no row.
-    leaving: busy || unsettled !== undefined ? (key: string) => moved.has(key) : undefined,
+    // changed, while the action is out (`running`), and while the list read after it is still
+    // out once its hold ran out (`unsettled`). The commit that lets the action go draws that read
+    // at the latest, and a read that outlived the hold is drawn in the commit that ends
+    // `unsettled`. The List's anchor asks the render before a commit as well (`ViewportAnchor`'s
+    // `leaving`), so the rows are named in that commit. A row a later live update takes away is
+    // not named. With no action out, `leaving` is undefined and names no row.
+    leaving: running > 0 || unsettled !== undefined ? (key: string) => moved.has(key) : undefined,
     duplicateEpic,
     setDuplicateEpic,
     unansweredEpic,

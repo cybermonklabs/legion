@@ -24,9 +24,9 @@ import { inboxActionMark } from "./inbox-action-mark";
 import { RowAsideContext } from "./pane-selection";
 
 /** What one ask's Assign to me write is doing, as every control drawn for the ask shows it: the
- *  write's own `error`, `failed` and `pending`, and whether the refused save may be made again
- *  (`IssueFieldWrite.retry`). */
-type AssignShown = Readonly<Pick<IssueAssigneeWrite, "error" | "failed" | "pending">> & {
+ *  write's own `error`, `failed`, `held` and `pending`, and whether the refused save may be made
+ *  again (`IssueFieldWrite.retry`). */
+type AssignShown = Readonly<Pick<IssueAssigneeWrite, "error" | "failed" | "held" | "pending">> & {
   readonly retryable: boolean;
 };
 
@@ -34,6 +34,7 @@ type AssignShown = Readonly<Pick<IssueAssigneeWrite, "error" | "failed" | "pendi
 const NOTHING_SAVED: AssignShown = {
   error: undefined,
   failed: false,
+  held: false,
   pending: false,
   retryable: false,
 };
@@ -43,6 +44,7 @@ const NOTHING_SAVED: AssignShown = {
 const SAVING: AssignShown = {
   error: undefined,
   failed: false,
+  held: true,
   pending: true,
   retryable: false,
 };
@@ -160,6 +162,7 @@ export function AskAssignWritesProvider({ children }: { children: ReactNode }): 
       update(askId, (entry) =>
         entry.shown.error === shown.error &&
         entry.shown.failed === shown.failed &&
+        entry.shown.held === shown.held &&
         entry.shown.pending === shown.pending &&
         entry.shown.retryable === shown.retryable
           ? entry
@@ -242,11 +245,11 @@ function AssignWrite({
       made.delete(askId);
     };
   }, [askId, made]);
-  const { error, failed, pending } = write;
+  const { error, failed, held, pending } = write;
   const retryable = write.retry !== undefined;
   useLayoutEffect(() => {
-    report(askId, { error, failed, pending, retryable });
-  }, [askId, error, failed, pending, report, retryable]);
+    report(askId, { error, failed, held, pending, retryable });
+  }, [askId, error, failed, held, pending, report, retryable]);
   return null;
 }
 
@@ -261,10 +264,13 @@ function AssignWrite({
  *  question - shows `Assigning…`, a refusal and its Retry. A refusal ends the hold at once: the
  *  rollback puts the issue back with nobody holding it, and the next read of the Inbox places the
  *  row. The button is held (`heldPress`) from the press until the commit after its write's
- *  answer (`useHeldThroughAnswer`); the Inbox lets go of the row in the answer's own commit, so a
- *  row the landing takes out of the list takes this button away while it is still held. On a
- *  short row beside the column that is not the item in hand, a press - the button or its Retry -
- *  first takes a focus it left in the row to the item being read (`RowAsideContext`).
+ *  answer (`useHeldThroughAnswer`), or until the write is late (`IssueFieldWrite.held`): a save is
+ *  tried under its key until Dispatch decides it, so offline it holds the button no longer than
+ *  its deadline, and a press then saves again, behind it on the issue's line, while the button
+ *  still says `Assigning…`. The Inbox lets go of the row in the answer's own commit, so a row the
+ *  landing takes out of the list takes this button away while it is still held. On a short row
+ *  beside the column that is not the item in hand, a press - the button or its Retry - first
+ *  takes a focus it left in the row to the item being read (`RowAsideContext`).
  *
  *  Its own module rather than `Inbox.tsx`'s, because the Inbox's reading pane draws it too
  *  (`ReadingPaneHead`): the Inbox mounts the pane, so a control the pane's head imports from the
@@ -289,7 +295,7 @@ export function AssignToMe({
   const { draw } = writes;
   useLayoutEffect(() => draw(askId, issueKey), [askId, draw, issueKey]);
   const write = writes.of(askId);
-  const held = useHeldThroughAnswer(write.pending);
+  const held = useHeldThroughAnswer(write.held);
   const aside = useContext(RowAsideContext);
   const retry = write.retry;
   return (

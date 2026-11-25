@@ -1,8 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 
 import { newIssueSettingsQuery } from "../../api/queries";
 import { stoppedWriteNote } from "../writes/keyed-write";
+import { useLateWrites } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { useWrites, type Writes } from "../writes/write-store";
 import { type FiledIssue, fileNewIssue, type NewIssueWrite } from "./new-issue";
 import {
@@ -19,20 +21,22 @@ import {
 export const NEW_ISSUE_GROUP_ID = "search-group-new-issue";
 export const NEW_ISSUE_OPTION_ID = "search-option-new-issue";
 
-/** Where the offer stands once a press has been made: the writes out, the issue made (`filed`
- *  absent for one Dispatch had no answer naming, and carrying the write onto it that Dispatch
- *  refused where there was one), the create itself refused, in the person's words, or stopped by
- *  the person before Dispatch confirmed it. Nothing pressed is no state at all
- *  (`useWordsState`). */
+/** Where the offer stands once a press has been made: the writes out, from the press made `at`,
+ *  the issue made (`filed` absent for one Dispatch had no answer naming, and carrying the write
+ *  onto it that Dispatch refused where there was one), the create itself refused, in the
+ *  person's words, or stopped by the person before Dispatch confirmed it. Nothing pressed is no
+ *  state at all (`useWordsState`). */
 type OfferState =
-  | { readonly kind: "making"; readonly words: string }
+  | { readonly at: number; readonly kind: "making"; readonly words: string }
   | { readonly filed: FiledIssue | undefined; readonly kind: "made"; readonly words: string }
   | UnconfirmedPress;
 
-/** How the offer writes; the tests pass their own. */
+/** How the offer writes, telling `waitOn` the key of each write as it is made (`press`); the
+ *  tests pass their own. */
 export type FileNewIssue = (
   writes: Writes,
-  write: NewIssueWrite
+  write: NewIssueWrite,
+  waitOn: (key: string) => void
 ) => Promise<FiledIssue | undefined>;
 
 /**
@@ -75,6 +79,20 @@ export function useNewIssueOffer({
     enabled: offered && project !== undefined,
   });
   const [here, setState] = useWordsState<OfferState>(words);
+  // The write of the filing out now, with the press it is of (`at`): the filing's writes go out
+  // one at a time, each telling its key as it is made.
+  const [writing, setWriting] = useState<{ readonly at: number; readonly key: string }>();
+  const making = here?.kind === "making" ? here : undefined;
+  const writingKey = making !== undefined && writing?.at === making.at ? writing.key : undefined;
+  const lateKeys = useLateWrites(writingKey === undefined ? [] : [writingKey]);
+  // Each write is tried until Dispatch decides it, so past the deadline of the one out the row is
+  // listed again rather than withheld for good; a press of it while the filing is out makes no
+  // second issue, and the line says so (`useOneCreateOut`).
+  const makingLate = writingKey !== undefined && lateKeys.has(writingKey);
+  const oneCreate = useOneCreateOut({
+    isPending: making !== undefined,
+    submittedAt: making?.at ?? 0,
+  });
   // Nothing pressed and nothing to offer is no offer at all. Once a press has been made the
   // line stays, whatever the list behind it does: the search re-answers after the create and
   // now matches the issue that press just made, which withdraws the row - rightly, since there
@@ -82,13 +100,17 @@ export function useNewIssueOffer({
   // offer is still on the table. Words the person has typed since drop it (`useWordsState`),
   // because then it answers a question they have moved on from.
   if (!offered || project === undefined || settings.data === undefined) {
-    return here === undefined ? undefined : { row: undefined, said: <NewIssueSaid state={here} /> };
+    return here === undefined
+      ? undefined
+      : { row: undefined, said: <NewIssueSaid state={here} stillMaking={oneCreate.refused} /> };
   }
   const filed = here?.kind === "made" ? here.filed : undefined;
   const accept = () => {
+    if (oneCreate.refuse()) return;
     const settled = settings.data;
-    setState({ kind: "making", words });
-    file(writes, { project, settings: settled, words }).then(
+    const at = Date.now();
+    setState({ at, kind: "making", words });
+    file(writes, { project, settings: settled, words }, (key) => setWriting({ at, key })).then(
       (made) => {
         void queryClient.invalidateQueries({ queryKey: ["issues"] });
         setState({ filed: made, kind: "made", words });
@@ -117,11 +139,12 @@ export function useNewIssueOffer({
   return {
     // The row is listed from the states a press can still create from - nothing pressed, a
     // create Dispatch refused, and one the person stopped, which the line says a press makes
-    // again as a new create - and as `Open …` once an issue is made. While the writes are out,
-    // and for a create Dispatch landed with no answer naming, there is no row: a press there
-    // would make a second issue.
+    // again as a new create - and as `Open …` once an issue is made. While the writes are out
+    // within their deadline, and for a create Dispatch landed with no answer naming, there is no
+    // row: a press there would make a second issue. Past the deadline of the write out it is
+    // listed again, and its press sends nothing while the filing is out (`accept`).
     row:
-      here === undefined || here.kind === "refused" || here.kind === "stopped"
+      here === undefined || here.kind === "refused" || here.kind === "stopped" || makingLate
         ? {
             id: NEW_ISSUE_OPTION_ID,
             kind: "offer",
@@ -129,21 +152,31 @@ export function useNewIssueOffer({
             select: accept,
           }
         : openRow,
-    said: <NewIssueSaid state={here} />,
+    said: <NewIssueSaid state={here} stillMaking={oneCreate.refused} />,
   };
 }
 
 /** The one line the bar says about the issue it is making, made, or could not make. An issue
  *  it made that a later write was refused on says which write that was, against the key of the
- *  issue it has: the create landed, so there is an issue whatever the rest of the filing did. */
-function NewIssueSaid({ state }: { readonly state: OfferState | undefined }): ReactNode {
+ *  issue it has: the create landed, so there is an issue whatever the rest of the filing did.
+ *  While the filing is out, a press of the row it lists again past its deadline made nothing
+ *  (`stillMaking`), which the line says. */
+function NewIssueSaid({
+  state,
+  stillMaking,
+}: {
+  readonly state: OfferState | undefined;
+  readonly stillMaking: boolean;
+}): ReactNode {
   if (state === undefined) {
     return null;
   }
   if (state.kind === "making") {
     return (
       <p className={barNoteClassName} role="status">
-        Making the issue…
+        {stillMaking
+          ? "Make a new issue sent nothing: the issue is still being made. This line says what became of it once Dispatch answers, and if it could not be made, pressing Make a new issue again sends a new create."
+          : "Making the issue…"}
       </p>
     );
   }
