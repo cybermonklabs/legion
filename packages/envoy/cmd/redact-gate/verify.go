@@ -372,16 +372,17 @@ type verdicts struct {
 	passed, failed, unknown int
 }
 
-func (v *verdicts) say(state, line string) {
+// say prints a verdict line, its state (PASS, PRINT, FAIL or UNKNOWN) and then text, and counts it.
+func (v *verdicts) say(state, text string) {
 	switch state {
-	case "PASS":
+	case "PASS", "PRINT":
 		v.passed++
 	case "FAIL":
 		v.failed++
 	default:
 		v.unknown++
 	}
-	fmt.Fprintln(v.out, line)
+	fmt.Fprintln(v.out, state+" "+text)
 }
 
 // printCount is a count a REDACT-PRINT line gives.
@@ -422,7 +423,7 @@ func judgeVerify(inv inventory, gos []goRun, buns []bunRun, out io.Writer) int {
 		holders = append(holders, read.holders...)
 		whole := read.verdict("")
 		if run.status == 0 && whole == "pass" && read.unread == 0 {
-			v.say("PASS", "PASS step go test "+run.pkg)
+			v.say("PASS", "step go test "+run.pkg)
 			continue
 		}
 		leaves := read.failedLeaves()
@@ -442,7 +443,7 @@ func judgeVerify(inv inventory, gos []goRun, buns []bunRun, out io.Writer) int {
 		case read.unread > 0:
 			what = fmt.Sprintf("unreadable event lines: %d (a go command killed mid-line cuts its last line short), so no reading of its run is whole", read.unread)
 		}
-		v.say(state, fmt.Sprintf("%s step go test %s (exit %d): %s", state, run.pkg, run.status, what))
+		v.say(state, fmt.Sprintf("step go test %s (exit %d): %s", run.pkg, run.status, what))
 		why = append(why, fmt.Sprintf("  why %s did not pass:", goPackageName(run.pkg)))
 		if read.broken != "" {
 			why = append(why, "    "+compilerError(read.built[read.broken]))
@@ -476,11 +477,11 @@ func judgeVerify(inv inventory, gos []goRun, buns []bunRun, out io.Writer) int {
 		row := fmt.Sprintf("%s (%s) %s %s", r.ID, r.Requirement, r.Package, r.Test)
 		switch {
 		case ran == "pass" && whole == "pass":
-			v.say("PASS", "PASS "+row)
+			v.say("PASS", row)
 		case late[r.Package] && ran != "fail":
-			v.say("UNKNOWN", fmt.Sprintf("UNKNOWN %s: test %s, package ran past its bound", row, ran))
+			v.say("UNKNOWN", fmt.Sprintf("%s: test %s, package ran past its bound", row, ran))
 		default:
-			v.say("FAIL", fmt.Sprintf("FAIL %s: test %s, package %s", row, ran, whole))
+			v.say("FAIL", fmt.Sprintf("%s: test %s, package %s", row, ran, whole))
 		}
 	}
 	for _, line := range why {
@@ -490,9 +491,9 @@ func judgeVerify(inv inventory, gos []goRun, buns []bunRun, out io.Writer) int {
 	states := map[string]map[string]string{}
 	for _, run := range buns {
 		if run.status == 0 {
-			v.say("PASS", "PASS step bun test "+run.file)
+			v.say("PASS", "step bun test "+run.file)
 		} else {
-			v.say("FAIL", fmt.Sprintf("FAIL step bun test %s (exit %d)", run.file, run.status))
+			v.say("FAIL", fmt.Sprintf("step bun test %s (exit %d)", run.file, run.status))
 		}
 		if run.reported {
 			states[run.file] = junitStates(string(run.report))
@@ -516,14 +517,14 @@ func judgeVerify(inv inventory, gos []goRun, buns []bunRun, out io.Writer) int {
 			}
 		}
 		if state == "passed" {
-			v.say("PASS", "PASS "+row)
+			v.say("PASS", row)
 		} else {
-			v.say("FAIL", fmt.Sprintf("FAIL %s: the test %s", row, state))
+			v.say("FAIL", fmt.Sprintf("%s: the test %s", row, state))
 		}
 	}
 
 	if len(holders) == 0 {
-		v.say("FAIL", "FAIL print-test: no holder printed a REDACT-PRINT line, so no print row ran")
+		v.say("FAIL", "print-test: no holder printed a REDACT-PRINT line, so no print row ran")
 	} else {
 		total := map[string]int{}
 		for _, line := range holders {
@@ -532,7 +533,7 @@ func judgeVerify(inv inventory, gos []goRun, buns []bunRun, out io.Writer) int {
 				total[m[1]] += n
 			}
 		}
-		v.say("PASS", fmt.Sprintf("PRINT %d holders: %d printer and placement rows, %d with a twin at their own placement and shape, %d reshaped and %d relocated (each shows only that the printer output is captured there), %d blind",
+		v.say("PRINT", fmt.Sprintf("%d holders: %d printer and placement rows, %d with a twin at their own placement and shape, %d reshaped and %d relocated (each shows only that the printer output is captured there), %d blind",
 			len(holders), total["rows"], total["same"], total["reshaped"], total["relocated"], total["blind"]))
 		for _, line := range holders {
 			fmt.Fprintln(out, "  "+line)
