@@ -3018,7 +3018,8 @@ func parseSignInSwitch(getenv func(string) string) (bool, error) {
 // all four of the client's settings are required, since a broker that signs people in and that
 // nobody can sign in to is a broker on which no secret request is ever approved. It refuses: any
 // of them missing, naming each one; an issuer that is not an absolute https URL, or http to a
-// loopback host; and an unreadable or blank secret file. No refusal carries the secret.
+// loopback host, naming the setting alone, since the URL as written is where a credential would
+// be; and an unreadable or blank secret file. No refusal carries the secret.
 func parseSignIn(getenv func(string) string, sessionLifetime time.Duration) (approval.SignIn, error) {
 	signIn := approval.SignIn{SessionLifetime: sessionLifetime}
 	// One destination per SignInSettings entry, read in that order, so the missing ones are named
@@ -3037,7 +3038,7 @@ func parseSignIn(getenv func(string) string, sessionLifetime time.Duration) (app
 		return approval.SignIn{}, fmt.Errorf("the broker's approval page needs %s; missing %s", strings.Join(SignInSettings, ", "), strings.Join(missing, ", "))
 	}
 	if !signInIssuerOK(signIn.Issuer) {
-		return approval.SignIn{}, fmt.Errorf("%s must be an absolute https URL, or http to a loopback host, got %q", signInIssuerSetting, signIn.Issuer)
+		return approval.SignIn{}, fmt.Errorf("%s must be an absolute https URL, or http to a loopback host", signInIssuerSetting)
 	}
 	var err error
 	if signIn.ClientSecret, err = secretFile(signInClientSecretSetting, secretPath); err != nil {
