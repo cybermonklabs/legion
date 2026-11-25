@@ -1038,7 +1038,10 @@ func TestARoleDocumentCannotLeaveItsIssueRoomTooLargeToDecode(t *testing.T) {
 		}
 		return loaded
 	}
-	heaviest := heaviestAdmitted(t, func(units int) string { return strings.Repeat("- a\n", units) })
+	heaviest, err := heaviestAdmitted(func(units int) string { return strings.Repeat("- a\n", units) })
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"plan.md", "verification.md"} {
 		var held, named int
 		count := func() {
