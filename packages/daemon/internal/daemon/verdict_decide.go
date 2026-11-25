@@ -157,7 +157,7 @@ type headPulls struct {
 
 // pullRequestsAt is each open pull request of repository whose head is head, with the branch it
 // merges into, as GitHub lists the pull requests of that commit with the daemon's read token (GET
-// /commits/{sha}/pulls), read once in the write pulls is of.
+// /commits/{sha}/pulls), read once in the write pulls is of. Its failure is a gitHubReadError.
 func (w *workflowRuntime) pullRequestsAt(ctx context.Context, repository ghrepo.Repository, head string, pulls *headPulls) ([]githubrest.PullRequest, error) {
 	if pulls.read && pulls.head == head {
 		return pulls.pulls, nil
@@ -165,13 +165,13 @@ func (w *workflowRuntime) pullRequestsAt(ctx context.Context, repository ghrepo.
 	serving := w.repositories.serving(repository)
 	client, err := readClient(ctx, w.tokens, w.githubAPI, serving)
 	if err != nil {
-		return nil, fmt.Errorf("mint the read token for %s: %w", serving, err)
+		return nil, gitHubReadError{fmt.Errorf("mint the read token for %s: %w", serving, err)}
 	}
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	defer cancel()
 	listed, err := githubrest.GetPages[githubrest.PullRequest](read, client, "/commits/"+head+"/pulls")
 	if err != nil {
-		return nil, fmt.Errorf("list the pull requests of %s at %s: %w", serving, head, err)
+		return nil, gitHubReadError{fmt.Errorf("list the pull requests of %s at %s: %w", serving, head, err)}
 	}
 	var open []githubrest.PullRequest
 	for _, pull := range listed {
@@ -608,20 +608,36 @@ func reviewsOf(ctx context.Context, tx pgx.Tx, repository ghrepo.Repository, num
 }
 
 // readVerdictPullRequest reads pull request number of repository from GitHub with the daemon's
-// read token (GET /pulls/{number}).
+// read token (GET /pulls/{number}). Its failure is a gitHubReadError.
 func (w *workflowRuntime) readVerdictPullRequest(ctx context.Context, repository ghrepo.Repository, number int) (githubrest.PullRequest, error) {
 	serving := w.repositories.serving(repository)
 	client, err := readClient(ctx, w.tokens, w.githubAPI, serving)
 	if err != nil {
-		return githubrest.PullRequest{}, fmt.Errorf("mint the read token for %s: %w", serving, err)
+		return githubrest.PullRequest{}, gitHubReadError{fmt.Errorf("mint the read token for %s: %w", serving, err)}
 	}
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	defer cancel()
 	var pull githubrest.PullRequest
 	if err := client.Get(read, "/pulls/"+strconv.Itoa(number), &pull); err != nil {
-		return githubrest.PullRequest{}, fmt.Errorf("read pull request %s#%d: %w", serving, number, err)
+		return githubrest.PullRequest{}, gitHubReadError{fmt.Errorf("read pull request %s#%d: %w", serving, number, err)}
 	}
 	return pull, nil
+}
+
+// gitHubReadError is the failure of a read of GitHub's that a decision of a head needs beside the
+// record: the open pull requests at the head (pullRequestsAt), or a pull request no record holds
+// (readVerdictPullRequest). A head's write that cannot read the other pull requests there keeps its
+// own failure or no decision yet, since neither needs them (decideHead); a failure of the store is
+// none of these, and fails the write, which the writers' sweep makes again.
+type gitHubReadError struct{ err error }
+
+func (e gitHubReadError) Error() string { return e.err.Error() }
+func (e gitHubReadError) Unwrap() error { return e.err }
+
+// gitHubReadFailed is whether err is, or wraps, a gitHubReadError.
+func gitHubReadFailed(err error) bool {
+	var read gitHubReadError
+	return errors.As(err, &read)
 }
 
 // renames is the deployment's repository renames, none for a runtime a test builds with no

@@ -75,7 +75,7 @@ func (w *workflowRuntime) writeMergeGroup(ctx context.Context, target verdictTar
 		switch {
 		case err == nil:
 			decided = combined
-		case decided.conclusion == verdict.Success:
+		case !gitHubReadFailed(err) || decided.conclusion == verdict.Success:
 			return err
 		}
 	}

@@ -2393,6 +2393,125 @@ func TestLegionVerdictTheSweepWritesOverAForeignSuccessWhileNoDecisionStands(t *
 	}
 }
 
+// R19 on a merge group's commit while no decision stands: the writers' sweep writes over another
+// token's run of the App on the group of a pull request whose head GitHub gives no answer for, with
+// failure where the daemon wrote nothing on that group, and makes no run of its own there; before
+// the bound the head's own run stands as it is.
+func TestLegionVerdictTheSweepWritesOverAForeignRunOnTheGroupOfAnUndecidedHead(t *testing.T) {
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
+	run := rig.acceptedAndWritten(t)
+	rig.github.mu.Lock()
+	rig.github.compareStatus = http.StatusBadGateway
+	rig.github.mu.Unlock()
+	rig.sweep.queued(86, "group-86")
+	rig.foreign([]fakeRun{{ID: 800, Head: "group-86", Name: verdict.CheckName, Conclusion: "success", App: verdictAppSlug}}, nil)
+	rig.swept(t)
+	if runs := rig.github.legionRuns("group-86"); len(runs) != 1 || runs[0].ID != 800 || runs[0].Conclusion != "failure" {
+		t.Fatalf("legion-verdict runs on group-86 = %+v, want the App's run 800 at failure and no run of the daemon's own", runs)
+	}
+	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "success" {
+		t.Fatalf("legion-verdict runs on code = %+v, want run %d left at success before the bound", runs, run.ID)
+	}
+}
+
+// R19 while no decision stands, for a run the record holds: another token of the App that turns the
+// daemon's own run sees it turned back at the next sweep, to the conclusion of the daemon's newest
+// write at the head, as a run the record does not hold is. Here the run is the daemon's failure for a
+// commit with no reader, another token turns it to success, and GitHub gives no answer to the read
+// of the change.
+func TestLegionVerdictARecordedRunAnotherTokenTurnedIsCorrectedWhileNoDecisionStands(t *testing.T) {
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, unreadReviewersCommit, openCapture)
+	rig.github.mu.Lock()
+	rig.github.messages["code"] = commitOf(captureReviewerSession)
+	rig.github.mu.Unlock()
+	rig.apply(t, rig.signOff(t))
+	rig.written(t)
+	run := rig.soleRun(t, "code", "failure")
+	rig.github.mu.Lock()
+	rig.github.compareStatus = http.StatusBadGateway
+	for i := range rig.github.runs {
+		if rig.github.runs[i].ID == run.ID {
+			rig.github.runs[i].Conclusion = "success"
+		}
+	}
+	rig.github.mu.Unlock()
+	rig.swept(t)
+	if again := rig.soleRun(t, "code", "failure"); again.ID != run.ID {
+		t.Fatalf("the run at code is %+v, want run %d turned back to failure, the daemon's newest write there", again, run.ID)
+	}
+}
+
+// A store failure is no answer of GitHub's: where deciding another pull request at the head fails
+// in the store, the write fails and is logged for the writers' sweep, which writes the head again,
+// rather than writing the pull request's own failure in its place or counting the head as one
+// GitHub gave no answer for. Here the store cannot read the outside pull request 90 at code (its
+// table is renamed away), while CAPTURE-1's pull request 86 is decided from the record.
+func TestLegionVerdictAStoreFailureDecidingAnotherPullRequestFailsTheWrite(t *testing.T) {
+	newRig := func(t *testing.T) (*sweepRig, fakeRun) {
+		t.Helper()
+		rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode,
+			openCapture, sweptPull{number: 90, ref: "feature/faster-builds", head: "code"})
+		rig.apply(t, intake.OutsidePullRequest{Repo: "acme/widgets", Number: 90, Branch: "feature/faster-builds", HeadSHA: "code"})
+		run := rig.acceptedAndWritten(t)
+		inStore(t, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `alter table outside_pull_requests rename to outside_pull_requests_away`)
+			return err
+		})
+		return rig, run
+	}
+	restored := func(t *testing.T, rig *sweepRig) {
+		t.Helper()
+		inStore(t, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `alter table outside_pull_requests_away rename to outside_pull_requests`)
+			return err
+		})
+	}
+	failed := func(t *testing.T, rig *sweepRig) {
+		t.Helper()
+		lines := loggedMessages(t, rig.logs.String(), verdictWriteFailed)
+		if len(lines) == 0 || !strings.Contains(fmt.Sprint(lines[len(lines)-1]["error"]), "outside_pull_requests") {
+			t.Fatalf("failed-write lines = %v, want one naming the store's failure", lines)
+		}
+	}
+	t.Run("a refusal of the Legion pull request", func(t *testing.T) {
+		rig, run := newRig(t)
+		rig.review(t, personsReview(1, "changes_requested"))
+		rig.written(t)
+		if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "success" {
+			t.Fatalf("legion-verdict runs on code = %+v, want run %d untouched: the write failed", runs, run.ID)
+		}
+		failed(t, rig)
+		restored(t, rig)
+		rig.swept(t)
+		if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "failure" {
+			t.Fatalf("legion-verdict runs on code after the sweep = %+v, want run %d at failure: the sweep writes the head again", runs, run.ID)
+		}
+	})
+	t.Run("a head GitHub gives no answer for", func(t *testing.T) {
+		rig, run := newRig(t)
+		rig.github.mu.Lock()
+		rig.github.compareStatus = http.StatusBadGateway
+		rig.github.mu.Unlock()
+		for range noAnswerSweeps {
+			rig.swept(t)
+		}
+		if lines := loggedMessages(t, rig.logs.String(), noAnswerLine); len(lines) != 0 {
+			t.Fatalf("%q lines = %v, want none: a store failure is no answer of GitHub's", noAnswerLine, lines)
+		}
+		if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "success" {
+			t.Fatalf("legion-verdict runs on code = %+v, want run %d untouched", runs, run.ID)
+		}
+		failed(t, rig)
+	})
+}
+
+// The WARN of a head with no answer names the bound as noAnswerSweeps is, so the two cannot part.
+func TestLegionVerdictTheNoAnswerWarnNamesTheBound(t *testing.T) {
+	if want := fmt.Sprintf(" on %d of the writers' sweeps in a row", noAnswerSweeps); !strings.Contains(verdictNoAnswer, want) {
+		t.Fatalf("%q names no %q", verdictNoAnswer, want)
+	}
+}
+
 // The writers' sweep counts a head whose change GitHub gives no answer to once per pass, however
 // many open pull requests stand at it: here CAPTURE-1's pull request 86 and the outside pull
 // request 90 at code. A fact whose write gets no answer about the change either - a person's request
