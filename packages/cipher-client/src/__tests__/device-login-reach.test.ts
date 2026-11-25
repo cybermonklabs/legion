@@ -344,7 +344,7 @@ test("a broker that meets the limit a refusal names is shown its code, and one s
     const row = JSON.stringify(refused);
     expect(await answer(refused), row).toEndWith(`${until} ${cure}`);
     expect(await answer(meets), `${row}, met by ${JSON.stringify(meets)}`).toBe("shown");
-    expect(await answer(short), `${row}, short at ${JSON.stringify(short)}`).toContain(until);
+    expect(await answer(short), `${row}, short at ${JSON.stringify(short)}`).toContain(`${until} `);
   }
 });
 
