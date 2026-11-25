@@ -952,10 +952,12 @@ test("the start and the poll agree on which code a poll reaches, to the millisec
         (started) => started,
         () => null
       );
-      // A code the start refused is handed to the poll as the start would have handed it: its end
-      // the whole milliseconds the start reads, from the one function it reads them by.
+      // A code the start refused is handed to the poll as the start would have handed it: at the
+      // row's own broker, so a poll of it would reach the stand-in this row counts, and its end the
+      // whole milliseconds the start reads, from the one function it reads them by.
       const handed = shown ?? {
         ...base,
+        brokerUrl: stub.url,
         intervalSeconds: Math.max(interval, 1),
         expiresAt: new Date(now + wholeMillisecondsOf(expiresIn)),
       };
@@ -979,8 +981,9 @@ test("the start and the poll agree on which code a poll reaches, to the millisec
 
 // The poll waits at least the interval the broker named (RFC 8628 Section 3.5), in whole
 // milliseconds rounded up: 4.9997 s waits 5000 ms, not the 4999 its digits cut to, and 1.001 s
-// 1001 ms, where the product is 1000.9999999999999. An interval of whole seconds waits exactly
-// that. The code's test reads this same count (the agreement test above).
+// 1001 ms, where the product is 1000.9999999999999, and 2.007 s 2007 ms, where it is
+// 2007.0000000000002. An interval of whole seconds waits exactly that. The code's test reads this
+// same count (the agreement test above).
 test("the poll waits at least the interval, to a whole millisecond", async () => {
   const base = await startDeviceLogin({ brokerUrl: broker().url, person: PERSON, host: HOST });
   const now = Date.now();
@@ -1006,16 +1009,6 @@ test("the poll waits at least the interval, to a whole millisecond", async () =>
         }
       ).catch(() => undefined);
       expect(waits, `${intervalSeconds} s`).toEqual([wait]);
-      // Never short of the interval's digits, never a millisecond past them: the digits' whole
-      // milliseconds, or the next where a digit past the third is not 0. (The double product is no
-      // reference: 2.007 * 1000 is 2007.0000000000002.)
-      expect(waits[0] ?? 0, `${intervalSeconds} s is waited whole`).toBeGreaterThanOrEqual(
-        wholeMillisecondsOf(intervalSeconds)
-      );
-      expect(
-        waits[0] ?? 0,
-        `${intervalSeconds} s is waited at most a millisecond up`
-      ).toBeLessThanOrEqual(wholeMillisecondsOf(intervalSeconds) + 1);
     }
   } finally {
     still.mockRestore();
