@@ -84,6 +84,15 @@ func workingCopyOpening(key string) string {
 // that names one (workingCopyAt, workingCopyLine).
 const workingCopyDirectory = ", directory "
 
+// workingCopyEnd is what ends the working copy line of a task this release composes: taskOpening
+// writes it after the line, and workingCopyLine reads the line up to the first one. The line can
+// hold no other: an issue key (claim.IsIssueKey) and a repository's owner and name (ghrepo.Parse)
+// hold none, and the directory, the line's one free text, stands under the state directory under
+// tmux, whose load refuses a state_dir that holds a line break (config's resolve), and under the
+// fixed sandbox.TreeRoot under Kubernetes. So the line's end is found without reading the
+// directory or the title after it.
+const workingCopyEnd = "\n"
+
 // WorkingCopyAtSend is task, a worker's task as this package composed it (task, resumeText) and
 // as it is kept until its send, with the working copy line of the issue key written again from
 // repo, the repository the process the task goes to works (the daemon's workingCopy), the zero
@@ -107,10 +116,11 @@ func (e *Engine) WorkingCopyAtSend(task, key string, repo ghrepo.Repository) str
 // including its full stop, for a send that writes line, the line of the process the task goes to,
 // in its place (WorkingCopyAtSend).
 //
-// This release's task and resumeText open every task with that line and end it with a line break
-// (taskOpening), so the line runs from byte 0 up to the task's first line break. No words a person
-// wrote stand before it, so no title can move it or be read in its place, and the line holds no
-// line break of its own, so neither a title nor a directory decides where it ends. The opening of
+// This release's task and resumeText open every task with that line and end it with
+// workingCopyEnd (taskOpening), so the line runs from byte 0 up to the task's first
+// workingCopyEnd, which the line cannot hold. No words a person wrote stand before it, so no title
+// can move it or be read in its place, and neither a title nor a directory decides where it ends.
+// The opening of
 // the line (workingCopyOpening) must be followed by the full stop of a line that names the branch
 // alone, or by `, directory `, so the line of a longer key that begins with key, such as
 // LEGION-2080's for LEGION-208, is not read as key's. A task that opens with the line but holds no
@@ -125,7 +135,7 @@ func workingCopyLine(task, key, line string) (start, end int, ok bool) {
 	if !strings.HasPrefix(task, opening) {
 		return earlierLine(task, key, opening, line)
 	}
-	end = strings.IndexByte(task, '\n')
+	end = strings.Index(task, workingCopyEnd)
 	if end < 0 {
 		return 0, 0, false
 	}

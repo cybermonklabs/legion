@@ -26,9 +26,6 @@ func TestAWorkingCopyDirectoryThatHoldsAFullStopAndASpaceIsWrittenWhole(t *testi
 		root = "/srv/legion v2. state/workspaces/"
 		old  = "Working copy: branch legion/LEGION-208, directory " + root + "acme/widgets/LEGION-208."
 		now  = "Working copy: branch legion/LEGION-208, directory " + root + "zeta/tools/LEGION-208."
-		// earlierOpening is the continue line a task an earlier release composed opens with, and the
-		// space after it, where that release put the working copy line.
-		earlierOpening = "Continue root. Issue: LEGION-208. Phase: reviewing. "
 	)
 	engine := stepEngine(nil)
 	engine.cfg.WorkspaceDir = func(key string, repo ghrepo.Repository) string { return root + repo.String() + "/" + key }
