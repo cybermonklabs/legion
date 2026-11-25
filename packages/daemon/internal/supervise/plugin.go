@@ -153,11 +153,11 @@ const PodUpdateContract = 46
 // last of them is no post at all. The controller's claim is posted uncredited because its wake
 // is outside the pacing (reserveWake), and the guard spares it rather than asking for it. A
 // claim the pass read in a turn is posted uncredited because its relaunch takes no wake now
-// (holdStaleRelaunch, R2); the credit such a post does carry is the window where the pass's
-// snapshot and this machine disagree — a claim read idle that has started a turn since — and the
-// end of this decision gives it back (endRefreshLane). And the relaunch that hold left waiting
-// comes back through here at the turn's end, with no credit of its own and the claim in whatever
-// state that end left it (afterTurn).
+// (holdStaleRelaunch, R2); the credit such a post does carry is the window where the claim the
+// pass read (Machine.Published) and this machine disagree — a claim read idle that has started a
+// turn since — and the end of this decision gives it back (endRefreshLane). And the relaunch that
+// hold left waiting comes back through here at the turn's end, with no credit of its own and the
+// claim in whatever state that end left it (afterTurn).
 func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *RefreshCredit) error {
 	if credit != nil {
 		if m.refreshCredit != nil {
@@ -209,13 +209,13 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *Ref
 // fleet whose stale claims are mostly working, the lane would admit its whole minute of the
 // pacing and relaunch nobody.
 //
-// The daemon's own pass posts such a claim with no credit at all, reading the state its
-// snapshot of the claims holds (refreshStalePlugins in internal/daemon). That snapshot and this
-// machine can disagree — the claim it read idle can have started a turn by the time the post is
-// decided here, and one it read working can have ended its turn — so a post that reaches this
-// call carrying a credit is exactly that window, and the end of this decision gives the credit
-// straight back, since it leaves no refresh wake waiting (endRefreshLane). The window costs the
-// claim one sweep, which is what an imperfect skip costs the pass everywhere else it makes one.
+// The daemon's own pass posts such a claim with no credit at all, reading the state the claim's
+// machine last published (Machine.Published, refreshStalePlugins in internal/daemon). That read and
+// this decision can disagree — a decision that lands between them can start the turn of a claim
+// read idle, or end the turn of one read working — so a post that reaches this call carrying a
+// credit is exactly that window, and the end of this decision gives the credit straight back,
+// since it leaves no refresh wake waiting (endRefreshLane). The window costs the claim one sweep,
+// which is what an imperfect skip costs the pass everywhere else it makes one.
 func (m *Machine) holdStaleRelaunch(trigger string) {
 	if m.staleRelaunch == nil {
 		m.log.Info("supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end",
@@ -551,12 +551,14 @@ func StaleRefusesCalls(c Claim, daemonContract int, pluginRelaunchable bool, noP
 // boot's own de-round pass has posted such a claim its end a moment before the refresh pass
 // runs (internal/daemon's endPluginRounds), and one machine's inbox is FIFO, so that end is
 // decided ahead of the post and the machine sees a claim in no round at all. What that pass reads
-// is the claims the boot restored, where the round still stands, so a term of "in any round" would
-// pass over exactly the claims the de-round pass has just freed and leave each of them a sweep — a
-// whole minute, and a credit of the gate each — behind the rest of the fleet, and would have the
-// count hide that work at the one moment it exists to be read: a boot over a fleet an earlier
-// daemon left mid-round. A claim whose plugin round is somehow still standing when its machine
-// takes the post is decided nothing wrong by it either: refreshPlugin relaunches it, and no
+// is each claim as its machine last published it, which still shows the round until the machine
+// has decided that end, and the count reads the claims the store holds, where the round stands
+// until that end's own write. So a term of "in any round" would pass over exactly the claims the
+// de-round pass has just freed and leave each of them a sweep — a whole minute, and a credit of
+// the gate each — behind the rest of the fleet, and would have the count hide that work at the
+// one moment it exists to be read: a boot over a fleet an earlier daemon left mid-round. A claim
+// whose plugin round is somehow still standing when its machine takes the post is decided nothing
+// wrong by it either: refreshPlugin relaunches it, and no
 // plugin round holds a relaunch back, since the ask that did was deleted with the round. A
 // claim that left its round at a registration speaking the daemon's contract
 // (endCurrentPluginRound) is no longer stale at all, and the contract term above passes over it.

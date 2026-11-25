@@ -894,7 +894,7 @@ func populatedClaims(s *seeding, rows populatedRows) map[claim.Token]capabilitie
 	// The release of LEGION-211's pod in LEGION-200's tree (store.Store.RecordPodRelease), which
 	// suspended its implementer as `released`. A release takes only a pod whose workspace held
 	// nothing unpushed and saves no bundle, so it records no bundle bytes (store.PodRelease).
-	_, err := s.st.RecordPodRelease(s.ctx, store.PodRelease{Project: "legion", Issue: "LEGION-211", Generation: 2,
+	_, _, err := s.st.RecordPodRelease(s.ctx, store.PodRelease{Project: "legion", Issue: "LEGION-211", Generation: 2,
 		Roles: []string{string(claim.RoleImplementer)}, At: at(22, 8, 55, 0)})
 	s.must("the release of LEGION-211's pod", err)
 

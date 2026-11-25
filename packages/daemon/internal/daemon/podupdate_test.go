@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2616,14 +2617,13 @@ func TestPodUpdateReadsAClaimMidRelaunchWithoutWaitingAndCountsItUnanswered(t *t
 		})
 	}()
 
-	var live []supervise.Claim
-	select {
-	case live = <-read:
-	case <-time.After(10 * time.Second):
-		close(released)
-		t.Fatal("the live read did not answer while a claim's machine was inside a Resume; it waited on the decision")
-	}
-	close(released)
+	// The read is the answer of a call the test started: a read that waited on the decision would
+	// give none, and the wait gives up by name at the test binary's deadline (testwait.Receive),
+	// letting the held Resume go first.
+	release := sync.OnceFunc(func() { close(released) })
+	defer release()
+	live := testwait.Receive(t, "the live read while a claim's machine is inside a Resume; a read that waits on the decision gives none", read)
+	release()
 
 	var answered []claim.Role
 	for _, c := range live {
