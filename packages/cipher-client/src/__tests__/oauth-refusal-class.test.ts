@@ -10,7 +10,7 @@
 import { expect, test } from "bun:test";
 import { LibraryError } from "@legion/contracts/remote-text";
 import { ResponseBodyError } from "openid-client";
-import { brokerRefusal } from "../token-client";
+import { brokerRefusal } from "../broker-request";
 import { BrokerRefusedError, BrokerTradeFailedError } from "../token-errors";
 
 const ENDPOINT = "http://broker.test/v1/oauth/token";

@@ -6,12 +6,12 @@ package api
 // The catalogue is the dispatch tools that write, all but one: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
 // each carried whole through contracts.DispatchTools — its own curated description, which is
-// what a model chooses on, and its own argument schema. Twenty-one of the thirty-seven tools
-// write, and the catalogue holds twenty of them, which is under the count where a model's choice
-// measurably falls apart, so the list is read whole: nothing searches it, and no second schema
-// is authored per route. The one it leaves out is dispatch_review, on purpose: a review records
-// an approval or a changes request in a person's name, and the loop that proposes operations on
-// Dispatch's graph must never propose one, so goingToolRoutes names no row for it.
+// what a model chooses on, and its own argument schema. The catalogue holds every tool that
+// writes but dispatch_review, and that many actions is under the count where a model's choice
+// measurably falls apart, so the list is read whole: nothing searches it, and no
+// second schema is authored per route. It leaves dispatch_review out on purpose: a review
+// records an approval or a changes request in a person's name, and the loop that proposes
+// operations on Dispatch's graph must never propose one, so goingToolRoutes names no row for it.
 //
 // Which tools write is not a field a tool spec carries. goingToolRoutes names the rows of the
 // server's own table each tool writes, and buildGoingCatalogue holds every one of them to the
@@ -90,11 +90,32 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		Method: http.MethodPost, Pattern: "/api/v1/issues", Path: map[string]string{},
 		Relations: []string{"child_of", "blocked_by", "affects", "mentions"},
 	}},
-	"dispatch_issue_update": {{
-		Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
-		Path:      map[string]string{"key": "issue"},
-		Relations: []string{"child_of", "blocked_by", "affects"},
-	}},
+	"dispatch_issue_update": {
+		// A call that sets an option of the status change sends that route, which takes the
+		// status and the option: the PATCH takes no option and would drop it. One row per option,
+		// each guarded by its own argument, and all three tried before the PATCH row, which takes
+		// every call that sets none.
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
+			Path: map[string]string{"key": "issue"}, WhenArgument: optionIncludeChildren, WhenValue: true,
+			Relations: []string{"child_of"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
+			Path: map[string]string{"key": "issue"}, WhenArgument: optionUnlinkChildren, WhenValue: true,
+			Relations: []string{"child_of"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
+			Path: map[string]string{"key": "issue"}, WhenArgument: optionIncludeParent, WhenValue: true,
+			Relations: []string{"child_of"},
+		},
+		{
+			Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
+			Path:      map[string]string{"key": "issue"},
+			Relations: []string{"child_of", "blocked_by", "affects"},
+		},
+	},
 	"dispatch_claim": {
 		{
 			Method: http.MethodDelete, Pattern: "/api/v1/issues/{key}/claim",
@@ -166,6 +187,18 @@ var goingToolRoutes = map[string][]goingToolRoute{
 			Relations: []string{"owned_by", "anchored_to", "mentions"},
 		},
 	},
+	// The four corrections of a post. Each names its own post, so the one placeholder binds to
+	// the tool's own argument. An edit re-indexes the new body, which is the one edge family a
+	// body writes; a delete clears the body, so it writes no edge at all and removes the ones
+	// the post had.
+	"dispatch_edit_comment": {{
+		Method: http.MethodPatch, Pattern: "/api/v1/comments/{id}",
+		Path: map[string]string{"id": "comment"}, Relations: []string{"mentions"},
+	}},
+	"dispatch_delete_comment": {{
+		Method: http.MethodDelete, Pattern: "/api/v1/comments/{id}",
+		Path: map[string]string{"id": "comment"},
+	}},
 	"dispatch_message": {
 		{
 			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/messages",
@@ -178,6 +211,14 @@ var goingToolRoutes = map[string][]goingToolRoute{
 			Relations: []string{"replies_to", "mentions"},
 		},
 	},
+	"dispatch_edit_message": {{
+		Method: http.MethodPatch, Pattern: "/api/v1/messages/{id}",
+		Path: map[string]string{"id": "message"}, Relations: []string{"mentions"},
+	}},
+	"dispatch_delete_message": {{
+		Method: http.MethodDelete, Pattern: "/api/v1/messages/{id}",
+		Path: map[string]string{"id": "message"},
+	}},
 	// The issue-less send to one session. Its path names the session the tool was asked to
 	// reach, not the calling session, so the placeholder binds to the tool's own argument. The
 	// body is indexed without its references counted (createStoredMessage: a message with no
@@ -452,8 +493,8 @@ type goingCatalogueBody struct {
 	Actions []GoingAction `json:"actions"`
 }
 
-// getGoingCatalogue serves the catalogue whole. Twenty actions is a list a reader scans, so
-// there is nothing to search and nothing to page.
+// getGoingCatalogue serves the catalogue whole. It is a list a reader scans, so there is nothing
+// to search and nothing to page.
 func (s *server) getGoingCatalogue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

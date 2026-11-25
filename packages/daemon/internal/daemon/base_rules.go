@@ -151,8 +151,13 @@ func (t githubText) LogValue() slog.Value { return slog.StringValue(t.String()) 
 // it bounds the per-issue read's - is a read whose rules the daemon does not know: Unread says why,
 // R0 acts on it at once (record.ConflictRulesUnread), and nothing else fails. Each call logs one
 // line with what it read, the base and the contexts as the rule reads GitHub's words.
+//
+// Both reads are conditional, every page of the rulesets too (githubrest.Client.ETags, the
+// runtime's etags): a base's rules change seldom and every conflicting read of every pull request
+// on it reads them, so GitHub's 304, which costs the installation's rate limit nothing, answers
+// most of them with the rules read before.
 func (w *workflowRuntime) readBaseRules(ctx context.Context, github githubrest.Client, pr record.PullRequest, base githubText) record.BaseRules {
-	rules, said := baseRules(ctx, github, base)
+	rules, said := baseRules(ctx, github.WithETags(w.etags), base)
 	attributes := []any{"repo", pr.Repo, "pullRequest", pr.Number, "base", shownBase(base),
 		"required", said, "strict", rules.Strict, "unread", rules.Unread}
 	if rules.Unread != "" {

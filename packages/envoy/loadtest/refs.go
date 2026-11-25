@@ -273,6 +273,8 @@ func writeRefTargets(ctx context.Context, a *api, p refPlan) (int, error) {
 			name := fmt.Sprintf("%s%d.md", refTargetPrefix, t.n)
 			// The id of the document version 1 created, which every later version reads its base
 			// from: an upload replacing a document names the text it believes it is replacing.
+			// Every version writes that same document, so a later version that landed with no
+			// answer to give keeps the id an earlier version gave.
 			var artifactID string
 			for v := range t.versions {
 				body := map[string]any{
@@ -288,12 +290,27 @@ func writeRefTargets(ctx context.Context, a *api, p refPlan) (int, error) {
 					body["precondition"] = map[string]any{"document": token}
 				}
 				res := a.callRetryKeyed(gctx, "POST", "/api/v1/issues/"+t.issue+"/artifacts", who{}, body, refTargetKey(t.n, v+1))
-				if res.err != nil || res.status != http.StatusCreated {
+				// A write that landed with no answer to give made the version: the seed goes on to
+				// the next version as after a 201.
+				landed := res.landed()
+				if !landed && (res.err != nil || res.status != http.StatusCreated) {
 					return fmt.Errorf("write %s version %d on %s: %d %s %v, want 201", name, v+1, t.issue, res.status, res.text(), res.err)
 				}
 				// The id is Dispatch's word, which the next version's read sends back and its
 				// refusal names: it is kept only in Dispatch's shape (isDispatchID).
-				if artifactID = idOf(res.body); !isDispatchID(artifactID) {
+				switch {
+				case !landed:
+					artifactID = idOf(res.body)
+				case v == 0:
+					// A first version that landed has no earlier id to keep: the document it
+					// made is read back by its name, which no other document of the issue has.
+					id, err := refReadBack(gctx, a, t.issue, name)
+					if err != nil {
+						return err
+					}
+					artifactID = id
+				}
+				if !isDispatchID(artifactID) {
 					return fmt.Errorf("write %s version %d on %s: no artifact id in Dispatch's shape in %s", name, v+1, t.issue, res.text())
 				}
 				if n := written.Add(1); n%refProgressEvery == 0 {
@@ -327,6 +344,30 @@ func refDocumentToken(ctx context.Context, a *api, artifactID string) (string, e
 	return doc.Token, nil
 }
 
+// refReadBack is the id of the document named name on issue, which a first version that landed
+// with no answer to give made: the element of the issue's documents whose name is name, as
+// loopWriter.readBack finds what a landed write made. A target's name is its own on its issue, so
+// at most one element has it; none is an error, since the write made it.
+func refReadBack(ctx context.Context, a *api, issue, name string) (string, error) {
+	res := a.callRetry(ctx, "GET", "/api/v1/issues/"+issue+"/artifacts", who{}, nil)
+	if !res.ok() {
+		return "", fmt.Errorf("read back %s on %s: %d %s %v, want 200", name, issue, res.status, trunc(res.body), res.err)
+	}
+	var rows []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(res.body, &rows); err != nil {
+		return "", fmt.Errorf("read back %s on %s: %w", name, issue, err)
+	}
+	for _, row := range rows {
+		if row.Name == name && row.ID != "" {
+			return row.ID, nil
+		}
+	}
+	return "", fmt.Errorf("read back %s on %s: the landed write made no document of that name in %s", name, issue, trunc(res.body))
+}
+
 // writeRefSources writes one references.md per LGA issue that cites at least one target. Each
 // citation is a dispatch:// reference to a target document, which is what makes the references
 // answer of that issue do member work.
@@ -349,7 +390,7 @@ func writeRefSources(ctx context.Context, a *api, p refPlan) (issues, cites int,
 			}
 			body := map[string]any{"name": refSourceName, "content": b.String(), "actor": refWriter(0)}
 			res := a.callRetryKeyed(gctx, "POST", "/api/v1/issues/"+key+"/artifacts", who{}, body, refSourceKey(key))
-			if res.err != nil || res.status != http.StatusCreated {
+			if !res.landed() && (res.err != nil || res.status != http.StatusCreated) {
 				return fmt.Errorf("write %s on %s: %d %s %v, want 201", refSourceName, key, res.status, res.text(), res.err)
 			}
 			return nil

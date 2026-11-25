@@ -469,6 +469,49 @@ func TestCatchUpAwaitingLeavesARootNoPersonAnswered(t *testing.T) {
 	}
 }
 
+// deletedReply is the reply askReplied makes, at seq in ask's thread by actor leaving the turn
+// waitingOn, deleted since: Dispatch's event log serves its comment.created with deleted_at and
+// deleted_by in place of its body (Dispatch's attachPostMarks).
+func deletedReply(seq int64, ask, waitingOn string, actor dispatch.Actor) json.RawMessage {
+	return askEvent(seq, "comment.created", actor, map[string]any{"id": "comment-reply", "ask_id": ask, "ask_state": "open",
+		"ask_waiting_on": waitingOn, "deleted_at": "2026-10-23T17:30:00Z", "deleted_by": map[string]any{"kind": actor.Kind, "id": actor.ID}})
+}
+
+// postCorrections are the four corrections an author makes of its posts, by actor at seq and the
+// three sequences after it: the edit and the delete of its reply in ask's thread, which carry the
+// ask's id and no turn, and the edit and the delete of a message of the issue.
+func postCorrections(seq int64, ask string, actor dispatch.Actor) []json.RawMessage {
+	const at = "2026-10-23T17:30:00Z"
+	by := map[string]any{"kind": actor.Kind, "id": actor.ID}
+	return []json.RawMessage{
+		askEvent(seq, "comment.edited", actor, map[string]any{"id": "comment-reply", "ask_id": ask, "body": "Go ahead once the rollback is named.", "edited_at": at}),
+		askEvent(seq+1, "comment.deleted", actor, map[string]any{"id": "comment-reply", "ask_id": ask, "body": "", "deleted_at": at, "deleted_by": by}),
+		askEvent(seq+2, "message.edited", actor, map[string]any{"id": "message-note", "body": "The staging run is green again.", "edited_at": at}),
+		askEvent(seq+3, "message.deleted", actor, map[string]any{"id": "message-note", "body": "", "deleted_at": at, "deleted_by": by}),
+	}
+}
+
+// A person's reply deleted since the daemon went down is read from the event log masked, with no
+// body, and still hands the ask's turn as its live event would have: Dispatch keeps a deleted
+// reply's turn, so the root waiting on that ask is answered. The corrections of a post - the edit
+// and the delete of that reply, which carry the ask's id, and of a message - move no turn, so a
+// window that holds them alone leaves the root waiting on the person.
+func TestCatchUpAppliesADeletedReplysTurnAndPassesOverTheCorrections(t *testing.T) {
+	t.Run("a deleted reply handing the open ask to the agent", func(t *testing.T) {
+		events := append([]json.RawMessage{deletedReply(9, "ask-root", "agent", alice)}, postCorrections(10, "ask-root", alice)...)
+		got := catchUpAwaitingRoot(t, record.Awaiting{Ask: "ask-root"}, nil, &awaitingDispatch{events: events})
+		if got == nil || !got.Answered() {
+			t.Fatalf("caught-up root = %#v, want it answered by the deleted reply", got)
+		}
+	})
+	t.Run("the corrections alone", func(t *testing.T) {
+		got := catchUpAwaitingRoot(t, record.Awaiting{Ask: "ask-root"}, nil, &awaitingDispatch{events: postCorrections(9, "ask-root", alice)})
+		if got == nil || !got.AwaitingPerson() || got.Answered() {
+			t.Fatalf("root after the catch-up = %#v, want it still waiting on the person", got)
+		}
+	})
+}
+
 type unreachableEvents struct{ awaitingDispatch }
 
 func (*unreachableEvents) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {

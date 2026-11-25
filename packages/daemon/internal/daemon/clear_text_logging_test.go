@@ -496,16 +496,19 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 			},
 		},
 		{
-			// readMergeState's error in a read after the ladder, a follow of head code: the pull
-			// request read GitHub answered 500.
-			name: "merge_state_reads.go:followMergeState github: a merge state read after the ladder", capture: "sink/daemon/merge_state_reads.go/followMergeState",
-			message: followRead, level: "WARN", keys: []string{"error"},
-			holds: []string{`"answered":"no answer"`, "GET /pulls/86 with 500", "[redacted]"},
+			// readChunk's error in the reads of a base, which take up a follow of head code after its
+			// ladder (followOnBase): the merge-state query GitHub answered 500.
+			name: "merge_state_batches.go:readChunk github: read the merge state of the open pull requests on a base whose reads were asked for", capture: "sink/daemon/merge_state_batches.go/readChunk",
+			message: sinkBaseReadFailed, level: "WARN", keys: []string{"error"},
+			holds: []string{"POST /graphql with 500", "[redacted]"},
 			drive: func(t *testing.T, log *sinkLog) (string, *sinkServer) {
-				github := newSinkServer(t, map[string]sinkRoute{"/repos/acme/widgets/pulls/86": sinkRefusal(http.StatusInternalServerError)})
-				w := sinkReadRuntime(seededCapture(t), github, log.logger())
+				github := newSinkServer(t, map[string]sinkRoute{"/graphql": sinkRefusal(http.StatusInternalServerError)})
+				pool := seededCapture(t)
+				w := sinkReadRuntime(pool, github, log.logger())
 				w.mergeStateRetry = 10 * time.Millisecond
-				sinkLadder(t, w, func() { w.queueMergeStateFollow("CAPTURE-1", "code") }, func() bool { return log.holds(followRead) })
+				follow := recordedPull(t, pool, "CAPTURE-1")
+				follow.Base = "main"
+				sinkLadder(t, w, func() { w.queueMergeStateFollow("CAPTURE-1", follow) }, func() bool { return log.holds(sinkBaseReadFailed) })
 				return oauth2calltest.Token, github
 			},
 		},
@@ -680,6 +683,10 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 		})
 	}
 }
+
+// sinkBaseReadFailed is the line readChunk logs when the merge-state query of a base's reads
+// failed.
+const sinkBaseReadFailed = "github: read the merge state of the open pull requests on a base whose reads were asked for; their records stand as they were, and they are read again"
 
 // sinkLadder runs w's merge-state reader until done holds, after queue asks it for a ladder, then
 // stops it and waits for every ladder it started to end.

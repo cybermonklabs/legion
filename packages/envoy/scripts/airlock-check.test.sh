@@ -115,22 +115,54 @@ for slug in gcloud-example-login gws-example-view-2 gws-example-admin-2; do
 done
 jq -e -s 'length == 3 and all(.[]; type == "object" and .type == "authorized_user" and (.client_id | type == "string") and (.client_secret | type == "string") and (.refresh_token | type == "string"))' "$work/k7-google-logins" >/dev/null
 consumer="$work/k7-consumer"
-mkdir -p "$consumer/gws" "$consumer/scripts" "$work/k7/pulumi"
+mkdir -p "$consumer/gws" "$work/k7/pulumi"
 jq -n --arg key "$AIRLOCK_GWS_TIER_KEY" \
-  '{($key):{tiers:{read:{command:["secret-run","GWS_EXAMPLE_VIEW_2"]}}}}' >"$consumer/gws/accounts.json"
-# The consumer's gcloud-broker reads its login under the operator's name for it.
-cat >"$consumer/scripts/gcloud-broker" <<'BROKER'
-#!/usr/bin/env bash
-[[ "$GCLOUD_BROKER_INNER" == 1 ]] && printf 'ERROR: %s\n' "${GCLOUD_EXAMPLE_LOGIN:-unset}"
-BROKER
+  '{($key):{tiers:{read:{command:["agent-secrets","GWS_EXAMPLE_VIEW_2","--reason","gws operator read","--"]}}}}' >"$consumer/gws/accounts.json"
 mkdir -p "$work/consumer-bin"
-cat >"$work/consumer-bin/secret-run" <<'RUNNER'
+# The fake gcloud answers as Google refuses a token, naming the token it was handed, when the
+# steps set it up as an admin gcloud command's grant does: a 0600 token file in its own
+# CLOUDSDK_CONFIG, prompts and file logging off, and neither the login's variable nor any account,
+# configuration or impersonation of the caller's left. Otherwise it names what is wrong. It
+# records the CLOUDSDK_CONFIG it was given, so the test can see the steps remove it.
+cat >"$work/consumer-bin/gcloud" <<'GCLOUD'
+#!/usr/bin/env bash
+printf '%s\n' "${CLOUDSDK_CONFIG:-unset}" >>"${K7_TEST_GCLOUD_DIRS:?}"
+wrong=""
+[[ "$*" == 'projects list --format=json' ]] || wrong+=" arguments $*;"
+[[ -d "${CLOUDSDK_CONFIG:-}" && "${CLOUDSDK_AUTH_ACCESS_TOKEN_FILE:-}" == "$CLOUDSDK_CONFIG/token" ]] || wrong+=" no token file in CLOUDSDK_CONFIG;"
+[[ "$(stat -c %a "${CLOUDSDK_AUTH_ACCESS_TOKEN_FILE:-}" 2>/dev/null)" == 600 ]] || wrong+=" token file mode;"
+[[ "${CLOUDSDK_CORE_DISABLE_PROMPTS:-}" == 1 && "${CLOUDSDK_CORE_DISABLE_FILE_LOGGING:-}" == true ]] || wrong+=" prompts or file logging on;"
+for name in GCLOUD_EXAMPLE_LOGIN GCLOUD_ACCOUNT CLOUDSDK_ACTIVE_CONFIG_NAME CLOUDSDK_CORE_ACCOUNT CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT GOOGLE_APPLICATION_CREDENTIALS; do
+  [[ -z "${!name+set}" ]] || wrong+=" $name is set;"
+done
+if [[ -n "$wrong" ]]; then printf 'ERROR: fake gcloud:%s\n' "$wrong"; exit 1; fi
+printf 'ERROR: %s\n' "$(cat "$CLOUDSDK_AUTH_ACCESS_TOKEN_FILE")"
+GCLOUD
+# The fake client records the names and flags it is given, up to --, and runs the command after
+# it in the environment the outer grant set up, as the real client runs it under its own grant.
+cat >"$work/consumer-bin/agent-secrets" <<'RUNNER'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "$1" == --reason && "$2" == 'gws operator read' && "$3" == GWS_EXAMPLE_VIEW_2 && "$4" == -- ]]
-shift 4
+before=()
+while (($#)) && [[ "$1" != -- ]]; do before+=("$1"); shift; done
+[[ "${1:-}" == -- ]] || { echo "fake agent-secrets: no -- in the call" >&2; exit 2; }
+shift
+printf '%s\n' "${before[*]}" >>"${K7_TEST_CLIENT_CALLS:?}"
 exec "$@"
 RUNNER
+# The real GitHub CLI, which the gh step puts first on PATH, says what it was given and ends as gh
+# ends GitHub's refusal (HTTP 401); the gh behind it plays Legion's wrapper, which refuses a call
+# whose GH_TOKEN is set. The step keeps what gh says in gh-step.out and prints only the status.
+gh_dir="$work/real-gh"
+mkdir -p "$gh_dir"
+cat >"$gh_dir/gh" <<'GH'
+#!/usr/bin/env bash
+printf 'gh %s with GH_TOKEN %s and GITHUB_TOKEN %s (HTTP 401)\n' "$*" "${GH_TOKEN:-unset}" "${GITHUB_TOKEN:-unset}"
+GH
+cat >"$work/consumer-bin/gh" <<'GH'
+#!/usr/bin/env bash
+echo 'wrapper gh: refused, GH_TOKEN is set'
+GH
 cat >"$work/consumer-bin/curl" <<'CURL'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -147,37 +179,73 @@ cat >"$work/consumer-bin/pulumi" <<'PULUMI'
 #!/usr/bin/env bash
 [[ "$1 $2" == 'stack init' ]] && printf 'error: token %s\n' "${GOOGLE_OAUTH_ACCESS_TOKEN:-unset}"
 PULUMI
-chmod +x "$consumer/scripts/gcloud-broker" "$work/consumer-bin/secret-run" "$work/consumer-bin/curl" "$work/consumer-bin/pulumi"
+chmod +x "$work/consumer-bin/gcloud" "$work/consumer-bin/agent-secrets" "$work/consumer-bin/curl" "$work/consumer-bin/pulumi" \
+  "$work/consumer-bin/gh" "$gh_dir/gh"
 # run_consumers [state]: writes the step script's preamble with the real k7_consumer_preamble, as
-# k7_steps does, runs it, checks the setup it made, then runs the Google consumers. A state file
-# is sourced after the setup, so a control can leave the setup wrong and show the check refuses
-# it. PREAMBLE_EDIT, a sed program, edits the preamble first, so a control can swap its mapping.
+# k7_steps does, runs it, checks the setup it made, then runs the GitHub and Google consumers. A
+# state file is sourced after the setup, so a control can leave the setup wrong and show the check
+# refuses it. PREAMBLE_EDIT, a sed program, edits the preamble first, so a control can swap its
+# mapping. The caller's own gcloud account, configuration and impersonation are set, as a box can
+# set them, so the fake gcloud shows the steps drop each. The outer grant's values are the fake
+# environment's; K7_TEST_CLIENT_CALLS collects what each nested agent-secrets call was given.
 run_consumers() {
   status=0
-  K7_DOTFILES="$consumer" k7_consumer_preamble "$work/k7" >"$work/preamble.sh"
+  K7_DOTFILES="$consumer" K7_GH_DIR="$gh_dir" k7_consumer_preamble "$work/k7" >"$work/preamble.sh"
   if [[ -n "${PREAMBLE_EDIT:-}" ]]; then sed -i "$PREAMBLE_EDIT" "$work/preamble.sh"; fi
   # shellcheck disable=SC2016 # These variables expand in bash -c after the fake environment is set.
-  output="$(env -u BASH_ENV PATH="$work/consumer-bin:$PATH" \
-    GCLOUD_EXAMPLE_LOGIN=gcloud-placeholder GWS_EXAMPLE_VIEW_2=read-placeholder GWS_EXAMPLE_ADMIN_2=admin-placeholder \
+  output="$(env -u BASH_ENV PATH="$work/consumer-bin:$PATH" K7_TEST_GCLOUD_DIRS="$work/gcloud-dirs" K7_TEST_CLIENT_CALLS="$work/client-calls" \
+    GITHUB_ADMIN_PAT=github-placeholder GCLOUD_EXAMPLE_LOGIN=gcloud-placeholder GWS_EXAMPLE_VIEW_2=read-placeholder GWS_EXAMPLE_ADMIN_2=admin-placeholder \
+    GCLOUD_ACCOUNT=caller CLOUDSDK_ACTIVE_CONFIG_NAME=caller CLOUDSDK_CORE_ACCOUNT=caller@example.com \
+    CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=caller@example.iam.gserviceaccount.com GOOGLE_APPLICATION_CREDENTIALS=/caller.json \
     bash -c 'set -u
       source "$1"
       if [[ -n "${2:-}" ]]; then source "$2"; fi
       [[ "$DOTFILES_DIR" == "$K7_DOTFILES" ]] || { echo "setup: DOTFILES_DIR is $DOTFILES_DIR" >&2; exit 1; }
       [[ "$XDG_CONFIG_HOME" == "$K7_CONSUMER_WORK_DIR/xdg" && -d "$XDG_CONFIG_HOME" ]] || { echo "setup: XDG_CONFIG_HOME is $XDG_CONFIG_HOME" >&2; exit 1; }
-      [[ "$PATH" == "$K7_DOTFILES/scripts:$K7_DOTFILES/shims:"* ]] || { echo "setup: PATH does not start with the consumer scripts and shims" >&2; exit 1; }
+      [[ "$PATH" == "$K7_DOTFILES/shims:"* ]] || { echo "setup: PATH does not start with the consumer shims" >&2; exit 1; }
+      k7_consumer_github_step
       k7_consumer_google_steps
       cat "$K7_CONSUMER_WORK_DIR/out"' bash "$work/preamble.sh" "$@" 2>&1)" || status=$?
 }
+: >"$work/gcloud-dirs"
+: >"$work/client-calls"
 run_consumers
 label='operator inputs build matching profiles, store names, prepare consumers and run valid commands'; check test "$status" -eq 0
-label='the gcloud login, selected tier and both Google Workspace logins reach the real consumer boundary'
-check test "$output" = $'kms=error: token gcloud-placeholder\ngcloud=ERROR: gcloud-placeholder\ngws_tier=secret-run GWS_EXAMPLE_VIEW_2\ngws=200\nadmin=200'
+label='the GitHub admin token, gcloud login, selected tier and both Google Workspace logins reach the real consumer boundary'
+check test "$output" = $'gh=HTTP 401\nkms=error: token gcloud-placeholder\ngcloud=ERROR: gcloud-placeholder\ngws_tier=agent-secrets GWS_EXAMPLE_VIEW_2 --reason gws operator read --\ngws=200\nadmin=200'
+label='the gh step keeps what the real GitHub CLI said, the admin token it was given in both variables, in gh-step.out'
+output="$(cat "$work/k7/gh-step.out")"
+check test "$output" = 'gh api user with GH_TOKEN github-placeholder and GITHUB_TOKEN github-placeholder (HTTP 401)'
+label='the GitHub admin and Google Workspace read calls each ask agent-secrets for their one name, with their reason'
+output="$(cat "$work/client-calls")"
+check test "$output" = $'GITHUB_ADMIN_PAT --reason k7: one gh api call with a fake admin token\nGWS_EXAMPLE_VIEW_2 --reason gws operator read'
+label='the gcloud steps remove the CLOUDSDK_CONFIG they made once gcloud ends'
+output="CLOUDSDK_CONFIG directories the fake gcloud was given: $(tr '\n' ' ' <"$work/gcloud-dirs")"
+removed=false
+if [[ "$(wc -l <"$work/gcloud-dirs")" -eq 1 ]]; then
+  read -r gcloud_dir <"$work/gcloud-dirs"
+  [[ "$gcloud_dir" == /* && ! -e "$gcloud_dir" ]] && removed=true
+fi
+check "$removed"
 
 # Control: the preamble with the read and administrator logins swapped. The read call is then sent
 # the administrator's login and the administrator call the read login, which the fake curl refuses.
 PREAMBLE_EDIT='s/^K7_CONSUMER_GWS_READ_SECRET=/K7_SWAP=/; s/^K7_CONSUMER_GWS_ADMIN_SECRET=/K7_CONSUMER_GWS_READ_SECRET=/; s/^K7_SWAP=/K7_CONSUMER_GWS_ADMIN_SECRET=/' run_consumers
 label='a preamble that swaps the read and administrator logins fails both Google Workspace calls'
-check test "$output" = $'kms=error: token gcloud-placeholder\ngcloud=ERROR: gcloud-placeholder\ngws_tier=secret-run GWS_EXAMPLE_VIEW_2\ngws=\nadmin='
+check test "$output" = $'gh=HTTP 401\nkms=error: token gcloud-placeholder\ngcloud=ERROR: gcloud-placeholder\ngws_tier=agent-secrets GWS_EXAMPLE_VIEW_2 --reason gws operator read --\ngws=\nadmin='
+
+# Control: with no real GitHub CLI directory the gh step reaches the wrapper, which refuses it.
+gh_dir='' run_consumers
+label='a gh step with no real GitHub CLI first on PATH reaches the wrapper, whose words it keeps in gh-step.out and does not print'
+check test "${output%%$'\n'*}:$(cat "$work/k7/gh-step.out")" = 'gh=:wrapper gh: refused, GH_TOKEN is set'
+
+# The Google Workspace step reads the tier command only to report it: a read tier whose command
+# names another client (here `secrets`) changes the reported tier and nothing of the call.
+jq -n --arg key "$AIRLOCK_GWS_TIER_KEY" \
+  '{($key):{tiers:{read:{command:["secrets","GWS_EXAMPLE_VIEW_2","--"]}}}}' >"$consumer/gws/accounts.json"
+run_consumers
+label='a read tier command that names another client changes only the reported tier'
+check test "$output" = $'gh=HTTP 401\nkms=error: token gcloud-placeholder\ngcloud=ERROR: gcloud-placeholder\ngws_tier=secrets GWS_EXAMPLE_VIEW_2 --\ngws=200\nadmin=200'
 
 # Controls: each wrong setup state must stop the consumers and name the variable that is wrong.
 cat >"$work/wrong-dotfiles.sh" <<'STATE'
@@ -187,7 +255,7 @@ cat >"$work/wrong-xdg.sh" <<'STATE'
 export XDG_CONFIG_HOME="$K7_CONSUMER_WORK_DIR/wrong-xdg"
 STATE
 cat >"$work/wrong-path.sh" <<'STATE'
-export PATH="$K7_DOTFILES/shims:$PATH"
+export PATH="/usr/bin:$PATH"
 STATE
 for wrong in DOTFILES_DIR:wrong-dotfiles XDG_CONFIG_HOME:wrong-xdg PATH:wrong-path; do
   run_consumers "$work/${wrong#*:}.sh"
@@ -260,7 +328,7 @@ check test "$output" = "$want_environ"
 # is a version manager's shim: a script that takes its own directory out of PATH and execs the az
 # it then finds there, as mise's does when it falls through. k6_azure_wrapper records the az on
 # PATH, the shim, and writes the wrapper; the wrapper then runs first on PATH, as k6_azure puts it,
-# with a config directory that holds no cloud yet, as az-broker's does. It registers the stand-in
+# with a config directory that holds no cloud yet, as k6's steps make it. It registers the stand-in
 # cloud, selects it and runs the command, each through the shim, and the verdict is the calls the
 # az behind the shim recorded: those three, in that order. A wrapper that ran the shim on its own
 # PATH handed the shim back to the wrapper, and the two called each other, a new pair at each
@@ -465,13 +533,13 @@ old_cli_case good OLD_CLI_STATUS=diverged
 label="fetch_old_cli refuses a release GitHub compares as diverged, and says so"
 check test "${output#*"as 'diverged', not 'ahead'"}" != "$output"
 
-# --- k6's and k7's fetches of sjawhar/dotfiles and k7's gh step, read out of airlock-check.sh and
-# run on their own with a stand-in gh first on PATH. Whatever answers gh in GitHub's place holds
-# gh's token and writes gh's error and its answer, so each puts the marker in what gh says, and
-# what the check prints (the function's stdout and stderr, or the line the gh step writes into the
-# file the check observes and judges) holds no run of eight of its characters. Twins: the kept file
-# holds the marker. Control: a gh whose last line ends (HTTP 401) gives the step `gh=HTTP 401`,
-# which k7's judge reads as GitHub's refusal.
+# --- k7's fetch of sjawhar/dotfiles, read out of airlock-check.sh, and k7's gh step, the consumer
+# boundary's k7_consumer_github_step (sourced above), each run on its own with a stand-in gh.
+# Whatever answers gh in GitHub's place holds gh's token and writes gh's error and its answer, so
+# each puts the marker in what gh says, and what the check prints (the function's stdout and
+# stderr, or the line the gh step writes into the file the check observes and judges) holds no run
+# of eight of its characters. Twins: the kept file holds the marker. Control: a gh whose last line
+# ends (HTTP 401) gives the step `gh=HTTP 401`, which k7's judge reads as GitHub's refusal.
 fetch_dir="$work/dotfiles-fetch"
 mkdir -p "$fetch_dir/bin"
 cat >"$fetch_dir/bin/gh" <<'GH'
@@ -481,11 +549,9 @@ printf 'gh: %s (HTTP %s)\n' "$FETCH_SAYS" "${FETCH_STATUS:-502}" >&2
 exit 1
 GH
 chmod +x "$fetch_dir/bin/gh"
-for function in k6_azure k7_dotfiles; do
-  definition="$(sed -n "/^${function}() {/,/^}/p" "$script_dir/airlock-check.sh")"
-  [[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no %s()\n' "$function"; exit 1; }
-  eval "$definition"
-done
+definition="$(sed -n "/^k7_dotfiles() {/,/^}/p" "$script_dir/airlock-check.sh")"
+[[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no k7_dotfiles()\n'; exit 1; }
+eval "$definition"
 fetch_case() { # <function> <kept file under WORK_DIR>
   rm -rf "$fetch_dir/work" && mkdir -p "$fetch_dir/work"
   : >"$fetch_dir/calls"
@@ -498,43 +564,95 @@ fetch_case() { # <function> <kept file under WORK_DIR>
   label="$1's refusal names the file that keeps gh's words"; check test "${output#*"gh's own words are in $fetch_dir/work/$2"}" != "$output"
   label="twin: that file holds the marker"; check grep -qF "$old_marker" "$fetch_dir/work/$2"
 }
-fetch_case k6_azure k6/az-broker.gh-err
 fetch_case k7_dotfiles k7/dotfiles/fetch.gh-err
 
-# k7_steps writes the step; the step is run alone, between its comment and pulumi's.
+# k7_steps writes the gh step as a call of the consumer boundary's k7_consumer_github_step, which
+# runs here alone, with the stand-in gh as the real GitHub CLI and the fake agent-secrets above.
 step_dir="$work/k7-gh-step"
-mkdir -p "$step_dir/bin" "$step_dir/k7"
-cat >"$step_dir/bin/secret-run" <<'RUN'
-#!/usr/bin/env bash
-while [[ $# -gt 0 && "$1" != -- ]]; do shift; done
-shift
-GITHUB_ADMIN_PAT=fake-admin-placeholder exec "$@"
-RUN
-chmod +x "$step_dir/bin/secret-run"
 definition="$(sed -n '/^k7_steps() {/,/^}/p' "$script_dir/airlock-check.sh")"
-[[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no k7_steps()\n'; exit 1; }
-eval "$definition"
-# shellcheck disable=SC2034 # read by k7_steps, eval'd above
-(
-  WORK_DIR="$step_dir" SCRIPT_DIR="$script_dir" K7_GH_DIR="$fetch_dir/bin" AIRLOCK_S_URL=https://s.test \
-    AIRLOCK_BOTO3_PYTHON=python3 STANDS_BIN=/bin/true K7_DOTFILES="$step_dir/dotfiles" k7_steps
-)
-sed -n '/^# gh api under secret-run for GITHUB_ADMIN_PAT/,/^# pulumi preview/p' "$step_dir/k7/steps.sh" >"$step_dir/gh-step.sh"
-label="k7_steps writes the gh step"; check grep -q 'exec gh api user' "$step_dir/gh-step.sh"
+label="k7_steps writes the gh step of the consumer boundary"
+check grep -qx 'k7_consumer_github_step' <<<"$definition"
 gh_step() { # [FETCH_STATUS]
+  rm -rf "$step_dir" && mkdir -p "$step_dir"
   : >"$step_dir/out" && : >"$fetch_dir/calls"
-  rm -f "$step_dir/k7/gh-step.out"
-  # The step's own lines, with say writing where the generated script's does.
-  # shellcheck disable=SC2016,SC2031 # expanded in the step's bash; PATH is the stand-ins' for this one call
-  FETCH_CALLS="$fetch_dir/calls" FETCH_SAYS="$old_marker" FETCH_STATUS="${1:-401}" PATH="$step_dir/bin:$fetch_dir/bin:$PATH" \
-    bash -c 'out=$1; say() { printf "%s\n" "$1" >>"$out"; }; source "$2"' bash "$step_dir/out" "$step_dir/gh-step.sh" >/dev/null 2>&1 || true
+  (
+    # shellcheck disable=SC2030 # the stand-ins are first on PATH for this one call
+    export FETCH_CALLS="$fetch_dir/calls" FETCH_SAYS="$old_marker" FETCH_STATUS="${1:-401}" K7_TEST_CLIENT_CALLS="$step_dir/client-calls" \
+      GITHUB_ADMIN_PAT=fake-admin-placeholder PATH="$work/consumer-bin:$PATH" K7_CONSUMER_WORK_DIR="$step_dir" K7_CONSUMER_GH_DIR="$fetch_dir/bin"
+    k7_consumer_github_step
+  ) >/dev/null 2>&1 || true
   output="$(cat "$step_dir/out")"
 }
 gh_step 401
 label="k7's gh step asks the stand-in gh"; check grep -q '^gh api user' "$fetch_dir/calls"
 label="k7's gh step writes no run of the marker gh said where the check reads it"; check prints_no_marker "$output"
 label="control: it writes gh's HTTP status, which k7's judge reads as a refusal"; check test "$output" = "gh=HTTP 401"
-label="twin: gh-step.out keeps gh's words, the marker among them"; check grep -qF "$old_marker" "$step_dir/k7/gh-step.out"
+label="twin: gh-step.out keeps gh's words, the marker among them"; check grep -qF "$old_marker" "$step_dir/gh-step.out"
+
+# --- k6's login steps, read out of airlock-check.sh and run by sh as each k6 run runs them under
+# its grant, with a fake az first on PATH that records its login and the state it was handed. Their
+# TMPDIR is a directory of the test's own, so what they leave there shows: nothing, after a login,
+# after a value with no federated token, which never reaches az, and after a TERM.
+login_dir="$work/az-login"
+mkdir -p "$login_dir/bin" "$login_dir/tmp"
+cat >"$login_dir/bin/az" <<'EOF'
+#!/usr/bin/env bash
+dir="${AZURE_CONFIG_DIR%/config}"
+printf 'az %s; config %s; token %s, mode %s; login variable %s\n' "$*" "${AZURE_CONFIG_DIR:-unset}" \
+  "$(cat "$dir/token" 2>/dev/null)" "$(stat -c %a "$dir/token" 2>/dev/null)" "${AIRLOCK_AZURE_LOGIN+set}" >>"${K6_TEST_AZ_CALLS:?}"
+EOF
+chmod +x "$login_dir/bin/az"
+definition="$(sed -n '/^k6_azure_login_steps() {/,/^}/p' "$script_dir/airlock-check.sh")"
+[[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no k6_azure_login_steps()\n'; exit 1; }
+eval "$definition"
+# run_login <azure-login value> <command...>: runs the steps as k6_azure does, the command after them.
+run_login() {
+  local value="$1"
+  shift
+  status=0
+  : >"$login_dir/calls"
+  output="$(PATH="$login_dir/bin:$PATH" TMPDIR="$login_dir/tmp" K6_TEST_AZ_CALLS="$login_dir/calls" AIRLOCK_AZURE_LOGIN="$value" \
+    sh -c "$(k6_azure_login_steps)" sh "$@" 2>&1)" || status=$?
+}
+login='{"tenant_id":"tenant-1","client_id":"client-1","federated_token":"federated-placeholder","expires_at":"2026-11-24T06:00:00Z"}'
+# shellcheck disable=SC2016 # expands in the command the steps run
+run_login "$login" sh -c 'printf "the command ran with config %s; login variable %s\n" "$AZURE_CONFIG_DIR" "${AIRLOCK_AZURE_LOGIN+set}"; exit 7'
+label="k6's login steps keep the command's exit status"; check test "$status" -eq 7
+command_output="$output"
+output="$(cat "$login_dir/calls")"
+config="${output#*; config }"
+config="${config%%;*}"
+label="k6's login steps log az in as the service principal from a 0600 token file beside a throwaway AZURE_CONFIG_DIR, with the login's variable gone"
+check test "$output" = "az login --service-principal --username client-1 --tenant tenant-1 --federated-token @${config%/config}/token --allow-no-subscriptions --output none; config $config; token federated-placeholder, mode 600; login variable "
+label="that AZURE_CONFIG_DIR is a new directory under TMPDIR"
+check test "${config#"$login_dir/tmp/"}" != "$config"
+label="the command runs in the same AZURE_CONFIG_DIR, without the login's variable"
+output="$command_output"
+check test "$output" = "the command ran with config $config; login variable "
+label="k6's login steps remove their directory when the command ends"
+output="$(ls -A "$login_dir/tmp")"
+check test -z "$output"
+# Control: a value with no federated token stops the steps before az and before the command.
+run_login '{"tenant_id":"tenant-1","client_id":"client-1"}' sh -c 'echo the command ran'
+label="a login value with no federated token stops the steps before az and the command, and leaves nothing"
+output="status $status; az calls: $(cat "$login_dir/calls"); output: $output; left: $(ls -A "$login_dir/tmp")"
+passed=false
+[[ "$status" -ne 0 && ! -s "$login_dir/calls" && "$output" != *'the command ran'* && -z "$(ls -A "$login_dir/tmp")" ]] && passed=true
+check "$passed"
+# A TERM to the steps' shell while the command runs: the shell ends with 143 once the command has
+# ended, and its EXIT trap still removes the directory. Without the TERM trap the shell would die
+# at once and leave the token file behind.
+started="$work/az-login-started"
+PATH="$login_dir/bin:$PATH" TMPDIR="$login_dir/tmp" K6_TEST_AZ_CALLS="$login_dir/calls" AIRLOCK_AZURE_LOGIN="$login" \
+  sh -c "$(k6_azure_login_steps)" sh sh -c ': >"$0"; sleep 1' "$started" &
+steps=$!
+for _ in $(seq 1 100); do [[ -e "$started" ]] && break; sleep 0.05; done
+kill -TERM "$steps"
+status=0
+wait "$steps" || status=$?
+label="a TERM to k6's login steps ends them with 143 and still removes their directory"
+output="status $status; left: $(ls -A "$login_dir/tmp")"
+check test "$output" = "status 143; left: "
 
 if [[ "$failed" -ne 0 ]]; then
   printf 'airlock-check inputs: failed (%s checks)\n' "$failed"

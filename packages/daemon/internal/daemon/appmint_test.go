@@ -140,21 +140,14 @@ func appTokensWith(t *testing.T, discover func(w http.ResponseWriter, r *http.Re
 	}, appauth.Options{BaseURL: server.URL, HTTPClient: server.Client()}), standIn
 }
 
-// quickAppMints shortens the attempt and the retry of a boot's read of GitHub's App endpoints for
-// the test, restoring them after.
-func quickAppMints(t *testing.T) {
-	attempt, retry := appMintAttempt, appMintRetry
-	appMintAttempt, appMintRetry = 500*time.Millisecond, bootprobe.Retry{Initial: 10 * time.Millisecond, Max: 10 * time.Millisecond, Attempts: 3}
-	t.Cleanup(func() { appMintAttempt, appMintRetry = attempt, retry })
-}
-
-// withStartRateLimits applies change to the start's rate-limit policy for the test, restoring the
-// production policy after.
-func withStartRateLimits(t *testing.T, change func(*rateLimitPolicy)) {
-	t.Helper()
-	production := startRateLimits
-	change(&startRateLimits)
-	t.Cleanup(func() { startRateLimits = production })
+// quickAppMints are the start's App-call bounds shortened for a test: a 500 ms attempt and three
+// attempts 10 ms apart, with the production rate-limit policy, which a test changes on the value it
+// gets. The daemons a test boots on them (bootsOn, bootStoppedWhen) are given them alone, so the
+// test runs beside every other test.
+func quickAppMints() *appCallBounds {
+	calls := productionAppCalls()
+	calls.attempt, calls.retry = 500*time.Millisecond, bootprobe.Retry{Initial: 10 * time.Millisecond, Max: 10 * time.Millisecond, Attempts: 3}
+	return &calls
 }
 
 func installed(w http.ResponseWriter) {
@@ -170,11 +163,18 @@ func bootsOrExits(t *testing.T, cfg config.Config, tokens appauth.Source, within
 // bootsOrExitsLogging is bootsOrExits with the daemon logging to log.
 func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Source, within time.Duration, log *slog.Logger) error {
 	t.Helper()
-	return bootsOrExitsOn(t, cfg, tokens, repositoriesGitHub(t), within, log)
+	return bootsOrExitsOn(t, cfg, tokens, repositoriesGitHub(t), within, log, nil)
 }
 
-// bootsOrExitsOn is bootsOrExitsLogging with the daemon reading GitHub's REST API at githubAPI.
-func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Source, githubAPI string, within time.Duration, log *slog.Logger) error {
+// bootsOn is bootsOrExitsLogging with the daemon's start making its App calls on calls.
+func bootsOn(t *testing.T, cfg config.Config, tokens appauth.Source, calls *appCallBounds, within time.Duration, log *slog.Logger) error {
+	t.Helper()
+	return bootsOrExitsOn(t, cfg, tokens, repositoriesGitHub(t), within, log, calls)
+}
+
+// bootsOrExitsOn is bootsOrExitsLogging with the daemon reading GitHub's REST API at githubAPI, and
+// its start making its App calls on calls (nil for the production bounds).
+func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Source, githubAPI string, within time.Duration, log *slog.Logger, calls *appCallBounds) error {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -185,6 +185,7 @@ func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Source, gith
 			clock:          stillClock{},
 			workflowTokens: tokens,
 			githubAPI:      githubAPI,
+			appCalls:       calls,
 		})
 	}()
 	stopped := false
@@ -242,9 +243,9 @@ func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Source, gith
 // context deadline exceeded", #1347). Control: with appAttempt classing its own deadline as a
 // refusal, the boot exits on the first attempt's "context deadline exceeded".
 func TestABootRunsItsKeyProofAgainAfterAGitHubRequestOutlastsAnAttempt(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
-	quickAppMints(t)
-	held := appMintAttempt + appMintAttempt/2
+	t.Parallel()
+	calls := quickAppMints()
+	held := calls.attempt + calls.attempt/2
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {
 		if app == "1" && n == 1 {
 			select {
@@ -256,7 +257,7 @@ func TestABootRunsItsKeyProofAgainAfterAGitHubRequestOutlastsAnAttempt(t *testin
 		installed(w)
 	})
 	var logged syncBuffer
-	if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(&logged, nil))); err != nil {
+	if err := bootsOn(t, workflowConfig(t, workflowNATS(t)), tokens, calls, 60*time.Second, slog.New(slog.NewJSONHandler(&logged, nil))); err != nil {
 		t.Fatalf("boot = %v, want the key proof run again after the attempt GitHub's request outlasted", err)
 	}
 	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 1, "2": 1}) {
@@ -274,12 +275,12 @@ func TestABootRunsItsKeyProofAgainAfterAGitHubRequestOutlastsAnAttempt(t *testin
 // A definitive answer (the App's key refused) is refused at once, naming the App whose key GitHub
 // refused and GitHub's answer: no retry changes it.
 func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
-	quickAppMints(t)
+	t.Parallel()
+	calls := quickAppMints()
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, _ string, _ int) {
 		http.Error(w, `{"message":"A JSON web token could not be decoded"}`, http.StatusUnauthorized)
 	})
-	err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second)
+	err := bootsOn(t, workflowConfig(t, workflowNATS(t)), tokens, calls, 60*time.Second, quietLogger())
 	if err == nil || !strings.Contains(err.Error(), "prove the implement App's key by reading its installations: ") || !strings.Contains(err.Error(), "(401)") {
 		t.Fatalf("boot = %v, want the refusal naming the implement App's key proof and GitHub's 401", err)
 	}
@@ -288,14 +289,14 @@ func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
 	}
 }
 
-// Both Apps' key proofs share one retry budget, so a boot waits at most appMintRetry before it
+// Both Apps' key proofs share one retry budget, so a boot waits at most the start's retry before it
 // refuses, however the failures fall between the two reads. Here the implement App's discovery
 // fails twice and then answers, and the review App's never does: the budget's three attempts are
 // spent before the review App's installations are asked for more than once. With a budget per App
 // the boot would wait both out, twice as long, which is what outlasted Stage 3's wait for /healthz.
 func TestABootGivesBothAppsKeyProofsOneRetryBudget(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
-	quickAppMints(t)
+	t.Parallel()
+	calls := quickAppMints()
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {
 		if app == "1" && n > 2 {
 			installed(w)
@@ -303,7 +304,7 @@ func TestABootGivesBothAppsKeyProofsOneRetryBudget(t *testing.T) {
 		}
 		http.Error(w, "{}", http.StatusBadGateway)
 	})
-	err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second)
+	err := bootsOn(t, workflowConfig(t, workflowNATS(t)), tokens, calls, 60*time.Second, quietLogger())
 	if err == nil || !strings.Contains(err.Error(), "retry budget (3 attempts)") || !strings.Contains(err.Error(), "review App") {
 		t.Fatalf("boot = %v, want the refusal after the one budget's three attempts, naming the review App's key proof", err)
 	}
@@ -380,15 +381,15 @@ func linesBeforeServing(logged, msg string) []string {
 // check a-go, item 8): proveAppKeys asking the token source for each role's token on acme. That
 // mint is refused and the boot stops.
 func TestTheBootProvesEachAppKeyWithItsInstallations(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
+	t.Parallel()
 	t.Run("each App's key is proved and nothing is minted", func(t *testing.T) {
-		quickAppMints(t)
+		calls := quickAppMints()
 		manager, standIn := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
 		var logged syncBuffer
 		tokens := &refusingMints{Manager: manager, log: &logged}
 		cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
 		seedLiveTreeOn(t, cfg, "acme/widgets")
-		if err := bootsOrExitsLogging(t, cfg, tokens, 60*time.Second, slog.New(slog.NewJSONHandler(&logged, nil))); err != nil {
+		if err := bootsOn(t, cfg, tokens, calls, 60*time.Second, slog.New(slog.NewJSONHandler(&logged, nil))); err != nil {
 			t.Fatalf("boot = %v, want the daemon up: the boot mints no token, so a source that refuses every mint stops nothing", err)
 		}
 		if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 1, "2": 1}) {
@@ -406,7 +407,7 @@ func TestTheBootProvesEachAppKeyWithItsInstallations(t *testing.T) {
 	})
 
 	t.Run("a refused key stops the boot, naming the App", func(t *testing.T) {
-		quickAppMints(t)
+		calls := quickAppMints()
 		manager, standIn := appTokens(t, func(w http.ResponseWriter, _ *http.Request, app string, _ int) {
 			if app == "2" {
 				http.Error(w, `{"message":"A JSON web token could not be decoded"}`, http.StatusUnauthorized)
@@ -414,7 +415,7 @@ func TestTheBootProvesEachAppKeyWithItsInstallations(t *testing.T) {
 			}
 			installed(w)
 		})
-		err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), &refusingMints{Manager: manager}, 60*time.Second)
+		err := bootsOn(t, workflowConfig(t, workflowNATS(t)), &refusingMints{Manager: manager}, calls, 60*time.Second, quietLogger())
 		if err == nil || !strings.Contains(err.Error(), "prove the review App's key by reading its installations: ") || !strings.Contains(err.Error(), "(401)") {
 			t.Fatalf("boot = %v, want the refusal naming the review App's key proof and GitHub's 401", err)
 		}
@@ -424,7 +425,7 @@ func TestTheBootProvesEachAppKeyWithItsInstallations(t *testing.T) {
 	})
 
 	t.Run("an App with no installation boots, with one WARN line naming it", func(t *testing.T) {
-		quickAppMints(t)
+		calls := quickAppMints()
 		manager, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, app string, _ int) {
 			if app == "1" {
 				fmt.Fprint(w, `[]`)
@@ -433,7 +434,7 @@ func TestTheBootProvesEachAppKeyWithItsInstallations(t *testing.T) {
 			installed(w)
 		})
 		var logged syncBuffer
-		if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), &refusingMints{Manager: manager}, 60*time.Second, slog.New(slog.NewJSONHandler(&logged, nil))); err != nil {
+		if err := bootsOn(t, workflowConfig(t, workflowNATS(t)), &refusingMints{Manager: manager}, calls, 60*time.Second, slog.New(slog.NewJSONHandler(&logged, nil))); err != nil {
 			t.Fatalf("boot = %v, want the daemon up: an App installed on no account boots", err)
 		}
 		if warned := warnLinesNaming(logged.String(), "a GitHub App is installed on no account"); len(warned) != 1 || !strings.Contains(warned[0], `"app":"implement"`) {
@@ -442,56 +443,8 @@ func TestTheBootProvesEachAppKeyWithItsInstallations(t *testing.T) {
 	})
 }
 
-// rateLimitWaitLine is the line a start logs for each wait for GitHub's rate limit on an App call
-// (bootprobe.Run's wait outcome).
-const rateLimitWaitLine = "boot probe waits out GitHub's rate limit"
-
 // discoveredOnAcme answers every installation discovery with the App's one installation, on acme.
 func discoveredOnAcme(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) }
-
-// spentUntil is an answer for appTokensWith or commandTokens: each request refused names is
-// answered with GitHub's 403 for a spent rate limit (spentLimit) until the limit's reset, ahead of
-// the first such request, which it stores in reset; every request after the reset, and every
-// other request, is left to the stand-in.
-func spentUntil(ahead time.Duration, reset *atomic.Int64, refused func(r *http.Request) bool) func(w http.ResponseWriter, r *http.Request) bool {
-	return func(w http.ResponseWriter, r *http.Request) bool {
-		if !refused(r) {
-			return false
-		}
-		reset.CompareAndSwap(0, time.Now().Add(ahead).Unix())
-		if !time.Now().Before(time.Unix(reset.Load(), 0)) {
-			return false
-		}
-		spentLimit(w, reset.Load())
-		return true
-	}
-}
-
-// keyProofRead is whether r is the boot's proof of an App's key: its read of the App's
-// installations under the App's JWT (proveAppKeys).
-func keyProofRead(r *http.Request) bool { return r.URL.Path == "/app/installations" }
-
-// oneRateLimitWait is the one rate-limit wait line of the daemon's JSON log logs, and fails the
-// test unless there is exactly one, for probe.
-func oneRateLimitWait(t *testing.T, logs, probe string) map[string]any {
-	t.Helper()
-	waits := loggedLines(t, logs, rateLimitWaitLine)
-	if len(waits) != 1 || waits[0]["probe"] != probe {
-		t.Fatalf("rate-limit wait lines = %v, want one, for the %s", waits, probe)
-	}
-	return waits[0]
-}
-
-// loggedDuration is the duration a JSON log line holds under key.
-func loggedDuration(t *testing.T, line map[string]any, key string) time.Duration {
-	t.Helper()
-	text, _ := line[key].(string)
-	duration, err := time.ParseDuration(text)
-	if err != nil {
-		t.Fatalf("the line's %s = %v, want a duration: %v", key, line[key], err)
-	}
-	return duration
-}
 
 // commandTokens is a real App token manager in token mode whose GitHub is a stand-in, the implement
 // App id 1 and the review App id 2. Each App's token_command releases its installation on acme with
@@ -543,8 +496,8 @@ func commandTokensWith(t *testing.T, answer func(w http.ResponseWriter, r *http.
 // one caller before the daemon serves a launch), first writes the file begun, so a token_command
 // can hold each release asked for once the key proof has begun and none the App logins read asked
 // for, whatever the number of runs the logins read made: an attempt of the logins read that ends
-// after it took a role's release, as one can on a loaded box past appMintAttempt, runs the command
-// again on its next attempt for every role, the roles it already read among them
+// after it took a role's release, as one can on a loaded box past its attempt bound, runs the
+// command again on its next attempt for every role, the roles it already read among them
 // (appLoginsAtBoot).
 type keyProofHolds struct {
 	*appauth.Manager
@@ -560,12 +513,12 @@ func (k *keyProofHolds) InstalledOwners(ctx context.Context, role appauth.AppRol
 
 // A token_command still running when an attempt of the boot's key proof ends holds the boot
 // without ending it, however many attempt bounds it outlasts: a grant may wait on a person's
-// approval. Each such attempt is pending and spends no attempt of appMintRetry
+// approval. Each such attempt is pending and spends no attempt of the start's retry
 // (appauth.ErrCommandPending, appAttempt), the next attempt joins the command's run still going
 // (appauth.Manager.InstalledOwners, whose token-mode read is runTokenCommand's), and once the
 // command prints its release the key proof passes and the boot serves. Here each App's
 // token_command holds each release of every installation the key proof asks for (keyProofHolds)
-// for twice the bounds of all appMintRetry's attempts and writes the hold down, so each App's
+// for twice the bounds of all the retry's attempts and writes the hold down, so each App's
 // command holds one run: the key proof's attempts join it. It holds no release the logins read
 // asked for; an attempt of the logins read may still outlast its bound on a loaded box, pending
 // or transient, which is the boot doing its job, so no line of the logins read is counted.
@@ -573,9 +526,9 @@ func (k *keyProofHolds) InstalledOwners(ctx context.Context, role appauth.AppRol
 // before INFRA-4401's review 5996655281, each attempt the bound ends is transient, and the boot
 // refuses once the three are spent, naming the key proof's context deadline exceeded.
 func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
-	quickAppMints(t)
-	hold := 2 * time.Duration(appMintRetry.Attempts) * appMintAttempt
+	t.Parallel()
+	calls := quickAppMints()
+	hold := 2 * time.Duration(calls.retry.Attempts) * calls.attempt
 	dir := t.TempDir()
 	begun := filepath.Join(dir, "key-proof-begun")
 	held := func(role appauth.AppRole) string { return filepath.Join(dir, string(role)+".held") }
@@ -585,7 +538,7 @@ func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *test
 	})
 	logs := &syncBuffer{}
 	started := time.Now()
-	if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), &keyProofHolds{Manager: manager, begun: begun}, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
+	if err := bootsOn(t, workflowConfig(t, workflowNATS(t)), &keyProofHolds{Manager: manager, begun: begun}, calls, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
 		t.Fatalf("boot = %v, want it to wait for the token_command past every attempt of the key proof and serve", err)
 	}
 	if took := time.Since(started); took < hold {
@@ -604,8 +557,8 @@ func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *test
 		return slices.DeleteFunc(lines, func(line map[string]any) bool { return line["probe"] != probe })
 	}
 	proof := byProbe(loggedMessages(t, logs.String(), "boot probe's work is still running"), "GitHub App key proof")
-	if len(proof) <= appMintRetry.Attempts {
-		t.Fatalf("the key proof was pending %d times, want more than appMintRetry's %d attempts", len(proof), appMintRetry.Attempts)
+	if len(proof) <= calls.retry.Attempts {
+		t.Fatalf("the key proof was pending %d times, want more than the retry's %d attempts", len(proof), calls.retry.Attempts)
 	}
 	for _, line := range proof {
 		if detail, _ := line["detail"].(string); !strings.Contains(detail, `.token_command for every installation is still running after context deadline exceeded (a grant may wait on a person's approval)`) {
@@ -626,7 +579,8 @@ func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *test
 // the logins read was answered with. Before, the next attempt read both Apps again, each running
 // its command a second time for the logins read.
 func TestABootRunsEachAppsTokenCommandOnceForTheLoginsReadAcrossItsAttempts(t *testing.T) {
-	quickAppMints(t)
+	t.Parallel()
+	calls := quickAppMints()
 	dir := t.TempDir()
 	runs := func(role appauth.AppRole) string { return filepath.Join(dir, string(role)+".runs") }
 	var refused atomic.Bool
@@ -640,7 +594,7 @@ func TestABootRunsEachAppsTokenCommandOnceForTheLoginsReadAcrossItsAttempts(t *t
 	}, func(role appauth.AppRole) string {
 		return fmt.Sprintf(`[ -n "${%s}" ] || echo run >>%q; `, appauth.TokenCommandOwner, runs(role))
 	})
-	if err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second); err != nil {
+	if err := bootsOn(t, workflowConfig(t, workflowNATS(t)), tokens, calls, 60*time.Second, quietLogger()); err != nil {
 		t.Fatalf("boot = %v, want it to read the review App's login again after GitHub's 502 and serve", err)
 	}
 	if !refused.Load() {
@@ -665,7 +619,8 @@ func TestABootRunsEachAppsTokenCommandOnceForTheLoginsReadAcrossItsAttempts(t *t
 // again under the release it kept (appauth's loginRelease), which is the boot doing its job, so
 // the row reads the 401 in the waited-out attempts' lines, not the number of reads GitHub saw.
 func TestABootStopsAtOnceWhenGitHubRefusesAnAppsTokenOnTheLoginsRead(t *testing.T) {
-	quickAppMints(t)
+	t.Parallel()
+	calls := quickAppMints()
 	dir := t.TempDir()
 	runs := func(role appauth.AppRole) string { return filepath.Join(dir, string(role)+".runs") }
 	tokens := commandTokensWith(t, func(w http.ResponseWriter, r *http.Request) bool {
@@ -679,7 +634,7 @@ func TestABootStopsAtOnceWhenGitHubRefusesAnAppsTokenOnTheLoginsRead(t *testing.
 		return fmt.Sprintf(`[ -n "${%s}" ] || echo run >>%q; `, appauth.TokenCommandOwner, runs(role))
 	})
 	logs := &syncBuffer{}
-	err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil)))
+	err := bootsOn(t, workflowConfig(t, workflowNATS(t)), tokens, calls, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil)))
 	if err == nil || !strings.Contains(err.Error(), "read the review App's login") || !strings.Contains(err.Error(), "(401)") {
 		t.Fatalf("boot = %v, want it refused, naming the review App's login read and GitHub's 401", err)
 	}
@@ -705,10 +660,11 @@ func TestABootStopsAtOnceWhenGitHubRefusesAnAppsTokenOnTheLoginsRead(t *testing.
 // read, and every later one, 401. The boot stops naming the 401, waits out no attempt that carries
 // it, and runs each App's token_command once: the kept release served the second read. Found by
 // Tester4958-2: the row above refuses a fresh release, and a refusal made transient only for a
-// kept release, which production would wait out across appMintRetry's attempts on the same
+// kept release, which production would wait out across its retry's attempts on the same
 // refused token, passed it.
 func TestABootStopsAtOnceWhenGitHubRefusesTheTokenTheLoginsReadKept(t *testing.T) {
-	quickAppMints(t)
+	t.Parallel()
+	calls := quickAppMints()
 	dir := t.TempDir()
 	runs := func(role appauth.AppRole) string { return filepath.Join(dir, string(role)+".runs") }
 	var reads atomic.Int32
@@ -727,7 +683,7 @@ func TestABootStopsAtOnceWhenGitHubRefusesTheTokenTheLoginsReadKept(t *testing.T
 		return fmt.Sprintf(`[ -n "${%s}" ] || echo run >>%q; `, appauth.TokenCommandOwner, runs(role))
 	})
 	logs := &syncBuffer{}
-	err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil)))
+	err := bootsOn(t, workflowConfig(t, workflowNATS(t)), tokens, calls, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil)))
 	if n := reads.Load(); n < 2 {
 		t.Fatalf("GitHub was asked the review App's login %d times: the read under the kept release never came (boot = %v)", n, err)
 	}
@@ -747,359 +703,5 @@ func TestABootStopsAtOnceWhenGitHubRefusesTheTokenTheLoginsReadKept(t *testing.T
 		if n := strings.Count(string(ran), "run\n"); n != 1 {
 			t.Errorf("the %s App's token_command ran %d times, want once: the read after the 502 uses the release it kept", role, n)
 		}
-	}
-}
-
-// A start whose proof of an App's key GitHub refuses for a spent rate limit waits until the reset
-// GitHub names and serves after it (c-boot-mint-rate-limit case 1, on the key proof), saying so in
-// one line that names the call, the time it waits until and the total waited. The refusals outlast
-// the three quick attempts, which the wait does not spend: before, the start exited once they were
-// spent, before the reset.
-func TestABootWaitsOutARateLimitOnTheAppKeyProofAndServesAfterTheReset(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
-	quickAppMints(t)
-	var reset atomic.Int64
-	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(3*time.Second, &reset, keyProofRead))
-	logs := &syncBuffer{}
-	if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
-		t.Fatalf("boot = %v, want it to wait out GitHub's rate limit on the key proof and serve after the reset", err)
-	}
-	resetAt := time.Unix(reset.Load(), 0)
-	if served := time.Now(); served.Before(resetAt) {
-		t.Fatalf("the daemon served at %s, before GitHub's reset at %s", served, resetAt)
-	}
-	wait := oneRateLimitWait(t, logs.String(), "GitHub App key proof")
-	if want := resetAt.UTC().Format(time.RFC3339); wait["until"] != want {
-		t.Errorf("the wait line's until = %v, want GitHub's reset, %s", wait["until"], want)
-	}
-	if waited := loggedDuration(t, wait, "waited"); waited <= 0 || waited > 3*time.Second+100*time.Millisecond {
-		t.Errorf("the wait line's waited = %s, want the time to the reset, at most 3s", waited)
-	}
-}
-
-// GitHub's 403 naming its rate limit in its message alone, with calls left in its headers, is a
-// rate limit to the start's key proof too (c-boot-mint-rate-limit case 2, on the key proof). It
-// names no time, so the start waits a minute, says so, and serves after it. Before, the start read
-// it as GitHub's answer about the App and exited at the first attempt.
-func TestABootWaitsOutARateLimitNamedOnlyByItsMessageOnTheAppKeyProof(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
-	quickAppMints(t)
-	var refusals atomic.Int64
-	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
-		if !keyProofRead(r) || refusals.Add(1) > 1 {
-			return false
-		}
-		w.Header().Set("X-RateLimit-Limit", "15000")
-		w.Header().Set("X-RateLimit-Remaining", "14671")
-		w.Header().Set("X-RateLimit-Resource", "core")
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = io.WriteString(w, `{"message":"API rate limit exceeded for installation ID 7.","status":"403"}`)
-		return true
-	})
-	logs := &syncBuffer{}
-	started := time.Now()
-	if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 90*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
-		t.Fatalf("boot = %v, want it to wait out the rate limit GitHub's message names and serve", err)
-	}
-	if took := time.Since(started); took < time.Minute {
-		t.Errorf("the daemon served %s after it started, want after the minute's wait", took)
-	}
-	// The line gives the wait left when it is written, to a tenth of a second, so a slow runner
-	// can show a little under the minute decided; never more.
-	if wait := loggedDuration(t, oneRateLimitWait(t, logs.String(), "GitHub App key proof"), "wait"); wait <= time.Minute-time.Second || wait > time.Minute {
-		t.Errorf("the wait line's wait = %s, want 1m0s, the wait for a refusal that names no time", wait)
-	}
-}
-
-// A start whose read of the Apps' logins GitHub refuses for a spent rate limit waits until the reset
-// and serves after it (c-boot-mint-rate-limit case 3). Before, the start exited once the three quick
-// attempts were spent, before the reset.
-func TestABootWaitsOutARateLimitOnTheAppLoginsRead(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
-	quickAppMints(t)
-	var reset atomic.Int64
-	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(3*time.Second, &reset, func(r *http.Request) bool { return r.URL.Path == "/app" }))
-	logs := &syncBuffer{}
-	if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
-		t.Fatalf("boot = %v, want it to wait out GitHub's rate limit on the logins read and serve after the reset", err)
-	}
-	resetAt := time.Unix(reset.Load(), 0)
-	if served := time.Now(); served.Before(resetAt) {
-		t.Fatalf("the daemon served at %s, before GitHub's reset at %s", served, resetAt)
-	}
-	if wait := oneRateLimitWait(t, logs.String(), "GitHub App logins read"); wait["until"] != resetAt.UTC().Format(time.RFC3339) {
-		t.Errorf("the wait line's until = %v, want GitHub's reset, %s", wait["until"], resetAt.UTC().Format(time.RFC3339))
-	}
-}
-
-// A start whose tokens come from a token_command waits out GitHub's rate limit on the App read that
-// checks a released token (appauth's tokenIdentity: the GraphQL viewer), which the logins read makes
-// under the token the command releases for every installation, and serves after the reset
-// (c-boot-mint-rate-limit case 4, on the logins read). The limit refuses the implement App's token
-// so released. Before, the start exited once the three quick attempts were spent, before the reset.
-func TestABootWaitsOutARateLimitOnATokenCommandsAppRead(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
-	quickAppMints(t)
-	var reset atomic.Int64
-	tokens := commandTokens(t, spentUntil(3*time.Second, &reset, func(r *http.Request) bool {
-		return r.URL.Path == "/graphql" && r.Header.Get("Authorization") == "token ghs_implement_any_write"
-	}))
-	logs := &syncBuffer{}
-	if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
-		t.Fatalf("boot = %v, want it to wait out GitHub's rate limit on the released token's App read and serve after the reset", err)
-	}
-	resetAt := time.Unix(reset.Load(), 0)
-	if served := time.Now(); served.Before(resetAt) {
-		t.Fatalf("the daemon served at %s, before GitHub's reset at %s", served, resetAt)
-	}
-	if wait := oneRateLimitWait(t, logs.String(), "GitHub App logins read"); wait["until"] != resetAt.UTC().Format(time.RFC3339) {
-		t.Errorf("the wait line's until = %v, want GitHub's reset, %s", wait["until"], resetAt.UTC().Format(time.RFC3339))
-	}
-}
-
-// bootStoppedWhen runs the daemon on cfg with tokens, logging to logs as JSON, until ready reads
-// what the test waits for in the log, then stops it, and says how long run took to return after the
-// stop. The test fails if ready does not hold within within, if run returns before the stop, or if
-// it returns an error after it.
-func bootStoppedWhen(t *testing.T, cfg config.Config, tokens appauth.Source, logs *syncBuffer, within time.Duration, ready func(logs string) bool) time.Duration {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		done <- run(ctx, cfg, slog.New(slog.NewJSONHandler(logs, nil)), overrides{
-			listen:         heldListen,
-			runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
-			clock:          stillClock{},
-			workflowTokens: tokens,
-			githubAPI:      repositoriesGitHub(t),
-		})
-	}()
-	var ended error
-	returned := false
-	if !testwait.Holds(within, testwait.Poll, func() bool {
-		select {
-		case ended = <-done:
-			returned = true
-			return true
-		default:
-		}
-		return ready(logs.String())
-	}) {
-		t.Fatalf("the daemon's log did not hold what the test waits for within %s; it holds:\n%s", within, logs.String())
-	}
-	if returned {
-		t.Fatalf("run returned %v before the test stopped it; the log holds:\n%s", ended, logs.String())
-	}
-	cancel()
-	stopped := time.Now()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("run stopped by the test = %v, want a clean stop", err)
-		}
-		return time.Since(stopped)
-	case <-time.After(30 * time.Second):
-		t.Fatal("run did not return within 30s of its stop")
-	}
-	return 0
-}
-
-// A Retry-After GitHub sends on the start's key proof is waited as GitHub asks, at most the maximum
-// (c-boot-mint-rate-limit case 5, first half, on the key proof; the maximum shortened to 2 s): a 429
-// asking for a second waits a second, one asking for 30 s waits the 2 s, and the start serves after
-// each.
-//
-// The wait line's checks follow from the start's own decisions, whatever the machine's load: the
-// start's count of its waits (waited) is the wait it decided; the wait left can be any amount up to
-// that wait, nothing or less once the line comes late; and the until (whole seconds) is at most the
-// wait past the line and less than a second short of the wait past the refused read, which the
-// start answered after. One bound still follows the clock: the second read at most 3 s past the
-// wait, the bound on a wait that runs past its until. An earlier version held the wait left to
-// equal the wait decided; with a 1 s delay injected before the line, it failed.
-func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
-	quickAppMints(t)
-	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Max = 2 * time.Second })
-	for _, tc := range []struct {
-		name       string
-		retryAfter string
-		want       time.Duration
-	}{
-		{name: "a Retry-After of a second", retryAfter: "1", want: time.Second},
-		{name: "a Retry-After above the maximum", retryAfter: "30", want: 2 * time.Second},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var mu sync.Mutex
-			var reads []time.Time
-			tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
-				if !keyProofRead(r) {
-					return false
-				}
-				mu.Lock()
-				reads = append(reads, time.Now())
-				first := len(reads) == 1
-				mu.Unlock()
-				if !first {
-					return false
-				}
-				w.Header().Set("Retry-After", tc.retryAfter)
-				w.WriteHeader(http.StatusTooManyRequests)
-				_, _ = io.WriteString(w, `{"message":"You have exceeded a secondary rate limit."}`)
-				return true
-			})
-			logs := &syncBuffer{}
-			if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
-				t.Fatalf("boot = %v, want it to wait out GitHub's Retry-After and serve", err)
-			}
-			wait := oneRateLimitWait(t, logs.String(), "GitHub App key proof")
-			if waited := loggedDuration(t, wait, "waited"); waited != tc.want {
-				t.Errorf("the start's waits so far = %s, want %s: the one wait it decided", waited, tc.want)
-			}
-			if left := loggedDuration(t, wait, "wait"); left > tc.want {
-				t.Errorf("the wait left = %s, want at most the %s wait decided", left, tc.want)
-			}
-			until, err := time.Parse(time.RFC3339, fmt.Sprint(wait["until"]))
-			if err != nil {
-				t.Fatalf("the wait line's until = %v: %v", wait["until"], err)
-			}
-			mu.Lock()
-			defer mu.Unlock()
-			if len(reads) < 2 || reads[1].Sub(reads[0]) < tc.want || reads[1].Sub(reads[0]) > tc.want+3*time.Second {
-				t.Fatalf("GitHub was read for the App's installations at %v, want the refused read and one more %s after it", reads, tc.want)
-			}
-			if line := loggedAt(t, wait); until.After(line.Add(tc.want)) || !until.After(reads[0].Add(tc.want-time.Second)) {
-				t.Errorf("the wait line at %s says until %s, want at most %s past the line and less than a second short of %s past the refused read at %s",
-					line, until, tc.want, tc.want, reads[0])
-			}
-		})
-	}
-}
-
-// Refusals of one call of the start that name no time wait a minute, then two (c-boot-mint-rate-limit
-// case 5, second half, at the production minute, on the key proof): GitHub answers every read of the
-// App's installations with a 429 and no rate-limit header. The start's count of its waits (waited)
-// is a minute at the first wait line and three at the second, so the second wait is two minutes; the
-// second wait begins only once the first has ended, and ends two minutes after it begins, so its
-// until is two minutes or more past the first's and at most two minutes past its own line. A stop
-// during that wait ends the start at once.
-//
-// The waited, wait-left and until checks follow from the start's own decisions, whatever the
-// machine's load: a line is written some time after its wait was decided, so its wait left can be
-// any amount under the wait decided, and an until (whole seconds) any amount under two minutes past
-// its line. Two bounds still follow the clock: the 90 s the test gives the two lines, and the 1 s
-// the start may take to return after its stop. The 90 s is the only bound on how long the first wait
-// runs past its until. An earlier version also held the second line to between 60 and 70 s after
-// the first, and each wait left to within 1 s of the wait decided; with a 1 s delay injected before
-// each line, both failed.
-func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
-	quickAppMints(t)
-	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
-		if !keyProofRead(r) {
-			return false
-		}
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = io.WriteString(w, `{"message":"Too many requests."}`)
-		return true
-	})
-	logs := &syncBuffer{}
-	took := bootStoppedWhen(t, workflowConfig(t, workflowNATS(t)), tokens, logs, 90*time.Second, func(logs string) bool {
-		return strings.Count(logs, rateLimitWaitLine) >= 2
-	})
-	if took > time.Second {
-		t.Errorf("run returned %s after its stop, want within 1s", took)
-	}
-	waits := loggedLines(t, logs.String(), rateLimitWaitLine)
-	if len(waits) != 2 {
-		t.Fatalf("rate-limit wait lines = %v, want two", waits)
-	}
-	if first, second := loggedDuration(t, waits[0], "waited"), loggedDuration(t, waits[1], "waited"); first != time.Minute || second != 3*time.Minute {
-		t.Errorf("the start's waits so far = %s and then %s, want 1m0s and then 3m0s: a wait of a minute, then one of two", first, second)
-	}
-	if first, second := loggedDuration(t, waits[0], "wait"), loggedDuration(t, waits[1], "wait"); first <= 0 || first > time.Minute || second <= 0 || second > 2*time.Minute {
-		t.Errorf("the waits left = %s and %s, want each above nothing and at most its wait, 1m0s and then 2m0s", first, second)
-	}
-	untils := make([]time.Time, len(waits))
-	for i, wait := range waits {
-		until, err := time.Parse(time.RFC3339, fmt.Sprint(wait["until"]))
-		if err != nil {
-			t.Fatalf("wait line %d's until = %v: %v", i+1, wait["until"], err)
-		}
-		untils[i] = until
-	}
-	if first := loggedAt(t, waits[0]); untils[0].After(first.Add(time.Minute)) {
-		t.Errorf("the first wait's until = %s, want at most a minute after its line, %s", untils[0], first)
-	}
-	if second := loggedAt(t, waits[1]); second.Before(untils[0]) || untils[1].Before(untils[0].Add(2*time.Minute)) || untils[1].After(second.Add(2*time.Minute)) {
-		t.Errorf("the second wait's line at %s and until %s, want both past the first wait's until %s, and the until two minutes or more past it and at most two minutes past the line",
-			second, untils[1], untils[0])
-	}
-}
-
-// All rate-limit waits of one start end at the bound after the first of them (c-boot-mint-rate-limit
-// case 6, on the key proof, the bound shortened to 3 s): GitHub refuses every read of the App's
-// installations with a reset a minute ahead, the one wait ends at the bound, and the refusal after
-// it ends the start, naming the call, GitHub's last answer with its headers and message, the 3 s
-// waited and the App whose key the read proves.
-func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
-	quickAppMints(t)
-	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Bound = 3 * time.Second })
-	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
-		if !keyProofRead(r) {
-			return false
-		}
-		spentLimit(w, time.Now().Add(time.Minute).Unix())
-		return true
-	})
-	logs := &syncBuffer{}
-	// Two minutes, so that a start that waited for GitHub's reset in place of the bound still ends
-	// here and fails on the ceiling below.
-	err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 2*time.Minute, slog.New(slog.NewJSONHandler(logs, nil)))
-	ended := time.Now()
-	waits := loggedLines(t, logs.String(), rateLimitWaitLine)
-	if len(waits) != 1 {
-		t.Fatalf("rate-limit wait lines = %v, want the one that ended at the bound (boot = %v)", waits, err)
-	}
-	// The start is timed from its wait's own line, so neither the test's setup nor the boot's steps
-	// before the key proof count: the first test of a process starts the package's shared NATS
-	// container (testnats.URL), and the first boot of a process migrates the run's database
-	// (testDSN), and on a loaded machine either took longer than the whole ceiling. The ceiling
-	// still holds the bound: a start that waited for GitHub's reset, a minute after its refusal,
-	// would end past it.
-	if after, named := ended.Sub(loggedAt(t, waits[0])), loggedDuration(t, waits[0], "wait"); after < named-100*time.Millisecond || after > 30*time.Second {
-		t.Errorf("the start ended %s after its wait's line, want no sooner than the %s wait the line names and within 30s", after, named)
-	}
-	for _, want := range []string{
-		"the GitHub App key proof waited 3s for GitHub's rate limit, the most a start waits, and GitHub still refuses it: ",
-		"GitHub answered GET /app/installations with 403",
-		`X-RateLimit-Remaining "0"`,
-		"API rate limit exceeded for installation ID 7.",
-		"prove the implement App's key by reading its installations: ",
-	} {
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Fatalf("boot = %v, want the start ended naming %q", err, want)
-		}
-	}
-}
-
-// A stop that arrives while the start waits out GitHub's rate limit ends the start at once and
-// cleanly (c-boot-mint-rate-limit case 9, on the key proof): the App's installations are refused
-// until a reset a minute ahead, and run returns nil within a second of the stop.
-func TestABootStoppedWhileItWaitsOutARateLimitEndsAtOnce(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
-	quickAppMints(t)
-	var reset atomic.Int64
-	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(time.Minute, &reset, keyProofRead))
-	logs := &syncBuffer{}
-	took := bootStoppedWhen(t, workflowConfig(t, workflowNATS(t)), tokens, logs, 30*time.Second, func(logs string) bool {
-		return strings.Contains(logs, rateLimitWaitLine)
-	})
-	if took > time.Second {
-		t.Errorf("run returned %s after its stop, want within 1s", took)
-	}
-	if stopped := loggedMessages(t, logs.String(), "legion daemon stopped before it proved its GitHub Apps' keys"); len(stopped) != 1 {
-		t.Errorf("the stop's lines = %v, want one", stopped)
 	}
 }

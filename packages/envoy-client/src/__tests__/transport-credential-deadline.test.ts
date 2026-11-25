@@ -7,7 +7,7 @@
 // credential fails fast where its broker cannot answer, so a listener that asks for no credential
 // keeps its calls (`transport.ts`, `attemptOnce`).
 
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { brokerCredential } from "../broker-credential";
 import { createEnvoyClient, EnvoySendUnconfirmedError } from "../transport";
@@ -253,10 +253,11 @@ test.each([
 }, 40_000);
 
 test("inside the renewal window, a broker that hangs leaves the call its live token and the time to send it", async () => {
-  // The token in hand is inside its renewal window, so the call waits for the renewal the
-  // credential starts, and the broker never answers it. At the end of the credential's share of
-  // the attempt the credential answers with the live token (`BrokerTokenClient.token`), and the
-  // request goes out with it in the time left, rather than on a deadline already spent.
+  // The token in hand is past its renewal, its half life (`renewalAt`), so the call waits for the
+  // renewal the credential starts, and the broker never answers it. At the end of the
+  // credential's share of the attempt the credential answers with the live token
+  // (`BrokerTokenClient.token`), and the request goes out with it in the time left, rather than
+  // on a deadline already spent.
   let trades = 0;
   const broker = Bun.serve({
     port: 0,
@@ -264,7 +265,8 @@ test("inside the renewal window, a broker that hangs leaves the call its live to
     fetch: async () => {
       trades += 1;
       if (trades > 1) return await new Promise<Response>(() => {});
-      // Good for 200 s: inside the 5-minute renewal window from the first.
+      // Good for 200 s, so renewed at 100 s: the row moves the clock to 150 s before the second
+      // call, while the token is still live.
       return Response.json({
         access_token: fixtureSecret("live"),
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
@@ -298,7 +300,12 @@ test("inside the renewal window, a broker that hangs leaves the call its live to
   await client.getRole("implementer");
   const live = fetched[0];
   expect(live).toStartWith("DPoP ");
-  await client.getRole("implementer");
+  setSystemTime(new Date(Date.now() + 150_000));
+  try {
+    await client.getRole("implementer");
+  } finally {
+    setSystemTime();
+  }
   expect(trades).toBe(2);
   expect(fetched).toEqual([live, live]);
 });

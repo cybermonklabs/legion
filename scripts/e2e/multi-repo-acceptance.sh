@@ -909,13 +909,10 @@ negative_no_repo() {
   project=$(issue_project "$key")
   daemon_actor="legion-daemon:$project"
   local none_note="Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project $project, in Dispatch, and move it to todo again."
+  # lib/multi-repo-none-note.jq: the daemon's latest repository note is the none-note, and a message
+  # its author deleted is no note.
   local latest_is_none
-  latest_is_none=$(jq --arg actor "$daemon_actor" --arg none "$none_note" '
-    [.[] | select(.type=="message.created" and .actor.kind=="session" and .actor.id==$actor
-      and ((.payload.body | startswith("Legion did not admit this issue:")) or (.payload.body | startswith("Legion keeps "))))]
-    | sort_by(.seq) | last
-    | if . == null then false else (.payload.body | startswith($none + "\n\n<!-- legion-outbox:")) end
-  ' "$events_file")
+  latest_is_none=$(jq --arg actor "$daemon_actor" --arg none "$none_note" -f "$script_dir/lib/multi-repo-none-note.jq" "$events_file")
   [ "$latest_is_none" = "true" ] || ok=0
 
   summary "negative-no-repo-$key" "issues has($key): $has
@@ -992,10 +989,9 @@ negative_repo_edit() {
   # $dispatch_repo_now for the one it refused), never the operator's LEGION_E2E_REPO_X, which the
   # case-insensitive comparisons above tolerate differing from but a literal quote must not.
   note="Legion keeps $b_repo as this issue's repository; the change to $dispatch_repo_now in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for $dispatch_repo_now instead."
-  has_note=$(jq --arg actor "$daemon_actor" --arg note "$note" '
-    any(.[]; .type=="message.created" and .actor.kind=="session" and .actor.id==$actor
-      and (.payload.body | startswith($note + "\n\n<!-- legion-outbox:")))
-  ' "$events_file")
+  # lib/multi-repo-kept-note.jq: the daemon posted the note, and a message its author deleted is no
+  # note.
+  has_note=$(jq --arg actor "$daemon_actor" --arg note "$note" -f "$script_dir/lib/multi-repo-kept-note.jq" "$events_file")
   [ "$has_note" = "true" ] || ok=0
 
   summary "negative-repo-edit-$child" "baseline: repo=$b_repo last_seq=$b_last_seq

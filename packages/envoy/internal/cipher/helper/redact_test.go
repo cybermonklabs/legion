@@ -23,6 +23,7 @@ import (
 // route joined onto the address makes (the session here holds no enrollment id, and the join
 // cleans the doubled slash its empty segment leaves).
 func TestABrokerCallErrorNamesNoCredentialTheURLCarries(t *testing.T) {
+	t.Parallel()
 	s, err := newSession(1, 1, "runtime", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)

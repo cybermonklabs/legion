@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/envoy/redirects/redirectstest"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
@@ -32,7 +33,7 @@ func TestACacheAskThatGotNoAnswerNamesTheCacheByItsSchemeHostAndPath(t *testing.
 		if !strings.Contains(err.Error(), token) {
 			t.Fatalf("net/http's own error holds no %q, so the row cannot see a leak: %q", token, err)
 		}
-		request := FetchRequest{Repo: ghrepo.MustParse("acme/widgets"), CacheURL: cacheURL, CacheToken: "cache-token", Clock: WallClock{}}
+		request := FetchRequest{Repo: ghrepo.MustParse("acme/widgets"), CacheURL: cacheURL, CacheToken: "cache-token", Clock: clock.Real()}
 		_, err = unpackCache(context.Background(), initOnly{}, request, filepath.Join(t.TempDir(), "staging"))
 		if err == nil {
 			t.Fatal("unpackCache answered no error")

@@ -7,7 +7,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { askgateStore, MARKER_MAX_AGE_MS, pidNamespace, processStart } from "../askgate-marker";
 import { adviceMemory, resetAdviceMemory } from "../dispatch-execute";
@@ -22,6 +22,7 @@ import {
   recordOutcome,
   resultsEnd,
   saveSessionMemory,
+  writeLongOutput,
   writePicture,
 } from "../dispatch-session-state";
 
@@ -192,6 +193,38 @@ describe("per-session state", () => {
       "dispatch_ask",
     ]);
     expect(loadSessionMemory(dir, "s9").has("ask-9")).toBe(true);
+  });
+
+  // A ledger line and a long result are read after the call, when a post they hold may since have
+  // been edited or deleted, so each says when it was written: the line its `at`, the result its
+  // file's name. A later reader of either knows it holds an earlier read.
+  test("each ledger line carries the time of its call, and a long result's file is named by its time", () => {
+    const dir = sessionDirectory({ DISPATCH_STATE_DIR: root() }, "s10");
+    const before = Date.now();
+    appendResult(dir, { tool: "dispatch_read", details: {} });
+    recordOutcome(dir, "s10", new Set(), { tool: "dispatch_read", details: {} });
+    const path = writeLongOutput(dir, "The full result.");
+    const after = Date.now();
+
+    const written = readResultsSince(dir, 0, (problem) => {
+      throw new Error(problem);
+    }).entries.map((entry) => Date.parse(entry.at));
+    expect(written).toHaveLength(2);
+    for (const at of written) {
+      expect(at).toBeGreaterThanOrEqual(before);
+      expect(at).toBeLessThanOrEqual(after);
+    }
+
+    // `out/<ISO time, each ":" written "-">-<pid>.md`.
+    expect(dirname(path)).toBe(join(dir, "out"));
+    const name = /^(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(\d{2}\.\d{3}Z)-(\d+)\.md$/.exec(
+      basename(path)
+    );
+    const named = Date.parse(`${name?.[1]}:${name?.[2]}:${name?.[3]}`);
+    expect(named).toBeGreaterThanOrEqual(before);
+    expect(named).toBeLessThanOrEqual(after);
+    expect(name?.[4]).toBe(String(process.pid));
+    expect(readFileSync(path, "utf-8")).toBe("The full result.");
   });
 
   test("pruning runs at most once a day", () => {

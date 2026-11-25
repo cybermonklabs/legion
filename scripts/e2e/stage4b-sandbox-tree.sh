@@ -6346,10 +6346,10 @@ dispatch_get "issues/$report" | jq -e '(.labels | map(ascii_downcase) | index("l
   fail "$report, the report issue, carries the legion label"
 # The message is the controller's, names tree 1, which runs throughout, and the free slots, and
 # holds the skill's 2,000-character budget for the report, which is the report's own length rule
-# and not the Dispatch server's body cap.
+# and not the Dispatch server's body cap; a message its author deleted counts as not posted
+# (lib/stage4b-report-posted.jq).
 report_posted() {
-  dispatch_events "$report" | jq -e --arg s "$controller_session" --arg tree "$tree1" \
-    'any(.[]; .type == "message.created" and .actor.id == $s and (.payload.body | test("(^|[^0-9A-Za-z-])" + $tree + "($|[^0-9])")) and (.payload.body | test("slot"; "i")) and (.payload.body | length) <= 2000)' >/dev/null
+  dispatch_events "$report" | jq -e --arg s "$controller_session" --arg tree "$tree1" -f "$root/scripts/e2e/lib/stage4b-report-posted.jq" >/dev/null
 }
 until_true 300 "the controller's report message on $report" report_posted
 # It was posted on a turn a tick started while the controller was idle, the quiet day's wake. A

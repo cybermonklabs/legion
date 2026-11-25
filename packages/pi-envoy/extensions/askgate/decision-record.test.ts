@@ -1,6 +1,7 @@
 import { describe, expect, jest, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_PATTERN,
   IDEMPOTENCY_KEY_REUSED,
@@ -107,7 +108,7 @@ function harness(
   const deps: RecordDeps = {
     env: opts.env ?? { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
     now: () => NOW,
-    dispatchClient: (directory, signal) => {
+    dispatchClient: async (directory, signal) => {
       asked.push({ directory, signal });
       if (opts.unconfigured) return undefined;
       return { client: opts.client ?? fakeRecord().client };
@@ -719,6 +720,24 @@ describe("the AskGate decision record", () => {
         { id: "doc-committed", key: appendKey("t1") },
       ]);
       expect(recordsIn(dispatch.markdown()).map((record) => record.id)).toEqual(["t1"]);
+    }
+  });
+
+  // An append Dispatch made and gave no copy of its answer for is in the document: Dispatch
+  // answered for it, so the record is written, and no entry counts it as one the session could
+  // not confirm.
+  test("an append answered KEY_COMMITTED or ANSWER_NOT_KEPT is recorded as written", async () => {
+    for (const landed of [
+      new DispatchWriteLandedError(IDEMPOTENCY_KEY_COMMITTED, 409, "POST", "https://dispatch.test"),
+      new DispatchWriteLandedError(
+        IDEMPOTENCY_ANSWER_NOT_KEPT,
+        200,
+        "POST",
+        "https://dispatch.test"
+      ),
+    ]) {
+      const dispatch = fakeRecord({ docEdit: () => Promise.reject(landed) });
+      expect(await harness({ client: dispatch.client }).write(REFUSAL)).toBeUndefined();
     }
   });
 

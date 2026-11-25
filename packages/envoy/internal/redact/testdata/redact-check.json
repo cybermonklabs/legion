@@ -432,6 +432,30 @@
         "test": "print-daemon.githubPullRequest"
       },
       {
+        "holder": "github.com/sjawhar/legion/daemon/internal/daemon.graphQLPull",
+        "test": "print-daemon.graphQLPull"
+      },
+      {
+        "holder": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).queryChunk struct{Repository map[string]*daemon.graphQLPull \"json:\\\"repository\\\"\"}",
+        "test": "print-daemon.queryChunk.answer"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/daemon.chunkAnswer",
+        "test": "print-daemon.chunkAnswer"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/githubrest.graphQLStep",
+        "test": "print-githubrest.graphQLStep"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/githubrest.graphQLAnswered",
+        "test": "print-githubrest.graphQLAnswered"
+      },
+      {
+        "holder": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).GraphQL struct{Errors []githubrest.graphQLAnswered \"json:\\\"errors\\\"\"}",
+        "test": "print-githubrest.Client.GraphQL.answered"
+      },
+      {
         "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.RateLimitError",
         "test": "print-githubapp.RateLimitError"
       },
@@ -535,8 +559,18 @@
       {
         "file": "packages/envoy/internal/testnats/connlock.go",
         "function": "github.com/sjawhar/envoy/internal/testnats.connLock",
-        "operands": ["*github.com/nats-io/nats.go.Conn", "uintptr"],
-        "why": "a NATS test helper's read of nats.go's connection lock (Conn.mu), a sync.RWMutex a test takes by address to hold a publish: it prints nothing and reaches no answer"
+        "operands": [
+          "*github.com/nats-io/nats.go.Conn",
+          "github.com/nats-io/nats.go.StreamConfig",
+          "uintptr"
+        ],
+        "why": "a NATS test helper's read of nats.go's connection lock (Conn.mu), a sync.RWMutex a test takes by address to hold a publish: it prints nothing and reaches no answer. Its package also gives reflect a nats.go StreamConfig (settingsNotHeld), which holds no box and no external error"
+      },
+      {
+        "file": "packages/envoy/internal/testnats/streams.go",
+        "function": "github.com/sjawhar/envoy/internal/testnats.settingsNotHeld",
+        "operands": ["*github.com/nats-io/nats.go.Conn", "github.com/nats-io/nats.go.StreamConfig"],
+        "why": "a NATS test helper's comparison of the stream settings a test sent with those the server holds, read field by field from nats.go's StreamConfig, the test's own settings and nats-server's copy of them, which hold no box and no external error; its package's other reflect read is connLock's of nats.go's Conn"
       },
       {
         "file": "packages/envoy/internal/dispatch/store/storetest/xidwindow_softirq_linux.go",
@@ -567,6 +601,13 @@
         "function": "github.com/sjawhar/envoy/internal/dispatch/store/storetest.xidHoldThread",
         "operands": ["*int", "*uint64", "unsafe.Pointer"],
         "why": "the xid window rig's get_mempolicy and set_mempolicy system calls, given a local mode and node mask by address: they print nothing and reach no answer"
+      },
+      {
+        "file": "packages/envoy/internal/dispatch/store/storetest/large_arguments.go",
+        "function": "github.com/sjawhar/envoy/internal/dispatch/store/storetest.heldBytes",
+        "operands": [],
+        "exported_fields_only": true,
+        "why": "the large-arguments tracer's count of the bytes of text a statement's arguments hold, which it compares with what a released connection counts: it reads lengths and prints none, and reads exported fields alone, so no box's storage"
       },
       {
         "file": "packages/envoy/cmd/listener/role_frame.go",
@@ -4710,6 +4751,11 @@
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
       },
       {
+        "file": "packages/envoy/internal/cipher/ciphertest/client.go",
+        "callee": "(net/http.RoundTripper).RoundTrip",
+        "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
+      },
+      {
         "file": "packages/envoy/internal/cipher/helper/broker.go",
         "callee": "(net/http.RoundTripper).RoundTrip",
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
@@ -7351,8 +7397,8 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/refused",
-      "production": "githubrest Client.call and GetPages: GitHub's answer to a later page names the page by its number after the read's name (Answer.Path, ShownPath of the call's shown name), never the path GitHub's Link header wrote",
-      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).call",
+      "production": "githubrest Client.exchange (call) and GetPages: GitHub's answer to a later page names the page by its number after the read's name (Answer.Path, ShownPath of the call's shown name), never the path GitHub's Link header wrote",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).exchange",
       "capture": "githubrest.answer-words/next-page-refused",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
@@ -7365,8 +7411,8 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/unanswered",
-      "production": "githubrest Client.call and GetPages: a later page's read that got no answer names the page by its number after the read's name (oauth2call.Unanswered), never the URL GitHub's Link header wrote",
-      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).call",
+      "production": "githubrest Client.exchange (call) and GetPages: a later page's read that got no answer names the page by its number after the read's name (oauth2call.Unanswered), never the URL GitHub's Link header wrote",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).exchange",
       "capture": "githubrest.answer-words/next-page-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
@@ -9573,6 +9619,48 @@
       "production": "github.com/sjawhar/legion/daemon/internal/daemon.githubPullRequest: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
+      "id": "print-daemon.graphQLPull",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.graphQLPull",
+      "production": "github.com/sjawhar/legion/daemon/internal/daemon.graphQLPull: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-daemon.queryChunk.answer",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.queryChunk.answer",
+      "production": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).queryChunk struct{Repository map[string]*daemon.graphQLPull \"json:\\\"repository\\\"\"}: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-daemon.chunkAnswer",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.chunkAnswer",
+      "production": "github.com/sjawhar/legion/daemon/internal/daemon.chunkAnswer: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-githubrest.graphQLStep",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/githubrest.graphQLStep",
+      "production": "github.com/sjawhar/legion/daemon/internal/githubrest.graphQLStep: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-githubrest.graphQLAnswered",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/githubrest.graphQLAnswered",
+      "production": "github.com/sjawhar/legion/daemon/internal/githubrest.graphQLAnswered: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-githubrest.Client.GraphQL.answered",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/githubrest.Client.GraphQL.answered",
+      "production": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).GraphQL struct{Errors []githubrest.graphQLAnswered \"json:\\\"errors\\\"\"}: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
       "id": "daemon-answer-words-merge-queue-merged",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
@@ -10655,8 +10743,8 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestARedirectIsGitHubsAnswerAndNoLocationReachesTheError/unparsed",
-      "production": "githubrest Client.call: a redirect whose Location does not parse, which net/http's error quotes whatever the client's redirect policy, names the read shown and the failure by its class (oauth2call.Unanswered)",
-      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).call",
+      "production": "githubrest Client.exchange (call): a redirect whose Location does not parse, which net/http's error quotes whatever the client's redirect policy, names the read shown and the failure by its class (oauth2call.Unanswered)",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).exchange",
       "capture": "githubrest.redirect/unparsed",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
