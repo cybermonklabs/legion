@@ -830,8 +830,13 @@ host.describe("proc_start and the environment readers", () => {
   test(
     "proc_start gives a zombie no start and a live process its own",
     () => {
+      // The zombie's parent is a perl that sets SIGCHLD to its default and never waits, so the
+      // child stays a zombie whenever it ends. A bash that forked it and then exec'd sleep reaped
+      // it whenever it ended before that exec, through bash's own SIGCHLD handler, and left no
+      // zombie to wait for: with four CPU-bound processes on the row's CPUs it timed out in 11 of
+      // 200 runs, each time with the child gone and its parent a live sleep that ignored no SIGCHLD.
       const r = run(`
-bash -c 'sleep 600 & "$0" 0 </dev/null >/dev/null 2>&1 & echo $!; exec sleep 600' "$program" </dev/null >"$scratch/zombie" 2>/dev/null &
+perl -e '$SIG{CHLD} = "DEFAULT"; defined(my $pid = fork) or die "fork: $!\\n"; if (!$pid) { exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\\n" } $| = 1; print "$pid\\n"; sleep 600' -- "$program" 0 </dev/null >"$scratch/zombie" 2>/dev/null &
 parent=$!
 started+=("$parent")
 until_true 10 "the child to be a zombie" sh -c 'read -r z <"$1" && read -r s </proc/$z/stat && s=\${s##*) } && [ "\${s%% *}" = Z ]' sh "$scratch/zombie"
