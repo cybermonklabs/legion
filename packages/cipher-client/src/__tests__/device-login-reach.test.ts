@@ -37,6 +37,24 @@ function loginPath(): string {
   return join(makeDirectory(), "legion", "device-login.json");
 }
 
+// The words a refusal ends on, and the cures it names, each limit in the counts the poll's test
+// reads: a lifetime a millisecond or more past the wait, the interval counted up, and an interval
+// a millisecond or more short of the end, the lifetime counted down, each printed where it is not
+// the broker's own digits. The refusal table and the test that follows each cure both read them,
+// so a cure's words change in one place.
+const until = "; no device login works at that broker until";
+const shorter = "its poll interval is a millisecond or more shorter than";
+const upTo = "its poll interval counted up to a whole millisecond";
+const downTo = "its codes' lifetime counted down to a whole millisecond";
+const floor =
+  "its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps";
+const outlivesInterval = "its codes live a millisecond or more longer than its poll interval";
+const noInterval =
+  "its codes live a millisecond or more longer than 5 s, or a millisecond or more longer than both 1 s and a poll interval it names, counted up to a whole millisecond";
+const noIntervalShorter =
+  "it names a poll interval a millisecond or more shorter than its codes' lifetime, or its codes live a millisecond or more longer than 5 s";
+const pastHour = `${shorter} an hour and its codes live a millisecond or more longer than both 1 s and that interval, counted up to a whole millisecond`;
+
 test("a code is polled at the broker's interval, once a second at least, every 5 s where it names none", async () => {
   for (const [interval, wait] of [
     [0.001, 1_000],
@@ -65,18 +83,8 @@ test("a code is polled at the broker's interval, once a second at least, every 5
 // large or small, and what must change at the broker, worded from what ends the code: asking again
 // would meet the same answer. A code that had already lapsed is not said to lapse before its poll.
 test("a broker's code no poll could reach is refused before it is shown, naming the cause", async () => {
-  const lapsed = "; no device login works at that broker until";
-  const lapses = `: the code would lapse before its first poll${lapsed}`;
-  const apart = `, under two milliseconds apart: the code would lapse before its first poll, as this machine counts a poll's wait up and a code's end down to a whole millisecond${lapsed}`;
-  // Each limit is named by the count the poll's test reads: a lifetime a millisecond or more past
-  // the wait, the interval counted up, and an interval a millisecond or more short of the end, the
-  // lifetime counted down, each printed where it is not the broker's own digits.
-  const shorter = "its poll interval is a millisecond or more shorter than";
-  const upTo = "its poll interval counted up to a whole millisecond";
-  const downTo = "its codes' lifetime counted down to a whole millisecond";
-  const noInterval =
-    "its codes live a millisecond or more longer than 5 s, or a millisecond or more longer than both 1 s and a poll interval it names, counted up to a whole millisecond";
-  const pastHour = `${shorter} an hour and its codes live a millisecond or more longer than both 1 s and that interval, counted up to a whole millisecond`;
+  const lapses = `: the code would lapse before its first poll${until}`;
+  const apart = `, under two milliseconds apart: the code would lapse before its first poll, as this machine counts a poll's wait up and a code's end down to a whole millisecond${until}`;
   for (const [options, says] of [
     [
       { interval: 1_800 },
@@ -101,28 +109,28 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
     ],
     [
       { expiresIn: 0 },
-      `a device code that had already lapsed, with a poll interval of 1 s${lapsed} its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps`,
+      `a device code that had already lapsed, with a poll interval of 1 s${until} ${floor}`,
     ],
     [
       { interval: null, expiresIn: 0 },
-      `a device code that had already lapsed, with no poll interval, so one of 5 s${lapsed} ${noInterval}`,
+      `a device code that had already lapsed, with no poll interval, so one of 5 s${until} ${noInterval}`,
     ],
     [
       { interval: 5_000, expiresIn: 0 },
-      `a device code that had already lapsed, with a poll interval of 5000 s${lapsed} ${pastHour}`,
+      `a device code that had already lapsed, with a poll interval of 5000 s${until} ${pastHour}`,
     ],
     [
       { interval: null, expiresIn: 3 },
-      `a device code that lives 3 s, with no poll interval, so one of 5 s${lapses} it names a poll interval a millisecond or more shorter than its codes' lifetime, or its codes live a millisecond or more longer than 5 s`,
+      `a device code that lives 3 s, with no poll interval, so one of 5 s${lapses} ${noIntervalShorter}`,
     ],
     // The broker's interval is already shorter than its code: only a longer lifetime helps.
     [
       { interval: 0.25, expiresIn: 1 },
-      `a device code that lives 1 s, with a poll interval of 0.25 s, so one of 1 s${lapses} its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps`,
+      `a device code that lives 1 s, with a poll interval of 0.25 s, so one of 1 s${lapses} ${floor}`,
     ],
     [
       { interval: 0.0004, expiresIn: 1 },
-      `a device code that lives 1 s, with a poll interval of 0.0004 s, so one of 1 s${lapses} its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps`,
+      `a device code that lives 1 s, with a poll interval of 0.0004 s, so one of 1 s${lapses} ${floor}`,
     ],
     // An interval whose digits go past the millisecond is no floor: it waits the millisecond up
     // (1.0005 s waits 1001 ms), which a code holding only 1 s does not outlast, so the cure names
@@ -133,13 +141,13 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
     ],
     [
       { interval: 2, expiresIn: 1e-9 },
-      `a device code that lives 0.000000001 s, with a poll interval of 2 s${lapses} its codes live a millisecond or more longer than its poll interval`,
+      `a device code that lives 0.000000001 s, with a poll interval of 2 s${lapses} ${outlivesInterval}`,
     ],
     // A code of 1.0005 s ends 1000 ms on, which no interval reaches, the least being 1 s: only a
     // longer lifetime helps, whatever interval the broker names, or none.
     [
       { interval: 2, expiresIn: 1.0005 },
-      `a device code that lives 1.0005 s, with a poll interval of 2 s${lapses} its codes live a millisecond or more longer than its poll interval`,
+      `a device code that lives 1.0005 s, with a poll interval of 2 s${lapses} ${outlivesInterval}`,
     ],
     [
       { interval: null, expiresIn: 1.0005 },
@@ -165,7 +173,7 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
     // 1000.9999999999999 in floating point, so the cure names that interval, not the floor.
     [
       { interval: 1.001, expiresIn: 1.0005 },
-      `a device code that lives 1.0005 s, with a poll interval of 1.001 s${lapses} its codes live a millisecond or more longer than its poll interval`,
+      `a device code that lives 1.0005 s, with a poll interval of 1.001 s${lapses} ${outlivesInterval}`,
     ],
     [
       { interval: 5_000, expiresIn: 1.0005 },
@@ -218,11 +226,11 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
     // at the 5 s of a broker that names none.
     [
       { interval: 0.5, expiresIn: 1.0005 },
-      `a device code that lives 1.0005 s, with a poll interval of 0.5 s, so one of 1 s${apart} its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps`,
+      `a device code that lives 1.0005 s, with a poll interval of 0.5 s, so one of 1 s${apart} ${floor}`,
     ],
     [
       { interval: 1, expiresIn: 1.0005 },
-      `a device code that lives 1.0005 s, with a poll interval of 1 s${apart} its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps`,
+      `a device code that lives 1.0005 s, with a poll interval of 1 s${apart} ${floor}`,
     ],
     [
       { interval: 1.0002, expiresIn: 1.0005 },
@@ -260,11 +268,6 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
 // interval under 1 s, which this machine polls at 1 s. The floor's cure is the control: its words
 // were already the count.
 test("a broker that meets the limit a refusal names is shown its code, and one short of it is not", async () => {
-  const until = "; no device login works at that broker until ";
-  const pastHour =
-    "its poll interval is a millisecond or more shorter than an hour and its codes live a millisecond or more longer than both 1 s and that interval, counted up to a whole millisecond";
-  const noIntervalShort =
-    "it names a poll interval a millisecond or more shorter than its codes' lifetime, or its codes live a millisecond or more longer than 5 s";
   const answer = async (options: Parameters<typeof broker>[0]): Promise<string> =>
     startDeviceLogin({ brokerUrl: broker(options).url, person: PERSON, host: HOST }).then(
       () => "shown",
@@ -273,49 +276,49 @@ test("a broker that meets the limit a refusal names is shown its code, and one s
   for (const [refused, cure, meets, short] of [
     [
       { interval: 1.0005, expiresIn: 1 },
-      "its codes live a millisecond or more longer than 1.001 s, its poll interval counted up to a whole millisecond",
+      `its codes live a millisecond or more longer than 1.001 s, ${upTo}`,
       { interval: 1.0005, expiresIn: 1.002 },
       { interval: 1.0005, expiresIn: 1.0015 },
     ],
     [
       { interval: null, expiresIn: 1 },
-      "its codes live a millisecond or more longer than 5 s, or a millisecond or more longer than both 1 s and a poll interval it names, counted up to a whole millisecond",
+      noInterval,
       { interval: 1.0005, expiresIn: 1.002 },
       { interval: 1.0005, expiresIn: 1.0015 },
     ],
     [
       { interval: 2, expiresIn: 0.5 },
-      "its codes live a millisecond or more longer than its poll interval",
+      outlivesInterval,
       { interval: 2, expiresIn: 2.001 },
       { interval: 2, expiresIn: 2.0005 },
     ],
     [
       { interval: 1_800 },
-      "its poll interval is a millisecond or more shorter than its codes' lifetime",
+      `${shorter} its codes' lifetime`,
       { interval: 599.999 },
       { interval: 599.9995 },
     ],
     [
       { interval: 1_800, expiresIn: 600.0005 },
-      "its poll interval is a millisecond or more shorter than 600 s, its codes' lifetime counted down to a whole millisecond",
+      `${shorter} 600 s, ${downTo}`,
       { interval: 599.999, expiresIn: 600.0005 },
       { interval: 600.0002, expiresIn: 600.0005 },
     ],
     [
       { interval: null, expiresIn: 3 },
-      noIntervalShort,
+      noIntervalShorter,
       { interval: 2.999, expiresIn: 3 },
       { interval: 2.9995, expiresIn: 3 },
     ],
     [
       { interval: null, expiresIn: 3 },
-      noIntervalShort,
+      noIntervalShorter,
       { interval: null, expiresIn: 5.001 },
       { interval: null, expiresIn: 5.0005 },
     ],
     [
       { interval: 5_000, expiresIn: 7_200 },
-      "its poll interval is a millisecond or more shorter than an hour",
+      `${shorter} an hour`,
       { interval: 3_599.999, expiresIn: 7_200 },
       { interval: 3_599.9995, expiresIn: 7_200 },
     ],
@@ -333,13 +336,13 @@ test("a broker that meets the limit a refusal names is shown its code, and one s
     ],
     [
       { interval: 1, expiresIn: 1 },
-      "its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps",
+      floor,
       { interval: 1, expiresIn: 1.001 },
       { interval: 1, expiresIn: 1.0005 },
     ],
   ] as const) {
     const row = JSON.stringify(refused);
-    expect(await answer(refused), row).toEndWith(`${until}${cure}`);
+    expect(await answer(refused), row).toEndWith(`${until} ${cure}`);
     expect(await answer(meets), `${row}, met by ${JSON.stringify(meets)}`).toBe("shown");
     expect(await answer(short), `${row}, short at ${JSON.stringify(short)}`).toContain(until);
   }
