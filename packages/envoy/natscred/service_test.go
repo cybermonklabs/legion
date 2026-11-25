@@ -154,7 +154,7 @@ func TestTheOperatorsRenewalIsDecidedAsTheOperator(t *testing.T) {
 	later := platformToken(operatorAccount, time.Now().Add(15*time.Minute))
 	require.NoError(t, os.WriteFile(file, []byte(first+"\n"), 0o600))
 
-	option, keeper := natscred.Service(natscred.ServiceFile(file))
+	option, keeper := natscred.Service(natscred.ServiceFile(file, "NATS_SERVICE_TOKEN_FILE"))
 	var reconnected atomic.Int64
 	nc, err := nats.Connect(rig.url, option, nats.Name("operator"), nats.CustomInboxPrefix(natsgrant.OperatorInbox),
 		nats.Timeout(10*time.Second), nats.ReconnectHandler(func(*nats.Conn) { reconnected.Add(1) }))
