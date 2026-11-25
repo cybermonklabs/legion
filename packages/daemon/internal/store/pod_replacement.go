@@ -18,9 +18,11 @@ import (
 // took, in the transaction that queues the issue's architect's notice of what the act took
 // (FinishPodReplacement), or once the runtime shows the act was not made (ForgetPodReplacement).
 // Operation is the act's own identity, which keys the row (pod_replacements): two acts on the same
-// pod are two rows, and no write goes over a row that stands (GPT-6.1 Sol's point 3 on #5285 at
-// fa9deb04). PodUID is the pod the act takes, "" where
-// the issue's Sandbox ran no pod of its own. Act is what the act takes and the uid of its target
+// pod are two rows, and no record is written over a row that stands (GPT-6.1 Sol's point 3 on #5285
+// at fa9deb04). The one write over a standing row is a yield's (FinishPodReplacement), which moves
+// the read of the record that yields onto the record it yields to and changes nothing of that
+// record but its read. PodUID is the pod the act takes, "" where the issue's Sandbox ran no pod of
+// its own. Act is what the act takes and the uid of its target
 // (runtime.RecordedAct; GPT-6.1 Sol's point 4), which the daemon has the runtime read to say
 // whether the act was made. WithPod is the act's runtime.TakenPod.WithPod: a launch's delete of the
 // issue's Sandbox and its kept volume over PodUID, a live pod of that Sandbox, which takes that pod
@@ -48,8 +50,8 @@ func (r PodReplacement) Targets() []runtime.RecordedAct {
 }
 
 // RecordPodReplacement writes r, the record of a replacement of one of project's issue pods, with
-// the moment of this write. A row of r's operation that stands already is kept as it is: a record is
-// never written over.
+// the moment of this write. A row of r's operation that stands already is kept as it is: no record
+// is written over another; only a yield moves a read onto a standing record (FinishPodReplacement).
 func (s *Store) RecordPodReplacement(ctx context.Context, project string, r PodReplacement) error {
 	if project == "" || r.Operation == "" || r.Issue == "" || r.Act.Takes == "" || r.Act.Target == "" || len(r.Record) == 0 {
 		return errors.New("the record of a pod's replacement needs its project, its operation, its issue, what it takes, its target and the record")
