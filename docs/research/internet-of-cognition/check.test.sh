@@ -7762,7 +7762,7 @@ dir="$(fresh published-landed-side)"
     printf "FAIL a step commit the fixture's branch does not hold could not be planted on a side branch\n"
     exit 1
 }
-one_failure_result "a landed step whose commit the default branch's history does not hold fails published-tree alone, naming the step, the commit and the head" published-tree \
+one_failure_result "a landed step another pull request merged (merged_in) whose commit the default branch's history does not hold fails published-tree alone, naming the step, the commit and the head" published-tree \
     '^1 of 2 assertions failed: published-tree$' \
     "^FAIL published-tree: the landed step 'An execution record under the gen_ai\\. names' commits $side_commit, and the default branch's history at $fixture_head does not hold that commit, so its sentences are not read\$" \
     "$(fixture_published "$dir")"
@@ -7808,13 +7808,15 @@ fi
 # of the fixture's repository that adds a line to pr-body.md and keeps the step's sentence, as
 # case 245 does, goes back to the fixture's branch and commits there a change whose subject ends
 # "(#<n>)", <n> being the fixture's pull request, and that rewrites the sentence 'one row per
-# half' in pr-body.md, and names the side commit as the step's commit, with no merged_in, and
-# the fixture's own repository as our repository's url: published-tree must fail alone, naming
-# that squash, the file and the sentence. The gate at 5787a79c read no squash: run on this case,
-# with "pull_request": 1 added to its fixture's sources.json, which it never reads, it failed
-# published-tree alone with "the landed step 'An execution record under the gen_ai. names'
-# commits <the side commit>, and the default branch's history at <the squash> does not hold
-# that commit, so its sentences are not read".
+# half' in pr-body.md, then one later commit of another tree that puts the sentence back, so
+# that the squash is not the branch's tip and a gate that read the tip would pass. It names the
+# side commit as the step's commit, with no merged_in, and the fixture's own repository as our
+# repository's url: published-tree must fail alone, naming that squash, the file and the
+# sentence. The gate at 5787a79c read no squash: run on this case, with "pull_request": 1
+# added to its fixture's sources.json, which it never reads, it failed published-tree alone
+# with "the landed step 'An execution record under the gen_ai. names' commits <the side
+# commit>, and the default branch's history at <the head> does not hold that commit, so its
+# sentences are not read".
 dir="$(fresh published-step-squash)"
 pull_request="$(jq -r '.our_repository.pull_request' "$dir/repo/docs/research/internet-of-cognition/sources.json")"
 [[ "$pull_request" =~ ^[1-9][0-9]*$ ]] &&
@@ -7825,9 +7827,13 @@ pull_request="$(jq -r '.our_repository.pull_request' "$dir/repo/docs/research/in
         git checkout --quiet "$branch" &&
         sed -i 's/one row per half/a row for each half of the pair/' skills/legion-worker/references/pr-body.md &&
         ! grep -qF 'one row per half' skills/legion-worker/references/pr-body.md &&
-        git commit --quiet -am "docs(research): the squash of the fixture's pull request (#$pull_request)") &&
+        git commit --quiet -am "docs(research): the squash of the fixture's pull request (#$pull_request)" &&
+        sed -i 's/a row for each half of the pair/one row per half/' skills/legion-worker/references/pr-body.md &&
+        grep -qF 'one row per half' skills/legion-worker/references/pr-body.md &&
+        git commit --quiet -am "docs(skills): another tree's later words, after the squash") &&
     side_commit="$(git -C "$dir/repo" rev-parse side)" &&
-    squash_commit="$(git -C "$dir/repo" rev-parse HEAD)" &&
+    squash_commit="$(git -C "$dir/repo" rev-parse HEAD~1)" &&
+    [ "$squash_commit" != "$(git -C "$dir/repo" rev-parse HEAD)" ] &&
     ! git -C "$dir/repo" merge-base --is-ancestor "$side_commit" "$squash_commit" &&
     git -C "$dir/repo" show "$side_commit:skills/legion-worker/references/pr-body.md" | grep -qF 'one row per half' &&
     published_step_plant "$dir" "$side_commit" &&

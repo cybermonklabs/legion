@@ -8314,8 +8314,10 @@ mode_published() {
     local -A step_at=()
     # The landed steps, one line each: the step's index in the list; merged for a step
     # another pull request merged (merged_in), ours for a step of this pull request; its
-    # commit; its title.
-    local landed_rows='.landed // [] | to_entries[] | select(.value.state == "landed") | [.key, (if (.value.merged_in // "") != "" then "merged" else "ours" end), (.value.commit // ""), (.value.title // "")] | @tsv'
+    # commit; its title. The fields are joined by the unit separator, which is no
+    # whitespace to read, so an empty commit or title stays empty and shifts no field after
+    # it, as a tab would, since read merges runs of a whitespace separator.
+    local landed_rows='.landed // [] | to_entries[] | select(.value.state == "landed") | [(.key | tostring), (if (.value.merged_in // "") != "" then "merged" else "ours" end), (.value.commit // ""), (.value.title // "")] | join("\u001f")'
     if [ -n "$head" ]; then
         git init --quiet "$clone" 2>/dev/null || cannot_run environment " --published: git init of the scratch clone failed."
         live_read "GitHub, the fetch of $head from $remote" "$work/fetch.log" git -C "$clone" fetch --quiet --depth 1 --no-tags "$remote" "$head"
@@ -8343,7 +8345,7 @@ mode_published() {
             git -C "$history_repo" rev-list "$head" >"$work/history.list" 2>/dev/null ||
                 cannot_run environment " --published: git rev-list of the fetched history of $head failed."
             pr="$(jq -r '.our_repository.pull_request | if type == "number" and . > 0 and . == floor then tostring else "" end' "$EVIDENCE/sources.json")"
-            while IFS=$'\t' read -r index kind commit title; do
+            while IFS=$'\x1f' read -r index kind commit title; do
                 at="$commit"
                 if ! grep -qxF -- "$commit" "$work/history.list"; then
                     if [ "$kind" = merged ]; then
@@ -8431,7 +8433,7 @@ mode_published() {
         # read fails the same way, naming why: no pull request number, or how many commits
         # end their subject with it. Each pair of a step that has a commit is read in the
         # file as that commit, fetched into the clone above, holds it.
-        while IFS=$'\t' read -r index kind commit title; do
+        while IFS=$'\x1f' read -r index kind commit title; do
             at="${step_at[$index]}" said="commits $commit"
             case "$at" in
             unheld)
