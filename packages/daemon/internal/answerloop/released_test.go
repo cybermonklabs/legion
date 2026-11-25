@@ -23,7 +23,7 @@ func releasedRig(t *testing.T) (*rig, string) {
 
 // A question for an agent whose claim the daemon released is answered from its conversation and
 // posted as any stopped agent's: nothing is forwarded to its role topic, and nothing wakes it.
-func TestAReleasedAgentsQuestionIsAnsweredAndWakesNothing(t *testing.T) {
+func TestIdleReleasedAgentsQuestionIsAnsweredAndWakesNothing(t *testing.T) {
 	r, path := releasedRig(t)
 	r.receive(messageHandoff("ses_tester", "m-1", 1, "Why plum?"))
 	r.drain()
@@ -46,7 +46,7 @@ func TestAReleasedAgentsQuestionIsAnsweredAndWakesNothing(t *testing.T) {
 // the agent given the answer through one wake, which says where the loop posted its answer. The
 // wake is asked for once its question is done, however often the answer is handed off, and the
 // conversation held the loop's answer when it was.
-func TestAReleasedAgentsDecisionThatAlsoAsksIsGivenOnceItsAnswerIsIn(t *testing.T) {
+func TestIdleReleasedAgentsDecisionThatAlsoAsksIsGivenOnceItsAnswerIsIn(t *testing.T) {
 	r, _ := releasedRig(t)
 	decided := dispatchHandoff("ses_tester", answeredEvent(34, person, askID, "question", []string{"B"}, new("Use B. Why did you test A?")))
 	r.receive(decided)
@@ -89,7 +89,7 @@ func TestAReleasedAgentsDecisionThatAlsoAsksIsGivenOnceItsAnswerIsIn(t *testing.
 // A post refused for good is given the same way in place of its pass-on. The control is
 // TestTheReplyKindDecidesWhatIsPostedAndPassedOn, the same replies for an agent that is not
 // released.
-func TestAReleasedAgentsRepliesTheLoopDoesNotPostWakeIt(t *testing.T) {
+func TestIdleReleasedAgentsRepliesTheLoopDoesNotPostWakeIt(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		reply func(req answer.Request) answer.Reply
@@ -167,7 +167,7 @@ func assertWoken(t *testing.T, r *rig, path, before, asked string) {
 // daemon's own post, a comment carrying the loop's own mark, the daemon's own notice and the
 // broker's message are none of the agent's and give it nothing. For an agent that is not
 // released, the same hand-offs give nothing, and the decision goes to Decisions.
-func TestAReleasedAgentIsGivenWhatAsksItNothingAndNothingThatIsNotItsOwn(t *testing.T) {
+func TestIdleReleasedAgentIsGivenWhatAsksItNothingAndNothingThatIsNotItsOwn(t *testing.T) {
 	daemon := intake.DispatchActor{Kind: "session", ID: dispatch.DaemonSessionPrefix + "legion"}
 	comment := dispatchHandoff("ses_tester", bare("comment.created", person, new("LEGION-9"),
 		map[string]any{"id": "c-root", "issue_key": "LEGION-9", "body": "Thanks, that settles it.", "ask_id": nil}))
@@ -217,7 +217,7 @@ func TestAReleasedAgentIsGivenWhatAsksItNothingAndNothingThatIsNotItsOwn(t *test
 
 // A message of a source no agent answers, a GitHub notification here, is given to a released
 // agent by its own source and topic: the wake does not tell it as an Envoy session's message.
-func TestAReleasedAgentIsToldAMessageOfAnotherSourceByItsSourceAndTopic(t *testing.T) {
+func TestIdleReleasedAgentIsToldAMessageOfAnotherSourceByItsSourceAndTopic(t *testing.T) {
 	const topic = "notifications.github.acme.widgets.pull_request_review.submitted"
 	github := envoyHandoff("notifications.agent.ses_tester", "ses_tester", "evt-github", "github.k1", "acme/widgets#7 got a review")
 	github.Envelope.Source, github.Envelope.SourceSession, github.Envelope.Topic = "github", "", topic
