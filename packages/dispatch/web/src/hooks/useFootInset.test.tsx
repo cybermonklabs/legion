@@ -283,8 +283,8 @@ async function withTheTable(
 test("a float that goes while the reader stands in the end room it gave a scroller leaves that room in place", async () => {
   await withTheTable({ float: true }, async (box, view) => {
     expect(box).toHaveAttribute(MARK_ATTRIBUTE);
-    const room = box.getAttribute("style") ?? "";
-    expect(room).toContain("80px");
+    expect(box).toHaveAttribute("style", expect.stringContaining("80px"));
+    const room = box.getAttribute("style");
     box.scrollTop = 1400;
     view.rerender(<TableUnderFloats float={false} />);
     await nextFrame();

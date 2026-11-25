@@ -149,7 +149,7 @@ Each is in `packages/contracts/src/dispatch-api.ts` or the modules it re-exports
 The error **code** strings. The route table records a route's codes only in its prose, so making
 them machine-readable is a change to the table's own content, which dispatch://INFRA-1406 puts
 out of scope; `ID_AMBIGUOUS` is one, which `scripts/gen-go.ts` renders into Go as
-`contracts.IDAmbiguous`. The error **bodies** are generated, the seven refusals richer than
+`contracts.IDAmbiguous`. The error **bodies** are generated, every refusal richer than
 `{error, code}` included.
 
 Headers are not in the document either — `Idempotency-Key`, `Dispatch-Login`,

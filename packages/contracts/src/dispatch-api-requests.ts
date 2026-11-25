@@ -92,6 +92,9 @@ export type ArtifactVersionContent = ArtifactVersionText | ArtifactVersionBlob;
  */
 export const ID_AMBIGUOUS = "ID_AMBIGUOUS";
 
+/** The code of the `409` refusing a write that breaks Dispatch's parent-status rule (R24). */
+export const PARENT_STATUS_CONFLICT = "PARENT_STATUS_CONFLICT";
+
 /** Every key any member of the union `T` carries. */
 type KeyOfAny<T> = T extends unknown ? keyof T : never;
 
@@ -124,7 +127,7 @@ export function parentStatusConflictIssues(
   code: string | undefined,
   issues: DispatchServiceErrorShape["issues"]
 ): ParentStatusConflictIssue[] | undefined {
-  return code === "PARENT_STATUS_CONFLICT"
+  return code === PARENT_STATUS_CONFLICT
     ? issues?.filter((issue) => "relation" in issue)
     : undefined;
 }

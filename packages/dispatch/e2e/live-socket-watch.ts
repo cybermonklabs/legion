@@ -23,12 +23,12 @@ export function connect(route: WebSocketRoute): WebSocketRoute {
 
 /** `connect` for a routed live socket whose page is handed no `event` frame. Every other frame
  *  of Dispatch's (`events_start`, endings, errors, heartbeats) reaches the page as it comes, and
- *  the socket's close stays Dispatch's own. A held event is never delivered: the page's feed
- *  resumes after the last event it applied, so a socket that ends with events held leaves that
- *  point where the socket began, and the next connection's replay carries them. A row that
+ *  the socket's close stays Dispatch's own. An event is dropped, never delivered later: the page's
+ *  feed resumes after the last event it applied, so a socket that ends with events dropped leaves
+ *  that point where the socket began, and the next connection's replay carries them. A row that
  *  rotates a page "before it has seen any event" gets that state whatever else commits on the
- *  shared feed meanwhile. `watchLiveSockets` still records a held event in `received`, which is
- *  what Dispatch sent and not what the route handed on. */
+ *  shared feed meanwhile. `watchLiveSockets` still records a dropped event in `received`, which
+ *  is what Dispatch sent and not what the route handed on. */
 export function connectWithoutEvents(route: WebSocketRoute): void {
   connect(route).onMessage((message) => {
     if ((JSON.parse(String(message)) as LiveServerFrame).type !== "event") route.send(message);

@@ -1,4 +1,4 @@
-import { ISSUE_UPDATE_PATCH_FIELDS, issueProject } from "@legion/contracts";
+import { ISSUE_UPDATE_PATCH_FIELDS, issueProject, PARENT_STATUS_CONFLICT } from "@legion/contracts";
 import { commandLine } from "../dispatch-command";
 import { DispatchGatewayError, DispatchNoRouteError, DispatchServiceError } from "../dispatch-http";
 import type { Owner } from "../dispatch-owner";
@@ -94,7 +94,7 @@ export function parentStatusConflictLines(
   args: Readonly<Record<string, unknown>>,
   legionIssue?: string
 ): string[] | undefined {
-  if (!dispatchAnswered(error, 409) || error.code !== "PARENT_STATUS_CONFLICT") return undefined;
+  if (!dispatchAnswered(error, 409) || error.code !== PARENT_STATUS_CONFLICT) return undefined;
   const issues = error.issues ?? [];
   if (issues.length === 0) return undefined;
   const parents = issues.filter((issue) => issue.relation === "parent").map(({ key }) => key);

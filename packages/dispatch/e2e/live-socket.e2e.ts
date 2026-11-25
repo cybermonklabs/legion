@@ -387,7 +387,7 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
     const rotationWindow = reads.length;
     reconnectReleased.resolve();
     // Dispatch's second connection starts, and the replay after its `events_start` is where the
-    // comment's event arrives. An event on the first connection is no part of this: it was held.
+    // comment's event arrives. An event on the first connection is no part of this: it was dropped.
     await expect
       .poll(() => sockets.received.filter((type) => type === "events_start"))
       .toHaveLength(2);

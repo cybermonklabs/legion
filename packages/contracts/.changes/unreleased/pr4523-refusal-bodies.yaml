@@ -6,4 +6,6 @@ body: |-
   a 5xx or its default. `IDCandidate` is the generated type under the same export name, and
   `DispatchServiceErrorShape` is a mapped type over `DispatchRefusal` rather than a hand-written
   shape. `dispatch-href.ts` exports `controlCharacterPattern`, the expression
-  `hasControlCharacter` reads.
+  `hasControlCharacter` reads. `dispatch-api-requests.ts` exports `PARENT_STATUS_CONFLICT` and
+  `parentStatusConflictIssues`, which gives a refusal's `issues` only for that code, since a
+  `409 FOREIGN_CHILD_OPEN` lists issues of another shape under the same field.
