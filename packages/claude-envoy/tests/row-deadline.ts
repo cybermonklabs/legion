@@ -2,19 +2,34 @@
  * A wait of a row that starts a child process, which ends on what the child does and fails by name
  * when that never comes, before the row's hang guard does.
  *
- * The guard, `ROW_GUARD_MS`, is a hang guard and decides no verdict: 120 s, far above any real
- * duration of these rows (the slowest, run with its whole file on one CPU that 200 busy loops
- * share, took 39.7 s), and the value #4924's `HANG_GUARD_MS` holds. Each file that uses this module
- * sets it as its rows' default (`setDefaultTimeout(ROW_GUARD_MS)`: a row's own limit wins over it,
- * and it wins over the package script's `--timeout`), so the rows state no limit of their own. A
- * wait here gives up `NAMED_BEFORE_GUARD_MS` before it, counted from the row's start (`rowStarted`,
- * which each such file calls from a `beforeEach` of its own), ends the child, and fails naming what
- * it waited for and what the child had written. A child that a loaded machine merely slows takes
- * what it takes up to there.
+ * A guard is a hang guard and decides no verdict. Each file that uses one sets it as its rows'
+ * default (`setDefaultTimeout`: a row's own limit wins over it, and it wins over the package
+ * script's `--timeout`). There are two:
+ *
+ * - `ROW_GUARD_MS`, 120 s, the value #4924's `HANG_GUARD_MS` holds. It is the default of
+ *   `channel-fatal-exit.test.ts`, `envoy-channel-lifecycle.test.ts`,
+ *   `envoy-channel-server.test.ts`, `envoy-send-url.test.ts` and `legion-pane-mcp.test.ts`. #4955
+ *   recorded 39.7 s as the slowest row of the files that used this module then, each run whole on
+ *   one CPU that 200 busy loops share. These five files' comments give no later reading. One of
+ *   their rows states a limit of its own: `channel-fatal-exit.test.ts`'s late parent, this guard
+ *   plus the wait it makes before its stop (`DIAL_TIMEOUT_MS` and 1 s).
+ * - `JOB_ROOM_GUARD_MS`, 240 s, below. It is the default of `open-asks-hook.test.ts` and
+ *   `envoy-channel-mcp.test.ts`, whose rows a loaded host stretched past a sixth of
+ *   `ROW_GUARD_MS`. Their worst rows read 59 101 ms (open-asks, at 82306880) and 82 600 ms (mcp,
+ *   at 0faaee16), each over 20 runs on two CPUs, with each file's comment naming its runs. mcp's
+ *   two broker-token rows state this guard as their limit. mcp's dial row states `ROW_TIMEOUT_MS`
+ *   (600 s, `./reopen-server.ts`), 7.1 times its 84 395 ms.
+ *
+ * A wait here gives up `NAMED_BEFORE_GUARD_MS` before the row's guard, counted from the row's
+ * start (`rowStarted`, which each file that waits here calls from a `beforeEach` of its own). It
+ * then ends the child and fails naming what it waited for and what the child had written. A row
+ * whose guard is not `ROW_GUARD_MS` hands its guard to each wait (`guardMs`), and to
+ * `./mcp-connect.ts`'s `connectedToServer`. A child that a loaded machine merely slows takes what
+ * it takes up to there.
  */
 import type { Subprocess } from "bun"
 
-/** Each row's hang guard, which every file that uses this module sets as its rows' default. */
+/** The hang guard the header names five files for, which each sets as its rows' default. */
 export const ROW_GUARD_MS = 120_000
 /**
  * The hang guard of the files whose rows a loaded host stretches past a sixth of `ROW_GUARD_MS`

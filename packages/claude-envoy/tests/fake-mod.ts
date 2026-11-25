@@ -81,19 +81,27 @@ export async function startFakeMod(
     /** Aborted once the caller's row has ended, at its limit included: the probe for the socket
      *  stops, naming that, and so does the polling after it, as `stop` stops it. A caller that
      *  holds the server process passes `exited`; one that does not passes this, and one may pass
-     *  both. With neither, the probe runs until the socket answers. */
+     *  both. With neither, and no `answerWithinMs`, the probe runs until the socket answers. */
     readonly signal?: AbortSignal
+    /** How long the probe waits for the socket to answer the first event, for a caller whose
+     *  row's limit is past what its job leaves one hang (`ROW_TIMEOUT_MS`,
+     *  `./reopen-server.ts`). Once it has passed, the probe stops, naming that. */
+    readonly answerWithinMs?: number
   },
 ): Promise<FakeMod> {
   const calls: ModCall[] = []
   let stopped = false
+  // A call, not a test of `stopped` and `signal` in place: a test in place would narrow both
+  // for the code after it, which reads them again after each await.
+  const pollEnded = (): boolean => stopped || options.signal?.aborted === true
 
-  const post = async (route: string, body: unknown): Promise<unknown> => {
+  const post = async (route: string, body: unknown, signal?: AbortSignal): Promise<unknown> => {
     const answer = await fetch(`${MOD_URL_BASE}${route}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
       unix: socketPath,
+      ...(signal === undefined ? {} : { signal }),
     })
     return answer.json()
   }
@@ -144,7 +152,7 @@ export async function startFakeMod(
   // The poll stops once the mod is stopped or its caller's row has ended, at its next turn and
   // after each await, so a row its limit abandoned answers nothing more of its server's.
   const poll = async (): Promise<void> => {
-    while (!stopped && options.signal?.aborted !== true) {
+    while (!pollEnded()) {
       let requests: readonly ModRequest[] = []
       try {
         const body = (await post(MOD_ROUTE_REQUESTS, {})) as { requests?: readonly ModRequest[] }
@@ -154,14 +162,14 @@ export async function startFakeMod(
         return
       }
       for (const request of requests) {
-        if (stopped || (options.signal as AbortSignal | undefined)?.aborted === true) return
+        if (pollEnded()) return
         calls.push({ call: request.call, args: request.args })
         try {
           const value = await answerOf(request)
-          if (stopped || (options.signal as AbortSignal | undefined)?.aborted === true) return
+          if (pollEnded()) return
           await post(MOD_ROUTE_RESULTS, { results: [{ id: request.id, ok: true, value }] })
         } catch (error) {
-          if (stopped || (options.signal as AbortSignal | undefined)?.aborted === true) return
+          if (pollEnded()) return
           await post(MOD_ROUTE_RESULTS, {
             results: [{ id: request.id, ok: false, error: String(error) }],
           }).catch(() => undefined)
@@ -175,32 +183,46 @@ export async function startFakeMod(
   }
 
   // The server binds its socket while its MCP transport starts, so a mod started beside it
-  // probes until the socket answers, as the real mod does. The probe has no deadline of its
-  // own: how long the bind takes is the host's speed, and a socket that never answers is the
-  // row's limit to end, which names the row. A server that exits first ends the probe at once
-  // (`exited`), and so does the end of the caller's row (`signal`).
+  // probes until the socket answers, as the real mod does. How long the bind takes is the host's
+  // speed. A caller whose row's limit ends a hang within its job's room gives the probe no
+  // deadline: a socket that never answers is that limit's to end, which names the row. A caller
+  // whose row's limit is past that room passes `answerWithinMs`. Its probe then stops once that
+  // time has passed, naming the socket. That includes a socket that took the event and never
+  // answered it, since the event's send is aborted then. A server that exits first ends the probe
+  // at once (`exited`), and so does the end of the caller's row (`signal`).
   let exited = false
   const ended = () => {
     exited = true
   }
   void options.exited?.then(ended, ended)
+  const answerBy =
+    options.answerWithinMs === undefined ? undefined : AbortSignal.timeout(options.answerWithinMs)
+  const probeEnds = [options.signal, answerBy].filter((signal) => signal !== undefined)
+  const probeSignal = probeEnds.length === 0 ? undefined : AbortSignal.any(probeEnds)
   for (;;) {
     if (options.signal?.aborted === true) {
       throw new Error("the row ended before the server's mod socket answered")
     }
     try {
       if (options.hello !== false) {
-        await send({
+        const hello: ModEvent = {
           kind: "hello",
           sessionId: options.sessionId,
           claudeVersion: "2.1.310",
           interactive: true,
-        })
+        }
+        await post(MOD_ROUTE_EVENTS, { events: [hello] }, probeSignal)
       }
       break
     } catch (error) {
       if (exited) {
         throw new Error("the server exited before its mod socket answered", { cause: error })
+      }
+      if (answerBy?.aborted === true) {
+        throw new Error(
+          `the server's mod socket had not answered ${options.answerWithinMs} ms into the probe`,
+          { cause: error },
+        )
       }
       await Bun.sleep(50)
     }

@@ -45,7 +45,14 @@ async function startWithEarlyClear(broker?: SessionBroker) {
   try {
     const socketPath = modSocketPath(BEFORE, { XDG_RUNTIME_DIR: run.stateDirectory })
     if (socketPath === undefined) throw new Error("the session names no mod socket")
-    const mod = await startFakeMod(socketPath, { sessionId: BEFORE, exited: run.server.exited })
+    // The probe waits `PROCESS_WAIT_MS`, as each wait of this file does: the row's limit
+    // (`ROW_TIMEOUT_MS`) is past what the claude-envoy job leaves one hang, so a socket that never
+    // answers fails here by name.
+    const mod = await startFakeMod(socketPath, {
+      sessionId: BEFORE,
+      exited: run.server.exited,
+      answerWithinMs: PROCESS_WAIT_MS,
+    })
     // The link has the `/clear` before the session starts, so before the live view listens.
     await mod.send({ kind: "session-id", sessionId: AFTER })
     held.resolve()

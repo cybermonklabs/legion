@@ -9,11 +9,7 @@ import {
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack"
 import { type StallProxy, startStallProxy } from "@legion/envoy-client/test/stall-proxy"
-import {
-  FREEZE_HEARTBEAT_MS,
-  RECOVERY_BOUND_MS,
-  runFreezeScenario,
-} from "@legion/envoy-client/test/stall-scenario"
+import { FREEZE_HEARTBEAT_MS, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario"
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
@@ -58,12 +54,13 @@ interface ChannelServer {
    *  exited or been sent that SIGKILL, whichever comes first; the home; the proxy. Every release
    *  runs even when one fails, and the call then throws that failure, or an `AggregateError` of
    *  them all where several failed. A call made while another runs waits for it to settle, then
-   *  releases whatever was taken since. */
+   *  releases whatever was taken since. The host leaves `openHosts` once its releases have run. */
   stop(): Promise<void>
 }
 
-/** The stop of each host started and not yet stopped. The describe's `afterEach` runs each one:
- *  a row its limit abandoned never reaches its own `finally`, and its host must not outlive it. */
+/** The stop of each host started whose releases have not all run. The describe's `afterEach`
+ *  runs each one: a row its limit abandoned never reaches its own `finally`, and its host must not
+ *  outlive it. A host whose stop is still running stays here until that stop has released all. */
 const openHosts = new Set<() => Promise<void>>()
 
 /**
@@ -82,7 +79,6 @@ async function startChannelServer(
   const releases: (() => Promise<void>)[] = []
   let stopping = Promise.resolve()
   const stop = (): Promise<void> => {
-    openHosts.delete(stop)
     ended.abort(new Error("the row ended"))
     stopping = stopping
       .catch(() => undefined)
@@ -95,6 +91,9 @@ async function startChannelServer(
             failures.push(error)
           }
         }
+        // Only now: a row whose limit fired while its own `finally` ran this stop leaves the host
+        // here, and the `afterEach`'s stop of it waits for these releases to settle.
+        openHosts.delete(stop)
         if (failures.length === 1) throw failures[0]
         if (failures.length > 1) {
           throw new AggregateError(failures, `${failures.length} of the host's releases failed`)
@@ -204,11 +203,12 @@ async function startChannelServer(
       ended: ended.signal,
       // The server runs on nats.js's real ping and dial timers and a real listener, so each wait
       // polls the real clock until its condition holds. Only a wait whose time the row asserts
-      // has a deadline (`RECOVERY_BOUND_MS`). A wait given none ends at the row's limit, which
-      // names the row. Every wait throws on the poll after the server, natsd or the listener
-      // exits, naming that exit, and names it in place of the error a read meets once one has.
-      // Once its row has ended it throws before each poll and in place of its answer, so a wait
-      // of a row its limit abandoned does not poll on into the row after it.
+      // has a deadline: the freeze scenario's recovery, within `RECOVERY_BOUND_MS` of the freeze
+      // (`runFreezeScenario`). A wait given none ends at the row's limit, which names the row.
+      // Every wait throws on the poll after the server, natsd or the listener exits, naming that
+      // exit, and names it in place of the error a read meets once one has. Once its row has
+      // ended it throws before each poll and in place of its answer, so a wait of a row its limit
+      // abandoned does not poll on into the row after it.
       async waitFor(condition, deadline, what) {
         const stillOpen = () => {
           if (ended.signal.aborted) throw new Error(`stopped waiting for ${what}: the row ended`)
@@ -285,12 +285,19 @@ describe.skipIf(!envoyStackEnabled)(
     }, 60_000)
     afterEach(async () => {
       // A row its limit abandoned never reaches its own `finally`: its host is stopped here, so
-      // its waits throw and its server, home and proxy go with the row. A row that reached its
-      // `finally` left no host open.
+      // its waits throw and its server, home and proxy go with the row. A row whose limit fired
+      // while its `finally` stopped its host left that host here, and its stop below waits for
+      // those releases to settle. A row whose `finally` finished its stop left no host open.
       for (const stop of openHosts) await stop()
-      // A hang guard: what can hang is a host's stop, whose server is sent SIGKILL 10 s after its
-      // SIGTERM. No run has measured it, so 30_000 is three times those 10 s.
-      // MEASUREMENT-PROVISIONAL
+      // A hang guard: what can hang is a host's stop. Its server's release ends 10 s after the
+      // SIGTERM at the latest (`STOP_GRACE_MS`), when the server is sent SIGKILL. The home's
+      // removal and the proxy's close come after that release and have no bound of their own.
+      // Worst measured cost of a host's stop with its server running: 57.36 ms over 3 runs of
+      // this file, idle on the issue's pod (two CPUs, 8 GiB), timed around the first row's
+      // `stop`, 2026-11-25T04:47Z to 04:52Z, at 353017d0 with these edits. The server exited on
+      // its SIGTERM each time, so no run reached the SIGKILL. No reading under load exists.
+      // 30_000 is three times `STOP_GRACE_MS`. A server that ignores its SIGTERM holds the stop
+      // 10 s of it, and the 20 s left for the rest are 348 times the whole stop's idle worst.
     }, 30_000)
 
     test("a session whose NATS path freezes subscribes its relay subject again on the new connection within 60 s, registers a new epoch, and shows each message once", async () => {
@@ -361,6 +368,8 @@ describe.skipIf(!envoyStackEnabled)(
           "the session's registration and first subscription",
         )
         // The first redial after the freeze hangs (accepted, never answered); the next forwards.
+        // The row asserts no time for this recovery, only the exit on SIGTERM below, so the wait
+        // has no deadline: a recovery that never comes ends at the row's limit.
         proxy.stallNext(1)
         const frozenAt = proxy.freeze()
         await waitFor(
@@ -368,7 +377,7 @@ describe.skipIf(!envoyStackEnabled)(
             proxy.connections.some(
               (opened) => opened.acceptedAt >= frozenAt && opened.subscribedAt !== undefined,
             ),
-          frozenAt + RECOVERY_BOUND_MS,
+          undefined,
           "the session to subscribe again after the hung redial",
         )
         const signalledAt = Date.now()

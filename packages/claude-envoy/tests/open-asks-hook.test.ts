@@ -45,11 +45,12 @@ setDefaultTimeout(OPEN_ASKS_ROW_GUARD_MS)
  * one that starts after the directory is gone cannot record itself, so it does not sleep. */
 const hangingJjPidDirectories: string[] = []
 
-// A hang guard, not a bound on the work: the body is a read, a signal and a removal per hanging
-// jj, which no row of this file has more than one of. A limit does not interrupt a synchronous
-// body: bun fails the hook after the fact once the body ran past it. So this one carries its own,
-// the file's `OPEN_ASKS_ROW_GUARD_MS`, rather than bun's 5 s default, which a starved host can
-// pass on its charge alone.
+// A bound on work, not a hang guard: the body is synchronous, a read, a signal and a removal per
+// hanging jj, and no row of this file has more than one hanging jj. Bun does not interrupt a
+// synchronous hook at its limit. It fails the hook once the hook has returned, when the hook took
+// longer than its limit. So the limit bounds the charge Bun puts on this hook, which a starved
+// host stretches. It is the file's default (`setDefaultTimeout` above), which reaches this hook
+// without it (Bun 1.4.4). It is stated here beside the body it bounds.
 afterEach(() => {
   for (const directory of hangingJjPidDirectories.splice(0)) {
     let pid = 0
