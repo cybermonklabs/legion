@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -240,17 +239,6 @@ func TestAMessageHeldForAReviewerWaitsForAProcessAtTheRecordedHead(t *testing.T)
 	}
 }
 
-// reviewerPodOf is the Sandbox runtime's reading of the live pod of LEGION-208, the issue the
-// runner of runnerIn holds: what the script answers for its own issue (podImageScript).
-type reviewerPodOf struct{ *podImageScript }
-
-func (p reviewerPodOf) IssuePodImage(issue string) (sandbox.PodImage, bool) {
-	if issue != "LEGION-208" {
-		return sandbox.PodImage{}, false
-	}
-	return p.podImageScript.IssuePodImage(podUpdateIssue)
-}
-
 // A message the daemon holds for a reviewer is held as the reviewer's task is while the
 // reviewer's issue pod runs another image than the configured one, also where its process was
 // launched at the head the record holds: the reviewer works only in a pod on the configured image
@@ -270,10 +258,10 @@ func TestAMessageHeldForAReviewerAtItsHeadWaitsForItsPodOnAnotherImage(t *testin
 	sup.deps.Specs = headSpecs{recorded: recorded}
 	// The reviewer rule as openSupervision wires it: every launch's recheck, and the hold of a
 	// send, read the issue pod's image.
-	images := &podImageScript{}
+	images := &podImageScript{issue: "LEGION-208"}
 	images.runs(podUpdatePod, reviewerPodConfiguredImage)
 	pods := newReviewerPods(sup.deps.Runtime, quietLogger())
-	pods.images = reviewerPodOf{images}
+	pods.images = images
 	sup.deps.Store = pods.gate(sup.deps.Store)
 	sup.deps.DeliveryWaits = pods.check
 	rt := sup.deps.Runtime.(*fake.Runtime)

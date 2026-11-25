@@ -32,13 +32,14 @@ const (
 )
 
 // podImageScript is the Sandbox runtime's reading of the issue pod's image
-// (sandbox.Runtime.IssuePodImage), as a test sets it: the pod the issue's Sandbox runs now and the
-// image it runs, or no live pod at all, which is what the round's replacement leaves until the
-// next launch builds a fresh pod on the configured image.
+// (sandbox.Runtime.IssuePodImage), as a test sets it: the pod the Sandbox of issue runs now and
+// the image it runs, or no live pod at all, which is what the round's replacement leaves until the
+// next launch builds a fresh pod on the configured image. Every other issue has no live pod.
 type podImageScript struct {
-	mu   sync.Mutex
-	read sandbox.PodImage
-	live bool
+	issue string
+	mu    sync.Mutex
+	read  sandbox.PodImage
+	live  bool
 	// ended is each pod ReplaceIssuePod ended, in order.
 	ended []string
 }
@@ -47,7 +48,7 @@ type podImageScript struct {
 // pod is another or none, else the last word and then no live pod.
 func (p *podImageScript) ReplaceIssuePod(ctx context.Context, issue, pod string, due func(context.Context) error) error {
 	p.mu.Lock()
-	there := issue == podUpdateIssue && p.live && p.read.Pod == pod
+	there := issue == p.issue && p.live && p.read.Pod == pod
 	p.mu.Unlock()
 	if !there {
 		return nil
@@ -72,7 +73,7 @@ func (p *podImageScript) endedPods() []string {
 func (p *podImageScript) IssuePodImage(issue string) (sandbox.PodImage, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if issue != podUpdateIssue {
+	if issue != p.issue {
 		return sandbox.PodImage{}, false
 	}
 	return p.read, p.live
@@ -96,7 +97,7 @@ func (p *podImageScript) replaced() {
 // image, and answers the script.
 func (r *podUpdateRig) readsPodImages(image string) *podImageScript {
 	r.t.Helper()
-	script := &podImageScript{}
+	script := &podImageScript{issue: podUpdateIssue}
 	script.runs(podUpdatePod, image)
 	r.s.reviewerPods.images = script
 	return script
