@@ -56,8 +56,8 @@ export const EDITOR_BOX_ATTRIBUTE = "data-editor-box";
  * the task that gives it the focus (`selectInEditor`), so no key reaches it before its selection
  * is the block's. Called again, it puts back a caret the editor dropped or moved as it redrew
  * itself (`useNodeEditing.ts`), in the node's block and nowhere else.
- * With `at`, places the caret that many characters into the editable text instead; a reference
- * drawn by its name can shift the count, but the caret still lands inside the block.
+ * With `at`, places the caret that many characters into the editable text instead, which holds
+ * a reference as written; a count past the block's text lands at its end, inside the block.
  */
 export function caretInBlock(host: HTMLElement, blockId?: string, at?: CaretAt): boolean {
   const drawn = drawnBlock(host, blockId);

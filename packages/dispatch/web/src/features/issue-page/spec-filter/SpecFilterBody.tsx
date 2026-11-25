@@ -946,8 +946,16 @@ function statementWordsAt(target: EventTarget): HTMLElement | null {
   return words !== null && !words.contains(control) ? words : null;
 }
 
-/** Reads the press before the editor replaces the words. Both drawings count text characters,
- *  not markup or lines, so a different wrap in the editor does not change the caret's place. */
+/** The mark of a reference's link in a node's drawn words, which holds the reference as its text
+ *  wrote it (`row-references.ts`'s `ROW_WRITTEN`). */
+const REFERENCE_WRITTEN = "data-row-written";
+
+/** Reads the press before the editor replaces the words, as the count of the editor's text
+ *  characters before it: text, not markup or lines, so a different wrap in the editor does not
+ *  change the caret's place. The view draws a reference by its target's name, while the editor
+ *  holds the reference as written, under a title of its own that the caret cannot enter, so each
+ *  reference counts as the text it was written as, which its link carries, and a press inside
+ *  one counts as at its start. Every other text counts as drawn, a link that carries none too. */
 function pressInWords(words: HTMLElement, x: number, y: number): CaretAt {
   const doc = words.ownerDocument;
   const position = doc.caretPositionFromPoint?.(x, y);
@@ -958,11 +966,17 @@ function pressInWords(words: HTMLElement, x: number, y: number): CaretAt {
   end.setStart(node, position?.offset ?? range?.startOffset ?? 0);
   const walker = doc.createTreeWalker(words, NodeFilter.SHOW_TEXT);
   let offset = 0;
+  // The reference the last text counted belongs to, whose other texts count nothing more.
+  let counted: Element | null = null;
   for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
     if (text.parentElement?.closest("[data-node-trail]") != null) continue;
+    const reference = text.parentElement?.closest(`[${REFERENCE_WRITTEN}]`) ?? null;
+    if (reference !== null && reference === counted) continue;
+    if (reference?.contains(node) === true) return { x, y, offset };
     if (text === node) return { x, y, offset: offset + end.startOffset };
     if (end.comparePoint(text, 0) >= 0) break;
-    offset += text.textContent?.length ?? 0;
+    counted = reference;
+    offset += (reference?.getAttribute(REFERENCE_WRITTEN) ?? text.textContent ?? "").length;
   }
   return { x, y, offset };
 }

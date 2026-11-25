@@ -2170,6 +2170,77 @@ test("a press on a statement's words passes its point to the outline's editing",
   }
 });
 
+// R8: a press is counted in the editor's text. The view draws a reference to an issue by the
+// issue's key and title, while the editor holds the reference as it is written, hidden under a
+// title of its own that takes no caret (`@legion/proof-editor`'s `reference-decorations.ts`), so a
+// press after the reference counts it as written. A plain editable on the stage stands in for
+// the editor's drawing of the statement: its title out of the editable text, the reference as
+// written hidden in it. Counted as drawn, the press on "first" would put the caret 8 characters
+// into the words after the reference rather than 3.
+test("a press after a reference counts the reference as the editor holds it", async () => {
+  const user = userEvent.setup();
+  const cited = "dispatch://CORE-2";
+  const after = " first, then the rest.";
+  const text = `Read ${cited}${after}`;
+  const editorView = new EditorView(null, {
+    state: EditorState.create({
+      schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
+    }),
+  });
+  const onEditing: OnEditing = (artifactId, onEditor) => {
+    if (artifactId !== undefined) onEditor?.({ view: editorView });
+  };
+  const editor = (
+    <DocumentStage artifactId="artifact-spec">
+      <div contentEditable suppressContentEditableWarning>
+        <section data-block-id="r1">
+          <p>
+            {"Read "}
+            <span contentEditable={false}>CORE-2 The other issue</span>
+            <span hidden>{cited}</span>
+            {after}
+          </p>
+        </section>
+      </div>
+    </DocumentStage>
+  );
+  const { read, view } = drawBody(
+    issueTree([statement("r1", { text, tree: displayTree(text) })]),
+    [],
+    { editor, names: new Map([[cited, "The other issue"]]), onEditing }
+  );
+  const original = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint");
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const link = await waitFor(() => {
+      const found = row.querySelector(`[data-node-words] a[data-row-reference="${cited}"]`);
+      expect(found?.textContent).toBe("CORE-2 The other issue");
+      return found;
+    });
+    const pressed = link?.nextSibling;
+    if (!(pressed instanceof Text) || pressed.parentElement === null) {
+      throw new Error("the statement draws no words after its reference");
+    }
+    expect(pressed.data).toBe(after);
+    // The press is on "first", 3 characters into the words after the reference.
+    const point = mock(() => ({ offsetNode: pressed, offset: 3 }));
+    Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
+    await user.pointer({ keys: "[MouseLeft]", target: pressed.parentElement });
+    await waitFor(() => {
+      const words = row.querySelector('[data-block-id="r1"] p')?.lastChild;
+      expect(words?.textContent).toBe(after);
+      expect(window.getSelection()?.anchorNode).toBe(words);
+      expect(window.getSelection()?.anchorOffset).toBe(3);
+    });
+  } finally {
+    if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
+    else Object.defineProperty(document, "caretPositionFromPoint", original);
+    view.unmount();
+    editorView.destroy();
+    read.mockRestore();
+  }
+});
+
 // The same order on a decision's cell: a press on the cell draws the person's whole answer only
 // once it ends, and the statement that had the focus keeps its look until then; a press on that
 // statement keeps the whole answer drawn until it ends, and then the statement takes the focus.
