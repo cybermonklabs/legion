@@ -207,6 +207,10 @@ func TestCloseWaitOfEachCase(t *testing.T) {
 	linkedMerge.Repo = cwLinkedRepo
 	stackedMerge := cwMerge()
 	stackedMerge.Base = "release"
+	// live is an after_merge check of production that names no program, where Dispatch holds the
+	// current deploy of more than one program in the issue's repository.
+	live := cwAfterMerge("c-live", cwStands(dispatch.PassStandsUnknown, dispatch.PassStandsReasonProgramNotNamed))
+	live.Subject = dispatch.CheckSubjectProduction
 
 	for _, tc := range []struct {
 		name  string
@@ -345,8 +349,10 @@ func TestCloseWaitOfEachCase(t *testing.T) {
 		{name: "row 23: a Verification document with no approved version",
 			facts: passing(CheckReadAnswer{Results: cwResults(cwAfterMerge("c-after", cwPass)),
 				Approval: &CheckApproval{Current: []dispatch.DocumentBlock{cwBlock("c-after", nil)}}})},
-		// Row 24, a live check that reads unknown for program_not_named, comes with the reasons of a
-		// live check's deploy, which Dispatch's results read does not answer yet.
+		{name: "row 24: a live check that reads unknown for program_not_named waits with no result yet",
+			facts: passing(oneCheck(live)),
+			want: CloseWait{Checks: []CheckWait{{Check: "c-live", State: CheckStateNoResult, Answer: dispatch.PassStandsUnknown,
+				Reason: dispatch.PassStandsReasonProgramNotNamed}}}},
 		{name: "row 25: a check block that only gained subject production",
 			facts: approved(nil, map[string]string{"subject": dispatch.CheckSubjectProduction})},
 		{name: "row 26: a check block that gained subject production and program dispatch",
