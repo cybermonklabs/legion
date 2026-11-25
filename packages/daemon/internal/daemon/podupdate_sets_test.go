@@ -190,7 +190,7 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 			}
 			// The background hold is a wait on the pod's processes, not on an answer, and it never
 			// names a suspended or failed claim (backgroundClaims): the answer side is what R2 sets.
-			unanswered, _, _ := readRoundEnd(group, round, clock).holding()
+			unanswered, _, _, _ := readRoundEnd(group, round, clock).holding()
 			waiting, held, holding := named(waitingClaims(group, round, clock)), named(heldByOperator(group, round, clock)), named(unanswered)
 			t.Logf("over %d claims: waitingClaims %t, heldByOperator %t, holding %t", len(group), waiting, held, holding)
 			read = append(read, waiting || held || holding)
@@ -375,7 +375,7 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 						if got := slices.ContainsFunc(waitingClaims(group, round, clock), isClaim); got != wantWaits {
 							t.Errorf("the round waits for the claim: %t, want %t", got, wantWaits)
 						}
-						unanswered, _, _ := readRoundEnd(group, round, clock).holding()
+						unanswered, _, _, _ := readRoundEnd(group, round, clock).holding()
 						if got, want := slices.ContainsFunc(unanswered, isClaim), wantWaits || keep; got != want {
 							t.Errorf("the round's end holds the replacement through a process for the claim: %t, want %t", got, want)
 						}

@@ -181,12 +181,18 @@ func TestStoredClaimClearsEveryFieldTheMachineOverlays(t *testing.T) {
 	h.m.compacting = &compacting{}
 	h.m.processGone = true
 	h.m.awaitsPod = &awaited
+	// A take whose turn ran and whose report has not come, on a plugin that names its task's
+	// number: the report of the take's turn is owed (ReportOwed).
+	pending, contract := h.m.claim.Pending, h.m.claim.PluginContract
+	h.m.claim.Pending = &Delivery{ID: "dlv-owed", Task: "the task whose report is owed", Number: 1, ConfirmedAt: epoch, TurnStarted: true}
+	h.m.claim.PluginContract = TaskTakeContract
 	reported, held := h.m.current(), copyClaim(h.m.claim)
 	h.m.held, h.m.compacting, h.m.processGone, h.m.awaitsPod = nil, nil, false, nil
+	h.m.claim.Pending, h.m.claim.PluginContract = pending, contract
 	h.m.mu.Unlock()
 
 	if !reported.SuspensionHeld || reported.SuspensionHeldBy != SuspendedByOperator || !reported.Compacting || !reported.ProcessGone ||
-		reported.AwaitsPod == nil || len(reported.RegisteredPods.Pods) == 0 {
+		reported.AwaitsPod == nil || len(reported.RegisteredPods.Pods) == 0 || !reported.ReportOwed {
 		t.Fatalf("the claim the machine reports carries %+v, want every overlay set", reported)
 	}
 	if stored, want := StoredClaim(reported), StoredClaim(held); !reflect.DeepEqual(stored, want) {

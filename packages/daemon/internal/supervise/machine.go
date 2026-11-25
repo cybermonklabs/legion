@@ -544,6 +544,19 @@ type Claim struct {
 	// the machine of each claim it groups (Machine.RegisteredPods), and the store never writes or
 	// reads it (StoredClaim).
 	RegisteredPods RegisteredPods
+	// ReportOwed is whether the report of the claim's take's turn is owed: the pending take ran
+	// its turn, no turn runs now, and the turn-outcome report naming the take's number has not
+	// come (reportwait.go's waitReport, as reportWaitNow reads it). It is that phase alone. In
+	// waitFinish the report came, and below TaskTakeContract the end frame finishes the task
+	// (waitNone), so in both the daemon's end-frame bound makes the finish; in waitTake no turn
+	// of the task's text ran; and in waitTurn the claim is stored working already. The machine
+	// writes it where it publishes its view (current), whatever the claim's harness, Oh My Pi or
+	// Claude Code. It is memory only, as ProcessGone is: Machine.Claim and View report it, and the
+	// store never writes or reads it (StoredClaim). The daemon's pod update round reads it to hold
+	// its early end for the report (internal/daemon's reportingClaims): a pod replaced between the
+	// end of a take's turn and its report takes the report with it, and the relaunched process
+	// runs the task again.
+	ReportOwed bool
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
 	// registration records Session/SessionFile/CapabilityHash (register, reregister).
@@ -570,11 +583,11 @@ type Claim struct {
 	// the pod the claim runs on, which every claim of that pod shares, and PluginRoundPrefix and
 	// the daemon's contract the per-claim round of a claim whose plugin is behind this daemon. A
 	// round ends when the process it waits for is replaced. The daemon asks each role of the
-	// round and replaces the pod once every asked role has answered, no turn runs and no claim's
-	// activity report holds it (internal/daemon's roundEnd.holding), or at the round's bound
-	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
-	// suspension excepted. Work that a role did not push goes with the disk the replacement
-	// deletes.
+	// round and replaces the pod once every asked role has answered, no turn runs, no take's report
+	// is owed (ReportOwed) and no claim's activity report holds it (internal/daemon's
+	// roundEnd.holding), or at the round's bound (pod_update_grace_minutes) whatever the roles
+	// answered and whatever runs, an operator's suspension excepted. Work that a role did not push
+	// goes with the disk the replacement deletes.
 	UpdateRound string
 	// UpdateReasons is what the round was opened for, as the daemon found the drift: the task's
 	// text and the operator's reading of why this pod is being replaced.
@@ -2976,6 +2989,7 @@ func (m *Machine) current() Claim {
 	c.ProcessGone = m.processGone
 	c.AwaitsPod = cloneLocator(m.awaitsPod)
 	c.RegisteredPods = m.registeredPods.clone()
+	c.ReportOwed = m.reportWaitNow() == waitReport
 	return c
 }
 
@@ -2983,10 +2997,11 @@ func (m *Machine) current() Claim {
 // its own, and the store holds none of the fields current overlays on the claim the machine
 // reports: a suspension held for its turn (SuspensionHeld, SuspensionHeldBy), a compaction in
 // flight (Compacting), a process the runtime reported gone (ProcessGone), the pod a launch waits
-// on (AwaitsPod) and the pods an agent of the claim registered in (RegisteredPods). Only the
-// machine holds them, in memory, and internal/store writes none of them, so the one statement
-// below clears every one, and no stored claim, nor a claim compared with one, carries any of
-// them. A field that current comes to overlay belongs in that statement too.
+// on (AwaitsPod), the pods an agent of the claim registered in (RegisteredPods) and the report of
+// the take's turn still owed (ReportOwed). Only the machine holds them, in memory, and
+// internal/store writes none of them, so the one statement below clears every one, and no stored
+// claim, nor a claim compared with one, carries any of them. A field that current comes to
+// overlay belongs in that statement too.
 //
 // No caller needs one of them on the claim it hands the store: the machine's own writes hand it
 // the claim the machine holds, which carries none of them (stored); the boot's repair hands it a
@@ -2994,8 +3009,8 @@ func (m *Machine) current() Claim {
 // hands it the claim one of those writes built (internal/daemon's projectPause.stopTx). Call
 // NormalizeClaim before this when c will also construct a machine.
 func StoredClaim(c Claim) Claim {
-	c.Pending, c.SuspensionHeld, c.SuspensionHeldBy, c.Compacting, c.ProcessGone, c.AwaitsPod, c.RegisteredPods =
-		nil, false, "", false, false, nil, RegisteredPods{}
+	c.Pending, c.SuspensionHeld, c.SuspensionHeldBy, c.Compacting, c.ProcessGone, c.AwaitsPod, c.RegisteredPods, c.ReportOwed =
+		nil, false, "", false, false, nil, RegisteredPods{}, false
 	return c
 }
 
