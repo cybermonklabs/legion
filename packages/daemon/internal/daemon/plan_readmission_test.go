@@ -208,7 +208,7 @@ func (r *ownerStepsRig) todoAgain() {
 	if err != nil {
 		t.Fatalf("encode the Dispatch event of %s: %v", r.key, err)
 	}
-	r.publish("notifications.dispatch.issue."+r.key+".issue.updated", "dispatch", fmt.Sprintf("%s-todo-%d", r.key, moved.LastSeq), string(payload))
+	r.publish(issueSubject(r.key, "issue.updated"), "dispatch", fmt.Sprintf("%s-todo-%d", r.key, moved.LastSeq), string(payload))
 }
 
 // waitStands waits for issue to stand in want at generation.

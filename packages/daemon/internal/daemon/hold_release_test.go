@@ -133,7 +133,7 @@ func TestPollHoldReleaseReleasesOnceTheEventThatPinnedTheFloorIsGivenUp(t *testi
 		t.Fatalf("seed root: %v", err)
 	}
 	repo := "acme/widgets"
-	ack, err := js.Publish(ctx, "notifications.dispatch.issue."+pinned+".issue.updated",
+	ack, err := js.Publish(ctx, issueSubject(pinned, "issue.updated"),
 		retainedIssueEnvelope(t, pinned, 401, 3, "todo", map[string]string{"kind": "user", "id": "a-person"}, &repo))
 	if err != nil {
 		t.Fatalf("publish the pinned event: %v", err)
@@ -205,7 +205,7 @@ func TestPollHoldReleaseRetriesAFailedPositionRead(t *testing.T) {
 		t.Fatal("Held() = false after seeding a behind record, want it held")
 	}
 
-	reader := &failingPositionReader{failures: 3, position: intake.DispatchConsumerPosition{AckFloorStream: 5}}
+	reader := &failingPositionReader{failures: 3, position: intake.DispatchConsumerPosition{AckFloorStream: 5, Idle: true}}
 	w := &workflowRuntime{
 		pool: pool, admission: admission, handlers: []intake.Handler{engine, admission},
 		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, holdPollInterval: 20 * time.Millisecond,
@@ -498,11 +498,11 @@ func TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow(t *te
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
-	// A message ahead of the consumer's own ack floor, never consumed in this test, is what keeps
-	// caughtUp false: the label-adding LEGION-EDGE event itself, still sitting on the stream
+	// A message on the consumer's own filter, never consumed in this test, is what keeps the
+	// consumer from idle: the label-adding LEGION-EDGE event itself, still sitting on the stream
 	// unconsumed, is exactly the real event Reconcile's own listing snapshot cannot yet be told
 	// apart from.
-	if _, err := js.Publish(context.Background(), "notifications.dispatch.issue.LEGION-EDGE.issue.created", []byte(`{"seq":1,"type":"issue.created","payload":{"status":"backlog"}}`)); err != nil {
+	if _, err := js.Publish(context.Background(), "notifications.dispatch.issue.CAPTURE.LEGION-EDGE.issue.created", []byte(`{"seq":1,"type":"issue.created","payload":{"status":"backlog"}}`)); err != nil {
 		t.Fatalf("publish LEGION-EDGE's own pending event: %v", err)
 	}
 
@@ -552,7 +552,7 @@ func TestReconcileOnThePilotsShapeAdmitsOnlyTheLabeledTodoRootQuickly(t *testing
 	}
 	// Another project's daemon already published to the shared stream before this one ever opens
 	// its consumer.
-	if _, err := js.Publish(context.Background(), "notifications.dispatch.issue.OTHER-1.issue.updated", []byte(`{"seq":1,"type":"issue.updated","payload":{"status":"todo"}}`)); err != nil {
+	if _, err := js.Publish(context.Background(), "notifications.dispatch.issue.OTHER.OTHER-1.issue.updated", []byte(`{"seq":1,"type":"issue.updated","payload":{"status":"todo"}}`)); err != nil {
 		t.Fatalf("publish another project's event: %v", err)
 	}
 
@@ -645,7 +645,7 @@ func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 		t.Fatal("Held() = false after seeding a behind record, want it held")
 	}
 
-	// A reader stuck at an ack floor that never reaches target 5: the hold this poll would
+	// A reader stuck behind messages it never acknowledges, never idle: the hold this poll would
 	// otherwise never explain.
 	reader := &failingPositionReader{position: intake.DispatchConsumerPosition{AckFloorStream: 0, Idle: false}}
 	w := &workflowRuntime{
@@ -665,8 +665,8 @@ func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 	<-done
 
 	msg := logBuf.String()
-	if !strings.Contains(msg, "target=5") || !strings.Contains(msg, "ack_floor=0") {
-		t.Fatalf("warn log = %q, want it to name the target and the ack floor", msg)
+	if !strings.Contains(msg, "ack_floor=0") || !strings.Contains(msg, "idle=false") || strings.Contains(msg, "target=") {
+		t.Fatalf("warn log = %q, want it to name the ack floor and that the consumer is not idle, and no stream target", msg)
 	}
 }
 
@@ -740,7 +740,7 @@ func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRec
 				t.Fatal("LEGION-RACE already slotted before pending cleared, want it recorded but not yet promoted (that transaction's own promote still saw it held)")
 			}
 		})
-		_, err := admission.Apply(ctx, tx, intake.DispatchConsumerPosition{AckFloorStream: 10})
+		_, err := admission.Apply(ctx, tx, intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true})
 		return err
 	}); err != nil {
 		t.Fatalf("apply position fact: %v", err)
@@ -813,7 +813,7 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 				t.Fatalf("apply the racing event: %v", err)
 			}
 		})
-		_, err := admission.Apply(ctx, tx, intake.DispatchConsumerPosition{AckFloorStream: 10})
+		_, err := admission.Apply(ctx, tx, intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true})
 		return err
 	}); err != nil {
 		t.Fatalf("apply position fact: %v", err)
@@ -838,16 +838,19 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 
 // reconcileAdmission runs admission's boot reconcile as the workflow runtime does (reconcile): in
 // its own transaction (store.Transact), settling the runs its writes end before it commits, and
-// running the commit hooks it registered once that commits.
+// running the commit hooks it registered once that commits. target is the stream position the
+// scenario's listing was read at: a consumer whose ack floor is at or past it has caught up, which
+// its own info reads as idle (intake.DispatchConsumerPosition.Reached).
 func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admission, summaries []dispatch.IssueSummary, target int64, position intake.DispatchConsumerPosition) {
 	t.Helper()
+	position.Idle = position.Idle || position.AckFloorStream >= target
 	listed := make([]intake.DispatchIssue, len(summaries))
 	for i, summary := range summaries {
 		listed[i] = intake.ListedIssue(summary)
 	}
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		ctx, settle := intake.OpenSettlers(ctx, admission)
-		if _, err := admission.Reconcile(ctx, tx, listed, target, position); err != nil {
+		if _, err := admission.Reconcile(ctx, tx, listed, position); err != nil {
 			return err
 		}
 		return settle(ctx, tx)
@@ -859,7 +862,7 @@ func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admissi
 // The three admission log lines this proof reads, each the one an operator reads in the daemon's
 // own output.
 const (
-	holdingMessage   = "admission reconcile: holding roots for the Dispatch consumer to reach a stream position"
+	holdingMessage   = "admission reconcile: holding roots for the Dispatch consumer to catch up"
 	releaseMessage   = "admission: the Dispatch consumer has caught up; releasing held roots"
 	slotTakenMessage = "admission: slot taken"
 )

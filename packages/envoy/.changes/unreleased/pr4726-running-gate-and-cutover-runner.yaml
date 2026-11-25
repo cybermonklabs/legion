@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+    `scripts/daemon-running-gate.sh --deployment <owner/repo> <commit>` says whether every Legion
+    daemon that runs now runs a build at or after `<commit>`. It checks that the rollout is complete
+    and that no older ReplicaSet holds a pod. It reads each running container's own digest with
+    `crane config` and holds its revision to `<commit>`'s ancestry. It also checks that `legion
+    version` in the daemon's pod names that same revision. It reads the deployment's Legion projects
+    through `scripts/lib/legion-deployment-projects.sh`, which `daemon-release-gate.sh` now sources
+    too, so the two gates never disagree on which daemons run.
+
+    `scripts/cutover-read.sh` runs `legion cutover-read drain|filters` in a one-off Job under the
+    in-cluster listener's identity, from a worker image named by digest, and exits as the read does.
+time: 2026-11-21T06:34:27.480959704Z
+custom:
+    Issue: pr4726

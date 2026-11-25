@@ -43,6 +43,7 @@ github_apps:
     app_id: "2"
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
+notification_stream_max_age_hours: 72
 `
 
 // deploymentBound is `stalled_tree_notice_hours` as a deployment gives it: lines is what the

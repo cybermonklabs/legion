@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
+	"github.com/sjawhar/envoy/subjectforms"
 
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
@@ -123,10 +124,23 @@ func (e ErrPublishDenied) Error() string {
 	return fmt.Sprintf("the listener's NATS grant denied the forward (%s)", e.Message)
 }
 
-// RoleTopicPrefix is the Envoy subject a role token is reached on (ROLE_TOPIC_PREFIX,
-// packages/contracts/src/subject.ts): a notice goes to its architect's, and a review-stuck notice
+// RoleTopicPrefix begins every role lane's name, in either form (ROLE_TOPIC_PREFIX,
+// packages/contracts/src/subject.ts): the old form names the role alone after it, the new form the
+// role's project and then the role. It is the prefix a reader cuts and a subscription names; a
+// topic the daemon publishes to is RoleTopic's, never this prefix and a role.
+const RoleTopicPrefix = subjectforms.RoleTopicPrefix
+
+// RoleTopic is the Envoy topic role is reached on, the one form every role topic the daemon
+// writes takes: the role's lane under the project its own name says
+// (subjectforms.RoleSubject(subjectforms.RoleProject(role), role), Envoy's KC1 builder). A Legion
+// role token, legion-<token>-…, is reached under its token in upper case, which is the project
+// the listener keys its claim by, so the topic and the claim cannot name two projects whatever
+// the deployment's Dispatch key is; a token whose upper case is no project key, and any other
+// role, under no project (`_`). A notice goes to its architect's topic, and a review-stuck notice
 // names its reviewer's, so the architect need not build it.
-const RoleTopicPrefix = "notifications.role."
+func RoleTopic(role string) string {
+	return subjectforms.RoleSubject(subjectforms.RoleProject(role), role)
+}
 
 // ControllerTopic is the topic of project's controller, the one notice topic the daemon publishes
 // to; a workflow notice goes to the role topic of the architect that owns its issue instead (the

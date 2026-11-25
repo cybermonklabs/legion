@@ -48,7 +48,7 @@ func committedLines() []committedLine {
 				if !admission.Held() {
 					t.Fatal("the boot listing holds no root: the case's premise")
 				}
-				return "dispatch", intake.DispatchConsumerPosition{AckFloorStream: 5}, []intake.Handler{engineStub{}, admission}
+				return "dispatch", intake.DispatchConsumerPosition{AckFloorStream: 5, Idle: true}, []intake.Handler{engineStub{}, admission}
 			},
 			wrote: func(t *testing.T, pool *pgxpool.Pool) bool { return holdsSlot(t, pool, "LEGION-EDGE") }},
 		{name: "the hand-over event", line: `msg="admission hand-over" issue=LEGION-209`,

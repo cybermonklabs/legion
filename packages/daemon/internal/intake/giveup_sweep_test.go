@@ -87,20 +87,23 @@ func TestASweepGivesUpAFailingMessageItsConsumerWasMadeAgainPast(t *testing.T) {
 			}
 			stop := runConsumers(t, consumers, failsCapture3)
 			captured := capturedIssueUpdatedEnvelope(t)
-			left := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", envelopeWithID(t, captured, "dispatch-swept-1"))
-			touched := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", envelopeWithID(t, captured, "dispatch-swept-2"))
-			applied := publish(t, js, "notifications.dispatch.issue.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
+			left := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", envelopeWithID(t, captured, "dispatch-swept-1"))
+			touched := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", envelopeWithID(t, captured, "dispatch-swept-2"))
+			applied := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
 			dispatch := dispatchConsumerName(spec.Project)
 			waitOpenFailures(t, pool, dispatch, left.Sequence, touched.Sequence)
 			testwait.Eventually(t, "the fact behind the failing messages applied", func() bool { return writeCount(t, pool) == 1 })
 			stop()
 
-			filters := consumerInfo(t, stream, dispatch).Config.FilterSubjects
+			filter := consumerInfo(t, stream, dispatch).Config.FilterSubject
+			if filter != dispatchIssueFilter(spec.Project) {
+				t.Fatalf("the Dispatch durable filters %q, want its one filter %q, which the remade durable must keep", filter, dispatchIssueFilter(spec.Project))
+			}
 			if err := stream.DeleteConsumer(context.Background(), dispatch); err != nil {
 				t.Fatalf("delete the Dispatch durable: %v", err)
 			}
 			if row.deliverNew {
-				if _, err := stream.CreateConsumer(context.Background(), jetstream.ConsumerConfig{Durable: dispatch, FilterSubjects: filters,
+				if _, err := stream.CreateConsumer(context.Background(), jetstream.ConsumerConfig{Durable: dispatch, FilterSubject: filter,
 					AckPolicy: jetstream.AckExplicitPolicy, AckWait: spec.AckWait, DeliverPolicy: jetstream.DeliverNewPolicy}); err != nil {
 					t.Fatalf("make the Dispatch durable again at the next message: %v", err)
 				}
@@ -210,10 +213,10 @@ func TestASweepGivesUpAFailingMessageTheStreamDeleted(t *testing.T) {
 	js := testnats.JetStream(t)
 	stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}, MaxAge: 3 * time.Second})
 	spec := consumerSpec(&lockedBuffer{})
-	spec.NakDelay, spec.NakDelayCap, spec.RetentionMargin = 500*time.Millisecond, 500*time.Millisecond, time.Nanosecond
+	spec.NakDelay, spec.NakDelayCap, spec.RetentionMargin, spec.StreamMaxAge = 500*time.Millisecond, 500*time.Millisecond, time.Nanosecond, 3*time.Second
 	alwaysFails := handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) { return Result{}, errAlwaysFails })
 	stop := startConsume(t, js, spec, pool, alwaysFails)
-	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	dispatch := dispatchConsumerName(spec.Project)
 	waitOpenFailures(t, pool, dispatch, sent.Sequence)
 	stop()

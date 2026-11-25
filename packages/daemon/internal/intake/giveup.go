@@ -117,10 +117,10 @@ func didNotEndError(delivery uint64, recorded string) string {
 
 // remadeFailures is, for each durable consumer createConsumer made again at a stored position in
 // this boot, the stream sequences of the open failures it had then. Such a consumer delivers
-// those messages again with a delivery count of 1, and this is what says one may have an open
-// failure for its success to delete (consumerRun.mayHaveFailed). It is read once, as the consumer
-// is made again, so the ordinary delivery costs no statement. SetRepositories can make the GitHub
-// consumer again while Run reads, so it is kept under mu.
+// those messages again, the first of them twice (checkStart's nak), and this is what says one may
+// have an open failure for its success to delete (consumerRun.mayHaveFailed). It is read once, as
+// the consumer is made again, so the ordinary delivery costs no statement. The four consumers'
+// goroutines read and forget it at once, so it is kept under mu.
 type remadeFailures struct {
 	mu   sync.Mutex
 	seqs map[remadeFailure]struct{}
@@ -554,7 +554,7 @@ func (s *failureSweep) sweepConsumer(ctx context.Context, name string) (sweptPas
 	spec := c.spec
 	at := spec.Now()
 	read, cancel := context.WithTimeout(ctx, consumerLagBound)
-	consumer, err := c.stream.Consumer(read, name)
+	consumer, err := c.js.Consumer(read, notificationStream, name)
 	cancel()
 	if err != nil {
 		if ctx.Err() == nil {

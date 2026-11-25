@@ -35,6 +35,7 @@ github_apps:
     app_id: "2"
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
+notification_stream_max_age_hours: 72
 `
 
 // The five `gates.design` shapes the configuration check drives `legion config check`
@@ -59,6 +60,7 @@ github_apps:
     app_id: "2"
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
+notification_stream_max_age_hours: 72
 gates:
   design: [decisions, criteria]
 `
@@ -79,6 +81,7 @@ github_apps:
     app_id: "2"
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
+notification_stream_max_age_hours: 72
 gates:
   design: []
 `
@@ -99,6 +102,7 @@ github_apps:
     app_id: "2"
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
+notification_stream_max_age_hours: 72
 `
 
 const gatesUnknownWordFile = `project: DEMO
@@ -117,6 +121,7 @@ github_apps:
     app_id: "2"
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
+notification_stream_max_age_hours: 72
 gates:
   design: sometimes
 `
@@ -137,6 +142,7 @@ github_apps:
     app_id: "2"
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
+notification_stream_max_age_hours: 72
 gates:
   design: [spec, criteria, spec]
 `
@@ -225,6 +231,7 @@ func defaultsFor(port int) Config {
 		WorkerWakeBurst:                         1,
 		EnvoyURL:                                "http://127.0.0.1:9020",
 		NatsURLs:                                []string{"nats://127.0.0.1:4222"},
+		NotificationStreamMaxAge:                72 * time.Hour,
 		DispatchURL:                             "http://127.0.0.1:8080",
 		DispatchTokenFile:                       "/var/run/legion/DISPATCH_TOKEN",
 		Projects:                                map[string]Project{"DEMO": {ProductionCheck: claim.RoleTester}},
@@ -1744,6 +1751,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "nats_nkey_seed_file", line: "nats_nkey_seed_file: /var/run/legion/NATS_NKEY_SEED", class: modelled},
 		{key: "nats_daemon_nkey_seed_file", line: "nats_daemon_nkey_seed_file: /var/run/legion/NATS_DAEMON_NKEY_SEED", class: modelled},
 		{key: "nats_urls", line: "nats_urls: [nats://127.0.0.1:4222]", class: modelled},
+		{key: "notification_stream_max_age_hours", class: modelled},
 		{key: "operator_token_file", line: "operator_token_file: /var/run/legion/OPERATOR_TOKEN", class: modelled},
 		{key: "worker_wakes_per_minute", line: "worker_wakes_per_minute: 8", class: modelled},
 		{key: "worker_wake_burst", line: "worker_wake_burst: 1", class: modelled},

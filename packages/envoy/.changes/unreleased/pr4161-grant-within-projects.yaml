@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  `natsgrant.WithinProjects` holds a Legion daemon's NATS grant to the projects its token lists:
+  its own reply prefix (`natsgrant.InboxPrefix`) in place of `_INBOX.>`, the scope's issue,
+  role-exception and Legion lanes, and its own consumers under each project, each create naming
+  its one filter. It keeps every repository's GitHub events (`notifications.github.>`) whole, and
+  each project has one GitHub consumer, `legion-go-<project>-github`, on that family: a GitHub
+  event is a message of no project, and the grant names no repository. It drops the stream's info
+  and stored-message get, and refuses, naming the entry, any other stored-message read, a
+  filterless consumer create, a KV bucket's call, `notifications.>`, any entry it does not know,
+  and a grant that would end with an empty publish or subscribe list. Nothing calls it yet: the
+  auth service holds a daemon to projects only after the daemon and every listener run the change
+  that moves their consumers and wake reports.
+time: 2026-11-16T05:24:20Z
+custom:
+    Issue: pr4161

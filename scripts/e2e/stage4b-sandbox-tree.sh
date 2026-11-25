@@ -1458,6 +1458,7 @@ nats_urls:
   - $nats_url
 dispatch_url: $dispatch_base
 dispatch_token_file: $work/dispatch-token
+notification_stream_max_age_hours: 72
 # The project names no production_check, so the role a merge's check is handed to is the default,
 # the tester: Stage 3's rig writes the word out and proves the setting is read, this one the default.
 projects:

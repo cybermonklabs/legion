@@ -18,7 +18,7 @@ func TestAMessageThatDoesNotDecodeIsRecordedAtItsFirstDelivery(t *testing.T) {
 	stop := startConsume(t, js, spec, pool)
 	defer stop()
 
-	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", []byte(`{`))
+	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-208.issue.updated", []byte(`{`))
 	dispatch := dispatchConsumerName(spec.Project)
 	given := waitGivenUp(t, pool, dispatch, sent.Sequence)
 	if given.GiveUpReason != record.GiveUpUndecodable || given.Deliveries != 1 || given.EventID != "" || !bytes.Equal(given.Payload, []byte(`{`)) ||

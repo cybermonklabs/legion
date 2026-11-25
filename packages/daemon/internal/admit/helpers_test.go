@@ -470,19 +470,23 @@ func testJetStream(t *testing.T) jetstream.JetStream {
 
 func reconcile(t *testing.T, pool *pgxpool.Pool, admission *Admission, summaries []dispatch.IssueSummary) {
 	t.Helper()
-	// target=1 against ack floor 0, not idle, never Reaches: a caller that never measured a real
-	// stream position makes no claim of having caught up, so a summary found behind a stored record
-	// is deferred exactly as production would, leaving the record alone — matching every test built
-	// before Reconcile took a stream position at all. Tests exercising the hold or its release use
+	// A consumer that is not idle has not caught up: a caller that never measured a real consumer
+	// makes no claim of having caught up, so a summary found behind a stored record is deferred
+	// exactly as production would, leaving the record alone — matching every test built before
+	// Reconcile took a consumer position at all. Tests exercising the hold or its release use
 	// reconcileWithPosition directly.
 	reconcileWithPosition(t, pool, admission, summaries, 1, 0, false)
 }
 
-// reconcileWithPosition applies summaries through Reconcile at target and the consumer's position,
-// and answers the keys Reconcile found older than an issue fact the daemon applied.
+// reconcileWithPosition applies summaries through Reconcile at the consumer's position, and answers
+// the keys Reconcile found older than an issue fact the daemon applied. Each scenario names the
+// stream position the listing was read at (target) beside the consumer's ack floor, as it reads: a
+// floor at or past that position is a consumer that has delivered and had acknowledged everything
+// it was given, which its own info reads as idle, and that is the whole of what Reconcile reads
+// (DispatchConsumerPosition.Reached).
 func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admission, summaries []dispatch.IssueSummary, target, ackFloorStream int64, idle bool) []string {
 	t.Helper()
-	position := intake.DispatchConsumerPosition{AckFloorStream: ackFloorStream, Idle: idle}
+	position := intake.DispatchConsumerPosition{AckFloorStream: ackFloorStream, Idle: idle || ackFloorStream >= target}
 	listed := make([]intake.DispatchIssue, len(summaries))
 	for i, summary := range summaries {
 		listed[i] = intake.ListedIssue(summary)
@@ -491,7 +495,7 @@ func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admissio
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		ctx, settle := intake.OpenSettlers(ctx, admission)
 		var err error
-		if refused, err = admission.Reconcile(ctx, tx, listed, target, position); err != nil {
+		if refused, err = admission.Reconcile(ctx, tx, listed, position); err != nil {
 			return err
 		}
 		return settle(ctx, tx)

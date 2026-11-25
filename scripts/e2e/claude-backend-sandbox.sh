@@ -699,6 +699,7 @@ nats_urls:
   - nats://$host:$port_nats
 dispatch_url: $pod_dispatch_url
 dispatch_token_file: $work/dispatch-token
+notification_stream_max_age_hours: 72
 # The project's repository is no key of legion.yaml: the PUT below sets $repo as the project's
 # default repository in Dispatch, and the daemon takes each issue's repository from Dispatch.
 projects:

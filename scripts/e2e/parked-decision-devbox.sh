@@ -276,6 +276,7 @@ nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
+notification_stream_max_age_hours: 72
 # The project's repository is no key of legion.yaml: the PUT in rig sets $repo as its default repository in Dispatch.
 projects:
   $project: {}

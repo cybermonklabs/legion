@@ -33,8 +33,8 @@ export type LegionWakeSubject<Token extends string = string> =
 
 /** The wake lane of the Legion deployment whose project token is `token`
  * (`legionProjectToken`), beside its controller lane: the role and agent messages the listener
- * reports for a released issue pod of that deployment. Until the listener moves its wakes here,
- * every wake goes to the one `notifications.legion.wake` (`bus.LegionWakeTopic`). */
+ * reports for a released issue pod of that deployment. Only the listener's own `listener_ready`
+ * stays on the one `notifications.legion.wake` (`bus.LegionWakeTopic`) every daemon shares. */
 export function legionWakeSubject<Token extends string>(token: Token): LegionWakeSubject<Token> {
   return `${LEGION_NOTICE_TOPIC_PREFIX}${token}.wake`;
 }

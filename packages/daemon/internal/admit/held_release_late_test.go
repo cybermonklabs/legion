@@ -13,18 +13,18 @@ import (
 // key's summary, or a later Reconcile may have held the key again. Neither is what the release
 // applied, so each stays held for a release of its own.
 
-// lateRelease holds LEGION-1 and LEGION-2 for the Dispatch consumer to reach position 10, and
-// takes the snapshot of both that a release at that position applies.
+// lateRelease holds LEGION-1 and LEGION-2 for the Dispatch consumer to catch up, and takes the
+// snapshot of both that a release at a confirmed idle applies.
 func lateRelease(t *testing.T) (*Admission, map[string]heldSummary) {
 	t.Helper()
 	admission := New(record.NewStore(), nil, 1, testProject, nil)
 	admission.holdDeferred(map[string]intake.DispatchIssue{
 		"LEGION-1": {Key: "LEGION-1", Status: "todo", Seq: 5},
 		"LEGION-2": {Key: "LEGION-2", Status: "todo", Seq: 5},
-	}, 10)
-	releasing := admission.releasable(intake.DispatchConsumerPosition{AckFloorStream: 10})
+	})
+	releasing := admission.releasable(intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true})
 	if len(releasing) != 2 {
-		t.Fatalf("the release at the target takes %d holds, want both", len(releasing))
+		t.Fatalf("the release at a confirmed idle takes %d holds, want both", len(releasing))
 	}
 	return admission, releasing
 }
@@ -57,7 +57,7 @@ func TestAReleaseClearsOnlyTheHoldsItApplied(t *testing.T) {
 // The rehold writes the summary the release applied, so only the hold itself tells the two apart.
 func TestAReholdSinceTheReleaseStaysHeld(t *testing.T) {
 	admission, releasing := lateRelease(t)
-	admission.holdDeferred(map[string]intake.DispatchIssue{"LEGION-1": {Key: "LEGION-1", Status: "todo", Seq: 5}}, 20)
+	admission.holdDeferred(map[string]intake.DispatchIssue{"LEGION-1": {Key: "LEGION-1", Status: "todo", Seq: 5}})
 
 	admission.clearReleased(releasing)
 	held := stillHeld(admission)

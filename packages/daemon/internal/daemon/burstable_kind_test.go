@@ -94,6 +94,7 @@ operator_token_file: ./operator-token
 dispatch_url: https://dispatch.internal.example
 dispatch_token_file: ./dispatch-token
 nats_urls: [nats://nats.internal.example:4222]
+notification_stream_max_age_hours: 72
 worker_boot_timeout_seconds: 300
 projects:
   %[1]s: {}

@@ -121,7 +121,7 @@ func TestTheBootReadRecordsATodoChildOfALiveTreeThatHasNoRecord(t *testing.T) {
 				if got := maybeIssue(t, pool, bootChild); got != nil {
 					t.Fatalf("%s recorded while the consumer is behind = %#v, want it held for the consumer", bootChild, got)
 				}
-				if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10}, engineStub{}, admission); err != nil {
+				if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true}, engineStub{}, admission); err != nil {
 					t.Fatalf("ApplyFact position-reached: %v", err)
 				}
 			} else {

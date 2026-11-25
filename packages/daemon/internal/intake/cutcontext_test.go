@@ -155,7 +155,7 @@ func TestTheCutEndsAHandlerOnceItsStepHonoursTheCancelledContext(t *testing.T) {
 	// One fact, published once the consumers are open, since a durable created where the pool
 	// keeps no position for it starts at the next message (openConsumer): every line the row
 	// reads is this fact's, and the one redelivery it sees is the cut's.
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-350.issue.updated", envelopeJSON(t, "cut-350", "dispatch",
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-350.issue.updated", envelopeJSON(t, "cut-350", "dispatch",
 		`{"id":1,"issue_key":"CAPTURE-350","seq":1,"notify":true,"type":"issue.updated","actor":{"kind":"user","id":"someone"},`+
 			`"payload":{"key":"CAPTURE-350","status":"backlog","title":"a fact whose step ignores its context","parent":null,"rank":"A","labels":[],"resolved_repo":"sjawhar/legion"}}`))
 

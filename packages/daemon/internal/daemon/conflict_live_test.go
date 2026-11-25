@@ -124,7 +124,7 @@ func (r *conflictLive) roleTopic(issue string, role claim.Role) string {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	return notify.RoleTopicPrefix + string(token)
+	return notify.RoleTopic(string(token))
 }
 
 // heardOn is how many messages the listener has taken on the role topic of each of issue's roles,

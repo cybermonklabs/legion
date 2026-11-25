@@ -1,12 +1,13 @@
-// Package subjectforms holds the readers of the message names the rename that put a project into
-// them moves (dispatch://INFRA-3862), for a caller outside this module: an issue event's name
-// carries its key in either form, and a role lane's name its role in either form.
+// Package subjectforms holds the readers and builders of the message names the rename that put a
+// project into them moves, for a caller outside this module: an issue event's name carries its key
+// in either form, and a role lane's name its role in either form; a role lane is written in the new
+// form, its project first.
 //
 // It exists because the Legion daemon (packages/daemon, module
 // github.com/sjawhar/legion/daemon) is a Go module of its own, and Go's internal rule bars it
 // from github.com/sjawhar/envoy/internal/contracts, where these readers are (KC1 of the rename's
 // plan). This package is the one public door onto them, and re-exports them with no logic of its
-// own, so the daemon and the listener cannot read a name two ways.
+// own, so the daemon and the listener cannot read or write a name two ways.
 //
 // No package of the envoy module imports this one, for the reason sessiontiming gives:
 // packages/envoy/docker/Dockerfile copies only what the listener's own packages reach into the
@@ -35,6 +36,19 @@ func IssueEventKey(subject string) (key string, legacy, ok bool) {
 // project the name says.
 func CanonicalRole(role string) (project, name string, legacy bool) {
 	return contracts.CanonicalRole(role)
+}
+
+// RoleProject is contracts.RoleProject: the project a role works for, read from the role's own
+// name. A Legion role, legion-<token>-…, works for the project whose key is its token in upper
+// case when that is a project key, and every other role for none (contracts.NoProject).
+func RoleProject(role string) string {
+	return contracts.RoleProject(role)
+}
+
+// RoleSubject is contracts.RoleSubject: a role's lane in the new form,
+// notifications.role.<project>.<role>.
+func RoleSubject(project, role string) string {
+	return contracts.RoleSubject(project, role)
 }
 
 // LegionWakeSubject is contracts.LegionWakeSubject: a Legion project's own wake subject,

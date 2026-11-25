@@ -159,6 +159,14 @@ type Config struct {
 	// authenticates with, never handed to a pane, "" when the file names none (natsauth.DaemonSeed
 	// then reads NATS_DAEMON_NKEY_SEED_FILE or NATS_DAEMON_NKEY_SEED from the daemon's environment).
 	NatsDaemonNkeySeedFile string
+	// NotificationStreamMaxAge is how long the notification stream keeps a message
+	// (`notification_stream_max_age_hours`), the stream's own MaxAge as the deployment renders it
+	// from the stream owner's source (envoy's notificationstream.MaxAge, 72 hours), and 0 for
+	// `unlimited`, a stream that keeps every message. A file that configures the workflow must set
+	// it: the intake gives a failing message up before the stream would delete it
+	// (intake.ConsumerSpec.StreamMaxAge), and a daemon held to its projects may not read the
+	// stream's own MaxAge, so no value is guessed for a file that leaves the key out.
+	NotificationStreamMaxAge time.Duration
 
 	// Stage 3's workflow dependencies. DispatchTokenFile remains a pointer here: boot reads the
 	// bearer only after every local configuration refusal has passed.
@@ -407,8 +415,11 @@ type fileConfig struct {
 	OperatorTokenFile    *string
 	EnvoyURL             *string
 	NatsURLs             []string
-	EnvoyTokenFile       *string
-	NatsNkeySeedFile     *string
+	// NotificationStreamMaxAge is `notification_stream_max_age_hours`: nil for a file that leaves
+	// the key out, which a workflow refuses, and a pointer to 0 for `unlimited`.
+	NotificationStreamMaxAge *time.Duration
+	EnvoyTokenFile           *string
+	NatsNkeySeedFile         *string
 	// NatsDaemonNkeySeedFile is `nats_daemon_nkey_seed_file`.
 	NatsDaemonNkeySeedFile *string
 	DispatchURL            *string
@@ -935,6 +946,26 @@ func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time
 		return nil, fmt.Errorf("%s must be a positive number", key)
 	}
 	return &duration, nil
+}
+
+// NotificationStreamUnlimited is the word `notification_stream_max_age_hours` takes for a stream
+// that keeps every message, a MaxAge of 0.
+const NotificationStreamUnlimited = "unlimited"
+
+// readStreamMaxAge is `notification_stream_max_age_hours`: a positive number of hours, a decimal
+// among them, up to the longest a duration holds, or NotificationStreamUnlimited, read as 0. A key
+// written with no value, a zero, a negative number and any other word are refused: 0 would be
+// read as a stream that keeps nothing, and the word is how a file says the stream keeps
+// everything, so no number stands for it.
+func readStreamMaxAge(value *yaml.Node, key string) (*time.Duration, error) {
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!str" && value.Value == NotificationStreamUnlimited {
+		unlimited := time.Duration(0)
+		return &unlimited, nil
+	}
+	if value.Tag == "!!null" || (value.Tag != "!!int" && value.Tag != "!!float") {
+		return nil, fmt.Errorf("%s must be a positive number of hours, or %s", key, NotificationStreamUnlimited)
+	}
+	return readUnit(value, key, time.Hour, int(math.MaxInt64/int64(time.Hour)))
 }
 
 // validURL is the shipped `validateUrl` (config.ts) for the URLs this daemon dials or

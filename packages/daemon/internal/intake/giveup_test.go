@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/sjawhar/envoy/notificationstream"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -125,19 +126,19 @@ func consumeDelivery(ctx context.Context, d *fakeDelivery, run consumerRun, hand
 func productionRun(t *testing.T, pool store.TxPool, logs *lockedBuffer, now func() time.Time) consumerRun {
 	t.Helper()
 	spec, err := normalizedSpec(ConsumerSpec{Project: "CAPTURE", Repositories: capturedRepositories, NakDelay: time.Second,
-		Logger: slog.New(slog.NewTextHandler(logs, nil)), Now: now})
+		StreamMaxAge: notificationStreamMaxAge, Logger: slog.New(slog.NewTextHandler(logs, nil)), Now: now})
 	if err != nil {
 		t.Fatalf("normalizedSpec: %v", err)
 	}
-	return consumerRun{spec: spec, repositories: spec.Repositories, pool: pool, maxAge: notificationStreamMaxAge, names: &issueNames{},
+	return consumerRun{spec: spec, repositories: spec.Repositories, pool: pool, maxAge: spec.StreamMaxAge, names: &issueNames{},
 		remade: &remadeFailures{}, dropped: newDroppedSettlements()}
 }
 
 // notificationStreamMaxAge is how long production's notification stream keeps a message, its
-// MaxAge: Envoy sets it to the stream's 72-hour duplicate window, streamDuplicateWindow in
-// packages/envoy/internal/bus/stream.go, which this module cannot import. The daemon reads the
-// stream's own MaxAge at OpenConsumers; the production schedule is held to this copy of it.
-const notificationStreamMaxAge = 72 * time.Hour
+// MaxAge: the stream owner's public value (envoy's notificationstream.MaxAge), from which a
+// deployment renders the daemon's notification_stream_max_age_hours, the 72-hour duplicate window
+// Envoy sets on the stream. The production schedule is held to it.
+const notificationStreamMaxAge = notificationstream.MaxAge
 
 // The delay before a failed message's next delivery doubles from NakDelay with each delivery and
 // stops at NakDelayCap; no delivery count overflows it, and a count of 0, a delivery whose

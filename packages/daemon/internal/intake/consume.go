@@ -119,6 +119,15 @@ type ConsumerSpec struct {
 	// come for the message not to be given up at once (retentionEnds); none is
 	// defaultRetentionMargin.
 	RetentionMargin time.Duration
+	// StreamMaxAge is how long the notification stream keeps a message, the stream's MaxAge as
+	// the deployment supplies it (config.Config.NotificationStreamMaxAge, rendered from the stream
+	// owner's envoy notificationstream.MaxAge), 0 for a stream that keeps every message: the early
+	// give-up reads it (retentionEnds). The daemon never reads the stream's own MaxAge, since the
+	// stream's info (STREAM.INFO) is a read of every project's subjects that a daemon held to its
+	// projects is not granted (Consumers), so the value is a deployment agreement, not a reading:
+	// a value above the stream's gives a message up later than its retention allows, and one below
+	// it sooner. Negative is refused.
+	StreamMaxAge time.Duration
 	// WakeOutbox wakes the outbox lane that runs kind for issue once a give-up's transaction has
 	// committed a notice of it (the controller's intake-gave-up notice, which each give-up
 	// statement of the record counts it in), as the daemon's records wake a lane for every row
@@ -249,54 +258,77 @@ func (r *RetryLater) Unwrap() error { return r.Err }
 // set GitHub intake hears and decodes, which SetRepositories replaces under mu. pool is the
 // Postgres every fact is applied on and every consumer's position is kept in (consumer_positions).
 // progress is, per durable consumer, what JetStream does not keep: when this daemon opened it and
-// when it last handled a message (Lag). js is the JetStream they were opened on, where each read of
-// the stream's info opens a handle of its own (DispatchTarget, createConsumer); stream is the
-// handle every other call shares. maxAge is how long the stream keeps a message, its own MaxAge (0
-// for ever), which the early give-up reads (retentionEnds). remade is the open failures of the
-// consumers made again in this boot (remadeFailures). sweepEvery is the failure sweep's period,
-// failureSweepEvery, which a test shortens.
+// when it last handled a message (Lag). js is the JetStream they were opened on. remade is the
+// open failures of the consumers made again in this boot (remadeFailures). sweepEvery is the
+// failure sweep's period, failureSweepEvery, which a test shortens. probe is the bounded create
+// that confirms the Dispatch consumer idle (DispatchPosition, idleProbe).
+//
+// Every call reaches the stream through a consumer of this project's own, by its name: a
+// consumer's create (CONSUMER.CREATE with the consumer's one filter in its subject), its info
+// (CONSUMER.INFO), its pull and its acknowledgements, and the idle probe's create, which names
+// the project's Dispatch filter in its subject too. None reads stream state or a stored message:
+// neither the stream's info (STREAM.INFO, whose subject listing names every stored subject) nor a
+// stored message (STREAM.MSG.GET, DIRECT.GET). A daemon whose grant holds it to its projects
+// (envoy's natsgrant.WithinProjects) is granted none of them, since each would show it another
+// project's names, so what the stream's own info would say is supplied instead: its MaxAge, as
+// spec.StreamMaxAge.
 type Consumers struct {
 	spec     ConsumerSpec
 	pool     store.TxPool
 	js       jetstream.JetStream
-	stream   jetstream.Stream
 	dispatch jetstream.Consumer
 	github   jetstream.Consumer
-	// wake is the durable on the Envoy listener's role and agent wake reports, on two filters while
-	// the reports move from the one subject every daemon shares (legionWakeSubject) to the
-	// project's own (wakeSubject): a message published to a role topic of a released pod, and a
-	// message sent to the agent subject of a released session. It hears the shared subject until a
-	// later release drops it, once every listener reports on the project's subject and nothing of
-	// the project is left unread on the shared one. ready is the durable on the shared subject
-	// alone, from its own creation on, which carries the listener's own `listener_ready`; a report
-	// a listener of an earlier release still puts there reaches this daemon through both, and the
-	// second is dropped as a duplicate (processed_events).
+	// wake is the durable on the Envoy listener's wake reports for this project (wakeSubject): a
+	// message published to a role topic of a released pod of this project, and a message sent to
+	// the agent subject of a released session of it. ready is the durable on the one wake subject
+	// every daemon shares (legionWakeSubject), which carries the listener's own `listener_ready`;
+	// a role or agent report still found there is acknowledged with no fact (decodeMessage).
 	wake  jetstream.Consumer
 	ready jetstream.Consumer
 
 	progress struct{ dispatch, github, wake, ready *consumerProgress }
 
-	maxAge     time.Duration
 	remade     *remadeFailures
 	sweepEvery time.Duration
+	probe      *idleProbe
 
 	mu    sync.Mutex
 	repos []ghrepo.Repository
 }
 
-// OpenConsumers creates or updates this project's Dispatch, GitHub, listener-wake and
-// listener-ready durable consumers. A consumer created here for the first time starts at the next
+// consumerStart is where a durable consumer that is missing is created: at the last message it
+// applied, which consumer_positions keeps (fromStoredPosition), or at the next message whatever
+// is stored (atCreation).
+type consumerStart int
+
+const (
+	fromStoredPosition consumerStart = iota
+	atCreation
+)
+
+// OpenConsumers creates or updates this project's Dispatch, GitHub, wake and ready durable
+// consumers, each on exactly one filter, so the subject its create is sent on names that filter
+// (`$JS.API.CONSUMER.CREATE.<stream>.<consumer>.<filter>`), which is what a grant holding the
+// daemon to its projects names. A consumer created here for the first time starts at the next
 // message, so a first daemon on a stream that already holds history (production keeps 72 hours of
 // it) does not replay it into admission. Boot opens the consumers before it reads its Dispatch
 // listing, so the listing covers the state before them and the consumers everything published
 // since, including what lands while the listing is read. A consumer that exists keeps its name,
-// its position and the policy that created it, and takes the rest of this boot's configuration:
-// the wake consumer of an earlier release, on the shared subject alone, is updated in place to
-// both wake subjects, its ack floor and position kept, so a report the project's subject gains
-// after this boot is never behind its position. A consumer that applied messages before and is
-// now missing starts at the last one it applied (openConsumer), except the ready consumer, which
-// starts at its own creation (openReady). pool is required: it is where facts are applied and
-// positions kept.
+// its position and the policy that created it, and takes the rest of this boot's configuration,
+// its one filter included: nats-server updates a consumer's filter in place and keeps its ack
+// floor and its position, so the Dispatch consumer of an earlier release (on the issue family) and
+// the GitHub consumer (one filter per repository) move onto their one filter with no gap and no
+// replay. The wake consumer of the release before this one hears both wake subjects, the shared
+// one and the project's own; this boot drops the shared one in place. That loses nothing only once
+// every listener reports role and agent wakes on project subjects and no role or agent report of
+// the project is left unread on the shared subject past the consumer's ack floor (plan C's
+// drain read, `legion cutover-read drain`, CutoverReader.Drain), which is why this build deploys
+// after that read. A consumer that applied messages before and is now missing starts at the last
+// one it applied (openConsumer), except the ready consumer, which starts at its own creation: it
+// carries the listener's liveness report, which says nothing about the past, and a start at an
+// older position would hand this daemon every report the shared subject kept, other projects'
+// among them, from a listener of an earlier release. pool is required: it is where facts are
+// applied and positions kept.
 //
 // A NATS server that can skip a message on a consumer filtering on a wildcard and a literal at the
 // same token is refused before any consumer is opened, naming its version and the fixed releases
@@ -305,7 +337,7 @@ type Consumers struct {
 // the error.
 // The version is decided on one the connection reports: a connection reconnecting or draining when
 // the boot reaches this is looked at again, within ctx (the boot attempt's 30 s bootTimeout, the
-// bound the stream lookup after this has), and is never read as a server of no version.
+// bound the first consumer's read after this has), and is never read as a server of no version.
 func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPool, spec ConsumerSpec) (*Consumers, error) {
 	if pool == nil {
 		return nil, errors.New("intake consumers need the Postgres pool facts are applied on")
@@ -317,49 +349,32 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPoo
 	if err != nil {
 		return nil, err
 	}
-	stream, err := js.Stream(ctx, notificationStream)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", notificationStream, err)
-	}
-
-	remade := &remadeFailures{}
-	dispatch, err := openConsumer(ctx, js, stream, pool, spec, remade, jetstream.ConsumerConfig{
-		Durable:        dispatchConsumerName(spec.Project),
-		FilterSubjects: []string{"notifications.dispatch.issue.>"},
-		AckPolicy:      jetstream.AckExplicitPolicy,
-		AckWait:        spec.AckWait,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("open the Dispatch durable consumer: %w", err)
-	}
-	github, err := openConsumer(ctx, js, stream, pool, spec, remade, githubConsumerConfig(spec, spec.Repositories))
-	if err != nil {
-		return nil, fmt.Errorf("open the GitHub durable consumer: %w", err)
-	}
 	wakeOn, err := wakeSubject(spec.Project)
 	if err != nil {
 		return nil, err
 	}
-	wake, err := openConsumer(ctx, js, stream, pool, spec, remade, jetstream.ConsumerConfig{
-		Durable:        wakeConsumerName(spec.Project),
-		FilterSubjects: []string{legionWakeSubject, wakeOn},
-		AckPolicy:      jetstream.AckExplicitPolicy,
-		AckWait:        spec.AckWait,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("open the listener wake durable consumer: %w", err)
+	consumer := func(durable, filter string) jetstream.ConsumerConfig {
+		return jetstream.ConsumerConfig{Durable: durable, FilterSubject: filter, AckPolicy: jetstream.AckExplicitPolicy, AckWait: spec.AckWait}
 	}
-	ready, err := openReady(ctx, stream, jetstream.ConsumerConfig{
-		Durable:       readyConsumerName(spec.Project),
-		FilterSubject: legionWakeSubject,
-		AckPolicy:     jetstream.AckExplicitPolicy,
-		AckWait:       spec.AckWait,
-	})
+	remade := &remadeFailures{}
+	dispatch, err := openConsumer(ctx, js, pool, spec, remade, consumer(dispatchConsumerName(spec.Project), dispatchIssueFilter(spec.Project)), fromStoredPosition)
 	if err != nil {
-		return nil, fmt.Errorf("open the listener ready durable consumer: %w", err)
+		return nil, fmt.Errorf("open the Dispatch durable consumer on stream %s: %w", notificationStream, err)
 	}
-	consumers := &Consumers{spec: spec, pool: pool, js: js, stream: stream, dispatch: dispatch, github: github, wake: wake, ready: ready,
-		maxAge: stream.CachedInfo().Config.MaxAge, remade: remade, sweepEvery: failureSweepEvery, repos: slices.Clone(spec.Repositories)}
+	github, err := openConsumer(ctx, js, pool, spec, remade, consumer(githubConsumerName(spec.Project), githubFilter), fromStoredPosition)
+	if err != nil {
+		return nil, fmt.Errorf("open the GitHub durable consumer on stream %s: %w", notificationStream, err)
+	}
+	wake, err := openConsumer(ctx, js, pool, spec, remade, consumer(wakeConsumerName(spec.Project), wakeOn), fromStoredPosition)
+	if err != nil {
+		return nil, fmt.Errorf("open the listener wake durable consumer on stream %s: %w", notificationStream, err)
+	}
+	ready, err := openConsumer(ctx, js, pool, spec, remade, consumer(readyConsumerName(spec.Project), legionWakeSubject), atCreation)
+	if err != nil {
+		return nil, fmt.Errorf("open the listener ready durable consumer on stream %s: %w", notificationStream, err)
+	}
+	consumers := &Consumers{spec: spec, pool: pool, js: js, dispatch: dispatch, github: github, wake: wake, ready: ready,
+		remade: remade, sweepEvery: failureSweepEvery, probe: newIdleProbe(js.Conn(), spec.Project), repos: slices.Clone(spec.Repositories)}
 	opened := spec.Now()
 	consumers.progress.dispatch = &consumerProgress{name: dispatchConsumerName(spec.Project), opened: opened}
 	consumers.progress.github = &consumerProgress{name: githubConsumerName(spec.Project), opened: opened}
@@ -368,33 +383,21 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPoo
 	return consumers, nil
 }
 
-func githubConsumerConfig(spec ConsumerSpec, repositories []ghrepo.Repository) jetstream.ConsumerConfig {
-	return jetstream.ConsumerConfig{
-		Durable:        githubConsumerName(spec.Project),
-		FilterSubjects: githubFilters(repositories),
-		AckPolicy:      jetstream.AckExplicitPolicy,
-		AckWait:        spec.AckWait,
-	}
-}
-
-// SetRepositories replaces the repositories GitHub intake hears: the GitHub consumer's filters,
-// then, once JetStream has taken them, the set the decoder accepts an event's repository from. Both
-// change under one lock every decode reads the set under, so no event is decoded against the one
-// while the consumer filters on the other: an event of a repository added here is decoded from the
-// moment the consumer delivers it, and one of a repository taken out is acknowledged untouched. An
-// update JetStream refuses changes neither, so the caller can retry it. No repository is a daemon
-// that serves none yet (githubHearsNoRepository); a zero one is refused.
-func (c *Consumers) SetRepositories(ctx context.Context, repositories []ghrepo.Repository) error {
+// SetRepositories replaces the repositories GitHub intake hears: the set the decoder accepts an
+// event's repository from, under the lock every decode reads it under. It makes no JetStream call:
+// the GitHub consumer hears every repository's events (githubFilter), and the decoder acknowledges
+// with no fact an event of a repository the set does not hold (decodeGitHubFact), so a repository
+// added here needs no new consumer, no new grant and no reconnect. An event of it delivered before
+// the add was acknowledged as it passed, and one delivered after it is applied, as a filter updated
+// in place at the add would give. No repository is a daemon that serves none yet; a zero one is
+// refused.
+func (c *Consumers) SetRepositories(_ context.Context, repositories []ghrepo.Repository) error {
 	if slices.ContainsFunc(repositories, ghrepo.Repository.IsZero) {
 		return fmt.Errorf("GitHub intake cannot hear a zero repository")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	github, err := openConsumer(ctx, c.js, c.stream, c.pool, c.spec, c.remade, githubConsumerConfig(c.spec, repositories))
-	if err != nil {
-		return fmt.Errorf("update the GitHub durable consumer's repositories: %w", err)
-	}
-	c.repos, c.github = slices.Clone(repositories), github
+	c.repos = slices.Clone(repositories)
 	return nil
 }
 
@@ -412,192 +415,158 @@ func (c *Consumers) Records() Records {
 }
 
 // openConsumer updates the durable consumer config names, keeping the start position it was created
-// with (JetStream refuses to change it), or creates it. A consumer created where pool keeps a
-// position for it (recordStreamPosition) starts at that position's stream time, so the messages
-// published while it was missing are delivered; the one at that time, which it applied, is
-// delivered again and dropped as a duplicate (processed_events). The start is logged; one older
-// than the stream's first message (the stream keeps 72 hours) is warned of too. The position moves
-// only when a fact is applied or a message is given up, never for a message acknowledged without a
-// transaction, so on a quiet project an old position is no sign of loss: the messages between it
-// and the stream's first may have been handled by the consumer before it went missing, or may have
-// been missed. The daemon applied none of them, and nothing replays them. A consumer with no
-// position starts at the next message.
-func openConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool store.TxPool, spec ConsumerSpec, remade *remadeFailures, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
-	existing, err := stream.Consumer(ctx, config.Durable)
+// with (JetStream refuses to change it), or creates it where start says (createConsumer). It reads
+// the consumer by its name (CONSUMER.INFO) and writes it with CreateOrUpdateConsumer, whose subject
+// names the consumer and its one filter.
+func openConsumer(ctx context.Context, js jetstream.JetStream, pool store.TxPool, spec ConsumerSpec, remade *remadeFailures, config jetstream.ConsumerConfig, start consumerStart) (jetstream.Consumer, error) {
+	existing, err := js.Consumer(ctx, notificationStream, config.Durable)
 	if errors.Is(err, jetstream.ErrConsumerNotFound) {
-		return createConsumer(ctx, js, stream, pool, spec, remade, config)
+		return createConsumer(ctx, js, pool, spec, remade, config, start)
 	}
 	if err != nil {
 		return nil, err
 	}
 	created := existing.CachedInfo().Config
 	config.DeliverPolicy, config.OptStartSeq, config.OptStartTime = created.DeliverPolicy, created.OptStartSeq, created.OptStartTime
-	return stream.UpdateConsumer(ctx, config)
+	return js.CreateOrUpdateConsumer(ctx, notificationStream, config)
 }
 
-// openReady updates the ready consumer config names in place, keeping the start it was created
-// with, or creates it at the next message whatever consumer_positions holds for it: it carries
-// the listener's liveness report, which says nothing about the past, and a start at an older
-// position would hand this daemon the role and agent reports the shared subject kept, other
-// projects' among them.
-func openReady(ctx context.Context, stream jetstream.Stream, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
-	existing, err := stream.Consumer(ctx, config.Durable)
-	if errors.Is(err, jetstream.ErrConsumerNotFound) {
-		config.DeliverPolicy = jetstream.DeliverNewPolicy
-		return stream.CreateConsumer(ctx, config)
-	}
-	if err != nil {
-		return nil, err
-	}
-	created := existing.CachedInfo().Config
-	config.DeliverPolicy, config.OptStartSeq, config.OptStartTime = created.DeliverPolicy, created.OptStartSeq, created.OptStartTime
-	return stream.UpdateConsumer(ctx, config)
-}
+// startCheckWait is how long createConsumer waits for the first message of a consumer it created at
+// a stored position, the message it checks the start against.
+const startCheckWait = 2 * time.Second
 
-// createConsumer creates the missing durable consumer config names, at its stored position when
-// pool keeps one and at the next message otherwise (openConsumer). The stream's info it reads for
-// a stored position comes through a handle of its own on js, as DispatchTarget's does, and never
-// through stream, which other goroutines share. A consumer made at its stored position delivers
-// again the messages after it, each with a delivery count of 1, so the open failures it had are
-// read into remade as it is made, for their success to delete (remadeFailures). One made at the
-// next message delivers none of them again, and the sweep gives up those it moved past.
-func createConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool store.TxPool, spec ConsumerSpec, remade *remadeFailures, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+// createConsumer creates the missing durable consumer config names: at the next message when start
+// is atCreation or pool keeps no position for it, and otherwise at that position's stream time, so
+// the messages published while it was missing are delivered; the one at that time, which it
+// applied, is delivered again and dropped as a duplicate (processed_events). The position moves
+// only when a fact is applied or a message is given up, never for a message acknowledged without
+// a transaction, so on a quiet project an old position is no sign of loss.
+//
+// A consumer made at its stored position delivers again the messages after it, so the open
+// failures it had are read into remade as it is made, for their success to delete
+// (remadeFailures). One made at the next message delivers none of them again, and the sweep gives
+// up those it moved past.
+//
+// The start is checked on the consumer's own first message, which needs no read of the stream
+// (checkStart): a first message stored after the position means the stored message is no longer in
+// the stream (its 72 hours ran out, it was purged, or the stream was made again). The check runs at
+// creation, so a boot that stops after OpenConsumers has already logged it. Its nak hands that
+// message to Run as a second delivery, which the record notes as a redelivery and its success
+// clears (consumerRun.noteRedelivery, consumerRun.mayHaveFailed).
+func createConsumer(ctx context.Context, js jetstream.JetStream, pool store.TxPool, spec ConsumerSpec, remade *remadeFailures, config jetstream.ConsumerConfig, start consumerStart) (jetstream.Consumer, error) {
 	logger := spec.Logger
-	start, stored, err := storedStreamTime(ctx, pool, config.Durable)
+	at, stored, err := storedStreamTime(ctx, pool, config.Durable)
 	if err != nil {
 		return nil, err
 	}
-	if !stored {
+	if !stored || start == atCreation {
 		config.DeliverPolicy = jetstream.DeliverNewPolicy
-		return stream.CreateConsumer(ctx, config)
+		return js.CreateConsumer(ctx, notificationStream, config)
 	}
 	if err := readRemadeFailures(ctx, pool, spec.Project, config.Durable, remade); err != nil {
 		return nil, err
 	}
-	fresh, err := js.Stream(ctx, notificationStream)
-	if err != nil {
-		return nil, fmt.Errorf("read %s info: %w", notificationStream, err)
-	}
-	info := fresh.CachedInfo()
-	config.DeliverPolicy, config.OptStartTime = jetstream.DeliverByStartTimePolicy, &start
-	consumer, err := stream.CreateConsumer(ctx, config)
+	config.DeliverPolicy, config.OptStartTime = jetstream.DeliverByStartTimePolicy, &at
+	consumer, err := js.CreateConsumer(ctx, notificationStream, config)
 	if err != nil {
 		return nil, err
 	}
 	logger.Info("intake: a missing durable consumer is created at the last message it applied",
-		"consumer", config.Durable, "start", start.UTC().Format(time.RFC3339Nano))
-	// The stored time keeps microseconds; the stream's, nanoseconds. A start at the stream's first
-	// message itself is not before it.
-	if first := info.State.FirstTime; start.Before(first.Truncate(time.Microsecond)) {
-		logger.Warn("intake: a missing durable consumer's last applied message is older than the stream's first message; events published between may have been missed: the daemon applied none of them, and nothing replays them, so an issue one of them would have moved waits for its next event",
-			"consumer", config.Durable, "start", start.UTC().Format(time.RFC3339Nano), "stream_first", first.UTC().Format(time.RFC3339Nano))
-	}
+		"consumer", config.Durable, "start", at.UTC().Format(time.RFC3339Nano))
+	checkStart(consumer, logger, config.Durable, at)
 	return consumer, nil
 }
 
-// DispatchTarget is the notification stream's own current last sequence, read fresh from
-// JetStream. Boot reads it after Reconcile's own Dispatch listing (not before: a message
-// published between an earlier read and the listing would be in the listing but not counted),
-// so any record the listing shows behind Dispatch's log is caught up only once the Dispatch
-// consumer's ack floor reaches this position — a stream position, not a per-issue or per-message
-// count, so it needs no correction for redelivery, a nak, or messages the consumer's filter never
-// matches. It reads through a handle of its own (js.Stream: one STREAM.INFO request, the handle's
-// cached info that answer) rather than c.stream.Info: nats.go's Info writes the handle's cached
-// info under no lock, and the refresher's recovery reads the target while a SetRepositories on
-// another goroutine can read the stream's info (createConsumer), so reads on the shared handle
-// raced (the race detector's find in the daemon's boot-listing test). A fresh handle shares
-// nothing with another read.
-func (c *Consumers) DispatchTarget(ctx context.Context) (int64, error) {
-	stream, err := c.js.Stream(ctx, notificationStream)
+// checkStart fetches the first message of consumer, just created at the stored stream time at
+// (createConsumer), within startCheckWait, compares its stream time with at and naks it, so the
+// consumer hands it to Run again. The stored time keeps microseconds and the stream's nanoseconds,
+// so the message's is truncated before they are compared. A later first message is warned of: the
+// daemon applied none of the messages between, and nothing replays them. No message within the
+// wait is logged at INFO as a start that could not be checked.
+func checkStart(consumer jetstream.Consumer, logger *slog.Logger, durable string, at time.Time) {
+	start := at.UTC().Format(time.RFC3339Nano)
+	batch, err := consumer.Fetch(1, jetstream.FetchMaxWait(startCheckWait))
 	if err != nil {
-		return 0, fmt.Errorf("read notification stream info: %w", err)
+		logger.Info("intake: a missing durable consumer's start could not be checked: its first message could not be fetched",
+			"consumer", durable, "start", start, "error", err)
+		return
 	}
-	return int64(stream.CachedInfo().State.LastSeq), nil
+	var first jetstream.Msg
+	for message := range batch.Messages() {
+		if first == nil {
+			first = message
+		}
+	}
+	if first == nil {
+		attributes := []any{"consumer", durable, "start", start}
+		if err := batch.Error(); err != nil {
+			attributes = append(attributes, "error", err)
+		}
+		logger.Info("intake: a missing durable consumer's start could not be checked: no message reached it within the wait", attributes...)
+		return
+	}
+	if metadata, err := first.Metadata(); err == nil && metadata.Timestamp.Truncate(time.Microsecond).After(at) {
+		logger.Warn("intake: a missing durable consumer's last applied message is no longer in the stream; events published between may have been missed: the daemon applied none of them, and nothing replays them, so an issue one of them would have moved waits for its next event",
+			"consumer", durable, "start", start, "first", metadata.Timestamp.UTC().Format(time.RFC3339Nano))
+	}
+	if err := first.Nak(); err != nil {
+		logger.Warn("intake: the message a missing durable consumer's start was checked on was not handed back; it is delivered again when its acknowledgement window ends",
+			"consumer", durable, "error", err)
+	}
 }
 
 // DispatchPosition is the Dispatch consumer's own current position, read fresh from JetStream:
-// the measurement Reconcile holds against DispatchTarget (DispatchConsumerPosition.Reached). It
-// reads through a handle of its own (stream.Consumer: one CONSUMER.INFO request, the handle's
-// cached info that answer) rather than c.dispatch.Info: nats.go's Info writes the handle's cached
-// info under no lock and Run's Consume reads it as it starts, so a position read while Run starts
-// raced on the shared handle (the race detector's find in the daemon's retained-event test), and a
-// fresh handle shares nothing with the one Run consumes. Nothing here may wait for Run instead:
-// the boot's reconcile reads the position before Run starts, and pollHoldRelease beside it.
+// what a reconcile and the hold poller read (DispatchConsumerPosition.Reached), both through this
+// one reading, so a release decides on the same confirmed idle wherever it is taken. It reads
+// through a handle of its own (js.Consumer: one CONSUMER.INFO request, the handle's cached info
+// that answer) rather than c.dispatch.Info: nats.go's Info writes the handle's cached info under
+// no lock and Run's Consume reads it as it starts, so a position read while Run starts raced on the
+// shared handle (the race detector's find in the daemon's retained-event test), and a fresh handle
+// shares nothing with the one Run consumes. Nothing here may wait for Run instead: the boot's
+// reconcile reads the position before Run starts, and pollHoldRelease beside it.
 //
-// Idle is the stream's store's answer, not the consumer's counts alone. nats-server answers a
-// publish once it has stored the message, and only then queues the message for the stream's
-// consumers, where a goroutine of the stream's own adds it to each matching consumer's pending
-// count (v2.15.1: stream.go processJetStreamMsgWithBatch sends the PubAck, then pushes to sigq;
+// Idle is confirmed, not the consumer's counts alone. nats-server answers a publish once it has
+// stored the message, and only then queues the message for the stream's consumers, where a
+// goroutine of the stream's own adds it to each matching consumer's pending count (v2.15.1:
+// stream.go processJetStreamMsgWithBatch sends the PubAck, then pushes to sigq;
 // signalConsumersLoop calls consumer.processStreamSignal, which raises npc). Until that goroutine
 // runs, CONSUMER.INFO counts the message neither pending nor awaiting an ack, so a reading taken
-// just after the publish answered read idle while the message waited on the stream, and Reconcile
-// decided at once a key that message would still change. So when the counts say nothing waits,
-// the reading asks the store for the first message after the consumer's delivered sequence on its
-// filter subjects (firstStoredAfter), within consumerOldestBound, and a message there is waiting
-// whatever the counts say.
+// just after the publish answered read idle while the message waited on the stream, and a
+// reconcile decided at once a key that message would still change. So when the counts say nothing
+// waits, the reading creates the idle probe (idleProbe.pending): a consumer on the Dispatch
+// consumer's own filter from the sequence after its delivered one, which the stream leader makes
+// and counts from its store before it answers, and a message it counts is waiting whatever the
+// counts say. The probe reads no stream state and no stored message, so a daemon held to its
+// projects makes it with its own project's create alone.
 //
-// That read can fail: its bound passes on a loaded server, or the daemon's user lacks the
-// stored-message get (STREAM.MSG.GET, which NATS refuses by not answering, so it too ends at the
-// bound). DispatchPosition, the reading pollHoldRelease takes on its ticker, then keeps the
-// counts' idle, which is what every reading was before this get, and says so at Warn: a daemon
-// without the grant must still release its holds, and the poller reads again at its next tick.
-// ReconcilePosition, the reading a reconcile decides on at once, reads such a failure as not idle
-// instead (unconfirmed), so the keys a listing shows behind their log stay held until the poller
-// releases them.
+// A probe that fails reads as not idle, at boot and in the hold poller alike, and says so at Warn:
+// a refused create (NATS refuses by not answering, so it ends at idleProbeBound), one that passes
+// its bound on a loaded server or with no stream leader, an error the server answers, and a probe
+// of the same name that stands past the bound (an earlier reading's is gone within its inactive
+// threshold, and the create is tried again until then: idleProbeRetry). The hold it keeps is
+// released by a later reading that confirms the idle: an unconfirmed count never releases one.
+// Only a reading whose ctx ended is an error.
 func (c *Consumers) DispatchPosition(ctx context.Context) (DispatchConsumerPosition, error) {
-	position, unconfirmed, err := c.dispatchPosition(ctx)
+	consumer, err := c.js.Consumer(ctx, notificationStream, dispatchConsumerName(c.spec.Project))
 	if err != nil {
-		return DispatchConsumerPosition{}, err
-	}
-	if unconfirmed != nil {
-		c.spec.Logger.Warn("intake: the Dispatch consumer's next stored message could not be read, so its idle is its own count alone, which can miss a message the server stored and has not counted yet; the read's bound passed, on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET."+notificationStream,
-			"consumer", dispatchConsumerName(c.spec.Project), "error", unconfirmed)
-	}
-	return position, nil
-}
-
-// ReconcilePosition is DispatchPosition for a reconcile, which decides on the reading at once:
-// a counted idle the store could not confirm reads as not idle.
-func (c *Consumers) ReconcilePosition(ctx context.Context) (DispatchConsumerPosition, error) {
-	position, unconfirmed, err := c.dispatchPosition(ctx)
-	if err != nil {
-		return DispatchConsumerPosition{}, err
-	}
-	if unconfirmed != nil {
-		position.Idle = false
-		c.spec.Logger.Warn("intake: the Dispatch consumer's next stored message could not be read, so a reconcile reads the consumer as not idle and holds the keys its listing shows behind their log; the read's bound passed, on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET."+notificationStream,
-			"consumer", dispatchConsumerName(c.spec.Project), "error", unconfirmed)
-	}
-	return position, nil
-}
-
-// dispatchPosition is the reading DispatchPosition and ReconcilePosition share: the position, and
-// the store read's error when the counts said idle and the store could not confirm it
-// (unconfirmed, in which case position.Idle is the counts').
-func (c *Consumers) dispatchPosition(ctx context.Context) (position DispatchConsumerPosition, unconfirmed, err error) {
-	consumer, err := c.stream.Consumer(ctx, dispatchConsumerName(c.spec.Project))
-	if err != nil {
-		return DispatchConsumerPosition{}, nil, fmt.Errorf("read Dispatch consumer info: %w", err)
+		return DispatchConsumerPosition{}, fmt.Errorf("read Dispatch consumer info: %w", err)
 	}
 	info := consumer.CachedInfo()
-	position = DispatchConsumerPosition{
-		AckFloorStream: int64(info.AckFloor.Stream),
-		Idle:           info.NumPending == 0 && info.NumAckPending == 0,
+	position := DispatchConsumerPosition{AckFloorStream: int64(info.AckFloor.Stream)}
+	if info.NumPending != 0 || info.NumAckPending != 0 {
+		return position, nil
 	}
-	if !position.Idle {
-		return position, nil, nil
-	}
-	read, cancel := context.WithTimeout(ctx, consumerOldestBound)
-	defer cancel()
-	waiting, err := c.firstStoredAfter(read, info, info.Delivered.Stream)
+	waiting, err := c.probe.pending(ctx, info.Delivered.Stream)
 	if err != nil {
 		if ctx.Err() != nil {
-			return DispatchConsumerPosition{}, nil, fmt.Errorf("read the Dispatch consumer's next stored message: %w", err)
+			return DispatchConsumerPosition{}, fmt.Errorf("confirm the Dispatch consumer idle: %w", err)
 		}
-		return position, err, nil
+		c.spec.Logger.Warn("intake: the Dispatch consumer's idle could not be confirmed, so it reads as not idle and admission keeps what it holds until a later reading confirms it; the probe's create was refused (the daemon's NATS user lacks it), passed its bound on a loaded NATS server or with no stream leader, was answered with an error, or found a probe of the same name standing for the whole bound",
+			"consumer", dispatchConsumerName(c.spec.Project), "probe", c.probe.name, "after", info.Delivered.Stream, "error", err)
+		return position, nil
 	}
-	position.Idle = waiting == nil
-	return position, nil, nil
+	position.Idle = waiting == 0
+	return position, nil
 }
 
 const (
@@ -605,12 +574,6 @@ const (
 	// that does not answer costs a state read two seconds and an unavailable line, not the
 	// request's life.
 	consumerLagBound = 2 * time.Second
-	// consumerOldestBound bounds the read of one consumer's oldest waiting message, all its
-	// STREAM.MSG.GET together, from when the consumer's info answered. A NATS server that refuses a
-	// publish answers only with an asynchronous -ERR, so a get the daemon's user lacks the grant
-	// for never answers and waits this bound out; it ends within consumerLagBound, so the waiting
-	// count and stalled flag the info gave are still the consumer's answer.
-	consumerOldestBound = time.Second
 	// consumerStallAfter is how long a consumer with messages waiting may go without handling one
 	// before Lag calls it stalled: a healthy consumer handles a message in well under a second, and
 	// a stalled one holds every event behind the message it is stuck on.
@@ -621,19 +584,18 @@ const (
 //
 // Waiting is the messages the consumer has not handled, JetStream's NumPending (not yet delivered)
 // plus NumAckPending (delivered and not yet acknowledged); it counts the messages the daemon will
-// acknowledge without a transaction at decode too. OldestAt is the stream time of the oldest of
-// them, the first message after the consumer's ack floor on one of its filter subjects, and
-// OldestAge how long before the read it was stored; both are zero when nothing waits, and when that
-// message could not be read. LastHandledAt is when this daemon last handled a message of the
-// consumer — acknowledged it, or terminated it once a give-up record of it committed, with
-// JetStream taking either — and is zero before the first; a nak is not handled. Stalled is true
-// when messages wait and none was handled
+// acknowledge without a transaction at decode too. OldestAt is when the consumer's ack floor last
+// moved (its info's AckFloor.Last), the moment since which the oldest message still waiting has
+// waited at most, and OldestAge how long before the read that was; both are zero when nothing
+// waits, and when the server names no such moment. They are read from the consumer's own info, not
+// from a stored message, which a daemon held to its projects may not read (Consumers).
+// LastHandledAt is when this daemon last handled a message of the consumer — acknowledged it, or
+// terminated it once a give-up record of it committed, with JetStream taking either — and is zero
+// before the first; a nak is not handled. Stalled is true when messages wait and none was handled
 // for consumerStallAfter, counted from the consumer's open while none has been.
 //
-// Unavailable names what NATS did not answer or refused: `read the consumer's info: <error>` when
-// CONSUMER.INFO failed, and then Waiting is 0 and Stalled false, since neither is known; `read the
-// oldest waiting message: <error>` when only the stored-message read (STREAM.MSG.GET) failed, and
-// then Waiting and Stalled stand and OldestAt is zero. Empty when every read answered.
+// Unavailable names what NATS did not answer or refused, `read the consumer's info: <error>`, and
+// then Waiting is 0 and Stalled false, since neither is known. Empty when the read answered.
 type ConsumerLag struct {
 	Name          string
 	Waiting       uint64
@@ -667,17 +629,12 @@ func (p *consumerProgress) lastHandled() time.Time {
 	return p.handled
 }
 
-// Lag is the lag of the Dispatch, GitHub and listener-wake durable consumers, in
-// that order (ConsumerLag), read fresh from JetStream: per consumer one CONSUMER.INFO and, while
-// messages wait, one STREAM.MSG.GET per filter subject for the first message at or after the
-// sequence above its ack floor on that subject, the smallest sequence's time being the oldest; a
-// message at that sequence ends the reads, since no filter can give an older one. The consumers
-// the same time, each within consumerLagBound of its own, and each consumer's gets within
-// consumerOldestBound of their own, so a read that does not answer costs only its own consumer
-// its answer: never another consumer's info, nor its own consumer's waiting count.
-// Each consumer's info is read through a handle of its own, as DispatchPosition reads, so nothing
-// races Run's. A read that fails or runs out of its bound is that consumer's Unavailable; Lag
-// itself never fails, so the state that shows it is still served.
+// Lag is the lag of the Dispatch, GitHub, wake and ready durable consumers, in that order
+// (ConsumerLag), read fresh from JetStream: one CONSUMER.INFO per consumer, all at the same time,
+// each within consumerLagBound of its own, so a read that does not answer costs only its own
+// consumer its answer. Each consumer's info is read through a handle of its own, as
+// DispatchPosition reads, so nothing races Run's. A read that fails or runs out of its bound is
+// that consumer's Unavailable; Lag itself never fails, so the state that shows it is still served.
 func (c *Consumers) Lag(ctx context.Context) []ConsumerLag {
 	progress := []*consumerProgress{c.progress.dispatch, c.progress.github, c.progress.wake, c.progress.ready}
 	lags := make([]ConsumerLag, len(progress))
@@ -689,14 +646,13 @@ func (c *Consumers) Lag(ctx context.Context) []ConsumerLag {
 	return lags
 }
 
-// lagOf reads one consumer's lag (Lag) within consumerLagBound, its oldest waiting message within
-// consumerOldestBound of the info's answer.
+// lagOf reads one consumer's lag (Lag) within consumerLagBound.
 func (c *Consumers) lagOf(ctx context.Context, progress *consumerProgress) ConsumerLag {
 	ctx, cancel := context.WithTimeout(ctx, consumerLagBound)
 	defer cancel()
 	handled := progress.lastHandled()
 	lag := ConsumerLag{Name: progress.name, LastHandledAt: handled}
-	consumer, err := c.stream.Consumer(ctx, progress.name)
+	consumer, err := c.js.Consumer(ctx, notificationStream, progress.name)
 	if err != nil {
 		lag.Unavailable = "read the consumer's info: " + err.Error()
 		return lag
@@ -712,56 +668,10 @@ func (c *Consumers) lagOf(ctx context.Context, progress *consumerProgress) Consu
 		since = progress.opened
 	}
 	lag.Stalled = now.Sub(since) >= consumerStallAfter
-	read, cancelRead := context.WithTimeout(ctx, consumerOldestBound)
-	defer cancelRead()
-	oldest, err := c.oldestWaiting(read, info)
-	if err != nil {
-		lag.Unavailable = "read the oldest waiting message: " + err.Error()
-		return lag
-	}
-	if !oldest.IsZero() {
-		lag.OldestAt, lag.OldestAge = oldest, now.Sub(oldest)
+	if moved := info.AckFloor.Last; moved != nil && !moved.IsZero() {
+		lag.OldestAt, lag.OldestAge = *moved, now.Sub(*moved)
 	}
 	return lag
-}
-
-// oldestWaiting is the stream time of the first message after info's ack floor on any of its
-// consumer's filter subjects (firstStoredAfter), or zero when the stream holds none (the stream's
-// MaxAge removed it since the info was read).
-func (c *Consumers) oldestWaiting(ctx context.Context, info *jetstream.ConsumerInfo) (time.Time, error) {
-	oldest, err := c.firstStoredAfter(ctx, info, info.AckFloor.Stream)
-	if err != nil || oldest == nil {
-		return time.Time{}, err
-	}
-	return oldest.Time, nil
-}
-
-// firstStoredAfter is the first message the stream stores after sequence after on any of info's
-// consumer's filter subjects, one STREAM.MSG.GET per filter, or nil when it stores none. A message
-// at the sequence right after is the first any filter can give, so the filters after it are not
-// read.
-func (c *Consumers) firstStoredAfter(ctx context.Context, info *jetstream.ConsumerInfo, after uint64) (*jetstream.RawStreamMsg, error) {
-	filters := slices.Clone(info.Config.FilterSubjects)
-	if info.Config.FilterSubject != "" {
-		filters = append(filters, info.Config.FilterSubject)
-	}
-	var first *jetstream.RawStreamMsg
-	for _, filter := range filters {
-		message, err := c.stream.GetMsg(ctx, after+1, jetstream.WithGetMsgSubject(filter))
-		if errors.Is(err, jetstream.ErrMsgNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if first == nil || message.Sequence < first.Sequence {
-			first = message
-		}
-		if first.Sequence == after+1 {
-			break
-		}
-	}
-	return first, nil
 }
 
 // Run consumes the four durable consumers until ctx ends, and returns the error of the one that
@@ -775,22 +685,18 @@ func (c *Consumers) firstStoredAfter(ctx context.Context, info *jetstream.Consum
 // daemon's boot-owned concern (workflowRuntime.pollHoldRelease), not intake's: this loop knows
 // nothing about either.
 func (c *Consumers) Run(ctx context.Context, handlers ...Handler) error {
-	c.mu.Lock()
-	dispatch, github := c.dispatch, c.github
-	c.mu.Unlock()
 	group, consumeContext := errgroup.WithContext(ctx)
-	group.Go(func() error {
-		return c.consumeConsumer(consumeContext, dispatch, c.progress.dispatch, handlers)
-	})
-	group.Go(func() error {
-		return c.consumeConsumer(consumeContext, github, c.progress.github, handlers)
-	})
-	group.Go(func() error {
-		return c.consumeConsumer(consumeContext, c.wake, c.progress.wake, handlers)
-	})
-	group.Go(func() error {
-		return c.consumeConsumer(consumeContext, c.ready, c.progress.ready, handlers)
-	})
+	for _, run := range []struct {
+		consumer jetstream.Consumer
+		progress *consumerProgress
+	}{
+		{c.dispatch, c.progress.dispatch}, {c.github, c.progress.github},
+		{c.wake, c.progress.wake}, {c.ready, c.progress.ready},
+	} {
+		group.Go(func() error {
+			return c.consumeConsumer(consumeContext, run.consumer, run.progress, handlers)
+		})
+	}
 	group.Go(func() error {
 		return c.sweepFailures(consumeContext)
 	})
@@ -813,7 +719,7 @@ func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Cons
 			metadata = nil
 		}
 		lag.observe(message, metadata)
-		run := consumerRun{spec: c.spec, repositories: c.repositories(), pool: c.pool, maxAge: c.maxAge, names: names, remade: c.remade, dropped: dropped}
+		run := consumerRun{spec: c.spec, repositories: c.repositories(), pool: c.pool, maxAge: c.spec.StreamMaxAge, names: names, remade: c.remade, dropped: dropped}
 		if consumeMessage(ctx, message, metadata, run, handlers) {
 			progress.handle(c.spec.Now())
 		}
@@ -1483,6 +1389,9 @@ func normalizedSpec(spec ConsumerSpec) (ConsumerSpec, error) {
 	if slices.ContainsFunc(spec.Repositories, ghrepo.Repository.IsZero) {
 		return ConsumerSpec{}, fmt.Errorf("intake consumer repository is required")
 	}
+	if spec.StreamMaxAge < 0 {
+		return ConsumerSpec{}, fmt.Errorf("intake consumer stream max age %s is negative; 0 is a stream that keeps every message", spec.StreamMaxAge)
+	}
 	if spec.AckWait <= 0 {
 		spec.AckWait = defaultAckWait
 	}
@@ -1513,20 +1422,15 @@ func normalizedSpec(spec ConsumerSpec) (ConsumerSpec, error) {
 	return spec, nil
 }
 
-// githubHearsNoRepository is the GitHub consumer's one filter while GitHub intake hears no
-// repository: a subject Envoy publishes no repository's event on, since a GitHub owner's login
-// never begins with a hyphen. A consumer with no filter would hear every subject of the stream.
-const githubHearsNoRepository = "notifications.github.-.-"
+// githubFilter is the GitHub consumer's one filter: every repository's events. A grant holding the
+// daemon to its projects keeps the GitHub family whole, since a GitHub event carries no project,
+// and the daemon keeps only the events of the repositories it hears (decodeGitHubFact).
+const githubFilter = "notifications.github.>"
 
-func githubFilters(repositories []ghrepo.Repository) []string {
-	if len(repositories) == 0 {
-		return []string{githubHearsNoRepository}
-	}
-	filters := make([]string, 0, len(repositories))
-	for _, repo := range repositories {
-		filters = append(filters, githubRepositoryPrefix(repo)+".>")
-	}
-	return filters
+// dispatchIssueFilter is the Dispatch consumer's one filter: the issue events of project, in the
+// form whose fourth token is the project (notifications.dispatch.issue.<project>.<key>.<type>).
+func dispatchIssueFilter(project string) string {
+	return subjectforms.IssueTopicPrefix + project + ".>"
 }
 
 // githubRepositoryPrefix is what every GitHub subject Envoy publishes for repo begins with: the

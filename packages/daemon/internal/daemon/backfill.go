@@ -234,8 +234,7 @@ func (w *workflowRuntime) backfillLater(ctx context.Context) {
 
 // backfillRecords is the records the refresher's backfill writes through (backfillLater). Each
 // record a fill or a name writes has GitHub intake hear the GitHub spelling it now keeps, as
-// intake hears the one a new record names (hearRecorded): through hearOrPend, which marks the
-// heard set pending only where JetStream refuses the update, and the other name of a configured
+// intake hears the one a new record names (hearRecorded, hear), and the other name of a configured
 // pair that holds it as well, as heardRepositories hears it beside a record's own. It also asks
 // the refresher to read the live records again (refreshLive), so a live record it wrote joins the
 // live set and the cache set. Both are hooks of the write's commit (store.OnCommit): a write whose
@@ -271,9 +270,9 @@ func (w *workflowRuntime) hearBackfilled(ctx context.Context, spelled string) er
 		return err
 	}
 	store.OnCommit(ctx, func() {
-		w.hearOrPend(ctx, repo)
+		w.hear(ctx, repo)
 		if partner, paired := w.repositories.renames.Partner(repo.String()); paired {
-			w.hearOrPend(ctx, partner)
+			w.hear(ctx, partner)
 		}
 		w.wakeLive()
 	})

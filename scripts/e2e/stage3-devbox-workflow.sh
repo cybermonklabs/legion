@@ -305,6 +305,7 @@ nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
+notification_stream_max_age_hours: 72
 # The project's repository is no key of legion.yaml: the PUT below sets $repo as the project's
 # default repository in Dispatch. \`production_check: tester\` is the word that names the role a merge's production check
 # is handed to, written out here rather than left to the default, so the run proves the setting is

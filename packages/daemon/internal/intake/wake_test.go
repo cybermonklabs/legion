@@ -9,11 +9,10 @@ import (
 	"time"
 )
 
-// The Envoy listener's wake report arrives on one subject of its own, which the daemon's fourth
-// durable consumer filters on whole. Its payload names the kind, the role token or the session,
-// and the listener's own clock in epoch milliseconds — the shape Envelope.KeptAt has, because
-// the stream's store time is the NATS server's clock and the daemon measures a wake against its
-// own.
+// The Envoy listener's wake report arrives on its project's own wake subject, which the daemon's
+// wake consumer filters on whole. Its payload names the kind, the role token or the session, and
+// the listener's own clock in epoch milliseconds — the shape Envelope.KeptAt has, because the
+// stream's store time is the NATS server's clock and the daemon measures a wake against its own.
 //
 // A report of a kind this build has no wake for, one that names neither a role nor a session,
 // and one with no time are no fact rather than poison: a listener of a later release can report
@@ -66,7 +65,7 @@ func TestDecodeTheListenerWakeReport(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			decoded, err := decodeMessage(legionWakeSubject, "CAPTURE", capturedRepositories, envelopeJSON(t, "wake-1", tc.source, tc.payload))
+			decoded, err := decodeMessage("notifications.legion.capture.wake", "CAPTURE", capturedRepositories, envelopeJSON(t, "wake-1", tc.source, tc.payload))
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("decode = %v, want poison naming %q", err, tc.wantErr)
@@ -111,24 +110,36 @@ func TestTheWakeConsumerNamesItsProjectOnItsOwnSubject(t *testing.T) {
 	}
 }
 
-// A wake report on the project's own wake subject is decoded as one on the shared subject is,
-// and one on another project's wake subject is no subject of this daemon's.
+// A wake report on the project's own wake subject is decoded; on the shared subject only the
+// listener's liveness report is, and a role or agent report still found there is acknowledged with
+// no fact, since a listener that has not moved may name another project's role or session there;
+// and a report on another project's wake subject is no subject of this daemon's.
 func TestAWakeReportOnTheProjectsOwnSubjectIsDecoded(t *testing.T) {
-	payload := `{"kind":"role_message","role":"legion-capture-capture-7-architect","at":1790000000000}`
-	for subject, wantErr := range map[string]bool{
-		"notifications.legion.wake":         false,
-		"notifications.legion.capture.wake": false,
-		"notifications.legion.other.wake":   true,
+	const role, session = "legion-capture-capture-7-architect", "ses_capture"
+	reports := map[string]string{
+		ListenerWakeRole:  `{"kind":"role_message","role":"` + role + `","at":1790000000000}`,
+		ListenerWakeAgent: `{"kind":"agent_message","session":"` + session + `","at":1790000000000}`,
+		ListenerWakeReady: `{"kind":"listener_ready","at":1790000000000}`,
+	}
+	for _, row := range []struct {
+		subject, kind string
+		fact, poison  bool
+	}{
+		{"notifications.legion.capture.wake", ListenerWakeRole, true, false},
+		{"notifications.legion.capture.wake", ListenerWakeAgent, true, false},
+		{"notifications.legion.wake", ListenerWakeReady, true, false},
+		{"notifications.legion.wake", ListenerWakeRole, false, false},
+		{"notifications.legion.wake", ListenerWakeAgent, false, false},
+		{"notifications.legion.other.wake", ListenerWakeRole, false, true},
 	} {
-		decoded, err := decodeMessage(subject, "CAPTURE", nil, envelopeJSON(t, "wake-"+subject, "envoy", payload))
-		if (err != nil) != wantErr {
-			t.Errorf("decode on %s: %v, want an error %v", subject, err, wantErr)
+		decoded, err := decodeMessage(row.subject, "CAPTURE", nil, envelopeJSON(t, "wake-"+row.subject+row.kind, "envoy", reports[row.kind]))
+		if (err != nil) != row.poison {
+			t.Errorf("decode of a %s on %s: %v, want an error %v", row.kind, row.subject, err, row.poison)
 			continue
 		}
-		if !wantErr {
-			if wake, ok := decoded.Fact.(ListenerWake); !ok || wake.Role != "legion-capture-capture-7-architect" {
-				t.Errorf("decode on %s = %#v, want the role wake", subject, decoded.Fact)
-			}
+		wake, isWake := decoded.Fact.(ListenerWake)
+		if row.fact != isWake || (isWake && wake.Kind != row.kind) {
+			t.Errorf("decode of a %s on %s = %#v, want a fact %v", row.kind, row.subject, decoded.Fact, row.fact)
 		}
 	}
 }

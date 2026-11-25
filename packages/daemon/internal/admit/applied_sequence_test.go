@@ -55,7 +55,7 @@ func TestOnlyAnAppliedIssueFactHoldsBackAnOlderListingOrView(t *testing.T) {
 					t.Fatal("Held() = false after a labelled todo summary behind the stream, want it held")
 				}
 			}, after: func(t *testing.T, pool *pgxpool.Pool, admission *Admission, mirror *blockers.Mirror) {
-				applyWith(t, pool, "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10}, mirror, admission)
+				applyWith(t, pool, "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true}, mirror, admission)
 			}},
 			{name: "a view of an admission event", after: func(t *testing.T, pool *pgxpool.Pool, admission *Admission, mirror *blockers.Mirror) {
 				applyWith(t, pool, "the-view", view, mirror, admission)

@@ -61,7 +61,7 @@ func TestAMessageWhoseHandlerAlwaysFailsIsGivenUpAfterItsCountAndItsHour(t *test
 	stop := startConsume(t, js, spec, pool, handler)
 	defer stop()
 
-	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	dispatch := dispatchConsumerName(spec.Project)
 	given := waitGivenUp(t, pool, dispatch, sent.Sequence)
 	assertAcknowledgedThrough(t, stream, dispatch, sent)
@@ -125,7 +125,7 @@ func TestAMessageWhoseHandlingNeverEndsIsGivenUpWithoutRunningItAgain(t *testing
 			}
 			// The durable is made before the message is stored, so it delivers it.
 			stop := run()
-			sent := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+			sent := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 			for delivery := 1; delivery <= 3; delivery++ {
 				if delivery > 1 {
 					stop = run()
@@ -173,7 +173,9 @@ func TestAMessageTheStreamWouldDeleteBeforeItsNextDeliveryIsGivenUpAtOnce(t *tes
 			js := testnats.JetStream(t)
 			stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}, MaxAge: 3 * time.Second})
 			spec := consumerSpec(&lockedBuffer{})
-			spec.NakDelay, spec.RetentionMargin = 2*time.Second, time.Second
+			// The daemon reads no stream state, so it is told the stream's age as a deployment
+			// renders it (ConsumerSpec.StreamMaxAge), the 3 s the stream above keeps a message.
+			spec.NakDelay, spec.RetentionMargin, spec.StreamMaxAge = 2*time.Second, time.Second, 3*time.Second
 			var calls atomic.Int32
 			entered := make(chan struct{}, 1)
 			handler := handlerFunc(func(ctx context.Context, _ pgx.Tx, _ Fact) (Result, error) {
@@ -187,7 +189,7 @@ func TestAMessageTheStreamWouldDeleteBeforeItsNextDeliveryIsGivenUpAtOnce(t *tes
 			})
 			stop := startConsume(t, js, spec, pool, handler)
 			defer stop()
-			sent := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+			sent := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 			if row.stop {
 				waitEntered(t, entered, "the first delivery")
 				stop()
@@ -230,7 +232,7 @@ func TestAGiveUpRecordHoldsTheWholeMessage(t *testing.T) {
 				return Result{}, errAlwaysFails
 			}))
 			defer stop()
-			const subject = "notifications.dispatch.issue.CAPTURE-3.issue.updated"
+			const subject = "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated"
 			sent, err := js.PublishMsg(context.Background(), &nats.Msg{Subject: subject, Data: row.data, Header: row.header})
 			if err != nil {
 				t.Fatalf("publish: %v", err)
@@ -294,8 +296,8 @@ func TestAGivenUpMessageMovesTheFloorAndTheMessagesBehindItApply(t *testing.T) {
 	}))
 	defer stop()
 
-	failing := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
-	behind := publish(t, js, "notifications.dispatch.issue.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
+	failing := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	behind := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
 	testwait.Eventually(t, "the Dispatch floor past the given-up event and the one behind it", func() bool {
 		position, err := consumers.DispatchPosition(context.Background())
 		return err == nil && position.AckFloorStream >= int64(behind.Sequence)
@@ -322,7 +324,7 @@ func TestTheCountAndTheFirstFailureSurviveARestartOfTheConsumers(t *testing.T) {
 		return Result{}, errAlwaysFails
 	})
 	stop := startConsume(t, js, spec, pool, handler)
-	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	dispatch := dispatchConsumerName(spec.Project)
 	var before record.IntakeFailure
 	testwait.Eventually(t, "two failed deliveries recorded", func() bool {
@@ -372,7 +374,7 @@ func TestAFactThatFailsBelowTheBoundAppliesAndLeavesNoRecord(t *testing.T) {
 		return Result{}, err
 	}))
 	defer stop()
-	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", data)
+	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", data)
 	dispatch := dispatchConsumerName(spec.Project)
 	assertAcknowledgedThrough(t, stream, dispatch, sent)
 	testwait.Eventually(t, "the fact applied once", func() bool { return writeCount(t, pool) == 1 })
@@ -404,7 +406,7 @@ func TestAnotherProjectsUndecodableIssueEventMakesNoRecord(t *testing.T) {
 	defer startConsume(t, js, spec, pool, writeHandler("applied", nil))()
 	publish(t, js, "notifications.dispatch.issue.LEGION-7.issue.updated", []byte(`{`))
 	publish(t, js, "notifications.dispatch.issue.LEGION.LEGION-7.issue.updated", []byte(`{`))
-	last := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	last := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	assertAcknowledgedThrough(t, stream, dispatchConsumerName(spec.Project), last)
 	if records := intakeRecords(t, pool); len(records) != 0 {
 		t.Fatalf("intake_failures = %+v, want no record of another project's events", records)
@@ -467,9 +469,9 @@ func TestAnAppliedFactDeletesItsOpenFailureInItsOwnTransaction(t *testing.T) {
 			defer func() { stop() }()
 			var sent *jetstream.PubAck
 			if row.remade {
-				applied := publish(t, js, "notifications.dispatch.issue.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
+				applied := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
 				assertAcknowledgedThrough(t, stream, dispatch, applied)
-				sent = publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+				sent = publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 				testwait.Eventually(t, "the open failure of the failing message", func() bool {
 					_, found := intakeRecordOf(t, pool, dispatch, sent.Sequence)
 					return found
@@ -484,7 +486,7 @@ func TestAnAppliedFactDeletesItsOpenFailureInItsOwnTransaction(t *testing.T) {
 				}
 				stop = runConsumers(t, consumers, handler)
 			} else {
-				sent = publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+				sent = publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 			}
 			assertAcknowledgedThrough(t, stream, dispatch, sent)
 			mu.Lock()

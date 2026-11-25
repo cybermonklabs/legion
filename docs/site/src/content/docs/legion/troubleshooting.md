@@ -1783,11 +1783,12 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   pull request the daemon does not record, and a run of a workflow that is no configured deploy.
   Those take no database transaction, so a backlog of them drains quickly. `0 waiting` is a
   consumer that is caught up.
-- **`oldest`** (`oldestAt`, `oldestAgeSeconds`) is how long ago the oldest waiting message was
-  stored: how long the event at the back of the line has waited. Seconds are normal. Minutes that
-  keep growing are a consumer behind its stream, and once it handles a message stored more than
-  five minutes before, the daemon logs `intake: a durable consumer is behind its stream; …`
-  ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)).
+- **`oldest`** (`oldestAt`, `oldestAgeSeconds`) is how long ago the consumer's acknowledgements
+  last moved past a message, read from the consumer's own info: the oldest waiting message has
+  waited at most that long. It is unknown before the consumer has acknowledged anything. Seconds
+  are normal. Minutes that keep growing are a consumer behind its stream, and once it handles a
+  message stored more than five minutes before, the daemon logs `intake: a durable consumer is
+  behind its stream; …` ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)).
 - **`STALLED`** (`stalled`) is messages waiting and none of that consumer's handled for 60
   seconds, since the last one (`lastHandledAt`) or, before the first, since the daemon started.
   The daemon is handling none of them: each delivery fails and is put back to retry (the database
@@ -1812,21 +1813,16 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   so one consumer's read that does not answer leaves the others' as they are. `read the consumer's
   info: …` leaves `waiting` 0 and `stalled` false, since neither is known: check that the daemon
   reaches NATS and that the consumer exists (`nats consumer info ENVOY_NOTIFICATIONS <name>`).
-  `read the oldest waiting message: …` leaves `waiting` and `stalled` standing and the oldest
-  unknown (`oldest unknown` on the text line); that read has one second of its own. NATS refuses a
-  request the daemon's user has no grant for without answering it, so a missing grant shows as
-  `context deadline exceeded`, with the daemon's error line `NATS refused the daemon a permission:
-  its NATS user lacks that grant` naming the subject. With subject
-  `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS` it is the stored-message get
-  ([Envoy](/legion/dispatch/envoy/#the-nats-grant-a-legion-daemon-needs)). A deployment gets that
-  grant with the envoy-infra plugin release that carries it: until that release is applied, the
-  oldest message is `unavailable` on each consumer while messages wait on it. The same get
-  confirms the Dispatch consumer idle; when it does not answer within its bound, from a missing
-  grant or a loaded NATS server, a reconcile reads the consumer as not idle and holds the roots its
-  listing shows behind their log, and the hold poller releases them on the consumer's own count
-  (WARN lines `the Dispatch consumer's next stored message could not be read` say which, naming
-  both causes). That count can miss a message the server has stored and not yet counted, so a held
-  root can be released a moment early.
+  NATS refuses a request the daemon's user has no grant for without answering it, so a missing
+  grant shows as `context deadline exceeded`, with the daemon's error line `NATS refused the daemon
+  a permission: its NATS user lacks that grant` naming the subject. With subject
+  `$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-<project>-dispatch-probe.…` it is the
+  probe that confirms the Dispatch consumer idle: while that create is refused, does not answer
+  within two seconds, answers an error or finds a probe of that name still standing for those two
+  seconds, the consumer reads as not idle, so a reconcile holds the roots its listing shows behind
+  their log and the hold poller releases none of them until a reading confirms the idle (WARN lines
+  `the Dispatch consumer's idle could not be confirmed` say which). A count that reads idle is
+  never released on alone: it can miss a message the server has stored and not yet counted.
 
 While a GitHub event waits, or was lost on its way, nothing comes round to make up for it on a
 timer. The daemon's read of an issue's pull request
@@ -1876,7 +1872,11 @@ keeps:
 - **`did not end`**: one delivery ended in no recorded failure, because the daemon stopped or
   crashed while it ran or because the record of its failure was not written, and the bound is
   reached. The next delivery gives the message up before its handler runs again.
-- **`retention`**: the stream would delete the message before its next delivery.
+- **`retention`**: the stream would delete the message before its next delivery. The daemon
+  reads how long the stream keeps a message from its own `legion.yaml`,
+  `notification_stream_max_age_hours` (72, the stream's MaxAge, or `unlimited`), never from the
+  stream: a value above the stream's real age gives a message up later than the stream deletes it,
+  and one below it sooner.
 - **`undecodable`**: the message does not decode. The daemon gives it up at its first delivery.
 - **`consumer moved past`**: the consumer moved past the message without delivering it again,
   because the consumer was made again past it or the stream deleted it. A sweep finds such a
@@ -2232,15 +2232,18 @@ notice comes once per handoff commit, from whichever read finds it first.
   applied, so the messages published while it was missing are delivered; the one at `start`,
   applied already, is dropped as a duplicate. Nothing to do. A consumer the daemon has no applied
   message recorded for starts at the next message instead, with no line.
-- **`intake: a missing durable consumer's last applied message is older than the stream's first
-  message; …`** (a warning with `consumer`, `start` and `stream_first`). The stream keeps 72 hours
-  of messages, and the last message the consumer applied is older than the oldest it still holds.
-  Only an applied event, or one the daemon gave up, moves that position, not one the daemon
-  acknowledged without acting on, so on a quiet project the consumer may have handled every event
-  between `start` and `stream_first` before it went missing. Any it had not reached may have been
-  missed: the daemon applied none of them, and nothing replays them, so an issue one of them would
-  have moved waits for its next event, or for the daemon's own read of its pull request at that
-  issue's next handoff.
+- **`intake: a missing durable consumer's last applied message is no longer in the stream; …`** (a
+  warning with `consumer`, `start` and `first`). The consumer the daemon created again delivered,
+  as its first message, one stored after `start`: the message at `start` is gone, because the
+  stream keeps 72 hours of messages, was purged or was made again. The daemon reads this from the
+  consumer's own first message, and no read of the stream. Only an applied event, or one the daemon
+  gave up, moves that position, not one the daemon acknowledged without acting on, so on a quiet
+  project the consumer may have handled every event between `start` and `first` before it went
+  missing. Any it had not reached may have been missed: the daemon applied none of them, and
+  nothing replays them, so an issue one of them would have moved waits for its next event, or for
+  the daemon's own read of its pull request at that issue's next handoff. A start the daemon could
+  not check, because no message reached the consumer within two seconds, is an info line
+  (`its start could not be checked`).
 - **`agent-secrets: the token login failed; retrying`** (an error line with the cause, the class
   it was sorted into and the retry schedule that class takes).
   With `runtime.kubernetes.agent_secrets` set, the daemon logs in to the

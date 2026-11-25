@@ -324,8 +324,10 @@ jobs:
       - uses: ./.github/actions/install-omp
 
       # internal/daemon's and internal/intake's NATS tests start testnats.Image, internal/intake's
-      # refusal test SkippingImage (nats:2.10), and internal/daemon's grant test Envoy's HubImage
-      # (packages/envoy/testnatsimages), pulled first for the reason the action gives.
+      # refusal test SkippingImage (nats:2.10), internal/daemon's grant test Envoy's HubImage, and
+      # internal/intake's three-node probe test Envoy's ClusteredHubImage, the clustered hub's
+      # 2.15.3 (both through packages/envoy/testnatsimages), pulled first for the reason the action
+      # gives.
       - name: Pull the NATS test container images
         uses: ./.github/actions/pull-test-images
         with:
@@ -333,6 +335,7 @@ jobs:
             packages/daemon/internal/testnats/nats.go Image
             packages/daemon/internal/testnats/nats.go SkippingImage
             packages/envoy/internal/testnats/nats.go HubImage
+            packages/envoy/internal/testnats/nats.go ClusteredHubImage
 
       # internal/launcher's role-namespace tests start each role generation in unprivileged user,
       # mount, PID and IPC namespaces, as an issue pod's launcher does, and t.Fatal rather than

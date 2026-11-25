@@ -40,7 +40,7 @@ func heldListing() intake.DispatchIssue {
 // is what releases every key it deferred (Admission.release).
 func reachConsumer(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string) {
 	t.Helper()
-	position := intake.DispatchConsumerPosition{AckFloorStream: admission.Target(), Idle: true}
+	position := intake.DispatchConsumerPosition{Idle: true}
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", eventID, position, admission); err != nil {
 		t.Fatalf("apply the consumer position %s: %v", eventID, err)
 	}
@@ -82,7 +82,7 @@ func TestAHeldCandidateStopsTheLineForAChildOfAnotherTree(t *testing.T) {
 		{
 			name: "the Dispatch consumer's hold",
 			hold: func(_ *testing.T, admission *Admission) {
-				admission.holdDeferred(map[string]intake.DispatchIssue{"LEGION-9": heldListing()}, 100)
+				admission.holdDeferred(map[string]intake.DispatchIssue{"LEGION-9": heldListing()})
 			},
 			release: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 				reachConsumer(t, pool, admission, "position-1")
@@ -101,7 +101,7 @@ func TestAHeldCandidateStopsTheLineForAChildOfAnotherTree(t *testing.T) {
 		{
 			name: "both holds",
 			hold: func(_ *testing.T, admission *Admission) {
-				admission.holdDeferred(map[string]intake.DispatchIssue{"LEGION-9": heldListing()}, 100)
+				admission.holdDeferred(map[string]intake.DispatchIssue{"LEGION-9": heldListing()})
 				admission.HoldForCatchUp("LEGION-9")
 			},
 			release: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {

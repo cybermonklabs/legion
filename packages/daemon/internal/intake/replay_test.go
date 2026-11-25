@@ -111,9 +111,11 @@ func replayIssueEnvelope(t *testing.T, key string) []byte {
 		`"labels":[],"resolved_repo":"sjawhar/legion"}}`, key, key))
 }
 
-// replayIssueSubject is the subject of replayIssueEnvelope's event on key.
+// replayIssueSubject is the subject of replayIssueEnvelope's event on key, in the form whose
+// fourth token is the key's project, the one the Dispatch durable filters on.
 func replayIssueSubject(key string) string {
-	return "notifications.dispatch.issue." + key + ".issue.updated"
+	project, _, _ := strings.Cut(key, "-")
+	return "notifications.dispatch.issue." + project + "." + key + ".issue.updated"
 }
 
 // replayedRecord is give-up id as the record keeps it after a replay or a discard, read through the

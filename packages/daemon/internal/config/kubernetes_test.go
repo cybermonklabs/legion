@@ -29,6 +29,7 @@ bind: 10.0.0.5
 daemon_url: http://10.0.0.5:13370
 envoy_url: http://envoy-listener.internal.example:9020
 nats_urls: [nats://nats.internal.example:4222]
+notification_stream_max_age_hours: 72
 envoy_token_file: /var/run/legion/ENVOY_TOKEN
 operator_token_file: /var/run/legion/OPERATOR_TOKEN
 dispatch_url: https://dispatch.internal.example
@@ -1862,6 +1863,7 @@ envoy_url: http://envoy-listener.internal.example:9020
 envoy_token_file: /tmp/stage4b/envoy-token
 nats_urls:
   - nats://nats.internal.example:4222
+notification_stream_max_age_hours: 72
 dispatch_url: https://dispatch.internal.example
 dispatch_token_file: /tmp/stage4b/dispatch-token
 projects:

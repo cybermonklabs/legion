@@ -203,7 +203,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "dispatch_url", Default: "the daemon runs no workflow", RequiredBy: "when runtime is kubernetes: the workflow is what launches every pod",
-			Description: "Dispatch's service base URL, never its `/mcp` endpoint, which its clients append themselves; setting it configures the workflow, which then requires `dispatch_token_file`, `nats_urls` and a `projects` entry for the daemon's own project.",
+			Description: "Dispatch's service base URL, never its `/mcp` endpoint, which its clients append themselves; setting it configures the workflow, which then requires `dispatch_token_file`, `nats_urls`, `notification_stream_max_age_hours` and a `projects` entry for the daemon's own project.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.DispatchURL = v }),
 		},
 		{
@@ -235,6 +235,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Name: "nats_daemon_nkey_seed_file", Default: "the daemon connects to NATS with no nkey user of its own", RequiredBy: "no",
 			Description: "The file holding the NATS nkey user seed for the daemon's own connection, readable by its owner alone, which no agent receives.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
+		},
+		{
+			Name: "notification_stream_max_age_hours", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when `dispatch_url` is configured: the intake gives a failing message up before the stream would delete it, and may not read the stream's own age",
+			Description: "How many hours Envoy's notification stream keeps a message, decimals allowed, or `unlimited` for a stream that keeps every message: the stream's own MaxAge, which a deployment renders from the stream owner's value (`github.com/sjawhar/envoy/notificationstream.MaxAge`, 72 hours). The daemon never reads the stream's age itself, so a value above the stream's gives a failing message up later than the stream allows, and one below it sooner.",
+			Read:        reads(readStreamMaxAge, func(f *fileConfig, v *time.Duration) { f.NotificationStreamMaxAge = v }),
 		},
 		{
 			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod works one issue of a configured project",

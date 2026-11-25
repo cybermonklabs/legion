@@ -257,8 +257,11 @@ jobs:
       # edge reaches no holder of another project's role; and the relay socket's rows, most of the
       # step's time, run two edge listeners and the real broker with 30 s tokens, and carry frames
       # and receipts, refuse other sessions' subjects, and close the socket at a token's expiry,
-      # a revoke, a Reset, a person's removal, a changed answer and an unreachable broker. Each
-      # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run
+      # a revoke, a Reset, a person's removal, a changed answer and an unreachable broker.
+      # natsgrant also has a Legion daemon's grant held to its projects (natsgrant.WithinProjects),
+      # handed out by a stand-in auth callout on the hub's image, which receives no other
+      # project's message while today's grant, the control, does. Each package runs only the
+      # tests its tag adds: `-tags natslive ./pkg` would re-run
       # the package's untagged tests, which already run elsewhere - internal/testnats in the unit
       # step above, and internal/bus and internal/cipher/natscallout in envoy-go-race, which the
       # unit step's --module-except leaves out - so the -run comes from .github/scripts/go-tagged-tests.sh,

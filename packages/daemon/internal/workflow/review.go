@@ -1319,7 +1319,7 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 			return false, err
 		}
 		return false, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing,
-			Summary: by, Reason: r.reason, Topic: notify.RoleTopicPrefix + string(reviewer)})
+			Summary: by, Reason: r.reason, Topic: notify.RoleTopic(string(reviewer))})
 	}
 	return false, nil
 }

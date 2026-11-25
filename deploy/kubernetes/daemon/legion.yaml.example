@@ -78,6 +78,10 @@ dispatch_token_file: ./dispatch-token
 envoy_url: http://envoy.example.com:9020
 envoy_token_file: ./envoy-token
 nats_urls: [nats://nats.example.com:4222]
+notification_stream_max_age_hours: 72  # how long Envoy's notification stream keeps a message: its
+                                       # MaxAge, the stream owner's notificationstream.MaxAge
+                                       # (72 hours), or `unlimited`. Required with dispatch_url: the
+                                       # daemon cannot read the stream's own age
 
 projects:
   WIDGETS: {}                          # each Dispatch project the daemon runs; it names no

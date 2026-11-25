@@ -47,7 +47,7 @@ func newLaterRig(t *testing.T) *laterRig {
 		dispatch:        &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-REVIEW", ResolvedRepo: "acme/widgets"}}},
 		dispatchProject: "LEGION", stateDir: t.TempDir(), repositories: newRepositories("LEGION", ghrepo.Renames{}),
 		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now),
-		heardWake:       make(chan struct{}, 1), liveWake: make(chan struct{}, 16), log: log,
+		liveWake:        make(chan struct{}, 16), log: log,
 		setRepositories: func(_ context.Context, repos []ghrepo.Repository) error {
 			if !slices.Equal(repositoryNames(repos), []string{"Acme/Widgets"}) {
 				t.Errorf("GitHub intake told to hear %v, want Acme/Widgets alone", repositoryNames(repos))

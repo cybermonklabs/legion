@@ -184,6 +184,10 @@ type GitHubApps struct {
 // loader and the controller's.
 const missingDispatchTokenFile = "dispatch_token_file is required when dispatch_url is configured"
 
+// missingNotificationStreamMaxAge is the refusal of a workflow whose file does not say how long
+// the notification stream keeps a message.
+const missingNotificationStreamMaxAge = "notification_stream_max_age_hours is required when dispatch_url is configured: the intake gives a failing message up before the stream would delete it, and the daemon may not read the stream's own age; set it to the stream's MaxAge in hours (envoy notificationstream.MaxAge, 72), or unlimited"
+
 var (
 	projectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
 	roleNamePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -771,17 +775,23 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 	if file.GitHubApps != nil {
 		cfg.GitHubApps = *file.GitHubApps
 	}
-	// A workflow boot needs its Dispatch bearer, its intake, and its own project; each is refused
-	// here, so `legion config check` never passes a file `legion start` refuses.
+	// A workflow boot needs its Dispatch bearer, its intake, the stream's retention and its own
+	// project; each is refused here, so `legion config check` never passes a file `legion start`
+	// refuses.
 	if file.DispatchURL != nil {
 		switch _, ok := cfg.Projects[cfg.Project]; {
 		case cfg.DispatchTokenFile == "":
 			return errors.New(missingDispatchTokenFile)
 		case len(cfg.NatsURLs) == 0:
 			return errors.New("nats_urls is required when dispatch_url is configured: the workflow's intake reads Envoy's notification stream")
+		case file.NotificationStreamMaxAge == nil:
+			return errors.New(missingNotificationStreamMaxAge)
 		case !ok:
 			return fmt.Errorf("projects must configure %s, the daemon's own project", cfg.Project)
 		}
+	}
+	if file.NotificationStreamMaxAge != nil {
+		cfg.NotificationStreamMaxAge = *file.NotificationStreamMaxAge
 	}
 	if file.Linger != nil {
 		cfg.Linger = *file.Linger

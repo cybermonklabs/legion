@@ -567,7 +567,7 @@ func (r *admissionIssuesLive) publishStatus(key, status, parent, session string)
 	if err != nil {
 		r.t.Fatalf("encode the Dispatch event of %s: %v", key, err)
 	}
-	r.publish("notifications.dispatch.issue."+key+".issue.updated", "dispatch",
+	r.publish(issueSubject(key, "issue.updated"), "dispatch",
 		fmt.Sprintf("%s-%s-%d", key, status, r.seq), string(payload))
 	r.note("drove Dispatch's own event of that write: %s is %s under %s, actor %s", key, status, parent, session)
 }

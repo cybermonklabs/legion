@@ -724,7 +724,7 @@ func TestTheBootListingOfATitleHoldingNULWritesNothingTheRecordAlreadyHolds(t *t
 
 	listed := []intake.DispatchIssue{intake.ListedIssue(dispatch.IssueSummary{Key: "LEGION-3", Title: title, Status: "todo", Rank: "C", HandedOver: handed, LastSeq: 2, ResolvedRepo: "acme/widgets"})}
 	if err := store.Transact(ctx, facts, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := admission.Reconcile(ctx, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true})
+		_, err := admission.Reconcile(ctx, tx, listed, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true})
 		return err
 	}); err != nil {
 		t.Fatalf("reconcile the boot listing: %v", err)
@@ -1139,7 +1139,7 @@ func TestCapturedDispatchTodoEventAdmitsAndProjectsActiveSlot(t *testing.T) {
 	if labeled == string(captured) {
 		t.Fatal("the captured event has no empty labels to hand the issue over with")
 	}
-	if _, err := js.Publish(context.Background(), "notifications.dispatch.issue.CAPTURE-3.issue.updated", []byte(labeled)); err != nil {
+	if _, err := js.Publish(context.Background(), "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", []byte(labeled)); err != nil {
 		t.Fatalf("publish captured Dispatch event: %v", err)
 	}
 	testwait.Eventually(t, "captured event admission", func() bool {

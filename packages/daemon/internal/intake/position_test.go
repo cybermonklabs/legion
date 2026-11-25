@@ -3,7 +3,6 @@ package intake
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -13,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -53,8 +51,8 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	// about a consumer OpenConsumers creates after the publishes, so any consumer here is
 	// another's, and the failure names each by what it carries.
 	requireNoConsumers(t, read, stream)
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.comment.created", envelopeJSON(t, "dispatch-comment", "dispatch",
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.comment.created", envelopeJSON(t, "dispatch-comment", "dispatch",
 		`{"id":2,"issue_key":"CAPTURE-3","seq":9,"notify":true,"type":"comment.created","payload":{"body":"hi"}}`))
 
 	opening, cancelOpening := read()
@@ -62,15 +60,6 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	consumers, err := OpenConsumers(opening, js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
-	}
-	targetRead, cancelTarget := read()
-	defer cancelTarget()
-	target, err := consumers.DispatchTarget(targetRead)
-	if err != nil {
-		t.Fatalf("DispatchTarget: %v", err)
-	}
-	if target < 2 {
-		t.Fatalf("target = %d, want at least 2 (the two messages already published)", target)
 	}
 	// The precondition, read off the consumer itself: it was created at DeliverNew over the two
 	// messages, so it has none pending and none awaiting an ack, and no delivery of its own will
@@ -102,86 +91,9 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	if err != nil {
 		t.Fatalf("DispatchPosition: %v", err)
 	}
-	if !position.Idle {
-		t.Fatalf("idle = false for a freshly (re)created consumer with nothing it can ever deliver from before it existed, want true: ack floor %d, target %d",
-			position.AckFloorStream, target)
-	}
-}
-
-// nats-server answers a publish once it has stored the message, and counts the message into each
-// consumer's pending only afterwards, on a goroutine of the stream's own (DispatchPosition). A
-// CONSUMER.INFO read in between counts a Dispatch consumer with a message waiting as having nothing
-// pending and nothing awaiting an ack; read idle, it let the daemon's boot reconcile decide a key
-// that waiting message would still change (internal/daemon's
-// TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow, 1 of 20 race runs). The
-// stand-in answers that reading every time (lagStandIn's uncounted), so the gap the server leaves
-// for a moment is open for the whole row:
-//   - a GitHub message, which the Dispatch consumer's filter never matches, leaves it idle;
-//   - a Dispatch message stored after the consumer's delivered sequence makes it not idle;
-//   - with the stored-message get refused at once, or never answered until its bound passes (as
-//     NATS answers a user without the grant, and as a loaded server can), the poller's reading
-//     (DispatchPosition) keeps the counts' idle and a reconcile's (ReconcilePosition) reads not
-//     idle, each saying so at Warn.
-func TestDispatchPositionIsNotIdleWhileTheStoreHoldsAMessageTheConsumerHasNotCounted(t *testing.T) {
-	ctx := context.Background()
-	served, _ := testJetStream(t)
-	standIn := &lagStandIn{JetStream: served}
-	logs := &lockedBuffer{}
-	spec := consumerSpec(logs)
-	consumers, err := OpenConsumers(ctx, standIn, migratedPool(t), spec)
-	if err != nil {
-		t.Fatalf("OpenConsumers: %v", err)
-	}
-	standIn.uncounted = true
-	reading := func(read func(context.Context) (DispatchConsumerPosition, error)) DispatchConsumerPosition {
-		t.Helper()
-		bounded, cancel := rowRead(t)()
-		defer cancel()
-		position, err := read(bounded)
-		if err != nil {
-			t.Fatalf("reading the Dispatch consumer's position: %v", err)
-		}
-		return position
-	}
-	position := func() DispatchConsumerPosition { return reading(consumers.DispatchPosition) }
-
-	publish(t, served, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
-	if got := position(); !got.Idle {
-		t.Fatalf("position with only a GitHub message stored = %+v, want idle: the Dispatch consumer's filter never matches it", got)
-	}
-
-	publish(t, served, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
-	if got := position(); got.Idle {
-		t.Fatalf("position with a Dispatch message stored and not yet counted = %+v, want not idle", got)
-	}
-
-	never := func(ctx context.Context) (*jetstream.RawStreamMsg, error) {
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
-	for _, failing := range []struct {
-		name   string
-		getMsg func(context.Context) (*jetstream.RawStreamMsg, error)
-		err    string
-	}{
-		{"refused", func(context.Context) (*jetstream.RawStreamMsg, error) {
-			return nil, errors.New("nats: permissions violation")
-		}, "nats: permissions violation"},
-		{"never answered", never, context.DeadlineExceeded.Error()},
-	} {
-		standIn.getMsg = failing.getMsg
-		logs.Reset()
-		if got := position(); !got.Idle {
-			t.Fatalf("the poller's position with the stored-message get %s = %+v, want the counts' idle", failing.name, got)
-		}
-		if got := reading(consumers.ReconcilePosition); got.Idle {
-			t.Fatalf("a reconcile's position with the stored-message get %s = %+v, want not idle", failing.name, got)
-		}
-		for _, wants := range [][]string{{"its idle is its own count alone"}, {"a reconcile reads the consumer as not idle"}} {
-			if line := logLine(logs.String(), append(wants, "level=WARN", "on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS", failing.err)...); line == "" {
-				t.Fatalf("logs with the stored-message get %s = %q, want a WARN line saying %q, naming both causes and the error", failing.name, logs.String(), wants[0])
-			}
-		}
+	if !position.Idle || !position.Reached() {
+		t.Fatalf("idle = %v, reached = %v for a freshly (re)created consumer with nothing it can ever deliver from before it existed, want both true: ack floor %d",
+			position.Idle, position.Reached(), position.AckFloorStream)
 	}
 }
 
@@ -223,10 +135,10 @@ func requireNoConsumers(t *testing.T, read func() (context.Context, context.Canc
 }
 
 // A GitHub consumer that is found missing — deleted, or lost with the NATS server's state — while
-// events were published is created at the last message it applied, so every event published while
-// it was missing is applied, and none twice: the one at its position, already applied, is
-// delivered again and dropped as a duplicate. Both ways a consumer is created do it: the boot's
-// OpenConsumers, and a SetRepositories mid-run, as a recording on a repository not heard yet makes.
+// events were published is created by the boot at the last message it applied, so every event
+// published while it was missing is applied, and none twice: the one at its position, already
+// applied, is fetched by the start's check, handed back, delivered again and dropped as a duplicate.
+// The check finds the stored message still in the stream, so nothing is warned of.
 func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 	for _, reopen := range []struct {
 		name string
@@ -235,17 +147,6 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 		{"OpenConsumers", func(t *testing.T, js jetstream.JetStream, pool *pgxpool.Pool, spec ConsumerSpec, missing func()) func() {
 			missing()
 			return startConsume(t, js, spec, pool, factMarks())
-		}},
-		{"SetRepositories", func(t *testing.T, js jetstream.JetStream, pool *pgxpool.Pool, spec ConsumerSpec, missing func()) func() {
-			consumers, err := OpenConsumers(context.Background(), js, pool, spec)
-			if err != nil {
-				t.Fatalf("OpenConsumers: %v", err)
-			}
-			missing()
-			if err := consumers.SetRepositories(context.Background(), capturedRepositories); err != nil {
-				t.Fatalf("SetRepositories: %v", err)
-			}
-			return runConsumers(t, consumers, factMarks())
 		}},
 	} {
 		t.Run(reopen.name, func(t *testing.T) {
@@ -284,6 +185,12 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 			if line := logLine(logs.String(), "level=ERROR", "consumer="+github); line != "" {
 				t.Errorf("a consumer whose position the stream still holds logged an error: %s", line)
 			}
+			if line := logLine(logs.String(), "level=WARN", "consumer="+github); line != "" {
+				t.Errorf("a consumer whose stored message the stream still holds logged a warning: %s", line)
+			}
+			if line := logLine(logs.String(), "could not be checked", "consumer="+github); line != "" {
+				t.Errorf("a consumer whose stored message the stream still holds logged an unchecked start: %s", line)
+			}
 			info, err := stream.Info(context.Background())
 			if err != nil {
 				t.Fatalf("stream info: %v", err)
@@ -295,98 +202,75 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 	}
 }
 
-// Each read of the notification stream's info goes through a handle of its own, never through the
-// one handle the consumers share. This test reads at once: DispatchTarget on two goroutines; on a
-// third, SetRepositories after each delete of the GitHub consumer, which creates it again at its
-// stored position and so reads the stream's info (createConsumer); and on a fourth, for as long as
-// the third runs, Lag, while a Dispatch issue event waits unacknowledged on the Dispatch consumer,
-// so that every Lag reads that event's time (oldestWaiting) with a GetMsg on the shared handle,
-// which reads the handle's cached info. nats.go's Info writes the cached info of the handle it is
-// called on under no lock, so the race detector fails this test on a read of the stream's info on
-// the shared handle: createConsumer's beside Lag's GetMsg, and DispatchTarget's beside the other
-// goroutine's and Lag's. CI's daemon-go job runs this package under -race (ci_job_reads.py's
-// DAEMON_RACE_PACKAGES).
-func TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn(t *testing.T) {
-	ctx := context.Background()
+// The start of a consumer created at a stored position is checked at its creation, on its own
+// first message, so a boot that stops after OpenConsumers, before Run, has already logged it: here
+// the stream was made again after the GitHub consumer applied a message a moment ago, so its first
+// message now is one stored after that position, and OpenConsumers alone warns that what was
+// published between may have been missed. Nothing runs the consumers. The message the check
+// fetched is handed back (a nak): with an acknowledgement window of a minute, a fetch right after
+// the boot is given it again at once, where a message the check had only fetched would wait out
+// the window. A check at the first delivery instead would log nothing here, since nothing
+// delivers.
+func TestAStoredPositionTheStreamNoLongerHoldsWarnsAtTheConsumersCreation(t *testing.T) {
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	logs := &lockedBuffer{}
 	spec := consumerSpec(logs)
-	github, dispatch := githubConsumerName(spec.Project), dispatchConsumerName(spec.Project)
-	pushed := publish(t, js, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
-	// A position stored for the GitHub consumer, so each creation of it reads the stream's info.
-	if _, err := pool.Exec(ctx, `insert into consumer_positions (consumer, stream_seq, stream_time) values ($1, $2, $3)`,
-		github, int64(pushed.Sequence), time.Now()); err != nil {
-		t.Fatalf("store the GitHub consumer's position: %v", err)
+	spec.AckWait = time.Minute
+	github := githubConsumerName(spec.Project)
+	if _, err := pool.Exec(context.Background(), `insert into consumer_positions (consumer, stream_seq, stream_time) values ($1, 9000, $2)`,
+		github, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("store the position: %v", err)
 	}
-	consumers, err := OpenConsumers(ctx, js, pool, spec)
-	if err != nil {
+	published := publish(t, js, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
+	if _, err := OpenConsumers(context.Background(), js, pool, spec); err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
-	// Published after OpenConsumers created the Dispatch consumer at the next message, and handled
-	// by nothing, since nothing runs the consumers: it waits on the Dispatch consumer throughout.
-	last := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
-	waiting, err := stream.GetMsg(ctx, last.Sequence)
+	if line := logLine(logs.String(), "level=WARN", "consumer="+github, "no longer in the stream", "may have been missed"); line == "" {
+		t.Fatalf("a boot that stopped after OpenConsumers logged no warning of the missed events; logs:\n%s", logs)
+	}
+	consumer, err := stream.Consumer(context.Background(), github)
 	if err != nil {
-		t.Fatalf("read the waiting Dispatch event back: %v", err)
-	}
-
-	const reads, creations = 50, 10
-	recreated := make(chan struct{})
-	lags := 0
-	var group errgroup.Group
-	for range 2 {
-		group.Go(func() error {
-			for range reads {
-				target, err := consumers.DispatchTarget(ctx)
-				if err != nil {
-					return fmt.Errorf("DispatchTarget: %w", err)
-				}
-				if target != int64(last.Sequence) {
-					return fmt.Errorf("DispatchTarget = %d, want the stream's last sequence, %d", target, last.Sequence)
-				}
-			}
-			return nil
-		})
-	}
-	group.Go(func() error {
-		defer close(recreated)
-		for range creations {
-			if err := stream.DeleteConsumer(ctx, github); err != nil {
-				return fmt.Errorf("delete the GitHub consumer: %w", err)
-			}
-			if err := consumers.SetRepositories(ctx, capturedRepositories); err != nil {
-				return fmt.Errorf("SetRepositories: %w", err)
-			}
-		}
-		return nil
-	})
-	group.Go(func() error {
-		for {
-			// The control: Lag read the waiting event's time, so it took oldestWaiting's GetMsg on
-			// the shared handle.
-			if got := consumers.Lag(ctx)[0]; got.Name != dispatch || got.Waiting != 1 || !got.OldestAt.Equal(waiting.Time) || got.Unavailable != "" {
-				return fmt.Errorf("Lag's first consumer = %+v, want %s with the one event waiting, the oldest stored at %s, and nothing unavailable",
-					got, dispatch, waiting.Time)
-			}
-			lags++
-			select {
-			case <-recreated:
-				return nil
-			default:
-			}
-		}
-	})
-	if err := group.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	// The control: OpenConsumers and every SetRepositories created the GitHub consumer at its
-	// stored position, the path that reads the stream's info.
-	if created := strings.Count(logs.String(), "created at the last message it applied"); created != creations+1 {
-		t.Fatalf("the GitHub consumer was created at its stored position %d times, want %d: once by OpenConsumers and once by each SetRepositories; logs:\n%s",
-			created, creations+1, logs)
+	batch, err := consumer.Fetch(1, jetstream.FetchMaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("fetch after the boot: %v", err)
 	}
-	t.Logf("Lag read the waiting event's time %d times while the GitHub consumer was created %d times", lags, creations)
+	var again uint64
+	for message := range batch.Messages() {
+		if metadata, err := message.Metadata(); err == nil {
+			again = metadata.Sequence.Stream
+		}
+	}
+	if again != published.Sequence {
+		t.Fatalf("a fetch right after the boot was given stream sequence %d, want %d at once: the message the check fetched was not handed back", again, published.Sequence)
+	}
+}
+
+// A consumer created at a stored position whose stream holds no message at or after it — nothing
+// was published since — has no first message to check its start on within the wait: that is logged
+// at INFO as a start that could not be checked, and nothing is warned of.
+func TestAStoredPositionWithNothingAfterItLogsAnUncheckedStart(t *testing.T) {
+	pool := migratedPool(t)
+	js, _ := testJetStream(t)
+	logs := &lockedBuffer{}
+	spec := consumerSpec(logs)
+	github := githubConsumerName(spec.Project)
+	publish(t, js, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
+	if _, err := pool.Exec(context.Background(), `insert into consumer_positions (consumer, stream_seq, stream_time) values ($1, 9000, $2)`,
+		github, time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("store the position: %v", err)
+	}
+	if _, err := OpenConsumers(context.Background(), js, pool, spec); err != nil {
+		t.Fatalf("OpenConsumers: %v", err)
+	}
+	if line := logLine(logs.String(), "level=INFO", "consumer="+github, "could not be checked", "no message reached it"); line == "" {
+		t.Fatalf("no INFO line names the start that could not be checked; logs:\n%s", logs)
+	}
+	if line := logLine(logs.String(), "level=WARN", "consumer="+github); line != "" {
+		t.Errorf("a start with nothing after it warned: %s", line)
+	}
 }
 
 // A consumer that has applied nothing — here the GitHub consumer, whose only message was a push to
@@ -439,7 +323,7 @@ func TestAMissingConsumerWithNoStoredPositionStartsAtTheNextMessage(t *testing.T
 // an applied fact moves the position — starts the consumer at the stream's first message, and a
 // WARN line names the gap: the events published between may have been missed, the daemon applied
 // none of them, and the daemon's own read of each issue's pull request heals those it would have
-// acted on.
+// acted on. The message the check fetched is handed back and applied.
 func TestAStoredPositionOlderThanTheStreamWarnsOfEventsThatMayHaveBeenMissed(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
@@ -456,7 +340,7 @@ func TestAStoredPositionOlderThanTheStreamWarnsOfEventsThatMayHaveBeenMissed(t *
 	defer startConsume(t, js, spec, pool, factMarks())()
 	waitDelivered(t, stream, github)
 	testwait.Eventually(t, "the stream's first event applied", func() bool { return slices.Equal(writeHandlers(t, pool), []string{"pr-1"}) })
-	if line := logLine(logs.String(), "level=WARN", "consumer="+github, "older than the stream's first message", "may have been missed"); line == "" {
+	if line := logLine(logs.String(), "level=WARN", "consumer="+github, "no longer in the stream", "may have been missed"); line == "" {
 		t.Fatalf("no WARN line names the events that may have been missed before the stream's first message; logs:\n%s", logs)
 	}
 }

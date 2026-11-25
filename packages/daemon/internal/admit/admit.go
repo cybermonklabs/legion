@@ -52,7 +52,7 @@ type Admission struct {
 	// names none (config.Config.StalledTreeNotice).
 	stalledTreeNotice time.Duration
 
-	// mu guards pending, stamps, target and catchingUp, the only Admission state a caller outside
+	// mu guards pending, stamps, holds and catchingUp, the only Admission state a caller outside
 	// its own transactions touches: the daemon's boot-owned poll calls Held on every tick, outside
 	// any transaction and the database's own advisory fact lock, concurrently with whatever release
 	// call currently holds both while it clears them, and a release's hook that runs late clears
@@ -63,20 +63,17 @@ type Admission struct {
 	// recorded or not, whatever its listed status: the stream may still redeliver a stale event
 	// for it (a nak, a slow ack, the outbox's own publish backoff, or a key the listing itself
 	// never carried at all because it never hit the record). It empties all at once, not key by
-	// key: target is one position in one stream, not a per-issue property, so nothing
-	// distinguishes one held key's own catching-up from another's. release applies every key's
-	// own summary — exactly as Reconcile's own immediate path would — before it clears them, so a
-	// key the stream never gets around to explaining still lands on what the listing already knew.
+	// key: the consumer catches up as a whole (DispatchConsumerPosition.Reached), not per issue,
+	// so nothing distinguishes one held key's own catching-up from another's. release applies every
+	// key's own summary — exactly as Reconcile's own immediate path would — before it clears them,
+	// so a key the stream never gets around to explaining still lands on what the listing already
+	// knew.
 	pending map[string]heldSummary
 	// stamps counts the writes into pending, so each held summary carries the write that put it
 	// there (heldSummary.stamp), and a release clears only the holds it applied (clearReleased).
 	stamps uint64
-	// target is the notification stream's own last sequence Reconcile captured when it found the
-	// first record behind: every key in pending releases once the Dispatch consumer's position
-	// has Reached it. Zero means nothing is held.
-	target int64
 	// holds counts Reconcile's deferrals into pending (Holds), so a poller of the hold tells one
-	// hold from the next, which can wait on the same target and be released by the same position.
+	// hold from the next, which can be released by the same position.
 	holds uint64
 	// catchingUp names each root the daemon's boot catch-up has yet to finish
 	// (HoldForCatchUp): its record may still miss what its Dispatch event log holds, so no pass
@@ -841,10 +838,10 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 // key the listing shows behind that log — recorded or not, whatever its listed status — is held
 // back rather than decided on now: the stream still holds those events (or the outbox that would
 // still publish one), and a stale one can still redeliver after this read, unless the Dispatch
-// consumer's position had already Reached target when the caller measured it. Then nothing more
-// is coming for any of it, ever, so every summary applies now instead of holding a key nothing
-// will later release. target and position are the caller's own single measurement of the stream
-// and the Dispatch consumer, taken once for the whole call, not per issue.
+// consumer had already Reached the end of what it was given when the caller measured it. Then
+// nothing more is coming for any of it, ever, so every summary applies now instead of holding a
+// key nothing will later release. position is the caller's own single measurement of the Dispatch
+// consumer, taken once for the whole call, not per issue.
 //
 // The listing reaches admission outside intake.ApplyFact, so each summary takes the store's own
 // rule here as a fact takes it there (storetext.Strings), before anything compares it with a
@@ -862,7 +859,7 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 // was no older than any fact applied when it was deferred, and release answers nothing: a fact
 // applied after it was deferred, newer than it, that records nothing refreshes it
 // (refreshHeldSummary) or leaves its own trace — a note, or its repository's recovery.
-func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake.DispatchIssue, target int64, position intake.DispatchConsumerPosition) ([]string, error) {
+func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake.DispatchIssue, position intake.DispatchConsumerPosition) ([]string, error) {
 	summaries = storetext.Strings(summaries)
 	issues, err := a.store.LiveIssues(ctx, tx, a.project)
 	if err != nil {
@@ -874,7 +871,7 @@ func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake
 	}
 	live := record.LiveRoots(issues, facts)
 
-	caughtUp := position.Reached(target)
+	caughtUp := position.Reached()
 	deferred := make(map[string]intake.DispatchIssue)
 	var refused []string
 	for _, summary := range parentsFirst(summaries) {
@@ -893,9 +890,9 @@ func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake
 	}
 
 	if len(deferred) > 0 {
-		a.holdDeferred(deferred, target)
-		a.log.Info("admission reconcile: holding roots for the Dispatch consumer to reach a stream position",
-			"count", len(deferred), "target", target, "ack_floor", position.AckFloorStream)
+		a.holdDeferred(deferred)
+		a.log.Info("admission reconcile: holding roots for the Dispatch consumer to catch up",
+			"count", len(deferred), "ack_floor", position.AckFloorStream)
 	}
 
 	_, released, err := a.promote(ctx, tx)
@@ -1032,7 +1029,7 @@ func (a *Admission) declaredAssignments() []record.DeclaredExperiment {
 // call this the same way: a key nothing else ever gets around to explaining still lands on what
 // the listing already knew.
 //
-// With hold set — Reconcile's call while the consumer has not reached its target — a summary the
+// With hold set — Reconcile's call while the consumer has not caught up — a summary the
 // listing shows behind Dispatch's event log (Reconcile says why) applies nothing either, and
 // applySummary answers summaryHeld for it, for the caller to defer. A stale summary is answered
 // so before it could be held, since no fact the stream still delivers makes it any less stale.
@@ -1925,7 +1922,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// be permanent. The design is
 			// that the daemon gives the first issue of the line its slot; skipping the first
 			// issue is not that. The cost is bounded: a hold ends when the Dispatch consumer
-			// reaches the position Reconcile captured for it, and every fact, tick, hold
+			// is confirmed idle (DispatchConsumerPosition.Reached), and every fact, tick, hold
 			// release and boot runs this pass again, so a hold delays a pass rather than
 			// holding a state. heldKeys is the one predicate, the same closure
 			// ReconcileAwaiting was given above: with respectHolds false — release's own call —
@@ -2270,8 +2267,8 @@ func capLets(entry record.LineEntry, held, cap int) bool {
 	return !slotFor(entry) || held < cap
 }
 
-// held says whether Reconcile still holds key for the Dispatch consumer to reach the stream
-// position it captured for it (a.pending).
+// held says whether Reconcile still holds key for the Dispatch consumer to catch up
+// (a.pending).
 func (a *Admission) held(key string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -2495,24 +2492,14 @@ func (a *Admission) awaitingUnresumable(ctx context.Context, tx pgx.Tx, issue re
 	return reason, reason != "", err
 }
 
-// Held reports whether any key currently waits on the Dispatch consumer reaching the stream
-// position Reconcile captured for it. The intake consume loop calls it once per Dispatch message,
-// outside any transaction, to decide whether a JetStream Info call and a synthetic position fact
-// are worth their cost at all: once nothing is held, every later delivery is a lock check and
-// nothing else.
+// Held reports whether any key currently waits on the Dispatch consumer catching up. The intake
+// consume loop calls it once per Dispatch message, outside any transaction, to decide whether a
+// JetStream Info call and a synthetic position fact are worth their cost at all: once nothing is
+// held, every later delivery is a lock check and nothing else.
 func (a *Admission) Held() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return len(a.pending) > 0
-}
-
-// Target is the notification stream position Held's hold is waiting for: the highest target any
-// currently deferred key was captured against. Zero while nothing is held. A boot-owned watchdog
-// reads it to name what a long-lived hold is still waiting to reach.
-func (a *Admission) Target() int64 {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.target
 }
 
 // Holds counts the times Reconcile has deferred keys into the hold since the daemon started: the
@@ -2533,9 +2520,9 @@ type heldSummary struct {
 	stamp   uint64
 }
 
-// holdDeferred holds each key of deferred on its summary until the Dispatch consumer reaches
-// target, and counts the deferral (Holds).
-func (a *Admission) holdDeferred(deferred map[string]intake.DispatchIssue, target int64) {
+// holdDeferred holds each key of deferred on its summary until the Dispatch consumer has caught
+// up (DispatchConsumerPosition.Reached), and counts the deferral (Holds).
+func (a *Admission) holdDeferred(deferred map[string]intake.DispatchIssue) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for key, summary := range deferred {
@@ -2543,9 +2530,6 @@ func (a *Admission) holdDeferred(deferred map[string]intake.DispatchIssue, targe
 		a.pending[key] = heldSummary{summary: summary, stamp: a.stamps}
 	}
 	a.holds++
-	if target > a.target {
-		a.target = target
-	}
 }
 
 // refreshHeldSummary keeps a held, unrecorded key's own pending summary — the one release
@@ -2570,10 +2554,10 @@ func (a *Admission) refreshHeldSummary(observation intake.DispatchIssue) {
 	}, stamp: a.stamps}
 }
 
-// release applies the Dispatch consumer's current position: once it has Reached target, every key
-// Reconcile deferred is re-applied through applySummary — the listing's own snapshot for it, in
-// case the stream never delivers the event that would otherwise have caught it up — before
-// promote decides anything, so a held key is never admitted, or left admitted, on stale
+// release applies the Dispatch consumer's current position: once it has Reached the end of what it
+// was given, every key Reconcile deferred is re-applied through applySummary — the listing's own
+// snapshot for it, in case the stream never delivers the event that would otherwise have caught it
+// up — before promote decides anything, so a held key is never admitted, or left admitted, on stale
 // information. The in-memory pending set only clears once this call's own transaction has
 // actually committed (store.OnCommit): clearing it any earlier would say a hold is
 // resolved while a failed commit leaves nothing of this release durable, so the next
@@ -2635,12 +2619,12 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 	return returned, nil
 }
 
-// releasable is every key pending holds, with the write that holds it, once position has reached
-// the target Reconcile captured; nil while nothing is held or the consumer is behind it.
+// releasable is every key pending holds, with the write that holds it, once position has caught
+// up (DispatchConsumerPosition.Reached); nil while nothing is held or the consumer is behind.
 func (a *Admission) releasable(position intake.DispatchConsumerPosition) map[string]heldSummary {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if len(a.pending) == 0 || !position.Reached(a.target) {
+	if len(a.pending) == 0 || !position.Reached() {
 		return nil
 	}
 	return maps.Clone(a.pending)

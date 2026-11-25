@@ -277,6 +277,7 @@ nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
+notification_stream_max_age_hours: 72
 gates:
   design: root-issues
 admission_cap: 5
