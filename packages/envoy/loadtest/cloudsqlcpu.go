@@ -391,8 +391,6 @@ func runCloudSQLCPU(args []string) error {
 		return err
 	}
 	databaseID := cloudsqlDatabaseID(*project, *instance)
-	// The reads carry the access token, so their client follows no redirect (redirects.Refused):
-	// Cloud Monitoring answers none, and a Location is the answering party's words.
 	monitoring := redirects.Refused(shortClient)
 	points, err := readCloudSQLSeries(ctx, monitoring, *api, token, *project, cloudsqlCPUMetric, databaseID, ws, we)
 	if err != nil {
