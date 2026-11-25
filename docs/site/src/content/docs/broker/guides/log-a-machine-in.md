@@ -72,10 +72,10 @@ and exits with an error that says which; while systemd still holds a job for the
 restart that took too long, it leaves the helper draining until that restart lands or the minute
 passes, and says so. If the restart succeeds but `install` cannot read the unit's main process
 before or after it (the read fails, or does not answer within 5 seconds), `install` cannot tell
-whether the restart replaced the helper, and exits 2 with an error that names the read that failed
-and says it could not tell. It then tries to let the helper take sessions again only when it can
-read that systemd holds no job for the unit; while a job is queued, or when that read fails too,
-it leaves the helper draining, and the drain ends with the restart or by itself within the minute.
+whether the restart replaced the helper. It tries to let the helper take sessions again only when
+it can read that systemd holds no job for the unit; while a job is queued, or when that read fails
+too, it leaves the helper draining, and the drain ends with the restart or by itself within the
+minute. Then it exits 2 with an error that names the read that failed and says it could not tell.
 
 A helper that answers on the socket but that the unit does not run (one started by hand) makes
 `install` stop before it writes anything, even when the unit file already matches: it lists that helper's sessions and exits 2 with `an
