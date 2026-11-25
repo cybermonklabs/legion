@@ -147,7 +147,7 @@ export function StageSlot({
   const View = outline ? undefined : views[preset];
   if (landed.instead !== undefined) return landed.instead;
   if (landed.document !== undefined) return <DocumentStages>{landed.document}</DocumentStages>;
-  if (address.documents) {
+  if (preset === "documents") {
     return (
       <DocumentStages>
         <DocumentsList
@@ -215,6 +215,8 @@ export type ViewSlots = Readonly<Record<Preset, ((props: ViewSlotProps) => React
 export const VIEW_SLOTS: ViewSlots = {
   conversation: undefined,
   decisions: ViewDecisionsSlot,
+  // Documents draws its list before any view's slot (`StageSlot`'s second branch).
+  documents: undefined,
   plan: ViewPlanSlot,
   spec: ViewSpecSlot,
   verification: ViewVerificationSlot,
@@ -231,6 +233,7 @@ export type SlotsFilled = Readonly<Record<Preset, boolean>>;
 export const SLOT_FILLED: SlotsFilled = {
   conversation: true,
   decisions: true,
+  documents: true,
   plan: true,
   spec: true,
   verification: true,

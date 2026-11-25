@@ -235,9 +235,9 @@ export function DocumentsList({
         tabIndex={-1}
         type="file"
       />
-      {listed.length === 0 && artifacts.length > 0 ? (
+      {listed.length === 0 ? (
         <p className={`text-sm ${pageQuietText}`} {...pageChrome}>
-          {EMPTY_STATE_LINES.files_filtered}
+          {artifacts.length === 0 ? EMPTY_STATE_LINES.documents : EMPTY_STATE_LINES.files_filtered}
         </p>
       ) : null}
       {/* Its pages start again at 20 for each filter's words. */}

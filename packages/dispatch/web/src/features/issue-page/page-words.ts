@@ -289,6 +289,7 @@ export const PRESET_ORDER = freeze([
   "verification",
   "plan",
   "decisions",
+  "documents",
 ] as const);
 
 /** One control of the filter row, by its own token: `conversation`, which turns every filter
@@ -300,6 +301,7 @@ export type Preset = (typeof PRESET_ORDER)[number];
 export const PRESET_NAMES = joinWords("PRESET_NAMES", {
   conversation: "Conversation",
   decisions: "Decisions",
+  documents: "Documents",
   plan: "Plan",
   spec: "Spec",
   verification: "Verification",

@@ -1010,3 +1010,28 @@ test("a reader who scrolled away from the focused row: a round trip puts the pla
     view.unmount();
   }
 });
+
+// ST-5 and the plan's preset table: Documents' list is drawn in the outline's place, so the
+// outline's scroll place is neither put back on the list when it opens nor taken from a scroll
+// of the list, and Conversation after it puts back the outline's own place.
+test("the outline's scroll place is neither taken nor put back on Documents' list", async () => {
+  const user = userEvent.setup();
+  const view = drawPage(CONVERSATION);
+  try {
+    await rowOf(view, "[data-issue-body]", "head-a");
+    scrollPage(480);
+    await specOn(user);
+    await user.click(screen.getByRole("link", { name: "Open Documents" }));
+    await waitFor(() => expect(address()).toBe(DOCUMENTS));
+    await listLinks();
+    expect(window.scrollY, "the outline's place was put back on Documents' list").toBe(0);
+    scrollPage(900);
+    await user.click(screen.getByRole("button", { name: "Conversation" }));
+    await waitFor(() => expect(address()).toBe(CONVERSATION));
+    expect(window.scrollY, "a scroll of Documents' list was taken for the outline's place").toBe(
+      480
+    );
+  } finally {
+    view.unmount();
+  }
+});

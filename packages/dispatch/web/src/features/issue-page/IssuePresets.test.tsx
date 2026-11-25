@@ -1,17 +1,24 @@
 import { expect, spyOn, test } from "bun:test";
-import { render, screen, waitFor } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import type { IssueDetails } from "../../api/types";
 import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
+import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymap } from "../shell/keymap";
 import { useDialog } from "../shell/useDialog";
-import { IssuePresets } from "./IssuePresets";
+import { artifact, issueDetails } from "./decisions-filter/decisions-fixtures";
+import { IssuePresets, WORDS_FILTER_ATTRIBUTE } from "./IssuePresets";
 import { presetPath } from "./issue-address";
-import { PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-words";
-import type { Filter, PresetSignal } from "./presets";
+import { CONTROL_LABELS, PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-words";
+import { type Filter, isFilter, type PresetSignal } from "./presets";
+import { ProvidersSlot } from "./slots/providers";
+import { AppProviders, stubReads } from "./slots/stage-fixtures";
+import { ViewRowSlot } from "./slots/view-row";
 
 const SIGNALS: Readonly<Record<Filter, PresetSignal>> = {
   decisions: { count: 0 },
@@ -61,10 +68,12 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
       ["{ArrowDown}", "verification"],
       ["{ArrowDown}", "plan"],
       ["{ArrowDown}", "decisions"],
+      ["{ArrowDown}", "documents"],
       ["{ArrowDown}", "conversation"],
-      ["{ArrowUp}", "decisions"],
+      ["{ArrowUp}", "documents"],
       ["{Home}", "conversation"],
-      ["{End}", "decisions"],
+      ["{End}", "documents"],
+      ["{ArrowUp}", "decisions"],
       ["{ArrowUp}", "plan"],
     ] as const) {
       await user.keyboard(key);
@@ -383,5 +392,293 @@ test.each([
   } finally {
     view.unmount();
     restoreMatchMedia();
+  }
+});
+
+/** The issue the page's own view row is drawn for below: its spec, and a document of no role,
+ *  which Documents' list opens. */
+const NOTES = artifact("artifact-notes", "notes-md");
+const ROW_ISSUE: IssueDetails = {
+  ...issueDetails(),
+  artifacts: [artifact("artifact-spec", "spec", true), NOTES],
+};
+
+/** Documents' list's own address, and the notes' own, which a row of the list opens. */
+const DOCUMENTS = presetPath("CORE-1", "documents");
+const NOTES_ADDRESS = buildIssuePath({ key: "CORE-1", kind: "artifact", slug: NOTES.slug });
+
+/** The page's own view row at the address the router holds, under the page's providers, as the
+ *  page's root draws it, and where the router is: the address and the location's state. */
+function PageRow(): ReactNode {
+  const { pathname, search, state } = useLocation();
+  const route = parseIssuePath(pathname, search);
+  if (route === undefined) throw new Error(`${pathname} names no route`);
+  return (
+    <ProvidersSlot issue={ROW_ISSUE} route={route}>
+      <ViewRowSlot issue={ROW_ISSUE} route={route} />
+      <output aria-label="where" data-state={JSON.stringify(state ?? null)}>
+        {`${pathname}${search}`}
+      </output>
+    </ProvidersSlot>
+  );
+}
+
+/** The page's view row at `address`, with `state` in its location where one is given, at
+ *  `width` px, 1440 unless given, its reads answered; `done` takes it down and puts the width
+ *  and the reads back. */
+function drawPageRow(
+  address: string,
+  { state, width = DESKTOP_WIDTH }: { state?: unknown; width?: number } = {}
+): { container: HTMLElement; done: () => void } {
+  const restoreMatchMedia = stubViewport(width);
+  const reads = stubReads();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={[{ pathname: address, state }]}>
+      <AppProviders client={client}>
+        <PageRow />
+      </AppProviders>
+    </MemoryRouter>
+  );
+  return {
+    container: view.container,
+    done: () => {
+      view.unmount();
+      restoreMatchMedia();
+      for (const read of reads) read.mockRestore();
+    },
+  };
+}
+
+/** Where the page's row is, as `PageRow` draws it. */
+function where(): HTMLElement {
+  return screen.getByRole("status", { name: "where" });
+}
+
+/** The row of controls' toggle of `preset`, from 1280 px, named by its name alone. */
+function toggle(preset: Preset): HTMLElement {
+  return screen.getByRole("button", { name: PRESET_NAMES[preset] });
+}
+
+// Part N's R4: Documents is a control of the row in root R2's order - after Threads and before
+// Graph of the controls `main` holds, which today is after Decisions - and where the row is one
+// control, at 1024 px and below, an entry of its menu.
+test("Documents is a control after Decisions, and an entry of the one control", async () => {
+  const user = userEvent.setup();
+  for (const width of [DESKTOP_WIDTH, 1024]) {
+    const restoreMatchMedia = stubViewport(width);
+    const view = render(
+      <MemoryRouter initialEntries={[presetPath("CORE-1", "conversation")]}>
+        <IssuePresets active="conversation" issueKey="CORE-1" signals={SIGNALS} />
+        <Address />
+      </MemoryRouter>
+    );
+    try {
+      if (width === DESKTOP_WIDTH) {
+        const names = within(screen.getByRole("toolbar"))
+          .getAllByRole("button")
+          .map((button) => button.textContent);
+        expect(names.indexOf(PRESET_NAMES.documents), "Documents is not after Decisions").toBe(
+          names.indexOf(PRESET_NAMES.decisions) + 1
+        );
+        expect(toggle("documents")).toHaveAttribute("aria-pressed", "false");
+        await user.click(toggle("documents"));
+      } else {
+        await user.click(screen.getByRole("button", { name: PRESET_NAMES.conversation }));
+        const documents = screen.getByRole("menuitemradio", { name: PRESET_NAMES.documents });
+        expect(documents).toHaveAttribute("aria-checked", "false");
+        expect(menuItem("decisions").nextElementSibling, "Documents is not after Decisions").toBe(
+          documents
+        );
+        await user.click(documents);
+      }
+      expect(screen.getByRole("status", { name: "address" }).textContent, `${width} px`).toBe(
+        DOCUMENTS
+      );
+    } finally {
+      view.unmount();
+      restoreMatchMedia();
+    }
+  }
+});
+
+// Part N's R4 and ST-7: a press on Documents from any other control opens its list at its own
+// address and turns that control off, and hands the list the address it was pressed at, which
+// the list's Escape goes back to (the location's `outline`).
+test("pressing Documents opens its list and turns every other control off", async () => {
+  const user = userEvent.setup();
+  for (const from of PRESET_ORDER.filter((preset) => preset !== "documents")) {
+    const row = drawPageRow(presetPath("CORE-1", from));
+    try {
+      expect(toggle(from)).toHaveAttribute("aria-pressed", "true");
+      await user.click(toggle("documents"));
+      await waitFor(() => expect(where().textContent).toBe(DOCUMENTS));
+      expect(toggle("documents"), `from ${PRESET_NAMES[from]}`).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      );
+      for (const other of PRESET_ORDER.filter((preset) => preset !== "documents")) {
+        expect(toggle(other), `${PRESET_NAMES[other]} stayed on`).toHaveAttribute(
+          "aria-pressed",
+          "false"
+        );
+      }
+      expect(JSON.parse(where().dataset.state ?? "null")).toEqual({
+        outline: presetPath("CORE-1", from),
+      });
+    } finally {
+      row.done();
+    }
+  }
+});
+
+// Part N's R4: Documents is on while its list is drawn and while a document opened from the
+// list is (the location's `outline` is the list's address); the same document opened from
+// anywhere else is the page with no filter on.
+test("Documents stays active while a document opened from its list is drawn", async () => {
+  const fromList = drawPageRow(NOTES_ADDRESS, { state: { outline: DOCUMENTS } });
+  try {
+    await screen.findByRole("button", { name: CONTROL_LABELS.version });
+    expect(toggle("documents")).toHaveAttribute("aria-pressed", "true");
+    expect(toggle("conversation")).toHaveAttribute("aria-pressed", "false");
+  } finally {
+    fromList.done();
+  }
+  const fromView = drawPageRow(NOTES_ADDRESS, { state: { outline: presetPath("CORE-1", "spec") } });
+  try {
+    await screen.findByRole("button", { name: CONTROL_LABELS.version });
+    expect(toggle("documents")).toHaveAttribute("aria-pressed", "false");
+    expect(toggle("conversation")).toHaveAttribute("aria-pressed", "true");
+  } finally {
+    fromView.done();
+  }
+});
+
+// Part N's R4 and ST-7: a press on Documents while it is on - on its list, or on a document
+// opened from it - returns to Conversation, as a press on the view that is on turns it off.
+test("pressing Documents while it is active returns to Conversation", async () => {
+  const user = userEvent.setup();
+  for (const [address, state] of [
+    [DOCUMENTS, undefined],
+    [NOTES_ADDRESS, { outline: DOCUMENTS }],
+  ] as const) {
+    const row = drawPageRow(address, { state });
+    try {
+      expect(toggle("documents"), address).toHaveAttribute("aria-pressed", "true");
+      await user.click(toggle("documents"));
+      await waitFor(() => expect(where().textContent).toBe(presetPath("CORE-1", "conversation")));
+      expect(toggle("conversation"), address).toHaveAttribute("aria-pressed", "true");
+      expect(toggle("documents"), address).toHaveAttribute("aria-pressed", "false");
+    } finally {
+      row.done();
+    }
+  }
+});
+
+// The row is one tab stop that the arrows, Home and End move along, Documents among the rest.
+test("the arrows move along the row across Documents", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const view = render(
+    <MemoryRouter initialEntries={[presetPath("CORE-1", "decisions")]}>
+      <IssuePresets active="decisions" issueKey="CORE-1" signals={SIGNALS} />
+    </MemoryRouter>
+  );
+  try {
+    toggle("decisions").focus();
+    for (const [key, to] of [
+      ["{ArrowRight}", "documents"],
+      ["{ArrowRight}", "conversation"],
+      ["{ArrowLeft}", "documents"],
+      ["{ArrowLeft}", "decisions"],
+      ["{Home}", "conversation"],
+      ["{End}", "documents"],
+    ] as const) {
+      await user.keyboard(key);
+      expect(document.activeElement, `${key} did not move to ${PRESET_NAMES[to]}`).toBe(toggle(to));
+    }
+    expect(
+      within(screen.getByRole("toolbar"))
+        .getAllByRole("button")
+        .filter((button) => button.tabIndex === 0),
+      "the row is not one tab stop, on Documents"
+    ).toEqual([toggle("documents")]);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+// Part N's R4 and ST-1: a control that draws no outline draws no filter by words - neither its
+// Filter in the row nor the box, nor an Outline sheet to hold them - on its own address and, for
+// Documents, on a document opened from its list. Of the three, `main` holds Documents alone:
+// Dashboard and Threads join the list below as each part adds its control, which is no filter.
+test("Dashboard, Threads and Documents draw no Filter", async () => {
+  const outlineless = PRESET_ORDER.filter(
+    (preset) => preset !== "conversation" && !isFilter(preset)
+  );
+  for (const width of [DESKTOP_WIDTH, 1000]) {
+    // Conversation draws it, in the row or behind its Outline control, so what is read below is
+    // there to find.
+    const conversation = drawPageRow(presetPath("CORE-1", "conversation"), { width });
+    try {
+      expect(
+        conversation.container.querySelector(
+          `[${WORDS_FILTER_ATTRIBUTE}], button[aria-haspopup="dialog"]`
+        ),
+        `Conversation draws no Filter at ${width} px`
+      ).not.toBeNull();
+    } finally {
+      conversation.done();
+    }
+    for (const [address, state] of [
+      ...outlineless.map((preset) => [presetPath("CORE-1", preset), undefined] as const),
+      [NOTES_ADDRESS, { outline: DOCUMENTS }] as const,
+    ]) {
+      const row = drawPageRow(address, { state, width });
+      try {
+        await waitFor(() => expect(where().textContent).toBe(address));
+        expect(
+          row.container.querySelector(`[${WORDS_FILTER_ATTRIBUTE}]`),
+          `${address} draws a Filter at ${width} px`
+        ).toBeNull();
+        expect(
+          row.container.querySelector('button[aria-haspopup="dialog"]'),
+          `${address} draws an Outline sheet at ${width} px`
+        ).toBeNull();
+      } finally {
+        row.done();
+      }
+    }
+  }
+});
+
+// Part N's R4: Documents counts nothing. Once the tree's reads are in, the filters draw their
+// counts, and Documents' control draws none and is described by none, from 1280 px and in the one
+// control's menu, which names it alone.
+test("Documents draws no count", async () => {
+  const user = userEvent.setup();
+  const wide = drawPageRow(DOCUMENTS);
+  try {
+    await waitFor(() =>
+      expect(wide.container.querySelector('[data-preset-count="spec"]')).not.toBeNull()
+    );
+    expect(wide.container.querySelector('[data-preset-count="documents"]')).toBeNull();
+    expect(toggle("documents")).not.toHaveAttribute("aria-describedby");
+  } finally {
+    wide.done();
+  }
+  const narrow = drawPageRow(DOCUMENTS, { width: 1000 });
+  try {
+    await user.click(screen.getByRole("button", { name: PRESET_NAMES.documents }));
+    // The menu names each filter by its name and its count once the counts are read.
+    await within(screen.getByRole("menu")).findByRole("menuitemradio", { name: /^Spec \d/ });
+    expect(narrow.container.querySelector('[data-preset-count="documents"]')).toBeNull();
+    expect(
+      screen.getByRole("menuitemradio", { name: PRESET_NAMES.documents, checked: true })
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: PRESET_NAMES.documents })).toBeInTheDocument();
+  } finally {
+    narrow.done();
   }
 });

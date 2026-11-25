@@ -83,10 +83,11 @@ export function IssuePresets({
   /** The Outline control, beside the one control below 1024 px where the Contents pane is not
    *  drawn (R14), and undefined wherever no Outline control is drawn. */
   outline?: ReactNode;
-  /** The Outline sheet at 760 px and below, handed the two small controls this row moves into
-   *  it there - the version control and the filter by words (part N's R4) - with a view on or a
-   *  document open too. A caller that gives it leaves `outline` undefined, so the row draws one
-   *  Outline control (`slots/view-row.tsx`). */
+  /** The Outline sheet below 1024 px, handed the two small controls this row moves into it there
+   *  - the version control and the filter by words (part N's R4) - with a view on too. Where it
+   *  is not given the two stand at the row's right end, as on Documents and on a document drawn
+   *  as the stage, which draw no sheet. A caller that gives it leaves `outline` undefined, so
+   *  the row draws one Outline control (`slots/view-row.tsx`). */
   sheet?: (tools: ReactNode) => ReactNode;
   /** What each control draws after its name (`presets.ts`'s `filterSignals`). A control with no
    *  signal, such as Conversation, draws just its name. The whole record is undefined until the
@@ -98,6 +99,8 @@ export function IssuePresets({
 }): ReactNode {
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  // Part N's Documents hands its list the address it is pressed at (`press`).
+  const { search } = useLocation();
   const openKeys = useShortcutHelpOpener();
   // The row of five is drawn exactly where the one control is not.
   const row = !useMediaQuery(ONE_CONTROL_QUERY);
@@ -213,6 +216,16 @@ export function IssuePresets({
   // to the issue's own.
   const press = (preset: Preset) => {
     if (preset === "conversation" && pathname === presetPath(issueKey, "conversation")) return;
+    // Part N's Documents (its R4): its list goes back to the address it was opened from on
+    // Escape (the location's `outline`, `escape-order.ts`), and the words go with the reader.
+    if (preset === "documents" && active !== "documents") {
+      const words =
+        filter === undefined || filter === "" ? "" : `?${new URLSearchParams({ q: filter })}`;
+      navigate(`${presetPath(issueKey, "documents")}${words}`, {
+        state: { outline: `${pathname}${search}` },
+      });
+      return;
+    }
     // Part N's words go with the reader to the view they press, which draws with them, and the
     // box keeps them (its R4).
     if (filter !== undefined && filter !== "") {
@@ -273,8 +286,9 @@ export function IssuePresets({
   // The small controls, at the row's right end from 761 px up.
   const atTheEnd = <div className="flex shrink-0 items-center gap-2">{keys}</div>;
   // Part N's two small controls (R4): the version control, while a view is on or a document is
-  // open, and the filter by words. They stand at the row's right end before Keys from 761 px up,
-  // and in the Outline sheet at 760 px and below.
+  // open, and the filter by words. They stand at the row's right end before Keys, and below
+  // 1024 px in the Outline sheet (`sheet`); where no sheet is drawn - on Documents, and on a
+  // document drawn as the stage - at the row's end.
   const tools = (
     <div className="flex shrink-0 items-center gap-2">
       {toolbar === undefined ? null : (
@@ -306,8 +320,8 @@ export function IssuePresets({
       )}
     </div>
   );
-  // The same two in the Outline sheet at 760 px and below, each drawn open: the sheet is where
-  // the reader went to find them.
+  // The same two in the Outline sheet below 1024 px, each drawn open: the sheet is where the
+  // reader went to find them.
   const inTheSheet = (
     <>
       {toolbar}
@@ -394,15 +408,17 @@ export function IssuePresets({
           ) : null}
         </div>
         {/* After the one control, as the 390 px picture draws it. */}
-        {phone && sheet !== undefined ? sheet(inTheSheet) : null}
+        {sheet === undefined ? null : sheet(inTheSheet)}
         {outline}
         {phone ? null : (
           <>
             <span className="flex-1" />
-            {tools}
+            {sheet === undefined ? tools : null}
             {atTheEnd}
           </>
         )}
+        {/* At 760 px and below too, where no sheet is drawn: Documents and a document. */}
+        {phone && sheet === undefined ? tools : null}
       </div>
     );
   }
@@ -625,6 +641,6 @@ function WordsFilter({
  *  finds it (`useIssueKeymap.ts`). */
 export const WORDS_FILTER_ATTRIBUTE = "data-words-filter";
 
-/** The view row's Outline control, whose sheet holds the filter by words at 760 px and below:
- *  `t f` opens it where the words control is not drawn (`useIssueKeymap.ts`). */
+/** The view row's Outline control, whose sheet holds the filter by words below 1024 px: `t f`
+ *  opens it where the words control is not drawn (`useIssueKeymap.ts`). */
 export const OUTLINE_CONTROL = `[${FILTER_ROW_ATTRIBUTE}] button[aria-haspopup="dialog"]`;

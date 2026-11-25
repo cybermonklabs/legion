@@ -60,7 +60,7 @@ The view row is one line at every width.
 
 /** What the seed below gives each control of the view row to count: no question and no thread
  *  of the reader's, two statements, one check, no plan and no decision. */
-const SEEDED_COUNTS: Readonly<Record<Preset, number>> = {
+const SEEDED_COUNTS: Readonly<Partial<Record<Preset, number>>> = {
   conversation: 0,
   decisions: 0,
   plan: 0,
@@ -504,7 +504,7 @@ test("the five controls are toggles with an address each, one line at every widt
     // The toolbar Filters: five toggles in order, each named by its view's word alone. The four
     // filters are described by their signals, with the seed's counts. Conversation has no count.
     await expect(presetToolbar(page), "no toolbar named Filters holds the five").toHaveCount(1);
-    await expect(presetToggles(page)).toHaveCount(5);
+    await expect(presetToggles(page)).toHaveCount(PRESET_ORDER.length);
     expect(
       await presetToggles(page).evaluateAll((buttons) =>
         buttons.map((button) => button.querySelector("[data-preset-name]")?.textContent ?? "")
@@ -519,6 +519,10 @@ test("the five controls are toggles with an address each, one line at every widt
         preset === "conversation" ? "true" : "false"
       );
       if (preset === "conversation") continue;
+      if (preset === "documents") {
+        await expect(presetCount(page, preset), "Documents draws a count").toHaveCount(0);
+        continue;
+      }
       await expect(presetCount(page, preset)).toHaveText(String(SEEDED_COUNTS[preset]));
       await expect(
         toggle,
@@ -566,11 +570,11 @@ test("the five controls are toggles with an address each, one line at every widt
     await page.keyboard.press("ArrowRight");
     await expect(presetToggle(page, "spec")).toBeFocused();
     await page.keyboard.press("End");
-    await expect(presetToggle(page, "decisions")).toBeFocused();
+    await expect(presetToggle(page, "documents")).toBeFocused();
     await page.keyboard.press("Home");
     await expect(presetToggle(page, "conversation")).toBeFocused();
     await page.keyboard.press("ArrowLeft");
-    await expect(presetToggle(page, "decisions")).toBeFocused();
+    await expect(presetToggle(page, "documents")).toBeFocused();
 
     // Keys opens the list of keys, which names the five chords.
     await filterRow(page).getByRole("button", { exact: true, name: "Keys" }).click();
@@ -622,9 +626,10 @@ test("the five controls are toggles with an address each, one line at every widt
       ).toHaveAccessibleName(new RegExp(`^${PRESET_NAMES.spec} ${SEEDED_COUNTS.spec}\\b`));
       await presetChooser(page).click();
       await expect(openMenu(page)).toHaveCount(1);
-      await expect(openMenu(page).getByRole("menuitemradio"), "the menu is not five").toHaveCount(
-        5
-      );
+      await expect(
+        openMenu(page).getByRole("menuitemradio"),
+        "the menu does not hold the row's controls"
+      ).toHaveCount(PRESET_ORDER.length);
       for (const preset of PRESET_ORDER) {
         await expect(presetMenuItem(page, preset)).toHaveAttribute(
           "aria-checked",

@@ -19,6 +19,9 @@ export default {
       /** What a document's own address says where the issue holds no document or file at that
        *  address (part N's R2): never the slug the address wrote, and never the old tab's word. */
       document_missing: "This issue holds no document at this address.",
+      /** What Documents' list says where the issue holds no document and no file (part N's R2,
+       *  R4), as every other control of the view row says where it draws nothing. */
+      documents: "This issue has no documents yet.",
     },
     ANSWER_LINES: {
       /** What the opened document's comparison of two versions says while it reads their text,

@@ -5,6 +5,7 @@ import { primarySpec } from "../../../api/issue-cache";
 import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { CONTENTS_PANE_QUERY, OutlineSheet, PAGE_INSET } from "../contents-frame";
+import { useOpenedDocument } from "../document-address";
 import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
@@ -35,8 +36,9 @@ import { useViewRowTools } from "../view-row-tools";
  * page, and its height is published (`VIEW_ROW_HEIGHT_PROPERTY`).
  *
  * Part N adds the row's two small controls, the version control and the filter by words, before
- * Keys, and at 760 px and below the Outline sheet that holds them with a view on or a document
- * open too (`view-row-tools.tsx`), which the row draws in place of D's Outline control there.
+ * Keys (`view-row-tools.tsx`), and below 1024 px the Outline sheet that holds them, with a view on
+ * too, in place of D's Outline control. Documents draws no outline and so no sheet (root R14),
+ * and neither does a document drawn as the stage.
  */
 export function ViewRowSlot(props: SlotProps): ReactNode {
   const { issue, route } = props;
@@ -58,10 +60,14 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   useViewRowHeight(row);
   useIssueKeymap(issue.key);
   const tools = useViewRowTools(props);
-  // Part D's Outline sheet, beside the one control below 1024 px with no view on. At 760 px and
-  // below part N's sheet stands in its place, with a view on or a document open too, and holds
-  // the row's two small controls (`view-row-tools.tsx`).
-  const drawsOutline = !paned && !isFilter(address.preset) && tools.sheet === undefined;
+  const opened = useOpenedDocument(issue, route);
+  // Below 1024 px, where root R14 opens the Contents list as the Outline sheet, the sheet holds
+  // the row's two small controls, with a view on too (part N's R4). Documents draws no outline,
+  // so no sheet: its version control stands at the row's end. Nor does a document drawn as the
+  // stage, whichever way it was opened: no Contents list is drawn while it is (the plan's preset
+  // table), and its small controls stand at the row's end too.
+  const on = tools.active ?? address.preset;
+  const drawsOutline = !paned && opened === undefined && (on === "conversation" || isFilter(on));
   return (
     <div
       className={`border-b ${PAGE_INSET} ${pageLineBorder} ${pagePaperBg} max-[761px]:sticky max-[761px]:top-0 max-[761px]:z-[19]`}
@@ -70,8 +76,12 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
       <IssuePresets
         active={address.preset}
         issueKey={issue.key}
-        outline={drawsOutline ? <OutlineSheet slot={props} /> : undefined}
+        sheet={
+          drawsOutline ? (inSheet) => <OutlineSheet slot={props} tools={inSheet} /> : undefined
+        }
         signals={signals}
+        // Part N's: its two small controls, and Documents as the control that is on while a
+        // document its list opened is drawn (`view-row-tools.tsx`).
         {...tools}
       />
     </div>

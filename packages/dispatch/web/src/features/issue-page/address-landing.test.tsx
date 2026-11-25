@@ -162,7 +162,7 @@ function named(element: Element | null | undefined): string {
  *  but the held one in. */
 async function viewDrawsRows(
   view: RenderResult,
-  preset: Exclude<Preset, "decisions">,
+  preset: Exclude<Preset, "decisions" | "documents">,
   what: string
 ): Promise<void> {
   const body = preset === "conversation" ? "[data-issue-body]" : VIEW_BODY[preset];

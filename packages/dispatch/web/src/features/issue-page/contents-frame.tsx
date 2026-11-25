@@ -45,7 +45,7 @@ export function IssueContentsPane(props: SlotProps): ReactNode {
   // Part N's: Documents' list and a document drawn in place of the outline draw no Contents
   // pane (its R2, root R14).
   const opened = useOpenedDocument(props.issue, props.route);
-  const documents = issueAddress(props.route, "", "", undefined).documents;
+  const documents = issueAddress(props.route, "", "", undefined).preset === "documents";
   const viewOn = isFilter(issueAddress(props.route, "", "", undefined).preset);
   if (!paned || viewOn) return null;
   if (documents || opened !== undefined) return null;

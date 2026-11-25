@@ -3,11 +3,9 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
-import { useMediaQuery } from "../shell/useDialog";
-import { OutlineSheet } from "./contents-frame";
-import { useOpenedDocument, useOutlineAddress } from "./document-address";
-import { HEADER_SCROLLS_QUERY } from "./identity-block";
+import { documentsAddress, useOpenedDocument, useOutlineAddress } from "./document-address";
 import { issueAddress } from "./issue-address";
+import type { Preset } from "./page-words";
 import type { SlotProps } from "./slot-props";
 import { useFollowing } from "./slots/following";
 import { useDocumentToolbars } from "./useDocumentToolbars";
@@ -16,20 +14,23 @@ import { VersionControl } from "./VersionControl";
 
 /** What part N hands the view row's `IssuePresets` beside part D's props (its R3, R4). */
 export interface ViewRowTools {
+  /** Documents, where a document Documents' list opened is drawn: the control that is on in
+   *  place of the address's preset, which is Conversation's there (part N's R4). The row's own
+   *  `active` stands everywhere else, so this is given there alone. */
+  readonly active?: Preset;
   readonly filter: string;
-  readonly onFilterChange: (next: string) => void;
-  /** Present at 760 px and below only: the Outline sheet that holds the two small controls,
-   *  which the row draws in place of part D's Outline control (`slots/view-row.tsx`). */
-  readonly sheet?: (tools: ReactNode) => ReactNode;
+  /** How the box writes `?q=`; not given on Documents, which draws no Filter (part N's R4), so
+   *  the row draws no box there and still carries the words to the control pressed next. */
+  readonly onFilterChange?: (next: string) => void;
   readonly toolbar: ReactNode;
 }
 
 /**
  * The view row's two small controls, as `IssuePresets` props (dispatch://INFRA-1196 part N's
  * R3, R4): the filter by words, which writes `?q=` in place; and the version control, which reads
- * the opened document's versions, else the view's document's, else is not drawn. At 760 px and
- * below the two stand in the Outline sheet, which the row then draws with a view on or a document
- * open too.
+ * the opened document's versions, else the view's document's, else is not drawn. Below 1024 px
+ * the row draws the two in the Outline sheet (`slots/view-row.tsx`). Documents, on while its list
+ * or a document opened from the list is drawn, draws no Filter.
  */
 export function useViewRowTools(props: SlotProps): ViewRowTools {
   const { issue, route } = props;
@@ -41,7 +42,11 @@ export function useViewRowTools(props: SlotProps): ViewRowTools {
   const opened = useOpenedDocument(issue, route);
   const outline = useOutlineAddress(issue.key);
   const { diffs, showDiff, toolbars } = useDocumentToolbars();
-  const phone = useMediaQuery(HEADER_SCROLLS_QUERY);
+  // Documents is on while a document its list opened is drawn, whose way back is the list (the
+  // location's `outline`, which the list's rows hand over), as it is while the list is.
+  const documentsOn =
+    address.preset === "documents" ||
+    (opened !== undefined && outline === documentsAddress(issue.key));
   const isClosed = issue.closed_at !== null;
   // What the filter by words holds is `?q=`, which the box writes in place, keeping the rest of
   // the address, by a replace marked with the following it was typed in (`slots/following.ts`),
@@ -71,6 +76,7 @@ export function useViewRowTools(props: SlotProps): ViewRowTools {
     {
       conversation: undefined,
       decisions: undefined,
+      documents: undefined,
       plan: planArtifact,
       spec: primaryArtifact,
       verification: verificationArtifact,
@@ -116,9 +122,9 @@ export function useViewRowTools(props: SlotProps): ViewRowTools {
       />
     ) : undefined;
   return {
+    ...(documentsOn && address.preset !== "documents" ? { active: "documents" as const } : {}),
     filter: address.filter,
-    onFilterChange,
+    ...(documentsOn ? {} : { onFilterChange }),
     toolbar,
-    ...(phone ? { sheet: (tools: ReactNode) => <OutlineSheet slot={props} tools={tools} /> } : {}),
   };
 }

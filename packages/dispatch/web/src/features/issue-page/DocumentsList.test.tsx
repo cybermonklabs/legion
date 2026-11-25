@@ -608,3 +608,31 @@ test("the list makes no read of its own", async () => {
     view.unmount();
   }
 });
+
+// Part N's R2 and R4: where the issue holds no document and no file, the list says so in one
+// line, as every other control of the view row says where it draws nothing, and draws no row;
+// its filter's line is for words that match none of what the issue holds.
+test("an issue with no document draws the list's empty line", async () => {
+  const user = userEvent.setup();
+  const view = renderList(false, []);
+  try {
+    expect(screen.getByText(EMPTY_STATE_LINES.documents)).toBeInTheDocument();
+    expect(screen.queryByRole("list")).toBeNull();
+    expect(screen.queryByText(EMPTY_STATE_LINES.files_filtered)).toBeNull();
+    await user.type(
+      screen.getByRole("searchbox", { name: CONTROL_LABELS.filter_files }),
+      "nothing"
+    );
+    expect(screen.getByText(EMPTY_STATE_LINES.documents)).toBeInTheDocument();
+    expect(screen.queryByText(EMPTY_STATE_LINES.files_filtered)).toBeNull();
+  } finally {
+    view.unmount();
+  }
+  // An issue that holds one draws no such line.
+  const held = renderList(false, [background]);
+  try {
+    expect(screen.queryByText(EMPTY_STATE_LINES.documents)).toBeNull();
+  } finally {
+    held.unmount();
+  }
+});

@@ -50,11 +50,13 @@ import {
  */
 
 /** One of the four filters: every control of the row but Conversation, which turns them off. */
-export type Filter = Exclude<Preset, "conversation">;
+// Part N's Documents is no filter either: it draws its list in the outline's place, and no
+// outline, words box or Contents pane (its R4).
+export type Filter = Exclude<Preset, "conversation" | "documents">;
 
 /** Whether `preset` is a filter rather than the page with no filter on. */
 export function isFilter(preset: Preset): preset is Filter {
-  return preset !== "conversation";
+  return preset !== "conversation" && preset !== "documents";
 }
 
 /** The kinds each filter draws as rows of its own (R2). */

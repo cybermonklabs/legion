@@ -113,13 +113,18 @@ export function useStageLanding({ issue, route }: SlotProps): {
   useApprovalFocus(landing);
   useStepsAddress(route);
   useEscapeOrder({
-    documents: address.documents && opened === undefined,
+    documents: address.preset === "documents" && opened === undefined,
     filter: address.filter,
     issueKey: issue.key,
     opened: opened?.route,
     viewOn: isFilter(address.preset),
   });
-  useOutlinePlace(opened === undefined && !isFilter(address.preset), address.target !== undefined);
+  // The outline's place is taken and put back only where the stage draws the outline: no view,
+  // no document, and not Documents' list.
+  useOutlinePlace(
+    opened === undefined && address.preset === "conversation",
+    address.target !== undefined
+  );
   const queryAnswered = useAnsweredOnce(
     queryRead.prefix === undefined || !queryRead.resolution.isPending
   );

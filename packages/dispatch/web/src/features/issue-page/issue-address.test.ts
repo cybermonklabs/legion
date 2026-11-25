@@ -368,7 +368,6 @@ test("the children's address names the first row of their group", () => {
   const children = issueAddress({ key: "CORE-1", kind: "children" }, "", "", "spec");
   expect(children.target).toEqual({ id: "CORE-1", kind: "children" });
   expect(children.preset).toBe("conversation");
-  expect(children.documents).toBe(false);
   const withChildren = node("CORE-1", "issue", {
     children: [askNode, node("CORE-2", "child_issue"), node("CORE-3", "child_issue")],
   });
@@ -378,23 +377,22 @@ test("the children's address names the first row of their group", () => {
   ]);
 });
 
-// Part N's R1, R2 and R6: Documents' own address (`/documents`) and today's Artifacts tab's
-// (`/artifacts`) each open Documents' list in place of the outline, on no node and no document.
+// Part N's R1, R2, R4 and R6: Documents' own address (`/documents`) and today's Artifacts tab's
+// (`/artifacts`) each turn Documents on, whose list is drawn in place of the outline, on no node
+// and no document; Documents' control carries its own address.
 test("`/documents` and `/artifacts` open Documents", () => {
   for (const kind of ["issue-documents", "artifacts"] as const) {
     const documents = issueAddress({ key: "CORE-1", kind }, "", "", "spec");
-    expect([kind, documents.documents]).toEqual([kind, true]);
+    expect([kind, documents.preset]).toEqual([kind, "documents"]);
     expect([kind, documents.document]).toEqual([kind, undefined]);
     expect([kind, documents.target]).toEqual([kind, undefined]);
   }
-  for (const route of [
-    { key: "CORE-1", kind: "issue" },
-    { key: "CORE-1", kind: "spec" },
-    { key: "CORE-1", kind: "artifact", slug: "notes-md" },
+  for (const [route, preset] of [
+    [{ key: "CORE-1", kind: "issue" }, "conversation"],
+    [{ key: "CORE-1", kind: "spec" }, "spec"],
+    [{ key: "CORE-1", kind: "artifact", slug: "notes-md" }, "conversation"],
   ] as const) {
-    expect([route.kind, issueAddress(route, "", "", "spec").documents]).toEqual([
-      route.kind,
-      false,
-    ]);
+    expect([route.kind, issueAddress(route, "", "", "spec").preset]).toEqual([route.kind, preset]);
   }
+  expect(presetPath("CORE-1", "documents")).toBe("/issues/CORE-1/documents");
 });

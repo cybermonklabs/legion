@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { buildIssuePath, type IssueTab, parseIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { DOCUMENT_OPEN_ATTRIBUTE, DOCUMENTS_LIST_ATTRIBUTE } from "./DocumentsList";
+import { useOutlineAddress } from "./document-address";
 import { OUTLINE_CONTROL, WORDS_FILTER_ATTRIBUTE } from "./IssuePresets";
 import { bringOnScreen } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
@@ -18,7 +19,7 @@ const PARTS = {
   // Documents' list, which `t a` opens in place of the outline (part N's R2, R4).
   documents: `[${DOCUMENTS_LIST_ATTRIBUTE}]`,
   // The filter by words: its small control, which a press opens into the box, or the box
-  // (`IssuePresets.tsx`); at 760 px and below both are in the Outline sheet (part N's R4).
+  // (`IssuePresets.tsx`); below 1024 px both are in the Outline sheet (part N's R4).
   filter: `[${WORDS_FILTER_ATTRIBUTE}]`,
   // The outline, by its name: the Contents pane's list is a tree too, and it stands before the
   // outline in the page.
@@ -177,15 +178,6 @@ const CHORDS: readonly {
     path: (key) => presetPath(key, "conversation"),
     tab: "conversation",
   },
-  // `t a`, today's Artifacts tab, opens Documents' list at its own address (part N's R2, R4,
-  // R6), with the focus on its first row.
-  {
-    keys: "t a",
-    label: CONTROL_LABELS.open_documents,
-    part: "documents",
-    path: (key) => buildIssuePath({ key, kind: "issue-documents" }),
-    tab: "artifacts",
-  },
 ];
 
 /**
@@ -197,6 +189,9 @@ const CHORDS: readonly {
 export function useIssueKeymap(issueKey: string): void {
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  // Where `t a` and `t f` leave from (part N's R4).
+  const { search } = useLocation();
+  const outline = useOutlineAddress(issueKey);
   // The view the address has on, which a view's chord toggles from.
   const route = parseIssuePath(pathname);
   const active =
@@ -217,10 +212,49 @@ export function useIssueKeymap(issueKey: string): void {
       },
     }))
   );
+  // `t a`, today's Artifacts tab, opens Documents' list at its own address (part N's R2, R4,
+  // R6), with the focus on its first row, as a press of Documents does: the list goes back to the
+  // address the chord left on Escape (the location's `outline`), and from the list itself to
+  // where the list was opened from.
+  useKeymap("issue", [
+    {
+      id: "tab-artifacts",
+      keys: "t a",
+      label: CONTROL_LABELS.open_documents,
+      run: () => {
+        navigate(presetPath(issueKey, "documents"), {
+          state: { outline: active === "documents" ? outline : `${pathname}${search}` },
+        });
+        requestAnimationFrame(() => reachPart("documents"));
+      },
+    },
+  ]);
   // The filter by words narrows the view the reader is already on, so it opens no address of
   // its own: what it types is `?q=`, which the box itself writes (part N's R4).
   useKeymap("issue", [
-    { id: "tab-filter", keys: "t f", label: "Filter by words", run: () => reachPart("filter") },
+    {
+      id: "tab-filter",
+      keys: "t f",
+      label: "Filter by words",
+      run: () => {
+        // Where the row draws no Filter, in the row or in its Outline sheet - on Documents, which
+        // draws no outline - the chord turns Conversation on with the words kept, and opens its
+        // box there (part N's R4, ST-1).
+        if (
+          document.querySelector(PARTS.filter) === null &&
+          document.querySelector(OUTLINE_CONTROL) === null
+        ) {
+          const words = new URLSearchParams(search).get("q") ?? "";
+          const conversation = presetPath(issueKey, "conversation");
+          navigate(
+            words === "" ? conversation : `${conversation}?${new URLSearchParams({ q: words })}`
+          );
+          requestAnimationFrame(() => reachPart("filter"));
+          return;
+        }
+        reachPart("filter");
+      },
+    },
   ]);
   // `t e`, today's Steps tab, opens `/steps`, which opens Details at the issue's steps and puts
   // the focus there (`stage-landing.tsx`): each press is a new arrival at it, so it opens them

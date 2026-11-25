@@ -12,9 +12,8 @@ import { blockNodeId } from "./tree-drafts";
  *
  * Every address the old page's nine tabs answered still resolves, and this module is the one
  * place that says what each one opens: which preset, which document is opened in place of the
- * outline, which node the page unfolds the path to and puts the focus on, whether Documents' list
- * is drawn in its place, and which version is pinned. `refs/routes.ts` still parses the address;
- * this reads the route it answers.
+ * outline, which node the page unfolds the path to and puts the focus on, and which version is
+ * pinned. `refs/routes.ts` still parses the address; this reads the route it answers.
  *
  * It is pure and holds no React, so the page, the margin's panel and the unit tests all read an
  * address the same way.
@@ -61,11 +60,11 @@ export interface IssueAddress {
     | { readonly kind: "ask" | "comment"; readonly id: string }
     | { readonly kind: "mark"; readonly id: string }
     | undefined;
-  /** Whether the address names Documents, whose list is drawn in place of the outline and of
-   *  every view: `/documents` and `/artifacts`, the old page's Artifacts tab (part N's R1, R2). */
-  readonly documents: boolean;
   /** What `?q=` narrows the preset to; `""` for an address that narrows nothing. */
   readonly filter: string;
+  /** The control of the view row the address turns on: Conversation, one of the four filters,
+   *  or Documents, whose list is drawn in place of the outline and of every view at `/documents`
+   *  and at `/artifacts`, the old page's Artifacts tab (part N's R1, R2, R4). */
   readonly preset: Preset;
   /** The node the address names, which the page unfolds the path to and focuses (R19). */
   readonly target: AddressTarget | undefined;
@@ -74,10 +73,12 @@ export interface IssueAddress {
   readonly version: number | undefined;
 }
 
-/** Which filter each kind of route opens (R20). Every route not named here is the page with no
- *  filter on, Conversation, whose own address is the issue's. */
+/** Which control each kind of route opens (R20, part N's R4). Every route not named here is the
+ *  page with no filter on, Conversation, whose own address is the issue's. */
 const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
+  artifacts: "documents",
   decisions: "decisions",
+  "issue-documents": "documents",
   plan: "plan",
   spec: "spec",
   verification: "verification",
@@ -86,6 +87,7 @@ const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
 /** The address of `preset` on `key`, which is the address its own control carries (R2, R20):
  *  each filter its old tab's, and Conversation, the page with no filter on, the issue's own. */
 export function presetPath(key: string, preset: Preset): string {
+  if (preset === "documents") return buildIssuePath({ key, kind: "issue-documents" });
   return buildIssuePath(preset === "conversation" ? { key, kind: "issue" } : { key, kind: preset });
 }
 
@@ -185,7 +187,6 @@ export function issueAddress(
         ? addressed
         : undefined,
     documentItem,
-    documents: route.kind === "issue-documents" || route.kind === "artifacts",
     filter: query.get("q") ?? "",
     preset: ROUTE_PRESETS[route.kind] ?? "conversation",
     target:
