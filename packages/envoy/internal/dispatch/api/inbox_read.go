@@ -455,10 +455,20 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // replaced) runs before user_threads_message (0095, attached by 0097) on an issue message, and on
 // an Agent thread's reply it is the only one of the two that runs at all: that other trigger
 // returns at once for a message with no issue key, and an Agent thread's messages carry none. It
-// takes the root `for key share`, and `for no key update` before its delete wherever a mark of the
-// root stands. So a session's reply takes the thread's root before any row of this caller's it
-// reaches. A dismiss or a restore that took the caller's rows first and the root second would be
-// the opposite order, and the two would meet each holding what the other waits for.
+// takes the root `for key share`, and `for no key update` before its delete wherever a mark or an
+// owed row (below) of the root stands. So a session's reply takes the thread's root before any row
+// of this caller's it reaches. A dismiss or a restore that took the caller's rows first and the
+// root second would be the opposite order, and the two would meet each holding what the other
+// waits for.
+//
+// The restore of the release before is that opposite order: it takes the caller's marks and no
+// root, and deletes the marks. So the trigger's delete of a mark never waits at the root: it takes
+// the root `for no key update skip locked`, and where another transaction holds it, leaves the
+// column standing and appends the root to user_agent_thread_dismissed_owed (migration
+// 20261125053125's header). Every writer of this order that holds a root then settles it after its
+// own delete or write of the marks (user_agent_thread_dismissed_settle): a restore its roots
+// (inboxRestoreSettleAgentRoots, api/inbox_dismiss.go) and a session's reply its own
+// (inboxwrite's queueAgentDismissalsClear, and the clear trigger for an older build's reply).
 //
 // PUT /api/v1/me/threads/{id}/read is ordered against this transaction by the owner alone, as an
 // ordinary writer is (below), and not by this list: it takes its one thread's owner lock
@@ -642,23 +652,26 @@ type inboxEvent struct {
 }
 
 // commitInboxMarks ends both write routes over these rows. A request that changed nothing
-// announces nothing and has nothing to commit: the Inbox marks itself read on every click, and
-// each event would refetch the list in every tab the viewer has open. A request that changed
-// something takes the project of every event it appends - step 6 of the lock order above, in one
-// sorted order after the rows it wrote and before the first append, an agent reply's event naming
-// no owner and so taking no lock here - and then appends them, each followed by the marks it
-// causes, in one statement under that event (graphstore.QueueFromPerson), which takes no row lock
-// but the person's node, `do nothing` where the store holds it, all in one batch, and commits.
-// Every mark is dated at, the transaction's now(), which the events carry too. It answers the
-// count its caller answers, 0 when nothing changed, and the events to publish once the
-// transaction has committed. writer names the route to the seam a test injects a failure
-// through between the rows the route wrote and the marks (failpoint.InboxRead,
-// failpoint.InboxDismiss), decided before the batch is sent and queued before the first mark.
+// announces nothing: the Inbox marks itself read on every click, and each event would refetch the
+// list in every tab the viewer has open. It still commits, since the one write such a request can
+// hold is a restore's settle of the roots it locked (inboxRestoreSettleAgentRoots,
+// api/inbox_dismiss.go), which clears a column another restore left owed and changes no answer:
+// an owed root with no mark reads as live before it and after it (myAgentOwedRoot). A request that
+// changed something takes the project of every event it appends - step 6 of the lock order above,
+// in one sorted order after the rows it wrote and before the first append, an agent reply's event
+// naming no owner and so taking no lock here - and then appends them, each followed by the marks
+// it causes, in one statement under that event (graphstore.QueueFromPerson), which takes no row
+// lock but the person's node, `do nothing` where the store holds it, all in one batch, and
+// commits. Every mark is dated at, the transaction's now(), which the events carry too. It answers
+// the count its caller answers, 0 when nothing changed, and the events to publish once the
+// transaction has committed. writer names the route to the seam a test injects a failure through
+// between the rows the route wrote and the marks (failpoint.InboxRead, failpoint.InboxDismiss),
+// decided before the batch is sent and queued before the first mark.
 func (s *server) commitInboxMarks(
 	ctx context.Context, tx pgx.Tx, writer string, at time.Time, changed int, events []inboxEvent,
 ) (int, []model.Event, error) {
 	if len(events) == 0 {
-		return 0, nil, tx.Rollback(ctx)
+		return 0, nil, tx.Commit(ctx)
 	}
 	owners := make([]model.Event, len(events))
 	for index, event := range events {

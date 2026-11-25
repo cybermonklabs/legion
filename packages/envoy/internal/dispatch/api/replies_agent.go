@@ -177,8 +177,30 @@ var myAgentRootIsOneOff = `
 // ever sent, each dismissed one read and thrown away - at 5,000 dismissed Agent threads 10,020 rows
 // for 20 roots in the Inbox, where 250 dismissed read 520
 // (TestTheOneReadsInboxStatesDoNotGrowWithTheDismissedHistory).
+//
+// A root whose column outlived its author's mark is an owed one (myAgentOwedRoot), which each
+// state reads in a branch of its own beside this one.
 func myAgentLiveRoot(root string) string {
 	return root + `.agent_dismissed_at is null`
+}
+
+// myAgentOwedRoot is the other way a root is live: a root whose column stands set with no mark of
+// the person's behind it. A delete of a mark that found the root held by another transaction - a
+// restore of the release before, which takes the mark and no root, meeting a reply of either
+// build - leaves the column as it stood and appends the root to user_agent_thread_dismissed_owed
+// (migration 20261125053125's header) until the writer holding the root, or the maintenance sweep
+// (sweepAgentDismissalsOwed), settles it. Each of the Inbox's two states reads such roots in a
+// branch of their own, over the owed roots alone, rather than as an `or` beside myAgentLiveRoot:
+// the live branch keeps its plan off messages_direct_roots_live, and this one reads nothing while
+// the table is empty, which it is but for those moments. A root its author's mark still names is
+// dismissed, whatever the table owes of it.
+func myAgentOwedRoot(root string) string {
+	return root + `.id in (select owed.root_id from user_agent_thread_dismissed_owed owed)
+		  and ` + root + `.agent_dismissed_at is not null
+		  and not exists (
+			select 1 from user_agent_thread_dismissed d
+			where d.message_id = ` + root + `.id and d.login = $1
+		  )`
 }
 
 // myAgentRowFacts is what one root's own thread says about its row, read in one walk of it: the
@@ -223,6 +245,31 @@ var myAgentRowFacts = `
 var myAgentRootsWithFacts = `
 	from roots r` + myAgentRowFacts
 
+// myAgentUnreadRootsOf is one branch of state=unread's roots: the person's one-off roots that pass
+// live, each holding a session reply the person has not read. myAgentInboxRootsOf is one branch of
+// state=inbox's: the person's one-off roots that pass live, read or not.
+func myAgentUnreadRootsOf(live string) string {
+	return `
+		select m.id as root_id, null::timestamptz as dismissed_at
+		from messages m
+		cross join lateral (select ` + agentMarkOf(agentSessionOf("m.target")) + ` as at) mark
+		where ` + myAgentRootFilter("m") + `
+		  and ` + live + `
+		  and exists (` + agentThreadCTE("m.id") + `
+			select 1 from thread t
+			where t.author->>'kind' = 'session'
+			  and t.` + myAgentUnreadReplyTest("t.id", "mark.at") + `
+		  )`
+}
+
+func myAgentInboxRootsOf(live string) string {
+	return `
+		select m.id as root_id, null::timestamptz as dismissed_at
+		from messages m
+		where ` + myAgentRootFilter("m") + `
+		  and ` + live
+}
+
 // The roots each state reads, one `roots` set per state, each carrying the root and the dismissal
 // mark, which only the Dismissed view's rows have.
 var (
@@ -231,26 +278,16 @@ var (
 	// predicate of the index the roots are read off rather than a walk of every thread the person
 	// ever dismissed. The unread state leaves them out too, and may: a dismissal marks every reply
 	// in the thread read by id, and a reply written since cleared the mark in its own transaction,
-	// so a root that still carries one holds nothing unread.
+	// so a root that still carries one holds nothing unread. Each adds, in a branch of its own, the
+	// owed roots whose column outlived the person's mark (myAgentOwedRoot); a root is in at most
+	// one of the two branches, since one reads its column null and the other set.
 	myAgentUnreadRoots = myAgentMarks + `
-	roots as (
-		select m.id as root_id, null::timestamptz as dismissed_at
-		from messages m
-		cross join lateral (select ` + agentMarkOf(agentSessionOf("m.target")) + ` as at) mark
-		where ` + myAgentRootFilter("m") + `
-		  and ` + myAgentLiveRoot("m") + `
-		  and exists (` + agentThreadCTE("m.id") + `
-			select 1 from thread t
-			where t.author->>'kind' = 'session'
-			  and t.` + myAgentUnreadReplyTest("t.id", "mark.at") + `
-		  )
+	roots as (` + myAgentUnreadRootsOf(myAgentLiveRoot("m")) + `
+		union all` + myAgentUnreadRootsOf(myAgentOwedRoot("m")) + `
 	)`
 	myAgentInboxRoots = myAgentMarks + `
-	roots as (
-		select m.id as root_id, null::timestamptz as dismissed_at
-		from messages m
-		where ` + myAgentRootFilter("m") + `
-		  and ` + myAgentLiveRoot("m") + `
+	roots as (` + myAgentInboxRootsOf(myAgentLiveRoot("m")) + `
+		union all` + myAgentInboxRootsOf(myAgentOwedRoot("m")) + `
 	)`
 	// The Dismissed view's roots are the marks themselves, in the order the view answers in, so
 	// one index scan answers the narrowing, the order and the cursor

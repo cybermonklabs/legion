@@ -152,6 +152,19 @@ const inboxRestoreLockAgentRoots = `
 	order by id
 	for no key update`
 
+// inboxRestoreSettleAgentRoots settles each root inboxRestoreLockAgentRoots took
+// (user_agent_thread_dismissed_settle, migration 20261125053125), after the delete of the caller's
+// marks and under the roots' own locks. The restore of the release before takes no root: it
+// locks a mark and deletes it, and where this restore holds the root its trigger leaves the
+// column standing and owes it rather than wait there. This restore's own lock of that mark
+// (inboxDismissLockAgentThreads) waits until the other commits, so the settle, which comes after
+// this transaction has touched the marks, reads the owed row and sets the column from the mark as
+// it now stands. A root this restore's own delete reached was settled by the trigger already, and
+// the settle writes nothing of it.
+const inboxRestoreSettleAgentRoots = `
+	select user_agent_thread_dismissed_settle(root)
+	from unnest($1::uuid[]) as root`
+
 // inboxDismissCheckAgentRoots answers which of the Agent threads a dismissal read it may still
 // write a mark for. It runs as a statement of its own, after the root lock above has been given
 // and before the first write, so its snapshot holds every reply that committed while this
@@ -732,7 +745,8 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 // step 3 has already locked, as the mark-all's is and through the mark-all's own statement
 // (writeInboxThreadMarks), and the agent-reply write and its prune are the mark-all's own too
 // (markInboxReadAgentReplies), taken here for the same reason, so a dismissed Agent thread stops
-// counting as unread.
+// counting as unread. A restore's settle of its roots, after its delete of the marks, writes the
+// roots step 2 holds (inboxRestoreSettleAgentRoots).
 //
 // Every statement runs under the mark-all's statement_timeout, because this transaction holds the
 // same owners' locks in shared mode: every comment, answer and issue message on those owners waits
@@ -969,6 +983,13 @@ func (s *server) dismissInboxAgentThreads(
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return written, fmt.Errorf("dismiss the inbox's agent threads: %w", err)
+	}
+	if plan.restore {
+		// The roots step 2 took, settled now that the caller's marks are deleted, and never
+		// before (inboxRestoreSettleAgentRoots).
+		if _, err := tx.Exec(ctx, inboxRestoreSettleAgentRoots, read.agentRoots); err != nil {
+			return written, fmt.Errorf("settle the agent threads' roots: %w", err)
+		}
 	}
 	if len(read.replies) > 0 {
 		// Dismissing marks the thread read, so its unread replies are written by id exactly as the
