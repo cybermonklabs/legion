@@ -176,7 +176,7 @@ type SessionConsumers struct {
 	// logger is the logger the connection was opened with (ConnectSessionConsumers),
 	// slog.Default() where that was nil: where create and recordResumeFloorAt write their lines.
 	logger *slog.Logger
-	// pendingMu guards pending and createFault.
+	// pendingMu guards pending, createFault, deleteAnswerFault and infoFault.
 	pendingMu sync.Mutex
 	// pending holds, by consumer name, the start of each consumer a restart (RestartAtFloor) read
 	// the floor of and may have deleted, until a create at that start is confirmed: the position
@@ -185,6 +185,23 @@ type SessionConsumers struct {
 	// createFault, when not nil, runs before each consumer create is sent, and an error it returns
 	// fails the create unsent. It is nil outside tests (SetCreateFault).
 	createFault func(consumer string) error
+	// deleteAnswerFault, when not nil, runs after each consumer delete the server answered, and an
+	// error it returns replaces that answer, as a request whose answer was lost after the server
+	// applied it returns one. deleteSendFault, when not nil, runs before each consumer delete is
+	// sent, and an error it returns fails the delete unsent, as a request that never reached the
+	// server returns one. infoFault, when not nil, runs before each consumer info read is sent, and
+	// an error it returns fails the read unsent. All three are nil outside tests
+	// (SetDeleteAnswerFault, SetDeleteSendFault, SetInfoFault).
+	deleteAnswerFault func(consumer string) error
+	deleteSendFault   func(consumer string) error
+	infoFault         func(consumer string) error
+	// narrowed, when not nil, hears each change of a consumer's filter that drops a subject the
+	// new filter does not contain while the stream holds messages on it from the consumer's
+	// position on (SetNarrowed), with the count of them read on each such subject just before the
+	// change: an observation, which a message stored on the subject or delivered from it between
+	// the read and the change makes differ from the real loss by one. It is set before the handle
+	// is used, and read without a lock.
+	narrowed func(sessionID string, passedOver map[string]uint64, confirmed bool)
 
 	// streamMu guards streamNext and streamReading (streamState).
 	streamMu sync.Mutex
@@ -264,6 +281,34 @@ func (s *SessionConsumers) SetCreateFault(fault func(consumer string) error) {
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
 	s.createFault = fault
+}
+
+// SetDeleteAnswerFault makes every consumer delete the server answered call fault(consumer name)
+// and, when it returns an error, return that error in place of the answer, as a delete whose
+// answer was lost after the server applied it does; nil removes it. SetDeleteSendFault makes every
+// consumer delete call fault(consumer name) first and, when it returns an error, return that error
+// unsent, as a delete that never reached the server does; nil removes it. SetInfoFault makes every
+// consumer info read call fault(consumer name) first and fail, unsent, with the error it returns;
+// nil removes it. They are seams for tests, which lose a restart's delete answer, with the delete
+// applied or not, and fail the read back of it; nothing else sets them.
+func (s *SessionConsumers) SetDeleteAnswerFault(fault func(consumer string) error) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	s.deleteAnswerFault = fault
+}
+
+// SetDeleteSendFault: see SetDeleteAnswerFault.
+func (s *SessionConsumers) SetDeleteSendFault(fault func(consumer string) error) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	s.deleteSendFault = fault
+}
+
+// SetInfoFault: see SetDeleteAnswerFault.
+func (s *SessionConsumers) SetInfoFault(fault func(consumer string) error) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	s.infoFault = fault
 }
 
 // SetMaxAckPending makes every consumer this handle creates or updates deliver at most n of its
@@ -393,7 +438,7 @@ func (s *SessionConsumers) Ensure(ctx context.Context, sessionID string, subject
 		// failed never reached the server, or its create did. Its start is the sequence it was
 		// created at, which the caller records for the durable path (SessionConsumerStart).
 		s.setPendingStart(name, 0)
-		changed, err := s.update(ctx, name, info.Config, filters)
+		changed, err := s.update(ctx, sessionID, name, info, filters)
 		return SessionConsumerStart{StartSeq: info.Config.OptStartSeq, AckFloor: ackFloor(info), Updated: changed}, err
 	}
 }
@@ -409,7 +454,7 @@ func (s *SessionConsumers) UpdateFilter(ctx context.Context, sessionID string, s
 	if err != nil {
 		return err
 	}
-	_, err = s.update(ctx, name, info.Config, filters)
+	_, err = s.update(ctx, sessionID, name, info, filters)
 	return err
 }
 
@@ -494,18 +539,33 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 	if err == nil && info.NumAckPending == 0 {
 		// A consumer keepAtFloor does not keep, its next sequence past the stream's end, is
 		// restarted below at that sequence, as one awaiting an ack is.
-		if start, kept, err := s.keepAtFloor(ctx, name, info, filters, stream); err != nil || kept {
+		if start, kept, err := s.keepAtFloor(ctx, sessionID, name, info, filters, stream); err != nil || kept {
 			return start, err
 		}
 	}
 	var startSeq uint64
+	var passedOver map[string]uint64
 	switch {
 	case err == nil:
 		startSeq = ackFloor(info) + 1
+		// The consumer created again at startSeq holds nothing on a subject its filter drops,
+		// so every message on it from startSeq on, delivered and awaiting an ack or not, is
+		// passed over: counted before the delete, as an update's are (passedOverBy). The loss is
+		// certain once the delete lands, so it is reported then, before the create: a create that
+		// fails leaves the next call to create the consumer at the pending start with the filter
+		// it is given, and that call reads no deleted consumer to count against.
+		passedOver = s.passedOverBy(ctx, name, info, filters, startSeq)
 		s.setPendingStart(name, startSeq)
 		if err := s.delete(ctx, name); err != nil {
+			// A delete with no answer may have landed: it is read back, and the loss reported
+			// as for a landed delete when it did (reportUnansweredDelete). An answer the server
+			// sent, a refusal included, is definite, and nothing was deleted.
+			if errors.Is(err, errDeleteUnanswered) {
+				s.reportUnansweredDelete(ctx, sessionID, name, passedOver)
+			}
 			return SessionConsumerStart{}, err
 		}
+		s.reportNarrowed(sessionID, passedOver)
 	case errors.Is(err, ErrSessionConsumerNotFound):
 		pending, ok := s.pendingStart(name)
 		if !ok {
@@ -545,7 +605,7 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 // v2.10.29, which has no such reconcile and reports an ack floor of 0 for a consumer that has acked
 // nothing, a consumer with that floor of 0 whose start is past the end reaches the check too,
 // through ackFloor's OptStartSeq - 1 term, as one an earlier build created there does.
-func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *jetstream.ConsumerInfo, filters []string, stream *streamRead) (SessionConsumerStart, bool, error) {
+func (s *SessionConsumers) keepAtFloor(ctx context.Context, sessionID, name string, info *jetstream.ConsumerInfo, filters []string, stream *streamRead) (SessionConsumerStart, bool, error) {
 	state, err := stream.wait(ctx)
 	if err != nil {
 		return SessionConsumerStart{}, false, err
@@ -558,7 +618,7 @@ func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *j
 	if past {
 		return SessionConsumerStart{}, false, nil
 	}
-	if _, err := s.update(ctx, name, info.Config, filters); err != nil {
+	if _, err := s.update(ctx, sessionID, name, info, filters); err != nil {
 		return SessionConsumerStart{}, false, err
 	}
 	s.setPendingStart(name, 0)
@@ -931,13 +991,67 @@ func sessionConsumerTarget(sessionID string, subjects []string) (string, []strin
 // its project). An issue's topic under a wildcard project (notifications.dispatch.issue.*.KEY.>)
 // would overlap its old form, so contracts.LegacyTwin gives it none and it stays one filter. It is
 // the one computation of that set, which a caller comparing a consumer with the row it was built
-// from reads too.
+// from reads too; SessionConsumerReduction is the same computation with the subjects that fed each
+// filter.
 func SessionConsumerFilters(subjects []string) []string {
-	forms := make([]string, 0, 2*len(subjects))
-	for _, subject := range subjects {
-		forms = append(forms, contracts.TopicForms(subject)...)
-	}
+	forms, _ := sessionConsumerForms(subjects, false)
 	return ReduceFilterSubjects(forms)
+}
+
+// ReducedSessionFilter is one filter of the set SessionConsumerFilters gives, with the subjects
+// whose forms fed it (SessionConsumerReduction).
+type ReducedSessionFilter struct {
+	Subject string
+	// Fed is the subjects, of those SessionConsumerReduction was handed, whose forms
+	// (contracts.TopicForms) went into Subject, each once and in the order handed: the subject a
+	// form is of, where Subject is that form as it came; and, where the reduction merged two
+	// overlapping filters into their common prefix and `>`, every subject a form of which fed that
+	// merge or a merge before it. A form another filter contains is dropped, and feeds nothing.
+	Fed []string
+}
+
+// SessionConsumerReduction is SessionConsumerFilters with the provenance of each filter: the same
+// filters in the same order, each with the subjects that fed it (ReducedSessionFilter), from the
+// one reduction (reduceFilters). A caller that weighs what each filter of the set reaches reads
+// the set the consumer carries, and which of its subjects made each filter: cmd/listener's
+// sessionConsumerFilter leaves out the wildcard topics that fed a filter reaching another session's
+// private subjects, and no others.
+func SessionConsumerReduction(subjects []string) []ReducedSessionFilter {
+	forms, fedBy := sessionConsumerForms(subjects, true)
+	if len(forms) == 0 {
+		return nil
+	}
+	reduced := reduceFilters(forms, fedBy)
+	filters := make([]ReducedSessionFilter, len(reduced))
+	for index, filter := range reduced {
+		slices.Sort(filter.fed)
+		fed := slices.Compact(filter.fed)
+		names := make([]string, len(fed))
+		for at, subject := range fed {
+			names[at] = subjects[subject]
+		}
+		filters[index] = ReducedSessionFilter{Subject: filter.subject, Fed: names}
+	}
+	return filters
+}
+
+// sessionConsumerForms is every form of each of subjects (contracts.TopicForms), in order, and,
+// when track is set, beside each form the index in subjects of the subject it is a form of.
+func sessionConsumerForms(subjects []string, track bool) ([]string, []int) {
+	forms := make([]string, 0, 2*len(subjects))
+	var fedBy []int
+	if track {
+		fedBy = make([]int, 0, 2*len(subjects))
+	}
+	for index, subject := range subjects {
+		for _, form := range contracts.TopicForms(subject) {
+			forms = append(forms, form)
+			if track {
+				fedBy = append(fedBy, index)
+			}
+		}
+	}
+	return forms, fedBy
 }
 
 // applySettings sets the session consumer settings and filters on config, leaving what an update
@@ -956,15 +1070,146 @@ func (s *SessionConsumers) applySettings(config *jetstream.ConsumerConfig, filte
 	config.FilterSubjects = filters
 }
 
-// update sends consumer name's current configuration with the session consumer settings and
-// filters applied, when that changes anything, and reports whether it sent it.
-func (s *SessionConsumers) update(ctx context.Context, name string, current jetstream.ConsumerConfig, filters []string) (bool, error) {
-	next, changed := s.updated(current, filters)
+// update sends consumer name's configuration, as info read it, with the session consumer settings
+// and filters applied, when that changes anything, and reports whether it sent it. An update that
+// drops a subject with messages waiting on it is reported to the narrowed hook (passedOverBy).
+func (s *SessionConsumers) update(ctx context.Context, sessionID, name string, info *jetstream.ConsumerInfo, filters []string) (bool, error) {
+	next, changed := s.updated(info.Config, filters)
 	if !changed {
 		return false, nil
 	}
-	_, err := s.upsert(ctx, name, next, "update")
-	return err == nil, err
+	// nats-server goes on from the consumer's position with the new filters, so a message the
+	// consumer has not delivered on a subject they drop is never delivered.
+	passedOver := s.passedOverBy(ctx, name, info, filters, max(info.Delivered.Stream, ackFloor(info))+1)
+	if _, err := s.upsert(ctx, name, next, "update"); err != nil {
+		return false, err
+	}
+	s.reportNarrowed(sessionID, passedOver)
+	return true, nil
+}
+
+// SetNarrowed sets the hook a change of a consumer's filter calls when it passes messages over: an
+// update, once the server took it, or a restart at the ack floor that deletes the consumer and
+// creates it again, once its delete landed and before its create, whose new filter drops a subject
+// no subject of it contains while the stream holds messages on that subject from the consumer's
+// position on. Those messages were counted for the session at their publish and are never
+// delivered to it. passedOver holds, for each such subject, how many messages the stream held on it
+// from that position on (passedOverBy): an observation read just before the change, so a message
+// stored on the subject, or delivered from it, between that read and the change makes the real
+// loss differ from it by one each. confirmed is false only for a restart whose delete went
+// unanswered and whose read back of the consumer failed too (reportUnansweredDelete): the loss is
+// then reported as the delete may have made it, unconfirmed. Call it before the handle is used.
+//
+// A create where no consumer stands counts nothing, since nothing records the filter the consumer
+// it replaces carried: the resume record of a deleted consumer holds its floor and the stream's
+// identity alone (SessionResumeRecord), the server's own removal of an idle consumer
+// (SessionConsumerInactiveThreshold) records nothing, and a restart's retry at a pending start
+// reads no consumer. Such a create passes over at most the messages the stream holds on the
+// subjects the replaced consumer carried and its filter does not contain, from its start (the
+// resume floor plus one, the pending start, or the start its caller gave) to the stream's last
+// sequence at the create; for a restart's retry, only on the subjects its filter drops beyond those
+// the restart's own count read.
+func (s *SessionConsumers) SetNarrowed(narrowed func(sessionID string, passedOver map[string]uint64, confirmed bool)) {
+	s.narrowed = narrowed
+}
+
+// reportNarrowed calls the narrowed hook with passedOver, confirmed, when it holds any subject.
+func (s *SessionConsumers) reportNarrowed(sessionID string, passedOver map[string]uint64) {
+	s.reportNarrowedAs(sessionID, passedOver, true)
+}
+
+// reportNarrowedAs calls the narrowed hook with passedOver and confirmed, when it holds any
+// subject.
+func (s *SessionConsumers) reportNarrowedAs(sessionID string, passedOver map[string]uint64, confirmed bool) {
+	if s.narrowed != nil && len(passedOver) > 0 {
+		s.narrowed(sessionID, passedOver, confirmed)
+	}
+}
+
+// deleteReadBackTimeout bounds the read of a consumer whose delete went unanswered
+// (reportUnansweredDelete). It runs on a context of its own, since the caller's may have ended
+// with the delete: the read decides whether a loss is named, and costs that bound only on that
+// error.
+const deleteReadBackTimeout = 2 * time.Second
+
+// reportUnansweredDelete reports the loss passedOver counted for a restart of consumer name whose
+// delete went unanswered (errDeleteUnanswered), the server having applied it or not. It reads the
+// consumer back: one the stream no longer holds was deleted, and the loss is reported as for a
+// delete that answered; one still there was not, and nothing is reported, since the next restart
+// counts it again from its own floor; and a read that fails too reports the loss unconfirmed, as
+// the delete may have made it, rather than leave it silent, since the next call that finds the
+// consumer missing creates it at the pending start and counts nothing.
+func (s *SessionConsumers) reportUnansweredDelete(ctx context.Context, sessionID, name string, passedOver map[string]uint64) {
+	if s.narrowed == nil || len(passedOver) == 0 {
+		return
+	}
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deleteReadBackTimeout)
+	defer cancel()
+	_, err := s.info(readCtx, name)
+	switch {
+	case errors.Is(err, ErrSessionConsumerNotFound):
+		s.reportNarrowedAs(sessionID, passedOver, true)
+	case err != nil:
+		s.reportNarrowedAs(sessionID, passedOver, false)
+	}
+}
+
+// passedOverBy is, for each subject of consumer name's filter, as info read it, that filters drop
+// and no subject of filters contains (SubjectContains), how many messages the stream holds on it
+// from stream sequence from on, read on the subject itself (pendingOn), so the count is that
+// subject's own whatever the new filter adds or keeps. A subject a new one contains, as
+// notifications.team.foo replaced by notifications.team.>, passes nothing over, and a subject
+// with no message waiting on it is left out. It reads nothing when no narrowed hook is set.
+func (s *SessionConsumers) passedOverBy(ctx context.Context, name string, info *jetstream.ConsumerInfo, filters []string, from uint64) map[string]uint64 {
+	if s.narrowed == nil {
+		return nil
+	}
+	var dropped []string
+	for _, subject := range append(slices.Clone(info.Config.FilterSubjects), info.Config.FilterSubject) {
+		if subject != "" && !slices.ContainsFunc(filters, func(kept string) bool { return SubjectContains(kept, subject) }) {
+			dropped = append(dropped, subject)
+		}
+	}
+	passedOver := map[string]uint64{}
+	for _, subject := range dropped {
+		if pending := s.pendingOn(ctx, name, subject, from); pending > 0 {
+			passedOver[subject] = pending
+		}
+	}
+	return passedOver
+}
+
+// passedOverConsumerPrefix begins the name of the consumer pendingOn counts through, in place of
+// sessionConsumerPrefix, so no list of session consumers (ListSessionConsumers) reads it as one: a
+// name of one token, as the session-consumer grant takes (natsgrant, CONSUMER.CREATE.<stream>.*).
+const passedOverConsumerPrefix = "p-"
+
+// pendingOn is how many messages the stream holds on subject from stream sequence from on: it
+// creates a consumer of its own on the stream, filtering on subject alone and starting at from,
+// reads the count the server answers it has to deliver (NumPending), and deletes it. A count that
+// cannot be read is logged and answered as 0, so the change of the filter it was read for goes on.
+func (s *SessionConsumers) pendingOn(ctx context.Context, name, subject string, from uint64) uint64 {
+	counter := passedOverConsumerPrefix + strings.TrimPrefix(name, sessionConsumerPrefix)
+	info, err := s.upsert(ctx, counter, jetstream.ConsumerConfig{
+		Name:              counter,
+		FilterSubject:     subject,
+		DeliverPolicy:     jetstream.DeliverByStartSequencePolicy,
+		OptStartSeq:       max(from, 1),
+		AckPolicy:         jetstream.AckNonePolicy,
+		InactiveThreshold: time.Minute,
+		MemoryStorage:     true,
+		Replicas:          1,
+	}, "create")
+	if err != nil {
+		s.logger.Warn("bus: the messages a session consumer's filter change passes over on a subject could not be counted",
+			slog.String("consumer", name), slog.String("subject", subject), slog.String("error", err.Error()))
+		return 0
+	}
+	if err := s.delete(ctx, counter); err != nil {
+		s.logger.Warn("bus: the consumer that counted a subject's messages was not deleted; the server removes it once it is idle",
+			slog.String("consumer", counter), slog.String("error", err.Error()))
+	}
+	return info.NumPending
 }
 
 // updated is current with the session consumer settings and filters applied, and whether that
@@ -1168,6 +1413,14 @@ func (s *SessionConsumers) upsert(ctx context.Context, name string, config jetst
 
 // info reads consumer name, or returns ErrSessionConsumerNotFound.
 func (s *SessionConsumers) info(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
+	s.pendingMu.Lock()
+	fault := s.infoFault
+	s.pendingMu.Unlock()
+	if fault != nil {
+		if err := fault(name); err != nil {
+			return nil, err
+		}
+	}
 	var response consumerResponse
 	if err := s.consumerRequest(ctx, consumerAPI("INFO", name), nil, &response); err != nil {
 		return nil, err
@@ -1181,13 +1434,41 @@ func (s *SessionConsumers) info(ctx context.Context, name string) (*jetstream.Co
 	return &response.ConsumerInfo, nil
 }
 
-// delete deletes consumer name; one the stream does not hold is no error.
+// errDeleteUnanswered wraps the error of a consumer delete that brought no answer from the server
+// (delete): a request that timed out, a connection lost, an answer that does not decode. The server
+// may have applied such a delete; an answer it sent, its refusal under the grant included, is
+// definite.
+var errDeleteUnanswered = errors.New("bus: the delete of a session consumer brought no answer")
+
+// delete deletes consumer name; one the stream does not hold is no error. An error with no answer
+// from the server wraps errDeleteUnanswered.
 func (s *SessionConsumers) delete(ctx context.Context, name string) error {
 	var response struct {
 		Error *jetstream.APIError `json:"error"`
 	}
-	if err := s.consumerRequest(ctx, consumerAPI("DELETE", name), nil, &response); err != nil {
+	s.pendingMu.Lock()
+	sendFault := s.deleteSendFault
+	s.pendingMu.Unlock()
+	var err error
+	if sendFault != nil {
+		err = sendFault(name)
+	}
+	if err == nil {
+		err = s.consumerRequest(ctx, consumerAPI("DELETE", name), nil, &response)
+		if err == nil {
+			s.pendingMu.Lock()
+			fault := s.deleteAnswerFault
+			s.pendingMu.Unlock()
+			if fault != nil {
+				err = fault(name)
+			}
+		}
+	}
+	if errors.Is(err, ErrConsumerNotGranted) {
 		return err
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %s: %w", errDeleteUnanswered, name, err)
 	}
 	if response.Error != nil && response.Error.ErrorCode != jetstream.JSErrCodeConsumerNotFound {
 		return fmt.Errorf("bus: delete session consumer %s: %w", name, response.Error)
