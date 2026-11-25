@@ -2534,7 +2534,10 @@ func TestAProjectThatOwesAReadAndGoesQuietIsReadWithinTheMinute(t *testing.T) {
 	rig.settled()
 	reads := readRecords(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonGap, true)
-	minuteEnds := reads[len(reads)-1].readAt.Add(ReadRetryAfter)
+	// The minute runs from the start of the read (last_read_started_at), not from read_at, the time
+	// the daemon answered it: an owed read may begin before read_at's minute ends, by the time the
+	// first read took.
+	minuteEnds := lastReadStartedAt(t, rig, "INFRA").Add(ReadRetryAfter)
 
 	// left before the minute ends, a second gap: 13 never reaches Dispatch. Its read is owed, and
 	// INFRA publishes nothing after it.
@@ -2577,8 +2580,9 @@ func TestAProjectThatOwesAReadAndGoesQuietIsReadWithinTheMinute(t *testing.T) {
 	reads = readRecords(t, rig.database, "INFRA")
 	retried := reads[len(reads)-1]
 	requireWholeRead(t, retried, ReadReasonGap, true)
-	if retried.readAt.Before(minuteEnds) {
-		t.Errorf("the owed read is at %s, want it once the minute ended at %s", retried.readAt.Format(time.RFC3339Nano), minuteEnds.Format(time.RFC3339Nano))
+	if started := lastReadStartedAt(t, rig, "INFRA"); started.Before(minuteEnds) {
+		t.Errorf("the owed read began at %s, want it once the minute after the first gap's read began ended, at %s",
+			started.Format(time.RFC3339Nano), minuteEnds.Format(time.RFC3339Nano))
 	}
 	if served := infra.served(); served != 3 {
 		t.Errorf("INFRA's daemon served %d reads, want the starting read, the first gap's and the owed one", served)
