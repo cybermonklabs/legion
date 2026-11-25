@@ -96,7 +96,7 @@ function partyLinks(text: string, names: ReadonlyMap<string, string> = NAMES): (
 
 // A row links a party from its address alone, as every other sink of a reference does
 // (`referenceHref`). The batched read brings no name for one: its own read does, and until it
-// has the link keeps its writer's words (R8, INFRA-1196 decision 350).
+// has the link keeps its writer's words (R8, issue page decision 350).
 test("an agent's session links to its live view, in the words its writer wrote", () => {
   const agent = "dispatch://agent/01a1bb84-93b2-74d6-9d65-fb75e08653ce";
   expect(partyLinks(`Ask ${agent}.`)).toEqual([
@@ -145,7 +145,7 @@ test("an issue reads as its key and title, and anything else as its target's own
     words: "The header draws the approval of each step",
   });
   // An issue the read has not named yet reads as the words its writer wrote, and so does any
-  // other target, as a link of any body does until its title resolves (R8, INFRA-1196 decision
+  // other target, as a link of any body does until its title resolves (R8, issue page decision
   // 350, which replaces decision 95's short form).
   expect(rowReferenceWords(unnamed, NAMES, ISSUE)).toEqual({
     key: undefined,

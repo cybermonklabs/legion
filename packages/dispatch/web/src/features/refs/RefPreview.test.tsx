@@ -1709,7 +1709,7 @@ function drawGoneBlock(comment: CommentRead) {
 
 // A block of a post its author deleted is no missing target: Dispatch resolves the post and
 // knows the delete, so the reference keeps its link and its author's words, and its card says
-// the post was deleted (INFRA-1523, R3; R8's state with no link is for a target Dispatch cannot
+// the post was deleted (deleted-post R3; R8's state with no link is for a target Dispatch cannot
 // resolve). Drawn as missing, the link would be gone.
 test("a reference to a block of a deleted post keeps its link and its card says the post was deleted", async () => {
   const deleted = "55555555-5555-4555-8555-555555555555";

@@ -57,7 +57,7 @@ import { titleReading } from "./tree-drafts";
  * targets answer to names no one of them: the page publishes it as ambiguous, apart from the
  * names (`KnownReferences.ambiguous`), and it is drawn as its author wrote it, with no link
  * (decisions 62 and 89). A reference with no name yet - one the read has not answered, a gone
- * one - keeps its link and reads as the words its author wrote (R8, INFRA-1196 decision 350).
+ * one - keeps its link and reads as the words its author wrote (R8, issue page decision 350).
  * The row asks the server nothing for a reference the page reads (R21), so the body's own link
  * pass, which reads one target for each reference, is given nothing to link.
  *
@@ -66,7 +66,7 @@ import { titleReading } from "./tree-drafts";
  * `KnownReferences.edited`); one its author deleted by the deleted line without its time, in
  * the deleted line's italic as a link to it is (`RefLink`), its actor named as the page names an
  * author (`AgentText.author`), as the row's own deleted line names it (`node-line.tsx`'s
- * `DeletedLine`), by INFRA-1196's decision 342, and not as the published name holds it
+ * `DeletedLine`), by issue page decision 342, and not as the published name holds it
  * (`KnownReferences.deleted`).
  *
  * The words are a reading of the text: an `ask` block in a document is a node of the tree of its

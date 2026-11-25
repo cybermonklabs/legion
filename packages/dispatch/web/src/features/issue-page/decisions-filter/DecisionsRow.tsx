@@ -485,7 +485,7 @@ function Declined({
  * line (`NodeParentLine`): its line is the link a reader follows to the parent where the model
  * gives it an address, out of the tab order as everything inside a row is, which the row's own
  * keys reach; a parent its author deleted is drawn as the deleted line, and one its author edited
- * says ` · edited` after its line (INFRA-1523, R2 and R3). A parent with no words of its own is
+ * says ` · edited` after its line (deleted-post R2 and R3). A parent with no words of its own is
  * named by its kind's word once, as plain text with no link, which is the line G gives it
  * (`lineOrKindWord`), and never by its id (R7); an edited one says ` · edited` after that word.
  * Nothing follows the word until the projection answers, one pre-paint commit on a page whose
@@ -520,7 +520,7 @@ function EntryParentLine({ parent }: { parent: ParentLine }): ReactNode {
  * replied to. What they wrote is drawn as a person's answer under an ask is (`NodeRow.tsx`'s
  * `AskAnswer`), by the row's own reader (`RowText`): from the server's reading of it, and where
  * the read sent none from the page's own parse of it. The reader's own words carry the ink rule
- * (R34). A change its author edited says ` · edited` after the words (`EditedMark`, INFRA-1523,
+ * (R34). A change its author edited says ` · edited` after the words (`EditedMark`, deleted-post
  * R2), in the page's own words; a deleted one is no change of the decision (`decisionChanges`)
  * and is not drawn here.
  */

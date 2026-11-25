@@ -824,7 +824,7 @@ export function useReferenceData(
   const blockDeletion =
     goneBlockPost === undefined ? postDeletion(blockData?.node) : postDeletion(post);
   // A block a delete took with its comment or message is no missing target: the post stands,
-  // marked deleted, so the link stays and its card says the post was deleted (INFRA-1523, R3).
+  // marked deleted, so the link stays and its card says the post was deleted (deleted-post R3).
   // A gone block of a post is missing only once the post's own read has answered with no delete
   // - until then it is not yet known missing - and any other gone block is missing at once.
   const blockMissing =

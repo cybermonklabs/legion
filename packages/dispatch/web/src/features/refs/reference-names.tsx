@@ -343,7 +343,7 @@ function useReadingName(
 }
 
 /**
- * Whether a chip names the target `route` by a block's line (INFRA-1196 decisions 66 and 88):
+ * Whether a chip names the target `route` by a block's line (issue page decisions 66 and 88):
  * `route` names a block, and the reading the page published for it is the block's whole text,
  * whose first block that holds words the store projects beside its name (`chipLineReading`,
  * `KnownReferences.lines`). A tie's chip (`issue-page/NodeRow.tsx`'s `Chip`) waits on that line

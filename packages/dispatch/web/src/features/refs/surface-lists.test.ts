@@ -2355,7 +2355,7 @@ const UNTREED_ROWS: readonly UntreedRow[] = [
   },
   {
     surface: "person-node-title",
-    why: "A node's line on a person's page reaches the page with no tree: the person nodes read (`api/person_nodes.go`) sends the first line of the node's text, cut to 240 runes, and no reading of it, so the preview parses that line on the page. A tree for it is carried to dispatch://INFRA-4353 (cybermonklabs/legion#4105).",
+    why: "A node's line on a person's page reaches the page with no tree: the person nodes read (`api/person_nodes.go`) sends the first line of the node's text, cut to 240 runes, and no reading of it, so the preview parses that line on the page. A tree for it is carried to cybermonklabs/legion#4105.",
   },
 ];
 

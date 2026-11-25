@@ -1,5 +1,5 @@
 // post_corrections_party_references_test.go holds an edit and a delete of a post to the rule that
-// a mention is a reference (dispatch://INFRA-1702/spec R4). Who a post names is read out of its
+// a mention is a reference (R4 of this change's spec). Who a post names is read out of its
 // body by the shared reader, so an edit changes who it names and sends nothing: the delivery
 // ledger (comment_mentions and comment_deliveries) keeps what the create delivered, and the edit
 // writes no row in it. The post's reference edges are planned again from the edited body

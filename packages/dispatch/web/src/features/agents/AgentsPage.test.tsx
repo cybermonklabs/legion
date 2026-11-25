@@ -3990,7 +3990,7 @@ test("a refused send's row shows its message formatted on one line, with its who
     );
     expect(preview.querySelector("ol, li, p")).toBeNull();
     // The hover text is the shared projection, which writes an ordered list's item with its
-    // number as a rendered body draws it (INFRA-1196 decisions 66 and 88): `1. check` keeps `1.`.
+    // number as a rendered body draws it (issue page decisions 66 and 88): `1. check` keeps `1.`.
     await waitFor(() =>
       expect(preview).toHaveAttribute("title", "Stop the deploy 1. check main 2. report back")
     );

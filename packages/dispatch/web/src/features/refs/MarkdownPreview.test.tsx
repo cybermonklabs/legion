@@ -407,7 +407,7 @@ test("the hover text is the whole text as plain words, never its source, and a p
   try {
     await waitFor(() => expect(preview().querySelector("strong")?.textContent).toBe("Stop"));
     // The hover text is the shared projection, which writes an ordered list's item with its
-    // number as a rendered body draws it (INFRA-1196 decisions 66 and 88): `1. one` keeps `1.`.
+    // number as a rendered body draws it (issue page decisions 66 and 88): `1. one` keeps `1.`.
     await waitFor(() =>
       expect(preview()).toHaveAttribute("title", "Stop the deploy 1. one 2. two")
     );

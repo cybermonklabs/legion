@@ -240,7 +240,7 @@ export function NodeRow({
   // A reference in the words takes its name after they are first drawn - the page's batched
   // read answers last, and a party's own read after it - and its words can run longer or shorter
   // than the words written: the row measures its cut again, as for words of another value
-  // (`useClamp`), so no word is cut short of the room or drawn past it (INFRA-1196 decision 350).
+  // (`useClamp`), so no word is cut short of the room or drawn past it (issue page decision 350).
   const redrawn = useCallback(() => {
     const element = words.current;
     if (cuttable && element !== null) clampRedrawn(element);
@@ -1231,7 +1231,7 @@ export function NodeEdges({
  * as the row names it (`DeletedLine`), where the published name holds it as no registry knows
  * it, so such a chip reads nothing; and a post its author edited by its words cut to the chip's
  * length, then ` · edited` (`EditedMark`), drawn after the cut, so no cut takes the mark
- * (INFRA-1523, R2 and R3).
+ * (deleted-post R2 and R3).
  */
 function Chip({
   chip,

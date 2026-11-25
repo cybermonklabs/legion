@@ -22,7 +22,7 @@ import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
  * R1's first-line rule (`firstLineOf`), with an ellipsis only where the cut ended inside a
  * sentence (`drawnLine`), so a heading never runs into the paragraph after it. A reference in it
  * reads as the same reference in the node's row does (`RowText.tsx`): as its target's current
- * name once it resolves, and as the words its author wrote until then (R8, INFRA-1196 decision
+ * name once it resolves, and as the words its author wrote until then (R8, issue page decision
  * 350); and a numbered step keeps its number (decisions 66 and 88). The issue's own line is its
  * key and then its projected title, the key handed to R1's rule apart from the title, which reads
  * a label after it (`LineReading.key`). Each role is read by the issue the node's record is on.
@@ -136,7 +136,7 @@ export function NodeParentLine({
  *  `tabStops` holds: `f` steps to it and Enter follows it. A parent its author deleted is drawn
  *  as the deleted line, as its own row draws it (`DeletedLine`), and one its author edited says
  *  ` · edited` after its line (`EditedMark`), so the line holds both marks wherever the parent's
- *  own row is not drawn (INFRA-1523, R2 and R3). */
+ *  own row is not drawn (deleted-post R2 and R3). */
 function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
   const parent = line.reference === undefined ? undefined : parseNodeReference(line.reference);
   const href = parent === undefined ? undefined : referenceHref(parent);
@@ -172,16 +172,16 @@ function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean })
 /**
  * A deleted post's line where its row draws its words, whole or as its one line, and where the
  * page draws its one line apart from its row - a filter's parent line (`ParentLink`), a crumb
- * above a zoom (`IssueTree.tsx`'s `CrumbLine`) (INFRA-1523, R3): the line every surface draws in
+ * above a zoom (`IssueTree.tsx`'s `CrumbLine`) (deleted-post R3): the line every surface draws in
  * a deleted post's place (`DeletedBody`), in its italic, with who deleted it and when. The actor
  * is named as the page names an author (`AgentText.author`), the rule the row's own author and
- * "Kept by" are named by, by INFRA-1196's decision 342: a session nothing names reads as the
+ * "Kept by" are named by, by issue page decision 342: a session nothing names reads as the
  * page's word for an agent, and never as its short id. The node's text is the same line as the
  * model writes it (`tree-drafts.ts`'s `deletedPostLine`), with the actor named as no registry
  * knows it and the time as stored, so the row draws the line from the delete and never from that
  * text. The line's words are the page's own, marked as its chrome and declared in
  * `page-words.ts` (`CONTROL_LABELS.post_deleted_by`), and the actor's name and the time are not
- * (INFRA-1523, R3).
+ * (deleted-post R3).
  */
 export function DeletedLine({ deleted }: { deleted: PostDeletion }): ReactNode {
   const agentText = useAgentText();

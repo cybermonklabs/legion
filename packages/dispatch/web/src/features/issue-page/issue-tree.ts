@@ -106,7 +106,7 @@ export interface NodeChip {
    *  though it carries the marks. A view that draws a comment's or a message's chip carrying this
    *  draws the deleted line in its italic, as a link to the post does (`RefLink`), and names the
    *  actor from `deletedBy` as the page names an author, as a row's chip does (`NodeRow.tsx`'s
-   *  `Chip`, INFRA-1196's decision 342). */
+   *  `Chip`, issue page decision 342). */
   readonly deletedAt?: string;
   /** Who deleted it (`ReferenceTarget.deleted_by`); absent where `deletedAt` is absent, and where
    *  the read names nobody. */
@@ -206,7 +206,7 @@ export interface ParentLine {
   /** When its author deleted the parent, a comment or a message (`TreeNode.deletedAt`); absent
    *  for every other parent. Its `text` is then the deleted line as the model writes it, and the
    *  child's row draws the line from the delete instead, as the parent's own row does
-   *  (`node-line.tsx`'s `DeletedLine`, INFRA-1523 R3). */
+   *  (`node-line.tsx`'s `DeletedLine`, deleted-post R3). */
   readonly deletedAt?: string;
   /** Who deleted the parent (`TreeNode.deletedBy`); absent where `deletedAt` is, and where the
    *  read names nobody. */
@@ -230,7 +230,7 @@ export interface ParentLine {
 
 /** The line a filter's row names `node` by on its child's row (`ParentLine`): its id, its kind,
  *  its address where it has one, the words a row projects its one line from, and a comment's or
- *  a message's marks, which the child's row draws with the line (INFRA-1523, R2 and R3). */
+ *  a message's marks, which the child's row draws with the line (deleted-post R2 and R3). */
 export function parentLineOf(node: TreeNode): ParentLine {
   return {
     ...(node.deletedAt === undefined ? {} : { deletedAt: node.deletedAt }),
@@ -544,7 +544,7 @@ export type LineReading =
  * for a node draws it from here - a folded branch's line, a parent's line under a filter and a
  * crumb above a zoom (`node-line.tsx`). The projection reads every reference in it as a rendered
  * body does: as its target's current name, and as the words its author wrote until it resolves
- * (R8, INFRA-1196 decision 350); and it reads no list or block marker as a word, but for an
+ * (R8, issue page decision 350); and it reads no list or block marker as a word, but for an
  * ordered list's number (decisions 66 and 88).
  *
  * - **A node with a reading** by the first top-level block of it that holds any words, a heading

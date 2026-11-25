@@ -786,7 +786,7 @@ function readsOf(view: { queryClient: QueryClient }, reference: string): unknown
     .filter((key) => JSON.stringify(key).includes(id.split("/")[0] ?? id));
 }
 
-// INFRA-1196 decision 350, which replaces decision 95's short form: a folded branch's one line
+// issue page decision 350, which replaces decision 95's short form: a folded branch's one line
 // reads a reference in its words as the shared projection reads one (`usePlainHeadline`), the
 // way the row's own words read it (`RowText.tsx`): as the words its author wrote while the
 // page's batched read has not named it - with no read of its own made for a reference the page
@@ -814,7 +814,7 @@ test("a folded branch's line reads a reference as its target's name, and as its 
   }
 });
 
-// R1 over INFRA-1196 decision 350: a folded branch's one line is cut by R1's first-line rule
+// R1 over issue page decision 350: a folded branch's one line is cut by R1's first-line rule
 // over the words the projection draws, so a name that lands after the line was first drawn cuts
 // it again. A first sentence that fits the line with its address as written runs past R1's limit
 // with its target's name in its place - a name the page cuts to a chip's 32 characters - and is
@@ -1275,7 +1275,7 @@ test("before the page's read answers, a chip names another issue's spec as a doc
   }
 });
 
-// R2 and INFRA-1196 decision 350: a filter's row names a parent it draws no row for by the
+// R2 and issue page decision 350: a filter's row names a parent it draws no row for by the
 // parent's own first line, projected from its words as every one line of a node is: a
 // reference in it reads as its target's name once the page names it. A parent whose words hold
 // none is named by the page's word for its kind (R22).
@@ -2179,7 +2179,7 @@ test("the read's names are named as chips once per answer, not once per row", as
 // the page publishes it as ambiguous, apart from its names, and a node's words draw it as its
 // author wrote it, with no link, never as a target that is gone. A reference the read answered
 // gone keeps its link, and reads as the words its author wrote rather than as its short form
-// (INFRA-1196 decision 350, which replaces decision 95). Both the words drawn from their reading
+// (issue page decision 350, which replaces decision 95). Both the words drawn from their reading
 // and the words drawn from the page's parse are read.
 test("an ambiguous short reference in a node's words is drawn as written with no link, and a gone one keeps its link", async () => {
   const written = "dispatch://CORE-1/spec#b-1a2b3c4d";
@@ -2406,7 +2406,7 @@ test("a link in a row's words to the address the reader is at replaces it", asyn
   }
 });
 
-// R5, R8 and INFRA-1196 decision 350: a party - here a role - is never asked of the batched
+// R5, R8 and issue page decision 350: a party - here a role - is never asked of the batched
 // read, so a row names it by its own read, as every surface of Dispatch does: a role by its
 // token, once a session the registry lists holds it, never as its address. Words whose read sent
 // no reading of them, which the page parses, draw it the same way, and link it to the agents list
@@ -2629,7 +2629,7 @@ test("a row held whole in view stays whole when a later read draws the same word
   expect(drawn.maxHeight).toBe("");
 });
 
-// INFRA-1196 decision 350 and G's clamp: a reference in a row's words takes its name after the
+// issue page decision 350 and G's clamp: a reference in a row's words takes its name after the
 // row was first drawn and measured - the page's batched read answers last - and its name can run
 // the words longer or shorter than the words its author wrote. The row measures its cut again,
 // as it does for words of another value (`useClamp`), in the commit the name lands in, before the

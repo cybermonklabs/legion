@@ -1035,7 +1035,7 @@ This job is where it runs.
 
 On the pull-request and full lanes, where the alone and multiprocess jobs run on `full`
 alone: this is one Chromium install and two rows of about 90 s, and it holds a check of the
-pull request it is on (check k2 of dispatch://INFRA-1042, the bar's embedding count) rather
+pull request it is on (check k2 of the embedding bar's issue, the bar's embedding count) rather
 than a clock reading or a second server shape. A lane that skipped it would leave the claim
 unread until the merge queue. Not on `references`, which its `if:` holds it off: that lane
 runs the spec files its arm of .github/scripts/dispatch-browser-shard-suite.sh names, and
