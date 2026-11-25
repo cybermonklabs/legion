@@ -750,6 +750,9 @@ owns that code and files an issue only when none does.
 One that needs a decision is a Dispatch ask on Legion's daily report issue, so you decide whether it
 needs an issue.
 The record is those results and the pull request.
+Each look's report names `check_opened_at`, the RFC 3339 opening time its task gives, with the
+stored microseconds unchanged. That field alone selects a report on that check: without it,
+`handoff_complete` completes a step, never a look, whatever phase the issue is in.
 
 Nothing waits for the deploy, and the agent names its own next look. A `pending` on any look but
 the check's last carries `wake_at`, an RFC 3339 time: when the agent wants to look again. The

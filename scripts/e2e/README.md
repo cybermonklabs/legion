@@ -5724,6 +5724,33 @@ The planner's launch follows the move into planning, so the list the line names 
 What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for.
 `OWNER_STEPS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
+## look-names-its-check.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  bash scripts/e2e/look-names-its-check.sh
+```
+
+This proof builds and boots the whole daemon and a real Dispatch of this checkout, on databases of the caller's PostgreSQL server and a `nats-server` of its own.
+It needs Linux, Go, Git, jj, Bun after `bun install`, awk and Python 3, as [`owner-steps-client.sh`](#owner-steps-clientsh) does.
+`LOOK_NAMES_ITS_CHECK_EVIDENCE_DIR` keeps its evidence.
+GitHub-hosted CI runs its row in `.github/e2e-scripts.json` with the `e2e` label, by manual dispatch and each night.
+
+`TestLookNamesItsCheckLive`, built with `-tags e2e`, walks one issue to its merge and close under `production_check: tester`.
+The tester takes look 1.
+The client is `executePhaseOp` with `createLegionDaemonClient`, run under Bun by the unchanged `owner-steps-client.ts` runner.
+
+- `control-client-look-unnamed` sends a report without `check_opened_at`.
+  It must throw `409 CHECK_LOOK_NOT_SERVED`, and the operator's `legion state --json` must still show look 1 open.
+
+- `client-look-named` reads the opening time from the task the fake runtime received, never from the store.
+  A `pending` with that `check_opened_at` and a `wake_at` must answer `{}`.
+  The same CLI must show the check still open, `lookOpen: false`, and `nextWakeAt` equal to the wake.
+
+The refused call is run first.
+A daemon that chooses a report from the claim's served look records that unnamed report, so the control fails before the named call can pass.
+The proof stands in for GitHub and each worker's runtime; Dispatch, the daemon, its operator CLI, and the plugin's phase operation and HTTP client are real.
+
 ## owner-steps-client.sh
 
 ```sh
