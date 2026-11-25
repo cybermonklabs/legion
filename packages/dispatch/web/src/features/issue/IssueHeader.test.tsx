@@ -300,12 +300,11 @@ test.each(
 // Chromium and Firefox mark such a key `isComposing`; Safari sends it after the composition's end,
 // unmarked, with keyCode 229 (`inputMethodKey`). A plain key after it still ends the edit: Escape
 // puts the issue's title back and writes nothing, and Enter writes the title, once.
-test.each([
-  ["Enter", "isComposing"],
-  ["Enter", "keyCode 229"],
-  ["Escape", "isComposing"],
-  ["Escape", "keyCode 229"],
-] as const)("an %s that ends a composition in the title's editor, marked by %s, leaves the editor open with its draft and writes nothing, and a plain one ends the edit", async (key, mark) => {
+test.each(
+  (["Enter", "Escape"] as const).flatMap((key) =>
+    COMPOSITION_MARKS.map(([mark, marked]) => [key, mark, marked] as const)
+  )
+)("an %s that ends a composition in the title's editor, marked by %s, leaves the editor open with its draft and writes nothing, and a plain one ends the edit", async (key, _mark, marked) => {
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -319,12 +318,7 @@ test.each([
     await view.user.clear(title);
     await view.user.paste("Pin it from the header");
     // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(
-      title,
-      mark === "isComposing"
-        ? { isComposing: true, key }
-        : { isComposing: false, key, keyCode: 229 }
-    );
+    fireEvent.keyDown(title, { ...marked, key });
     expect(title).toBeInTheDocument();
     expect(title).toHaveValue("Pin it from the header");
     expect(title).toHaveFocus();

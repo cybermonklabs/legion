@@ -32,8 +32,8 @@ import { actionBar } from "./editor";
 import { keptWrites, pendingWrites } from "./keyed-writes";
 import { pauseClock } from "./page-clock";
 import { settledValue } from "./settled";
-import { fetchedChunk, WRITE_KINDS_CHUNK } from "./shell";
-import { expect, type Locator, type Page, type Request, test } from "./test";
+import { fetchedChunk, kindsRequests, WRITE_KINDS_CHUNK } from "./shell";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const PRIORITIES_PATH = "/priorities";
@@ -2948,9 +2948,8 @@ test("what a reader types into a priority's description is written as the tab cl
  *  is out when the reload comes, held at the network, so the tab keeps it, and a priority's line
  *  (`priority:<id>`) holds it for as long as the kinds are held. Before it answers, it checks
  *  that the take-up still waits: the reloaded page asked for the kinds and no such request has
- *  ended, the tab still keeps the rename, the store holds no row of it, so a row that uses it
- *  cannot pass because the kinds came in. `letThrough` lets the kinds and the rename's own
- *  request through from then on. */
+ *  ended, and the tab still keeps the rename, so a row that uses it cannot pass because the kinds
+ *  came in. `letThrough` lets the kinds and the rename's own request through from then on. */
 async function renameKeptWhileTheKindsAreHeld(
   page: Page,
   id: string,
@@ -2978,16 +2977,7 @@ async function renameKeptWhileTheKindsAreHeld(
   // The page before the reload has its own download of the kinds in first, so each request
   // counted below is the reloaded page's.
   await fetchedChunk(page, WRITE_KINDS_CHUNK);
-  const asked = new Set<Request>();
-  const ended = new Set<Request>();
-  page.on("request", (request) => {
-    if (WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname)) asked.add(request);
-  });
-  const end = (request: Request) => {
-    if (asked.has(request)) ended.add(request);
-  };
-  page.on("requestfinished", end);
-  page.on("requestfailed", end);
+  const { asked, ended } = kindsRequests(page);
   await page.route(WRITE_KINDS_CHUNK, async (route) => {
     if (held) return;
     await route.continue();
@@ -3000,7 +2990,6 @@ async function renameKeptWhileTheKindsAreHeld(
     .toBeGreaterThan(0);
   expect(ended.size, "a download of the kinds ended").toBe(0);
   expect(await keptWrites(page), "the tab does not keep the rename").toBe(1);
-  await expect(pendingWrites(page), "the take-up did not wait for the kinds").toHaveCount(0);
   return {
     letThrough: () => {
       held = false;

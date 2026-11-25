@@ -7,6 +7,7 @@ import type { ComponentType, ReactNode } from "react";
 import { quietConsoleError } from "../../__tests__/act-warnings";
 import { settle } from "../../__tests__/fake-clock";
 import { keepWrite, keyMinted } from "../../__tests__/kept-sends-harness";
+import { withOnLine } from "../../__tests__/on-line";
 import { ApiError, api, type WriteRequest } from "../../api/client";
 import { chunk } from "../shell/chunk-component";
 import { chunkLoadsOut } from "../shell/chunk-loads";
@@ -282,7 +283,7 @@ function indicatorChunk(): { downloads: Download[]; end: () => void; Host: () =>
     chunk<object>(() => {
       const download = Promise.withResolvers<ComponentType<object>>();
       downloads.push(download);
-      if (ended) end();
+      if (ended) download.reject(new TypeError("Failed to fetch dynamically imported module"));
       return download.promise;
     })
   );
@@ -487,27 +488,21 @@ test("the line in a pending-writes indicator's place stays, and counts a write p
 // again, and draws the refusal, with its Retry and Discard, as that download lands.
 test("the line in a pending-writes indicator's place stays while the browser is offline after the chunk failed online, and says the change is not saved once Dispatch refuses it", async () => {
   const { downloads, end, logged, view, writes } = await failTheIndicatorOverAHeldWrite();
-  const onLine = Object.getOwnPropertyDescriptor(Navigator.prototype, "onLine");
-  const online = () => {
-    Reflect.deleteProperty(navigator, "onLine");
-    if (onLine !== undefined) Object.defineProperty(Navigator.prototype, "onLine", onLine);
-  };
-  Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
   try {
-    act(() => writes.release("alice"));
-    await waitFor(() => expect(downloads).toHaveLength(2));
-    await failDownload(downloads[1]);
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("status")?.textContent,
-        "the line left the indicator's place while the browser was offline"
-      ).toBe("1 change not sent — Not saved")
-    );
-    expect(downloads, "the indicator asked for its chunk again while offline").toHaveLength(2);
-    expect(screen.queryByRole("region", { name: "Pending changes" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-
-    online();
+    await withOnLine(false, async () => {
+      act(() => writes.release("alice"));
+      await waitFor(() => expect(downloads).toHaveLength(2));
+      await failDownload(downloads[1]);
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("status")?.textContent,
+          "the line left the indicator's place while the browser was offline"
+        ).toBe("1 change not sent — Not saved")
+      );
+      expect(downloads, "the indicator asked for its chunk again while offline").toHaveLength(2);
+      expect(screen.queryByRole("region", { name: "Pending changes" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
     await act(async () => {
       window.dispatchEvent(new Event("online"));
       await settle();
@@ -519,7 +514,6 @@ test("the line in a pending-writes indicator's place stays while the browser is 
     expect(within(indicator).getByRole("button", { name: "Retry" })).toBeVisible();
     expect(screen.queryByText(/\bnot sent\b/u)).not.toBeInTheDocument();
   } finally {
-    online();
     logged.mockRestore();
     view.unmount();
     end();

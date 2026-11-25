@@ -1351,10 +1351,10 @@ test("writes pressed while the take-up's load of the kinds of write is out start
 // A write pressed while the take-up waits stays out of its line so that a kept write taken up
 // after a newer press on its line would not land after it (`Writes.run`). A line the reload kept
 // no write on has no such write to land after, so when the page goes (`pagehide`) the write joins
-// its line and is sent as the page goes, as main sends it: a tab closed in that window has no
-// reload to send it later. A write with no target has no line and goes too; two on one line keep
-// press order. The kept write still waits for the kinds, which never came in this row until the
-// end, and goes out then.
+// its line and is sent as the page goes, as a write pressed with no take-up waiting is: a tab
+// closed in that window has no reload to send it later. A write with no target has no line and
+// goes too; two on one line keep press order. The kept write still waits for the kinds, which
+// never came in this row until the end, and goes out then.
 test("a write pressed while the take-up waits, on a line the reload kept no write on, goes out when the page goes", async () => {
   await onFakeClock(async () => {
     const taking = await pressedWhileTakingUp((writes) =>
@@ -1481,8 +1481,9 @@ test("a write pressed while the take-up waits, on a line that holds a kept write
 
 // A kept write that the take-up does not send on its own holds no line: a refused one, and one
 // pressed longer ago than `KEPT_SEND_RESUME_MS`, which is taken up refused (`#resume`) and starts
-// nothing in its line. Main sends a field's write at once past either, so a write pressed
-// meanwhile on such a line goes out when the page goes, and the kept record stays refused.
+// nothing in its line. A write on such a line with no take-up waiting goes out at once, so a
+// write pressed meanwhile on such a line goes out when the page goes, and the kept record stays
+// refused.
 test("a write pressed while the take-up waits, on a line whose only kept write is refused or too old to be sent on its own, goes out when the page goes", async () => {
   await onFakeClock(async () => {
     const cases: Readonly<Record<string, Parameters<typeof keepWrite>[2]>> = {

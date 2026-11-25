@@ -38,6 +38,7 @@ import {
   failAssetWhen,
   fetchedChunk,
   holdAsset,
+  kindsRequests,
   PENDING_WRITES_CHUNK,
   ranChunk,
   recordTabReloads,
@@ -51,7 +52,6 @@ import {
   expect,
   type Locator,
   type Page,
-  type Request,
   type Route,
   test,
 } from "./test";
@@ -2062,22 +2062,6 @@ test("Sign out pressed while the take-up waits for kinds of write that never arr
     await alice.close();
   }
 });
-
-/** Every request `page` makes for the kinds of write from here on, and each of them that has
- *  ended, answered or failed. */
-function kindsRequests(page: Page): { asked: Set<Request>; ended: Set<Request> } {
-  const asked = new Set<Request>();
-  const ended = new Set<Request>();
-  page.on("request", (request) => {
-    if (WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname)) asked.add(request);
-  });
-  const end = (request: Request) => {
-    if (asked.has(request)) ended.add(request);
-  };
-  page.on("requestfinished", end);
-  page.on("requestfailed", end);
-  return { asked, ended };
-}
 
 /** The login (`Dispatch-Login`) of each PATCH of `path` that `page` sends from here on, in the
  *  order they go out. */

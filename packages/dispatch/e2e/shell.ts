@@ -8,7 +8,7 @@
  *  path with `index.html`, as the SPA fallback). Rows of other files take from it too, to hold,
  *  fail or wait for one of the page's chunks, or to answer the page's landing without a part.
  */
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page, type Request } from "@playwright/test";
 
 /** The path of the asset the page at `origin` names in `pattern`'s first group. */
 export async function pageAssetPath(
@@ -241,6 +241,22 @@ export const PENDING_WRITES_CHUNK = /\/assets\/PendingWritesIndicator-[\w-]{8}\.
 /** The path of every kind of write, which the store's take-up of what a reload kept waits for and
  *  nothing draws from (`web/src/features/writes/kinds.ts`). */
 export const WRITE_KINDS_CHUNK = /\/assets\/kinds-[\w-]{8}\.js$/u;
+
+/** Every request `page` makes for the kinds of write from here on, and each of them that has
+ *  ended, answered or failed. */
+export function kindsRequests(page: Page): { asked: Set<Request>; ended: Set<Request> } {
+  const asked = new Set<Request>();
+  const ended = new Set<Request>();
+  page.on("request", (request) => {
+    if (WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname)) asked.add(request);
+  });
+  const end = (request: Request) => {
+    if (asked.has(request)) ended.add(request);
+  };
+  page.on("requestfinished", end);
+  page.on("requestfailed", end);
+  return { asked, ended };
+}
 
 /** The two chunks of writes every signed-in page fetches, neither of which a page without a write
  *  draws from, so no landmark shows they came down (`fetchedChunk`). */

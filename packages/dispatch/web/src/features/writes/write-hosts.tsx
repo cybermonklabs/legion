@@ -12,7 +12,11 @@ import {
 import { useContentDrawn } from "../shell/content-drawn";
 import { ErrorView, ReloadButton } from "../shell/ErrorBoundary";
 import { KeptWrites } from "./KeptWrites";
-import { PENDING_WRITES_FRAME, PendingWritesStatus } from "./pending-writes-frame";
+import {
+  PENDING_WRITES_FRAME,
+  PENDING_WRITES_PLACE,
+  PendingWritesStatus,
+} from "./pending-writes-frame";
 import { changesCount, indicatorWrites, keptRecords, keptWrites } from "./shown-writes";
 import type { KeptWrite } from "./write-storage";
 import { kindsRegistered, useNotTakenUp, useWriteSelection, type Write } from "./write-store";
@@ -254,7 +258,7 @@ export function pendingWritesHost(source: Chunk<object>): () => ReactNode {
           fallback={
             shown === "" ? null : (
               <CouldNotShow
-                className={`w-full max-w-md shadow-lg ${surfaceBg}`}
+                className={`${PENDING_WRITES_PLACE} ${surfaceBg}`}
                 list="the changes waiting to save"
               />
             )

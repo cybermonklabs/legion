@@ -3,19 +3,9 @@ import { act, render, screen } from "@testing-library/react";
 import { type ReactNode, Suspense } from "react";
 
 import { settle } from "../../__tests__/fake-clock";
+import { withOnLine } from "../../__tests__/on-line";
 import { importWhenOnline, keptUntilRejected, lazyChunk } from "./chunk-loads";
 import { ErrorBoundary } from "./ErrorBoundary";
-
-function withOnLine<T>(onLine: boolean, run: () => Promise<T>): Promise<T> {
-  const descriptor = Object.getOwnPropertyDescriptor(Navigator.prototype, "onLine");
-  Object.defineProperty(navigator, "onLine", { configurable: true, value: onLine });
-  return run().finally(() => {
-    Reflect.deleteProperty(navigator, "onLine");
-    if (descriptor !== undefined) {
-      Object.defineProperty(Navigator.prototype, "onLine", descriptor);
-    }
-  });
-}
 
 function Greeting({ name }: { name: string }): ReactNode {
   return <p>Hello {name}</p>;
