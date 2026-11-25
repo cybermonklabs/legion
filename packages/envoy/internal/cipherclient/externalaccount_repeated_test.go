@@ -1,11 +1,14 @@
 // packages/envoy/internal/cipherclient/externalaccount_repeated_test.go
 //
 // A credentials file or a certificate configuration that repeats a key is refused before anything
-// reads it. Go's JSON decoder matches a key without case and keeps the last of the keys that match,
-// and what "keeps" means differs by the type a reader decodes into: a null leaves a struct as it
-// was but sets a pointer to nil, and a map keeps each spelling. So two readers of one such file,
-// this client's check and Google's library, can read two different credentials. Each row runs the
-// real reader against local stand-ins.
+// reads it: two keys of one object that Go's JSON decoder puts in one place of the types Google's
+// library decodes the file into. In an object the library decodes into a struct the decoder matches
+// a key with a field's name without case and keeps the last of the keys that match, and what
+// "keeps" means differs by the type a reader decodes into: a null leaves a struct as it was but sets
+// a pointer to nil, and a map keeps each spelling. So two readers of one such file, this client's
+// check and Google's library, can read two different credentials. In an object the library decodes
+// into a map, keys that differ in case are two keys. Each row runs the real reader against local
+// stand-ins.
 
 package cipherclient
 
@@ -13,15 +16,27 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"cloud.google.com/go/auth/credentials"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient/repeatprobe"
 )
 
@@ -205,41 +220,318 @@ func TestAMachineCredentialsFileThatRepeatsAKeyIsAnError(t *testing.T) {
 	}
 }
 
-// TestARepeatedKeyIsFoundAtAnyDepthInAnyCase: repeatsKey finds two keys of one object that Go's
-// JSON decoder reads as one, as encoding/json folds them (strings.EqualFold), wherever the object
-// is. Controls: one key in two objects, or at two depths, repeats nothing.
-func TestARepeatedKeyIsFoundAtAnyDepthInAnyCase(t *testing.T) {
+// TestARepeatedKeyIsFoundWhereTheLibraryDecodesOnePlace: repeatsKey finds two keys of one object
+// that the decoder puts in one place of the types Google's library decodes the file into, wherever
+// the object is: in a struct, two keys that name one field as strings.EqualFold matches them; in a
+// map, two equal keys. Controls: header names that differ in case (a map), keys that name no field
+// and what is under them, one field at two depths, and a number outside float64's range, which
+// the decoder skips.
+func TestARepeatedKeyIsFoundWhereTheLibraryDecodesOnePlace(t *testing.T) {
+	file, config := credentialFieldsType, certificateConfigType
 	for _, row := range []struct {
-		name, data string
-		repeats    bool
+		name    string
+		schema  reflect.Type
+		data    string
+		repeats bool
 	}{
-		{"a key repeated exactly", `{"a":1,"a":2}`, true},
-		{"a key repeated in another case", `{"type":"x","TYPE":"y"}`, true},
-		{"a key repeated with ſ for s", `{"credential_source":1,"credential_ſource":2}`, true},
-		{"a key repeated with the Kelvin sign for k", `{"key_path":1,"\u212aey_path":2}`, true},
-		{"a key repeated through an escape", `{"a":1,"\u0041":2}`, true},
-		{"a key repeated after a null", `{"a":{"b":1},"a":null}`, true},
-		{"a key repeated in a nested object", `{"a":{"b":{"c":1,"C":2}}}`, true},
-		{"a key repeated in an object in an array", `{"a":[1,{"c":1,"c":2}]}`, true},
-		{"a key repeated after a nested object", `{"a":{"x":[{}]},"b":[],"A":1}`, true},
-		{"control: one key in two objects", `{"a":{"k":1},"b":{"k":2}}`, false},
-		{"control: one key at two depths", `{"k":{"k":{"K":1}}}`, false},
-		{"control: keys that differ by more than case", `{"credential_source":1,"credential_sources":2}`, false},
-		{"control: a value that repeats a key's text", `{"a":"a","b":["a","a"]}`, false},
-		{"control: no object", `[1,"a",null]`, false},
+		{"a field repeated exactly", file, `{"type":"a","type":"b"}`, true},
+		{"a field repeated in another case", file, `{"type":"x","TYPE":"y"}`, true},
+		{"a field repeated with ſ for s", file, `{"credential_source":{},"credential_ſource":{}}`, true},
+		{"a field repeated through an escape", file, `{"type":"a","\u0074ype":"b"}`, true},
+		{"a field repeated after a null", file, `{"credential_source":{"file":"a"},"credential_source":null}`, true},
+		{"a field of the certificate repeated in another case", file, `{"credential_source":{"certificate":{"trust_chain_path":"a","TRUST_CHAIN_PATH":"b"}}}`, true},
+		{"a header repeated exactly", file, `{"credential_source":{"headers":{"X-Example":"a","X-Example":"b"}}}`, true},
+		{"a field of the configuration repeated with the Kelvin sign for k", config, `{"cert_configs":{"workload":{"key_path":"a","\u212aey_path":"b"}}}`, true},
+		{"a field of the configuration repeated in another case", config, `{"cert_configs":{},"Cert_Configs":{}}`, true},
+		{"control: headers whose names differ in case", file, `{"credential_source":{"headers":{"X-Example":"e","x-example":"e"}}}`, false},
+		{"control: a key that names no field, in another case", file, `{"extension":1,"EXTENSION":2}`, false},
+		{"control: keys repeated under a key that names no field", file, `{"extension":{"type":1,"type":2}}`, false},
+		{"control: keys repeated in the configuration's libs, which no typed decode reads", config, `{"libs":{"ecp":"a","ecp":"b"}}`, false},
+		{"control: one field at two depths", file, `{"type":"a","credential_source":{"format":{"type":"b"}}}`, false},
+		{"control: an object where the library decodes a string, which it refuses", file, `{"type":{"a":1,"a":2}}`, false},
+		{"control: a number outside float64's range", file, `{"type":"external_account","unknown_extension":1e400}`, false},
+		{"control: no object", file, `[1,"a",null]`, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			repeats, err := repeatsKey([]byte(row.data))
+			repeats, err := repeatsKey([]byte(row.data), row.schema)
 			if err != nil || repeats != row.repeats {
 				t.Fatalf("repeatsKey(%s) = %t, %v; want %t", row.data, repeats, err, row.repeats)
 			}
 		})
 	}
-	for _, data := range []string{``, `{`, `{"a":1`, `{"a" 1}`, `{} {}`, `{}x`} {
-		if _, err := repeatsKey([]byte(data)); err == nil {
+	for _, data := range []string{``, `{`, `{"a":1`, `{"a" 1}`, `{} {}`, `{}x`, `{"a":1,}`, `{"a":[1}`} {
+		if _, err := repeatsKey([]byte(data), file); err == nil {
 			t.Errorf("repeatsKey(%q) answered no error; want one, as for data that is not one JSON value", data)
 		}
 	}
+}
+
+// TestAGcloudFileWithHeadersThatDifferInCaseMints: the credentials file `gcloud iam
+// workload-identity-pools create-cred-config --credential-source-headers=X-Example=example,
+// x-example=example` writes (Google Cloud SDK 594.0.0, bytes as it wrote them) holds two header
+// names that differ in case. Google's library decodes headers into a map, which keeps them apart,
+// so the file repeats no key, and the machine source mints with it: the subject token source is
+// sent both headers, and the account's access token, which the impersonation URL mints, is spent on
+// generateIdToken. Each Google host the file names is routed to a local stand-in.
+func TestAGcloudFileWithHeadersThatDifferInCaseMints(t *testing.T) {
+	path, err := filepath.Abs(filepath.Join("testdata", "gcloud-credential-case-distinct-headers.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var sent []string
+	subject := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sent = r.Header.Values("X-Example")
+		mu.Unlock()
+		_, _ = w.Write([]byte("the.url.subject"))
+	})
+	sts, exchange := federatedExchange(t)
+	impersonation, impersonated := impersonationStandIn(t)
+	iam, _ := accountIAM(t)
+	t.Setenv(credentialsFileVar, path)
+	source, reason, err := externalAccountFor(testAudience)
+	if err != nil || source == nil {
+		t.Fatalf("externalAccountFor = %v, %q, %v; want the file's identity", source, reason, err)
+	}
+	identity := source.(*ExternalAccountIdentity)
+	identity.IAMCredentialsURL = iam
+	identity.HTTP = routedClient(t, map[string]string{"tokens.example.invalid": subject, "sts.googleapis.com": sts, "iamcredentials.googleapis.com": impersonation})
+	token, tokenType, err := identity.Token(context.Background())
+	if err != nil || token != "robot-identity-token" || tokenType != oauthwire.SubjectTokenTypeGoogle {
+		t.Fatalf("Token = %q, %q, %v; want the identity token", token, tokenType, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(sent, []string{"example", "example"}) {
+		t.Errorf("the subject token source was sent X-Example %q; want both headers the file names", sent)
+	}
+	if got := exchange().Get("subject_token"); got != "the.url.subject" {
+		t.Errorf("the security token service was sent the subject token %q", got)
+	}
+	if n := impersonated.Load(); n != 1 {
+		t.Errorf("the impersonation URL saw %d requests; want the one that mints the account's access token", n)
+	}
+}
+
+// TestAnOutOfRangeNumberHidesNothingFromTheCheck: a number outside float64's range in a member the
+// library skips, which the decoder reads as text, leaves the file one the check reads in full. A
+// valid X.509 credential with such a member, at the credentials file's top level or in its
+// certificate configuration, mints; one whose certificate configuration is an enterprise
+// certificate proxy's is refused, and its signer does not run. Control: Google's library alone,
+// given that file, starts the signer.
+func TestAnOutOfRangeNumberHidesNothingFromTheCheck(t *testing.T) {
+	const extension = `"unknown_extension":1e400,`
+	t.Run("a credential that mints", func(t *testing.T) {
+		for _, where := range []string{"credentials file", "certificate configuration"} {
+			sts, _ := federatedExchange(t)
+			iam, _ := federationIAM(t)
+			files := writeX509Credential(t, t.TempDir(), sts, "https://iamcredentials.invalid")
+			data, err := os.ReadFile(files.credential)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if where == "credentials file" {
+				data = []byte(strings.Replace(string(data), `{`, `{`+extension, 1))
+			} else {
+				config, err := os.ReadFile(files.config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rewrite(t, files.config, strings.Replace(string(config), `{`, `{`+extension, 1))
+			}
+			identity := &ExternalAccountIdentity{CredentialsJSON: data, ServiceAccount: "robot@example.iam.gserviceaccount.com",
+				Audience: testAudience, HTTP: HTTPClient(), IAMCredentialsURL: iam}
+			if token, _, err := identity.Token(context.Background()); err != nil || token != "robot-identity-token" {
+				t.Errorf("%s with %s: Token = %q, %v; want the identity token", where, extension, token, err)
+			}
+		}
+	})
+	t.Run("a proxy's configuration", func(t *testing.T) {
+		dir := t.TempDir()
+		files := writeX509Credential(t, dir, "http://127.0.0.1:9", "https://iamcredentials.invalid")
+		ecp, ran := proxyConfiguration(t, dir)
+		data, err := os.ReadFile(files.credential)
+		if err != nil {
+			t.Fatal(err)
+		}
+		credential := strings.Replace(strings.Replace(string(data), `{`, `{"x":1e400,`, 1), strconv.Quote(files.config), strconv.Quote(ecp), 1)
+		_, _ = credentials.NewCredentialsFromJSON(credentials.ExternalAccount, stripped([]byte(credential)),
+			&credentials.DetectOptions{Scopes: []string{poolScope}, Logger: slog.New(slog.DiscardHandler)})
+		if err := os.Remove(ran); err != nil {
+			t.Fatalf("control: Google's library did not start the signer: %v", err)
+		}
+		identity := &ExternalAccountIdentity{CredentialsJSON: []byte(credential), ServiceAccount: "robot@example.iam.gserviceaccount.com",
+			Audience: testAudience, HTTP: HTTPClient()}
+		_, _, err = identity.Token(context.Background())
+		if want := "holds no workload certificate and private key"; err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Token: %v; want %q", err, want)
+		}
+		if _, err := os.Stat(ran); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("the enterprise certificate proxy's signer ran (stat: %v)", err)
+		}
+	})
+}
+
+// TestTheMirroredTypesAreGooglesLibrarys: credentialFields and certificateConfig, from which
+// repeatsKey reads which objects are structs and which are maps, have the shape of the types
+// Google's library decodes a credentials file and a certificate configuration into, read from the
+// library's own source in the module this package builds with: each field's JSON name, and a
+// struct, a pointer, a map or a scalar where the library has one. Controls: the library's types
+// with credential_source a struct and not a pointer, or headers a string and not a map, differ
+// from the mirror, so this check sees each.
+func TestTheMirroredTypesAreGooglesLibrarys(t *testing.T) {
+	list := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "cloud.google.com/go/auth")
+	out, err := list.Output()
+	if err != nil {
+		t.Fatalf("go list -m cloud.google.com/go/auth: %v", err)
+	}
+	dir := strings.TrimSpace(string(out))
+	for _, row := range []struct {
+		file, root string
+		mirror     reflect.Type
+	}{
+		{"internal/credsfile/filetype.go", "ExternalAccountFile", credentialFieldsType},
+		{"internal/transport/cert/workload_cert.go", "certificateConfig", certificateConfigType},
+	} {
+		types := structTypes(t, filepath.Join(dir, row.file))
+		library, mirror := astShape(types[row.root], types), reflectShape(row.mirror)
+		if library != mirror {
+			t.Errorf("%s in %s has the shape\n  %s\nand the mirror\n  %s", row.root, row.file, library, mirror)
+		}
+	}
+
+	types := structTypes(t, filepath.Join(dir, "internal/credsfile/filetype.go"))
+	for name, edit := range map[string]func(){
+		"credential_source a struct": func() {
+			field := fieldTagged(t, types["ExternalAccountFile"], "credential_source")
+			field.Type = field.Type.(*ast.StarExpr).X
+		},
+		"headers a string": func() { fieldTagged(t, types["CredentialSource"], "headers").Type = ast.NewIdent("string") },
+	} {
+		types = structTypes(t, filepath.Join(dir, "internal/credsfile/filetype.go"))
+		edit()
+		if astShape(types["ExternalAccountFile"], types) == reflectShape(credentialFieldsType) {
+			t.Errorf("control: the library's types with %s have the mirror's shape, so this check cannot see that difference", name)
+		}
+	}
+}
+
+// structTypes is every struct type the Go file at path declares, by name.
+func structTypes(t *testing.T, path string) map[string]ast.Expr {
+	t.Helper()
+	parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	types := map[string]ast.Expr{}
+	ast.Inspect(parsed, func(n ast.Node) bool {
+		if spec, ok := n.(*ast.TypeSpec); ok {
+			if _, ok := spec.Type.(*ast.StructType); ok {
+				types[spec.Name.Name] = spec.Type
+			}
+		}
+		return true
+	})
+	return types
+}
+
+// fieldTagged is the field of the struct expr whose JSON name is name.
+func fieldTagged(t *testing.T, expr ast.Expr, name string) *ast.Field {
+	t.Helper()
+	for _, field := range expr.(*ast.StructType).Fields.List {
+		if jsonName(field) == name {
+			return field
+		}
+	}
+	t.Fatalf("no field %s", name)
+	return nil
+}
+
+// jsonName is the JSON name a struct field's tag gives it, or its Go name.
+func jsonName(field *ast.Field) string {
+	if field.Tag != nil {
+		tag, err := strconv.Unquote(field.Tag.Value)
+		if err == nil {
+			if name, _, _ := strings.Cut(reflect.StructTag(tag).Get("json"), ","); name != "" {
+				return name
+			}
+		}
+	}
+	return field.Names[0].Name
+}
+
+// astShape is the shape of a type expression of a file whose struct types are types: "scalar", "*"
+// and the shape pointed at, "map[" key "]" value, "[]" element, or "{" each field's JSON name and
+// shape "}", in name order.
+func astShape(expr ast.Expr, types map[string]ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		if named, ok := types[e.Name]; ok {
+			return astShape(named, types)
+		}
+		return "scalar"
+	case *ast.StarExpr:
+		return "*" + astShape(e.X, types)
+	case *ast.MapType:
+		return "map[" + astShape(e.Key, types) + "]" + astShape(e.Value, types)
+	case *ast.ArrayType:
+		return "[]" + astShape(e.Elt, types)
+	case *ast.StructType:
+		var fields []string
+		for _, field := range e.Fields.List {
+			fields = append(fields, jsonName(field)+":"+astShape(field.Type, types))
+		}
+		slices.Sort(fields)
+		return "{" + strings.Join(fields, ",") + "}"
+	}
+	return fmt.Sprintf("other %T", expr)
+}
+
+// reflectShape is the shape of a type, as astShape writes it.
+func reflectShape(t reflect.Type) string {
+	switch t.Kind() {
+	case reflect.Pointer:
+		return "*" + reflectShape(t.Elem())
+	case reflect.Map:
+		return "map[" + reflectShape(t.Key()) + "]" + reflectShape(t.Elem())
+	case reflect.Slice, reflect.Array:
+		return "[]" + reflectShape(t.Elem())
+	case reflect.Struct:
+		var fields []string
+		for i := range t.NumField() {
+			field := t.Field(i)
+			name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+			if name == "" {
+				name = field.Name
+			}
+			fields = append(fields, name+":"+reflectShape(field.Type))
+		}
+		slices.Sort(fields)
+		return "{" + strings.Join(fields, ",") + "}"
+	}
+	return "scalar"
+}
+
+// routedClient is a client that sends a request for each host routes names to the stand-in at its
+// base URL, and any other request as it stands.
+func routedClient(t *testing.T, routes map[string]string) *http.Client {
+	t.Helper()
+	to := map[string]*url.URL{}
+	for host, base := range routes {
+		u, err := url.Parse(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		to[host] = u
+	}
+	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if standIn, ok := to[r.URL.Host]; ok {
+			r = r.Clone(r.Context())
+			r.URL.Scheme, r.URL.Host, r.Host = standIn.Scheme, standIn.Host, standIn.Host
+		}
+		return http.DefaultTransport.RoundTrip(r)
+	})}
 }
 
 // TestACredentialSourceReadsAsGooglesLibraryReadsIt: credentialFields decodes credential_source

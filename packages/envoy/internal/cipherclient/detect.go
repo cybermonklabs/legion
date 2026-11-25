@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -105,11 +106,6 @@ func externalAccountFor(audience string) (Source, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("read the credentials file %s names: %w", credentialsFileVar, redact.File(err))
 	}
-	if repeated, err := repeatsKey(data); err != nil {
-		return nil, "", fmt.Errorf("the credentials file %s names is not JSON", credentialsFileVar)
-	} else if repeated {
-		return nil, "", errCredentialRepeatsKey
-	}
 	var head struct {
 		Type          string `json:"type"`
 		Impersonation string `json:"service_account_impersonation_url"`
@@ -123,6 +119,11 @@ func externalAccountFor(audience string) (Source, string, error) {
 			kind = fmt.Sprintf("a %q", head.Type)
 		}
 		return nil, fmt.Sprintf("the credentials file %s names is %s credential, not an external_account with a service account to act as", credentialsFileVar, kind), nil
+	}
+	if repeated, err := repeatsKey(data, credentialFieldsType); err != nil {
+		return nil, "", fmt.Errorf("the credentials file %s names is not JSON", credentialsFileVar)
+	} else if repeated {
+		return nil, "", errCredentialRepeatsKey
 	}
 	account := impersonatedAccount(head.Impersonation)
 	if account == "" {
@@ -231,7 +232,7 @@ var errCredentialRepeatsKey = errors.New("the credentials file " + credentialsFi
 func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*poolTimeout)
 	defer cancel()
-	if repeated, err := repeatsKey(e.CredentialsJSON); err != nil {
+	if repeated, err := repeatsKey(e.CredentialsJSON, credentialFieldsType); err != nil {
 		return "", "", errCredentialUnread
 	} else if repeated {
 		return "", "", errCredentialRepeatsKey
@@ -304,21 +305,67 @@ func withoutImpersonation(credential []byte) ([]byte, error) {
 	return json.Marshal(fields)
 }
 
-// credentialFields are the fields of an external_account credential file this client reads for
-// its own messages and checks: the token service, and the files its credential_source names. Each
-// has the type cloud.google.com/go/auth decodes it into (internal/credsfile's
-// ExternalAccountFile), a pointer where the library's is one, so that a null reads as the library
-// reads it, and a file whose fields do not parse here is one the library refuses too.
+// credentialFields is an external_account credentials file in the types cloud.google.com/go/auth
+// decodes it into (internal/credsfile's ExternalAccountFile and the types it holds): every field,
+// with the library's JSON name, and a struct, a pointer, a map or a scalar where the library has
+// one, so that this client reads the bytes it checks as the library reads them, a null and a
+// repeated key included (repeatsKey reads which objects are structs and which are maps from these
+// types). TestTheMirroredTypesAreGooglesLibrarys holds them to the library's own source. This
+// client reads the token service and the files its credential_source names; the other fields are
+// here for repeatsKey.
 type credentialFields struct {
-	TokenURL string            `json:"token_url"`
-	Source   *credentialSource `json:"credential_source"`
+	Type                     string                 `json:"type"`
+	ClientID                 string                 `json:"client_id"`
+	ClientSecret             string                 `json:"client_secret"`
+	Audience                 string                 `json:"audience"`
+	SubjectTokenType         string                 `json:"subject_token_type"`
+	Impersonation            string                 `json:"service_account_impersonation_url"`
+	TokenURL                 string                 `json:"token_url"`
+	Source                   *credentialSource      `json:"credential_source,omitempty"`
+	TokenInfoURL             string                 `json:"token_info_url"`
+	ImpersonationLifetime    *impersonationLifetime `json:"service_account_impersonation,omitempty"`
+	QuotaProjectID           string                 `json:"quota_project_id"`
+	WorkforcePoolUserProject string                 `json:"workforce_pool_user_project"`
+	UniverseDomain           string                 `json:"universe_domain"`
 }
 
-// credentialSource is a credential's credential_source, as far as this client reads it (the
-// library's CredentialSource).
+// credentialFieldsType is credentialFields' type, the schema repeatsKey reads a credentials file
+// with.
+var credentialFieldsType = reflect.TypeFor[credentialFields]()
+
+// credentialSource is a credential's credential_source (the library's CredentialSource).
 type credentialSource struct {
-	File        string             `json:"file"`
-	Certificate *certificateSource `json:"certificate"`
+	File                        string             `json:"file"`
+	URL                         string             `json:"url"`
+	Headers                     map[string]string  `json:"headers"`
+	Executable                  *executableSource  `json:"executable,omitempty"`
+	Certificate                 *certificateSource `json:"certificate"`
+	EnvironmentID               string             `json:"environment_id"`
+	RegionURL                   string             `json:"region_url"`
+	RegionalCredVerificationURL string             `json:"regional_cred_verification_url"`
+	CredVerificationURL         string             `json:"cred_verification_url"`
+	IMDSv2SessionTokenURL       string             `json:"imdsv2_session_token_url"`
+	Format                      *subjectFormat     `json:"format,omitempty"`
+}
+
+// executableSource is an executable credential_source (the library's ExecutableConfig).
+type executableSource struct {
+	Command       string `json:"command"`
+	TimeoutMillis int    `json:"timeout_millis"`
+	OutputFile    string `json:"output_file"`
+}
+
+// subjectFormat is how a file or URL credential_source holds its subject token (the library's
+// Format).
+type subjectFormat struct {
+	Type                  string `json:"type"`
+	SubjectTokenFieldName string `json:"subject_token_field_name"`
+}
+
+// impersonationLifetime is a credential's service_account_impersonation (the library's
+// ServiceAccountImpersonationInfo).
+type impersonationLifetime struct {
+	TokenLifetimeSeconds int `json:"token_lifetime_seconds"`
 }
 
 // readCredentialFields is the credentialFields of credential.
@@ -461,7 +508,7 @@ func certificateFailure(source certificateSource) string {
 	if err != nil {
 		return "read " + what + ": " + redact.File(err).Error()
 	}
-	if repeated, err := repeatsKey(data); err != nil {
+	if repeated, err := repeatsKey(data, certificateConfigType); err != nil {
 		return what + " is not JSON"
 	} else if repeated {
 		return what + " repeats a key"
@@ -493,9 +540,10 @@ func certificateFailure(source certificateSource) string {
 }
 
 // certificateConfig is a certificate configuration decoded into the types Google's library decodes
-// it into (internal/transport/cert's certificateConfig), a pointer where the library's is one, so
-// that a null reads as the library reads it. The library reads a nil Workload as an enterprise
-// certificate proxy's configuration.
+// it into (internal/transport/cert's certificateConfig and the types it holds), a pointer where the
+// library's is one, so that a null reads as the library reads it, and the schema repeatsKey reads
+// the configuration with. The library reads a nil Workload as an enterprise certificate proxy's
+// configuration. TestTheMirroredTypesAreGooglesLibrarys holds it to the library's own source.
 type certificateConfig struct {
 	CertConfigs struct {
 		Workload *struct {
@@ -504,6 +552,9 @@ type certificateConfig struct {
 		} `json:"workload"`
 	} `json:"cert_configs"`
 }
+
+// certificateConfigType is certificateConfig's type.
+var certificateConfigType = reflect.TypeFor[certificateConfig]()
 
 // pemCertificate is the certificate whose PEM block leads data, or nil where data leads with none,
 // as Google's library reads a certificate file (credentials/internal/externalaccount's
@@ -564,67 +615,114 @@ func opens(path string) error {
 	return nil
 }
 
-// repeatsKey is whether data, one JSON value, holds an object with two keys Go's JSON decoder
-// reads as one (foldKey), at any depth, and an error where data is not one JSON value. Such a key
-// is read differently by a decoder into a struct, into a pointer and into a map (the last of the
-// keys, a merge of them, or each spelling), so where this client checks a file that Google's
-// library then reads, a repeated key can make the two read different files: the file is refused
-// before either reads it. A file gcloud writes repeats none.
-func repeatsKey(data []byte) (bool, error) {
-	// objects holds, for each object or array the walk is in, innermost last, the folded keys
-	// read so far (nil for an array), and whether the next token is a key.
-	type open struct {
-		keys map[string]bool
-		key  bool
-	}
-	var objects []open
+// repeatsKey is whether data, one JSON value that Google's library decodes into a value of type
+// schema, holds an object with two keys the decoder (encoding/json) puts in one place (placeOf): in
+// an object the library decodes into a struct, two keys that name one of its fields, which the
+// decoder matches without case (foldKey); in one it decodes into a map, such as a credential_source's
+// headers, two equal keys, since a map keeps keys that differ in case apart. A key that names no
+// field of its struct is one the decoder skips, value and all, so neither it nor anything under it
+// is compared. A repeated key is read differently by a decoder into a struct, into a pointer and
+// into a map (the last of the keys, a merge of them, or each spelling), so where this client checks
+// a file that Google's library then reads, it can make the two read different files: such a file is
+// refused before either reads it. Numbers are read as text (UseNumber), as the decoder skips one
+// whatever its size. The error is the decoder's where data is not one JSON value: truncated, with
+// trailing data, with a delimiter, a colon or a comma out of place, or nested deeper than the
+// decoder reads.
+func repeatsKey(data []byte, schema reflect.Type) (bool, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
-	read := false
-	for {
-		token, err := dec.Token()
-		if err == io.EOF && read {
-			return false, nil
-		}
-		if err == io.EOF {
-			return false, io.ErrUnexpectedEOF
-		}
-		if err != nil {
-			return false, err
-		}
-		if read {
-			return false, errors.New("more than one JSON value")
-		}
-		inner := len(objects) - 1
-		if delim, ok := token.(json.Delim); ok {
-			switch delim {
-			case '{':
-				objects = append(objects, open{keys: map[string]bool{}, key: true})
-				continue
-			case '[':
-				objects = append(objects, open{})
-				continue
-			}
-			objects = objects[:inner]
-		} else if inner >= 0 && objects[inner].key {
-			folded := foldKey(token.(string))
-			if objects[inner].keys[folded] {
-				return true, nil
-			}
-			objects[inner].keys[folded], objects[inner].key = true, false
-			continue
-		}
-		// A value ended: the next token of the object around it is a key.
-		if outer := len(objects) - 1; outer < 0 {
-			read = true
-		} else if objects[outer].keys != nil {
-			objects[outer].key = true
-		}
+	dec.UseNumber()
+	if repeated, err := repeatsIn(dec, schema); err != nil || repeated {
+		return repeated, err
 	}
+	if _, err := dec.Token(); err != io.EOF {
+		return false, errors.New("more than one JSON value")
+	}
+	return false, nil
 }
 
-// foldKey is key as Go's JSON decoder matches it with a field's name (encoding/json's foldName):
-// each ASCII letter in upper case, and each other rune as the least of the runes whose case folds
-// to it, so that two keys fold alike exactly where strings.EqualFold holds.
+// repeatsIn reads the next JSON value from dec, which the library decodes into a value of type
+// schema (nil for one it skips), and answers whether an object in it repeats a key as repeatsKey
+// says.
+func repeatsIn(dec *json.Decoder, schema reflect.Type) (bool, error) {
+	token, err := dec.Token()
+	if err == io.EOF {
+		return false, io.ErrUnexpectedEOF
+	}
+	if err != nil {
+		return false, err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return false, nil
+	}
+	for schema != nil && schema.Kind() == reflect.Pointer {
+		schema = schema.Elem()
+	}
+	seen := map[string]bool{}
+	for dec.More() {
+		value := schema
+		if delim == '{' {
+			token, err := dec.Token()
+			if err != nil {
+				return false, err
+			}
+			key, _ := token.(string)
+			place, in, decoded := placeOf(schema, key)
+			if decoded {
+				if seen[place] {
+					return true, nil
+				}
+				seen[place] = true
+			}
+			value = in
+		} else if schema != nil && (schema.Kind() == reflect.Slice || schema.Kind() == reflect.Array) {
+			value = schema.Elem()
+		} else if schema == nil || schema.Kind() != reflect.Interface {
+			value = nil
+		}
+		if repeated, err := repeatsIn(dec, value); err != nil || repeated {
+			return repeated, err
+		}
+	}
+	_, err = dec.Token()
+	return false, err
+}
+
+// placeOf is where the decoder puts key's value in an object it decodes into a value of type
+// schema, and the type of the value there: the field key names in a struct (decoded is false where
+// it names none), and key itself in a map, or in an any, which the decoder fills with a map. In an
+// object where the library decodes a scalar, which it refuses, key goes nowhere.
+func placeOf(schema reflect.Type, key string) (place string, value reflect.Type, decoded bool) {
+	if schema == nil {
+		return "", nil, false
+	}
+	switch schema.Kind() {
+	case reflect.Struct:
+		folded := foldKey(key)
+		for i := range schema.NumField() {
+			field := schema.Field(i)
+			name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+			if name == "" {
+				name = field.Name
+			}
+			if foldKey(name) == folded {
+				return name, field.Type, true
+			}
+		}
+		return "", nil, false
+	case reflect.Map:
+		return key, schema.Elem(), true
+	case reflect.Interface:
+		return key, schema, true
+	}
+	return "", nil, false
+}
+
+// foldKey is key as Go's JSON decoder matches it with a struct field's name: in its v1 defaults
+// that match is strings.EqualFold (Go 1.27 builds encoding/json on encoding/json/v2, whose own
+// case-insensitive match also drops _ and -, which v1's MatchCaseSensitiveDelimiter turns off).
+// Each ASCII letter is put in upper case, and each other rune as the least of the runes whose case
+// folds to it, so that two keys fold alike exactly where strings.EqualFold holds.
 func foldKey(key string) string {
 	var folded strings.Builder
 	for _, r := range key {
