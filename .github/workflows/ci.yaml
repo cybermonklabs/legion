@@ -64,7 +64,6 @@ env:
       "envoy-go-race": "envoy_go_race",
       "envoy-go-race-api": "envoy_go_race_api",
       "envoy-go-race-docs": "envoy_go_race_docs",
-      "envoy-go-docs-finalizers": "envoy_go_race_docs",
       "dispatch-memory": "dispatch_memory",
       "dispatch-multiprocess": "dispatch_multiprocess",
       "dispatch-two-builds": "dispatch_two_builds",
@@ -123,58 +122,11 @@ jobs:
       private_names_port: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.private_names_port }}
       # why: .github/ci-notes/ci.md#why-the-session-message-wait-suite-has-an-output-of-its-own
       sessions_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.sessions_script }}
-      # why: .github/ci-notes/ci.md#guide_layout-the-guides-layout-step-of-the-tooling-checks-job-ci-job-testyamls
-      guide_layout: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.guide_layout }}
-      # why: .github/ci-notes/ci.md#one-output-per-testsh-step-of-the-test-job
-      release_push_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.release_push_test }}
-      release_bump_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.release_bump_test }}
-      check_bun_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_bun_version_test }}
-      check_playwright_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_playwright_version_test }}
-      check_bun_workspace_manifests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_bun_workspace_manifests_test }}
-      check_zod_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_zod_version_test }}
-      check_gh_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gh_version_test }}
-      check_gitleaks_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gitleaks_version_test }}
-      workflow_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.workflow_paths_test }}
-      check_image_trigger_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_image_trigger_paths_test }}
-      check_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_images_test }}
-      mirror_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.mirror_ci_images_test }}
-      ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_tools_test }}
-      mirror_ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.mirror_ci_tools_test }}
-      check_ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_tools_test }}
-      ci_tools_proof_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_tools_proof_test }}
-      check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_action_pins_test }}
-      check_workflow_files_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_workflow_files_test }}
-      check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
-      check_private_names_terms_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_terms_test }}
-      check_private_names_keys_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_keys_test }}
-      check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
-      check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
-      check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
-      check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
-      repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
-      select_e2e_proofs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.select_e2e_proofs_test }}
-      go_tagged_tests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_tagged_tests_test }}
-      ci_router_outputs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_router_outputs_test }}
-      ci_ok_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_test }}
-      ci_ok_report_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_report_test }}
-      ci_ok_reconcile_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_reconcile_test }}
-      find_pr_payload_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.find_pr_payload_test }}
-      merge_group_cancels_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.merge_group_cancels_test }}
-      main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.main_bypass_check_test }}
-      edited_migrations_base_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.edited_migrations_base_test }}
-      dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
-      dispatch_browser_reading_rows_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_reading_rows_test }}
-      dispatch_browser_run_reads_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_run_reads_test }}
-      gh_read_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.gh_read_test }}
-      dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_samples_test }}
-      race_memory_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.race_memory_test }}
-      disk_watch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.disk_watch_test }}
-      go_cache_working_set_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_cache_working_set_test }}
-      priorities_seed_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.priorities_seed_check_test }}
-      architecture_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.architecture_check_test }}
-      check_ci_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_filters_test }}
-      check_ts_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ts_filters_test }}
-      go_test_step_expansion_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_test_step_expansion_test }}
+      # The step gates of the test and tooling-checks jobs, all in one: the paths filter's own list
+      # of the filters that matched, out of which each harness step and the guides' layout step
+      # read their own; `all` on a dispatch and when the filters fell open (every_filter).
+      # why: .github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates
+      matched_filters: ${{ (github.event_name == 'workflow_dispatch' || steps.generate.outputs.every_filter == 'true') && 'all' || steps.filter.outputs.changes }}
       # Selected like any other job now that no run of this workflow is a push to main.
       # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
@@ -261,6 +213,7 @@ jobs:
         timeout-minutes: 3
         run: bun install --frozen-lockfile
       - name: Compute every filter from what each job reads
+        id: generate
         timeout-minutes: 9
         env:
           CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
@@ -295,7 +248,6 @@ jobs:
       contents: read
       actions: read
       checks: write
-      pull-requests: read
     uses: ./.github/workflows/ci-job-lint.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
@@ -371,55 +323,7 @@ jobs:
       job: test
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       changes-result: ${{ needs.changes.result }}
-      release_push_test: ${{ needs.changes.outputs.release_push_test }}
-      release_bump_test: ${{ needs.changes.outputs.release_bump_test }}
-      check_bun_version_test: ${{ needs.changes.outputs.check_bun_version_test }}
-      check_playwright_version_test: ${{ needs.changes.outputs.check_playwright_version_test }}
-      check_bun_workspace_manifests_test: ${{ needs.changes.outputs.check_bun_workspace_manifests_test }}
-      check_zod_version_test: ${{ needs.changes.outputs.check_zod_version_test }}
-      check_gh_version_test: ${{ needs.changes.outputs.check_gh_version_test }}
-      check_gitleaks_version_test: ${{ needs.changes.outputs.check_gitleaks_version_test }}
-      workflow_paths_test: ${{ needs.changes.outputs.workflow_paths_test }}
-      check_image_trigger_paths_test: ${{ needs.changes.outputs.check_image_trigger_paths_test }}
-      check_ci_images_test: ${{ needs.changes.outputs.check_ci_images_test }}
-      mirror_ci_images_test: ${{ needs.changes.outputs.mirror_ci_images_test }}
-      ci_tools_test: ${{ needs.changes.outputs.ci_tools_test }}
-      mirror_ci_tools_test: ${{ needs.changes.outputs.mirror_ci_tools_test }}
-      check_ci_tools_test: ${{ needs.changes.outputs.check_ci_tools_test }}
-      ci_tools_proof_test: ${{ needs.changes.outputs.ci_tools_proof_test }}
-      check_action_pins_test: ${{ needs.changes.outputs.check_action_pins_test }}
-      check_workflow_files_test: ${{ needs.changes.outputs.check_workflow_files_test }}
-      check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
-      check_private_names_terms_test: ${{ needs.changes.outputs.check_private_names_terms_test }}
-      check_private_names_keys_test: ${{ needs.changes.outputs.check_private_names_keys_test }}
-      check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
-      check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
-      check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}
-      check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}
-      repo_paths_test: ${{ needs.changes.outputs.repo_paths_test }}
-      select_e2e_proofs_test: ${{ needs.changes.outputs.select_e2e_proofs_test }}
-      go_tagged_tests_test: ${{ needs.changes.outputs.go_tagged_tests_test }}
-      ci_router_outputs_test: ${{ needs.changes.outputs.ci_router_outputs_test }}
-      ci_ok_test: ${{ needs.changes.outputs.ci_ok_test }}
-      ci_ok_report_test: ${{ needs.changes.outputs.ci_ok_report_test }}
-      ci_ok_reconcile_test: ${{ needs.changes.outputs.ci_ok_reconcile_test }}
-      find_pr_payload_test: ${{ needs.changes.outputs.find_pr_payload_test }}
-      merge_group_cancels_test: ${{ needs.changes.outputs.merge_group_cancels_test }}
-      main_bypass_check_test: ${{ needs.changes.outputs.main_bypass_check_test }}
-      edited_migrations_base_test: ${{ needs.changes.outputs.edited_migrations_base_test }}
-      dispatch_browser_latest_blobs_test: ${{ needs.changes.outputs.dispatch_browser_latest_blobs_test }}
-      dispatch_browser_reading_rows_test: ${{ needs.changes.outputs.dispatch_browser_reading_rows_test }}
-      dispatch_browser_run_reads_test: ${{ needs.changes.outputs.dispatch_browser_run_reads_test }}
-      gh_read_test: ${{ needs.changes.outputs.gh_read_test }}
-      dispatch_browser_samples_test: ${{ needs.changes.outputs.dispatch_browser_samples_test }}
-      race_memory_test: ${{ needs.changes.outputs.race_memory_test }}
-      disk_watch_test: ${{ needs.changes.outputs.disk_watch_test }}
-      go_cache_working_set_test: ${{ needs.changes.outputs.go_cache_working_set_test }}
-      priorities_seed_check_test: ${{ needs.changes.outputs.priorities_seed_check_test }}
-      architecture_check_test: ${{ needs.changes.outputs.architecture_check_test }}
-      check_ci_filters_test: ${{ needs.changes.outputs.check_ci_filters_test }}
-      check_ts_filters_test: ${{ needs.changes.outputs.check_ts_filters_test }}
-      go_test_step_expansion_test: ${{ needs.changes.outputs.go_test_step_expansion_test }}
+      matched-filters: ${{ needs.changes.outputs.matched_filters }}
 
   # why: .github/ci-notes/ci.md#what-the-tooling-checks-job-runs
   tooling-checks:
@@ -435,7 +339,7 @@ jobs:
       job: tooling-checks
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       changes-result: ${{ needs.changes.result }}
-      guide_layout: ${{ needs.changes.outputs.guide_layout }}
+      matched-filters: ${{ needs.changes.outputs.matched_filters }}
 
   # why: .github/ci-notes/ci.md#why-the-daemons-go-suite-is-a-job-of-its-own
   daemon-go:
@@ -791,18 +695,6 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # why: .github/ci-notes/ci.md#the-cleanup-detector-run-of-the-document-service
-  envoy-go-docs-finalizers:
-    needs: changes
-    if: needs.changes.outputs.envoy_go_race_docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    permissions:
-      contents: read
-      actions: read
-      checks: write
-    uses: ./.github/workflows/ci-job-envoy-go-docs-finalizers.yaml
-    with:
-      ci-ok-changes: ${{ toJSON(needs.changes) }}
-
   # why: .github/ci-notes/ci.md#the-real-process-memory-tests-and-why-they-are-a-job-of-their-own
   dispatch-memory:
     needs: changes
@@ -1074,7 +966,6 @@ jobs:
       - envoy-go-race-api
       - envoy-go-claim-model
       - envoy-go-race-docs
-      - envoy-go-docs-finalizers
       - dispatch-memory
       - dispatch-multiprocess
       - dispatch-two-builds

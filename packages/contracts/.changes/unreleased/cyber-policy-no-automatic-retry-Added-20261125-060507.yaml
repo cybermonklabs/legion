@@ -1,8 +1,8 @@
 kind: Added
 body: |-
-  Daemon API contract 264: `LEGION_FAILURE_CAUSES` gains `cyber_policy`, the cause a claim fails
-  under after OpenAI's cyber-policy refusal of its session's content, and
-  `LegionTurnOutcomeRequest` takes an optional `code: "cyber_policy"`.
+  Daemon API contract entry 20261125174608 (cyber-policy): `LEGION_FAILURE_CAUSES` gains
+  `cyber_policy`, the cause a claim fails under after OpenAI's cyber-policy refusal of its
+  session's content, and `LegionTurnOutcomeRequest` takes an optional `code: "cyber_policy"`.
 time: 2026-11-25T06:05:07Z
 custom:
     Issue: cyber-policy-no-automatic-retry

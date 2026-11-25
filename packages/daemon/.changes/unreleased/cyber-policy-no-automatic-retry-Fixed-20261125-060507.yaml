@@ -12,7 +12,8 @@ body: |-
     `legion claims retry --claim <token> --fresh-session`, which, like the architect's retry of the
     held phase, relaunches it, the controller included. One send can still go before the plugin's
     report lands, since the report and the turn's end reach the daemon in no fixed order; that
-    prompt's own result then fails the claim. Daemon API contract 264.
+    prompt's own result then fails the claim. Daemon API contract entry 20261125174608
+    (cyber-policy).
 time: 2026-11-25T06:05:07Z
 custom:
     Issue: cyber-policy-no-automatic-retry

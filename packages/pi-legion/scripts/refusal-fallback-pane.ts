@@ -1,8 +1,7 @@
-// The driver of scripts/e2e/refusal-fallback-omp.sh: three Legion panes on the real Oh My Pi, each
-// against an OpenAI-shaped stand-in of its own, each driven about once a minute for about twelve
-// minutes, so the window the check c-r1-chain asks for is measured on a real clock. The three panes
-// run at the same time, since each needs the whole twelve minutes and a pod holds three `omp --mode
-// rpc` children at once; every line a pane prints names the pane, so the three read apart.
+// The driver of scripts/e2e/refusal-fallback-omp.sh: four Legion panes on the real Oh My Pi,
+// each against its own OpenAI-shaped stand-in. The panes run together for twenty-one minutes:
+// two measure a refusal's ten-minute cooldown, and two distinguish a rate limit's suppression
+// from that cooldown. Every output line names its pane.
 //
 //   LEGION_OMP_PATH=<omp> REFUSAL_FALLBACK_NATS_URL=<nats://host:port> \
 //     bun packages/pi-legion/scripts/refusal-fallback-pane.ts <cooldown-ms> <drive-ms> <evidence-dir>
@@ -18,25 +17,22 @@
 // provider and a chain from the first to the second, with `retry.fallbackRevertPolicy: never`, the
 // shape INFRA's operator overlay carries (deploy/kubernetes/operator-route/overlay.yml), and
 // `retry.rateLimitWalksChain: true`, which Oh My Pi has off (`writeProfile` below says what it
-// does). The stand-in answers every request of the long turn with a `sleep`, so each
-// request says which model the session stood on a minute after the one before it.
+// does). Each stand-in keeps its long turn running with a `sleep`, so the requests repeatedly
+// read which model the session is on.
 //
-// What the three panes differ in is the one answer that refuses:
-//   - filtered-clean: `finish_reason: content_filter` with no content, which Oh My Pi may replay,
-//     so the host walks its own chain and the plugin arms the return from the host's own reason.
-//   - filtered-after-text: the same after streamed text, which is replay-unsafe, so the host leaves
-//     the session where it is and the plugin walks the chain itself.
-//   - rate-limited: HTTP 429 with `retry-after: 60`, which is no content filter, so the host notes
-//     a suppression of the model for the 60 s the provider asked for, the arming's cause is
-//     `other`, and the return waits on that suppression instead of on the cooldown. With
-//     `retry.rateLimitWalksChain` on and a context under `retry.rateLimitFallbackMaxContextTokens`,
-//     the host walks its chain at the first 429 rather than after its same-model retries
-//     (`writeProfile` below).
+// What the four panes differ in is the answer that refuses:
+//   - filtered-clean: `finish_reason: content_filter` with no content, which the host may replay.
+//   - filtered-after-text: the same after streamed text, so the plugin walks the chain itself.
+//   - rate-limited: HTTP 429 with `retry-after: 60`, retried inside the transport until the
+//     first-event budget ends. The host then sees a timeout with no retry-after, walks the chain
+//     and suppresses the model for five minutes. The plugin waits for that suppression.
+//   - rate-limited-final: the same 429 with `x-should-retry: false`. The host sees the 429,
+//     walks the chain and suppresses the model for its retry-after of sixty seconds. This pane
+//     asks every ten seconds, so ignoring that suppression produces a request before it ends.
 //
 // Every expectation prints `== <name>`, what was measured and `ok <name>`, or `FAIL <name>: <why>`
-// on stderr. Unlike a stage proof, a failed expectation does not stop the run: the twelve minutes
-// are spent, and every other expectation's measurement is evidence about the same run. The exit
-// status is 1 when any failed, naming the first, and 2 when the run could not be made at all.
+// on stderr. A failed expectation does not stop the other panes' measurements. The exit status
+// is 1 when any expectation failed, and 2 when the run could not be made at all.
 import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
@@ -96,10 +92,17 @@ const WEAK = `${PROVIDER}/${WEAK_ID}`;
  */
 const HOST_RESTORE_FLOOR_MS = 300_000;
 
-/** How long the stand-in's `sleep` holds each request apart: a thirteenth of the span the pane is
- * driven for, which is about a minute at the proof's own numbers, so the model of each request
- * reads as the minute it came at. */
-const sleepSeconds = Math.max(1, Math.round(driveMs / 13_000));
+/** The wait the final pane's 429 asks for (`retry-after: 60`), which the host suppresses the model
+ * for when the transport surfaces that 429 rather than retrying it. It is the wait that pane's
+ * return takes, as `HOST_RESTORE_FLOOR_MS` is the retried pane's. */
+const PROVIDER_RETRY_AFTER_MS = 60_000;
+
+/** Below the final 429's sixty-second suppression, so an ignored wait is observable. */
+const FINAL_REQUEST_SECONDS = 10;
+
+/** The existing panes' pacing stays at most 58 seconds when the driving span grows. Short
+ * diagnostic runs can still shorten it; only the final-429 pane has a ten-second override. */
+const sleepSeconds = Math.max(1, Math.min(58, Math.round(driveMs / 13_000)));
 
 /** How late after the cooldown's end the session may come back and still be its return: one
  * request's worth of cadence, twice over. The pane is in its long turn when the wait ends, and the
@@ -150,6 +153,8 @@ interface Pane {
   /** When its first request on the chain's next model arrived — the moment the fallback took
    * effect — or undefined when none did. */
   fellBackAt: number | undefined;
+  /** The first return to the strong model after a fallback, from its transcript's model_change. */
+  restoredAt: number | undefined;
   readonly served: Served[];
   /** The turns of the conversation, the run-end self-check not among them: which answer of the
    * run's own script the next request gets. */
@@ -161,7 +166,7 @@ interface Pane {
   trouble: string | undefined;
 }
 
-/** One of the three panes: what it is called, the issue it is the architect of, and the answer its
+/** One of the four panes: what it is called, the issue it is the architect of, and the answer its
  * stand-in gives each turn. */
 interface Run {
   readonly label: string;
@@ -173,6 +178,14 @@ interface Run {
   /** True for the two panes a content filter refuses: their return waits out the cooldown. A rate
    * limit's waits on the host's own suppression instead. */
   readonly refused: boolean;
+  /** For a rate-limited pane (`refused` false): how long the host suppresses the model, which is
+   * the wait the return takes. The 429 the transport retries leaves the host no wait to read, so it
+   * suppresses for its own floor (`HOST_RESTORE_FLOOR_MS`); the 429 the transport surfaces carries
+   * the provider's wait, so the host suppresses for that. Undefined for a refused pane, whose
+   * return waits out the cooldown instead. */
+  readonly suppressionMs?: number;
+  /** The shorter cadence of the final-429 pane, below its sixty-second suppression. */
+  readonly sleepSeconds?: number;
 }
 
 /** What the stand-in answered one request with: the response, and the words the pane's line
@@ -217,9 +230,8 @@ function says(model: string, nth: number, text: string): Answer {
   };
 }
 
-/** A turn answered with one `bash sleep`, which keeps the same turn running for about a minute: the
- * next request of that turn is the next minute's reading of the session's model. */
-function sleeps(model: string, nth: number): Answer {
+/** One `bash sleep` keeps the same turn running until the next reading of the session's model. */
+function sleeps(model: string, nth: number, seconds: number): Answer {
   return {
     response: completion(model, `sleep_${nth}`, [
       [
@@ -234,7 +246,7 @@ function sleeps(model: string, nth: number): Answer {
                 name: "bash",
                 arguments: JSON.stringify({
                   i: "Waiting out the gap before the next request",
-                  command: `sleep ${sleepSeconds}`,
+                  command: `sleep ${seconds}`,
                 }),
               },
             },
@@ -244,7 +256,7 @@ function sleeps(model: string, nth: number): Answer {
       ],
       [{}, "tool_calls"],
     ]),
-    what: `bash sleep ${sleepSeconds}`,
+    what: `bash sleep ${seconds}`,
   };
 }
 
@@ -266,7 +278,10 @@ function filtered(model: string, nth: number, before?: string): Answer {
   };
 }
 
-/** A turn refused by a rate limit, with the wait the provider asks for. */
+/** A turn refused by a rate limit, with the wait the provider asks for. Oh My Pi's OpenAI
+ * transport retries this by itself, honouring the wait, until its first-event budget ends: the
+ * host never sees the 429, only the stream timeout the budget leaves, which carries no wait, so the
+ * host suppresses the model for its own floor. */
 function rateLimited(): Answer {
   return {
     response: new Response(
@@ -277,9 +292,30 @@ function rateLimited(): Answer {
   };
 }
 
+/** The same 429, with `x-should-retry: false`, the header a gateway sets to say the request must
+ * not be retried (`getShouldRetryFromHeaders`, `@oh-my-pi/pi-ai utils/retry-after.ts`). The
+ * transport takes it as terminal and surfaces the 429 to the host at once, so the host walks the
+ * chain on the first request and suppresses the model for the wait the 429 asked for. */
+function rateLimitedFinal(): Answer {
+  return {
+    response: new Response(
+      JSON.stringify({ error: { type: "rate_limit_error", message: "Rate limit reached" } }),
+      {
+        status: 429,
+        headers: {
+          "content-type": "application/json",
+          "retry-after": "60",
+          "x-should-retry": "false",
+        },
+      }
+    ),
+    what: "429 rate limit, retry-after 60, x-should-retry false",
+  };
+}
+
 /**
- * The answer every turn after the refusal gets: another minute's `sleep` until the pane has been
- * driven for its whole span, then text, which lets the run settle.
+ * The answer every turn after the refusal gets: a `sleep` for that pane's request interval until
+ * the pane has been driven for its whole span, then text, which lets the run settle.
  *
  * A pane that fell back and has not been given its model again keeps asking past the span, for as
  * long as a return is still allowed to take. The host picks a request's model before it runs the
@@ -287,13 +323,15 @@ function rateLimited(): Answer {
  * it, and a span that ends between the two would report a return that happened as one that never
  * came.
  */
-function pacing(pane: Pane, model: string, nth: number): Answer {
+function pacing(pane: Pane, model: string, nth: number, seconds = sleepSeconds): Answer {
   const fellBack = pane.fellBackAt;
   const waitingForTheReturn =
     fellBack !== undefined &&
     !pane.served.some((served) => served.at >= fellBack && served.model === STRONG_ID);
   const span = driveMs + (waitingForTheReturn ? RETURN_SLACK_MS : 0);
-  return Date.now() - pane.startedAt >= span ? says(model, nth, "Done.") : sleeps(model, nth);
+  return Date.now() - pane.startedAt >= span
+    ? says(model, nth, "Done.")
+    : sleeps(model, nth, seconds);
 }
 
 const runs: readonly Run[] = [
@@ -315,12 +353,25 @@ const runs: readonly Run[] = [
   {
     label: "rate-limited",
     key: "RLIM-1",
-    what: "a 429 with retry-after 60, which is no content filter: the return waits on the host's own suppression",
+    what: "a 429 with retry-after 60 the transport retries: the return waits on the host's floor suppression",
     refused: false,
+    suppressionMs: HOST_RESTORE_FLOOR_MS,
     answer: (pane, model, nth) =>
       model === STRONG_ID && pane.fellBackAt === undefined
         ? rateLimited()
         : pacing(pane, model, nth),
+  },
+  {
+    label: "rate-limited-final",
+    key: "RLIF-1",
+    what: "a 429 with retry-after 60 and x-should-retry false: the host walks at once and suppresses for the wait",
+    refused: false,
+    suppressionMs: PROVIDER_RETRY_AFTER_MS,
+    sleepSeconds: FINAL_REQUEST_SECONDS,
+    answer: (pane, model, nth) =>
+      model === STRONG_ID && pane.fellBackAt === undefined
+        ? rateLimitedFinal()
+        : pacing(pane, model, nth, FINAL_REQUEST_SECONDS),
   },
 ];
 
@@ -364,14 +415,11 @@ async function writeProfile(home: string, base: string): Promise<void> {
       "retry:",
       "  modelFallback: true",
       "  fallbackRevertPolicy: never",
-      // On, a rate limit on this model goes to the chain consult at once rather than waiting for
-      // another attempt on the same model (`sourceRateLimited` and `deferToSameModel`,
-      // `session/turn-recovery.ts:3732-3734` and `:4078` at the pinned tag). Oh My Pi has it off,
-      // and off, a rate limit waits on the same model until `retry.maxRetries` (10) is spent or
-      // the stated wait is past `retry.maxDelayMs` (five minutes). Either way the consult keeps the
-      // model for a context larger than `retry.rateLimitFallbackMaxContextTokens`, 100,000 tokens by
-      // default (`rateLimitHoldsModel`, `:4092-4093` and `:4103`), so for a context under it the
-      // host walks the chain at the stand-in's first 429.
+      // Admit a surfaced rate limit to the chain consult (`sourceRateLimited` and
+      // `deferToSameModel`, `session/turn-recovery.ts:3732-3734` and `:4078` at the pinned tag),
+      // for a context no larger than `retry.rateLimitFallbackMaxContextTokens`, 100,000 tokens by
+      // default (`rateLimitHoldsModel`, `:4092-4093` and `:4103`). A 429 retried inside the
+      // transport reaches this recovery only as the timeout of its first-event budget.
       "  rateLimitWalksChain: true",
       "  fallbackChains:",
       `    ${STRONG}: [${WEAK}]`,
@@ -398,18 +446,20 @@ async function within<T>(ms: number, what: string, work: Promise<T>): Promise<T>
 /**
  * Copies what the pane leaves behind into the evidence directory, which outlives its scratch root:
  * its Oh My Pi transcripts and the host's own log, the one record of what the host did with a
- * refusal the stand-in cannot see. Answers the cooldown states the transcripts hold, in order.
+ * refusal the stand-in cannot see. Records the cooldown states and first return's own timestamp.
  */
 async function keepEvidence(
   home: string,
   sessions: string,
-  label: string
-): Promise<FallbackCooldownState[]> {
+  label: string,
+  pane: Pane
+): Promise<void> {
   const logs = path.join(home, ".omp", "logs");
   for (const log of await readdir(logs).catch(() => [])) {
     await cp(path.join(logs, log), path.join(evidence, `${label}-${log}`)).catch(() => undefined);
   }
-  const states: FallbackCooldownState[] = [];
+  let firstFallbackAt = Number.POSITIVE_INFINITY;
+  const strongChanges: number[] = [];
   const files = (await readdir(sessions, { recursive: true })).filter((file) =>
     file.endsWith(".jsonl")
   );
@@ -419,11 +469,28 @@ async function keepEvidence(
     for (const line of (await readFile(full, "utf8")).split("\n").filter(Boolean)) {
       const entry: unknown = JSON.parse(line);
       if (typeof entry !== "object" || entry === null) continue;
+      if (
+        "type" in entry &&
+        entry.type === "model_change" &&
+        "model" in entry &&
+        "timestamp" in entry &&
+        typeof entry.timestamp === "string"
+      ) {
+        const at = Date.parse(entry.timestamp);
+        if (Number.isFinite(at)) {
+          if (entry.model === WEAK) firstFallbackAt = Math.min(firstFallbackAt, at);
+          if (entry.model === STRONG) strongChanges.push(at);
+        }
+      }
       if (!("customType" in entry) || entry.customType !== LEGION_FALLBACK_ENTRY) continue;
-      if ("data" in entry) states.push(entry.data as FallbackCooldownState);
+      if ("data" in entry) pane.states.push(entry.data as FallbackCooldownState);
     }
   }
-  return states;
+  for (const at of strongChanges) {
+    if (at >= firstFallbackAt && (pane.restoredAt === undefined || at < pane.restoredAt)) {
+      pane.restoredAt = at;
+    }
+  }
 }
 
 /**
@@ -434,6 +501,7 @@ async function drivePane(run: Run, cleanup: Cleanup): Promise<Pane> {
   const pane: Pane = {
     startedAt: 0,
     fellBackAt: undefined,
+    restoredAt: undefined,
     served: [],
     turns: 0,
     states: [],
@@ -587,7 +655,7 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
     await rpc.end();
   } finally {
     // A pane that never settled is the run this evidence is most wanted for.
-    pane.states = await keepEvidence(home, sessions, run.label).catch(() => []);
+    await keepEvidence(home, sessions, run.label, pane).catch(() => undefined);
   }
 }
 
@@ -660,21 +728,30 @@ function verdictsFor(run: Run, pane: Pane): Verdict[] {
   if (armed === undefined || fellBack === undefined) return verdicts;
   const back = pane.served.find((served) => served.at >= fellBack && served.model === STRONG_ID);
   if (!run.refused) {
-    // The host suppresses a model it rate-limited for as long as the provider asked for, and the
-    // arming is due the moment that suppression ends — a clock of the host's, and nothing like the
-    // cooldown a refusal waits out.
+    // The first strong request must be after suppression. The transcript records the switch
+    // itself, which must be within one request's cadence after suppression, not a whole cooldown.
+    // A shorter cadence makes a no-wait return visible in the final-429 pane too.
+    const wait = run.suppressionMs ?? 0;
+    const restored = pane.restoredAt;
+    const cadence = (run.sleepSeconds ?? sleepSeconds) * 1000;
     verdicts.push({
       name: `${run.label}-comes-back-on-the-suppression`,
       measured:
         back === undefined
           ? `the session never went back to ${STRONG_ID}`
-          : `back on ${STRONG_ID} at ${minute(back.at)}, ${Math.round((back.at - fellBack) / 1000)}s after the fallback, with the cooldown at ${Math.round(cooldownMs / 1000)}s`,
+          : `back on ${STRONG_ID} at ${minute(back.at)}, ${Math.round((back.at - fellBack) / 1000)}s after the fallback; model switch ${restored === undefined ? "missing" : `${((restored - fellBack) / 1000).toFixed(3)}s`}, host's wait ${Math.round(wait / 1000)}s, cadence ${Math.round(cadence / 1000)}s, cooldown ${Math.round(cooldownMs / 1000)}s`,
       failure:
         back === undefined
           ? `the session never went back to ${STRONG_ID}`
-          : back.at - fellBack >= cooldownMs / 2
-            ? `it went back ${Math.round((back.at - fellBack) / 1000)}s after the fallback, which is the cooldown's own clock rather than the host's suppression`
-            : "",
+          : back.at - fellBack < wait
+            ? `it went back ${Math.round((back.at - fellBack) / 1000)}s after the fallback, before the host's ${Math.round(wait / 1000)}s suppression ended`
+            : restored === undefined
+              ? "the transcript recorded no return to the strong model"
+              : restored - fellBack > wait + cadence
+                ? `the model switched ${Math.round((restored - fellBack) / 1000)}s after the fallback, more than one request past the host's ${Math.round(wait / 1000)}s suppression`
+                : back.at - fellBack >= cooldownMs
+                  ? "the strong model was not asked again before the cooldown ended"
+                  : "",
     });
     return verdicts;
   }

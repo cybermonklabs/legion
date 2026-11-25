@@ -16,7 +16,7 @@ import { CAPABILITY_PROBE_OUT } from "../test/capability-host-probe";
 // binary's bundle, so `capability-report.test.ts` fakes the whole host and the typecheck reads
 // only `omp-host.d.ts`: neither sees what the host's functions really return. Oh My Pi's
 // `discoverExtensionPaths` returned bare paths at v18.18.6-sami.20261123-024918 and returns
-// `{path, scope}` entries at vOMP_PIN_PENDING_VERSION
+// `{path, scope}` entries at v18.18.6-sami.20261125-164517
 // (`extensibility/extensions/loader.ts:804-809`), and an adapter that passed the entries on
 // failed the repository-extensions row of every repository that carries an extension or a skill.
 // This case runs the adapter inside the binary (test/capability-host-probe.ts) against a

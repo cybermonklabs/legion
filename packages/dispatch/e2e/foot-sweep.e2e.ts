@@ -1039,8 +1039,13 @@ interface EndFrame {
 
 declare global {
   interface Window {
-    /** The frames `watchTheEnd` has read, and how its reading stops. */
-    __footMoment?: { readonly frames: EndFrame[]; readonly stop: () => void };
+    /** The frames `watchTheEnd` has read, a reading of its own at the moment the row asks for
+     *  one, which answers whether the float showed in it, and how its reading stops. */
+    __footMoment?: {
+      readonly frames: EndFrame[];
+      readonly read: () => boolean;
+      readonly stop: () => void;
+    };
   }
 }
 
@@ -1075,15 +1080,17 @@ async function standAtTheEnd(page: Page, end: MomentEnd, cell: string): Promise<
 
 /** Reads the end of a scroll in every animation frame from now until `framesOfTheMoment` stops
  *  it (`EndFrame`): the last element `end.last` matches, and whether the float `float` selects
- *  has a box. The first frame is read at once, before anything the row presses next. */
+ *  has a box. The first frame is read at once, before anything the row presses next, and
+ *  `window.__footMoment.read()` takes one more at a moment the row names, for the reason
+ *  `expectStillWhenItGoes` gives. */
 function watchTheEnd(page: Page, end: MomentEnd, float: string): Promise<void> {
   return page.evaluate(
     ({ float, last, names }) => {
       const frames: EndFrame[] = [];
       let reading = true;
-      const read = () => {
+      const read = (): boolean => {
         const content = [...document.querySelectorAll(last)].at(-1);
-        frames.push({
+        const frame: EndFrame = {
           at: performance.now(),
           marks: [...document.querySelectorAll<HTMLElement>(`[${names.mark}]`)]
             .map(
@@ -1095,7 +1102,9 @@ function watchTheEnd(page: Page, end: MomentEnd, float: string): Promise<void> {
             .join(","),
           shown: (document.querySelector(float)?.getBoundingClientRect().height ?? 0) > 0,
           top: content?.getBoundingClientRect().top ?? Number.NaN,
-        });
+        };
+        frames.push(frame);
+        return frame.shown;
       };
       const frame = () => {
         if (!reading) return;
@@ -1106,6 +1115,7 @@ function watchTheEnd(page: Page, end: MomentEnd, float: string): Promise<void> {
       requestAnimationFrame(frame);
       window.__footMoment = {
         frames,
+        read,
         stop: () => {
           reading = false;
         },
@@ -1123,13 +1133,18 @@ function goneAt(frames: readonly EndFrame[]): number {
 }
 
 /** The frames `watchTheEnd` has read, once they run `AFTER_IT_GOES_MS` past the frame the float
- *  went in, on the page's own clock: read until they do, and the reading is then stopped. */
+ *  went in, on the page's own clock: read until they do, and the reading is then stopped. Each
+ *  read takes a reading of its own first, so the frames run past the going on a page whose
+ *  animation frames have stopped coming as well as on one whose have not. */
 async function framesOfTheMoment(page: Page, cell: string): Promise<readonly EndFrame[]> {
   let frames: readonly EndFrame[] = [];
   await expect
     .poll(
       async () => {
-        frames = await page.evaluate(() => window.__footMoment?.frames ?? []);
+        frames = await page.evaluate(() => {
+          window.__footMoment?.read();
+          return window.__footMoment?.frames ?? [];
+        });
         const gone = frames[goneAt(frames)];
         return gone === undefined ? 0 : (frames.at(-1)?.at ?? 0) - gone.at;
       },
@@ -1159,7 +1174,8 @@ function momentReading(frames: readonly EndFrame[]): { readonly line: string; pr
   const line =
     `before ${round(first?.top)}, while shown ${round(Math.min(...shown))} to ` +
     `${round(Math.max(...shown))}, one frame after it went ${round(frames[gone + 1]?.top)}, ` +
-    `${AFTER_IT_GOES_MS} ms later ${round(later?.top)}; end room before ${first?.marks || "nowhere"}, ` +
+    `${AFTER_IT_GOES_MS} ms later ${round(later?.top)}; ${frames.length} readings, ` +
+    `${shown.length} of them with the float; end room before ${first?.marks || "nowhere"}, ` +
     `as it went ${frames[gone]?.marks || "nowhere"}`;
   const problems: string[] =
     first === undefined || Number.isNaN(first.top)
@@ -1193,6 +1209,16 @@ function momentReading(frames: readonly EndFrame[]): { readonly line: string; pr
  * float, or nothing where it already shows, and `hide` takes it away, and the top of the
  * scroll's last content is read in every animation frame between (`watchTheEnd`). Prints the
  * cell's `FOOT-CELL` line either way, with the four readings after it.
+ *
+ * Two of the readings are the row's own, taken where it knows what the page shows rather than
+ * left to the animation frames: one while the float shows, before `hide`, and one the moment
+ * `hide` has taken it away. A float this short is there for a frame or two - under four workers
+ * on four cores, as the shard legs run, a chord ended by a key was read in 1 to 6 frames of the
+ * 36 to 68 a reading holds (median 3), while frames ran 80 to 136 ms apart often enough that a
+ * leg read none at all inside the moment. The reading then holds no frame the float showed in,
+ * `goneAt` finds no going for the frames to run past, and the step fails 15 s later on a float
+ * that showed and went as it should: shard (1) of merge group 45461576237, and 1 of 8 readings
+ * of this row on a developer machine under that load.
  */
 async function expectStillWhenItGoes(
   page: Page,
@@ -1206,8 +1232,14 @@ async function expectStillWhenItGoes(
   await watchTheEnd(page, end, float);
   await show();
   await expect(page.locator(float)).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => window.__footMoment?.read() ?? false), {
+      message: `${cell}: a reading of the scroll's end while the float showed`,
+    })
+    .toBe(true);
   await hide();
   await expect(page.locator(float)).toHaveCount(0);
+  await page.evaluate(() => window.__footMoment?.read());
   const { line, problems } = momentReading(await framesOfTheMoment(page, cell));
   console.log(`${footCellLine(cell, problems)} (${line})`);
   expect(problems, `${cell}: the content at the end of the scroll moved`).toEqual([]);
@@ -1220,7 +1252,8 @@ async function expectStillWhenItGoes(
 // nothing, but room taken away while the reader stands in it shortens the scroll: its
 // `scrollTop` clamps and the content jumps. So at 1280x720 and 1600x1000 the top of the
 // scroll's last content is read in every frame from before the press until 500 ms after the
-// float has gone (`expectStillWhenItGoes`), and must not move. The builds are not routed, so the
+// float has gone, and in two readings of the row's own, while the float shows and the moment it
+// has gone (`expectStillWhenItGoes` says why), and must not move. The builds are not routed, so the
 // update banner never shows and each reading brings the one float it reads.
 // SLOW(>=2s): forty issues and forty messages seeded, and at two sizes five readings, each from a
 // scroll to the real end until 500 ms after its float has gone, two of them through the chord's

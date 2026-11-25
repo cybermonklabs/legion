@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    The worker image carries Oh My Pi `OMP_PIN_PENDING_VERSION` of cybermonklabs/oh-my-pi, which
+    The worker image carries Oh My Pi `18.18.6-sami.20261125-164517` of cybermonklabs/oh-my-pi, which
     `.omp-pin` names. A session holds the large values of its older entries in a private temporary
     file under `$TMPDIR/omp-cold-<uid>` instead of its heap (in memory, compressed, when that
     directory is not its own with mode 0700; a pod's is), and its stored session files hold every

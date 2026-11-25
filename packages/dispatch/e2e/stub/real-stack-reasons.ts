@@ -1,20 +1,31 @@
 /** Why each spec file's remaining rows stay on the real stack, read by `e2e/tools/row-map.ts`.
  *
  *  dispatch://INFRA-1407's k2 asks, for every row the change did not move, the server behaviour
- *  its assertion depends on. The reasons are here rather than as a comment in each of the
- *  hundred and forty spec files that keep rows, because a comment in each would touch every
- *  file of a suite several trees edit at once and conflict with all of them; gathering them
- *  makes the list readable in one pass as well. The generation refuses a file the listing names
- *  that is absent here, so the map stays complete and machine-checked either way.
+ *  its assertion depends on. A file's reason is in one of two places:
+ *
+ *  - **The list below** holds the reasons of the files that were there when the list closed. A
+ *    change to one of those reasons is made in the list.
+ *  - **The file's own header** holds the reason of a file added after the list closed. The
+ *    reason is a `/**` comment at the very start of the file, and `headerReasons` reads it as
+ *    the generation reads a stub file's header. So two changes that each add a file with its
+ *    reason change no common line.
+ *
+ *  `realStackReasons` holds the list's entries first, then the headers' reasons. Where the list
+ *  names a file, the list gives its reason, and its header is not read.
  *
  *  A reason names what the server decides for that file's rows: the four shapes
  *  `packages/dispatch/README.md`, "The stubbed layer", sets out. Where a file's rows stay for
  *  more than one, the reasons are joined with a semicolon.
  *
- *  A file whose every row moved is absent from this list, and so is a file no project of this
- *  listing runs - the multiprocess specs among them, which the generation never names. It
- *  refuses a file it lists that has no reason here, and a reason here for a file it does not
- *  list, so this list is exactly the suite's real-stack files and nothing else. */
+ *  A file whose every row moved has no reason, and neither has a file no project of this
+ *  listing runs - the multiprocess specs among them, which the generation never names. The
+ *  generation refuses a file it lists that has no reason, and a reason for a file it does not
+ *  list. So the reasons are exactly the suite's real-stack files and nothing else. */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { sourceFiles } from "../source-files";
+
 export const realStackReasons: Record<string, string> = {
   "accessibility.e2e.ts":
     "three of its scanned routes wait on the live document's connected status, which the Yjs socket alone gives",
@@ -311,3 +322,55 @@ export const realStackReasons: Record<string, string> = {
   "writes.e2e.ts":
     "a failed pin's retry, one comment from a double Submit, and a pin removed from Pinned",
 };
+
+/** The directories under `e2e/` that hold no spec file: `node_modules`, as Playwright's own
+ *  default ignores it, and the outputs of a browser run (`outputDir: "test-results"` in
+ *  e2e/playwright.config.ts, and the HTML report), which hold traces, videos and screenshots.
+ *  `specFiles` of e2e/no-browser-rows.ts skips `node_modules` and `test-results` for the same
+ *  reason. The walk below runs as this module loads, so this set stands above it. */
+const skippedDirectories = new Set(["node_modules", "playwright-report", "test-results"]);
+
+// A listing names a file relative to `e2e/`, so the walk starts there. The headers' reasons
+// come after the list's entries.
+Object.assign(
+  realStackReasons,
+  headerReasons(fileURLToPath(new URL("..", import.meta.url)), realStackReasons)
+);
+
+/** The reasons that the real-stack spec files under `directory` give in their own headers. Each
+ *  key is a file's path relative to `directory`, with `/` separators. A file gives a reason when
+ *  all of these are true:
+ *
+ *  - Its name ends in `.e2e.ts`, but not in `.stub.e2e.ts` or `.multiprocess.e2e.ts`.
+ *  - `listed` does not name it.
+ *  - A `/**` comment starts at its first byte.
+ *
+ *  The walk goes down every directory but `skippedDirectories`. */
+export function headerReasons(
+  directory: string,
+  listed: Readonly<Record<string, string>>
+): Record<string, string> {
+  const files = sourceFiles(directory, {
+    directory: (name) => !skippedDirectories.has(name),
+    file: (name) =>
+      name.endsWith(".e2e.ts") &&
+      !name.endsWith(".stub.e2e.ts") &&
+      !name.endsWith(".multiprocess.e2e.ts"),
+  });
+  const reasons: Record<string, string> = {};
+  for (const file of files) {
+    if (listed[file] !== undefined) continue;
+    // This is the rule of `stubReason` in e2e/tools/row-map.ts, which reads a stub file's header.
+    // It is a second copy, and not an import, because row-map.ts keeps its import line of this
+    // module unchanged. A change to the rule is made in both copies.
+    const header = /^\/\*\*([\s\S]*?)\*\//.exec(readFileSync(join(directory, file), "utf8"));
+    if (header === null) continue;
+    reasons[file] = header[1]
+      .split("\n")
+      .map((line) => line.replace(/^\s*\*? ?/, "").trimEnd())
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  return reasons;
+}

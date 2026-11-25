@@ -1,7 +1,7 @@
 kind: Changed
 body: |-
-  The plugin speaks daemon API contract 264, which adds the failure cause `cyber_policy` and the
-  turn-outcome report's optional `code`.
+  The plugin speaks the daemon API contract of entry 20261125174608 (cyber-policy), which adds the
+  failure cause `cyber_policy` and the turn-outcome report's optional `code`.
 time: 2026-11-25T06:05:07Z
 custom:
     Issue: cyber-policy-no-automatic-retry
