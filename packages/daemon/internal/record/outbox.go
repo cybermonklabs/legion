@@ -216,7 +216,6 @@ var pauseHolds = []pauseHold{
 	{kind: OutboxKindSupervise, op: "start"},
 	{kind: OutboxKindNotice},
 	{kind: OutboxKindHookPrompt},
-	{kind: OutboxKindCINews},
 	{kind: OutboxKindRoleMessage},
 	{kind: OutboxKindUpdateAsk},
 	{kind: OutboxKindMergeForward},
