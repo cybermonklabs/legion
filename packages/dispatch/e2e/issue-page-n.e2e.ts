@@ -127,6 +127,7 @@ import { marginSlot, TWENTY_LABELS } from "./issue-page-h";
 import {
   activePreset,
   caretInNode,
+  caretInRowBlock,
   childRows,
   childrenSection,
   expectActivePreset,
@@ -140,7 +141,7 @@ import {
   pickPreset,
   treeActiveDescendant,
 } from "./issue-page-i";
-import { drawnContentsEntries } from "./issue-page-j";
+import { drawnContentsEntries, scrollAtRest, wordAtCaret } from "./issue-page-j";
 import { historyEntries, historyItem, historyPanel, stepsSection } from "./issue-page-m";
 import {
   type AddressContent,
@@ -5093,6 +5094,219 @@ test("a view that waits for its reads says what it waits for", async ({ browser 
         } finally {
           await page.unroute(refusedRead, refuse);
         }
+      });
+    }
+  });
+});
+
+/** The block of the spec `c-press-caret` presses, which the row's seed inserts. */
+const PRESSED_BLOCK = "r-pressed";
+/** The word of that block a press lands in, and how far into it. */
+const PRESSED_WORD = "Placeholder";
+const PRESSED_INTO = 4;
+/** The words of a comment another person wrote, and the word of them a press lands in. */
+const THEIR_WORDS = "Bob's comment on the issue, which no other reader edits.";
+const THEIR_WORD = "comment";
+
+/** The words of `PRESSED_BLOCK`: `PRESSED_WORD` first, then a link to the issue's document
+ *  `slug`, which a press follows. */
+function pressedWords(key: string, slug: string): string {
+  return `${PRESSED_WORD} words come first in this statement, and dispatch://${key}/artifact/${slug} comes after them.`;
+}
+
+/** Brings the word `word` of `row`'s drawn words to the middle of the screen by a turn of the
+ *  wheel, the reader's own act, and answers the point of the page `into` characters into it: the
+ *  left edge of that character, plus a pixel, halfway down its line, where the browser reads a
+ *  place before it. */
+async function pointInWord(
+  page: Page,
+  row: Locator,
+  word: string,
+  into: number
+): Promise<{ x: number; y: number }> {
+  const wordPointNow = () =>
+    row.evaluate(
+      (element, { wanted, at }) => {
+        const words = element.querySelector("[data-node-words]");
+        if (words === null) return null;
+        const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+        for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+          const found = ` ${text.textContent ?? ""} `.indexOf(` ${wanted} `);
+          if (found < 0) continue;
+          const range = document.createRange();
+          range.setStart(text, found + at);
+          range.setEnd(text, found + at + 1);
+          const box = range.getBoundingClientRect();
+          return { x: box.left + 1, y: (box.top + box.bottom) / 2 };
+        }
+        return null;
+      },
+      { at: into, wanted: word }
+    );
+  const far = await wordPointNow();
+  expect(far, `the row draws no word "${word}"`).not.toBeNull();
+  await wheelToMiddle(page, far?.y ?? 0);
+  const at = await wordPointNow();
+  expect(at, `the word "${word}" is not on the page after the wheel`).not.toBeNull();
+  const point = at ?? { x: 0, y: 0 };
+  expect(
+    await wordAtCaret(page, point),
+    `the point (${point.x}, ${point.y}) is not on the word "${word}"`
+  ).toBe(word);
+  return point;
+}
+
+/** Brings `link` to the middle of the screen by a turn of the wheel, and answers its middle,
+ *  where a press lands on it. */
+async function pointOnLink(page: Page, link: Locator): Promise<{ x: number; y: number }> {
+  const linkMiddleNow = () =>
+    link.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return { x: box.left + box.width / 2, y: (box.top + box.bottom) / 2 };
+    });
+  await wheelToMiddle(page, (await linkMiddleNow()).y);
+  const point = await linkMiddleNow();
+  expect(
+    await link.evaluate(
+      (element, { x, y }) => element.contains(document.elementFromPoint(x, y)),
+      point
+    ),
+    `the point (${point.x}, ${point.y}) is not on the link`
+  ).toBe(true);
+  return point;
+}
+
+/** Turns the wheel, the reader's own act, to bring what stands `y` px down the screen to its
+ *  middle, and waits for the page to stop. */
+async function wheelToMiddle(page: Page, y: number): Promise<void> {
+  const size = page.viewportSize() ?? DESKTOP;
+  await page.mouse.move(size.width / 2, size.height / 2);
+  await page.mouse.wheel(0, y - size.height / 2);
+  await scrollAtRest(page);
+}
+
+// c-press-caret (R18, decision 420 (1)): a press on the words of an outline row that takes a caret
+// opens its editor with the caret where the press landed, as Enter opens it at the block's start,
+// and a letter typed then lands there; a press on a row that takes no caret - a comment another
+// person wrote - moves the focus to it and opens no editor; and a press on a link in a row's words
+// follows the link. Read on Conversation's outline at 1440 px and at 390 px, where the phone's
+// press is a tap. Before R18 only Enter opened the editor, while the pointer's text cursor
+// (decision 323) said the words took typing.
+// SLOW(>=2s): the whole issue seeded with a statement inserted in its spec and a second reader's
+// comment, and the conversation loaded at each width for a press, a letter typed and taken out
+// again, a press on the comment and a link followed.
+test("a press on a row puts the caret where it lands @phone", async ({ browser }) => {
+  test.setTimeout(180_000);
+  const seed = async () => {
+    const seeded = await seedWholeIssue();
+    const theirs = await createComment(seeded.key, { body: THEIR_WORDS }, { login: "bob" });
+    await editArtifact(seeded.specArtifactId, {
+      ops: [
+        {
+          after: `block:${requirementBlockId(3)}`,
+          markdown: `:::requirement{#${PRESSED_BLOCK}}\n${pressedWords(seeded.key, seeded.documents.cited)}\n:::`,
+          op: "insert",
+        },
+      ],
+    });
+    return { ...seeded, theirs: theirs.id };
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const statement = nodeRow(page, blockNodeId(specSlug, PRESSED_BLOCK)).first();
+    const comment = nodeRow(page, seeded.theirs).first();
+    // The phone's project presses by touch; the desktop's reads both widths with the mouse.
+    const touch = test.info().project.name === "iphone";
+    const press = (at: { x: number; y: number }) =>
+      touch ? page.touchscreen.tap(at.x, at.y) : page.mouse.click(at.x, at.y);
+    for (const width of touch ? [IPHONE_13.width] : [DESKTOP.width, IPHONE_13.width]) {
+      await test.step(`${width} px`, async () => {
+        await page.setViewportSize(viewportAt(width));
+        const traffic = watchApiRequests(page);
+        await gotoIssue(page, `/issues/${seeded.key}`);
+        await expectOpeningLanded(page);
+        await expectLoadSettled(traffic);
+        await expect(statement, "the statement's row takes no typing").toHaveAttribute(
+          "data-editable",
+          ""
+        );
+
+        // A press in the middle of a word opens the editor with the caret there, the row where
+        // the reader pressed it and the word under the pointer, and a letter typed lands there.
+        // The row's place on the screen is what is read, not the page's scroll: rows above it
+        // change as the press moves the focus, and Chromium's scroll anchoring moves the scroll to
+        // keep the screen still. Measured at 1440 px: the scroll 50 px up, the row where it stood.
+        const at = await pointInWord(page, statement, PRESSED_WORD, PRESSED_INTO);
+        const pressedRowTop = () =>
+          statement.evaluate((row) => Math.round(row.getBoundingClientRect().top));
+        const topAt = await pressedRowTop();
+        await press(at);
+        await expect
+          .poll(() => caretInRowBlock(page, PRESSED_BLOCK), {
+            message: "a press on the text opened no editor",
+          })
+          .toBe(true);
+        expect(
+          await wordAtCaret(page, "selection"),
+          `a press on "${PRESSED_WORD}" put the caret in another word`
+        ).toBe(PRESSED_WORD);
+        await scrollAtRest(page);
+        const moved = (await pressedRowTop()) - topAt;
+        expect(
+          Math.abs(moved),
+          `the press moved the row ${moved} px on the screen`
+        ).toBeLessThanOrEqual(1);
+        const caretY = await page.evaluate(() => {
+          const caret = window.getSelection()?.getRangeAt(0).getBoundingClientRect();
+          return caret === undefined ? null : (caret.top + caret.bottom) / 2;
+        });
+        expect(
+          Math.abs((caretY ?? Number.POSITIVE_INFINITY) - at.y),
+          `the caret's line stands at ${caretY} px, the press at ${at.y} px`
+        ).toBeLessThanOrEqual(12);
+        const block = statement.locator(
+          `[contenteditable="true"] [data-block-id="${PRESSED_BLOCK}"]`
+        );
+        await page.keyboard.type("Q");
+        await expect(
+          block,
+          "the letter typed after the press did not land at the press"
+        ).toContainText(
+          `${PRESSED_WORD.slice(0, PRESSED_INTO)}Q${PRESSED_WORD.slice(PRESSED_INTO)} words`
+        );
+        await page.keyboard.press("Backspace");
+        await expect(block).toContainText(`${PRESSED_WORD} words`);
+        await page.keyboard.press("Escape");
+        await expect
+          .poll(() => caretInNode(page), { message: "Escape left the caret in" })
+          .toBe(false);
+
+        // A press on a comment another person wrote moves the focus to its row alone.
+        await expect(comment, "another person's comment takes typing").not.toHaveAttribute(
+          "data-editable"
+        );
+        await press(await pointInWord(page, comment, THEIR_WORD, 2));
+        await expect
+          .poll(() => focusedNodeId(page), { message: "a press on the comment left the focus" })
+          .toBe(seeded.theirs);
+        await scrollAtRest(page);
+        expect(await caretInNode(page), "a press on the comment opened an editor").toBe(false);
+        await expect(
+          comment.locator("[data-row-report]"),
+          "the comment's row answered the press"
+        ).toHaveCount(0);
+
+        // A press on a link in the statement's words follows it, and opens no editor.
+        const link = statement.locator("[data-node-words] a[href]").first();
+        await expect(link, "the statement's words draw no link").toBeVisible();
+        const href = await link.getAttribute("href");
+        await press(await pointOnLink(page, link));
+        await expect
+          .poll(() => new URL(page.url()).pathname, {
+            message: "a press on the link did not follow it",
+          })
+          .toBe(new URL(href ?? "", page.url()).pathname);
+        expect(await caretInNode(page), "a press on the link opened an editor").toBe(false);
       });
     }
   });

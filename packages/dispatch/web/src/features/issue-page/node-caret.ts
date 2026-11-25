@@ -152,7 +152,15 @@ export type Point = readonly [node: Node, offset: number];
 
 /** A press on the row's words: its viewport coordinates, its count of the editor's characters
  *  before it, and the word pressed as drawn, the text to each neighbour's end and how far in. */
-export type CaretAt = Readonly<{ x: number; y: number; offset: number; word?: PressedWord }>;
+export type CaretAt = Readonly<{
+  x: number;
+  y: number;
+  offset: number;
+  word?: PressedWord;
+  /** The press landed on an atom - an image, inline HTML - which the count holds no character
+   *  for: the caret goes just past it (`pastAtom`), not at the end of the text before it. */
+  afterAtom?: true;
+}>;
 type PressedWord = readonly [before: string, word: string, after: string, into: number];
 
 /**
@@ -823,6 +831,9 @@ function firstPlace(block: HTMLElement): Point {
  *  the text there is not the word pressed between its neighbours, as far into the nearest place
  *  that is, if one is. A press with no word reads an empty one, found at the count itself. */
 function placeAt(block: HTMLElement, at: CaretAt): Point {
+  // A press on an atom puts the caret just past the atom the count stands at.
+  const { afterAtom, ...counted } = at;
+  if (afterAtom === true) return pastAtom(block, placeAt(block, counted));
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
   const texts: Text[] = [];
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
@@ -840,6 +851,43 @@ function placeAt(block: HTMLElement, at: CaretAt): Point {
     remaining -= node.data.length;
   }
   return lastPlace(block);
+}
+
+/**
+ * The place just past the atom that stands at `point` in `block` with nothing a caret can stand in
+ * between - an element the caret cannot enter, an image or inline HTML the editor draws
+ * `contenteditable="false"` - as a press on that atom asks (`CaretAt`'s `afterAtom`): the start of
+ * the text right after the atom where that text takes a caret, else the place right after the
+ * atom itself. The count holds no character for an atom, so it stands at the end of the text
+ * before the atom, where a letter typed goes in before it. `point` where no atom stands there.
+ */
+function pastAtom(block: HTMLElement, point: Point): Point {
+  const [node, offset] = point;
+  if (node instanceof Text && offset < node.data.length) return point;
+  const from = document.createRange();
+  from.setStart(node, offset);
+  const atom = [...block.querySelectorAll('[contenteditable="false"]')].find(
+    (one) => from.comparePoint(one, 0) >= 0
+  );
+  const parent = atom?.parentNode;
+  if (atom === undefined || parent === null || parent === undefined) return point;
+  const texts: Text[] = [];
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+    if (text instanceof Text && text.parentElement?.isContentEditable === true) texts.push(text);
+  }
+  const between = texts.some(
+    (text) =>
+      text !== node &&
+      text.data.length > 0 &&
+      from.comparePoint(text, 0) >= 0 &&
+      (atom.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_PRECEDING) !== 0
+  );
+  if (between) return point;
+  const next = atom.nextSibling;
+  return next instanceof Text && next.parentElement?.isContentEditable === true
+    ? [next, 0]
+    : [parent, [...parent.childNodes].indexOf(atom) + 1];
 }
 
 /** The last place of `block` a caret can stand at: the end of its last text a caret can enter,

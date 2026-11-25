@@ -31,6 +31,7 @@ import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, nodeStateWord } from "./page-words";
 import { type Press, trackPress, usePressFocus } from "./press-focus";
+import { pressedAtom, pressInWords, statementWordsAt } from "./press-point";
 import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
 import { focusIsLoose, nodeRowSelectorOf, rowSelectorOf } from "./tree-focus";
@@ -413,12 +414,17 @@ export function IssueTree({
   const [unplaced, setUnplaced] = useState<string | undefined>(undefined);
   const openingRow = useRef<string | undefined>(undefined);
   const zoomLanding = useRef(false);
+  // The row whose words a press is opening the editor of (R18, the tree's `onClick`), from its
+  // click until the editor is asked for: the focus the press gives it places nothing of the row's
+  // own (`unplaced`), so the page stays where the reader pressed it.
+  const pressOpens = useRef<string | undefined>(undefined);
 
   const takeFocus = useCallback(
     (row: string, node: TreeNode) => {
       setFocused(row);
       setStop(row);
       setUnplaced(row === openingRow.current || zoomLanding.current ? row : undefined);
+      if (row === pressOpens.current) setUnplaced(row);
       // A move to a row is the reader going on from what a key reported.
       setReport(undefined);
       setFocusedNode(focusedNodeOf(node));
@@ -437,6 +443,9 @@ export function IssueTree({
     ({ row }) =>
       body.current?.querySelector(rowSelectorOf(row))?.contains(document.activeElement) === true
   );
+  // The words a press in the tree went down on, with the primary button and no key held, for its
+  // click to open their row's editor (R18, the tree's `onClick`).
+  const pressedWords = useRef<HTMLElement | null>(null);
   // The focus leaving the tree lets go of the row it left: its body, its focused look and its
   // own placing on screen, the opening's row and what a key reported. By Tab or a script it goes
   // at once, and for a press on something else of the page once that press has ended and its
@@ -1237,12 +1246,70 @@ export function IssueTree({
           <span {...pageChrome}>/</span>
         </p>
       )}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: the press's key is Enter, which the tree's
+          keymap answers on the focused row (`useTreeKeymap.ts`), opening its editor too. */}
       <div
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
         onBlur={releaseFocus}
+        // R18 (decision 420 (1)): a press on the words of a row that takes a caret (`nodeEditable`,
+        // which the row marks `data-editable`) opens its editor with the caret where the press
+        // landed - the point the Spec view's statements pass (`press-point.ts`, decisions 446 and
+        // 455), just past an atom pressed - as Enter opens it at the block's start. It is a click
+        // on the words its press went down on (`onMouseDownCapture`), with no text a drag selected,
+        // on a row other than the one being edited, whose press is its editor's own. A link, a chip
+        // or another control in the words answers its press itself (`statementWordsAt`), and a row
+        // that takes no caret takes the focus alone. The editor is asked for a task on, once the
+        // press's focus has settled and I's press rule has ended the editing another row held
+        // (`useNodeEditing.ts`), and only while the row still holds the focus; the row places
+        // nothing of its own meanwhile (`pressOpens`), and the editor holds the pressed word under
+        // the pointer without moving the page (`holdEditorAtBlock`).
+        onClick={(event) => {
+          const words = pressedWords.current;
+          pressedWords.current = null;
+          if (
+            words === null ||
+            event.detail === 0 ||
+            words !== statementWordsAt(event.target, ROW_WORDS) ||
+            window.getSelection()?.isCollapsed === false
+          ) {
+            return;
+          }
+          const row = words.closest<HTMLElement>("[data-node-row]");
+          const rowKey = row?.dataset.rowKey;
+          const drawn = rows.find((one) => one.kind === "node" && rowKeyOf(one) === rowKey);
+          if (
+            row === null ||
+            rowKey === undefined ||
+            rowKey === editingRow ||
+            !row.hasAttribute("data-editable") ||
+            document.activeElement !== row ||
+            drawn?.kind !== "node"
+          ) {
+            return;
+          }
+          const point = pressInWords(words, event.clientX, event.clientY);
+          const at = pressedAtom(event.target, words)
+            ? { ...point, afterAtom: true as const }
+            : point;
+          pressOpens.current = rowKey;
+          window.setTimeout(() => {
+            pressOpens.current = undefined;
+            if (document.activeElement !== row || !row.contains(words)) return;
+            edit(rowKey, drawn.node, at);
+          }, 0);
+        }}
         // A press in the tree, whose focus the row takes once the press is over (`press`).
         onMouseDown={press.onMouseDown}
+        onMouseDownCapture={(event) => {
+          const plain =
+            event.button === 0 &&
+            !event.altKey &&
+            !event.ctrlKey &&
+            !event.metaKey &&
+            !event.shiftKey;
+          pressedWords.current = plain ? statementWordsAt(event.target, ROW_WORDS) : null;
+        }}
         ref={body}
         role="tree"
       >
@@ -1296,6 +1363,10 @@ export const LANDING_WAIT_MS = 10_000;
 
 /** No branch folded in the cycle's last state: the state it starts in each time. */
 const NO_FOLDS: ReadonlySet<string> = new Set();
+
+/** The element holding a row's words (`NodeRow.tsx`), which a press on them is read against
+ *  (R18, `statementWordsAt`); references in it are counted as written (`data-row-written`). */
+const ROW_WORDS = "[data-node-words]";
 
 /** `ids` without the ids of `drop`. */
 function withoutIds(ids: ReadonlySet<string>, drop: readonly string[]): ReadonlySet<string> {
