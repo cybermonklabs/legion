@@ -20,6 +20,7 @@ import (
 // so. Every move here is a settlement's (bySettlement); a route's version of the named text moves
 // the request to its agent (api's TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson).
 func TestAnApprovalRequestKeepsItsTurnOverAVersionOfTheTextThePersonWasAskedAbout(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	artifactID := createDocument(t, database, "# Spec\n\nShip it.\n")

@@ -4,7 +4,14 @@ import { type BrowserContext, expect, type Locator, type Page } from "@playwrigh
 import type { BroadcastCreated, CreateBroadcastInput, TmuxPlace } from "../web/src/api/types";
 import { CONTROL } from "../web/src/components/control-names";
 import type { AgentGroup } from "../web/src/features/agents/agent-groups";
-import { createAsk, createComment, createIssue, createProject } from "./api";
+import {
+  createAgentMessage,
+  createAsk,
+  createComment,
+  createIssue,
+  createProject,
+  replyToMessageDelivery,
+} from "./api";
 import { control, controlRow, openFilterPanel } from "./filters";
 import { harnessPorts } from "./harness-ports";
 import { type KeyedWrite, keyedWrite, watchWrites } from "./keyed-writes";
@@ -57,6 +64,35 @@ export async function resetFakeEnvoy(port?: number): Promise<void> {
 
 export async function setLiveSessions(rows: FakeSession[], port?: number): Promise<void> {
   await fixtureRequest("/__fixture/sessions", "PUT", rows, port);
+}
+
+/** A live session for the Agents page to list, seen 5 s ago. Its id is a UUID, which Dispatch's
+ *  agent routes require. `last_seen` is taken when the row seeds, never at a module's scope,
+ *  which a worker evaluates once and every later spec of that worker ages. */
+export function listedSession(sessionID: string, title: string): FakeSession {
+  return {
+    capabilities: ["aside", "btw"],
+    dir: `/workspaces/${title.toLowerCase()}`,
+    last_seen: Date.now() - 5_000,
+    machine_id: `${title.toLowerCase()}-host`,
+    roles: [title.toLowerCase()],
+    session_id: sessionID,
+    title,
+  };
+}
+
+/** One unread reply of the session `sessionID` to the reader, which is what keeps a row for a
+ *  session that has since left the registry. */
+export async function seedUnreadReply(sessionID: string): Promise<void> {
+  const asked = await createAgentMessage(sessionID, {
+    body: "How far along?",
+    delivery: "aside",
+  });
+  await replyToMessageDelivery(
+    asked.id,
+    { attempt: 1, body: "Done and gone." },
+    { id: sessionID, kind: "session" }
+  );
 }
 
 /** How the fake listener answers a send to a seeded session until a reseed: `200` takes it. `404`

@@ -173,8 +173,14 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     // that line's last pixel is now. Measured against the pager's own place — the box's own
     // bottom edge where the table has no pager — rather than the page's height, which on a page
     // shorter than the window is the window, leaving the box only able to shrink; so the box
-    // grows as well as shrinks, whatever stands above it.
-    const foot = pagerRef.current?.getBoundingClientRect().bottom ?? bounds.bottom;
+    // grows as well as shrinks, whatever stands above it. The place is the line's in the
+    // document, not on the screen: read on the screen, a measure made while the document is
+    // scrolled past the table - a window resize, the page growing - took the scroll for room, and
+    // the browser's scroll anchoring then kept the pager where it was, so each measure grew the box
+    // by the last one's growth, without end (the Priorities page's fault lists at 1600x1000,
+    // scrolled to its end before the resize).
+    const foot =
+      (pagerRef.current?.getBoundingClientRect().bottom ?? bounds.bottom) + window.scrollY;
     const padding = (element: Element | null) =>
       element === null ? 0 : Number.parseFloat(getComputedStyle(element).paddingBottom) || 0;
     const slack =

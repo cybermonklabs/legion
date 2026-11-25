@@ -812,7 +812,11 @@ export function DeliveryPage(): ReactNode {
   // gate.
   const counted = !query.isPlaceholderData && search === state.filters.search.trim();
   return (
-    <section className="flex flex-col gap-3 xl:h-[calc(100dvh-3rem)]">
+    // From `xl` the page is the window's height and the chart takes what its header leaves, never
+    // less than its own `min-h-[28rem]`. Where the window is too short for both - 1280x800 and
+    // 1280x720 - the page scrolls inside this box, rather than spill past the shell, which made
+    // the document scroll on past it and took the shell's Navigation off the top of the screen.
+    <section className="flex flex-col gap-3 xl:h-[calc(100dvh-3rem)] xl:overflow-y-auto">
       {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the header (`armOnPress`), so the header needs no role of its own. */}
       <header
         className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1"

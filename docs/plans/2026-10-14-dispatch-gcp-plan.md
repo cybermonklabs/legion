@@ -67,13 +67,13 @@ clean, tests beside the code, CI's exact commands pass locally before every push
 
 ## Decisions carried from the design conversation
 
-Sami's decisions (2026-10-14), recorded in the spec: Dispatch runs on GKE Autopilot; its database is
+Decisions recorded in the spec (2026-10-14): Dispatch runs on GKE Autopilot; its database is
 Cloud SQL for PostgreSQL; it is reached only over the deploying organization's tailnet, which is
 closed (a member reaches their own devices and the Envoy services, nothing else); anyone with a
 verified account of the organization's Workspace domain signs in (the Google sign-in mode is the
 separate plan above); the organization shares no infrastructure with any other.
 
-The coordinator's decisions within Sami's, which this plan implements and never reopens:
+The coordinator's decisions within those, which this plan implements and never reopens:
 
 1. **Tailnet transport.** One unprivileged userspace Tailscale container in the Dispatch pod does
    both directions: Serve (`TS_SERVE_CONFIG`) answers `https://<hostname>.<tailnet>.ts.net` and
@@ -125,7 +125,7 @@ Postgres, `settings.go:43-44`); Dispatch's GitHub webhooks; a monitoring alert p
 As built, the component gained, after this plan: the GitHub App's client ID, numeric ID and key
 by reference (`appClientId`, `appId`, `appPrivateKeySecretName`, `appPrivateKeySecretKey`) and
 the secrets broker's URL and UI token by reference (`agentSecretsUrl`, `agentSecretsTokenSecret`),
-both optional, once the owner chose to run Dispatch with the broker and the App; and server-side
+both optional, once Dispatch was set to run with the broker and the App; and server-side
 deletion protection on the instance and the database, driven by `deletionProtection`.
 
 ## Decisions made while planning
