@@ -187,8 +187,15 @@ type sweepRig struct {
 // open as acme/widgets' open pull requests.
 func newSweepRig(t *testing.T, tokens appauth.Tokens, entries []config.VerdictRepository, seed func(*testing.T, *store.Pool), open ...sweptPull) *sweepRig {
 	t.Helper()
+	return newSweepRigOfApp(t, verdictAppID, tokens, entries, seed, open...)
+}
+
+// newSweepRigOfApp is newSweepRig whose writer's configuration names appID as the one App's id.
+func newSweepRigOfApp(t *testing.T, appID string, tokens appauth.Tokens, entries []config.VerdictRepository, seed func(*testing.T, *store.Pool),
+	open ...sweptPull) *sweepRig {
+	t.Helper()
 	var sweep *sweepGitHub
-	rig := newVerdictRig(t, tokens, entries, seed, func(github *verdictGitHub, verdicts http.HandlerFunc) http.HandlerFunc {
+	rig := newVerdictRigOfApp(t, appID, tokens, entries, seed, func(github *verdictGitHub, verdicts http.HandlerFunc) http.HandlerFunc {
 		sweep = &sweepGitHub{verdictGitHub: github, open: open, groups: map[string]string{}}
 		return sweep.serve(t, verdicts)
 	})

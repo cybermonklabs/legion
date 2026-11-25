@@ -73,8 +73,10 @@ type listedStatus struct {
 // sweep's ask to put failure over each run and status of the App there that does not show it; a
 // write a fact asks for (writeVerdictOver without overForeign) writes nothing there and makes no
 // GitHub call. In token mode the daemon mints no verdict token (appauth.ErrNoVerdictToken): it
-// writes nothing and logs that once. One goroutine makes every write (writeVerdicts), so no two
-// writes of one head read its runs together and each create one.
+// writes nothing and logs that once. So it does while it holds no App id: an id that is no number
+// tells no run as the App's, its own among them, and a write would make a new run at each write;
+// the one ERROR where the writer is built says why (newVerdictWriter). One goroutine makes every
+// write (writeVerdicts), so no two writes of one head read its runs together and each create one.
 func (w *workflowRuntime) writeDecided(ctx context.Context, target verdictTarget, decided verdictDecision, overForeign bool) error {
 	_, err := w.writeDecidedChanged(ctx, target, decided, overForeign)
 	return err
@@ -84,7 +86,7 @@ func (w *workflowRuntime) writeDecided(ctx context.Context, target verdictTarget
 // created or updated a check run or set a commit status: a pass that writes a success is followed
 // by one more merge-state read (writeVerdictOver), and a pass that finds it written is not.
 func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdictTarget, decided verdictDecision, overForeign bool) (bool, error) {
-	if decided.conclusion == verdict.None && !overForeign {
+	if decided.conclusion == verdict.None && !overForeign || w.verdicts.appID == 0 {
 		return false, nil
 	}
 	serving := w.repositories.serving(target.repository)
@@ -113,7 +115,7 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 	}
 	shown, changed := false, false
 	for _, run := range runs {
-		if w.verdicts.appID == 0 || run.App.ID != w.verdicts.appID {
+		if run.App.ID != w.verdicts.appID {
 			continue
 		}
 		shown = true

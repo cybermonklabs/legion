@@ -455,6 +455,14 @@ type verdictRig struct {
 func newVerdictRig(t *testing.T, tokens appauth.Tokens, entries []config.VerdictRepository, seed func(*testing.T, *store.Pool),
 	wrap ...func(*verdictGitHub, http.HandlerFunc) http.HandlerFunc) *verdictRig {
 	t.Helper()
+	return newVerdictRigOfApp(t, verdictAppID, tokens, entries, seed, wrap...)
+}
+
+// newVerdictRigOfApp is newVerdictRig whose writer's configuration names appID as the one App's id
+// (github_apps.implement.app_id).
+func newVerdictRigOfApp(t *testing.T, appID string, tokens appauth.Tokens, entries []config.VerdictRepository, seed func(*testing.T, *store.Pool),
+	wrap ...func(*verdictGitHub, http.HandlerFunc) http.HandlerFunc) *verdictRig {
+	t.Helper()
 	rig := &verdictRig{pool: isolatedOutboxPool(t), github: newVerdictGitHub(), logs: &syncBuffer{}}
 	seed(t, rig.pool)
 	handle := rig.github.serve(t)
@@ -467,7 +475,7 @@ func newVerdictRig(t *testing.T, tokens appauth.Tokens, entries []config.Verdict
 		pool: rig.pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, repositories: servedAcme(),
 		tokens: botLeases{tokens}, dispatchProject: "CAPTURE", bootID: "test-boot", log: log, githubAPI: api, appLogin: verdictAppLogin,
 		mergeStates: newWakeSet[string](), mergeStateRunning: map[string]*mergeStateRun{}, mergeStateRetry: readRigWait,
-		verdicts: newVerdictWriter(entries, verdictAppID, log),
+		verdicts: newVerdictWriter(entries, appID, log),
 	}
 	w.engine = workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, AppLogin: verdictAppLogin,
 		ReadMergeState: w.queueMergeState, WriteVerdict: func(issue, repo string, number int, head string) {
@@ -1431,6 +1439,33 @@ func TestLegionVerdictAnAppIDThatIsNoNumberIsLoggedWhereTheWriterIsBuilt(t *test
 					tc.appID, writer.appID, named, tc.id, tc.errors)
 			}
 		})
+	}
+}
+
+// R19: an App id that is no number tells no run as the App's, the daemon's own among them, so a
+// write would make a new run beside its own at each write. While the writer holds no App id it
+// writes nothing, as in token mode: neither a fact's write nor the writers' sweep's, whose pass reads
+// nothing of GitHub. The one ERROR where the writer is built says why.
+func TestLegionVerdictAnAppIDThatIsNoNumberWritesNothing(t *testing.T) {
+	rig := newSweepRigOfApp(t, "legion-app", roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass, openCapture)
+	rig.apply(t, reviewerVerdict("changes", "code", 1))
+	rig.written(t)
+	rig.checkState(t, "code", "k1", verdict.StateNo)
+	rig.written(t)
+	_, before := rig.sweep.counts()
+	rig.swept(t)
+	rig.swept(t)
+	if writes, _ := rig.github.recorded(); len(writes) != 0 {
+		t.Fatalf("writes = %+v, want none while the App id is no number", writes)
+	}
+	if _, after := rig.sweep.counts(); after != before {
+		t.Fatalf("the two sweeps made %d requests, want none: they could lead to no write", after-before)
+	}
+	named := slices.DeleteFunc(loggedLines(t, rig.logs.String(), "github_apps.implement.app_id"), func(line map[string]any) bool {
+		return line["level"] != "ERROR"
+	})
+	if len(named) != 1 {
+		t.Fatalf("the ERROR lines naming github_apps.implement.app_id are %v, want the one where the writer is built", named)
 	}
 }
 

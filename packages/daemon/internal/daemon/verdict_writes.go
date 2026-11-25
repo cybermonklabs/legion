@@ -20,7 +20,7 @@ import (
 // read goes on after waiting its bound on its issue's write, and each write that fails, naming
 // what repairs it.
 const (
-	verdictAppIDNotANumber = "verdict: github_apps.implement.app_id is no number, so the writer of legion-verdict tells no check run as the App's, its own among them; set it to the App's id"
+	verdictAppIDNotANumber = "verdict: github_apps.implement.app_id is no number, so the writer of legion-verdict tells no check run as the App's, its own among them, and writes nothing; set it to the App's id"
 	otherProjectsHead      = "verdict: the head is another project's issue branch, of whose steps this daemon holds none, so no verdict stands there"
 	verdictTokenMode       = "verdict: legion-verdict is not written: the App is in token mode, which mints no verdict token"
 	verdictReadWentOn      = "verdict: a merge-state read went on before its issue's write of legion-verdict ended"
@@ -40,8 +40,9 @@ const (
 type verdictWriter struct {
 	entries []config.VerdictRepository
 	// appID is the one App's id (github_apps.implement.app_id), 0 where the configuration names
-	// none a number reads from, which tells no run as the App's. A rename of the App changes its
-	// slug and its bot's login, never its id (spec R16, R19).
+	// none a number reads from, which tells no run as the App's, so the writer writes nothing
+	// (writeDecided). A rename of the App changes its slug and its bot's login, never its id (spec
+	// R16, R19).
 	appID int64
 	// bound is how long a merge-state read waits on its issue's write (await).
 	bound time.Duration
