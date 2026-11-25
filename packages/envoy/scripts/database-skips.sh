@@ -6,7 +6,7 @@
 # variable unset, or with a t.Skip left in one of its tests, reads as green. This script runs
 # `go test -json` and counts the skips in that report, and fails on any.
 #
-#   database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--module-except PATTERN] [PACKAGE...]
+#   database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--count-table] [PACKAGE...]
 #   database-skips.sh --report FILE [PACKAGE...]
 #
 # PACKAGE is a pattern under packages/envoy: `./dir/`, that package alone, or `./dir/...`, it
@@ -25,12 +25,14 @@
 # `--skip PATTERN` is go test's -skip, for a test another step of the same job runs in the same
 # build and environment (envoy-go's backend count): go test reports nothing for a test -skip
 # leaves out, so it is neither run twice nor counted as a skip here.
-# `--module-except PATTERN` adds to that one go test every other package of the module that
-# `go list ./... | grep -Ev PATTERN` keeps, in go list's order: envoy-go's unit step runs the
-# module so, and the broker's packages share that run's -p slots with the rest, where a second
-# go test after the first left them idle behind its longest package. Their skips are not counted,
-# since a package outside the patterns skips for reasons this table does not hold, and their
-# packages are not held to showing a run; a failure of theirs fails go test and so this script.
+# `--count-table` runs every PACKAGE and counts the skips of DEFAULT_PACKAGES' packages (less
+# DEFAULT_EXCEPT) among them alone: envoy-go's unit legs run their packages so
+# (.github/go-legs.yaml), each leg a share of the module, and the broker's packages share a leg's
+# -p slots with the rest of it. The other packages' skips are not counted, since a package outside
+# the table skips for reasons this table does not hold, and they are not held to showing a run; a
+# failure of theirs fails go test and so this script. A run whose PACKAGEs hold no package of the
+# table counts nothing, and says so: it prints `database_skips=NONE` and passes or fails on go
+# test's result alone. It needs a PACKAGE.
 # `--report FILE` reads FILE instead and runs nothing, which the controls use; the five options
 # that shape a run are refused beside it.
 #
@@ -157,7 +159,7 @@ unknown() {
 }
 
 usage() {
-  echo "database-skips.sh: $1 (usage: database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--module-except PATTERN] [PACKAGE...], or --report FILE [PACKAGE...])" >&2
+  echo "database-skips.sh: $1 (usage: database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--count-table] [PACKAGE...], or --report FILE [PACKAGE...])" >&2
   exit 1
 }
 
@@ -171,7 +173,7 @@ vars=()
 race=()
 skip=()
 timeout=""
-module_except=""
+count_table=""
 packages=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -194,10 +196,9 @@ while [ $# -gt 0 ]; do
       skip=(-skip "$2")
       shift 2
       ;;
-    --module-except)
-      [ -n "${2:-}" ] || usage "--module-except needs a grep -Ev pattern over the module's import paths"
-      module_except="$2"
-      shift 2
+    --count-table)
+      count_table=yes
+      shift
       ;;
     --report)
       [ -n "${2:-}" ] || usage "--report needs the go test -json report to read"
@@ -211,14 +212,15 @@ while [ $# -gt 0 ]; do
     *) usage "unknown argument $1: a package is a pattern under packages/envoy that starts with ./" ;;
   esac
 done
-if [ -n "$report" ] && { [ ${#vars[@]} -gt 0 ] || [ ${#race[@]} -gt 0 ] || [ -n "$timeout" ] || [ ${#skip[@]} -gt 0 ] || [ -n "$module_except" ]; }; then
-  usage "--report reads a run made elsewhere, so --var, --race, --timeout, --skip and --module-except, which shape a run of its own, are refused beside it"
+if [ -n "$report" ] && { [ ${#vars[@]} -gt 0 ] || [ ${#race[@]} -gt 0 ] || [ -n "$timeout" ] || [ ${#skip[@]} -gt 0 ] || [ -n "$count_table" ]; }; then
+  usage "--report reads a run made elsewhere, so --var, --race, --timeout, --skip and --count-table, which shape a run of its own, are refused beside it"
 fi
-# runs is what the go list and go test below are given: the patterns as written, or for the
-# default table the import paths go list prints for it under the run's own flags, less
-# DEFAULT_EXCEPT, which they take as they take a pattern. The messages name the patterns.
-if [ ${#packages[@]} -eq 0 ]; then
-  packages=("${DEFAULT_PACKAGES[@]}")
+if [ -n "$count_table" ] && [ ${#packages[@]} -eq 0 ]; then
+  usage "--count-table counts the table's packages among the packages it is given, so it needs a PACKAGE"
+fi
+# The default table: the import paths go list prints for DEFAULT_PACKAGES under the run's own
+# flags, less DEFAULT_EXCEPT, which the go list and go test below take as they take a pattern.
+if [ ${#packages[@]} -eq 0 ] || [ -n "$count_table" ]; then
   go list "${race[@]}" "${DEFAULT_PACKAGES[@]}" >"$work/default" 2>"$work/list" || {
     echo "database_skips=UNKNOWN"
     echo "database-skips.sh: go list ${DEFAULT_PACKAGES[*]} failed, so no test ran and no skip was counted:" >&2
@@ -228,11 +230,30 @@ if [ ${#packages[@]} -eq 0 ]; then
   # grep -Ev '' would take every line out, since an empty pattern matches all of them, so an
   # empty DEFAULT_EXCEPT keeps the whole table.
   if [ -n "$DEFAULT_EXCEPT" ]; then
-    mapfile -t runs < <(grep -Ev "$DEFAULT_EXCEPT" "$work/default")
+    mapfile -t table < <(grep -Ev "$DEFAULT_EXCEPT" "$work/default")
   else
-    mapfile -t runs <"$work/default"
+    mapfile -t table <"$work/default"
   fi
-  [ ${#runs[@]} -gt 0 ] || unknown "DEFAULT_EXCEPT takes every package of ${DEFAULT_PACKAGES[*]} out, so no test ran"
+  [ ${#table[@]} -gt 0 ] || unknown "DEFAULT_EXCEPT takes every package of ${DEFAULT_PACKAGES[*]} out, so no test ran"
+fi
+# runs is what is counted, and what the go list below is given: the patterns as written, the
+# default table, or with --count-table the table's packages among the patterns' (given is then
+# every package the patterns name, which go test runs). The messages name the patterns.
+given=()
+none=""
+if [ ${#packages[@]} -eq 0 ]; then
+  packages=("${DEFAULT_PACKAGES[@]}")
+  runs=("${table[@]}")
+elif [ -n "$count_table" ]; then
+  go list "${race[@]}" "${packages[@]}" >"$work/given" 2>"$work/list" || {
+    echo "database_skips=UNKNOWN"
+    echo "database-skips.sh: go list ${packages[*]} failed, so no test ran and no skip was counted:" >&2
+    cat "$work/list" >&2
+    exit 1
+  }
+  mapfile -t given <"$work/given"
+  mapfile -t runs < <(printf '%s\n' "${table[@]}" | sort -u | awk 'NR == FNR { held[$0] = 1; next } held[$0]' - "$work/given")
+  [ ${#runs[@]} -gt 0 ] || none=yes
 else
   runs=("${packages[@]}")
 fi
@@ -247,34 +268,26 @@ fi
 # The packages the patterns name, as go lists them under the run's own flags (GOFLAGS, -race):
 # each by its canonical import path, which is how the report names it whatever spelling the
 # pattern used, with how many test files it has.
-go list "${race[@]}" -f '{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}' "${runs[@]}" >"$work/listed" 2>"$work/list" || {
-  echo "database_skips=UNKNOWN"
-  echo "database-skips.sh: go list ${packages[*]} failed, so no test ran and no skip was counted:" >&2
-  cat "$work/list" >&2
-  exit 1
-}
+if [ -n "$none" ]; then
+  : >"$work/listed"
+else
+  go list "${race[@]}" -f '{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}' "${runs[@]}" >"$work/listed" 2>"$work/list" || {
+    echo "database_skips=UNKNOWN"
+    echo "database-skips.sh: go list ${packages[*]} failed, so no test ran and no skip was counted:" >&2
+    cat "$work/list" >&2
+    exit 1
+  }
+fi
 listed="$(jq -R -s -c '[split("\n")[] | select(length > 0) | split(" ") | {(.[0]): true}] | add // {}' "$work/listed")"
 # shellcheck disable=SC2016 # $pkg and $listed are jq's variables, not the shell's
 under='def under($pkg): $listed[$pkg] == true;'
 
 if [ -z "$report" ]; then
   report="$work/report.json"
-  # tested is what go test runs: the listed packages, or with --module-except the module's
-  # packages the pattern keeps, in go list's order, and then each listed package it took out.
+  # tested is what go test runs: the counted packages, or with --count-table every package the
+  # patterns name, in go list's order.
   tested=("${runs[@]}")
-  if [ -n "$module_except" ]; then
-    go list "${race[@]}" ./... >"$work/module" 2>"$work/list" || {
-      echo "database_skips=UNKNOWN"
-      echo "database-skips.sh: go list ./... failed, so no test ran and no skip was counted:" >&2
-      cat "$work/list" >&2
-      exit 1
-    }
-    # grep exits 1 when the pattern keeps nothing, which leaves the listed packages alone, and 2
-    # when it cannot read the pattern.
-    grep -Ev "$module_except" "$work/module" >"$work/kept" || [ $? -eq 1 ] ||
-      unknown "--module-except's pattern is not one grep -E reads, so no test ran"
-    mapfile -t tested < <(cut -d' ' -f1 "$work/listed" | cat "$work/kept" - | awk '!seen[$0]++')
-  fi
+  [ -z "$count_table" ] || tested=("${given[@]}")
   go_test_exit=0
   go test -json -count=1 "${race[@]}" "${skip[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${tested[@]}" >"$report" 2>"$work/stderr" || go_test_exit=$?
 fi
@@ -283,34 +296,41 @@ fi
 [ -s "$report" ] || unknown "the report $report is empty"
 jq -r --argjson listed "$listed" "$under"' select(.Action == "pass" or .Action == "fail" or .Action == "skip") | select(under(.Package // "")) | "\(.Action) \(.Package) \(.Test // "")"' "$report" >"$work/ended" 2>"$work/jq" ||
   unknown "the report $report is not a go test -json stream ($(head -c 200 "$work/jq"))"
-# A test that passed or failed is the evidence a package's tests ran: a skip is what this script
-# counts, so a package whose tests all skipped shows none ran, and so does a package whose TestMain
-# returned before it ran them, which passes with no test. Every listed package with a test file
-# must hold one; a package with none has nothing to run.
-awk 'NF == 3 && $1 != "skip" { print $2 }' "$work/ended" | sort -u >"$work/evidenced"
-[ -s "$work/evidenced" ] || unknown "the report $report holds no test of a package under ${packages[*]} that passed or failed"
-awk '$2 + $3 > 0 { print $1 }' "$work/listed" | sort -u | comm -23 - "$work/evidenced" >"$work/silent"
-[ ! -s "$work/silent" ] || unknown "the report $report holds no test that passed or failed in $(paste -sd ',' "$work/silent" | sed 's/,/, /g'), which has test files"
-
-awk 'NF == 3 && $1 == "skip" { print $2, $3 }' "$work/ended" | sort -u >"$work/skipped"
-awk 'NF == 3 { print $2, $3 }' "$work/ended" | sort -u >"$work/held"
-printf '%s\n' "$EXPECTED_SKIPS" | jq -R -r --argjson listed "$listed" "$under"' select(length > 0) | split(" ") | select(under(.[0])) | "\(.[0]) \(.[1])"' | sort -u >"$work/expected"
-comm -23 "$work/expected" "$work/held" >"$work/stale"
-[ ! -s "$work/stale" ] || unknown "EXPECTED_SKIPS names $(paste -sd ',' "$work/stale" | sed 's/,/, /g'), under ${packages[*]}, which the report $report does not hold"
-
-comm -23 "$work/skipped" "$work/expected" >"$work/counted"
-sed 's/^/SKIP /' "$work/counted"
-database_skips="$(wc -l <"$work/counted")"
-echo "database_skips=$database_skips"
-
 status=0
-[ "$database_skips" -eq 0 ] || status=1
+if [ -n "$none" ]; then
+  # No package of the table ran, so there is no skip of one to count, and a zero would read as a
+  # count that found none: the run says what it is instead.
+  echo "database-skips.sh: no package of the table (${DEFAULT_PACKAGES[*]}) is among the ${#given[@]} package(s) given, so this run counts no skip, and go test's result alone decides" >&2
+  echo "database_skips=NONE"
+else
+  # A test that passed or failed is the evidence a package's tests ran: a skip is what this script
+  # counts, so a package whose tests all skipped shows none ran, and so does a package whose
+  # TestMain returned before it ran them, which passes with no test. Every listed package with a
+  # test file must hold one; a package with none has nothing to run.
+  awk 'NF == 3 && $1 != "skip" { print $2 }' "$work/ended" | sort -u >"$work/evidenced"
+  [ -s "$work/evidenced" ] || unknown "the report $report holds no test of a package under ${packages[*]} that passed or failed"
+  awk '$2 + $3 > 0 { print $1 }' "$work/listed" | sort -u | comm -23 - "$work/evidenced" >"$work/silent"
+  [ ! -s "$work/silent" ] || unknown "the report $report holds no test that passed or failed in $(paste -sd ',' "$work/silent" | sed 's/,/, /g'), which has test files"
+
+  awk 'NF == 3 && $1 == "skip" { print $2, $3 }' "$work/ended" | sort -u >"$work/skipped"
+  awk 'NF == 3 { print $2, $3 }' "$work/ended" | sort -u >"$work/held"
+  printf '%s\n' "$EXPECTED_SKIPS" | jq -R -r --argjson listed "$listed" "$under"' select(length > 0) | split(" ") | select(under(.[0])) | "\(.[0]) \(.[1])"' | sort -u >"$work/expected"
+  comm -23 "$work/expected" "$work/held" >"$work/stale"
+  [ ! -s "$work/stale" ] || unknown "EXPECTED_SKIPS names $(paste -sd ',' "$work/stale" | sed 's/,/, /g'), under ${packages[*]}, which the report $report does not hold"
+
+  comm -23 "$work/skipped" "$work/expected" >"$work/counted"
+  sed 's/^/SKIP /' "$work/counted"
+  database_skips="$(wc -l <"$work/counted")"
+  echo "database_skips=$database_skips"
+  [ "$database_skips" -eq 0 ] || status=1
+fi
+
 # A failed test or package fails the count too, in a report read with --report as in a run.
 awk '$1 == "fail"' "$work/ended" >"$work/failed"
 [ ! -s "$work/failed" ] || status=1
 if [ -n "$go_test_exit" ]; then
   # Each package's time, which go test prints without -json and the CI steps' limits are set
-  # from, on stderr: the listed packages' and, with --module-except, the rest of the module's.
+  # from, on stderr: every package's go test ran, those the count left out with --count-table too.
   jq -r 'select(.Test == null and (.Action == "pass" or .Action == "fail")) | "\(.Action) \(.Package) \(.Elapsed // 0)s"' "$report" >&2 || true
   echo "go_test_exit=$go_test_exit"
   [ "$go_test_exit" -eq 0 ] || status=1

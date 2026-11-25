@@ -626,4 +626,87 @@ printf 'nothing of the kind\n' > "$work/empty.txt"
 (cd "$root" && python3 .github/scripts/go_legs_groups.py mod many 2 4 "$work/listing.txt" "a fixture run" "$work/empty.txt" >/dev/null 2>&1) || status=$?
 check "a run that times nothing is refused rather than balanced from nothing" "$(is "$status" 1)"
 
+echo "case: a package twice names, in a leg of each of two jobs"
+# envoy's NATS auth service runs plain in a unit leg, which counts its hold rows' skips, and under
+# the detector in a race leg: two places, legs of two jobs, which `twice` must name.
+twice_legs='mod:
+  job:
+    1:
+      - b
+      - a
+    2:
+      - b/c
+  race:
+    1:
+      - a
+  twice:
+    a: the plain leg counts its skips, the race leg runs it under the detector
+  elsewhere:
+    testonly: another-job'
+root=$(tree twice-ok "$twice_legs")
+check "the plain job's leg prints it" "$(is "$(legs "$root" job 1)" "./b/
+./a/
+exit=0")"
+check "and so does the race job's" "$(is "$(legs "$root" race 1 1)" "./a/
+exit=0")"
+check "and twice is no job" "$(contains "$(legs "$root" twice 1 1)" '^exit=2$')"
+
+echo "case: a package in legs of two jobs that twice does not name"
+root=$(tree twice-unnamed "$(printf '%s\n' "$twice_legs" | grep -v -e '^  twice:' -e '^    a: the plain')")
+check "fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming both places" \
+  "$(contains "$(err)" 'mod/a is in 2 places of .github/go-legs.yaml (job leg 1, race leg 1), so it would run in each')"
+check "and what to write" "$(contains "$(err)" 'name it under twice with why')"
+
+echo "case: a package twice names in two legs of one job"
+root=$(tree twice-one-job 'mod:
+  job:
+    1:
+      - b
+      - a
+    2:
+      - b/c
+      - a
+  twice:
+    a: two legs of one job are no second mode
+  elsewhere:
+    testonly: another-job')
+check "fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming the rule" \
+  "$(contains "$(err)" 'twice names mod/a, which is in 2 place.s. .job leg 1, job leg 2.: a package twice names runs in the legs of exactly two jobs')"
+
+echo "case: a package twice names in one place only, or in a leg and elsewhere"
+root=$(tree twice-once 'mod:
+  job:
+    1:
+      - b
+      - a
+    2:
+      - b/c
+  twice:
+    a: names a package that runs once
+  elsewhere:
+    testonly: another-job')
+check "one place fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming it" "$(contains "$(err)" 'twice names mod/a, which is in 1 place.s. .job leg 1.')"
+root=$(tree twice-elsewhere 'mod:
+  job:
+    1:
+      - b
+      - a
+      - testonly
+    2:
+      - b/c
+  twice:
+    testonly: a leg and elsewhere are no two jobs
+  elsewhere:
+    testonly: another-job')
+check "a leg and elsewhere fail" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming both" "$(contains "$(err)" 'twice names mod/testonly, which is in 2 place.s. .job leg 1, elsewhere .another-job..')"
+
+echo "case: twice names a package go list does not print"
+root=$(tree twice-gone "$(printf '%s\n' "$twice_legs" | sed 's/^    a: the plain/    gone: no such package\n    a: the plain/')")
+check "fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming it" "$(contains "$(err)" 'twice names mod/gone, which .go list ./.... does not print as a package')"
+
 summary "go_legs.py runs each package of its module in exactly one place, and each test of a package it splits in exactly one group"
