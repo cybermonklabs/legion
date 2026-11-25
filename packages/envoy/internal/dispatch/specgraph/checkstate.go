@@ -520,10 +520,7 @@ func (j *checkJudge) newestApproval(statement string) (string, time.Time) {
 	return newest, at
 }
 
-// countingRuns is the runs of c that count at the subject (step 4): for a check whose results count
-// at a commit (countsAtACommit), the runs of a commit where a run of c counts at the subject
-// (runCounts); and for a check of production or of the graph, of those, the runs that read the
-// subject's deploy or its transaction of the graph.
+// countingRuns is the runs of c that count at the subject (step 4).
 func (j *checkJudge) countingRuns(c Check, runs []Result) []Result {
 	if countsAtACommit(c) {
 		runs = resultsWhere(runs, func(r Result) bool { return j.runCounts(c, resultCommit(r)) })
@@ -536,13 +533,8 @@ func (j *checkJudge) countingRuns(c Check, runs []Result) []Result {
 	return resultsWhere(runs, func(r Result) bool { return subject != "" && readOf(c, r.Commit, r.Deploy, r.GraphTx) == subject })
 }
 
-// runCounts is whether a run of c, or a run of c's job, at commit counts at the subject (step 4).
-// For a check of the code, commit is the commit that the run read, and the commit that its job
-// tested, so the run counts there alone: only at the subject's own commit, also where no file that
-// c's tie covers changed between the two. For a program check of production or of the graph,
-// commit is the commit of its test, and the run read a deploy or a transaction of the graph, which
-// countingRuns matches with the subject's; the run counts only while its test, which is code, is
-// the test at the subject's commit (carries), so no run counts across a change of the test.
+// runCounts is whether a run of c, or a run of c's job, at commit counts at the subject by that
+// commit (step 4).
 func (j *checkJudge) runCounts(c Check, commit string) bool {
 	if c.Subject == SubjectCode {
 		return commit == j.in.Subject.Commit
