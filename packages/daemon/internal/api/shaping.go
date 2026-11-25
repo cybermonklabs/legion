@@ -611,10 +611,6 @@ var stateNarrowings = []stateNarrowing{
 	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
 	{contract: dispatchCredentialContract, state: withoutDispatchCredential, dropped: "dispatchCredential"},
-	{contract: deploymentRolesContract, state: withoutDeploymentRoleClaims, issue: withoutDeploymentRoles,
-		left: leftDeploymentRoles,
-		dropped: "the phase step (served as implementing), the issues' stepRole and startWaitsForPod, and the " +
-			"stranded claims, waiting wakes and pause stops of a deployment's roles"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1175,28 +1171,6 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // change's own number, and answers.go's SupportedContracts names the constant rather than its
 // number.
 const causeTimesContract = 256
-
-// deploymentRolesContract is the daemon contract that added the roles a deployment defines to the
-// state (version.go's 297): the phase step, each issue's `stepRole` and `startWaitsForPod`, and
-// the stranded claims, waiting wakes and pause stops of a role outside Legion's six. A plugin
-// below it reads an issue's `phase`, its `heldFrom` and a pending task's `phase` with an
-// enumeration that names no step, and the `role` of a stranded claim, of a waiting wake and of a
-// pause stop with an enumeration of the six, and refuses the whole body for another value. So a
-// caller below it is served the state without them (withoutDeploymentRoles,
-// withoutDeploymentRoleClaims), and the daemon logs each claim it left out (leftDeploymentRoles).
-//
-// It is one band, which follows strip, though it takes values as well as keys, where a value
-// strip follows restore (fieldArrivals.heldBack). The two numbers are one below this contract:
-// a caller that states its contract is served at that number on both sides, and a pod's reckoning
-// counts only claims below shapedAnswersContract (podContracts), so every caller whose strip is
-// below this contract has its restore below it too, and no reader that refuses step or a role of
-// the deployment is served one.
-//
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number, and it is the last number of answers.go's
-// SupportedContracts, which names the constant rather than its number for that reason.
-const deploymentRolesContract = 297
 
 // withoutDeploymentRoles is the issue as a caller below deploymentRolesContract reads it: an issue
 // at step is at work, so it is served as implementing — its Dispatch status is in_progress, as
