@@ -29,8 +29,8 @@ import (
 // closed (issue_close: retired, its session kept for a later todo). Its pod goes either way, and
 // the disk it ran on with it, so its Sandbox is deleted either way (record.IssueSuspend), while
 // its parent keeps running in a pod of its own. A child closed as done at its merge still owes its
-// production check, where the project opens one (Engine.checkRole): five of its claims are
-// closed, the checking role's is not, no IssueSuspend is written, and the check opens in that
+// production check, where the project opens one (Engine.checkRole): every claim of it but the
+// checking role's is closed, a role of the deployment's among them, no IssueSuspend is written, and the check opens in that
 // role's live session; the check's close writes the suspension (closeCheck). A project whose
 // `production_check` is off checks nothing in production, so its merged child close is like any
 // other done: every claim is closed and the Sandbox deleted with the pod and the disk it ran on.
@@ -352,8 +352,8 @@ func awaitsMerge(issue record.Issue) bool {
 
 // InWorkflow says whether an issue is in the workflow: its status is one the workflow runs in and
 // its phase short of done. One still admitted counts, since it will run — a root reopened inside
-// its linger (admit's readmit) stands in `admitted` with no role's phase until its architect
-// reaches planning, and is running again from the reopen. It is the production check's "runs
+// its linger (admit's readmit) stands in `admitted` with no role's phase until its gate opens its
+// task's first step, and is running again from the reopen. It is the production check's "runs
 // again" predicate (check.go) and the outbox's (checkLookHolds): a look of an issue that runs
 // again would resume the implementer and relaunch its Sandbox under the run, so none starts.
 //

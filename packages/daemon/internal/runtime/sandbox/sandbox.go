@@ -425,7 +425,7 @@ func configureProber(opts Options) (*Runtime, error) {
 	}
 	for role, files := range opts.RoleConfigFiles {
 		if role != claim.RoleController && !slices.Contains(issueRoles, role) {
-			return refuse("Oh My Pi overlays for %q, which is not a Legion role", role)
+			return refuse("Oh My Pi overlays for %q, which is no role of an issue pod or the controller", role)
 		}
 		for _, file := range files {
 			if !filepath.IsAbs(file) || strings.Contains(file, ":") {

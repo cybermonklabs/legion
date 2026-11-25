@@ -68,7 +68,7 @@ func driftOf(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) []string {
 }
 
 // operatorVolume is an operator's own volume (runtime.kubernetes.pod.volumes), and operatorMount a
-// mount of it: what an operator adds to every pod Legion runs, and two of the five keys a pod's
+// mount of it: what an operator adds to every pod Legion runs, and two of the keys a pod's
 // recorded shape holds.
 var (
 	operatorVolume = corev1.Volume{Name: "operator-extra", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -189,13 +189,15 @@ func sandboxBlock(kind SandboxType, canaries ...string) func(*Options) {
 // value as the operator wrote it: the image, the kind's own reservation, the operator's volumes and
 // mounts, the disk, and, for a microVM pod alone, where it runs — the microVM RuntimeClass and the
 // microvm block's ComputeClass, StorageClass, keep_volume where it is on, and metadata endpoint,
-// which a block naming none leaves out. The controller's microVM pod records no StorageClass and no
-// keep_volume: its disk stays on runtime.kubernetes.storage_class (diskSpec), and it keeps the
-// volume its Sandbox owns whatever keep_volume says (keptVolume), so neither key is in its shape. A
-// gVisor pod records no sandbox at all, beside a microvm block or without one, keep_volume on or
-// off, so its shape is the one every release before the sandbox setting recorded. It is pinned
-// whole because it is what every later daemon compares a running pod against: a change of
-// spelling here reads as drift on every pod of the fleet at once.
+// which a block naming none leaves out. The recorded shape of an issue pod of a deployment that
+// defines roles also holds those roles by name (podShapeRecord.Roles). The controller's microVM
+// pod records no StorageClass and no keep_volume: its disk stays on
+// runtime.kubernetes.storage_class (diskSpec), and it keeps the volume its Sandbox owns whatever
+// keep_volume says (keptVolume), so neither key is in its shape. A gVisor pod records no sandbox
+// at all, beside a microvm block or without one, keep_volume on or off, so its shape is the one
+// every release before the sandbox setting recorded. It is pinned whole because it is what every
+// later daemon compares a running pod against: a change of spelling here reads as drift on every
+// pod of the fleet at once.
 func TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom(t *testing.T) {
 	withoutMetadata := testMicroVM()
 	withoutMetadata.Metadata = nil
@@ -412,7 +414,8 @@ func TestPodDriftNamesEachConfigurationKeyThatMoved(t *testing.T) {
 }
 
 // A Sandbox whose stored template records no shape was written before this release, so there is
-// nothing to say what its pod was built from: it is compared by image alone, exactly as a pod is.
+// nothing to say what its pod was built from: it is compared by image alone, exactly as a pod is,
+// and by the roles its launcher names, Legion's six where the deployment defines none (rolesDrift).
 // A moved reservation, operator volume or mount, or disk size on it is no drift — a guess there
 // would replace pods no operator changed — and a moved image is.
 func TestPodDriftComparesASandboxWithoutAPodShapeByImageAlone(t *testing.T) {

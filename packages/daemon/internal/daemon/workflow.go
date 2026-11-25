@@ -301,7 +301,7 @@ type workflowRuntime struct {
 	handedOff *wakeSet[taskRead]
 	// mergeStates is each task pull request a fact owes a read of GitHub's merge state (queueMergeState, the
 	// engine's Config.ReadMergeState: a round waiting on GitHub's answer, and by the gate
-	// classify.MergeStateReadOwed a head move in implementing through merging), each the start read
+	// classify.MergeStateReadOwed a head move where a merge forward stands), each the start read
 	// found GitHub still computing (readIssuesAtStart), and each a second read of a conflicting head
 	// left reading no answer (queueMergeStateFollow), that readMergeStates has not started a ladder
 	// for yet; mergeStateQueued is what each of them asked for, the pull request its ladder hands
@@ -1859,6 +1859,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
+	w.outbox.deployment = supervision.cfg.Deployment()
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outbox.sweepEvery = w.outboxSweep
 	w.outboxWake.Store(w.outbox)

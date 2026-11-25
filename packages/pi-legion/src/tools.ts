@@ -328,8 +328,8 @@ function stateSummary(state: LegionState): string {
     }
     const claims: Array<readonly [string, SummaryClaim]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
-    // Each worker of the issue's map: Legion's six in their workflow order, then each role of the
-    // deployment (contract 221) in the map's order.
+    // Each worker of the issue's map: Legion's six in the order of the default steps, then each role of the
+    // deployment (contract 258) in the map's order.
     const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
     for (const role of [...LEGION_ROLES, ...deployed]) {
       const claim = issue.workers?.[role]?.claim;
@@ -408,7 +408,7 @@ function toolSchema(pi: PiApi): unknown {
     step: z
       .enum(GATED_STEPS)
       .describe(
-        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it"
+        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes a registration of that step's document without it"
       )
       .optional(),
     issues: z.array(z.string()).optional(),
@@ -644,7 +644,8 @@ export function createLegionTool(deps: {
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
         "or, on a root, a person sets the root todo; the task then starts at its first step (a task that never started waits for its " +
-        "gate and its line, as any task does before its first step); retry_or_escalate does not start it again (TASK_STOPPED). On an " +
+        "gate and its line, as any task does before its first step), unless a step of it names a role the deployment no longer " +
+        "defines, whose stop stands; retry_or_escalate does not start it again (TASK_STOPPED). On an " +
         "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
         "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
         "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop in a tree that lingers after it left the " +
@@ -685,7 +686,8 @@ export function createLegionTool(deps: {
         "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since the head that ancestor's last step passed cannot carry work released " +
-        "under it now: wait for the ancestor to close, then release it, where that ancestor is not the tree's root. " +
+        "under it now. Unless the ancestor's pull request has merged, ask the role that works its phase to take it back with " +
+        "request_backward_move. Or, where the ancestor is not the tree's root, call the same operation again once it has closed. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, how " +
         "many give-ups each intake consumer has open and the newest stream sequence among them, each " +
@@ -802,7 +804,7 @@ export function createLegionTool(deps: {
             parameters
           );
           // A call that returned without throwing: a completion, and a backward move, which hands
-          // the issue to another phase. Either way this session's phase is no longer open.
+          // the issue to an earlier step of its task. Either way this session's phase is no longer open.
           // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
           // then waits for its process to be replaced rather than working, so the turn it ends
           // after answering earns no reminder (the `update-answered` input of

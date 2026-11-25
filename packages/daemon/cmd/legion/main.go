@@ -1306,8 +1306,9 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 
 // entryBehind is one issue the plain state names for its phase entry: the issue, the role it is
 // named for, the entry the phases row of the role of its current phase stands on and the entry
-// that role was given (phase.RoleFor, the role the state's two numbers are of), and, for a root's
-// architect, the arms the state names for it.
+// that role was given (record.Issue.RoleAt: phase.RoleFor, or at step the role of the running
+// step, the role the state's two numbers are of), and, for a root's architect, the arms the state
+// names for it.
 type entryBehind struct {
 	issue string
 	role  legionclaim.Role

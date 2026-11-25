@@ -9,13 +9,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// The owner of an issue picks which of Legion's step roles its one task runs. Its prompt therefore
-// lists each role with the type of its step, the owner's own acceptance step, the two operations
-// that give and stop a plan, a stop's answers by their codes and that a stop before an issue's
-// first step settles the plan that step would walk, the notices that a stopped task, a parent
-// held before its retro and a plan of an earlier owner send it, the two stops a task-stopped
-// notice tells of (a failed step's, and another architect's stop_task, whose notice names that
-// architect) and the stop it is not sent for (its own), when a plan must be given and how a plan
+// The owner of an issue picks which roles the steps of its one task name. Its launch's addressing
+// lists the roles of the deployment, each with the type of its step (the daemon's
+// DeploymentRolesFragment), so its composed prompt names no list of roles. The prompt names the
+// owner's own acceptance step, the two operations that give and stop a plan, a stop's answers by
+// their codes and that a stop before an issue's first step settles the plan that step would walk,
+// the notices that a stopped task, a parent held before its retro and a plan of an earlier owner
+// send it, the two stops a task-stopped notice tells of (a failed step's, and another architect's
+// stop_task, whose notice names that architect) and the stop it is not sent for (its own), when a
+// plan must be given and how a plan
 // replaces the default steps once the work started, and the answers a later version gets from the
 // workflow (workflow.planGiven): the running task's block, its text included, is refused and the
 // unchanged block taken, each refusal names its cause and changes nothing so the same version can
@@ -40,10 +42,6 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 			composed := composedText(t, composer, claim.RoleArchitect, tc.isRoot)
 			text := foldWhitespace(composed)
 			for _, term := range []string{
-				"planner (planning)",
-				"implementer (implementation)",
-				"tester (testing)",
-				"reviewer (review)",
 				"acceptance:owner",
 				"register_plan",
 				"stop_task",
@@ -282,7 +280,8 @@ func TestThePlannerAddsNoTaskBlockToAnOwnersPlan(t *testing.T) {
 // step at which a task with plan rows was stopped is refused as late (intake's
 // LateReportOfStoppedTask): the answer names no result and no cause, sends the agent to
 // `dispatch steps`, and keeps the handoff record the report named as used, so each phase worker is
-// told what TASK_STOPPED means and that a later run of its step writes a handoff of its own. Each
+// told what TASK_STOPPED means and that a later run of its step writes a handoff of its own, where
+// its phase writes one. Each
 // duty is held by the terms of the clause that states it, in their order, so a rewording that
 // keeps them passes. This shows the text is loaded, never that a worker follows it.
 func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
@@ -314,8 +313,8 @@ func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 // sentence that named one of them as if every issue ran it now says where it runs and, where it
 // does not, who holds its duty: the order of the starts is the order of the steps of the issue's
 // plan; `accepting` and the sign-off are the owner's only where the task holds `acceptance:owner`;
-// the move back names an earlier step's phase; a failed step goes back to the implementer or to
-// the earlier step its completion names. A parent with no `acceptance:owner` step gets no reading
+// the move back names an earlier step's phase; a failed step goes back to the first step of the
+// type implementation before it or to the earlier step its completion names. A parent with no `acceptance:owner` step gets no reading
 // of its finished whole from its owner, and each part says so in one sentence where it speaks of a
 // parent and its children. Each part gives `register_plan` and `stop_task` with the arguments of
 // the daemon's routes. The words the parts carried before are gone from both, and from the
@@ -337,7 +336,6 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"A task with no `acceptance:owner` step has no `accepting`",
 		"`to` the phase of an earlier step of the task, and `reason`",
 		"is a gap that a tester step and a reviewer step name and neither refuses",
-		"goes back to the implementer, or to the earlier step its completion names",
 	}
 	retired := []string{
 		"fixed workflow table",
@@ -802,12 +800,10 @@ func TestTheSentencesTheLastAcceptanceRoundShowedFalseAgreeWithTheDaemon(t *test
 }
 
 // The daemon does none of the merger's reads for it, though it reads the head, the reviews and the
-// checks for its own record (reviewRound, tellChecks). A phase moves on from the legion tool's
-// handoff_complete, request_backward_move and sign_off and from GitHub's events: the reviewer's review ends
-// its round with or without its completion (workflow's reviewRound), and the merge ends merging. A
-// completion that comes after the review is recorded on the round the review ended
-// (reportEndedStep). Each part is read alone, by its name. This shows the text is loaded, never
-// that an agent follows it.
+// checks for its own record (reviewRound, tellChecks). The reviewer's review ends its round with or
+// without its completion (workflow's reviewRound). A completion that comes after the review is
+// recorded on the round the review ended (reportEndedStep). Each part is read alone, by its name.
+// This shows the text is loaded, never that an agent follows it.
 func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
 	for _, tc := range []struct {
 		part       string
@@ -817,11 +813,6 @@ func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
 			"merger.md",
 			[]string{"It makes none of your reads of the head you merge: its checks, and the reviewer's approval where your task has a reviewer step."},
 			[]string{"it reads neither the head you merge, nor its checks, nor the reviewer's approval"},
-		},
-		{
-			"worker-common.md",
-			[]string{"It moves a phase on only from the `legion` tool's `handoff_complete`, `request_backward_move` and the architect's `sign_off`. It also moves one on from the GitHub events your role part names, such as the reviewer's review and the merge."},
-			[]string{"`handoff_complete` is the only way to finish a phase"},
 		},
 		{
 			"reviewer.md",
@@ -1027,13 +1018,13 @@ func TestTheMergeForwardPartsReadTheTasksOwnSteps(t *testing.T) {
 	}
 }
 
-// An architect's move back counts no review round: only a review that requests changes counts
-// one (workflow's recordRound, held by TestAFailedStepReturnsAndNoCountStopsATask). A move back
-// at a conflicting head counts no conflict round either, since a conflict round is a review
-// round. So no part says the move counts either. Each part is read alone, by its name. This shows
-// the text is loaded, never that an owner follows it.
+// An architect's move back counts no review round: only a review's request for changes, or the
+// fail of a step of the type review, counts one (workflow's recordRound, held by
+// TestAFailedStepReturnsAndNoCountStopsATask). A move back at a conflicting head counts no
+// conflict round either, since a conflict round is a review round. So no part says the move
+// counts either. Each part is read alone, by its name. This shows the text is loaded, never that
+// an owner follows it.
 func TestTheArchitectsMoveBackCountsNoReviewRound(t *testing.T) {
-	counts := "The move counts no review round: only a review that requests changes counts one."
 	retired := []string{
 		"counts a review round",
 		"counting a review round",
@@ -1042,7 +1033,7 @@ func TestTheArchitectsMoveBackCountsNoReviewRound(t *testing.T) {
 	}
 	for _, part := range []string{"architect-common.md", "architect-root.md", "architect.md"} {
 		t.Run(part, func(t *testing.T) {
-			holdsAndRetires(t, "go/"+part, goPart(t, part), []string{counts}, retired)
+			holdsAndRetires(t, "go/"+part, goPart(t, part), nil, retired)
 		})
 	}
 }

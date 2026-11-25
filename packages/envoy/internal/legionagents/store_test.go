@@ -504,7 +504,7 @@ func TestEachReadDerivesWhoReplacedASession(t *testing.T) {
 }
 
 // Each listing reads only its own issue's or role token's keys, and an issue lists its agents by
-// role in workflow order, then newest first.
+// role in the order of the default steps, then newest first.
 func TestListingsFilterByIssueAndRoleToken(t *testing.T) {
 	r := openRegistry(t)
 	_, err := r.store.PutAll(ctx(t), []legionagents.Entry{
@@ -563,7 +563,7 @@ func TestAnEntryOfADeploymentRoleIsValidAndListedAfterTheSix(t *testing.T) {
 		t.Fatalf("by issue: %v", err)
 	}
 	if got := sessionIDs(byIssue); !slices.Equal(got, []string{"ses-tester", "ses-merger", "ses-checker", "ses-linter"}) {
-		t.Fatalf("by issue = %v, want the tester and the merger in workflow order, then the checker and the linter by name", got)
+		t.Fatalf("by issue = %v, want the tester and the merger in the order of the default steps, then the checker and the linter by name", got)
 	}
 
 	project, issue := strings.Repeat("p", 64), strings.Repeat("A", 27)+"-1234"

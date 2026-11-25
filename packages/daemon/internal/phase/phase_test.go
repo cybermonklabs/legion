@@ -98,7 +98,7 @@ func TestMovesBackIgnoresPhasesOutsideOrder(t *testing.T) {
 	}
 	for _, outside := range []Phase{Admitted, AwaitingPerson, Done, Held} {
 		if MovesBack(Merging, outside) || MovesBack(outside, Planning) {
-			t.Fatalf("%s stands outside Order, so no move into or out of it moves back", outside)
+			t.Fatalf("%s stands outside Order, so MovesBack answers no move into or out of it", outside)
 		}
 	}
 }

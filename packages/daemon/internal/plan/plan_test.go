@@ -265,6 +265,7 @@ func TestMovesBackPairsAreTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
 		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro", "step-retro",
 		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging", "step-merging",
 		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
+		"step-retro", "step-merging",
 	}
 	var want []string
 	for _, pair := range phase.MovePairs() {

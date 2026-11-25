@@ -1770,7 +1770,7 @@ func (r *liveRig) checkCleanupReapsTheIssue() error {
 
 // issue-suspend-resume: the whole of INFRA-80 on an issue of its own. Its role runs, its session is
 // in the table, and the issue is then closed the way the daemon's durable close effect closes one:
-// SuspendIssue suspends the Sandbox, waits its pod out and deletes the Sandbox with the six role
+// SuspendIssue suspends the Sandbox, waits its pod out and deletes the Sandbox with the role
 // Secrets it owned. Nothing of the issue is left — the Sandbox is gone, and the pod's own disk went
 // with the pod — so the resume that follows is a launch from nothing: a new Sandbox, a new pod, and
 // that pod's own disk, under the same name, since Kubernetes derives it from the pod's, with a new

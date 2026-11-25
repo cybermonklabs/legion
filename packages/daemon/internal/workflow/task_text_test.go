@@ -112,7 +112,7 @@ func withoutRoundsSentences(t *testing.T, pool *pgxpool.Pool, task string) strin
 // The task each agent of an owner's plan is told names its working copy, its task and its step in
 // it, each step of the task in order and the report of each earlier step, and, last of what the
 // task composes, the task's text inside a fence, which only the reviewer's two sentences of the
-// review round follow: the reviewer of the task `implementer reviewer` reads the implementer's
+// review round follow, or a review step's one sentence of its commit: the reviewer of the task `implementer reviewer` reads the implementer's
 // report, and the retro and the merger, which run no step, are told the task and its steps alone,
 // and read the runs of the steps from Dispatch.
 func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {

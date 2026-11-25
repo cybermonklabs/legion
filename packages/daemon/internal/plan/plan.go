@@ -145,6 +145,14 @@ type Plan struct {
 // Legion's own (BuiltinRoles) and each role the deployment's settings define.
 type Deployment struct{ Roles map[string]RoleDef }
 
+// Defines says whether a step of the deployment can name role: one of Legion's own step roles or a
+// role its settings define. A role it does not define is one a daemon restarted without, whose
+// step no role may start (the workflow's Walk.lostAt) and whose claim no message reaches.
+func (d Deployment) Defines(role string) bool {
+	_, defined := d.Roles[role]
+	return defined
+}
+
 // Refusal is one reason Legion does not take a plan: the task it names, "" for a cause of the
 // whole plan, and the reason as the owner reads it.
 type Refusal struct{ Task, Reason string }

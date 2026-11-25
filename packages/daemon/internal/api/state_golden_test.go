@@ -1668,9 +1668,10 @@ func approvedAt(version *int) string {
 // intakeGiveUpsContract's row does as well, no issue's `podHold` (withoutPodHold), since
 // podHoldContract's row does too, and every other key as a caller at shapedAnswersContract is
 // served it, since no other row of stateNarrowings stands between shapedAnswersContract and
-// repositoriesLiveContract. shapedAnswersContract's row and pauseContract's stand at or below the
-// contract it is served at, which is why the golden carries `lowestPluginContract`, each claim
-// view's `updateState` and `paused`.
+// repositoriesLiveContract; the row of deploymentRolesContract, above them all, holds back only
+// the roles of the deployment, which this caller is served without too. shapedAnswersContract's
+// row and pauseContract's stand at or below the contract it is served at, which is why the golden
+// carries `lowestPluginContract`, each claim view's `updateState` and `paused`.
 // `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
 // the block, so the narrowing is held to the reader it is written for, and its drift gate holds
 // every key of the file to that copy.

@@ -3085,7 +3085,7 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // written launching with none for the wait (parkWake), is suspended for the daemon with its
 // session kept, and the start of the role's next work resumes it (startLeft). A launch its issue
 // pod's start gate or the project's pause holds after its write is judged so at the grant or the
-// let-out that runs it on (heldStartLeft). Unlike requested, start goes with every retry raised
+// let-out that runs it on (startLeftWhileParked). Unlike requested, start goes with every retry raised
 // anew from the top, whose turn finds the claim launching with no process and judges it again.
 func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, turn time.Time, cause string, start StartWork) error {
 	again := func(ctx context.Context) error {
@@ -3094,40 +3094,38 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bo
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
-	return m.reserveWake(ctx, exempt, turn, func(ctx context.Context) error {
-		if parked := m.claim.State == StateLaunching && m.claim.Locator == nil; parked {
-			if left, err := m.heldStartLeft(ctx, start, again); left {
-				return err
-			}
+	return m.reserveWake(ctx, exempt, turn, start, func(ctx context.Context) error {
+		if left, err := m.startLeftWhileParked(ctx, start, again); left {
+			return err
 		}
 		return m.launchNow(ctx, charged, exempt, requested, cause, start)
 	}, again)
 }
 
 // startLeft ends a start's launch a gate parked and whose work the issue left during the wait
-// (heldStartLeft): the claim records no process, so none is stopped, and it is suspended for the
+// (startLeftWhileParked): the claim records no process, so none is stopped, and it is suspended for the
 // daemon, its session kept, the end a launch the tree's lifecycle refuses over a claim with no
 // process takes too (relaunchRefused). The task the start handed it names a phase and is retired
 // unsent with the suspension (settle), and the start of the role's next work resumes the claim by
 // rule. A suspension for the daemon is no stranded claim of a role that works no step the task
 // stands at (workflow.Stranded).
 func (m *Machine) startLeft(ctx context.Context, err error) error {
-	m.log.Info("supervise: the launch this start's wake held is of work its issue has left; suspending the claim with no process started", "error", err)
+	m.log.Info("supervise: the launch this start waited for is of work its issue has left; suspending the claim with no process started", "error", err)
 	return m.suspended(ctx, SuspendedByDaemon, nil)
 }
 
-// heldStartLeft judges again the work of the start a launch is for (startHolds), at the turn of
-// that launch after a gate held it with its claim launching and no process: the wake pacing's
-// turn (launchAfter), the grant of its issue pod's start gate (askPod) and the let-out after the
-// project's pause (pauseHeldTry). Each wait can be long, and the issue can leave the start's work
-// meanwhile. It answers whether the judgment ended the launch, with the error the decision then
-// ends with: a start whose work the issue left suspends the claim with no process started
-// (startLeft), and a read of the record that failed leaves the launch to again, raised anew from
-// the top (relaunchRefused). A start whose work holds, and the zero StartWork, answer false, and
-// the launch goes on.
-func (m *Machine) heldStartLeft(ctx context.Context, start StartWork, again func(context.Context) error) (bool, error) {
-	err := m.startHolds(ctx, start)
-	switch {
+// startLeftWhileParked is the one rule a start that waited keeps where its wait ends: a claim
+// written launching with no process — the state every park and every armed retry leaves it in
+// (waitOnMachine, askPod, pauseGate, relaunchLater) — whose start's work its issue has left since
+// starts no process (startLeft). It answers whether the launch ends here, and what ending it
+// answered: the start left, or its read failed, which relaunchRefused tries again with again.
+// A claim that still records its process, or that was not left launching, was judged by the
+// decision that raised its launch and is judged by nothing here, and so is the zero StartWork.
+func (m *Machine) startLeftWhileParked(ctx context.Context, start StartWork, again func(context.Context) error) (bool, error) {
+	if m.claim.State != StateLaunching || m.claim.Locator != nil {
+		return false, nil
+	}
+	switch err := m.startHolds(ctx, start); {
 	case err == nil:
 		return false, nil
 	case errors.Is(err, ErrStartLeft):
@@ -3192,7 +3190,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt, requested bool
 // the request that raised it is one the wake pacing lets through (exempt); whether a request
 // raised it at all, which the pod's gate reads (requested); and the work of the start it is for,
 // which a turn after a gate held it and every retry raised anew from the top judge again
-// (start, heldStartLeft, launchFromTop).
+// (start, startLeftWhileParked, launchFromTop).
 type launchTry struct {
 	intent                     *pluginIntent
 	charged, exempt, requested bool
@@ -3322,14 +3320,14 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 // written with; and a fresh try of the same launch, asked of the gate anew, once it carries none,
 // as a let-out after a pause runs it (letOutHeldLaunch, runWake). Either way the run first judges
 // the work of the start the launch is for again, as the turn of a launch the wake pacing parked
-// does, since the issue can leave that work during the wait (heldStartLeft); a start it ends gives
+// does, since the issue can leave that work during the wait (startLeftWhileParked); a start it ends gives
 // its grant back, which the end of the decision takes out of the gate for what the judgment left
 // of the claim (endPodPark). Its again is the launch raised anew from the top, for that let-out's
 // lifecycle recheck and that judgment's failed read (launchFromTop, relaunchRefused).
 func (m *Machine) heldTryWake(l launchTry, token string) *wake {
-	held := &wake{kind: WakeLaunch, state: m.claim.State, paid: true, ran: true, again: m.launchFromTop(l)}
+	held := &wake{kind: WakeLaunch, state: m.claim.State, paid: true, ran: true, again: m.launchFromTop(l), start: l.start}
 	held.run = func(ctx context.Context) error {
-		if left, err := m.heldStartLeft(ctx, l.start, held.again); left {
+		if left, err := m.startLeftWhileParked(ctx, l.start, held.again); left {
 			if held.park != nil {
 				m.podPark = held.park
 			}

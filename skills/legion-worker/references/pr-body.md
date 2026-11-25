@@ -66,3 +66,10 @@ A stale `Outcome` is a finding against the implementer; the merger rewrites noth
 
 - The reviewer's pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code;
   the `Thermo` line records the range it read and a row per half, and earlier rounds' rows stay beside them.
+
+## The footer of a comment
+
+- End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
+
+- A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
+  Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.

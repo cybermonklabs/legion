@@ -710,9 +710,11 @@ func TestTheGiveUpRoutesRefuseAnotherProjectsRecord(t *testing.T) {
 // without the key, and says so in its own log; a caller that states the contract is served the
 // key, and the rest of the two bodies is the same. Every build from shapedAnswersContract on
 // states its contract in the header, and a pod's claims place no caller at 193 or above
-// (podContracts), so the header is what places a caller below this band. The older caller's log
-// holds one line for each band above its contract (narrowingsExpected), the give-ups' first; a
-// later band's own line is that band's test's to name.
+// (podContracts), so the header is what places a caller below this band. The pod hold's band
+// (podHoldContract) and the roles of the deployment's band (deploymentRolesContract) stand above
+// both callers, so each is served the state without those keys. The older caller's log holds one
+// line for each band above its contract (narrowingsExpected), the give-ups' first; a later band's
+// own line is that band's test's to name.
 func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if intakeGiveUpsContract > DaemonAPIVersion {
 		t.Fatalf("intakeGiveUpsContract = %d, above DaemonAPIVersion %d: no caller could be served the key", intakeGiveUpsContract, DaemonAPIVersion)

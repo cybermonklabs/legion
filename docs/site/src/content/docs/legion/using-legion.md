@@ -173,8 +173,9 @@ makes them afresh.
 - **To stop Legion working an issue**, move it to `backlog` (or `icebox`) from the Dispatch
   dashboard. A person's move takes the tree out at once and the slots its issues held go to the next issues in line; its
   agents stop, each once the turn it is in ends, however long that takes, so a turn already under
-  way finishes what it was doing. To keep Legion off it for good, also take the `legion` label off;
-  taking the label off alone does not stop a tree that has started.
+  way finishes what it was doing. To keep Legion off it for good, also take the `legion` label off.
+  Taking the label off alone does not stop a tree at work, but a root that waits on a person then
+  leaves the workflow (`phase: done`).
 - **To run it again**, set it back to `todo` with the label on, or approve its spec: a person's
   approval of a parked labelled issue's spec is queued by the daemon when the issue has no
   parent, and the issue moves to `todo` itself; an approval that Dispatch carries in your name from

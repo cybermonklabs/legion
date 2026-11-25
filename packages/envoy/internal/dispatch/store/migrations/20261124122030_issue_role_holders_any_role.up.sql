@@ -1,4 +1,4 @@
--- 20261121192021_issue_role_holders_any_role.up.sql — a role holder of a role the deployment defines.
+-- 20261124122030_issue_role_holders_any_role.up.sql — a role holder of a role the deployment defines.
 --
 -- A Legion deployment defines roles of its own in its settings (`roles`), and a step of an issue's
 -- plan names one as it names Legion's six. The daemon publishes the session of each live claim of

@@ -14,7 +14,7 @@ import (
 // A file that names `hooks:` runs the hooks it names and no default beside them, read whole and
 // in file order: the first over every move back (`moves: any`) with its words in the key, the
 // second over two named moves with the file they are read from. The file the second names is
-// never written here, because this loader reads no file it names: the path is resolved against
+// never written here, because this loader reads no hook's file: the path is resolved against
 // the configuration's directory and kept (boot reads the words, ReadHookPrompt).
 func TestLoadReadsTheHooks(t *testing.T) {
 	path := writeConfigFile(t, minimalFile+`hooks:
@@ -120,6 +120,7 @@ func TestAHookNamingAMoveNoLineMakesBackIsRefused(t *testing.T) {
 		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro", "step-retro",
 		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging", "step-merging",
 		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
+		"step-retro", "step-merging",
 	}
 	loaded := 0
 	for _, move := range phase.MovePairs() {

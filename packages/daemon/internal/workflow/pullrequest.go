@@ -573,9 +573,9 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, s TaskScope,
 // close clears: a failed merger's claim, an escalation, a stopped task's or the upgrade's data
 // move's), on its merged pull request pr, and reports
 // the issues it waited for instead, empty when it closed. In a running tree the close is the
-// table's row to done (transition), which leaves: a child's close retires five of its claims and
-// opens its production check in the live session of the role the project's `production_check`
-// names, and retires all six and opens no check where that setting is off; a root's close lingers
+// table's row to done (transition), which leaves: a child's close retires every claim of it but
+// that of the role the project's `production_check` names, and opens its production check in that
+// role's live session, and retires every claim and opens no check where that setting is off; a root's close lingers
 // its tree and opens its check behind the linger's rows (leave). A merge is the one fact GitHub
 // never sends again, so one that lands while the tree lingers, where no transition runs, still
 // closes the issue: it writes what leave would that a lingering tree allows — the phase done, the

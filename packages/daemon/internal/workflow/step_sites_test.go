@@ -431,7 +431,7 @@ func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 	})
 }
 
-// The report of a step is the handoff its role's completion named, whichever of that completion
+// The report of a step whose role writes a handoff is the handoff its role's completion named, whichever of that completion
 // and the review event lands first: an event that decides the round first ends the review before
 // the reviewer completes, and the completion then names its handoff on that ended run's record,
 // so one write of the run carries it. That write is the run's: its id, its role, its type, its

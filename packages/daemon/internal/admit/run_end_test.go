@@ -81,7 +81,7 @@ func appliedFactKinds(t *testing.T) []string {
 }
 
 // stepPlaces is where each phase stands in the task default, as the records Dispatch receives
-// name it: the kind and the place in the task. A phase not here runs no step.
+// name it: the kind and the place in the task. A phase not here runs no step of the task default.
 var stepPlaces = map[phase.Phase]record.StepPlace{
 	phase.Planning:     {Task: "default", Kind: "step", Place: 1},
 	phase.Implementing: {Task: "default", Kind: "step", Place: 2},

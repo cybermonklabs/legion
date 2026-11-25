@@ -1058,7 +1058,7 @@ type HandoffComplete struct {
 	// Entry is the entry of the role's phase the completing claim serves (the claim's
 	// ServingEntry, or the held task's on the route's fallback): the one value the route's entry
 	// fence reads. The workflow judges it again on the role's phases row under the fact's lock,
-	// with the same rule (EntryFence), and holds a review step's commit to it (R11): only a
+	// with the same rule (EntryFence), and holds a review step's commit to it: only a
 	// completion of the entry that stands, on a row that holds that entry's task, moves the step's
 	// reviewed commit. 0 where the claim serves no entry, which is judged by neither and moves no
 	// commit.
@@ -2389,9 +2389,8 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 // Where staleCompletion sends the same completion again — a run's completion is the right work,
 // arrived early — this one does not, and that is the whole difference between the two: an entry
 // is new only because the phase was entered again, so the task it hands the role is work of its
-// own. A head that starts conflicting with its base takes the issue back to implementing, and
-// the testing entry the implementer's merge forward then raises is for a new head, so a verdict
-// reported for the head before it would stand as that new head's. The worker does the new
+// own. A move back raises a new entry of the step it returns to, whose work is done again, so a
+// verdict reported for the earlier entry would stand as the new entry's. The worker does the new
 // task's work and writes a handoff of its own for it, which StaleEntryInstruction says.
 //
 // clause says what refused this completion (BehindEntryClause).

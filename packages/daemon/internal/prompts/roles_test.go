@@ -121,7 +121,7 @@ func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
 	}
 }
 
-// Every role a claim can be on has its own part, and none is blank: a blank part boots a worker with
+// Every role of Legion's a claim can be on has its own part, and none is blank: a blank part boots a worker with
 // no instructions at all. The merger composes no core.
 func TestEveryRoleHasItsPartAndTheMergerHasNoCore(t *testing.T) {
 	for _, role := range claim.Roles {
@@ -643,7 +643,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/planner.md", "An open decision in a finished plan is a gap the steps after yours inherit."},
 		{"planner.md", "end the turn with a line that begins WAITING, naming the decision"},
 		// R5: a claim cites the file and the symbol or the text it was read at, never a line, in the
-		// core every phase worker but the merger composes and in the oracle core the composer joins for
+		// core every phase worker of Legion's but the merger composes and in the oracle core the composer joins for
 		// no role, which is where a later core would copy the sentence from (dispatch://INFRA-924).
 		{"core/common.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},

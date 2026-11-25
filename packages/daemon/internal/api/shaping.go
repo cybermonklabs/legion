@@ -617,15 +617,15 @@ var stateNarrowings = []stateNarrowing{
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
+	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
+	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
+	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
+	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
 	{contract: deploymentRolesContract, state: withoutDeploymentRoleClaims, issue: withoutDeploymentRoles,
 		left: leftDeploymentRoles,
 		dropped: "the phase step (served as implementing), the issues' stepRole and startWaitsForPod, and the " +
 			"stranded claims, waiting wakes and pause stops of a deployment's roles"},
 	{contract: strandedTokenContract, state: withoutStrandedTokens, dropped: "the stranded claims' token"},
-	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
-	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
-	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
-	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
 	{contract: tasksContract, issue: withoutTasks, dropped: "the issues' tasks"},
 }
 
@@ -1093,7 +1093,7 @@ const cachesSourceContract = 213
 const assignmentPlanContract = 220
 
 // deploymentRolesContract is the daemon contract that added the roles a deployment defines to the
-// state (version.go's 221): the phase step, each issue's `stepRole` and `startWaitsForPod`, and
+// state (version.go's 258): the phase step, each issue's `stepRole` and `startWaitsForPod`, and
 // the stranded claims, waiting wakes and pause stops of a role outside Legion's six. A plugin
 // below it reads an issue's `phase`, its `heldFrom` and a pending task's `phase` with an
 // enumeration that names no step, and the `role` of a stranded claim, of a waiting wake and of a
@@ -1112,16 +1112,16 @@ const assignmentPlanContract = 220
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
 // only with this change's own number, and answers.go's SupportedContracts names the constant
 // rather than its number for that reason.
-const deploymentRolesContract = 221
+const deploymentRolesContract = 258
 
 // strandedTokenContract is the daemon contract that added each stranded claim's token to the
-// state (version.go's 222, `strandedClaims.*.token`): two claims of one issue can hold one role,
+// state (version.go's 259, `strandedClaims.*.token`): two claims of one issue can hold one role,
 // so the issue and the role no longer name one claim.
 //
 // It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
 // gives, and answers.go's SupportedContracts names the constant rather than its number for that
 // reason.
-const strandedTokenContract = 222
+const strandedTokenContract = 259
 
 // tasksContract is the daemon contract that added each issue's tasks to the state (version.go's
 // 263, `issues.<key>.tasks`): each task of the issue's plan with where it stands, the act at its

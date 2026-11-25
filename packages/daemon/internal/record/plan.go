@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -122,6 +123,22 @@ func (p TaskPlace) StepPlace(task string) StepPlace {
 // there (StopTask keeps the place), so a task stopped at no act is one whose work never ran.
 func (p TaskPlace) Started() bool {
 	return p != TaskPlace{}
+}
+
+// Rank orders the places of one task's line: no place first, then each step by its place, then
+// the retro, then the merge. A move back goes to a place of a lower rank, and a step that ran
+// stands at a lower rank than the place the task stands at, whatever phase each runs as: every
+// step of a role the deployment defines runs as step, so only the place tells two of them apart.
+func (p TaskPlace) Rank() int {
+	switch p.Kind {
+	case PlaceStep:
+		return p.Position
+	case PlaceRetro:
+		return math.MaxInt - 1
+	case PlaceMerge:
+		return math.MaxInt
+	}
+	return 0
 }
 
 // ReturnCounts are the counts of returns of one task, which an issue with no plan rows keeps on its

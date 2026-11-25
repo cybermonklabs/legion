@@ -1088,7 +1088,7 @@ primary_issue() {
 
   begin smoke-main-clean
   # The merged pull request carried no handoff (A2): no commit of it changes only .legion/, and no
-  # file it merged is under .legion/, since every phase's handoff is a record on the Dispatch issue.
+  # file it merged is under .legion/, since every handoff is a record on the Dispatch issue.
   handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of $repo#$pr_number"
   [ -z "$handoff_pushes" ] || fail "$repo#$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
   merged_files=$(pull_request_product_files) || fail "could not read the files of $repo#$pr_number"

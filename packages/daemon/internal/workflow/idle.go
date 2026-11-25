@@ -39,7 +39,8 @@ const (
 	// IdleHoldInTurn: a claim of the pod has a process in a turn, starting or stopping, or one
 	// whose launch is not yet known.
 	IdleHoldInTurn
-	// IdleHoldDelivery: a task, notice, message or start waits for delivery to a role of the pod.
+	// IdleHoldDelivery: a task, notice, message or start waits for delivery to a role of the pod;
+	// a start that waits for its pod, built before its role, is none (pods.StartWaitsForPodPrefix).
 	IdleHoldDelivery
 	// IdleHoldBackgroundWork: a live role's session reported background work of its own running.
 	IdleHoldBackgroundWork
@@ -76,7 +77,8 @@ const (
 	// IdleHoldOvertaken: the pod was given work after its release was marked — a claim of it was
 	// started or resumed, or holds a process, at any of the release's role stops or at its
 	// teardown, or, at the first of the stops, before any role process was stopped, a task,
-	// notice, message or start reached a role of the pod — so that row cancelled the release
+	// notice, message or start reached a role of the pod, a start that waits for its pod excepted
+	// — so that row cancelled the release
 	// and the roles go on in the same pod. It is one hold wherever the release read it, because
 	// it is one thing that happened (store.ReleaseCauseOvertaken).
 	IdleHoldOvertaken
@@ -120,7 +122,8 @@ const (
 	// operator's resume brings that role back into this pod.
 	IdleHoldUnownedOperatorSuspended
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
-	// the pod, and the delivery is what brings a role back into it.
+	// the pod, and the delivery is what brings a role back into it. A start that waits for its pod
+	// is none, since the next pod serves it.
 	IdleHoldUnownedDelivery
 	// IdleHoldUnownedTreeNotLive: the issue or its tree root has left the workflow, or one of
 	// them lingers. Such a pod is a close's to stop, as it is for the idle rule
@@ -269,7 +272,8 @@ type IdleDecision struct {
 //     yet known. Failed, retired and already suspended claims stay as they are and hold nothing;
 //
 //   - no task, notice, message or start waits for delivery to a role of the pod, but a start
-//     queued for news alone, which wakes the claim a release suspends (pods.IdleView.Waiting);
+//     queued for news alone, which wakes the claim a release suspends, and a start that waits for
+//     its pod (pods.IdleView.Waiting);
 //
 //   - each live role's session reported, after its last turn, that it runs no background work. A
 //     claim with no report, or one whose report predates its last turn, is never released: that

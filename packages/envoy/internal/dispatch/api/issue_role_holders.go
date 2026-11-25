@@ -123,7 +123,7 @@ func heldRole(ctx context.Context, q queryer, issueKey, session string) (string,
 }
 
 // issueRoleHoldersStatement reads an issue and its stored set, $1 the issue's key and $2 Legion's
-// roles in workflow order, which is the order the set is answered in, every other role after them
+// roles in the order of the default steps, which is the order the set is answered in, every other role after them
 // by name. The left join answers one row with no holder for an issue where no session holds a
 // role, and no row for a key that no issue carries, so one statement says both.
 const issueRoleHoldersStatement = `

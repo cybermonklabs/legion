@@ -1436,8 +1436,9 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // (internal/daemon's checkIssueWorkspace). The daemon pushes nothing for a role.
 //
 // It stops nothing, so a release cancelled here costs only the read, and it sits before the
-// release's boundary (the first `release` row), so a delivery queued while it runs still cancels
-// the whole release (outbox.cancelRelease). The teardown waits for it (store.IssueRelease).
+// release's boundary (the first `release` row), so a delivery queued while it runs, save a start
+// that waits for its pod, still cancels the whole release (outbox.cancelRelease). The teardown
+// waits for it (store.IssueRelease).
 //
 // CloseRoles makes this the workspace check of a pod whose issue left the workflow. A clean
 // read queues its close; a failed read or unpushed work keeps the pod. TurnStart fences that
@@ -2016,7 +2017,8 @@ const (
 	// merging and the merger in merging, to merge the base forward onto the head and push.
 	MergeForwardAsk MergeForwardStep = "ask"
 	// MergeForwardHold tells the worker of the phase the issue stays in, when that is the
-	// tester, the reviewer or the merger, to stop writing the workspace while the merge runs.
+	// tester, the reviewer, the merger or, at step, the role of the running step, to stop writing
+	// the workspace while the merge runs.
 	MergeForwardHold MergeForwardStep = "hold"
 	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
 	MergeForwardLanded MergeForwardStep = "landed"
@@ -2042,10 +2044,10 @@ var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 }
 
 // MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
-// one list the workflow addresses the hold and the landed by (workflow's mergeForward and
-// mergeForwardLanded) and a row is validated against (validateOutboxPayload). The hold and the
-// landed also go to a role the deployment defines, the worker of a step that runs as step, which
-// reads the head as the tester and the reviewer do.
+// one list the workflow addresses the hold and the landed by (workflow's mergeForwardWorker, which
+// mergeForward and mergeForwardLanded read) and a row is validated against
+// (validateOutboxPayload). The hold and the landed also go to a role the deployment defines, the
+// worker of a step that runs as step, which reads the head as the tester and the reviewer do.
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 	if (step == MergeForwardHold || step == MergeForwardLanded) && claim.IsRole(role) && !claim.IsBuiltin(role) {
 		return true
@@ -2816,7 +2818,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
 		}
 		if !MergeForwardReaches(value.Step, value.Role) {
-			return fmt.Errorf("a merge-forward ask goes to the implementer or the merger, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
+			return fmt.Errorf("a merge-forward ask goes to the implementer or the merger, a hold or a landed to the tester, the reviewer, the merger or a role of the deployment, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
 		}
 		if err := namedClaim(value.Claim); err != nil {
 			return err

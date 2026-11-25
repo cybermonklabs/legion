@@ -198,8 +198,9 @@ func (w Walk) steps() []phase.Phase {
 }
 
 // MovesBack says whether row moves w's task back by the task's own order. A stored walk compares
-// the row's two places (placeRank): an earlier step by its place, every step before the retro, the
-// retro before the merge, so a move from step 3 back to step 2 goes back though both run as step.
+// the row's two places (record.TaskPlace.Rank): an earlier step by its place, every step before
+// the retro, the retro before the merge, so a move from step 3 back to step 2 goes back though both
+// run as step.
 // A run with no plan rows walks today's line, so this is phase.MovesBack of the row's two phases
 // for it. A task in another order than today's so counts its move back from testing to reviewing
 // (the steps `implementer reviewer tester`), and not the review's approval from reviewing to
@@ -555,7 +556,7 @@ func (w Walk) lostAt(place record.TaskPlace, d plan.Deployment) (record.TaskPlac
 	if !w.Stored || !ok {
 		return record.TaskPlace{}, false
 	}
-	if _, defined := d.Roles[step.Role]; defined {
+	if d.Defines(step.Role) {
 		return record.TaskPlace{}, false
 	}
 	return place, true
@@ -575,6 +576,14 @@ func (w Walk) lostStep(d plan.Deployment) (record.TaskPlace, bool) {
 	case record.PlaceRetro, record.PlaceMerge:
 		return record.TaskPlace{}, false
 	}
+	return w.lostFrom(first, d)
+}
+
+// lostFrom is the first step of w's task from step first on whose role d does not define
+// (lostAt). lostStep reads it from where a task that runs stands; a stopped task's end of its stop
+// reads it from step 1, since every step of the task is still to run once it goes on
+// (keepLostStop).
+func (w Walk) lostFrom(first int, d plan.Deployment) (record.TaskPlace, bool) {
 	for n := first; n <= len(w.Steps); n++ {
 		if lost, ok := w.lostAt(record.TaskPlace{Kind: record.PlaceStep, Position: n}, d); ok {
 			return lost, true
@@ -657,7 +666,7 @@ func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool, []record.Ta
 	}
 	var found []record.TaskPlace
 	for at, p := range w.Line {
-		if place := placeAt(w.Line, at); p == to && placeRank(place) < placeRank(w.Place) {
+		if place := placeAt(w.Line, at); p == to && place.Rank() < w.Place.Rank() {
 			found = append(found, place)
 		}
 	}

@@ -129,14 +129,14 @@ func TestTheProbesRoleOverlayRefusalIsTheBootsRefusal(t *testing.T) {
 	}
 }
 
-// New refuses role overlays no Legion role or PI_CONFIG_FILES could carry.
+// New refuses role overlays no role of the pod, Legion's or the deployment's, or PI_CONFIG_FILES could carry.
 func TestNewRefusesRoleOverlaysNoRoleCouldCarry(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		files map[claim.Role][]string
 		want  string
 	}{
-		{"an unknown role", map[claim.Role][]string{"coder": {"/etc/a.yml"}}, `sandbox runtime: Oh My Pi overlays for "coder", which is not a Legion role`},
+		{"an unknown role", map[claim.Role][]string{"coder": {"/etc/a.yml"}}, `sandbox runtime: Oh My Pi overlays for "coder", which is no role of an issue pod or the controller`},
 		{"a relative file", map[claim.Role][]string{claim.RoleMerger: {"a.yml"}}, `sandbox runtime: merger's Oh My Pi overlay "a.yml" is not an absolute path PI_CONFIG_FILES can name`},
 		{"the separator", map[claim.Role][]string{claim.RoleMerger: {"/etc/a:b.yml"}}, `sandbox runtime: merger's Oh My Pi overlay "/etc/a:b.yml" is not an absolute path PI_CONFIG_FILES can name`},
 	} {

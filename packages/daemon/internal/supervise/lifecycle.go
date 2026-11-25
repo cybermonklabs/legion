@@ -31,7 +31,7 @@ import (
 // move stops a worker. So the machine judges it again under its own lock, with the one answer a
 // queued task is judged by (Deps.PhaseHolds), where it brings the claim back (startHolds) and, for
 // a launch a gate parks — the wake pacing, its issue pod's start gate, the project's pause — at
-// that launch's turn (heldStartLeft). The zero StartWork — an operator's request, the boot's, a
+// that launch's turn (startLeftWhileParked). The zero StartWork — an operator's request, the boot's, a
 // start of no phase — is judged by nothing.
 type StartWork struct {
 	Phase      phase.Phase
@@ -66,7 +66,7 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // already reserved for this launch in the pacing (RequestSpawn.Turn), the zero time for every
 // request that reserved none (launchAfter). start is the work a workflow start brings the claim
 // back for, which its caller has judged already (startHolds) and the launch judges again at the
-// turn of a wake a gate parks it on (launchAfter, heldStartLeft).
+// turn of a wake a gate parks it on (launchAfter, startLeftWhileParked).
 //
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim

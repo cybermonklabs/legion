@@ -229,7 +229,9 @@ func releaseOvertaken(ctx context.Context, tx pgx.Tx, project, issue string, mar
 //
 //   - at the boundary, where no role process of the pod has been stopped yet, a task, notice,
 //     message or start of the issue addressed to a role of the pod that the release did not
-//     queue itself. One below the release's own rows was queued by a transaction already in
+//     queue itself, a start that waits for its pod excepted (pods.StartWaitsForPodPrefix), since
+//     the next pod is the one that serves it.
+//     One below the release's own rows was queued by a transaction already in
 //     flight when the mark was written; one above them was queued once the mark stood, while
 //     every role still ran. Either way the pod is the one that must answer it, so the release
 //     goes rather than the pod. A start queued for news alone is not such a row (idleWaitingRow),
@@ -433,9 +435,10 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		// rows, is the pod being used again: the teardown would take a pod with a live role in
 		// it, and the stop that would have caught it has already run. The start rows read here
 		// are those that wait for a role of the pod, the one rule the idle hold and the boundary
-		// read too (idleWaitingRow), so a start queued for news alone does not cancel the
-		// teardown: it wakes the claim this release suspended, as any start wakes one, and the
-		// role comes back with its news in the pod that replaces this one. The release reads
+		// read too (idleWaitingRow), so neither a start queued for news alone nor one that waits
+		// because the pod was built before its role cancels the teardown: the first wakes the
+		// claim this release suspended, as any start wakes one, and the role comes back with its
+		// news in the pod that replaces this one; the second starts in that pod. The release reads
 		// every other queued start row where IssueSuspension reads only a production check's
 		// look, and needs no other narrowing: the read above has already returned a cancel for
 		// an issue that is not pods.InWorkflowNotLingering, so this predicate runs only for an
@@ -449,8 +452,9 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if !overtaken {
 			if err := tx.QueryRow(ctx, `select exists (
 				select 1 from outbox where issue = $1 and `+idleWaitingRow+` and id > $3
+					and not `+fmt.Sprintf(startWaitsForPodRow, "$4")+`
 					and kind = 'supervise' and payload->>'op' = 'start')`,
-				release.Issue, idleWaitingKinds, mark.last).Scan(&overtaken); err != nil {
+				release.Issue, idleWaitingKinds, mark.last, pods.StartWaitsForPodPrefix).Scan(&overtaken); err != nil {
 				return err
 			}
 		}

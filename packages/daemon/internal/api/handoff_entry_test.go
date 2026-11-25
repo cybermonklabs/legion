@@ -741,8 +741,8 @@ func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int
 
 // queuedStart is the newest start the outbox holds for role on issue, with its row id: the row the
 // outbox runner would deliver next.
-// A phase worker's start is one row, which carries the task and its entry and waits for the
-// issue's admission slot (workflow.StartOrOwe). A start with no task is a role admission brings
+// A phase worker's start is one row, which carries the task and its entry and, in a phase that
+// keeps a slot (record.KeepsSlot), waits for the issue's admission slot (workflow.StartOrOwe). A start with no task is a role admission brings
 // back beside it and is of no entry, so it is not one of these.
 func queuedStart(t *testing.T, h *harness, issue string, role claim.Role) (int64, record.SuperviseRequest) {
 	t.Helper()

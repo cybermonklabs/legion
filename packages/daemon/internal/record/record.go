@@ -544,9 +544,10 @@ func (i Issue) Answered() bool { return i.AwaitingPerson() && i.Awaiting.Answere
 
 // WorkingPhase is the phase the issue's worker works: the phase its hold left while it is held —
 // the one whose worker's claim failed — and the phase it stands in otherwise. It is the one rule:
-// workflow.RoleFor(i.WorkingPhase()) is the role whose failure holds the issue, the role the
-// stranded report names, and the role the operator's retry of a phase worker acts for (api's
-// retryClaim), which read it here rather than each keeping a copy to drift from.
+// the role that works the issue at it (RoleAt: workflow.RoleFor of it, or at step the role of the
+// running step) is the role whose failure holds the issue, the role the stranded report names,
+// and the role the operator's retry of a phase worker acts for (api's retryClaim), which read it
+// here rather than each keeping a copy to drift from.
 func (i Issue) WorkingPhase() phase.Phase {
 	if i.Hold != nil {
 		return i.Hold.From
@@ -776,10 +777,11 @@ type PhaseRow struct {
 	HandoffRecord  string
 	HandoffVersion int
 	// Rounds is how many review rounds the issue has had while this role held it, counted on the
-	// implementer's row alone (workflow's recordRound): a review that requested changes ends one,
-	// and nothing else opens one — a tester's fail and a worker's backward move each raise Pass
-	// and leave this count where it stands. What review_round_cap bounds is Rounds less
-	// ConflictRounds.
+	// implementer's row alone (workflow's recordRound). A review that requested changes ends one,
+	// and so does the fail of a step of the type review whose agent is not the owner. Nothing else
+	// opens one — a tester's fail, the fail of a step of another type and a worker's backward move
+	// each raise Pass. They leave this count where it stands. What review_round_cap bounds is
+	// Rounds less ConflictRounds.
 	Rounds int
 	// ConflictRounds is how many of Rounds were opened while the daemon's record held the pull
 	// request's own head as conflicting with its base (PullRequest.ConflictingHead): a round the
@@ -827,7 +829,8 @@ type PhaseRow struct {
 	// approved or requested changes, submitted as the review App from the session the claims
 	// record holds for the claim the daemon starts the reviewer under (workflow's review,
 	// byReviewer and reviewersClaim), in the first round as in every later one. Only the
-	// reviewer's row holds it. A person's review does not move it, since the reviewer did not read
+	// reviewer's row holds it, beside the row of a role of the deployment whose step is of the type
+	// review, which holds the commit its step's newest run read (workflow's recordStepReview). A person's review does not move it, since the reviewer did not read
 	// that commit; neither does another review-App session's review or a review that decides
 	// nothing, and while the reviewer's claim records no session no review-App review decides the
 	// round or moves it (workflow's RefusedWhileNoSession). Unlike Decision it outlives its round:
@@ -1370,7 +1373,7 @@ const (
 // MergeForwardAsker is the role the daemon asks to merge the base forward while the issue stands
 // in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
 // the implementer in every earlier phase where a merge forward stands (classify.MergeForwardStands:
-// implementing, or a phase after it on the task's line). The ask's row goes to it
+// the task at the implementer's place, or a place after it on the task's line). The ask's row goes to it
 // (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
 func MergeForwardAsker(at phase.Phase) claim.Role {
 	if at == phase.Merging {

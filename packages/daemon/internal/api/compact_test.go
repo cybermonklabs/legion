@@ -627,7 +627,8 @@ func TestACompactionIsRefusedForAClaudeCodeClaim(t *testing.T) {
 }
 
 // `controller` is no role the controller's own tool may name, as it is none for a fresh session:
-// the roles are the six a claim can be on, and the project's controller is none of them.
+// the roles a claim can be on are Legion's six and each role of the deployment, and the project's
+// controller is none of them.
 func TestTheControllersCompactRefusesTheRoleController(t *testing.T) {
 	h := compactHarness(t, nil)
 	grant := controllerGrant(t, h)

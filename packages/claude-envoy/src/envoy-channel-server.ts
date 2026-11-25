@@ -2654,7 +2654,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
       // for a restarting daemon.
       const answer = await executeLegionTool(legionRuntime, request.params.arguments, extra.signal)
       // A call that returned without throwing: a completion, and a backward move, which hands the
-      // issue to another phase. Either way this session's phase is no longer open, and the
+      // issue to an earlier step of its task. Either way this session's phase is no longer open, and the
       // reminder must stop — the same two operations the Oh My Pi host closes its phase on
       // (`createLegionTool` in `packages/pi-legion/src/tools.ts`). `ready_for_update` ends no
       // phase: it answers the pod's update message, and the worker then waits for its process to be

@@ -358,9 +358,10 @@ func valueStripCases() map[string]valueStripCase {
 		// A pod recording 51 and 59 is served the report of claims nothing will wake without its
 		// retired entries, since the pod's 51 process parses `strandedClaims[].state` with an
 		// enum of `suspended` and `failed` and refuses the whole body for the `retired` of
-		// version.go's 56. Every entry whose state that process knows stays, in the order the
-		// report named it. The field is older than the floor, so the case names no value that
-		// arrived with it.
+		// version.go's 56. Every entry of Legion's roles whose state that process knows stays, in
+		// the order the report named it. A pod this far back is below deploymentRolesContract too,
+		// so an entry of a role of the deployment goes. The field is older than the floor, so the
+		// case names no value that arrived with it.
 		droppedStrandedState: {
 			state: populatedState, low: treeContract, high: fixAttemptsContract,
 			carries: func(t *testing.T, body []byte) bool {
@@ -535,7 +536,8 @@ func valueStripCases() map[string]valueStripCase {
 		// A pod recording the contract before shapedAnswersContract is served every issue held for
 		// `task-stopped` or `children` without its `holdReason`: the two arrived at
 		// OwnerPlanContract, and the pod's process reads the key with `z.literal("escalated")`.
-		// The hold's `heldFrom` stays, and so does every escalated hold. No pod's reckoning holds
+		// The hold's `heldFrom` stays, served as implementing where it is step, since such a pod is
+		// below deploymentRolesContract too, and so does every escalated hold. No pod's reckoning holds
 		// a claim at or above shapedAnswersContract, since a build from that contract on states
 		// its own (podContracts), so the pod's claim at OwnerPlanContract moves neither half and
 		// the pod alone at it is served this daemon's own body, as production serves it. The

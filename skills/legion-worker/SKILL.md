@@ -1,6 +1,6 @@
 ---
 name: legion-worker
-description: Use when dispatched as a per-process Legion phase worker — planner, implementer, tester, reviewer, or merger — booted from the daemon's LEGION_* environment.
+description: Use when dispatched as a per-process Legion phase worker — planner, implementer, tester, reviewer, merger, or a deployment's role — booted from the daemon's LEGION_* environment.
 ---
 
 # Legion Phase Worker
@@ -15,7 +15,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 2. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 
-3. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work:
+3. Before you write the handoff or report your step, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work:
    another role that commits next sets aside whatever the working copy holds.
 
 4. Every role writes the one workspace, so a file can change under your check.
@@ -62,7 +62,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - A released pod is not a stop.
   Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives but a volume the deployment keeps.
 
-- When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
+- When another role's topic answers 404, read its handoff with `dispatch handoff-read`, or its runs (step 1).
 
 ## Commits and pushes
 
@@ -80,7 +80,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 ## Pull request and merge gate
 
 - The implementer opens the pull request with the line `Dispatch: <KEY>` in its body.
-  Later phases push to that branch and edit that pull request.
+  A later phase that pushes uses that branch, and a later phase that edits a pull request edits that one.
 
 - No deferrals.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.
@@ -90,13 +90,8 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - The merge gate follows the task's `Steps:` line: each named step runs in order, then the retro and merge it names.
   The default task has tester evidence, reviewer approval and architect acceptance.
   With no tester step, the implementer's evidence serves;
-  with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro.
+  with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro, or holds a parent until the issues beneath it leave.
   Only the merger runs `gh pr merge`; nobody turns auto-merge on.
-
-- End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
-
-- A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
-  Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
 
 - Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset:
   a set variable outranks the gh directory the daemon refreshes.
@@ -113,7 +108,7 @@ and the production check after the close (`skill://legion-worker/references/merg
 
 ## References
 
-- The PR body, its `Thermo` line, the simplify pass: `skill://legion-worker/references/pr-body.md`.
+- The PR body, its `Thermo` line, the simplify pass, a comment's footer: `skill://legion-worker/references/pr-body.md`.
 
 - A check's result, the evidence each phase owes, a red or missing CI check, no surface for the changed path: `skill://legion-worker/references/results.md`.
 

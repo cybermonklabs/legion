@@ -91,6 +91,8 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 	done.Status = "done"
 	backlogged := newsMember(child, phase.Implementing)
 	backlogged.Status = "backlog"
+	checking := newsMember(child, phase.Step)
+	checking.Running = []RunningStep{{Phase: phase.Step, Role: "checker", Agent: "checker"}}
 
 	for _, tc := range []struct {
 		name  string
@@ -262,6 +264,15 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 				{Issue: newsRoot, Phase: phase.Accepting, Items: []NewsItem{specNews(new(4), 5)}},
 				{Issue: child, Phase: phase.Accepting, Items: []NewsItem{specNews(new(4), 5)}},
 			}},
+		},
+		{
+			name: "a step of a role the deployment defines is held by the role of the running step, as a phase of Legion's own workers is",
+			facts: NewsFacts{Steps: specOnly, Gates: newsRows(newsGate(DesignStepSpec, 5, 5)),
+				Members: []Issue{newsMember(newsRoot, phase.Implementing), checking},
+				Told: []DesignTold{architectTook(map[DesignStep]int{DesignStepSpec: 5}), holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 5}),
+					holderTook(child, map[DesignStep]int{DesignStepSpec: 4})}},
+			want: TreeNews{Members: []MemberNews{{Issue: child, Phase: phase.Step, Items: []NewsItem{specNews(new(4), 5)}}},
+				Untold: map[string]UntoldReason{newsRoot: UntoldTaken}},
 		},
 		{
 			name: "a deployment that gates no step owes nothing",

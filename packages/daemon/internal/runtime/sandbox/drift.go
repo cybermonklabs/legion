@@ -32,14 +32,15 @@ var _ runtime.IssuePodImage = (*Runtime)(nil)
 // are the daemon's (internal/daemon).
 //
 // A launch never replaces a live pod a round covers for one of these reasons (relaunch,
-// roundCovers): it keeps the pod and starts its role in it, since the round, not the launch, is
-// what ends the roles already running there. The one exception is the round's own: where the
-// round over the pod is over and no role process runs in it (Options.RoundPodEnds), the launch
-// replaces the pod as that round's replacement, under the round's mark, rather than start a role
-// the round would end a moment later. A pod no round covers has no such round to wait for, so its
-// launch replaces it for every kind of drift, as every launch did before the round existed — save
-// a launch installing a stale-plugin pair, which replaces such a pod for its shape only where the
-// pod was built on another image (podImageDrift).
+// roundCovers): it keeps the pod and starts its role in it, where the pod was built with that role
+// (a role the deployment defined since waits, runtime.ErrAwaitsPodUpdate), since the round, not the
+// launch, is what ends the roles already running there. The one exception is the round's own:
+// where the round over the pod is over and no role process runs in it (Options.RoundPodEnds), the
+// launch replaces the pod as that round's replacement, under the round's mark, rather than start a
+// role the round would end a moment later. A pod no round covers has no such round to wait for,
+// so its launch replaces it for every kind of drift, as every launch did before the round existed
+// — save a launch installing a stale-plugin pair, which replaces such a pod for its shape only
+// where the pod was built on another image (podImageDrift).
 
 // roundCovers is whether an update round can be opened over a pod of kind: the one predicate that
 // says who replaces such a pod when it has drifted, read by both sides of that answer. PodDrift
@@ -175,7 +176,7 @@ func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 		Roles:     roles,
 	})
 	if err != nil {
-		r.log.Error("sandbox runtime: the pod shape cannot be encoded; pods will be compared by image alone", "error", err)
+		r.log.Error("sandbox runtime: the pod shape cannot be encoded; pods will be compared by image and roles alone", "error", err)
 		return ""
 	}
 	return string(encoded)
@@ -254,10 +255,11 @@ func (c SandboxConfig) ofIssueLabel(label string) SandboxType {
 // requirements at admission, so a pod need not match the template it was made from, which is why
 // the repository cache's own check reads the template too (templateResized).
 //
-// A template carrying no shape at all was written before this release, and is compared by image
-// alone, exactly as imageDrift compares a pod: such a Sandbox never reads as having drifted
-// resources, volumes or mounts, whatever its pod holds, since nothing recorded what it was built
-// from and a guess would replace pods the operator never changed.
+// A template carrying no shape at all was written before this release, and is compared here by
+// image alone, exactly as imageDrift compares a pod (its roles are read apart, from its launcher's
+// command, rolesDrift): such a Sandbox never reads as having drifted resources, volumes or mounts,
+// whatever its pod holds, since nothing recorded what it was built from and a guess would replace
+// pods the operator never changed.
 //
 // Equality is semantic, not textual: a quantity spelled otherwise (1024Mi for 1Gi) is the same
 // reservation and the same disk, and a configuration that encodes differently but means the same
@@ -321,7 +323,8 @@ func sameQuantity(held, want string) bool {
 	return heldErr == nil && wantErr == nil && heldQuantity.Cmp(wantQuantity) == 0
 }
 
-// templateImageDrift is how a Sandbox written before this release is compared: the first container
+// templateImageDrift is how a Sandbox written before this release is compared by image (its roles
+// are compared apart, rolesDrift): the first container
 // of its stored template — an init container or the pod's own — running an image other than the
 // one this runtime launches every container with, as one reason. A pod is built whole from one
 // image, so one container's drift is the pod's.
@@ -391,8 +394,8 @@ func podImageDrift(s *sandbox, want string) bool {
 //
 // It is the configuration a running pod cannot be changed to carry: what its template was built
 // from (podShapeDrift — the image, the kind's reservation, the operator's volumes and mounts, the
-// disk, and the sandbox its issue's pod runs in — and leakCheckDrift, the leak check digest its
-// install is held to), the ServiceAccount the pod runs as
+// disk, and the sandbox its issue's pod runs in — rolesDrift, the roles its launcher runs, and
+// leakCheckDrift, the leak check digest its install is held to), the ServiceAccount the pod runs as
 // (accountDrift), and what driftedInPod reads of the pod itself whose worker can be asked to push
 // first — the operator's volume and mount holding its role's overlays, the secrets broker's
 // enrollment, the session store, and the GitHub owners its

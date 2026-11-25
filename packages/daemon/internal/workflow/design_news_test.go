@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -165,8 +166,8 @@ func treeSummaryNews() News {
 		Items: []NewsChange{specChanges(3), checksChanges()},
 		Members: []NewsMember{
 			{Issue: newsTree, Phase: phase.AwaitingPerson, State: NewsAwaitingPerson},
-			{Issue: "LEGION-209", Phase: phase.Implementing, State: NewsSentNow, Items: []NewsChange{specChanges(3)}},
-			{Issue: "LEGION-210", Phase: phase.Testing, State: NewsAtNextStart, Items: []NewsChange{specChanges(4)}},
+			{Issue: "LEGION-209", Phase: phase.Implementing, Role: claim.RoleImplementer, State: NewsSentNow, Items: []NewsChange{specChanges(3)}},
+			{Issue: "LEGION-210", Phase: phase.Testing, Role: claim.RoleTester, State: NewsAtNextStart, Items: []NewsChange{specChanges(4)}},
 			{Issue: "LEGION-211", Phase: phase.Accepting, State: NewsYouAnswer, Items: []NewsChange{specChanges(4)}},
 			{Issue: "LEGION-212", Phase: phase.Reviewing, State: NewsWorkUnchanged},
 			{Issue: "LEGION-213", Phase: phase.Planning, State: NewsAlreadyTaken},
@@ -212,8 +213,8 @@ func waitingSummaryNews() News {
 	return News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
 		Items: []NewsChange{specChanges(3)},
 		Members: []NewsMember{
-			{Issue: "LEGION-210", Phase: phase.Testing, State: NewsWaitsForTask, Items: []NewsChange{specChanges(4)}},
-			{Issue: "LEGION-211", Phase: phase.Accepting, State: NewsWaitsForTask, Items: []NewsChange{specChanges(4)}},
+			{Issue: "LEGION-210", Phase: phase.Testing, Role: claim.RoleTester, State: NewsWaitsForTask, Items: []NewsChange{specChanges(4)}},
+			{Issue: "LEGION-211", Phase: phase.Accepting, Role: claim.RoleArchitect, State: NewsWaitsForTask, Items: []NewsChange{specChanges(4)}},
 		}}
 }
 
@@ -407,8 +408,8 @@ func TestNewsOfAnItemWhoseReviewHistoryCouldNotBeReadSaysSoAndNotAFirstApproval(
 	first := firstApprovalHolderNews().Items[0]
 	summary := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
 		Members: []NewsMember{
-			{Issue: "LEGION-217", Phase: phase.Testing, State: NewsSentNow, Items: []NewsChange{unreadBaselineChanges()}},
-			{Issue: "LEGION-213", Phase: phase.Planning, State: NewsSentNow, Items: []NewsChange{first}},
+			{Issue: "LEGION-217", Phase: phase.Testing, Role: claim.RoleTester, State: NewsSentNow, Items: []NewsChange{unreadBaselineChanges()}},
+			{Issue: "LEGION-213", Phase: phase.Planning, Role: claim.RolePlanner, State: NewsSentNow, Items: []NewsChange{first}},
 		}})
 	t.Logf("the summary:\n%s", summary)
 	if line, want := newsLine(t, summary, "- LEGION-217, in testing:"), "owed version 5 of the spec document, since a version the daemon could not read"; !strings.Contains(line, want) ||
@@ -528,7 +529,7 @@ func TestAnUnchangedPairIsNamedWithNoChangeListInEveryForm(t *testing.T) {
 	summary := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
 		Items: []NewsChange{unchangedChanges()},
 		Members: []NewsMember{
-			{Issue: "LEGION-209", Phase: phase.Implementing, State: NewsSentNow, Items: []NewsChange{specChanges(3)}},
+			{Issue: "LEGION-209", Phase: phase.Implementing, Role: claim.RoleImplementer, State: NewsSentNow, Items: []NewsChange{specChanges(3)}},
 			{Issue: "LEGION-212", Phase: phase.Reviewing, State: NewsWorkUnchanged},
 		}})
 	t.Logf("the summary:\n%s", summary)

@@ -1,4 +1,4 @@
--- 20261117223524_deployment_roles.up.sql — a role the deployment defines, and the phase step that
+-- 20261124192838_deployment_roles.up.sql — a role the deployment defines, and the phase step that
 -- such a role works in.
 --
 -- A deployment defines roles of its own beside Legion's six, and a step of an issue's plan can
@@ -75,7 +75,7 @@
 --   alter table issue_releases add constraint issue_releases_role_check check (
 --     (kind = 'idle' and role in ('architect', 'planner', 'implementer', 'tester', 'reviewer', 'merger'))
 --     or (kind = 'unowned' and role = ''));
---   delete from schema_version where version = 20261117223524;
+--   delete from schema_version where version = 20261124192838;
 --   commit;
 --   SQL
 alter table issues drop constraint issues_phase_check;

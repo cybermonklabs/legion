@@ -72,7 +72,8 @@ type Inputs struct {
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
 // role whose phase entry and given entry each issue's view carries is the role that works its
-// current phase (phase.RoleFor), and the two handshake times beside them are that role's claim's,
+// current phase (record.Issue.RoleAt: phase.RoleFor, or at step the role of the running step),
+// and the two handshake times beside them are that role's claim's,
 // but for a tree's own root, whose times are its architect's claim's in every phase
 // (supervise.Claim.Handshake).
 func Project(ctx context.Context, in Inputs) (api.State, error) {
@@ -302,8 +303,8 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			}
 			// The architect is the issue's architect and no worker of its `workers` map, so no
 			// phase view is built for it. Its row is read all the same: the entry below is
-			// read off `phases` by the role that works the issue's phase (phase.RoleFor), which
-			// is the architect for a root at admitted.
+			// read off `phases` by the role that works the issue's phase (record.Issue.RoleAt),
+			// which is the architect for a root at admitted.
 			if item.Role == claim.RoleArchitect {
 				view.Architect = &claimView
 				continue

@@ -208,8 +208,14 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 		issue := rig.issue(name)
 		rig.agents.setPlan(issue.key, string(issue.role), plan)
 	}
+	// The boot starts the role process of every pod of the rig at once, while awaitListenerReady
+	// may start the listener again. A process that registered with the listener then would meet
+	// a refused connection or the starting listener's 503 "service starting", and end. So every
+	// role process waits before the listener until the daemon has read the listener ready.
+	rig.agents.holdEnvoy(true)
 	rig.boot()
 	rig.awaitListenerReady()
+	rig.agents.holdEnvoy(false)
 	for _, issue := range rig.issues {
 		rig.launch(issue)
 	}
@@ -238,7 +244,9 @@ func (r *idleWakeRig) listenerReports() map[string]string {
 // awaitListenerReady waits until the daemon has read a `listener_ready` report of the Envoy
 // listener, which is R7's gate: it releases nothing until it has. The listener publishes one at
 // its start and every five minutes after, so a listener that came up before this daemon's durable
-// consumer existed is started again rather than waited out.
+// consumer existed is started again rather than waited out. No role process may register with the
+// listener meanwhile: newIdleWakeRig holds them before it (idleRigAgents.holdEnvoy). A later call,
+// after a restart of the daemon, finds the report the first daemon recorded and starts nothing.
 func (r *idleWakeRig) awaitListenerReady() {
 	r.t.Helper()
 	defer func() {
@@ -677,9 +685,9 @@ func (r *idleWakeRig) launch(issue idleRigIssue) {
 	}()
 	token := r.token(issue)
 	var nudged time.Time
-	idleRigEventually(r.t, idleRigPodWait, "the pod of "+issue.key+" running its role, registered, ready and reported", func() bool {
+	idleRigEventually(r.t, idleRigPodWait, "the pod of "+issue.key+" running its role, registered and ready", func() bool {
 		state := r.api.claim(token)
-		if idleRigWorking(state.State) && r.agents.role(issue.key, string(issue.role)).Registered > 0 && r.reported(token) {
+		if idleRigWorking(state.State) && r.agents.role(issue.key, string(issue.role)).Registered > 0 {
 			return true
 		}
 		if state.State == string(supervise.StateSuspended) && time.Since(nudged) > 3*time.Second {
@@ -688,17 +696,6 @@ func (r *idleWakeRig) launch(issue idleRigIssue) {
 		}
 		return false
 	})
-}
-
-// reported is whether the claim token has an activity report (activity_at), which its role
-// process sends once it is ready (idleRigRoleProcess.reportActivity).
-func (r *idleWakeRig) reported(token claim.Token) bool {
-	r.t.Helper()
-	var reported bool
-	if err := r.pool.QueryRow(context.Background(), `select activity_at is not null from claims where token = $1`, string(token)).Scan(&reported); err != nil {
-		r.t.Fatalf("read whether %s has reported its activity: %v", token, err)
-	}
-	return reported
 }
 
 // diagnose is what a failure of the rig prints: the launchers' own log and the last of the

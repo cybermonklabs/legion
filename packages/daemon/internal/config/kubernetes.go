@@ -50,10 +50,11 @@ type Kubernetes struct {
 	// image probe run in gVisor whatever it says.
 	Sandbox SandboxConfig
 	// Resources are the reservations of the two pods the daemon builds: every issue pod's, whose
-	// one container runs all six workflow roles (runtime.kubernetes.resources.issue), and the
-	// controller's, whose pod a daemon under `controller: daemon` launches
-	// (runtime.kubernetes.resources.controller). After load both are filled field by field: the
-	// file's value where it sets one, the daemon's default (DefaultResources) otherwise. CPU and
+	// one container runs Legion's six workflow roles and each role of the deployment
+	// (runtime.kubernetes.resources.issue), and the controller's, whose pod a daemon under
+	// `controller: daemon` launches (runtime.kubernetes.resources.controller). After load both are
+	// filled field by field: the file's value where it sets one, the daemon's default
+	// (DefaultResources) otherwise. CPU and
 	// Memory are the container's limits; CPURequest and MemoryRequest its requests, each equal to
 	// its limit unless the file sets a lower one. With every request equal to its limit, as the
 	// defaults are, every Legion pod is Guaranteed and bursts past nothing; a request below its limit
@@ -1987,7 +1988,7 @@ const (
 // (INFRA-80). It kept each session as a file on the issue's disk, and that disk is now the pod's
 // own generic ephemeral volume, deleted with it: the file would die with the pod, the next
 // launch's resume would fail on the missing file (internal/launcher's sessionWritten), and three
-// such failures retire the claim.
+// such failures fail the claim.
 func readSessionStore(store, dsnSecret, database *yaml.Node) (ompsessions.Store, error) {
 	name, err := readString(store, sessionStoreKey)
 	if err != nil {
@@ -2002,7 +2003,7 @@ func readSessionStore(store, dsnSecret, database *yaml.Node) (ompsessions.Store,
 	case ompsessions.StoreVolume:
 		return ompsessions.Store{}, errors.New(sessionStoreKey + " must name a store that keeps sessions in a database, and is required (INFRA-80):" +
 			" an issue pod's disk is the pod's own ephemeral volume, deleted with the pod, so a session kept as a file on it ('pvc', also what an omitted session_store means) dies with it," +
-			" the next launch's resume fails on the missing file (internal/launcher's sessionWritten), and three such failures retire the claim")
+			" the next launch's resume fails on the missing file (internal/launcher's sessionWritten), and three such failures fail the claim")
 	default:
 		// A name this runtime does not take is told the two it does, and not `pvc`: the kind above
 		// refuses that one by name with its own reason, and a list of accepted values that holds a

@@ -54,8 +54,9 @@ func eachPart(parts embed.FS, dir string, visit func(name string, body []byte) e
 }
 
 // RoleReferences are the task agents and skills the shared role prompts name, each file named
-// `roles/<file>`: the daemon hands these prompts to every worker, so a gate or an image probe
-// resolves what they name beside the plugin's own.
+// `roles/<file>`: the daemon hands these prompts to its workers, the headless part and
+// worker-common.md to a role of the deployment too, so a gate or an image probe resolves what they
+// name beside the plugin's own.
 func RoleReferences() promptrefs.Names {
 	names := promptrefs.New()
 	if err := eachPart(roleParts, "roles", func(name string, body []byte) error {

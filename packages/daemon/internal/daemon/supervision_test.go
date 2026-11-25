@@ -1430,11 +1430,11 @@ func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const legion = "The roles of this deployment, each with the type of its step: planner (planning), implementer (implementation), tester (testing), reviewer (review), acceptance (review)"
 	deployed := []config.Role{
 		{Name: "checker", Type: "testing", PromptFile: "/etc/legion/checker.md", Model: "checker-model"},
 		{Name: "audit", Type: "security", PromptFile: "/etc/legion/audit.md"},
 	}
+	other := []config.Role{{Name: "critic", Type: "review", PromptFile: "/etc/legion/critic.md", Model: "critic-model"}}
 	gate := DesignGateFragment(config.DesignGateRootIssues.Steps())
 	addressing := func(roles []config.Role, issue string, role claim.Role) string {
 		t.Helper()
@@ -1450,6 +1450,8 @@ func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
 		}
 		return spec.Prompt.Addressing
 	}
+	pair := func(role config.Role) string { return string(role.Name) + " (" + string(role.Type) + ")" }
+	every := slices.Concat(deployed, other)
 
 	want := legion + ", checker (testing) with the model checker-model, audit (security)."
 	root := addressing(deployed, "S1-1", claim.RoleArchitect)
@@ -1462,11 +1464,14 @@ func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
 	if sub := addressing(deployed, "S1-2", claim.RoleArchitect); !strings.Contains(sub, want) {
 		t.Errorf("a sub-architect's addressing = %q, want it to hold %q", sub, want)
 	}
-	if none := addressing(nil, "S1-2", claim.RoleArchitect); !strings.Contains(none, legion+".") {
-		t.Errorf("an architect's addressing under a deployment that defines no role = %q, want it to hold %q", none, legion+".")
+	if check := " " + gate + " " + ProductionCheckFragment(""); !strings.HasSuffix(root, check) {
+		t.Errorf("the root architect's addressing = %q, want it to end with %q", root, check)
 	}
-	if tester := addressing(deployed, "S1-2", claim.RoleTester); strings.Contains(tester, "The roles of this deployment") {
-		t.Errorf("a tester's addressing = %q, want no list of the deployment's roles", tester)
+	tester := addressing(deployed, "S1-2", claim.RoleTester)
+	for _, role := range deployed {
+		if strings.Contains(tester, pair(role)) {
+			t.Errorf("a tester's addressing = %q, want no role of the deployment named, %q among them", tester, pair(role))
+		}
 	}
 }
 

@@ -635,7 +635,7 @@ func (m *Machine) adoptPodLoad() {
 // (letOutHeldLaunch, runWake), without a second token or wake line, since the launch passed the
 // wake gate before it parked (wake.paid, wake.ran). Either way the run first judges the work of
 // the start the launch is for again, as the turn of a launch the wake pacing parked does, since
-// the issue can leave that work during the wait (heldStartLeft); a start it ends gives its grant
+// the issue can leave that work during the wait (startLeftWhileParked); a start it ends gives its grant
 // back, which the end of the decision takes out of the gate for what the judgment left of the
 // claim (endPodPark). Its state is the claim's as the park leaves it, launching, which a request
 // that does not wait restores once the pause's gate holds the wake (dropWakeFor).
@@ -736,7 +736,7 @@ func podEndFor(state ClaimState, live podHoldEnd) podHoldEnd {
 // decision, a launch owed (pauseGate, pauseStopDue).
 //
 // A grant whose start's work the issue has left since the start's own judgment starts nothing
-// either: the run judges that work first (heldStartLeft) and suspends the claim with no process
+// either: the run judges that work first (startLeftWhileParked) and suspends the claim with no process
 // started (startLeft), or, where the record could not be read, leaves the launch to be raised anew
 // from the top (relaunchRefused). Either way the run puts the hold back on the machine's record,
 // so the end of this decision takes it out of the gate for what the judgment left of the claim
@@ -754,7 +754,11 @@ func podStartDue(m *Machine, ctx context.Context, _ Event) error {
 		waiting.park = nil
 		return m.pauseGate(ctx, waiting, pause)
 	}
-	m.wake, m.podPark = nil, nil
+	m.wake = nil
+	if left, err := m.startLeftWhileParked(ctx, waiting.start, waiting.again); left {
+		return err
+	}
+	m.podPark = nil
 	return waiting.run(ctx)
 }
 

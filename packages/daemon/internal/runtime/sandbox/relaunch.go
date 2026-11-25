@@ -90,7 +90,9 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // container on another image, the kind's reservation, an operator volume or mount, the disk size,
 // the ServiceAccount it runs as, the role's overlays, the secrets broker's enrollment, the session
 // store or the GitHub owners its gh volume projects a directory for (PodDrift) — is kept,
-// and this role is started in it.
+// and this role is started in it. A live pod built before this role, a role the deployment
+// defined since, is kept too, and this role is not started in it: the launch writes nothing and
+// waits for that pod's update round or its release (runtime.ErrAwaitsPodUpdate).
 // Such a pod is replaced by an update round, which first asks every role in it to do the steps
 // of its update message (supervise.UpdateTask) and answer, and then ends the pod (ReplacePod):
 // replacing it at a launch would end every role's turn in it and delete the issue's disk with
@@ -1059,7 +1061,7 @@ func sameAccessModes(a, b []corev1.PersistentVolumeAccessMode) bool {
 // old uid, the claim of the issue's volume (IssueClaimName) and reason.
 //
 // The one piece of the predecessor's metadata that travels is the pod it names as displaced
-// (displacedAnnotation): the five roles of the pod this launch just replaced are read as ended by
+// (displacedAnnotation): the other roles of the pod this launch just replaced are read as ended by
 // the daemon rather than dead only while their Sandbox names that pod (observe's names), and at
 // the cutover from the release before the pod-owned disk every running issue's launch comes
 // through here. Once the foreground delete's garbage collection is done and the object is gone,
@@ -1318,7 +1320,7 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 // and its gh directory an empty one (volumes).
 //
 // The pod projects the directories every role's bundle holds, and no more (ghDirsShared): a
-// projection item naming a key the role's Secret lacks stops the pod from starting, and the six
+// projection item naming a key the role's Secret lacks stops the pod from starting, and the
 // roles of an issue pod run as two Apps whose installations answer for themselves, so one App's
 // installation not reaching `acme/x` leaves acme out of that App's bundles alone (appauth's
 // mintBundle). A role whose bundle holds a directory outside that set simply does not project

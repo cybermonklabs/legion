@@ -140,7 +140,7 @@ func resetCritic(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 }
 
 // Only a completion of the entry that stands, on a row that holds that entry's task, moves a review
-// step's commit (R11): a completion the route read before the reset of the tree's generation and
+// step's commit: a completion the route read before the reset of the tree's generation and
 // the engine applies after it writes no commit of the generation before into the new one. With the
 // promotion (StartPromotedWorker raises the critic's row to the next entry, whose task names no
 // commit), a completion of the entry before the reset is refused HANDOFF_STALE_ENTRY under the

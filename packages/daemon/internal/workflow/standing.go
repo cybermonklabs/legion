@@ -375,7 +375,8 @@ func pullRequestBase(base string) string {
 // most one step of an issue, so its row holds that step's facts, and each step before a running
 // one completed in the run that led to it: a step that runs again after a return writes its new
 // record on the row before the step after it starts. A step whose role writes no handoff (the
-// owner's acceptance) has no line.
+// owner's acceptance, and a role of the deployment, whose verdict only the task of the step after
+// it names) has no line.
 func reportsBefore(rows []record.PhaseRow, w Walk, words []string, place int) string {
 	var text strings.Builder
 	for j := 1; j < place; j++ {

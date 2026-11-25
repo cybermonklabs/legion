@@ -336,9 +336,9 @@ func (r *Runtime) bindAtHello(ctx context.Context, s *sandbox, pod *corev1.Pod, 
 // token (errTokenNotCurrent): the credential the runtime held may be one a launch left behind when
 // it rewrote the Secret's token and then failed to bind its pod (writeLauncherSecrets,
 // bindLauncherSecrets). The read is held in its place, so that token's next hello is refused from
-// memory. The binding then writes the Secret of each role of the pod that no held credential binds
-// to it yet, and holds what it wrote (bindLauncherSecrets), so the next hello is accepted without a
-// request.
+// memory. The binding then writes the Secret of each role the pod was built with (templateRoles)
+// that no held credential binds to it yet, and holds what it wrote (bindLauncherSecrets), so the
+// next hello is accepted without a request.
 //
 // Its requests share one deadline, helloBindBound after it took the turn: apiTimeout, the longest
 // a hello waits for a binding (LauncherResolver). A binding still running past it would keep the
@@ -367,8 +367,7 @@ func (r *Runtime) bindCurrentPod(name string, sandboxUID, podUID types.UID, role
 	if v.sandbox == nil || v.sandbox.UID != sandboxUID || v.pod == nil || v.pod.UID != podUID || !bindable(v.sandbox, v.pod) {
 		return errNotBindable
 	}
-	kind, err := podKindOf(v.sandbox.Labels)
-	if err != nil {
+	if _, err := podKindOf(v.sandbox.Labels); err != nil {
 		return failed(fmt.Errorf("sandbox %s's pod: %w", name, err))
 	}
 	secret, err := r.kube.CoreV1().Secrets(r.namespace).Get(ctx, roleSecretName(name, role), metav1.GetOptions{})
@@ -383,8 +382,11 @@ func (r *Runtime) bindCurrentPod(name string, sandboxUID, podUID types.UID, role
 	if subtle.ConstantTimeCompare(current.hash[:], hash[:]) != 1 {
 		return errTokenNotCurrent
 	}
+	// The roles the pod was built with (templateRoles), the roles launcherBound holds a pod to: a
+	// pod recreated from a template built before a role of the deployment has no Secret of that
+	// role, and a binding that asked for one would fail at every hello of the pod.
 	var unbound []claim.Role
-	for _, each := range kind.roles(r) {
+	for _, each := range templateRoles(v.sandbox) {
 		if credential, held := r.launcherAuth.lookup(roleSecretName(name, each), sandboxUID); !held || credential.podUID != string(podUID) {
 			unbound = append(unbound, each)
 		}

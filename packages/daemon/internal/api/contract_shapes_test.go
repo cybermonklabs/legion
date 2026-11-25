@@ -40,12 +40,17 @@ import (
 // widened field is a shape change exactly as an added key is (answers.go's EnumeratedFields).
 //
 // A record holds keys and the domains of the fields that table declares, so a serving-down that
-// moves neither is outside what it can see. The one serving-down that moves no key is
+// moves neither is outside what it can see. Two serving-downs move no key. One is
 // withoutUnadmittedStrandedStates, which drops the entries of `strandedClaims` whose `state`
 // arrived above the caller's contract, today the word contract 56 added; the table does declare
 // that field, so a record below 56 admits two values where this daemon's own admits three, and a
-// body carrying the third below 56 is red here. state_caller_test.go holds the dropping itself,
-// entry by entry.
+// body carrying the third below 56 is red here. The other is the roles' band
+// (withoutDeploymentRoleClaims, withoutDeploymentRoles). Below deploymentRolesContract it drops
+// each entry of a role of the deployment and serves an issue at `step` as `implementing`. The
+// table declares those role and phase fields with their values up to that contract (answers.go's
+// EnumeratedFields). So a body carrying such a role or `step` below it is red here too.
+// state_caller_test.go and state_deployment_roles_test.go hold the dropping itself, entry by
+// entry.
 //
 // A settings key path is recorded only where a reader types it, as answers.go's typedSettings
 // declares and withoutUntypedSettings applies.

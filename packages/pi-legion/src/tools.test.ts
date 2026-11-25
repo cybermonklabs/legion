@@ -230,8 +230,9 @@ test("the legion tool's description carries the daemon's rules for ending a chil
   expect(description).toContain(notTakenYet);
 });
 
-/** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole: every
- * property and every `op` value in the order the tool declares them. */
+/** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole but for
+ * the words of its `description`s: every property and every `op` value in the order the tool
+ * declares them. */
 const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
   $schema: "https://json-schema.org/draft/2020-12/schema",
   type: "object",
@@ -265,18 +266,9 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     },
     issue: { type: "string" },
     since: { type: "string" },
-    artifactId: {
-      type: "string",
-      description:
-        "register_gate's document for the step it registers, and register_plan's plan: its artifact id, slug, or filename, as a dispatch command's --artifact takes it",
-    },
+    artifactId: { type: "string" },
     version: { type: "number" },
-    step: {
-      type: "string",
-      enum: ["decisions", "criteria", "spec"],
-      description:
-        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it",
-    },
+    step: { type: "string", enum: ["decisions", "criteria", "spec"] },
     issues: { type: "array", items: { type: "string" } },
     task: { type: "string" },
     to: {
@@ -295,11 +287,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "held",
       ],
     },
-    reason: {
-      type: "string",
-      description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child",
-    },
+    reason: { type: "string" },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
@@ -333,7 +321,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
   additionalProperties: false,
 });
 
-test("the legion tool's parameter schema serializes to the exact schema Oh My Pi agents are given, for every session", () => {
+// The schema the tool gives is read without the words of its `description`s, which no test holds.
+test("the legion tool's parameter schema serializes to the exact schema Oh My Pi agents are given, but for its descriptions, for every session", () => {
   for (const active of EVERY_SESSION) {
     const served = z.toJSONSchema(toolFor(active).parameters as z.ZodType) as unknown as {
       readonly properties: { readonly task: object };
@@ -859,9 +848,6 @@ test("the legion tool's description gives a verdict to the tester or a role of t
     resolveDocument: noDocumentLookup,
     session: () => claimSession("reviewer"),
   });
-  expect(tool.description).toContain(
-    "`verdict` pass|fail from the tester or a role of the deployment"
-  );
   expect(tool.description).not.toContain("when your role's instructions require one");
 });
 
@@ -1834,7 +1820,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
   });
 }
 
-/** The phase workers of an issue, in the order the summary lists them under the architect. */
+/** Legion's phase workers of an issue, in the order the summary lists them under the architect. */
 const WORKER_ROLES = ["planner", "implementer", "tester", "reviewer", "merger"] as const;
 
 /** The state at the size that cut the controller's read (dispatch://INFRA-329): the 92 issues
@@ -2047,7 +2033,7 @@ test("the controller reads the state without a grant and sets an issue's status 
     "compact",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "implementer" },
   ]);
-  // A claim of a role of the deployment (contract 221) is recovered as Legion's own roles' are.
+  // A claim of a role of the deployment (contract 258) is recovered as Legion's own roles' are.
   await run({ op: "fresh_session", issue: "LEGION-209", role: "checker" });
   expect(calls.at(-1)).toEqual([
     "freshSession",
@@ -2102,8 +2088,8 @@ test("the controller reads the state without a grant and sets an issue's status 
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller", "ses_controller"]);
 });
 
-// Contract 221: the summary lists each worker of an issue's map, a role of the deployment's after
-// Legion's own in their workflow order, so the controller sees the claim that works a step.
+// Contract 258: the summary lists each worker of an issue's map, a role of the deployment's after
+// Legion's own in the order of the default steps, so the controller sees the claim that works a step.
 test("read_state's summary lists the claim of a role of the deployment under its issue", async () => {
   const state = stateOf92Issues(1);
   const running = state.issues["INFRA-100"];

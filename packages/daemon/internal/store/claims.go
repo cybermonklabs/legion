@@ -775,6 +775,9 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 			return err
 		}
 	}
+	if err := warnSharedNewsCredit(ctx, tx, token, d, carried); err != nil {
+		return err
+	}
 	if err := settleDesignNews(ctx, tx, token, d, carried); err != nil {
 		return err
 	}

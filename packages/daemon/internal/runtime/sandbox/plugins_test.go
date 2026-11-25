@@ -698,10 +698,11 @@ func TestTwoRenderedInstallsSerialiseOnTheSharedBunCache(t *testing.T) {
 }
 
 // queuedInstalls and installBudget are what the wait must be big enough for, from the feature
-// rather than from the derivation: the last of a pod's six roles queues behind the five installs
-// before it, and a cold install of the plugin pair measured 505 milliseconds in an issue pod of
-// this cluster, so a second each is a generous budget. They are the lower bound the derivation
-// exists to leave room for, and nothing in installLockWait computes them.
+// rather than from the derivation: the last of the six roles of a pod whose deployment defines
+// none of its own queues behind the five installs before it, and a cold install of the plugin pair
+// measured 505 milliseconds in an issue pod of this cluster, so a second each is a generous
+// budget. They are the lower bound the derivation exists to leave room for, and nothing in
+// installLockWait computes them.
 const (
 	queuedInstalls = 5
 	installBudget  = time.Second
@@ -776,7 +777,7 @@ func TestTheInstallLockWaitIsABoundInProportionToTheRegistrationDeadline(t *test
 				t.Errorf("two waits of %ds and a second of install take %s, past the %s registration deadline, so a stalled lock is retired by the deadline rather than failing the launch by its own branch", wait, spent, deadline)
 			}
 			if queue := queuedInstalls * installBudget; deadline >= 3*queue && time.Duration(wait)*time.Second < queue {
-				t.Errorf("the wait at boot %s x %d intervals is %ds, less than the %s the queue this lock creates needs: the last of a pod's six roles waits for the %d installs before it, so a wait this short fails the launch the lock was added to save",
+				t.Errorf("the wait at boot %s x %d intervals is %ds, less than the %s the queue this lock creates needs: the last of Legion's six roles of a pod waits for the %d installs before it, so a wait this short fails the launch the lock was added to save",
 					tc.boot, tc.intervals, wait, queue, queuedInstalls)
 			}
 		})

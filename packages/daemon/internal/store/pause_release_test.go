@@ -256,6 +256,80 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 	}
 }
 
+// A cancel made while the project is paused arms the backstop of the worker of the issue's open
+// phase serving the issue's generation, and at step that worker is the role of the running step,
+// which the issue's plan rows name and the phase alone does not. The released checker of an issue
+// at step 2 of `implementer checker` gets the backstop, and the released implementer none.
+func TestACancelWhilePausedAtStepArmsTheBackstopOfTheRoleOfTheStep(t *testing.T) {
+	const checker = claim.Role("checker")
+	ctx := context.Background()
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	records := record.NewStore()
+	inTx(t, st, func(tx pgx.Tx) error {
+		v := record.PlanVersion{Issue: rootIssue, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: claim.Token("legion-legion-legion-208-architect"), GivenAt: pausedAt}
+		task := record.PlanTask{Issue: rootIssue, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+		steps := []record.PlanStep{
+			{Issue: rootIssue, Generation: 1, Task: "a", Position: 1, Role: string(claim.RoleImplementer), Type: "implementation"},
+			{Issue: rootIssue, Generation: 1, Task: "a", Position: 2, Role: string(checker), Type: "testing"},
+		}
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
+			return err
+		}
+		return records.MoveTask(ctx, tx, rootIssue, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+	})
+	if _, err := st.Pool().Exec(ctx, `update issues set phase = 'step' where key = $1`, rootIssue); err != nil {
+		t.Fatalf("move %s to step: %v", rootIssue, err)
+	}
+	servingReleasedClaim(t, st, claim.RoleImplementer)
+	servingReleasedClaim(t, st, checker)
+	markRelease(t, st, 18, 20, 22, 0, claim.RoleImplementer, checker)
+	pause, _ := pauseLegion(t, st, pausedAt)
+	at := pausedAt.Add(time.Minute)
+
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+		ReleaseCancelPause{At: at, Backstop: time.Hour, OpenWorkers: func(ctx context.Context, tx pgx.Tx, key string) ([]claim.Token, error) {
+			issue, err := records.Issue(ctx, tx, key)
+			if err != nil {
+				return nil, err
+			}
+			if issue == nil {
+				t.Fatalf("the paused issue %s was not read", key)
+			}
+			var workers []claim.Token
+			for _, step := range issue.Running {
+				if step.Held {
+					continue
+				}
+				token, err := claim.AgentToken("legion", key, step.Agent)
+				if err != nil {
+					return nil, err
+				}
+				workers = append(workers, token)
+			}
+			return workers, nil
+		}})
+	if err != nil {
+		t.Fatalf("cancel the release while paused: %v", err)
+	}
+	if cancelled.Pause != pause.ID || !slices.Equal(cancelled.Stopped, []claim.Role{checker, claim.RoleImplementer}) {
+		t.Fatalf("the cancel = %+v; want pause %d with the checker and the implementer stopped", cancelled, pause.ID)
+	}
+	rows, err := st.Pool().Query(ctx, `select role from pod_wake_backstops where issue = $1 and not fired and due_at = $2 order by role`,
+		rootIssue, at.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("read the backstops of %s: %v", rootIssue, err)
+	}
+	armed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the backstops of %s: %v", rootIssue, err)
+	}
+	if want := []string{string(checker)}; !slices.Equal(armed, want) {
+		t.Fatalf("the cancel at step 2 armed the backstops of %v, want %v, the role of the running step", armed, want)
+	}
+}
+
 // Decision 12 of dispatch://INFRA-3759, for the pod of another project's issue: a cancel of its
 // release reads the pause of the project whose release it is, never the pause of the issue key's
 // project, so while LEGION is paused it records the roles the release stopped as stopped by

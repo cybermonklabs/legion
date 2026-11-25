@@ -212,8 +212,8 @@ var ScratchVariables = []string{"TMPDIR", "XDG_CACHE_HOME", "XDG_DATA_HOME", "GO
 // The shim is what makes them, not the kubelet: a subPath mount per directory would have the
 // kubelet create each one, but it would also contradict the rule that these paths sit on the issue
 // volume's own mount (sandbox.TestTheIssuesRolesShareOneScratchAndOneGoCachePair), ask the
-// kubelet for twelve directories — the four the issue's roles share, the two Go caches beside
-// them and a state home for each of the issue pod's six roles — and rest on an unproven
+// kubelet for a directory each — the four the issue's roles share, the two Go caches beside
+// them and a state home for each role of the issue pod — and rest on an unproven
 // ownership behaviour: what mode a kubelet gives a nested sub-path directory it creates on a
 // fresh volume. The shim runs as the pod's own user, which can write the volume, and makes
 // exactly the directories the runtime told it to use, read from the same environment the agent

@@ -39,10 +39,10 @@ const refreshWindow = 20 * time.Minute
 // the daemon does changes it: only an account approving the grant does, which the next ask past
 // this window finds. Without the memory every refresh of every role of every live pod asks the
 // refused scope again, each exchange preceded by an uncached grant read — for one refused scope
-// of an issue pod, six role bundles times two exchanges a minute — and a rate limit then fails
-// every bundle of the project, the write leases included. Five minutes keeps that at one
-// exchange per scope per five minutes, while leaving an account's fix to reach the daemon well
-// inside the hour an installation token lasts.
+// of an issue pod, a role bundle for each role of the pod times two exchanges a minute — and a
+// rate limit then fails every bundle of the project, the write leases included. Five minutes
+// keeps that at one exchange per scope per five minutes, while leaving an account's fix to reach
+// the daemon well inside the hour an installation token lasts.
 const narrowingRefusalWindow = 5 * time.Minute
 
 // AppRole names the GitHub App a Legion role acts as.

@@ -27,9 +27,9 @@ import (
 func noAppOwners(claim.Role) []string { return nil }
 
 // A role the deployment defines launches with its own prompt file between the headless mechanics
-// and Legion's worker part (prompts.ComposeStep), so it is told the SEPARATE-POD line every phase
-// worker is told, and with the model its settings give it; one of Legion's roles names no model;
-// a role the deployment does not define is refused, with no prompt and no panic.
+// and Legion's worker part (prompts.ComposeStep), and with the model its settings give it; one of
+// Legion's roles names no model; a role the deployment does not define is refused, with no prompt
+// and no panic.
 func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
@@ -70,10 +70,8 @@ func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	own, line := strings.Index(prompt, "Run the checks and report pass or fail."), strings.Index(prompt, "SEPARATE-POD <ISSUE> <task> <reason>")
-	if own < 0 || line < own || !strings.Contains(prompt, "Legion starts no pod for this line") {
-		t.Errorf("the checker's composed prompt holds its own text at %d and the SEPARATE-POD line at %d, want the text first and the line after it, with %q",
-			own, line, "Legion starts no pod for this line")
+	if !strings.Contains(prompt, "Run the checks and report pass or fail.") {
+		t.Errorf("the checker's composed prompt lacks the text of its own prompt file:\n%s", prompt)
 	}
 
 	tester, err := launch(claim.RoleTester)

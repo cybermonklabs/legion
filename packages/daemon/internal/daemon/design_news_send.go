@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -540,7 +541,11 @@ type memberDraft struct {
 // with its items and how its holder is told. An owed item the record cannot tell yet
 // (newsRecorded.change) is named by none.
 func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
-	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, State: m.state, Architect: m.architect}
+	role := phase.RoleFor(m.issue.Phase)
+	if steps := m.issue.RunningAt(m.issue.Phase); len(steps) != 0 {
+		role = steps[0].Role
+	}
+	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, Role: role, State: m.state, Architect: m.architect}
 	if len(m.owed) > 0 && settlementOf(m.owed, recorded, m.openingOwed) == settleRaise {
 		member.State = workflow.NewsWorkUnchanged
 		return member

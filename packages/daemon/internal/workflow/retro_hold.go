@@ -149,8 +149,9 @@ func (e *Engine) releaseHeldParents(ctx context.Context, tx pgx.Tx, written []st
 // retro's Dispatch status is queued through Engine.status, since the
 // hold wrote none and the record still holds the status of the last step (PhaseStatus(held) is
 // empty). The implementer is started with the task the pass into the retro would have started it
-// with (transition): the handoff of the step the task passed last, which the hold kept on that
-// step's phases row, and the pull request. Its start raises its entry and the count of starts of
+// with (transition): the report of the step the task passed last, its handoff, or the verdict of
+// a role of the deployment, which writes none, as the hold kept them on that step's phases row,
+// and the pull request. Its start raises its entry and the count of starts of
 // the retro's place (start, which writes the retro's step), not restart, which raises neither,
 // since this retro never ran. The act is children_done, which the log line names: no row of the
 // table moves a held issue.

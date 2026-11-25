@@ -361,7 +361,7 @@ test("a sleeping view of an ordinary conversation comes back with its fastest wa
 // machine is slow: nothing in this pod can measure its load - `/proc/loadavg` reads 0.00 with
 // both CPUs busy and `/proc/stat` reports 91% busy either way, both blind under gVisor
 // (measured 2026-11-10) - so a host that is slow for as long as it runs and another of this
-// pod's six roles working beside this run are the same reading from in here. Either way the
+// pod's roles working beside this run are the same reading from in here. Either way the
 // fastest wake is the page's own floor: the one slice of the eight the machine left whole, and
 // what the view does in that slice is what it does on a machine that is not busy elsewhere.
 //

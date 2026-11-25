@@ -11,7 +11,7 @@ import (
 // `legion config check` reads the words of a hook that names a `prompt_file` as boot does
 // (daemon.CheckStart): a file that holds words passes, and a missing one is refused with exit 1,
 // no OK line, and boot's own sentence naming the hook and the operator's path. The loader reads
-// no file it names, so this check is the one proof that a hook's words can come from a file;
+// no hook's file, so this check is the one proof that a hook's words can come from a file;
 // without the read, a deployment would start on a hook whose prompt says nothing.
 func TestConfigCheckReadsAHooksPromptFile(t *testing.T) {
 	legionState(t)

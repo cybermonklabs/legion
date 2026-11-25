@@ -591,6 +591,7 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		p    phase.Phase
+		step claim.Role
 		want claim.Role
 	}{
 		{name: "implementing", p: phase.Implementing, want: claim.RoleImplementer},
@@ -599,6 +600,7 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 		{name: "accepting is the architect's", p: phase.Accepting},
 		{name: "awaiting a person", p: phase.AwaitingPerson},
 		{name: "done", p: phase.Done},
+		{name: "step is its running step's role", p: phase.Step, step: "checker", want: "checker"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issue := record.Issue{Phase: tc.p}

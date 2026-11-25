@@ -10,7 +10,7 @@ import (
 
 // deploymentRolesVersion is the version of the migration this file tests, so a test can migrate
 // through everything before it whatever lands beside it.
-const deploymentRolesVersion = 20261117223524
+const deploymentRolesVersion = 20261124192838
 
 // wayBackOpening opens the way back in a migration's header, and wayBackClosing ends it: what
 // stands between them is what psql reads on its standard input.
@@ -81,7 +81,7 @@ func runWayBack(t *testing.T, store *Store, sql string) error {
 	return err
 }
 
-// 20261117223524 lets the store hold a role a deployment defines: a claim, a phases row and an
+// 20261124192838 lets the store hold a role a deployment defines: a claim, a phases row and an
 // idle release of a name of the role grammar, `^[a-z][a-z0-9-]{0,31}$`, and an issue that stands
 // at the phase step, where such a role works, or is held from it. A name outside the grammar is
 // still refused by the same checks, and the controller's claim keeps its own shape. Before the

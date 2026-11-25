@@ -1,6 +1,6 @@
 // Whether any pod of a run carried a value of its Sandbox-owned provisioning or role Secrets in a
 // container's command, args or environment, judged against every credential those Secrets held for
-// the whole run. The provisioning Secret and six role-private `-boot` Secrets can change between
+// the whole run. The provisioning Secret and each role's role-private `-boot` Secret can change between
 // generations, while the pod watch records no Secret value, so a check made after the fact reads
 // the wrong values or none. This watches the run's Secrets from the start and keeps each value in
 // memory only: no value is printed or written anywhere. On SIGTERM it reads the pod watch the

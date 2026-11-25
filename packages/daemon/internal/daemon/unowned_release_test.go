@@ -715,7 +715,7 @@ func TestAReleasedKeptSandboxWhoseLaunchFailedIsReleasedOnce(t *testing.T) {
 				hold, marked, queued, workflow.IdleHoldUnownedSandboxGone)
 		}
 	}
-	// recordedAfterDeletes fails the test unless writes delete each of the seven Secrets of the
+	// recordedAfterDeletes fails the test unless writes delete each of the Secrets of the
 	// Sandbox name, each delete answered status, and then write the release's record, answered OK,
 	// once and after the last delete.
 	recordedAfterDeletes := func(t *testing.T, writes []apiWrite, name string, status int) {

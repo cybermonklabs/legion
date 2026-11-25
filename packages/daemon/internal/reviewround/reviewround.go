@@ -2,7 +2,7 @@
 // commit the reviewer's newest recorded deciding review read, and the entry of its round. Two
 // places write them, and both through Sentences: the workflow, onto each task of the reviewer it
 // queues (workflow's namingTheReviewRound) and onto a reviewer's start queued for news alone,
-// which the daemon's start executor names when it composes that task (workflow.ReviewerTask,
+// which the daemon's start executor names when it composes that task (workflow.RoundTask,
 // from the daemon's newsForStart); and the claim's send of a task that no such queue named, a
 // task the release before this one queued or an operator wrote (supervise's Delivery.message),
 // which names neither. One reads them back off a task's end, through Split: the daemon's render of

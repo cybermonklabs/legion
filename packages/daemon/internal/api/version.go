@@ -342,7 +342,7 @@ package api
 // directory it made is gone. `runtime.kubernetes.session_store` must name a store that keeps
 // sessions in a database, `postgres` or `cloudsql-iam` — an omitted key is the same refusal as an
 // explicit `pvc` — since a session kept as a file on the pod's disk would die with the pod and the
-// next launch's resume would fail on the missing file, retiring the claim after three failures. A
+// next launch's resume would fail on the missing file, failing the claim after three failures. A
 // daemon before 37 sets `LEGION_EXPECT_ISSUE_VOLUME=true` on a pod whose `workspace-init` from
 // this commit knows neither that name nor exit 3, so a lost disk is
 // provisioned afresh and reported as provisioned, and that daemon resumes a role onto a session
@@ -3399,54 +3399,6 @@ package api
 // `OwnerPlanContract`. Read the base's own number and every open pull request again at the next
 // merge rather than from this line.)
 //
-// 221: the roles a deployment defines run steps of an issue's task. An issue whose running step is
-// of such a role stands at a new phase, `step`, of `GET /legion/v1/state`'s `phase`, `heldFrom` and
-// a claim view's `pendingTask.phase`, and names that role in a new key, `issues.<key>.stepRole`; a
-// stranded claim and a waiting wake may name such a role. An issue names, in a new key
-// `issues.<key>.startWaitsForPod`, the roles whose start waits because its pod was built before the
-// deployment defined them, absent where none waits. A caller whose contract is below 221 is served
-// an issue at step as at work, at `implementing`, its hold from step as one from `implementing`, a
-// pending task at step as one at `implementing`, no `stepRole`, no `startWaitsForPod` (a plugin
-// before memoryContract reads an issue as a strict object and would refuse the whole state over
-// it), and no stranded claim or waiting wake of a role outside Legion's six (one band of
-// shaping.go at `deploymentRolesContract`), and the daemon logs one line for each claim it leaves
-// out (`leftAClaimOut`); the issue stays in `issues` and in `admission.active`. Such a role's agent
-// completes its step with `POST /legion/v1/handoff/complete` and the verdict `pass` or `fail` and
-// a commit, and no handoff record (`400 STEP_VERDICT_REQUIRED`); `VERDICT_ROLE_FORBIDDEN` now
-// reads `only a tester or a role of the deployment reports a verdict`. `POST
-// /legion/v1/phase/backward` takes such a role's grant, and one optional field, `returnTo`, the
-// place of the step the move returns to (below 1 `400 INVALID_RETURN_TO`; a place the workflow may
-// not name, or a `to` that is not the phase that step runs as, `409 BACKWARD_REFUSED`). `readBody`
-// refuses an unknown field, so a plugin sending `returnTo` to a daemon below 221 would have the
-// move refused; the bump is why the two never meet (`deploymentRolesContract`). `fresh_session`
-// and `compact` name the roles `architect, planner, implementer, tester, reviewer, merger, or a role
-// of this deployment`. From this entry the last number of answers.go's SupportedContracts is
-// `api.deploymentRolesContract`.
-// (This entry takes 221, above the base's 211 (the owner's plan, the entry above) and above every
-// number another open pull request declared, with 218 to 220 left free: a reading of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 422 open pull requests, made
-// between 2026-11-21T22:24:28Z and 22:24:45Z, read all 422 and found 211 declared by #4611 and
-// #4902, 213 by #4030 and #4553, 214 by #4592 and #4596, 215 by #4065, 216 by #3831, #4173, #4259
-// and #4540, 217 by #2230, #4273, #4590 and #4771, and nothing at 212, from 218 to 220, or at 221
-// or above. Read the base's own number and every open pull request again at the next merge rather
-// than from this line.)
-//
-// 222: a claim of `GET /legion/v1/state`'s `strandedClaims` names its claim token in a new key,
-// `strandedClaims.*.token`. Two claims of one issue can hold one role, a keyed agent's on another
-// role's step among them, so the issue and the role no longer name one claim; the boot's log line
-// and `legion state` read who suspended each stranded claim by that token (api.Suspenders), so
-// each takes the move its own suspender calls for. A caller whose contract is below 222 is served
-// each stranded claim without the key (one band of shaping.go at `strandedTokenContract`): a
-// plugin before INFRA-1048 reads a stranded claim as a strict object and would refuse the whole
-// state over it. From this entry the last number of answers.go's SupportedContracts is
-// `api.strandedTokenContract`, and `deploymentRolesContract` stays 221.
-// (This entry takes 222, the lowest number above the base's 221 (the entry above) that no other
-// open pull request declared: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head, by the
-// contract check's own reader (declared_by_open_pull_requests), of each of the 428 open pull
-// requests, made between 2026-11-22T04:42:58Z and 04:46:33Z, found 220 the highest number
-// declared and none at 222. Read the base's own number and every open pull request again at the
-// next merge rather than from this line.)
-//
 // 228: INFRA-1575 -- the intake gives up on a message whose handling keeps failing, keeps it
 // whole, tells the controller, and lets the operator or the controller replay it or discard it.
 // `GET /legion/v1/state` gains `intakeGiveUps` (`api.IntakeGiveUpsView`), written on every body:
@@ -3697,6 +3649,57 @@ package api
 // 256, so this entry kept 256, and the list ends priorityContract, causeTimesContract. Read the
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
+// 258: the roles a deployment defines run steps of an issue's task. An issue whose running step is
+// of such a role stands at a new phase, `step`, of `GET /legion/v1/state`'s `phase`, `heldFrom` and
+// a claim view's `pendingTask.phase`, and names that role in a new key, `issues.<key>.stepRole`; a
+// stranded claim and a waiting wake may name such a role. An issue names, in a new key
+// `issues.<key>.startWaitsForPod`, the roles whose start waits because its pod was built before the
+// deployment defined them, absent where none waits. A caller whose contract is below 258 is served
+// an issue at step as at work, at `implementing`, its hold from step as one from `implementing`, a
+// pending task at step as one at `implementing`, no `stepRole`, no `startWaitsForPod` (a plugin
+// before memoryContract reads an issue as a strict object and would refuse the whole state over
+// it), and no stranded claim or waiting wake of a role outside Legion's six (one band of
+// shaping.go at `deploymentRolesContract`), and the daemon logs one line for each claim it leaves
+// out (`leftAClaimOut`); the issue stays in `issues` and in `admission.active`. Such a role's agent
+// completes its step with `POST /legion/v1/handoff/complete` and the verdict `pass` or `fail` and
+// a commit, and no handoff record (`400 STEP_VERDICT_REQUIRED`); `VERDICT_ROLE_FORBIDDEN` now
+// reads `only a tester or a role of the deployment reports a verdict`. `POST
+// /legion/v1/phase/backward` takes such a role's grant, and one optional field, `returnTo`, the
+// place of the step the move returns to (below 1 `400 INVALID_RETURN_TO`; a place the workflow may
+// not name, or a `to` that is not the phase that step runs as, `409 BACKWARD_REFUSED`). `readBody`
+// refuses an unknown field, so a plugin sending `returnTo` to a daemon below 258 would have the
+// move refused; the bump is why the two never meet (`deploymentRolesContract`). `fresh_session`
+// and `compact` name the roles `architect, planner, implementer, tester, reviewer, merger, or a role
+// of this deployment`. From this entry the last number of answers.go's SupportedContracts is
+// `api.deploymentRolesContract`, after `api.causeTimesContract` (256).
+// (This entry took 255, the lowest number above main's 232 and above every number an open pull
+// request declared, and outside 246 to 250, which another change holds: a reading of `const
+// DaemonAPIVersion` at the head of each of the 480 open pull requests, made between
+// 2026-11-24T13:09:22Z and 13:11:08Z, read all 480 and found 254 the highest declared, and 229 to
+// 240, 242 to 246, 250 and 251 among the numbers below it. The entry first took 221, the lowest
+// free number at a reading of 2026-11-21, then 243 at the forward merge of main on 2026-11-24 that
+// brought main's 220; by the forward merge that brought main's 228 another open pull request
+// declared 243 and others declared numbers up to 251, so this entry moved to 252; by the forward
+// merge that brought main's 232 another open pull request declared 254, so this entry moved to 255.
+// The forward merge that brought main's 246 (the pod hold's entry) kept 255: a reading of the 477
+// open pull requests, made between 2026-11-24T15:59:22Z and 16:01:21Z, read all 477 and found 255
+// declared by this change alone. The forward merge that brought main's 250 and 256 (the entries
+// above this one) moved this entry to 258, the lowest number above main's 256 that no open pull
+// request declared: a reading of `const DaemonAPIVersion` at the head of each of the 486 open pull
+// requests, made between 2026-11-24T19:07:20Z and 19:10:45Z, read 485 of them and found 255 (this
+// change at its earlier number), 256 (#5428), 257 (#4580), 261 (#5332), 262 (#5204) and 265
+// (#5285) at 255 or above. Read main's own number and every open pull request again at the next
+// merge rather than from this line.)
+//
+// 259: a claim of GET /legion/v1/state's strandedClaims names its claim token in the new key
+// strandedClaims.*.token. Two claims of one issue can hold one role, so the issue and role no
+// longer name one claim. The boot log and legion state read who suspended each stranded claim
+// by that token (api.Suspenders). A caller below 259 is served each claim without its token
+// (shaping.go's strandedTokenContract), because an earlier plugin reads a strict object.
+// This unreleased entry first took 222; the coordinated allocation places it after the
+// deployment roles at 258. This branch carries that allocation without changing its owner's head.
+// SupportedContracts names api.strandedTokenContract after api.deploymentRolesContract.
+//
 // 263: each task of an owner's plan works in a working copy of its own, and the daemon's
 // adoption names it. The worker frame `adopt-working-copy` (`shimwire.AdoptWorkingCopy`) gains
 // `branch`, the branch of the task whose working copy the shim adopts: absent for the issue's own

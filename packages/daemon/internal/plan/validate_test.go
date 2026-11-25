@@ -36,7 +36,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 			t.Fatalf("%v refused: %+v", taken, r)
 		}
 	}
-	// architect, merger and controller are no roles of a step: the step roles are Legion's five.
+	// architect, merger and controller are no roles of a step: Legion's step roles are five, and a deployment adds its own.
 	for _, role := range []string{"architect", "merger", "controller"} {
 		r := Validate(oneTask("a", "implementer "+role), d)
 		want := Refusal{Task: "a", Reason: "step 2 of task a names the role " + role + ", which neither the deployment nor the plan defines."}

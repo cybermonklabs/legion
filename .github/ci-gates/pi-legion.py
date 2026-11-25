@@ -2,9 +2,14 @@
 # (pi-legion-build.py) is the half a pull request runs, the typecheck and the pack.
 GATE = gate("pi_legion", "pi-legion", runs=[
     script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
-               'const result = Bun.spawnSync(["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args], {',
+               'const go = ["go", command, "-overlay", overlay, "./cmd/daemon-pane", ...args];',
                f"daemon-pane.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="build",
                overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
+    script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
+               'const go = ["go", command, "-overlay", overlay, "./cmd/daemon-pane", ...args];',
+               f"daemon-pane.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="test",
+               overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go",
+                        f"{DAEMON}/cmd/daemon-pane/main_test.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane_test.go"}),
 ], reads=reads(
     ("packages/pi-legion/**", f"{at('pi-legion', 'Test pi-legion')} in packages/pi-legion"),
     ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:77,319 and legion-role-claim.test.ts:14,100 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1072"),
@@ -39,7 +44,7 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                                              "rig.test.ts:653 sources it for the safe_url row, :699 for the services_up row and :1541 copies it beside rig.sh, and "
                                              "rig-isolation.test.ts:77-79 copies it into its scratch checkout beside rig.sh"),
     (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1538-1545 copies .omp-pin"),
-    ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:29-30)"),
+    ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run or go test (:48-54)"),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")
   + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")

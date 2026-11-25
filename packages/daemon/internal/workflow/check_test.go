@@ -139,7 +139,7 @@ func TestAPendingReportSuspendsTheTesterAfterTheLooksStart(t *testing.T) {
 
 // A pass closes a child's check as recorded and ends the tester's part in it: its claim is
 // closed (issue_close) and the child's Sandbox deleted with the pod it ran in (an IssueSuspend),
-// since its five other claims retired at the close. A fail closes it as a defect the same way.
+// since every other claim of it retired at the close. A fail closes it as a defect the same way.
 func TestAPassOrFailOfAChildsCheckClosesItAndDeletesItsSandbox(t *testing.T) {
 	for _, tc := range []struct {
 		verdict string

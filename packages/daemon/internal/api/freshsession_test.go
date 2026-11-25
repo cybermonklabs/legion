@@ -826,8 +826,9 @@ func TestAFreshSessionRefusedForATurnThatStartedUnderItHoldsNoSuspension(t *test
 	}
 }
 
-// `controller` is no role the controller's own tool may name: the roles are the six a claim can
-// be on, and the project's controller is none of them. The refusal comes before the grant is
+// `controller` is no role the controller's own tool may name: the roles a claim can be on are
+// Legion's six and each role of the deployment, and the project's controller is none of them. The
+// refusal comes before the grant is
 // redeemed, as every check of this route's body does.
 func TestTheControllersFreshSessionRefusesTheRoleController(t *testing.T) {
 	h := freshSessionHarness(t, &phaseRestarter{})

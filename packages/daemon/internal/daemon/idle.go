@@ -86,7 +86,8 @@ func (w *workflowRuntime) tickIdle(ctx context.Context) {
 }
 
 // releaseIdlePods decides each pod of the project in turn. One issue's failure is logged and the
-// rest are decided: a release is a saving, never a correctness step, and nothing waits on it.
+// rest are decided: a release is a saving and never a correctness step, and the one start that
+// waits on it, a start whose pod was built before its role, is served by the update round too.
 func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 	if !w.listenerLive(ctx) {
 		return
@@ -173,8 +174,9 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 // releaseUnownedPods decides each pod of the project that no claim of its issue can use: an
 // issue whose every claim is failed, retired or suspended holds a pod of 3 CPU and 19 GiB that
 // no role can take a turn in, and this is the pass that releases it. One issue's failure is
-// logged and the rest are decided, as the idle pass has it: a release is a saving, never a
-// correctness step, and nothing waits on it.
+// logged and the rest are decided, as the idle pass has it: a release is a saving and never a
+// correctness step, and the one start that waits on it, a start whose pod was built before its
+// role, is served by the update round too.
 //
 // It writes one line saying what the whole pass did — how many issues it decided, how many it
 // released and how many it held under each reason — whenever it decided at least one. That line
@@ -303,8 +305,8 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 			return err
 		}
 		store.OnCommit(ctx, func() {
-			// The line that ends this release is the teardown's, and it is the one Info line of a
-			// release no role is waiting on; the mark is a Debug line here for that reason.
+			// The line that ends this release is the teardown's, and it is the release's one Info
+			// line, whoever waits on it; the mark is a Debug line here for that reason.
 			w.log.Debug("unowned release: releasing an issue's pod, which no claim of it can use",
 				"issue", issue, "idle", w.idlePeriod.String())
 			w.wakeOutbox(issue, record.OutboxKindSupervise)
@@ -348,8 +350,8 @@ func operatorSuspended(view pods.IdleView) []string {
 }
 
 // podWaitHeldWords is what the controller is told of the roles waiting, whose start waits for
-// the pod of issue that an operator's suspension of the claims suspended holds (ruling 18 point
-// 4), for the controller agent in plain words.
+// the pod of issue that an operator's suspension of the claims suspended holds, for the controller
+// agent in plain words.
 func podWaitHeldWords(issue string, waiting []claim.Role, suspended []string, idle time.Duration) string {
 	names := make([]string, len(waiting))
 	for i, role := range waiting {

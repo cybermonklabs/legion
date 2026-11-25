@@ -22,7 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// The places of today's fixed phases where a step runs (workflow's placeOnWalk), which a start
+// The places in the default steps where a step runs (workflow's placeOnWalk), which a start
 // records its agent under.
 var (
 	implementingPlace = record.StepPlace{Task: "default", Kind: "step", Place: 2}

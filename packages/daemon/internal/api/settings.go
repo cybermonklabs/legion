@@ -310,7 +310,8 @@ type TolerationSettings struct {
 }
 
 // PodResourcesSettings is the settled reservations of the two pods the daemon builds: every issue
-// pod's, whose one container runs all six workflow roles, and the controller's pod's.
+// pod's, whose one container runs Legion's six workflow roles and each role of the deployment,
+// and the controller's pod's.
 type PodResourcesSettings struct {
 	Issue      ReservationSettings `json:"issue"`
 	Controller ReservationSettings `json:"controller"`

@@ -2539,9 +2539,9 @@ func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
 // noPluginInstall is c's launch installing no plugin at all, whatever contract the claim records:
 // the runtime is Kubernetes and the claim's role runs on Claude Code, whose plugin there is the
 // worker image's own claude-envoy. No install reaches it (specs.stalePluginInstall installs none
-// for that backend, and no workflow releases claude-envoy) and no relaunch moves it, because the
-// launch keeps the pod the claim already runs in: only a new image carries another claude-envoy,
-// which is what the pod round replaces the pod for.
+// for that backend, and no npm install reaches the image's own) and no relaunch moves it, because
+// the launch keeps the pod the claim already runs in: only a new image carries another
+// claude-envoy, which is what the pod round replaces the pod for.
 //
 // Under tmux a Claude Code role is exempt from nothing. Its pane loads the claude-envoy held at
 // LEGION_CLAUDE_PLUGIN_DIR (resolveClaude; tmux's ClaudeLaunch, whose MCP configuration and

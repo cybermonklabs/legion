@@ -2937,7 +2937,7 @@ func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ct
 // claim's and nothing else (Runtime.Release, releaseControllerSandbox) — so an issue's pod and the
 // disk it owns go with the separately fenced IssueSuspend, or with the tree cleanup once every
 // claim of the tree has retired. That is why a merged close leaves the implementer's pod standing:
-// its five siblings take this close and no IssueSuspend is queued (workflow/linger.go). A release
+// every other claim of the issue takes this close and no IssueSuspend is queued (workflow/linger.go). A release
 // that fails changes nothing, so the close can be asked again.
 //
 // The claim keeps the session it recorded, both halves of it. A done issue is reopened — a person

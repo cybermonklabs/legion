@@ -581,7 +581,7 @@ const (
 	VolumeReportSizesMissing = 50
 	// VolumeReportRefusedReads is how many refused /proc reads a report names (RefusedReads): one
 	// per process of the pod the kernel refused a read of, or one for /proc itself. A pod runs
-	// six roles and their children, and an operator who must go and look needs a handful of pids
+	// its roles and their children, and an operator who must go and look needs a handful of pids
 	// rather than one per process.
 	VolumeReportRefusedReads = 25
 	// VolumeReportFaults is how many recovered panics a report carries (Faults), the newest ones.

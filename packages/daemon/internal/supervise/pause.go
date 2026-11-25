@@ -173,7 +173,7 @@ func (m *Machine) pauseGate(ctx context.Context, waiting *wake, pause int64) err
 // (pauseStopDue). A pause that ends before that stop lets the wake out, and its run is a fresh try
 // of the same launch (letOutHeldLaunch). The run judges the work of the start the launch is for
 // again before its fresh try, since the pause can last long after the launch's own judgment
-// (heldStartLeft). The wake carries no park, so no boot token goes with it.
+// (startLeftWhileParked). The wake carries no park, so no boot token goes with it.
 func (m *Machine) pauseHeldTry(ctx context.Context, l launchTry, pause int64) error {
 	m.stopLetGo(ctx, "the project's pause to end")
 	return m.pauseGate(ctx, m.heldTryWake(l, ""), pause)

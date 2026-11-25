@@ -57,7 +57,7 @@ export const LegionInstant = timestamp.regex(
  * the role working it: `workers` is keyed by role, each of `LEGION_ROLES` or a role of the
  * deployment. `awaiting_person` is a root that keeps its admission slot while its architect waits
  * on a person's answer (`waitingOn` on the issue record). `step` runs each step of a role the
- * deployment defines, which the issue names in `stepRole` (contract 221). `accepting` is the
+ * deployment defines, which the issue names in `stepRole` (contract 258). `accepting` is the
  * architect's acceptance, where the issue's task places its `acceptance:owner` step (in the
  * default steps, between the reviewer's approval and retro): no worker runs it. The merger merges
  * in `merging`, and the daemon closes the issue when it reads that merge (`done`); the production
@@ -79,7 +79,7 @@ export const LEGION_WORKFLOW_PHASES = [
 ] as const;
 
 /** The `api.PhaseBackwardRequest` targets contract-12's daemon accepts, and `step` since contract
- * 221. Future state-only phases join this list only with their daemon transition. */
+ * 258. Future state-only phases join this list only with their daemon transition. */
 export const LEGION_PHASE_BACKWARD_TARGETS = [
   "admitted",
   "planning",
@@ -383,8 +383,9 @@ const legionHandoffRecordView = z.object({
 /** `api.PhaseView` — one phase worker's claim, the handoff of its current phase (the commit its
  * completion reported, the Dispatch handoff record it named), and the three counts the phase
  * carries: `pass`, the passes it has made through its stretch of the workflow, which every
- * backward move counts one of, `rounds`, the review rounds, which only a review that requested
- * changes counts, and `backwardMoves`, the counts of the moves back that made those passes. */
+ * backward move counts one of, `rounds`, the review rounds, which a review that requested
+ * changes counts, and so does the fail of a step of the type review whose agent is not the
+ * owner, and `backwardMoves`, the counts of the moves back that made those passes. */
 const legionPhaseView = z.object({
   claim: legionClaimView.optional(),
   handoffCommit: nonEmptyString.optional(),
@@ -844,9 +845,9 @@ const legionIssue = z.object({
   generation: z.number().int().nonnegative().optional(),
   phase: z.enum(LEGION_PHASES),
   /** The role of the deployment that works the issue's running step, where the issue stands at
-   * `step` or its hold took it out of `step` (contract 221): no phase names such a role, so the
+   * `step` or its hold took it out of `step` (contract 258): no phase names such a role, so the
    * phase alone does not say who works the issue. Absent at every other phase, whose role the
-   * phase names, and from every issue of the body the route serves a caller before 221, which is
+   * phase names, and from every issue of the body the route serves a caller before 258, which is
    * served an issue at `step` as `implementing`. */
   stepRole: stepRole.optional(),
   status: nonEmptyString.optional(),
@@ -1889,9 +1890,9 @@ export const LegionErrorResponse = z.object({
 /** `api.DeliveryView` — the claim's pending task; `deliveredAt` is the latest acknowledgement of
  * this task's prompt, and with it whether the agent may have read the task (a refusal of that
  * prompt clears it, since an agent that refused it never read it), and `confirmedAt` the turn a
- * send started, each absent until it happens. `phase` is the issue phase the task was queued for, which is what
- * says whether it is still the work to do; a task of no phase — an operator's own, an
- * architect's — carries none. */
+ * send started, each absent until it happens. `phase` is the issue phase the task was queued for,
+ * which, with the run and, at `step`, the running step's role (`stepRole`), says whether it is
+ * still the work to do; a task of no phase — an operator's own, an architect's — carries none. */
 const legionDeliveryView = z.object({
   id: nonEmptyString,
   task: nonEmptyString,
@@ -2283,7 +2284,8 @@ export function legionPlanRatingLoneField(
  * base the plan gives that task (`HANDOFF_PULL_REQUEST_BASE`, contract 263); an issue with no plan
  * rows is held to no base. Either refusal records nothing.
  * `verdict` is `pass`
- * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
+ * or `fail` for the completion of the tester and of a role of the deployment
+ * (`STEP_VERDICT_REQUIRED` for the latter), `pass`, `pending` or `fail` for a check report
  * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string
  * on the wire, as the Go field is. `wakeAt` is the check report's alone (contract 54): when the
  * checking agent asks to be woken for its next look, which a pending report on a look that is not
@@ -2417,7 +2419,7 @@ export const LegionPhaseBackwardRequest = z.strictObject({
   reason: nonEmptyString,
   issue: nonEmptyString.optional(),
   /** The step of the running task the move returns to, by its place, 1 for its first (contract
-   * 221): the daemon judges it as it judges a failed step's `returnTo`, and `to` must be the phase
+   * 258): the daemon judges it as it judges a failed step's `returnTo`, and `to` must be the phase
    * that step runs as. */
   returnTo: z.number().int().positive().optional(),
   /** The task of the issue's plan the move is of (contract 263): an architect's move that names

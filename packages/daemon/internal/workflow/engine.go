@@ -132,8 +132,8 @@ type Config struct {
 	// ReadBaseMergeStates is asked, on the commit of a push to base of repo (basePush), to read
 	// GitHub's merge state for each pull request on that base the push owes a read, by issue and pull request number: the
 	// same reasons askMergeState reads a fact of one pull request by (mergeStateOwed:
-	// classify.MergeStateReadOwed's base-push reason, a phase after implementing on the task's
-	// line, or a review round waiting on GitHub), named
+	// classify.MergeStateReadOwed's base-push reason, a task at a place after the implementer's on
+	// its line, or a review round waiting on GitHub), named
 	// all at once, so that one push makes one batch of reads of its base rather than one read of
 	// each pull request (workflowRuntime.queueBaseMergeStates, GraphQL queries of a few pull
 	// requests each, asked for by number). issues is
@@ -2624,7 +2624,7 @@ func backwardRefusal(issue record.Issue, w Walk, fact intake.BackwardMove, serve
 			"the verdict fail and returnTo; the owner names it with request_backward_move and returnTo.",
 			w.Task, issue.Key, two[0].Position, w.RoleAt(two[0]), two[1].Position, w.RoleAt(two[1]))
 	case !served:
-		return fmt.Sprintf("a backward move reaches an earlier phase, and no backward row of %s serves %s; the %s's move of %s changed nothing",
+		return fmt.Sprintf("a backward move reaches an earlier step of the task, at an earlier phase or at step, and no backward row of %s serves %s; the %s's move of %s changed nothing",
 			issue.Phase, fact.To, fact.Requester, issue.Key)
 	case !slices.ContainsFunc(issue.RunningAt(issue.Phase), func(step record.RunningStep) bool { return step.Role == fact.Requester }):
 		owners := "no role's"
@@ -2699,7 +2699,8 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	view := s.issue
 	issue = &view
 	// The table is the guard, and it reads three things: the move names a target, a backward row
-	// of the issue's phase serves that target - anything but an earlier phase has none - and the
+	// of the issue's phase serves that target - anything but an earlier step of the task, at an
+	// earlier phase or at step, has none - and the
 	// caller is the role running that phase. An empty target is read first, since the row lookup
 	// takes it to match any row.
 	//
@@ -2917,8 +2918,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	// not written anew. The move's two phases go with the pass, because the move is counted under
 	// its own pair and a hook of the deployment stands on that pair (recordPass,
 	// fireWorkBackHooks), so a hook sees every way the work goes back and not the review's alone.
-	// The round is the review's alone — it counts the review rounds review_round_cap bounds, so
-	// only a review that requested changes moves it, and a send-back for anything else leaves it
+	// The round is the review's — it counts the review rounds review_round_cap bounds, so only a
+	// review that requested changes moves it, or the fail of a step of the type review whose agent
+	// is not the owner (Walk.reviewFails), and a send-back for anything else leaves it
 	// where it stands. The pull request goes with both because each reads it: a move made while
 	// the record holds this head in a confirmed conflict with its base (record.PullRequest's
 	// ConflictingHead) is a conflict round, which review_round_cap does not count and no pair
@@ -3409,7 +3411,8 @@ func (e *Engine) stopLostRole(ctx context.Context, tx pgx.Tx, s TaskScope, lost 
 // whose task still has a step to run of a role the engine's deployment no longer defines
 // (Walk.lostStep), running or waiting: the settings are read at the start, so a restart is where a
 // role leaves the deployment while the store still names it. A task its plan already holds
-// (planHold) has nothing to stop. A task whose stop cannot stand where its issue stands now (a root
+// (planHold) has nothing to stop: a todo on its root keeps it stopped while one of its steps names
+// a lost role (keepLostStop). A task whose stop cannot stand where its issue stands now (a root
 // that waits on a person before its first step) is passed over with one log line: the move into
 // its first step stops it then (transition's lostAt).
 func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {

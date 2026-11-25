@@ -137,13 +137,14 @@ import (
 // migration has no place in this release: the runtime never saves or restores a bundle.
 // dispatch://INFRA-5463's clear of the start failure of a claim whose agent is up
 // (20261123212127) is applied after all of these but dispatch://INFRA-5471's 20261123224717 and
-// touches no outbox_kind_check: it empties
+// the roles of a deployment (20261124192838), and touches no outbox_kind_check: it empties
 // claims.last_start_failure on every claim stored ready, working or idle, a column this list's
 // 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
 // (migration_20261123212127_test.go reads it).
 // dispatch://INFRA-5471's mark of a re-admission that still owes its tree's members their return
 // (20261123224717) is applied after all of these but the waiting line's issue priority
-// (20261124060500) and touches no outbox_kind_check either: it adds issues.members_owed and marks
+// (20261124060500), #5349's cause times (20261124073512) and the roles of a deployment
+// (20261124192838), and touches no outbox_kind_check either: it adds issues.members_owed and marks
 // the roots whose re-admitted generation no promotion has opened.
 // The waiting line's issue priority (20261124060500) is applied after all of these but #5349's
 // cause times (20261124073512) and touches no outbox_kind_check: it adds issues.priority, null on

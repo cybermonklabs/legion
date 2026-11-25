@@ -15,7 +15,7 @@ import { isStepRole } from "./legion-roles";
 const nonEmptyString = z.string().min(1);
 
 /** The role of a claim of an issue: one of Legion's six or a role of the deployment (contract
- * 221), a name of the step grammar but the controller's (`isStepRole`). `legion-api.ts` reads its
+ * 258), a name of the step grammar but the controller's (`isStepRole`). `legion-api.ts` reads its
  * claims' roles through this one schema too. */
 export const legionStepRole = z.string().refine(isStepRole, {
   message: "a role of the step grammar, ^[a-z][a-z0-9-]{0,31}$, and not the controller",

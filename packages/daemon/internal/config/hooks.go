@@ -30,8 +30,9 @@ const HookEventWorkBack = "work_back"
 var HookEvents = []string{HookEventWorkBack}
 
 // Hook is one entry of `hooks`, the deployment's own prompt in front of named roles every Every
-// moves back. PromptFile is kept as a path: this loader reads no file it names, and boot reads
-// the words (ReadHookPrompt, daemon.readBoot).
+// moves back. PromptFile is kept as a path: this loader reads no hook's file, though the daemon's
+// own load reads each role's prompt_file (CheckRolePrompts), and boot reads the words
+// (ReadHookPrompt, daemon.readBoot).
 type Hook struct {
 	Name       string
 	On         string   // the event; work_back is the one that ships

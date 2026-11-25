@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -226,6 +228,75 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 			t.Fatalf("the row logged %v, want one line naming the retired claim", lines)
 		}
 	})
+}
+
+// A merge forward's hold or landed to a role of the deployment, queued by the daemon before a
+// restart whose settings no longer define that role, ends undelivered at the restarted daemon's
+// attempt, its released claim not woken: the boot stopped that role's task (the workflow's
+// stopLostRoles), so the message is no work of the issue's, and its wake would resume a claim
+// whose launch then fails for want of the role (specs' rolePromptPaths). The restarted daemon's
+// outbox is built with the deployment its settings read (attach), which is what the restart
+// changes here; the row is in the store from before it. The control is the same row under the
+// deployment of the daemon before the restart, which defines the role: its attempt wakes the
+// released claim, as every held message does.
+func TestAMergeForwardMessageQueuedBeforeARestartThatDroppedItsRoleEndsUndelivered(t *testing.T) {
+	t.Parallel()
+	roles := deploymentRoles(t)
+	withoutChecker := slices.DeleteFunc(slices.Clone(roles), func(role config.Role) bool { return role.Name == deploymentChecker })
+	asked := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Step, Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
+	landed := *asked
+	landed.Landed = "sha-2"
+	hold := record.MergeForwardMessage{Role: deploymentChecker, Step: record.MergeForwardHold, Head: "sha-1", Base: "main",
+		Phase: phase.Step, PullRequest: 86, Why: record.ConflictCheckNotGreen}
+	told := record.MergeForwardMessage{Role: deploymentChecker, Step: record.MergeForwardLanded, Head: "sha-1", Landed: "sha-2",
+		Base: "main", Phase: phase.Step, PullRequest: 86, Why: record.ConflictCheckNotGreen}
+	for _, tc := range []struct {
+		name      string
+		roles     []config.Role
+		asked     *record.MergeForward
+		message   record.MergeForwardMessage
+		delivered bool
+	}{
+		{name: "a hold to the checker the restart dropped ends undelivered", roles: withoutChecker, asked: asked, message: hold},
+		{name: "a landed to the checker the restart dropped ends undelivered", roles: withoutChecker, asked: &landed, message: told},
+		{name: "control: a hold to the checker the deployment defines wakes it", roles: roles, asked: asked, message: hold, delivered: true},
+		{name: "control: a landed to the checker the deployment defines wakes it", roles: roles, asked: &landed, message: told, delivered: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			logs := &syncBuffer{}
+			publisher := &holderPublisher{}
+			runner, sup, pool := runnerIn(t, phase.Step, "in_progress", publisher, slog.New(slog.NewJSONHandler(logs, nil)))
+			runner.deployment = config.Config{Roles: tc.roles}.Deployment()
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				return runner.records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208",
+					Repo: "acme/widgets", Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: time.Now(),
+					Failing: []string{}, CheckRuns: []record.AttemptRun{}, Base: "main", MergeForward: tc.asked})
+			}); err != nil {
+				t.Fatalf("seed the pull request: %v", err)
+			}
+			machine := releasedClaim(t, sup, deploymentChecker)
+			enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", tc.message, time.Now().Add(-time.Minute)))
+
+			drainAt(t, runner, 0, "the row's attempt")
+			attempts, _ := publisher.snapshot()
+			woken := !machine.Claim().Released()
+			if !tc.delivered {
+				if attempts != 0 || outboxRows(t, pool) != 0 || woken {
+					t.Fatalf("the row made %d publishes, left %d rows and woke the checker: %t; want the row finished with nothing published and the checker still released",
+						attempts, outboxRows(t, pool), woken)
+				}
+				const why = "the deployment no longer defines the role checker"
+				if lines := loggedLines(t, logs.String(), mergeForwardLeftLine); len(lines) != 1 || !strings.Contains(fmt.Sprint(lines[0]["why"]), why) {
+					t.Fatalf("the row logged %v, want one line naming %q", lines, why)
+				}
+				return
+			}
+			if !woken || outboxRows(t, pool) != 1 {
+				t.Fatalf("the row woke the checker: %t and left %d rows, want the checker woken and the row waiting for its pod", woken, outboxRows(t, pool))
+			}
+		})
+	}
 }
 
 // In merging the merge forward is the merger's (cybermonklabs/legion#4979): its ask is published

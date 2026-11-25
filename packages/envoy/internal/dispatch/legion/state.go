@@ -69,6 +69,9 @@ type BlockedIssue struct {
 type Issue struct {
 	Key   string `json:"key"`
 	Phase string `json:"phase"`
+	// StepRole is the role of the step the issue's task runs at PhaseStep, a role the deployment
+	// defines, and of a hold taken from it; absent elsewhere, and from every daemon before it.
+	StepRole string `json:"stepRole,omitempty"`
 	// Tree is the issue's tree root (dispatch://INFRA-980), absent from every daemon before it: a
 	// pointer so "the daemon sent no tree field" and "the daemon named a root" stay apart.
 	Tree *string `json:"tree,omitempty"`
@@ -103,6 +106,10 @@ const (
 	FieldPhase     = "phase"
 	FieldSlot      = "slot"
 	FieldWaitingOn = "waiting_on"
+	// FieldStepRole is the role of the step an issue at PhaseStep runs (Issue.StepRole), which
+	// metric 2 puts that step's hours on. It is observed on every issue, `null` where the issue
+	// runs no such step, so the role a step left is a change like a phase.
+	FieldStepRole = "step_role"
 	// FieldTree is the issue's tree root as the daemon named it (dispatch://INFRA-980). It is
 	// observed only for an issue carrying one: a daemon that sends none leaves the reader to the
 	// parent chain rather than to a guess.
@@ -122,7 +129,9 @@ const (
 
 // The phases the daemon reports, which is what a FieldPhase observation holds
 // (packages/daemon/internal/phase). A reader of the board or of the metrics names them from
-// here, so the two never spell one of them differently.
+// here, so the two never spell one of them differently. PhaseStep is the phase of a step whose
+// role the deployment defines, of any type its settings name, whose role the daemon reports as
+// the issue's `stepRole`.
 const (
 	PhaseAdmitted       = "admitted"
 	PhaseAwaitingPerson = "awaiting_person"
@@ -130,6 +139,7 @@ const (
 	PhaseImplementing   = "implementing"
 	PhaseTesting        = "testing"
 	PhaseReviewing      = "reviewing"
+	PhaseStep           = "step"
 	PhaseAccepting      = "accepting"
 	PhaseRetro          = "retro"
 	PhaseMerging        = "merging"
@@ -167,9 +177,9 @@ type Observation struct {
 // AdmissionKey: the admission block and the settings the daemon reports, neither of which belongs
 // to an issue.
 //
-// Phase, slot and the wait are observed on every issue, `null` where the issue carries none, so a
-// slot released or a wait answered is a change like any other; a first `null` writes no row
-// (store.go's insert). A claim is observed for each role the read names — the architect and each
+// Phase, the step role, slot and the wait are observed on every issue, `null` where the issue
+// carries none, so a slot released, a wait answered or a step's role left is a change like any
+// other; a first `null` writes no row (store.go's insert). A claim is observed for each role the read names — the architect and each
 // worker — and a tree only for an issue the daemon named one for. A field this list does not
 // carry is one the read no longer holds — an issue gone from the daemon's state, a role's claim
 // gone from an issue, a tree the daemon stopped naming — and the store writes it `null` where its
@@ -179,8 +189,8 @@ type Observation struct {
 // (metrics' readStatusMarks).
 func (s State) Observations() []Observation {
 	keys := slices.Sorted(maps.Keys(s.Issues))
-	// The three fields every issue carries and one claim each, and the project's two.
-	observations := make([]Observation, 0, len(keys)*4+2)
+	// The four fields every issue carries and one claim each, and the project's two.
+	observations := make([]Observation, 0, len(keys)*5+2)
 	for _, project := range []struct {
 		field string
 		value any
@@ -198,6 +208,7 @@ func (s State) Observations() []Observation {
 			observations = append(observations, Observation{IssueKey: key, Field: field, Value: encodeValue(value)})
 		}
 		add(FieldPhase, issue.Phase)
+		add(FieldStepRole, optional(issue.StepRole))
 		if issue.Tree != nil {
 			add(FieldTree, optional(*issue.Tree))
 		}

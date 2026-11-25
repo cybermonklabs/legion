@@ -75,7 +75,7 @@ func TestAReviewersStartThatCarriesNewsKeepsTheRoundsTwoSentencesLast(t *testing
 
 // A start of the reviewer queued for news alone carries no task, so no queue named its round, and
 // the claim's send would give it the two sentences naming no commit and no entry, though the record
-// holds both. The start executor names them from the record instead (workflow.ReviewerTask): the
+// holds both. The start executor names them from the record instead (workflow.RoundTask): the
 // commit the reviewer's row holds, or `none` where it holds none, and the entry the row stands at,
 // after the news, and the delivery says the task names its round, so its send adds no second pair
 // (supervise's Delivery.message).
