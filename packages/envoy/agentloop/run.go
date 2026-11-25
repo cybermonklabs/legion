@@ -35,8 +35,10 @@ const placeholderKey = "read-per-call"
 // context ending, and for a callback that returned an error; the Result then still carries what
 // the calls made so far produced and cost. A reply Request.Check refuses is asked for again
 // inside the same run and the same bounds, at most Request.AskAgain times (doc.go, "Asking
-// again"), and a call whose reply the provider cut for length is made again, without that
-// reply, at most Request.CallAgainWhenCut times (doc.go, "A reply cut for length").
+// again"); a call whose reply the provider cut for length is made again, without that reply, at
+// most Request.CallAgainWhenCut times (doc.go, "A reply cut for length"); and a reply out of form
+// on a call that carried no schema is dropped, and the run's next call is its last (doc.go, "The
+// structured reply").
 func Run(ctx context.Context, req Request) (Result, error) {
 	if err := req.validate(); err != nil {
 		return Result{}, err
@@ -67,7 +69,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	r := &run{
-		req: req, kind: kind, history: len(history),
+		req: req, kind: kind, history: len(history), bound: req.Bounds.Calls,
 		indexes: make(map[string]int, len(req.Tools)), next: req.FirstToolIndex + 1,
 	}
 	opts := []aisdk.StreamOption{
@@ -121,14 +123,22 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		default:
 			r.finish(&result, stream)
 		}
-		if r.callAgain(runCtx, result) {
-			// The cut call is made again from the messages it was sent: the ones this
-			// ask was given and every message its calls before the cut one produced. The
-			// SDK's response messages end with the cut call's own, which the stream's last
-			// response holds, so none of the cut reply goes back to the model.
+		again, outOfForm := r.callAgain(runCtx, result), r.outOfForm(runCtx, result)
+		if again || outOfForm {
+			// The run goes on from the messages the dropped call was sent: the ones this ask
+			// was given and every message its calls before the dropped one produced. The
+			// SDK's response messages end with the dropped call's own, which the stream's
+			// last response holds, so none of its reply goes back to the model.
 			produced := stream.ResponseMessages()
 			messages = slices.Concat(messages, produced[:len(produced)-len(stream.Response().Messages)])
 			r.dropped()
+			if outOfForm {
+				// The next call is the run's last, so it offers no tool and carries the
+				// schema and Request.LastCall.
+				r.bound = r.before + 1
+			} else {
+				r.cut++
+			}
 			continue
 		}
 		refusal, again := r.refusal(runCtx, result)
@@ -144,12 +154,12 @@ func Run(ctx context.Context, req Request) (Result, error) {
 }
 
 // ask makes the model calls of one ask, the run's first, one after Request.Check refused a
-// reply, or a cut call made again: a stream of the messages the run holds so far, stopped at
+// reply, or one after a dropped call: a stream of the messages the run holds so far, stopped at
 // the model calls the run has left, read to its end.
 func (r *run) ask(ctx context.Context, model provider.LanguageModel, opts []aisdk.StreamOption, messages []provider.Message) *aisdk.StreamTextResult {
 	stream := aisdk.StreamText(ctx, model, slices.Concat([]aisdk.StreamOption{
 		aisdk.WithModelMessages(messages...),
-		aisdk.WithStopWhen(aisdk.StepCountIs(r.req.Bounds.Calls - r.before)),
+		aisdk.WithStopWhen(aisdk.StepCountIs(r.bound - r.before)),
 	}, opts)...)
 	r.drain(stream)
 	return stream
@@ -157,11 +167,12 @@ func (r *run) ask(ctx context.Context, model provider.LanguageModel, opts []aisd
 
 // refusal is the sentence the run asks the model again with, and whether it asks again at all:
 // it does where the last reply answered with a value, Request.Check refuses that value, and the
-// run has an ask, a model call and time left. A run that does not ask again returns its last
-// reply as it stands.
+// run has an ask, a model call and time left; the call after a dropped reply out of form is the
+// run's last, so it leaves none. A run that does not ask again returns its last reply as it
+// stands.
 func (r *run) refusal(ctx context.Context, result Result) (string, bool) {
 	if r.req.Check == nil || result.Fault != "" || result.Value == nil || r.asked >= r.req.AskAgain ||
-		len(result.Steps) >= r.req.Bounds.Calls || ctx.Err() != nil {
+		len(result.Steps) >= r.bound || ctx.Err() != nil {
 		return "", false
 	}
 	if err := r.req.Check(result.Value); err != nil {
@@ -176,7 +187,20 @@ func (r *run) refusal(ctx context.Context, result Result) (string, bool) {
 // reply's FaultLength.
 func (r *run) callAgain(ctx context.Context, result Result) bool {
 	return result.Fault == FaultLength && r.cut < r.req.CallAgainWhenCut &&
-		len(result.Steps) < r.req.Bounds.Calls && ctx.Err() == nil
+		len(result.Steps) < r.bound && ctx.Err() == nil
+}
+
+// outOfForm is whether the run drops its last step, a reply that is no Final object on a call
+// that carried no schema, and makes its next call its last (doc.go, "The structured reply"): the
+// reply ended the run on FaultMalformed, on the Messages API, the run offers tools, and the call
+// was not its last, so it offered them and the transport sent it with no schema (withoutFormat);
+// and the run has time left. A call that is not the run's last leaves the run a model call; the
+// last, whose tool choice prepareStep sets to none, carries the schema, so a run drops such a
+// reply once at most, and a reply out of form on a call that carried the schema ends the run on
+// its FaultMalformed.
+func (r *run) outOfForm(ctx context.Context, result Result) bool {
+	return result.Fault == FaultMalformed && anthropicKind(r.kind) && len(r.req.Tools) > 0 &&
+		len(result.Steps) < r.bound && ctx.Err() == nil
 }
 
 // askedAgain records the sentence the run sends after its last step's reply on that step, and
@@ -189,14 +213,14 @@ func (r *run) askedAgain(refusal string) {
 	r.asked++
 }
 
-// dropped marks the run's last step as the cut call the run makes again, and starts the next
-// ask's count of calls after every call the run has made, the dropped one included.
+// dropped marks the run's last step as a call none of whose reply goes back to the model, a cut
+// call the run makes again or a reply out of form, and starts the next ask's count of calls
+// after every call the run has made, the dropped one included.
 func (r *run) dropped() {
 	r.mu.Lock()
 	r.steps[len(r.steps)-1].Dropped = true
 	r.before = len(r.steps)
 	r.mu.Unlock()
-	r.cut++
 }
 
 // validate is whether the request is one the loop can run at all: it has its bounds, an
@@ -332,10 +356,11 @@ type run struct {
 	history int
 	// before is how many model calls the run made before its current ask, which prepareStep
 	// adds to a step's own number, counted from the ask's first, to find the run's last
-	// allowed call; asked is how many times the run has asked again, and cut how many times
-	// it has made a cut call again. All three change only between two asks, before the
-	// stream that reads them starts.
-	before, asked, cut int
+	// call; asked is how many times the run has asked again, and cut how many times it has
+	// made a cut call again. bound is how many model calls the run may make: Bounds.Calls,
+	// until a dropped reply out of form makes the next call the last (outOfForm). All four
+	// change only between two asks, before the stream that reads them starts.
+	before, asked, cut, bound int
 
 	mu sync.Mutex
 	// steps are the model calls that finished, in order; text and reason are the last of
@@ -463,27 +488,28 @@ func (r *run) failure() error {
 	return r.failed
 }
 
-// prepareStep offers no tool on the last allowed call of the whole run, so that call must answer,
-// and on the kinds Anthropic serves, where the run places cache marks, moves the newest message's
-// mark: the history keeps the marks Run put in it, because the step takes a mark off no message of
-// the history, the newest message gets one, and the one an earlier step put on its newest
-// message is taken off (the SDK carries a step's message overrides into later steps; Anthropic
-// allows four marks, which is this one and the three markAnthropicHistory places). Where the
-// request's Input is empty, the first call's newest message is the history's own last message,
-// which keeps the history's mark for the whole run. An ask after Request.Check refused a reply
-// starts from the run's own messages, which carry the history's marks and no other, so its
-// newest message, the check's sentence, takes the fourth. A cut call made again starts from the
-// messages the cut call was sent, so its newest message is the cut call's and takes the mark
-// the cut call put there.
+// prepareStep offers no tool on the last call of the whole run, the last Bounds.Calls allows or
+// the one after a dropped reply out of form, so that call must answer, and on the kinds Anthropic
+// serves, where the run places cache marks, moves the newest message's mark: the history keeps
+// the marks Run put in it, because the step takes a mark off no message of the history, the
+// newest message gets one, and the one an earlier step put on its newest message is taken off
+// (the SDK carries a step's message overrides into later steps; Anthropic allows four marks,
+// which is this one and the three markAnthropicHistory places). Where the request's Input is
+// empty, the first call's newest message is the history's own last message, which keeps the
+// history's mark for the whole run. An ask after Request.Check refused a reply starts from the
+// run's own messages, which carry the history's marks and no other, so its newest message, the
+// check's sentence, takes the fourth. A call after a dropped one, a cut call made again or the
+// call after a reply out of form, starts from the messages the dropped call was sent, so its
+// newest message is the dropped call's and takes the mark the dropped call put there.
 //
-// The last allowed call also carries Request.LastCall, after every other message and after the
-// mark: that call is the run's last, so nothing re-sends the sentence, a mark on it would pay for
-// a cache write nothing reads, and without one the call's marks and its cached prefix are the
-// ones it would have without the sentence. No later step takes the override on, and no Step
-// holds it: the SDK builds a step's response messages from the step's own output.
+// The last call also carries Request.LastCall, after every other message and after the mark:
+// that call is the run's last, so nothing re-sends the sentence, a mark on it would pay for a
+// cache write nothing reads, and without one the call's marks and its cached prefix are the ones
+// it would have without the sentence. No later step takes the override on, and no Step holds it:
+// the SDK builds a step's response messages from the step's own output.
 func (r *run) prepareStep(state aisdk.PrepareStepState) (*aisdk.PrepareStepResult, error) {
 	result := &aisdk.PrepareStepResult{}
-	last := r.before+state.StepNumber == r.req.Bounds.Calls-1
+	last := r.before+state.StepNumber == r.bound-1
 	if last {
 		result.ToolChoice = &provider.ToolChoice{Type: provider.ToolChoiceNone}
 	}
@@ -599,7 +625,7 @@ func (r *run) finish(result *Result, stream *aisdk.StreamTextResult) {
 		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("the last reply ended in an error: %s", reason.Raw)
 		return
 	case provider.FinishReasonToolCalls:
-		result.Fault, result.Detail = FaultCalls, fmt.Sprintf("the last of %d model calls still called a tool", r.req.Bounds.Calls)
+		result.Fault, result.Detail = FaultCalls, fmt.Sprintf("the last of %d model calls still called a tool", r.bound)
 		return
 	}
 	if r.req.Final == nil {

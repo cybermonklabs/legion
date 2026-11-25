@@ -134,6 +134,173 @@ func TestTheFinalSchemaReachesTheProviderInTheOrderItIsWritten(t *testing.T) {
 	}
 }
 
+// On the Messages API a call carries Request.Final only where it offers the model no tool: the
+// run's last allowed call, whose tool choice is none, and every call of a run with no tools, as
+// the broker's judge makes. That call carries the schema in Final's order; every call keeps the
+// model's effort in output_config; and no call logs a warning, the ones sent with no schema among
+// them. The same run on openai-responses sends the schema on every call. Each case with tools is
+// a run of three allowed calls whose model calls the tool twice and answers on the last; the
+// case with none answers on the first of three.
+func TestTheMessagesAPISendsTheSchemaOnlyOnACallThatOffersNoTool(t *testing.T) {
+	t.Parallel()
+	anthropicReplies := func() []reply {
+		return []reply{
+			anthropicStream("tool_use", anthropicUsage{Input: 10, Output: 5}, anthropicToolUse("toolu_1", toolName, map[string]any{"path": "note.txt"})),
+			anthropicStream("tool_use", anthropicUsage{Input: 20, Output: 5}, anthropicToolUse("toolu_2", toolName, map[string]any{"path": "other.txt"})),
+			anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 5}, anthropicText(orderedAnswer)),
+		}
+	}
+	for _, c := range []struct {
+		name    string
+		kind    Kind
+		noTools bool
+		replies []reply
+		// schema is, for each call the run makes, whether it carries the schema.
+		schema []bool
+	}{
+		{name: "anthropic-messages with tools", kind: AnthropicMessages, replies: anthropicReplies(), schema: []bool{false, false, true}},
+		{name: "azure-anthropic with tools", kind: AzureAnthropic, replies: anthropicReplies(), schema: []bool{false, false, true}},
+		{name: "openai-responses with tools", kind: OpenAIResponses, schema: []bool{true, true, true}, replies: []reply{
+			openaiStream(openaiUsage{Input: 100, Output: 5}, "", openaiToolCall("fc_1", "call_1", toolName, map[string]any{"path": "note.txt"})),
+			openaiStream(openaiUsage{Input: 120, Output: 5}, "", openaiToolCall("fc_2", "call_2", toolName, map[string]any{"path": "other.txt"})),
+			openaiStream(openaiUsage{Input: 140, Output: 5}, "", openaiMessage("msg_3", orderedAnswer)),
+		}},
+		{name: "anthropic-messages with no tools", kind: AnthropicMessages, noTools: true, schema: []bool{true},
+			replies: []reply{anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 5}, anthropicText(orderedAnswer))}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStandIn(t, c.replies...)
+			f := newFixture(t, s, c.kind, 3)
+			f.req.Final = json.RawMessage(orderedFinal)
+			if c.noTools {
+				f.req.Tools = nil
+			}
+			logs := &logtest.Recorder{}
+			f.req.Log = slog.New(logs)
+			result, err := Run(context.Background(), f.req)
+			if err != nil || result.Fault != "" || result.Value == nil || !sameJSON(t, result.Value, []byte(orderedAnswer)) {
+				t.Fatalf("result %+v, %v; want the answer and no fault", result, err)
+			}
+			got := s.requests()
+			if len(got) != len(c.schema) {
+				t.Fatalf("%d model calls, want %d", len(got), len(c.schema))
+			}
+			for i, r := range got {
+				schema, carried := valueAt(r.body, finalSchemaPath(c.kind))
+				if carried != c.schema[i] {
+					t.Errorf("call %d carries a schema at %v: %t, want %t", i+1, finalSchemaPath(c.kind), carried, c.schema[i])
+				}
+				if carried {
+					holdsFinalsOrder(t, schema, json.RawMessage(orderedFinal), fmt.Sprintf("call %d's schema", i+1))
+				}
+				if effort, _ := valueAt(r.body, []string{"output_config", "effort"}); anthropicKind(c.kind) && string(effort) != strconv.Quote(f.req.Model.Effort) {
+					t.Errorf("call %d carries the effort %s, want the model's %q", i+1, effort, f.req.Model.Effort)
+				}
+			}
+			if records := logs.Records(); len(records) != 0 {
+				t.Errorf("the run logged %d records, want none: %v", len(records), records)
+			}
+		})
+	}
+}
+
+// valueAt is the value at path in body, a JSON object, and whether body holds one there.
+func valueAt(body []byte, path []string) (json.RawMessage, bool) {
+	value := json.RawMessage(body)
+	for _, key := range path {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(value, &object); err != nil {
+			return nil, false
+		}
+		if value = object[key]; value == nil {
+			return nil, false
+		}
+	}
+	return value, true
+}
+
+// TestAMessagesBodyThatOffersAToolIsSentWithoutItsSchema: on the Messages API a body that offers
+// the model a tool, a tools array holding one and a tool choice that is not none, goes out with
+// output_config.format taken out and every other byte as it came, output_config's effort and the
+// spaces between members included, or with no output_config where format was all it held; its
+// retry sends the same bytes, and nothing is logged. A body that offers no tool, its tool choice
+// none or its tools empty or absent, carries the schema put back in Final's order, as does a body
+// of another protocol that offers one.
+func TestAMessagesBodyThatOffersAToolIsSentWithoutItsSchema(t *testing.T) {
+	t.Parallel()
+	const (
+		final = `{"type":"object","properties":{"kind":{"type":"string"},"text":{"type":"string"}}}`
+		// format is the output format as the SDK writes it, the schema's keys sorted, and
+		// ordered the same with the schema in Final's order.
+		format  = `{"type":"json_schema","schema":{"properties":{"kind":{"type":"string"},"text":{"type":"string"}},"type":"object"}}`
+		ordered = `{"type":"json_schema","schema":{"type":"object","properties":{"kind":{"type":"string"},"text":{"type":"string"}}}}`
+		tools   = `"tools":[{"name":"read","input_schema":{"type":"object"}}]`
+	)
+	for _, c := range []struct {
+		name       string
+		kind       Kind
+		body, sent string
+	}{
+		{name: "the effort after the format", kind: AnthropicMessages,
+			body: `{"model":"m","output_config":{"format":` + format + `,"effort":"high"},"tool_choice":{"type":"auto"},` + tools + `}`,
+			sent: `{"model":"m","output_config":{"effort":"high"},"tool_choice":{"type":"auto"},` + tools + `}`},
+		{name: "the effort before the format", kind: AzureAnthropic,
+			body: `{"model":"m","output_config":{"effort":"high","format":` + format + `},"tool_choice":{"type":"auto"},` + tools + `}`,
+			sent: `{"model":"m","output_config":{"effort":"high"},"tool_choice":{"type":"auto"},` + tools + `}`},
+		{name: "spaces between the members", kind: AnthropicMessages,
+			body: `{"model": "m", "output_config": {"format": ` + format + `, "effort": "high"}, "tool_choice": {"type": "auto"}, ` + tools + `}`,
+			sent: `{"model": "m", "output_config": { "effort": "high"}, "tool_choice": {"type": "auto"}, ` + tools + `}`},
+		{name: "the format alone, first in the body", kind: AnthropicMessages,
+			body: `{"output_config":{"format":` + format + `},"model":"m",` + tools + `,"tool_choice":{"type":"auto","disable_parallel_tool_use":true}}`,
+			sent: `{"model":"m",` + tools + `,"tool_choice":{"type":"auto","disable_parallel_tool_use":true}}`},
+		{name: "the format alone, last in the body, with no tool choice", kind: AnthropicMessages,
+			body: `{"model":"m",` + tools + `,"output_config":{"format":` + format + `}}`,
+			sent: `{"model":"m",` + tools + `}`},
+		{name: "the tool choice none", kind: AnthropicMessages,
+			body: `{"model":"m","output_config":{"effort":"high","format":` + format + `},"tool_choice":{"type":"none"},` + tools + `}`,
+			sent: `{"model":"m","output_config":{"effort":"high","format":` + ordered + `},"tool_choice":{"type":"none"},` + tools + `}`},
+		{name: "no tools", kind: AnthropicMessages,
+			body: `{"model":"m","output_config":{"format":` + format + `}}`,
+			sent: `{"model":"m","output_config":{"format":` + ordered + `}}`},
+		{name: "an empty tools array", kind: AnthropicMessages,
+			body: `{"model":"m","output_config":{"format":` + format + `},"tool_choice":{"type":"auto"},"tools":[]}`,
+			sent: `{"model":"m","output_config":{"format":` + ordered + `},"tool_choice":{"type":"auto"},"tools":[]}`},
+		{name: "openai-responses offering a tool", kind: OpenAIResponses,
+			body: `{"model":"m","text":{"format":` + format + `},"tool_choice":"auto","tools":[{"type":"function","name":"read"}]}`,
+			sent: `{"model":"m","text":{"format":` + ordered + `},"tool_choice":"auto","tools":[{"type":"function","name":"read"}]}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			logs := &logtest.Recorder{}
+			base := &recordingBase{statuses: []int{http.StatusServiceUnavailable, http.StatusOK}}
+			transport := newModelTransport(Endpoint{
+				Kind:  c.kind,
+				Token: func(context.Context) (string, error) { return "key", nil },
+			}, json.RawMessage(final), slog.New(logs))
+			transport.base = base
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://model.example/v1/call", strings.NewReader(c.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp, err := transport.RoundTrip(req); err != nil || resp.StatusCode != http.StatusOK {
+				t.Fatalf("the call: %v, %v; want the retry's 200", resp, err)
+			}
+			if len(base.bodies) != 2 {
+				t.Fatalf("%d attempts, want the call and its one retry", len(base.bodies))
+			}
+			for attempt, got := range base.bodies {
+				if string(got) != c.sent {
+					t.Errorf("attempt %d sent\n%s\nwant\n%s", attempt, got, c.sent)
+				}
+			}
+			if records := logs.Records(); len(records) != 0 {
+				t.Errorf("the call logged %d records, want none: %v", len(records), records)
+			}
+		})
+	}
+}
+
 // holdsFinalsOrder fails t where an object of sent, the schema a request body carries, does not
 // begin with the keys of the same object of final, in final's order. It goes on into the values
 // of each object whose keys are in that order and into each array's elements, so it fails once

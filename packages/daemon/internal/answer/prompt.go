@@ -100,15 +100,16 @@ func systemPrompt(req Request) string {
 	return b.String()
 }
 
-// lastCall is the message the answer's last model call carries (agentloop.Request.LastCall).
-// That call offers no tool, which the system prompt says once, far above, as the limit a reply
-// comes on at the latest, the model replying on whichever call it can answer on; this message is
-// the one that tells the model to reply now. A model not told so on the call itself has spent it
-// on one more tool call it could not make, or on a reply with nothing in it. It also names the
-// reply form's needs rule (parseReply), since that call's reply is never asked for again: a
-// not_answered or needs_work reply naming no need there is malformed, and the asker hears nothing
-// of what is needed. The message is the loop's own instruction, as the system prompt is, and the
-// append holds no trace of it (Reply.Append).
+// lastCall is the message the answer's last model call carries (agentloop.Request.LastCall): the
+// last call model_calls allows, or on Anthropic's Messages API the call after a reply out of form
+// that agentloop dropped (finalSchema). That call offers no tool, which the system prompt says
+// once, far above, as the limit a reply comes on at the latest, the model replying on whichever
+// call it can answer on; this message is the one that tells the model to reply now. A model not
+// told so on the call itself has spent it on one more tool call it could not make, or on a reply
+// with nothing in it. It also names the reply form's needs rule (parseReply), since that call's
+// reply is never asked for again: a not_answered or needs_work reply naming no need there is
+// malformed, and the asker hears nothing of what is needed. The message is the loop's own
+// instruction, as the system prompt is, and the append holds no trace of it (Reply.Append).
 const lastCall = "This is your last model call, and it offers no tool. Reply now, in the reply form, from what you already know. " +
 	"A not_answered or needs_work reply must say in needs what you need, and needs is never empty for them."
 
@@ -151,8 +152,14 @@ type form struct {
 }
 
 // finalSchema is the JSON schema of the reply, which agentloop sends to the provider and checks
-// the last reply against: exactly one object of the form, its kind one of those this message
-// offers (none only for a message that may ask nothing), and its text and needs strings.
+// every reply against: exactly one object of the form, its kind one of those this message offers
+// (none only for a message that may ask nothing), and its text and needs strings. On OpenAI's
+// Responses API every model call carries it. On Anthropic's Messages API only a call that offers
+// no tool does, the answer's last: with the form on every call, Claude answers that needed no
+// tool still made tool calls to the model_calls bound, and the requests of proof run 45683361567,
+// replayed without it, replied 100 times in 162 against 19 with it (agentloop's doc.go, "The
+// structured reply"). A reply out of form on a call that offered a tool is dropped there, never
+// sent back and never appended (exchange), and the next call is the answer's last (lastCall).
 //
 // Every property is required and none takes more than one type, because that is the shape a
 // provider constrains its own generation to: measured against Anthropic's Messages API on

@@ -853,8 +853,9 @@ func TestEveryAgentloopFaultIsNoAnswerUnderTheDaemonsOwnName(t *testing.T) {
 // no need, is asked for once again: agentloop sends parseReply's sentence as the message after it,
 // within the answer's model_calls, and the reply to it is the agent's. Both calls are counted and
 // priced, and the append holds the refused reply, the sentence and the reply after it, in the
-// order the run made them, which is what the appender writes into the conversation. The form the
-// model is held to states the rule it broke in its own descriptions.
+// order the run made them, which is what the appender writes into the conversation. The form
+// every reply is held to (finalSchema), which neither of these calls carries since both offer the
+// gh tool, states the rule the reply broke in its own descriptions.
 func TestAReplyTheFormRefusesIsAskedForOnceAgain(t *testing.T) {
 	const (
 		refused = `{"kind":"not_answered","text":"I cannot tell from here.","needs":""}`
@@ -891,21 +892,15 @@ func TestAReplyTheFormRefusesIsAskedForOnceAgain(t *testing.T) {
 	if turn := blocks(sent[3]); len(turn) != 2 || turn[0]["signature"] != "sig-refused+/==" || turn[1]["text"] != refused {
 		t.Errorf("the second call carries the refused reply as %v, want its signed thinking and its text", turn)
 	}
-	var body struct {
-		OutputConfig struct {
-			Format struct {
-				Schema struct {
-					Properties map[string]struct {
-						Description string `json:"description"`
-					} `json:"properties"`
-				} `json:"schema"`
-			} `json:"format"`
-		} `json:"output_config"`
+	var replyForm struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
 	}
-	if err := json.Unmarshal(got[0].body, &body); err != nil {
+	if err := json.Unmarshal(finalSchema(false), &replyForm); err != nil {
 		t.Fatal(err)
 	}
-	properties := body.OutputConfig.Format.Schema.Properties
+	properties := replyForm.Properties
 	if text := properties["text"].Description; !strings.Contains(text, "Never empty") {
 		t.Errorf("the form's text says %q, want it never empty", text)
 	}
@@ -1249,6 +1244,91 @@ func TestACutReplyCutAgainIsALengthFault(t *testing.T) {
 				t.Errorf("%d model calls, reply calls %d, usage %+v; want %d cut calls counted", n, reply.Calls, reply.Usage, c.calls)
 			}
 		})
+	}
+}
+
+// A reply out of form on a model call that offers a tool, which on Anthropic's Messages API
+// carries no reply form, is not the agent's and is never sent back: agentloop drops it and makes
+// the answer's next call its last, though model_calls would allow six more, and that call, which
+// offers no tool and carries the last call's message, gives the reply that is posted. Both calls
+// are counted and priced, the dropped one's included, and the append holds the reply's turn
+// alone, with nothing of the dropped reply, its thinking included, in it or in what Oh My Pi's and
+// Claude Code's appenders write.
+func TestAReplyOutOfFormIsFollowedByTheLastCallAndTheAppendHoldsNoTraceOfIt(t *testing.T) {
+	const (
+		answered = `{"kind":"answered","text":"PR 7 is green.","needs":""}`
+		// outOfFormSays is the prose the dropped reply writes before the form, and no other
+		// reply or request says it.
+		outOfFormSays = "Here is my reply to the question:"
+	)
+	s := newStandIn(t,
+		anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 20}, anthropicThinking("Answer at once.", "sig-out-of-form+/=="), anthropicText(outOfFormSays+" "+answered)),
+		anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 25}, anthropicText(answered)),
+	)
+	reply, err := Answer(context.Background(), anthropicRequest(t, s, &stubGH{}, 8))
+	if err != nil || reply.Fault != "" || reply.Kind != Answered || reply.Text != "PR 7 is green." {
+		t.Fatalf("reply %+v, %v; want the last call's reply, answered", reply, err)
+	}
+	want := (40*anthropicPrice.Input + 45*anthropicPrice.Output) / 1e6
+	if u := reply.Usage; reply.Calls != 2 || u.InputTokens != 40 || u.OutputTokens != 45 || math.Abs(reply.CostUSD-want) > 1e-12 {
+		t.Errorf("calls %d, usage %+v, cost $%.10f; want both calls counted and priced at $%.10f, the dropped one included", reply.Calls, u, reply.CostUSD, want)
+	}
+	got := s.requests()
+	if len(got) != 2 {
+		t.Fatalf("%d model calls, want 2: the call out of form and the last", len(got))
+	}
+	if bytes.Contains(got[0].body, []byte(lastCall)) {
+		t.Error("the first call, not the last, carries the last call's message")
+	}
+	sent := messages(t, got[1])
+	if newest := blocks(sent[len(sent)-1]); sent[len(sent)-1]["role"] != "user" || newest[len(newest)-1]["text"] != lastCall {
+		t.Errorf("the call after the reply out of form ends with %v, want the last call's message", newest)
+	}
+	var choice struct {
+		ToolChoice struct {
+			Type string `json:"type"`
+		} `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(got[1].body, &choice); err != nil || choice.ToolChoice.Type != "none" {
+		t.Errorf("the call after the reply out of form has the tool choice %q (%v), want none", choice.ToolChoice.Type, err)
+	}
+	dropped := []string{outOfFormSays, "Answer at once.", "sig-out-of-form+/=="}
+	for _, said := range dropped {
+		if bytes.Contains(got[1].body, []byte(said)) {
+			t.Errorf("the call after the reply out of form carries %q of that reply", said)
+		}
+	}
+	appended := reply.Append
+	encoded, err := json.Marshal(appended)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, said := range dropped {
+		if bytes.Contains(encoded, []byte(said)) {
+			t.Errorf("the append %s holds %q of the dropped reply", encoded, said)
+		}
+	}
+	if turns := appended.Turns; len(turns) != 1 || turns[0].Usage.OutputTokens != 25 {
+		t.Fatalf("turns %+v, want the last call's alone", turns)
+	}
+	if err := appended.Validate(); err != nil {
+		t.Fatalf("the append does not validate: %v", err)
+	}
+	for name, encode := range map[string]func(conversation.Append, time.Time) ([]byte, error){
+		"Oh My Pi": ompSession(t).Encode, "Claude Code": claudeSession(t).Encode,
+	} {
+		data, err := encode(appended, time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC))
+		if err != nil {
+			t.Fatalf("%s's appender refuses the append: %v", name, err)
+		}
+		for _, said := range dropped {
+			if bytes.Contains(data, []byte(said)) {
+				t.Errorf("%s's appender writes %q of the dropped reply:\n%s", name, said, data)
+			}
+		}
+		if !bytes.Contains(data, []byte("PR 7 is green.")) {
+			t.Errorf("%s's appender writes no reply:\n%s", name, data)
+		}
 	}
 }
 

@@ -46,8 +46,8 @@
 // included, and a Chat Completions refusal is what an openai-chat call says in place of
 // a reply. Both are read off the SDK's stream of raw provider chunks, which the run asks for on
 // those two protocols and no other. The HTTP transport keeps no response body of its own: it is
-// the token, the endpoint's query parameters, the Final schema's order (see "The structured
-// reply") and the retry, and nothing else.
+// the token, the endpoint's query parameters, the Final schema's place and order (see "The
+// structured reply") and the retry, and nothing else.
 //
 // # Cache marks
 //
@@ -67,13 +67,14 @@
 // # The structured reply
 //
 // Request.Final is the JSON schema the last reply must be exactly one object of, and the package
-// reads that reply back against the schema itself: a reply that does not fit is FaultMalformed.
-// The schema also rides to the provider, where the protocol says: in output_config.format on
-// anthropic-messages and azure-anthropic, as the Responses API's text format on
-// openai-responses, and on openai-chat as response_format.json_schema with the provider's
-// strict flag set. On every protocol the schema therefore binds the reply as it is generated,
-// and the package's own read of the reply is the second check, which an endpoint that speaks a
-// vendor's protocol without being that vendor still needs.
+// reads every reply back against the schema itself: a last reply that does not fit is
+// FaultMalformed. The schema also rides to the provider, where the protocol says: in
+// output_config.format on anthropic-messages and azure-anthropic, as the Responses API's text
+// format on openai-responses, and on openai-chat as response_format.json_schema with the
+// provider's strict flag set. On every call that carries it the schema therefore binds the reply
+// as it is generated, and the package's own read of the reply is the second check, which an
+// endpoint that speaks a vendor's protocol without being that vendor still needs. Every call of
+// a run with a Final carries it but one that offers the model a tool on the Messages API, below.
 //
 // The schema reaches the provider with each of its objects' keys in the order Request.Final
 // writes them. Under structured output the model writes its reply's keys in the schema's order,
@@ -89,11 +90,50 @@
 // every value but an object or an array keeps the bytes the SDK wrote, a key is written again
 // without HTML escaping, and a body that carries no schema is sent byte for byte as it came.
 //
-// Every call of a run with a Final carries its schema at the protocol's path. A call whose schema
-// the transport cannot put back, because the body holds none there, holds one of another JSON
-// kind than Final's, or is no JSON, or because Final is no JSON the transport can read, such as
-// one that holds a key twice, goes out as the SDK wrote it and logs one warning to Request.Log
-// naming the protocol and the reason, once for the call and not again on its retry.
+// Every call of a run with a Final but those the next paragraph names carries its schema at the
+// protocol's path. A call whose schema the transport cannot put back, because the body holds
+// none there, holds one of another JSON kind than Final's, or is no JSON, or because Final is no
+// JSON the transport can read, such as one that holds a key twice, goes out as the SDK wrote it
+// and logs one warning to Request.Log naming the protocol and the reason, once for the call and
+// not again on its retry.
+//
+// On the Messages API, anthropic-messages and azure-anthropic, a call that offers the model a
+// tool carries no schema: the transport takes output_config.format out of its body, keeps the
+// rest of output_config, the model's effort, and every other byte as the SDK wrote them, takes
+// out an output_config that held the format alone, as the SDK writes none for a request with
+// neither, and logs nothing. A body offers a tool where its tools array holds one and its
+// tool_choice is absent or of another type than none; the SDK keeps a step's tools in its body
+// whatever the step's tool choice and writes the last allowed call's as {"type":"none"}, so the
+// tool choice is what tells that call from the others. The run's last call, which offers no
+// tool, and every call of a run with no tools, such as the secrets broker's judge's one call,
+// carry the schema in Final's order as above, and openai-responses and openai-chat carry it on
+// every call. With the schema on every call, the Claude answers of the Legion daemon's answer
+// loop that needed no tool still made tool calls up to its call bound: in two proof runs, 18 of
+// 135 answers with no fault took all 8 of their calls. The requests of proof run 45683361567,
+// replayed through the model gateway against claude-sonnet-5-5, one model call each and no tool
+// run, three samples a request, replied on 19 of the 162 samples of the 54 requests where a reply
+// was possible with the schema in output_config.format and on 100 of them without it, and the
+// calls that did nothing fell from 56 to 18; on the 10 answers' first calls the replies rose from
+// 3 of 30 to 21 of 30, and counted by answer the replies rose by 50 points (interval +36 to +65)
+// and in all 10. The tool calls a question needed were made in every sample either way. Of the
+// 121 replies made without the schema, 120 were exactly the reply object with an allowed kind,
+// and one had a sentence of prose before the object. Nothing was measured on the OpenAI
+// protocols, whose answers in those runs took 1 to 3 calls, so they keep the schema on every
+// call.
+//
+// A reply on a call that offered a tool that is exactly one object of Final ends the run with
+// that object, as on any call. One that is not is no answer and, while the run has time left, no
+// fault: the run drops its step as it drops a cut call's (Step.Dropped, and "A reply cut for
+// length"), sends none of the reply back, and makes its next call its last, whatever Bounds.Calls
+// has left. That call is sent the messages the dropped call was sent, its cache marks falling
+// where the dropped call's did; it offers no tool and carries the schema and Request.LastCall;
+// and its reply is final: the object, the run's Value with no ask again whatever Request.Check
+// would make of it, as on any last call, or FaultMalformed. Bounds.Calls counts the dropped call
+// and Result.Usage its usage; the run drops such a reply once at most, since the call after it
+// carries the schema, and counts it against neither Request.AskAgain nor
+// Request.CallAgainWhenCut. A reply out of form on a call that carried the schema, the last call,
+// any call of a run with no tools or on another protocol, or one with no time left after it,
+// ends the run on FaultMalformed as before.
 //
 // A tool's input schema (Tool.Schema) is not put back: the same two adapters send its keys
 // sorted, as that run's requests show, so a tool whose input has more than one property is
@@ -159,25 +199,27 @@
 // between two tool calls, so a reply's thinking and its signature, or its reasoning item, go
 // back as they came.
 //
-// An ask again is no new run. Bounds.Calls counts every model call of the run, and the last
-// allowed call offers no tool, and carries Request.LastCall, whichever ask it falls in;
+// An ask again is no new run. Bounds.Calls counts every model call of the run, and the run's last
+// call offers no tool, and carries Request.LastCall, whichever ask it falls in;
 // Bounds.Time is the one deadline of the whole run, and no ask is made again once it has passed;
 // Bounds.OutputTokens bounds each call. Tool calls are numbered on across the asks, Result.Steps
 // holds every call in order with the sentence on the step it answered (Step.AskedAgain), and
 // Result.Usage sums them all. The cache marks are placed as for any call: the history keeps its
 // own, and the check's sentence takes the last of the four, as the newest message but for the
 // LastCall sentence after it on a last call, which takes none. Where the asks or the bounds are
-// spent, the run returns the last reply as it would with no check, its Value set and no fault: a
+// spent, the call after a dropped reply out of form ("The structured reply") being the run's
+// last, the run returns the last reply as it would with no check, its Value set and no fault: a
 // check's refusal is never a fault of this package, and refusing that value is the caller's to
 // do. A request with no Check sends exactly what it sent before Check existed.
 //
 // # The last call
 //
-// The last call Bounds.Calls allows offers no tool, so the model must answer on it, and a model
-// that is not told so meets a call with no tool it can make. Request.LastCall is the caller's
-// sentence telling it, which the package sends on that call alone, as one user message after
-// everything else the call carries: after the tool results of the call before it, or, where the
-// last call is an ask again, after the check's sentence, which the model then reads first and
+// The last call Bounds.Calls allows offers no tool, and so does the call after a dropped reply out
+// of form, which is then the run's last ("The structured reply"), so the model must answer on it,
+// and a model that is not told so meets a call with no tool it can make. Request.LastCall is the
+// caller's sentence telling it, which the package sends on that call alone, as one user message
+// after everything else the call carries: after the tool results of the call before it, or, where
+// the last call is an ask again, after the check's sentence, which the model then reads first and
 // answers on the same call; and where Bounds.Calls is 1, after Input, on the run's one call. The
 // sentence is the caller's instruction to the run, as the system prompt is, and no turn of the
 // conversation: no earlier call carries it, no Step and nothing else of the Result holds it, and
@@ -205,7 +247,9 @@
 // CallAgainWhenCut, or a cut with no model call or no time left, ends the run with
 // FaultLength. A prompt past the model's context window, which Anthropic also ends as length,
 // is the same prompt on the call again, so that run ends with FaultLength one call later. A
-// request with a zero CallAgainWhenCut sends exactly what it sent before the field existed.
+// request with a zero CallAgainWhenCut sends exactly what it sent before the field existed. A
+// reply out of form on a call that carried no schema is dropped the same way, and is no cut
+// CallAgainWhenCut counts ("The structured reply").
 //
 // # Bounds
 //

@@ -1757,13 +1757,15 @@ answers:
 - `bounds.model_calls` (8): Model calls per answer; the last one allowed offers no tool, so it must be the reply.
   That call carries a short message after everything else it is sent: that it is the last call, that it offers no tool, to reply now, in the reply form, from what the agent already knows, and that a `not_answered` or `needs_work` reply must say in `needs` what it needs, since that call's reply is never asked for again.
   The message is the loop's own instruction to that call, as its system prompt is, so the exchange written into the agent's conversation never holds it.
+  On Anthropic's Messages API only a call that offers no tool, the last, carries the reply form's schema, though the daemon checks every reply against the form: with the schema on every call, Claude answers that needed no tool still made tool calls to the bound, and the requests of proof run 45683361567, replayed through the model gateway, replied 100 times in 162 without it against 19 times with it.
+  A reply out of form on a call that offers a tool is dropped, never sent back to the model nor written into the agent's conversation, and the next call is the answer's last, with that message and the schema, whatever `model_calls` has left; its tokens and cost count in the answer's.
 
 - `bounds.output_tokens` (4000): Output tokens per model call.
   A reply the provider cuts there is taken for a model running on inside the reply form, not for a longer answer:
   across 415 answer calls in three proof runs, the longest reply the bound did not cut used 567 output tokens, and the one it cut was a complete answer of about 350 tokens inside the form's `text`, followed by about 3800 newline escapes.
   So a cut reply is never sent back to the model: the daemon makes the same model call once more without it, inside the same `model_calls` and `answer_seconds`, and the reply to that call is the agent's.
   The exchange written into the agent's conversation never holds the cut reply, and its tokens and cost count in the answer's.
-  A second cut reply, or one on the last call `model_calls` allows, is `length` (below).
+  A second cut reply, or one on the answer's last call, is `length` (below).
 
 - `bounds.gh_seconds` (30): How long one `gh` or `dispatch` call may run.
 
@@ -1933,11 +1935,11 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   The daemon holds a reply to one more rule: the text of every kind but `none` is no placeholder, meaning one word of letters alone that is neither yes nor no and is no word of the agent's conversation, the question or the answer's tool results, raw JSON among them read with each escape such as `\n` as a space.
   The rule is that narrow so that a terse right answer passes: `No.`, a commit sha, or a marker such as `SBOM-ZINC-512`.
   A reply that breaks one of these rules is asked for once again, with the daemon's reason as a message after it, inside the same `model_calls`, `answer_seconds` and `output_tokens`, and the exchange appended to the conversation then holds the refused reply, that message and the reply after it, in that order.
-  A second such reply, or one made on the last call `model_calls` allows, is `malformed` (below).
+  A second such reply, or one made on the answer's last call, is `malformed` (below).
   The placeholder rule does not read an exchange of its own that the conversation holds, a refused placeholder and the daemon's reason after it, so a placeholder refused once is refused again on a later question.
 
 - **No answer.**
-  A bound passed (`answer_seconds`, `model_calls`, `length` at `output_tokens`), a refusal, a reply not in the form (`malformed`), a provider that failed (`provider_error`), the day's spend over `daily_usd` (`over_limit`), `no_provider`, `no_price`, `unknown_format`, a run the provider metered no call of
+  A bound passed (`answer_seconds`, `model_calls`, `length` at `output_tokens`), a refusal, a reply not in the form on a call that carries its schema (`malformed`), a provider that failed (`provider_error`), the day's spend over `daily_usd` (`over_limit`), `no_provider`, `no_price`, `unknown_format`, a run the provider metered no call of
   — no counts at all, or zero input, output and cache tokens on every call, which is what a gateway that strips usage leaves (`unmetered`:
   its answer is unpriced, so it would move the day's spend by nothing and `daily_usd` would bound no answer)
   — and a conversation its store no longer holds (`no_conversation`):
@@ -1949,7 +1951,7 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   A read (`pr view`, `run view`, a search, a `gh api` `GET` or `HEAD`, a GraphQL query), a call asking for `--help` and a call the tool refused are not named, and a write the daemon stopped during is named with no exit.
   Each `dispatch` write the question's calls ran is named after them, by its command and dispatch's exit: `` I had already run these Dispatch writes: `dispatch comment` (exit 0).``
   That is every `dispatch` call but one of the dispatch command's reads, a command the tool does not know counted as a write, and no call the tool refused.
-  When a model call returned anything before the fault, the run's turns are appended to the agent's conversation as an answer's are, each tool call with its result, without the cut reply made again or the last call's message, and after them a message from the daemon saying that the answer ended with no reply and quoting the reply it posted, so the agent finds its writes when it next resumes.
+  When a model call returned anything before the fault, the run's turns are appended to the agent's conversation as an answer's are, each tool call with its result, without a cut reply made again, a reply out of form the daemon dropped or the last call's message, and after them a message from the daemon saying that the answer ended with no reply and quoting the reply it posted, so the agent finds its writes when it next resumes.
   A fault decided before any model call, or a first call that returned nothing, appends nothing.
 
 - **Passing on.**

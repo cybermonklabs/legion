@@ -581,6 +581,229 @@ func TestACutPastCallAgainIsALengthFault(t *testing.T) {
 	}
 }
 
+// outOfFormSays is the sentence of prose a reply out of form writes before the Final object, as
+// the one reply of 121 measured without the schema did (doc.go, "The structured reply"), and
+// outOfForm that reply. No other reply or request says outOfFormSays, so a request that carries
+// it carries that reply.
+const outOfFormSays = "Here is my reply to the question:"
+
+var outOfForm = outOfFormSays + " " + finalAnswer
+
+// On the Messages API a reply out of form on a call that offers a tool, which carries no Final
+// schema, is no answer and no fault while the run has a model call and time left: its step is
+// dropped, as a cut call's is, and the run's next call is its last whatever number it has. That
+// call offers no tool, carries the schema in Final's order and Request.LastCall, and is sent the
+// messages the dropped call was sent, so none of the dropped reply, its thinking included, goes
+// back to the model. Its object is the run's Value, the run has two steps, the first dropped,
+// and its usage is both calls'. Each case allows four calls, so the second call is the run's last
+// only because the first reply was out of form.
+func TestAReplyOutOfFormOnACallWithToolsIsDroppedAndTheNextCallIsTheLast(t *testing.T) {
+	t.Parallel()
+	var final any
+	if err := json.Unmarshal([]byte(finalSchema), &final); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []Kind{AnthropicMessages, AzureAnthropic} {
+		t.Run(string(kind), func(t *testing.T) {
+			t.Parallel()
+			s := newStandIn(t,
+				anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 20}, anthropicThinking("Answer at once.", "sig-out-of-form+/=="), anthropicText(outOfForm)),
+				anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 5}, anthropicText(finalAnswer)),
+			)
+			f := newFixture(t, s, kind, 4)
+			f.req.Final, f.req.LastCall = json.RawMessage(finalSchema), lastCallSentence
+			result, err := Run(context.Background(), f.req)
+			if err != nil || result.Fault != "" || string(result.Value) != finalAnswer {
+				t.Fatalf("result %+v, %v; want no fault and the second reply's %s", result, err, finalAnswer)
+			}
+			if len(result.Steps) != 2 || !result.Steps[0].Dropped || result.Steps[1].Dropped {
+				t.Fatalf("steps %+v, want the reply out of form dropped and the reply after it", result.Steps)
+			}
+			if u := result.Usage; u != sum(result.Steps[0].Usage, result.Steps[1].Usage) || u.Input != 40 || u.Output != 25 || !u.Metered {
+				t.Errorf("usage %+v, want both calls summed, the dropped one's included", u)
+			}
+			got := s.requests()
+			if len(got) != 2 {
+				t.Fatalf("%d model calls, want 2: the call out of form and the last", len(got))
+			}
+			if _, carried := valueAt(got[0].body, finalSchemaPath(kind)); carried {
+				t.Error("the first call, which offers the tool, carries the schema")
+			}
+			last := got[1].decoded(t)
+			if choice, _ := last["tool_choice"].(map[string]any); choice["type"] != "none" {
+				t.Errorf("the call after the reply out of form has the tool choice %v, want none", last["tool_choice"])
+			}
+			if schema, carried := valueAt(got[1].body, finalSchemaPath(kind)); !carried {
+				t.Error("the call after the reply out of form carries no schema")
+			} else {
+				holdsFinalsOrder(t, schema, json.RawMessage(finalSchema), "the last call's schema")
+			}
+			for _, said := range []string{outOfFormSays, "Answer at once.", "sig-out-of-form+/=="} {
+				if bytes.Contains(got[1].body, []byte(said)) {
+					t.Errorf("the call after the reply out of form carries %q of that reply", said)
+				}
+			}
+			if sent, want := withoutLastCall(t, kind, last)["messages"], got[0].decoded(t)["messages"]; !reflect.DeepEqual(sent, want) {
+				t.Errorf("the last call's messages less its sentence are\n%v\nwant the dropped call's\n%v", sent, want)
+			}
+			if made := len(f.tool.made()); made != 0 {
+				t.Errorf("the tool was called %d times, want none", made)
+			}
+		})
+	}
+}
+
+// A reply out of form on a call that carried the schema is FaultMalformed as before: on the
+// run's last allowed call, the only way a run has no model call left; on the call made after a
+// reply out of form, which is the run's last; on openai-responses, every call of which carries
+// the schema; and on a run with no tools, which offers a tool on no call. Every call the run made
+// is reported with its usage, and only a reply out of form on a call that offered a tool is
+// dropped.
+func TestAReplyOutOfFormOnACallThatCarriedTheSchemaIsMalformed(t *testing.T) {
+	t.Parallel()
+	anthropicOut := func() reply {
+		return anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 20}, anthropicText(outOfForm))
+	}
+	anthropicAnswer := func() reply {
+		return anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 5}, anthropicText(finalAnswer))
+	}
+	for _, c := range []struct {
+		name    string
+		kind    Kind
+		calls   int
+		noTools bool
+		replies []reply
+		// dropped is, for each call the run makes, whether its step is dropped.
+		dropped []bool
+	}{
+		{name: "out of form on the last allowed call", kind: AnthropicMessages, calls: 2, dropped: []bool{false, false}, replies: []reply{
+			anthropicStream("tool_use", anthropicUsage{Input: 10, Output: 5}, anthropicToolUse("toolu_1", toolName, map[string]any{"path": "note.txt"})),
+			anthropicOut(), anthropicAnswer(),
+		}},
+		{name: "out of form again on the call after it", kind: AnthropicMessages, calls: 4, dropped: []bool{true, false},
+			replies: []reply{anthropicOut(), anthropicOut(), anthropicAnswer()}},
+		{name: "openai-responses", kind: OpenAIResponses, calls: 4, dropped: []bool{false}, replies: []reply{
+			openaiStream(openaiUsage{Input: 100, Output: 20}, "", openaiMessage("msg_1", outOfForm)),
+			openaiStream(openaiUsage{Input: 120, Output: 5}, "", openaiMessage("msg_2", finalAnswer)),
+		}},
+		{name: "anthropic-messages with no tools", kind: AnthropicMessages, calls: 4, noTools: true, dropped: []bool{false},
+			replies: []reply{anthropicOut(), anthropicAnswer()}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStandIn(t, c.replies...)
+			f := newFixture(t, s, c.kind, c.calls)
+			f.req.Final, f.req.LastCall = json.RawMessage(finalSchema), lastCallSentence
+			if c.noTools {
+				f.req.Tools = nil
+			}
+			result, err := Run(context.Background(), f.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Fault != FaultMalformed || result.Value != nil {
+				t.Fatalf("fault %q (%s), value %s; want %q", result.Fault, result.Detail, result.Value, FaultMalformed)
+			}
+			if n := len(s.requests()); n != len(c.dropped) {
+				t.Errorf("%d model calls, want %d", n, len(c.dropped))
+			}
+			if len(result.Steps) != len(c.dropped) {
+				t.Fatalf("%d steps, want %d", len(result.Steps), len(c.dropped))
+			}
+			var total Usage
+			for i, step := range result.Steps {
+				if step.Dropped != c.dropped[i] {
+					t.Errorf("step %d dropped %t, want %t", i+1, step.Dropped, c.dropped[i])
+				}
+				total = sum(total, step.Usage)
+			}
+			if result.Usage != total || !result.Usage.Metered {
+				t.Errorf("usage %+v, want every call summed: %+v", result.Usage, total)
+			}
+		})
+	}
+}
+
+// A dropped reply out of form leaves a cut reply and a refused Value as they were, within
+// Bounds.Calls: a cut call is made again and a reply Request.Check refuses is asked for again
+// before a reply out of form, neither counting it nor counted by it, and the call after the
+// reply out of form is the run's last though the bound and AskAgain would allow more, so a Value
+// Check refuses on it is the run's, with no fault, as a refused Value on a run's last allowed
+// call is. Only the last call carries Request.LastCall, and no call carries the cut reply or the
+// reply out of form.
+func TestADroppedReplyOutOfFormLeavesACutAndARefusalAsTheyWere(t *testing.T) {
+	t.Parallel()
+	cut := func() reply {
+		return anthropicStream("max_tokens", anthropicUsage{Input: 30, Output: 4000}, anthropicText(cutAnswer))
+	}
+	text := func(text string) reply {
+		return anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 5}, anthropicText(text))
+	}
+	for _, c := range []struct {
+		name    string
+		calls   int
+		check   func(json.RawMessage) error
+		replies []reply
+		value   string
+		// dropped and asked are, for each call the run makes, whether its step is dropped
+		// and whether it was asked again.
+		dropped, asked []bool
+	}{
+		{name: "a cut and a refusal before the reply out of form", calls: 6, check: refuseEmptyAnswer,
+			replies: []reply{cut(), text(refusedAnswer), text(outOfForm), text(finalAnswer)}, value: finalAnswer,
+			dropped: []bool{true, false, true, false}, asked: []bool{false, true, false, false}},
+		{name: "a refusal after the reply out of form", calls: 4, check: refuseEveryAnswer,
+			replies: []reply{text(outOfForm), text(refusedAnswer), text(finalAnswer)}, value: refusedAnswer,
+			dropped: []bool{true, false}, asked: []bool{false, false}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStandIn(t, c.replies...)
+			f := newFixture(t, s, AnthropicMessages, c.calls)
+			f.req.Final, f.req.LastCall = json.RawMessage(finalSchema), lastCallSentence
+			f.req.Check, f.req.AskAgain, f.req.CallAgainWhenCut = c.check, 1, 1
+			result, err := Run(context.Background(), f.req)
+			if err != nil || result.Fault != "" || string(result.Value) != c.value {
+				t.Fatalf("result %+v, %v; want no fault and the value %s", result, err, c.value)
+			}
+			if len(result.Steps) != len(c.dropped) {
+				t.Fatalf("%d steps, want %d: %+v", len(result.Steps), len(c.dropped), result.Steps)
+			}
+			var total Usage
+			for i, step := range result.Steps {
+				if step.Dropped != c.dropped[i] || (step.AskedAgain == askAgainSentence) != c.asked[i] {
+					t.Errorf("step %d dropped %t and asked again with %q; want dropped %t and asked again %t", i+1, step.Dropped, step.AskedAgain, c.dropped[i], c.asked[i])
+				}
+				total = sum(total, step.Usage)
+			}
+			if result.Usage != total || !result.Usage.Metered {
+				t.Errorf("usage %+v, want every call summed: %+v", result.Usage, total)
+			}
+			got := s.requests()
+			if len(got) != len(c.dropped) {
+				t.Fatalf("%d model calls, want %d", len(got), len(c.dropped))
+			}
+			for i, r := range got {
+				if last := i == len(got)-1; bytes.Contains(r.body, []byte(lastCallSentence)) != last {
+					t.Errorf("call %d carries the last-call sentence: %t, want it on the run's last call alone", i+1, !last)
+				}
+				for _, said := range []string{cutSays, outOfFormSays} {
+					if bytes.Contains(r.body, []byte(said)) {
+						t.Errorf("call %d carries %q", i+1, said)
+					}
+				}
+			}
+			last := got[len(got)-1].decoded(t)
+			if choice, _ := last["tool_choice"].(map[string]any); choice["type"] != "none" {
+				t.Errorf("the last call has the tool choice %v, want none", last["tool_choice"])
+			}
+			if _, carried := valueAt(got[len(got)-1].body, finalSchemaPath(AnthropicMessages)); !carried {
+				t.Error("the last call carries no schema")
+			}
+		})
+	}
+}
+
 // A reply the model refused is a refusal fault, on each protocol's own way of saying so, and
 // whether or not the request asked for a Final object: a refusal is why the run ended, not a
 // reply of the wrong form.
@@ -1112,17 +1335,27 @@ func TestOnlyTheLastCallCarriesTheLastCallSentence(t *testing.T) {
 // Every call of a run before its last allowed call offers the run's tools with the protocol's own
 // auto tool choice, which leaves the model to call a tool or to answer, and never a forced one
 // (Anthropic's any or tool, OpenAI's required or a named function), which would have it call a
-// tool on a call it could answer on. Each carries Request.Final at the protocol's path
-// (finalSchemaPath), so a reply on any call is held to the schema as it is generated, and none
-// carries Request.LastCall. Each case is a run of three allowed calls on a protocol the Legion
-// daemon calls, whose model calls the tool on its first call and answers on its second, so
-// neither is the last allowed call; the last call's own request, no tool and the sentence, is
+// tool on a call it could answer on, and none carries Request.LastCall. On the Messages API
+// (anthropic-messages and azure-anthropic) such a call carries no Request.Final schema, so the
+// model is not held to the reply object on a call it may make a tool call on, and keeps the rest
+// of output_config, the model's effort; on openai-responses it carries the schema at the
+// protocol's path (finalSchemaPath), as every call does there (doc.go, "The structured reply").
+// A reply on such a call that is the Final object ends the run with that object on that call.
+// Each case is a run of three allowed calls whose model calls the tool on its first call and
+// answers on its second, so neither is the last allowed call; the last call's own request is
+// TestTheMessagesAPISendsTheSchemaOnlyOnACallThatOffersNoTool's and
 // TestOnlyTheLastCallCarriesTheLastCallSentence's.
-func TestEveryCallBeforeTheLastLeavesTheToolChoiceToTheModelAndCarriesTheFinalSchema(t *testing.T) {
+func TestEveryCallBeforeTheLastLeavesTheToolChoiceToTheModelAndCarriesNoSchemaOnTheMessagesAPI(t *testing.T) {
 	t.Parallel()
 	var final any
 	if err := json.Unmarshal([]byte(finalSchema), &final); err != nil {
 		t.Fatal(err)
+	}
+	anthropicReplies := func() []reply {
+		return []reply{
+			anthropicStream("tool_use", anthropicUsage{Input: 10, Output: 5}, anthropicToolUse("toolu_1", toolName, map[string]any{"path": "note.txt"})),
+			anthropicStream("end_turn", anthropicUsage{Input: 20, Output: 5}, anthropicText(finalAnswer)),
+		}
 	}
 	for _, c := range []struct {
 		kind    Kind
@@ -1130,10 +1363,8 @@ func TestEveryCallBeforeTheLastLeavesTheToolChoiceToTheModelAndCarriesTheFinalSc
 		// auto is the tool choice as the protocol writes its own auto.
 		auto any
 	}{
-		{kind: AnthropicMessages, auto: map[string]any{"type": "auto"}, replies: []reply{
-			anthropicStream("tool_use", anthropicUsage{Input: 10, Output: 5}, anthropicToolUse("toolu_1", toolName, map[string]any{"path": "note.txt"})),
-			anthropicStream("end_turn", anthropicUsage{Input: 20, Output: 5}, anthropicText(finalAnswer)),
-		}},
+		{kind: AnthropicMessages, auto: map[string]any{"type": "auto"}, replies: anthropicReplies()},
+		{kind: AzureAnthropic, auto: map[string]any{"type": "auto"}, replies: anthropicReplies()},
 		{kind: OpenAIResponses, auto: "auto", replies: []reply{
 			openaiStream(openaiUsage{Input: 100, Output: 5}, "", openaiToolCall("fc_1", "call_1", toolName, map[string]any{"path": "note.txt"})),
 			openaiStream(openaiUsage{Input: 120, Output: 5}, "", openaiMessage("msg_2", finalAnswer)),
@@ -1145,8 +1376,8 @@ func TestEveryCallBeforeTheLastLeavesTheToolChoiceToTheModelAndCarriesTheFinalSc
 			f := newFixture(t, s, c.kind, 3)
 			f.req.Final, f.req.LastCall = json.RawMessage(finalSchema), lastCallSentence
 			result, err := Run(context.Background(), f.req)
-			if err != nil || result.Fault != "" || string(result.Value) != finalAnswer || len(result.Steps) != 2 {
-				t.Fatalf("result %+v, %v; want the answer on the second of three allowed calls", result, err)
+			if err != nil || result.Fault != "" || string(result.Value) != finalAnswer || len(result.Steps) != 2 || result.Steps[0].Dropped || result.Steps[1].Dropped {
+				t.Fatalf("result %+v, %v; want the answer on the second of three allowed calls, no step dropped", result, err)
 			}
 			got := s.requests()
 			if len(got) != 2 {
@@ -1165,7 +1396,12 @@ func TestEveryCallBeforeTheLastLeavesTheToolChoiceToTheModelAndCarriesTheFinalSc
 					object, _ := schema.(map[string]any)
 					schema = object[key]
 				}
-				if !reflect.DeepEqual(schema, final) {
+				switch config, _ := body["output_config"].(map[string]any); {
+				case anthropicKind(c.kind) && (schema != nil || config["format"] != nil):
+					t.Errorf("call %d, which offers a tool, carries the output format %v, want none on the Messages API", i+1, config["format"])
+				case anthropicKind(c.kind) && config["effort"] != f.req.Model.Effort:
+					t.Errorf("call %d carries the output config %v, want the model's effort %q kept", i+1, config, f.req.Model.Effort)
+				case !anthropicKind(c.kind) && !reflect.DeepEqual(schema, final):
 					t.Errorf("call %d carries %v at %v, want the run's Final schema %s", i+1, schema, finalSchemaPath(c.kind), finalSchema)
 				}
 				if bytes.Contains(r.body, []byte(lastCallSentence)) {

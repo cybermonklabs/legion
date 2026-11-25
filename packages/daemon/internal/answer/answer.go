@@ -8,20 +8,21 @@
 // The model calls themselves are agentloop's (github.com/sjawhar/envoy/agentloop), the one model
 // loop the daemon and Dispatch share and the only import of Grafana's SDK: the providers, the
 // retry, the step bound with no tool on the last allowed call and the message that call carries,
-// the thinking and reasoning options, the cache marks, the check of the reply against its schema,
-// the one ask again for a reply the form's own rules refuse and the one call again for a reply
-// the provider cut at output_tokens are all its. This package is its caller: it builds the
-// request (the conversation as agentloop's messages, the system prompt, the reply form as the
-// request's Final schema, the form's own rules as its Check, the gh tool described for the
-// agent's repository, the dispatch tool for its session and the web_search tool, the last call's
-// message, the bounds and the endpoint `answers.providers` names, whose key is read again for
-// every call), decides the faults that need no model call
-// (no_provider, no_price, unknown_format), refuses an answer whose calls the provider metered
-// nothing for (unmetered), maps agentloop's faults onto the daemon's own reasons, refuses each
-// tool call that writes while the project is paused (toolSet), and reads the run back as the
-// agent's reply, the turns to append (an answer's, or those of a run that gave none, for the
-// caller to end with its own reply), a cut call agentloop made again left out, and what the
-// answer cost.
+// the thinking and reasoning options, the cache marks, the reply's schema, which on Anthropic's
+// Messages API rides only on a call that offers no tool, the check of every reply against it, the
+// one last call after a reply out of form on a call that offered a tool, the one ask again for a
+// reply the form's own rules refuse and the one call again for a reply the provider cut at
+// output_tokens are all its. This package is its caller: it builds the request (the conversation
+// as agentloop's messages, the system prompt, the reply form as the request's Final schema, the
+// form's own rules as its Check, the gh tool described for the agent's repository, the dispatch
+// tool for its session and the web_search tool, the last call's message, the bounds and the
+// endpoint `answers.providers` names, whose key is read again for every call), decides the faults
+// that need no model call (no_provider, no_price, unknown_format), refuses an answer whose calls
+// the provider metered nothing for (unmetered), maps agentloop's faults onto the daemon's own
+// reasons, refuses each tool call that writes while the project is paused (toolSet), and reads
+// the run back as the agent's reply, the turns to append (an answer's, or those of a run that
+// gave none, for the caller to end with its own reply), each call agentloop dropped left out (a
+// cut reply, or a reply out of form), and what the answer cost.
 package answer
 
 import (
@@ -74,10 +75,11 @@ type Fault string
 const (
 	// AnswerSeconds is the answer_seconds bound: the answer ran past its time.
 	AnswerSeconds Fault = "answer_seconds"
-	// ModelCalls is the model_calls bound: the last allowed model call still called a tool.
+	// ModelCalls is the model_calls bound: the answer's last model call (lastCall) still called a
+	// tool.
 	ModelCalls Fault = "model_calls"
 	// Length is a reply cut off at the output_tokens bound that agentloop did not make its call
-	// again for: a second cut, or one on the last model call model_calls allows.
+	// again for: a second cut, or one on the answer's last model call (lastCall).
 	Length Fault = "length"
 	// Refusal is a last reply the provider refused or filtered.
 	Refusal Fault = "refusal"
@@ -247,10 +249,12 @@ type Reply struct {
 	// first call that failed). It holds nothing else the loop told the model: not the system
 	// prompt, and not the message the last model call carries (lastCall), which is the loop's
 	// own instruction to that call and no part of what the agent did, so the agent's
-	// conversation never holds it. Nor does it hold a reply the provider cut at output_tokens
-	// whose call agentloop made again (agentloop.Step.Dropped): no later call was sent it.
+	// conversation never holds it. Nor does it hold a reply agentloop dropped
+	// (agentloop.Step.Dropped), which no later call was sent: one the provider cut at
+	// output_tokens whose call agentloop made again, or one out of form on a call that offered a
+	// tool (finalSchema).
 	Append conversation.Append
-	// Calls is how many model calls the answer made, a cut call made again included; Usage
+	// Calls is how many model calls the answer made, each call agentloop dropped included; Usage
 	// their tokens and costs summed, cache writes and reads included, reasoning counted as
 	// output; WebSearches the searches its web_search calls made and WebSearchUSD what those
 	// calls cost, their tokens at the search model's price and their searches' fee, none of it
@@ -402,7 +406,11 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 			Time: req.Bounds.Answer, Calls: req.Bounds.ModelCalls, OutputTokens: req.Bounds.OutputTokens,
 		},
 		FirstToolIndex: firstToolIndex(req.Earlier),
-		Final:          finalSchema(req.MayAskNothing),
+		// The reply form, which agentloop reads every reply against. On Anthropic's Messages
+		// API it rides only on a call that offers no tool, and a reply out of form on a call
+		// that offered one is dropped, which exchange appends nothing of, and followed by the
+		// answer's last call (finalSchema).
+		Final: finalSchema(req.MayAskNothing),
 		// A reply the form's own rules refuse (inFront.read) is asked for once again, with
 		// the rule's sentence (parseReply's, or errPlaceholder) as the message after it,
 		// within the same bounds: the rules the strict schema cannot state are the ones a
@@ -421,7 +429,8 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 		// appends nothing of. A second cut is the length fault.
 		CallAgainWhenCut: 1,
 		// The last call, which offers no tool, is told so (lastCall). agentloop puts the
-		// message on that call alone and in no step, so exchange appends nothing of it.
+		// message on that call alone, the last model_calls allows or the one after a reply out
+		// of form, and in no step, so exchange appends nothing of it.
 		LastCall: lastCall,
 		Log:      req.Log,
 	})
@@ -606,9 +615,10 @@ func firstToolIndex(earlier []store.AnswerToolCall) int {
 }
 
 // exchange is the run as the turns to append under front's question: every call of the run in
-// order but a cut one whose call agentloop made again, which no later call was sent and the
-// conversation never holds, and one that returned nothing at all, which no harness writes as a
-// turn. A run whose calls returned nothing has no turns.
+// order but one agentloop dropped, a cut one whose call it made again or a reply out of form on a
+// call that offered a tool, which no later call was sent and the conversation never holds, and
+// one that returned nothing at all, which no harness writes as a turn. A run whose calls returned
+// nothing has no turns.
 func exchange(req Request, r route, result agentloop.Result, front *inFront) conversation.Append {
 	a := conversation.Append{
 		QuestionID: req.Question.ID, Question: front.question,

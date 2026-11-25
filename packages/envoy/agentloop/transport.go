@@ -20,9 +20,10 @@ import (
 )
 
 // modelTransport carries every model call of a run. It puts the endpoint's token, read again for
-// the attempt, on each request; adds the endpoint's own query parameters to it; puts the run's
-// Final schema in the body back in the order its caller wrote it (inFinalOrder); and makes the
-// run's one retry, on a 429, a 5xx or a transport error, within the run's time.
+// the attempt, on each request; adds the endpoint's own query parameters to it; takes the run's
+// Final schema out of a Messages API body that offers the model a tool and puts it in every other
+// body back in the order its caller wrote it (inFinalOrder); and makes the run's one retry, on a
+// 429, a 5xx or a transport error, within the run's time.
 type modelTransport struct {
 	base  http.RoundTripper
 	kind  Kind
@@ -153,11 +154,13 @@ func finalSchemaPath(kind Kind) []string {
 // inFinalOrder is body with the schema it carries at its protocol's path (finalSchemaPath) put
 // back in the order of Request.Final: every byte of the body stays as it came but for that
 // schema's objects, each of which takes the order of the same object in Final (appendInOrder);
-// why is doc.go's "The structured reply". A run with no Final and a decision are sent byte for
-// byte as they came. So are a body that carries no schema at the path, a schema of another JSON
-// kind than Final's, a Final that is no JSON the transport can read, and a body that is no JSON,
-// which is the provider's to refuse; but every call of a run with a Final carries its schema
-// there, so each of these logs one warning for the call.
+// why is doc.go's "The structured reply". On the Messages API a body that offers the model a tool
+// (offersTools) goes out with no schema at all, and logs nothing (withoutFormat); why is the same
+// section's. A run with no Final and a decision are sent byte for byte as they came. So are a
+// body that carries no schema at the path, a schema of another JSON kind than Final's, a Final
+// that is no JSON the transport can read, and a body that is no JSON, which is the provider's to
+// refuse; but every other call of a run with a Final carries its schema there, so each of these
+// logs one warning for the call.
 func (t *modelTransport) inFinalOrder(body []byte) []byte {
 	path := finalSchemaPath(t.kind)
 	if t.final == nil || path == nil {
@@ -170,14 +173,21 @@ func (t *modelTransport) inFinalOrder(body []byte) []byte {
 			"protocol", string(t.kind), "reason", reason)
 		return body
 	}
+	// The body's own members are read once: they say whether the body offers a tool, and they
+	// are the walk's first step.
+	members, ok := jsonParts(body, jsontext.KindBeginObject)
+	if !ok {
+		return unordered("the body is no JSON object")
+	}
+	if anthropicKind(t.kind) && offersTools(body, members) {
+		return withoutFormat(body, members)
+	}
 	start, end := 0, len(body)
 	for i, name := range path {
-		members, ok := jsonParts(body[start:end], jsontext.KindBeginObject)
-		if !ok {
-			if i == 0 {
-				return unordered("the body is no JSON object")
+		if i > 0 {
+			if members, ok = jsonParts(body[start:end], jsontext.KindBeginObject); !ok {
+				return unordered(strings.Join(path[:i], ".") + " is no JSON object")
 			}
-			return unordered(strings.Join(path[:i], ".") + " is no JSON object")
 		}
 		j := slices.IndexFunc(members, func(m jsonPart) bool { return m.name == name })
 		if j < 0 {
@@ -200,6 +210,68 @@ func (t *modelTransport) inFinalOrder(body []byte) []byte {
 	// The walk to the schema read every value of the body, so what could not be read here is
 	// Final: a key it holds twice, or bytes that are no JSON.
 	return unordered("Final is no JSON the transport can read")
+}
+
+// withoutFormat is body, a Messages API request body that offers the model a tool (offersTools)
+// and whose members are members, with its output_config.format taken out. Every other byte of the
+// body stays as it came, the rest of output_config, the model's effort, among them; an
+// output_config that held the format and nothing else goes too, as the SDK writes none for a
+// request with neither. A body that holds no format is sent as it came.
+func withoutFormat(body []byte, members []jsonPart) []byte {
+	i := slices.IndexFunc(members, func(m jsonPart) bool { return m.name == "output_config" })
+	if i < 0 {
+		return body
+	}
+	config := body[members[i].start:members[i].end]
+	inner, _ := jsonParts(config, jsontext.KindBeginObject)
+	j := slices.IndexFunc(inner, func(m jsonPart) bool { return m.name == "format" })
+	switch {
+	case j < 0:
+		return body
+	case len(inner) == 1:
+		return withoutMember(body, members, i)
+	}
+	return slices.Concat(body[:members[i].start], withoutMember(config, inner, j), body[members[i].end:])
+}
+
+// offersTools is whether a Messages API request body, a JSON object whose members are members,
+// offers the model a tool: its tools array holds one, and its tool_choice is absent, which the
+// API reads as auto, or is an object whose type is a string other than none. The SDK writes a
+// step's tools whatever that step's tool choice, and writes the ToolChoiceNone prepareStep gives
+// the run's last call as {"type":"none"}, so the tools array alone does not tell that call from
+// the others.
+func offersTools(body []byte, members []jsonPart) bool {
+	value := func(name string) []byte {
+		if i := slices.IndexFunc(members, func(m jsonPart) bool { return m.name == name }); i >= 0 {
+			return body[members[i].start:members[i].end]
+		}
+		return nil
+	}
+	if tools, _ := jsonParts(value("tools"), jsontext.KindBeginArray); len(tools) == 0 {
+		return false
+	}
+	choice := value("tool_choice")
+	if choice == nil {
+		return true
+	}
+	var read struct {
+		Type *string `json:"type"`
+	}
+	return json.Unmarshal(choice, &read) == nil && read.Type != nil && *read.Type != "none"
+}
+
+// withoutMember is object, a JSON object whose members are parts, with its member j taken out
+// together with the comma that parted it from its neighbour: the one before it, or for the first
+// of several the one after it. Every other byte stays as it came.
+func withoutMember(object []byte, parts []jsonPart, j int) []byte {
+	from, to := 1, parts[j].end
+	switch {
+	case j > 0:
+		from = parts[j-1].end
+	case len(parts) > 1:
+		to += bytes.IndexByte(object[to:], ',') + 1
+	}
+	return slices.Concat(object[:from], object[to:])
 }
 
 // jsonKinds names the kind each JSON value begins with, for a warning's reason.

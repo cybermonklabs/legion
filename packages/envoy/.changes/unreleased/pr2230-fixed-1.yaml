@@ -22,10 +22,10 @@ body: |-
 
   Because every Final schema is now inside that subset, an `openai-chat` run sends the schema in
   OpenAI's strict mode — `response_format.json_schema` with `strict: true`, where it sent
-  `strict: false` before — so on every protocol the schema binds the reply as it is generated
-  rather than only being checked after it. The package still reads each reply back against the
-  schema itself and raises the malformed fault where it does not fit, since an endpoint that
-  speaks a vendor's protocol is not always that vendor.
+  `strict: false` before — so on every protocol the schema binds the reply of each call that
+  carries it as it is generated rather than only being checked after it. The package still reads
+  each reply back against the schema itself and raises the malformed fault where it does not fit,
+  since an endpoint that speaks a vendor's protocol is not always that vendor.
 time: 2026-11-07T12:00:00.000000000Z
 custom:
     Issue: pr2230

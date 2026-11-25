@@ -29,11 +29,12 @@ type tool struct {
 	run         func(ctx context.Context, req Request, call agentloop.ToolCall, n int) (output string, isError bool)
 }
 
-// tools are the loop's tools, which the system prompt names and every model call of an answer
-// offers where its request does (Request.offeredTools): gh, dispatch where the daemon found the
-// dispatch command, and web_search where answers.web_search configures it. A gh call writes as
-// the gh tool reads it (ghtool.CallWrites), a dispatch call as the dispatch tool does
-// (dispatchtool.CallWrites), and a web search is a read.
+// tools are the loop's tools, which the system prompt names and every model call of an answer but
+// its last (lastCall), which offers no tool, offers where its request does
+// (Request.offeredTools): gh, dispatch where the daemon found the dispatch command, and
+// web_search where answers.web_search configures it. A gh call writes as the gh tool reads it
+// (ghtool.CallWrites), a dispatch call as the dispatch tool does (dispatchtool.CallWrites), and a
+// web search is a read.
 var tools = []tool{
 	{name: store.ToolGH, description: ghDescription, schema: ghSchema, run: runGH,
 		writes: func(call agentloop.ToolCall) bool { return ghtool.CallWrites(argsOf(call)) }},

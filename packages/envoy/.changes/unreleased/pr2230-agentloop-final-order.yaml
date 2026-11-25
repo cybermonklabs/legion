@@ -20,7 +20,8 @@ body: |-
   `verdict`. A call whose schema the transport cannot put back, because its body holds none at the
   protocol's path, holds one of another JSON kind than `Final`'s, or is no JSON, or because `Final`
   is no JSON the transport can read, is sent as the SDK wrote it and logs one warning to the new
-  `Request.Log`, or to `slog.Default()` where it is nil.
+  `Request.Log`, or to `slog.Default()` where it is nil; a Messages API call that offers the model
+  a tool, which carries no schema by design, logs none.
 time: 2026-11-21T04:28:35.000000000Z
 custom:
     Issue: pr2230
