@@ -79,7 +79,7 @@ func TestListUnownedP0(t *testing.T) {
 	if want := want[:2]; !slices.Equal(acme, want) {
 		t.Fatalf("ListUnownedP0 of ACME = %+v, want %+v (its open P0 issues neither claimed nor routed, by number)", acme, want)
 	}
-	// The count the unowned-p0 eval records is the length of that list.
+	// The count is the length of that list.
 	for project, want := range map[string]int{"ACME": 2, "ACMEB": 1} {
 		if count, err := CountUnownedP0(ctx, pool, project); err != nil || count != want {
 			t.Errorf("CountUnownedP0 of %s = %d, %v; want %d, the length of its list", project, count, err, want)
@@ -89,7 +89,7 @@ func TestListUnownedP0(t *testing.T) {
 
 // Of four P0 issues, one done, one claimed, one routed and one none of these, the unowned P0
 // count is 1: the rule of ListUnownedP0, which the delivery measures' P0 card answers, and of
-// CountUnownedP0, which the unowned-p0 eval records (dispatch://INFRA-2916, R13).
+// CountUnownedP0 (dispatch://INFRA-2916, R13).
 func TestOfFourP0IssuesOnlyTheOneNeitherDoneClaimedNorRoutedIsUnowned(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)

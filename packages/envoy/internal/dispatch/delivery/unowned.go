@@ -58,7 +58,8 @@ func ListUnownedP0(ctx context.Context, q Querier, project string) ([]UnownedIss
 }
 
 // CountUnownedP0 is how many issues ListUnownedP0 lists for project, counted by the statement
-// rather than read: the unowned-p0 eval's day row records the count alone.
+// rather than read. Nothing in this tree calls it yet: it is here because issues_open_p0's
+// migration (20261117100010) and the plan test of this package name its statement.
 func CountUnownedP0(ctx context.Context, pool *store.Pool, project string) (int, error) {
 	var count int
 	err := pool.QueryRow(ctx, projectUnownedP0Count, project).Scan(&count)
