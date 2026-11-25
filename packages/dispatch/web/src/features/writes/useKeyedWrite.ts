@@ -34,7 +34,7 @@ import {
   SendStoppedError,
   stoppedWriteNote,
 } from "./keyed-write";
-import { plainWrite, useWrites, type Write } from "./write-store";
+import { plainWrite, useWrites, type Write, type Writes } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
  *  the write path makes from `write` or `request` and `label`. Its data is Dispatch's answer, or
@@ -210,6 +210,33 @@ function lateIn(rows: readonly Write[], key: string): boolean {
   );
 }
 
+/** Whether the write the store holds under `key` is late (`lateIn`), followed only while there is
+ *  a `key`: `KeyedWriteResult.late`, and the lateness of a press `usePendingKeyedPress` finds. */
+function useLateIn(writes: Writes, key: string | undefined): boolean {
+  const follow = useCallback(
+    (listener: () => void) => (key === undefined ? () => undefined : writes.subscribe(listener)),
+    [key, writes]
+  );
+  return useSyncExternalStore(follow, () => key !== undefined && lateIn(writes.rows(), key));
+}
+
+/** The keys among `keys()` whose write the store holds late (`lateIn`), followed only while
+ *  `following`, as one string of them, so a change of the store that turns none of them late
+ *  draws nothing again. */
+function useLateKeys(writes: Writes, following: boolean, keys: () => readonly string[]): string {
+  const subscribe = useCallback(
+    (listener: () => void) => (following ? writes.subscribe(listener) : () => undefined),
+    [following, writes]
+  );
+  return useSyncExternalStore(subscribe, () => {
+    if (!following) return "";
+    const rows = writes.rows();
+    return keys()
+      .filter((key) => lateIn(rows, key))
+      .join(" ");
+  });
+}
+
 /** The keys among `keys` whose write the store holds late, or waiting its turn on its target's
  *  line behind a write that is (`lateIn`), as `KeyedWriteResult.late` reads a keyed write's. For
  *  a surface that makes its writes with `Writes.run` under keys of its own rather than through
@@ -219,25 +246,17 @@ function lateIn(rows: readonly Write[], key: string): boolean {
  *  is not late. The set is the same object while the same keys are late, and the store is
  *  followed only while `keys` names any. */
 export function useLateWrites(keys: readonly string[]): ReadonlySet<string> {
-  const writes = useWrites();
-  const following = keys.length > 0;
-  const subscribe = useCallback(
-    (listener: () => void) => (following ? writes.subscribe(listener) : () => undefined),
-    [following, writes]
-  );
-  // One string of the late keys, so a change of the store that turns none of them late draws
-  // nothing again.
-  const late = useSyncExternalStore(subscribe, () => {
-    if (!following) return "";
-    const rows = writes.rows();
-    return keys.filter((key) => lateIn(rows, key)).join(" ");
-  });
+  const late = useLateKeys(useWrites(), keys.length > 0, () => keys);
   return useMemo(() => new Set(late === "" ? [] : late.split(" ")), [late]);
 }
 
 /** The pending press of a keyed write shared by exact mutation key. A surface that mounts
  *  while the press is out can release its hold at that same press's deadline. */
-export function usePendingKeyedPress(mutationKey: MutationKey) {
+export function usePendingKeyedPress(mutationKey: MutationKey): {
+  readonly isPending: boolean;
+  readonly late: boolean;
+  readonly submittedAt: number;
+} {
   const writes = useWrites();
   const press = useMutationState({
     filters: { exact: true, mutationKey, status: "pending" },
@@ -246,15 +265,7 @@ export function usePendingKeyedPress(mutationKey: MutationKey) {
       submittedAt: state.submittedAt,
     }),
   }).at(-1);
-  const key = press?.key;
-  const subscribe = useCallback(
-    (listener: () => void) => (key === undefined ? () => undefined : writes.subscribe(listener)),
-    [key, writes]
-  );
-  const late = useSyncExternalStore(
-    subscribe,
-    () => key !== undefined && lateIn(writes.rows(), key)
-  );
+  const late = useLateIn(writes, press?.key);
   return { isPending: press !== undefined, late, submittedAt: press?.submittedAt ?? 0 };
 }
 
@@ -554,29 +565,14 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   // The newest press's write as the store holds it, by the key the press made it under, and the
   // writes ahead of it on its target's line, followed only where the surface reads it
   // (`readsLate`).
-  const lateKey = readsLate === true ? newest?.key : undefined;
-  const followLate = useCallback(
-    (listener: () => void) =>
-      lateKey === undefined ? () => undefined : writes.subscribe(listener),
-    [lateKey, writes]
-  );
-  const late = useSyncExternalStore(
-    followLate,
-    () => lateKey !== undefined && lateIn(writes.rows(), lateKey)
-  );
+  const late = useLateIn(writes, readsLate === true ? newest?.key : undefined);
   // Every press out that is late, followed only where the surface reads it (`readsLate`), from
-  // the newest press on and while any press is out, as one string of their keys, so a change of
-  // the store that turns none of them late draws nothing again.
-  const followOut = readsLate === true && (newest !== undefined || out.current.size > 0);
-  const followPresses = useCallback(
-    (listener: () => void) => (followOut ? writes.subscribe(listener) : () => undefined),
-    [followOut, writes]
+  // the newest press on and while any press is out.
+  const lateOut = useLateKeys(
+    writes,
+    readsLate === true && (newest !== undefined || out.current.size > 0),
+    () => [...out.current.keys()]
   );
-  const lateOut = useSyncExternalStore(followPresses, () => {
-    if (!followOut) return "";
-    const rows = writes.rows();
-    return [...out.current.keys()].filter((key) => lateIn(rows, key)).join(" ");
-  });
   const lateOf = useCallback(
     (variables: TVariables) => {
       const keys = lateOut.split(" ");

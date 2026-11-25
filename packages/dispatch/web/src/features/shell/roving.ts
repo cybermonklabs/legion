@@ -48,6 +48,20 @@ export function focusBackOverPress(back: () => void): void {
   document.addEventListener("pointerdown", stop, true);
 }
 
+const PRESS_CANCELLATIONS = ["pointercancel", "dragend", "contextmenu"] as const;
+
+/** Hears the ways a press ends without a release on the page. Listen for the window's own
+ * blur, not a capture-phase blur, which also hears every element's blur. */
+export function hearPressCancellation(page: Document, end: () => void): () => void {
+  const heard = new AbortController();
+  const { signal } = heard;
+  for (const type of PRESS_CANCELLATIONS) {
+    page.addEventListener(type, end, { capture: true, signal });
+  }
+  page.defaultView?.addEventListener("blur", end, { signal });
+  return () => heard.abort();
+}
+
 /**
  * The element matching `selector` that holds keyboard focus *itself* - not one merely containing
  * a focused control. Every roving list asks this of its own rows: a key bound to the row acts

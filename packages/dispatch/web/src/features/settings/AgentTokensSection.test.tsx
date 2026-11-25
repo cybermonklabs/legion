@@ -811,16 +811,16 @@ async function mintUntilLate(refusing: () => boolean) {
     listAgentTokens.mockRestore();
     createAgentToken.mockRestore();
   };
-  render(
-    <QueryClientProvider client={queryClient}>
-      <AgentTokensSection />
-    </QueryClientProvider>
-  );
-  await screen.findByRole("cell", { name: "dsp_AbCdEf12…" });
-  jest.useFakeTimers();
-  const user = userOnFakeClock();
-  const presses = () => pressesOf([createAgentToken]);
   try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+    await screen.findByRole("cell", { name: "dsp_AbCdEf12…" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const presses = () => pressesOf([createAgentToken]);
     await user.click(screen.getByLabelText("Token label"));
     await user.paste("reviewer");
     await heldUntilLate(
@@ -833,11 +833,11 @@ async function mintUntilLate(refusing: () => boolean) {
         sent: presses,
       }
     );
+    return { presses, restore, user };
   } catch (error) {
     restore();
     throw error;
   }
-  return { presses, restore, user };
 }
 
 // A mint that never answers holds New token until its deadline, and no longer. A press then would

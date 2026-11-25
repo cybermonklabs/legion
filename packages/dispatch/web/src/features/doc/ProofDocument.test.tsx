@@ -173,16 +173,15 @@ test.each([
     const user = userOnFakeClock();
     const sent = () => pressesOf([create]);
     await heldUntilLate(user, control, {
+      alongside: (held) => {
+        expect(toolbar.current?.isNamingVersion, "the toolbar's naming").toBe(held);
+        expect(field.readOnly, "What changed?").toBe(held);
+      },
       label: `New version of ${artifact.name}`,
       name,
       queryClient,
-      sent: () => {
-        if (sent() === 1) expect(toolbar.current?.isNamingVersion).toBe(true);
-        return sent();
-      },
+      sent,
     });
-    expect(toolbar.current?.isNamingVersion).toBe(false);
-    expect(field.readOnly).toBe(false);
     await user.keyboard("{Enter}");
     await tick(1_000);
     expect(sent()).toBe(1);

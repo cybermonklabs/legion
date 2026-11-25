@@ -39,6 +39,9 @@ interface GroupChange {
   readonly what: string;
 }
 
+/** A change a group's card makes, which names the group it changes. */
+type GroupEdit = GroupChange & { readonly group: DeliverySessionGroup };
+
 const sectionLabel = `text-xs tracking-wide uppercase ${textMutedOnSurface}`;
 const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`;
 
@@ -64,7 +67,7 @@ function GroupCard({
   storedTitle: (session: string) => string | undefined;
   selected: readonly string[];
   /** Sends `change`, and calls `landed` once Dispatch has made it. */
-  write: (change: GroupChange, landed: () => void) => void;
+  write: (change: GroupEdit, landed: () => void) => void;
 }): ReactNode {
   const id = useId();
   const text = useAgentText();
@@ -80,7 +83,7 @@ function GroupCard({
   const [drawing, holdUntilDrawn] = useHoldUntilDrawn(group.updated_at);
   const held = pending || drawing;
   // The press's render hands its own `holdUntilDrawn`, so the hold is on the version pressed on.
-  const send = (change: GroupChange) => write(change, holdUntilDrawn);
+  const send = (change: GroupEdit) => write(change, holdUntilDrawn);
   const addable = selected.filter((session) => !(group.sessions ?? []).includes(session));
   const nothingToRename = name.trim() === "" || name.trim() === group.name;
   return (
@@ -215,7 +218,7 @@ export function SessionGroupsEditor({
     readsLate: true,
     write: (change: GroupChange, bounds: WriteBounds) => change.run(bounds),
   } as const;
-  const save = useKeyedWrite(changeOptions);
+  const save = useKeyedWrite<unknown, GroupEdit>(changeOptions);
   // An edit pressed after a late create must not replace the create we are still waiting for.
   const newGroup = useKeyedWrite({
     ...changeOptions,
@@ -229,15 +232,19 @@ export function SessionGroupsEditor({
   const oneGroup = useOneCreateOut(newGroup);
   // One refusal speaks for every group, so it names the change it refused, the group's name with
   // it, and goes once that group is renamed or removed - from another tab, or by another person -
-  // rather than stand beside groups it was never about. A create's has no group to lose.
-  const refused = useRefusalOfSubject(
-    save,
-    ({ group: changed }) =>
-      changed === undefined ||
-      groups.some((group) => group.id === changed.id && group.name === changed.name)
+  // rather than stand beside groups it was never about.
+  const refused = useRefusalOfSubject(save, ({ group: changed }) =>
+    groups.some((group) => group.id === changed.id && group.name === changed.name)
   )
     ? save.variables
     : undefined;
+  /** What the editor says of `change`, which the reader stopped or Dispatch refused (`error`). */
+  const changeNote = (change: GroupChange, error: unknown): string =>
+    error instanceof SendStoppedError
+      ? stoppedWriteNote(change.what, "saved", {
+          anew: "Making it again sends it as a new write.",
+        })
+      : refusedNote(`save ${change.what}`, error);
 
   const text = useAgentText();
   const storedTitle = (session: string): string | undefined => storedSessionTitle(titles, session);
@@ -367,23 +374,10 @@ export function SessionGroupsEditor({
 
       {/* A change the reader stopped may have been saved, and every button here is a press of
           its own, under a key of its own: none makes the stopped change again. */}
-      {[
-        { change: refused, error: save.error },
-        { change: newGroup.isError ? newGroup.variables : undefined, error: newGroup.error },
-      ].map(({ change, error }) =>
-        change === undefined ? null : (
-          <QueryError
-            key={change.method}
-            message={
-              error instanceof SendStoppedError
-                ? stoppedWriteNote(change.what, "saved", {
-                    anew: "Making it again sends it as a new write.",
-                  })
-                : refusedNote(`save ${change.what}`, error)
-            }
-          />
-        )
-      )}
+      {refused === undefined ? null : <QueryError message={changeNote(refused, save.error)} />}
+      {newGroup.isError && newGroup.variables !== undefined ? (
+        <QueryError message={changeNote(newGroup.variables, newGroup.error)} />
+      ) : null}
 
       {groups.length === 0 ? null : (
         <section className="grid gap-2">

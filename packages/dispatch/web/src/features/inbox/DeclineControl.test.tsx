@@ -193,21 +193,17 @@ async function declineLetsGo(inbox: boolean): Promise<void> {
     const user = userOnFakeClock();
     const sent = () => pressesOf([decline]);
     await heldUntilLate(user, button, {
+      alongside: (held) => {
+        expect(note.readOnly, "the note").toBe(held);
+        expect(opener.getAttribute("aria-disabled"), "the opener").toBe(held ? "true" : null);
+        expect(opener, "the opener").toHaveTextContent(held ? "Declining…" : "Decline to answer");
+        expect(cancel.getAttribute("aria-disabled"), "Cancel").toBe(held ? "true" : null);
+      },
       label: "Decline of “Which release path?”",
       name: "Decline to answer",
       queryClient,
-      sent: () => {
-        if (sent() === 1) {
-          expect(note.readOnly).toBe(true);
-          expect(opener).toHaveAttribute("aria-disabled", "true");
-          expect(cancel).toHaveAttribute("aria-disabled", "true");
-        }
-        return sent();
-      },
+      sent,
     });
-    expect(note.readOnly).toBe(false);
-    expect(opener).not.toHaveAttribute("aria-disabled");
-    expect(cancel).not.toHaveAttribute("aria-disabled");
     await user.keyboard("{Enter}");
     await tick(1_000);
     expect(sent()).toBe(2);

@@ -1,6 +1,6 @@
 import { expect, mock, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the press case needs a press, a blur and a removal inside one task, and user-event's press awaits between its events; the tap cases need a tap's order, its pointer up before the blur its mousedown makes, and user-event moves the focus as its pointer goes down; the cancelled, right-button, clickless and window-blur press cases need a pointercancel, a press of another button that moves no focus, a contextmenu with no pointerup, a pointerup with no click after it, and a blur of the window with a press under way; the press reader's own cases need each way a press ends, a dragend and the window's blur among them, alone after a bare pointerdown, which user-event has no form for.
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -475,8 +475,11 @@ test("each focus the keeper gives scrolls nothing of the browser's own", async (
     return taken;
   };
   const stopFixup = emulateChromiumFocusFixup();
+  // The tree mounted now, which the `finally` takes away whatever check fails.
+  let mounted: RenderResult | undefined;
   try {
     const region = render(<Region />);
+    mounted = region;
     act(() => button("Save").focus());
     take();
     region.rerender(<Region save="disabled" />);
@@ -486,8 +489,10 @@ test("each focus the keeper gives scrolls nothing of the browser's own", async (
     await waitFor(() => expect(button("Save")).toHaveFocus());
     const backToSave = take();
     region.unmount();
+    mounted = undefined;
 
     const layered = render(<LayerRegion />);
+    mounted = layered;
     let afterLayer: { readonly still: boolean; readonly to: string }[] = [];
     await onFakeClock(async () => {
       await openLayer();
@@ -499,7 +504,6 @@ test("each focus the keeper gives scrolls nothing of the browser's own", async (
       expect(button("First fallback")).toHaveFocus();
       afterLayer = take();
     });
-    layered.unmount();
 
     expect({ afterLayer, backToSave, toFallback }).toEqual({
       afterLayer: [{ still: true, to: "First fallback" }],
@@ -507,6 +511,7 @@ test("each focus the keeper gives scrolls nothing of the browser's own", async (
       toFallback: [{ still: true, to: "First fallback" }],
     });
   } finally {
+    mounted?.unmount();
     stopFixup();
     focuses.mockRestore();
   }

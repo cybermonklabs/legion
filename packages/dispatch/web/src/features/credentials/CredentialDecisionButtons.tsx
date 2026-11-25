@@ -22,9 +22,8 @@ import type { KeyedWriteResult } from "../writes/useKeyedWrite";
  * builds its own `approve`/`deny` mutations, whose POST bodies carry the code the operator typed,
  * then hands them here for the shared guard (both are held while either decision is out within
  * its deadline, `heldPress`), click-wiring, and verbatim broker-error rendering. A decision past
- * its deadline (`late`, which the page's writes read) holds them no longer: it is still tried
- * under its key, but one that never answers would otherwise hold both for good. With no
- * `approve`, only Deny shows: a record nobody may approve any more, such as a service's machine
+ * its deadline (`KeyedWriteResult.late`, which the page's writes read) holds them no longer. With
+ * no `approve`, only Deny shows: a record nobody may approve any more, such as a service's machine
  * login from before services logged in with their tokens.
  */
 export function CredentialDecisionButtons({

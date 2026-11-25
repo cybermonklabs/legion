@@ -6,7 +6,6 @@ import {
   type DragEvent,
   type ReactNode,
   type RefObject,
-  useEffect,
   useId,
   useRef,
   useState,
@@ -25,7 +24,7 @@ import type { Artifact, Version } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   calloutInfoBg,
   calloutInfoBorder,
@@ -597,9 +596,7 @@ export function useArtifactUpload(
   // Past the upload's deadline Upload and Cancel are let go, and so is the guard; a press of
   // Upload then sends nothing while the upload is still out (`oneUpload`), since a second press
   // of another file would be a second upload beside it.
-  useEffect(() => {
-    if (upload.late) pressGuard.release();
-  }, [pressGuard, upload.late]);
+  useReleaseWhenLate(pressGuard, upload.late);
   const oneUpload = useOneCreateOut(upload);
   // While a stopped press of the staged file is held, the summary field shows the summary that
   // press sent and takes no edit, and keeps those words once Upload makes the press again: the

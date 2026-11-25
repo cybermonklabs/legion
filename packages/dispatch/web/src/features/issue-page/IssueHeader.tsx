@@ -112,12 +112,12 @@ export function IssueHeader({
     saving: writes.fieldHeld,
   });
 
-  // Pin, Close and Reopen are held, never disabled, until their own write's deadline.
-  // Close and Reopen say they are saving until then: a press past
-  // it is a status write of its own, which waits behind the late one in the issue's line.
+  // Pin, Close and Reopen are held, never disabled, until their own write's deadline. Close and
+  // Reopen say they are saving until then: a press past it is a status write of its own, which
+  // waits behind the late one in the issue's line.
   const actions: IssueAction[] = [
     {
-      held: writes.pin.isPending && !writes.pin.late,
+      held: writes.pinHeld,
       id: "pin",
       pressed: state.pinned,
       run: () =>
@@ -225,7 +225,7 @@ export function IssueHeader({
             holds now (`drafts.retry`). Any other refusal keeps its plain line. */}
         <RefusalLine
           failed={writes.pin.isError}
-          held={writes.pin.isPending && !writes.pin.late}
+          held={writes.pinHeld}
           message={
             stoppedNote(writes.pin, "the pin status", "saved") ?? "Could not save pin status."
           }

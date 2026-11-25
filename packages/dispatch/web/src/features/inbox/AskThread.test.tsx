@@ -172,8 +172,10 @@ test("Retry lets go at the reply write deadline but cannot send while another co
     const user = userOnFakeClock();
     await user.click(second.getByRole("button", { name: "Reply" }));
     await tick(0);
-    await tick(SEND_DEADLINE_MS);
-    expect(retry).not.toHaveAttribute("aria-disabled");
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(retry, "Retry, a second short of the deadline").toHaveAttribute("aria-disabled", "true");
+    await tick(1_000);
+    expect(retry, "Retry, past the deadline").not.toHaveAttribute("aria-disabled");
     await user.click(retry);
     await tick(1_000);
     expect(pressesOf([create]), "Retry must not post while the other reply is out").toBe(2);

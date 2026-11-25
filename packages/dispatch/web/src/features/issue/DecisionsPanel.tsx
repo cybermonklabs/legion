@@ -261,9 +261,8 @@ function ChangeComposer({
   });
   // Send is held, not disabled, while the change is out within its deadline: it keeps the focus
   // the press gave it (`heldPress`), and Enter or a second press sends nothing more. A change past
-  // its deadline (`late`) holds it no longer: it is still tried under its key, but one that never
-  // answers would otherwise hold the form for good. A press then would post the change twice, so
-  // it sends nothing while that change is out, and the form says so (`oneChange`).
+  // its deadline (`KeyedWriteResult.late`) holds it no longer. A press then would post the change
+  // twice, so it sends nothing while that change is out, and the form says so (`oneChange`).
   const held = send.isPending && !send.late;
   const oneChange = useOneCreateOut(send);
   return (
@@ -452,8 +451,8 @@ function WaitingDecision({
         writable ? (
           <div className="space-y-2">
             <div className="flex gap-2">
-              {/* Held while its Keep is out within its deadline (`heldPress`); a Keep past it is
-                  still tried under its key, but one that never answers would hold it for good. */}
+              {/* Held while its Keep is out within its deadline (`heldPress`), and no longer
+                  (`KeyedWriteResult.late`). */}
               <button
                 className={secondaryButtonCompact}
                 {...heldPress(keep.isPending && !keep.late, () => keep.mutate(documentId))}

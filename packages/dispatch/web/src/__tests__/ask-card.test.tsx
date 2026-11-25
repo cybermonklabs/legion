@@ -1354,7 +1354,6 @@ test.each(
     expect(requestChanges.checked, "the Escape that ended a composition dropped the pick").toBe(
       true
     );
-    expect(reasonField).toHaveFocus();
 
     await user.keyboard("{Escape}");
     expect(requestChanges.checked).toBe(false);

@@ -2,9 +2,8 @@ import { Component, type ReactNode, type RefObject } from "react";
 
 import { CONTROL, controlIn } from "../../components/control-names";
 import { openerOf, pressArmed, pressMadeIn } from "../../components/focus-place";
-import { hearPressCancellation } from "../issue-page/focus-keeper";
 import { refPreviewCardContains, refPreviewOpenedIn } from "../refs/ref-preview-card";
-import { focusOnDocument } from "./roving";
+import { focusOnDocument, hearPressCancellation } from "./roving";
 
 export interface AnchorRow {
   id: string;

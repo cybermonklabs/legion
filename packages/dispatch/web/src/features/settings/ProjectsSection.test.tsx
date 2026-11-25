@@ -206,17 +206,18 @@ test.each([
     const user = userOnFakeClock();
     const sent = () => pressesOf([page.createProject]);
     await heldUntilLate(user, control, {
+      alongside: (held) => {
+        expect(assignee.getAttribute("aria-disabled"), "Default assignee").toBe(
+          held ? "true" : null
+        );
+        expect(key.readOnly, "Key").toBe(held);
+        expect(projectName.readOnly, "Name").toBe(held);
+      },
       label: "New project NEXT",
       name,
       queryClient: page.queryClient,
-      sent: () => {
-        if (sent() === 1) expect(assignee).toHaveAttribute("aria-disabled", "true");
-        return sent();
-      },
+      sent,
     });
-    expect(assignee).not.toHaveAttribute("aria-disabled");
-    expect(key.readOnly).toBe(false);
-    expect(projectName.readOnly).toBe(false);
     await user.keyboard("{Enter}");
     await tick(1_000);
     expect(sent()).toBe(1);

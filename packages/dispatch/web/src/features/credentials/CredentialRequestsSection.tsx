@@ -1,6 +1,6 @@
 import { awaitsDecision } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect } from "react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
@@ -9,7 +9,7 @@ import { useReadBound } from "../../api/read-bound";
 import type { CredentialPendingRow } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { LabelPill } from "../../components/Pill";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   dangerText,
   focusVisibleRing,
@@ -129,9 +129,7 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
     readsLate: true,
     write: ({ recordId }, bounds) => api.dismissCredentialRequest(recordId, bounds),
   });
-  useEffect(() => {
-    if (dismiss.late) submitGuard.release();
-  }, [dismiss.late, submitGuard]);
+  useReleaseWhenLate(submitGuard, dismiss.late);
 
   return (
     <>

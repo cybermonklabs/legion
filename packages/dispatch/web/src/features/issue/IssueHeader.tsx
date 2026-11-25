@@ -31,7 +31,7 @@ import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useScrollEnds } from "../../components/useScrollEnds";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { inputMethodKey } from "../../lib/input-method";
 import {
   badgePrimary,
@@ -264,12 +264,10 @@ export function IssueHeader({
   };
   // While a field write is out within its deadline every header control that writes the issue is
   // held rather than disabled: it keeps the focus the press gave it (`heldPress`). Past the
-  // deadline (`late`) it holds none of them: the write is still tried under its key, and the
-  // shell's indicator offers to stop it, but one that never answers - the browser offline - would
-  // otherwise hold them for good. A status pressed then is a write of its own, which waits behind
-  // it in the issue's line (`requestStatusSubmit`). The route and parent forms' submits need no
-  // guard of their own: `useIssueDrafts` keeps a draft submitted meanwhile and sends it once the
-  // writes out have landed, never beside one.
+  // deadline (`KeyedWriteResult.late`) it holds none of them, and a status pressed then is a write
+  // of its own, which waits behind it in the issue's line (`requestStatusSubmit`). The route and
+  // parent forms' submits need no guard of their own: `useIssueDrafts` keeps a draft submitted
+  // meanwhile and sends it once the writes out have landed, never beside one.
   const fieldHeld = updateIssue.isPending && !updateIssue.late;
   // A status write is out within its deadline, or the rule's question is checking or asking about
   // one: no second status write can start. The check is a dry run held to the request deadline
@@ -430,9 +428,7 @@ export function IssueHeader({
       }));
     },
   });
-  useEffect(() => {
-    if (updateState.late) pinGuard.release();
-  }, [pinGuard, updateState.late]);
+  useReleaseWhenLate(pinGuard, updateState.late);
   const saveTitleOnEnter = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
       event.currentTarget.blur();

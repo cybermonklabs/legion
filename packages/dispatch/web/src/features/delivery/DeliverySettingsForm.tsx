@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useId, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { deliverySettingsQuery } from "../../api/queries";
@@ -9,7 +9,7 @@ import { useReadBound } from "../../api/read-bound";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
 import { heldField } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { borderDefault, textMutedOnCanvas } from "../../theme/classes";
 import {
   ownerRepoPattern,
@@ -235,14 +235,10 @@ function DeliverySettingsFields({
   // The fields and Save are held, not disabled, while a save is out within its deadline and until
   // what it changes is drawn: whichever holds the focus keeps it, an edit made then is dropped,
   // and a submit then sends nothing (`submitGuard` covers only the save's own round trip). A save
-  // past its deadline (`late`) holds them no longer: it is still tried under its key, and the
-  // shell's indicator offers to stop it, but one that never answers - the browser offline - would
-  // otherwise hold the form for good. The guard lets go there too, so a submit then sends the
-  // fields as a save of its own rather than nothing.
+  // past its deadline (`KeyedWriteResult.late`) holds them no longer, and the guard lets go there
+  // too, so a submit then sends the fields as a save of its own rather than nothing.
   const held = (save.isPending && !save.late) || drawing;
-  useEffect(() => {
-    if (save.late) submitGuard.release();
-  }, [save.late, submitGuard]);
+  useReleaseWhenLate(submitGuard, save.late);
   const edit = (next: Draft) => {
     if (!held) setDraft(next);
   };

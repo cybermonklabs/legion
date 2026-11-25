@@ -5,12 +5,14 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { openList } from "../../__tests__/list-picks";
 import { stopTheLateWrite, untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError, type WriteBounds } from "../../api/client";
 import type { AnswerAskInput, Ask, AskRead, Comment } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
@@ -140,15 +142,14 @@ async function questionWriteLetsGo(
     const sent = () => pressesOf([answer, comment]);
     const clarification = name.startsWith("Ask back");
     await heldUntilLate(user, button, {
+      alongside: (held) => {
+        expect(field.readOnly, "Your answer").toBe(held);
+      },
       label: `${clarification ? "Question back on" : "Answer to"} “Which release path?”`,
       name,
       queryClient,
-      sent: () => {
-        if (sent() === 1) expect(field.readOnly).toBe(true);
-        return sent();
-      },
+      sent,
     });
-    expect(field.readOnly).toBe(false);
     await user.keyboard("{Enter}");
     await tick(1_000);
     if (clarification) {
@@ -200,18 +201,27 @@ async function handOnLetsGo(inbox: boolean): Promise<void> {
   try {
     const list = await openList(userEvent.setup(), "Hand this question to");
     const option = await within(list).findByRole("option", { name: "bob" });
-    const trigger = screen.getByRole("button", { name: /Hand this question to/ });
+    const trigger = screen.getByRole<HTMLButtonElement>("button", {
+      name: /Hand this question to/,
+    });
     jest.useFakeTimers();
     const user = userOnFakeClock();
-    await user.click(option);
-    await tick(0);
-    await tick(SEND_DEADLINE_MS - 1_000);
-    expect(trigger).toHaveAttribute("aria-disabled", "true");
-    expect(trigger).toHaveFocus();
-    await tick(1_000);
-    expect(writesOf(queryClient).rows()[0]?.status).toBe("late");
-    expect(trigger).not.toHaveAttribute("aria-disabled");
-    expect(trigger).toHaveFocus();
+    const stopFocusFixup = emulateChromiumFocusFixup();
+    try {
+      await user.click(option);
+      await tick(0);
+      await tick(SEND_DEADLINE_MS - 1_000);
+      expect(heldNotDisabled(trigger, "Hand on"), "Hand on, a second short of the deadline").toBe(
+        true
+      );
+      expect(trigger).toHaveFocus();
+      await tick(1_000);
+      expect(writesOf(queryClient).rows()[0]?.status).toBe("late");
+      expect(heldNotDisabled(trigger, "Hand on"), "Hand on, past the deadline").toBe(false);
+      expect(trigger).toHaveFocus();
+    } finally {
+      stopFocusFixup();
+    }
     await user.keyboard("{Enter}");
     await user.click(screen.getByRole("option", { name: "bob" }));
     await tick(1_000);

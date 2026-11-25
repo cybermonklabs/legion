@@ -1,6 +1,6 @@
 import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
-import { focusOnDocument } from "../shell/roving";
+import { focusOnDocument, hearPressCancellation } from "../shell/roving";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 
 /** What a region lost the focus to, as each fallback of `useFocusKeeper` reads it. */
@@ -129,20 +129,6 @@ function firstHolder(fallbacks: readonly FocusFallback[], loss: FocusLoss): HTML
     if (canHoldFocus(next)) return next;
   }
   return null;
-}
-
-const PRESS_CANCELLATIONS = ["pointercancel", "dragend", "contextmenu"] as const;
-
-/** Hears the ways a press ends without a release on the page. Listen for the window's own
- * blur, not a capture-phase blur, which also hears every element's blur. */
-export function hearPressCancellation(page: Document, end: () => void): () => void {
-  const view = page.defaultView;
-  for (const type of PRESS_CANCELLATIONS) page.addEventListener(type, end, true);
-  view?.addEventListener("blur", end);
-  return () => {
-    for (const type of PRESS_CANCELLATIONS) page.removeEventListener(type, end, true);
-    view?.removeEventListener("blur", end);
-  };
 }
 
 /**

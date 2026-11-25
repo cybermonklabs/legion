@@ -325,15 +325,16 @@ test("Un-snooze lets go at the snooze write deadline and saves again", async () 
     const user = userOnFakeClock();
     const sent = () => pressesOf([unsnooze]);
     await heldUntilLate(user, button, {
+      alongside: (held) => {
+        expect(trigger.getAttribute("aria-disabled"), "the list's trigger").toBe(
+          held ? "true" : null
+        );
+      },
       label: "Ask brought back now",
       name: "Un-snooze",
       queryClient,
-      sent: () => {
-        if (sent() === 1) expect(trigger).toHaveAttribute("aria-disabled", "true");
-        return sent();
-      },
+      sent,
     });
-    expect(trigger, "the list's trigger, past the deadline").not.toHaveAttribute("aria-disabled");
     await user.keyboard("{Enter}");
     await tick(1_000);
     expect(sent(), "a press past the deadline saves again").toBe(2);

@@ -480,7 +480,11 @@ export function MarginSheet({
             {/* No Tab stop of its own, which Firefox gives a box that scrolls, with no name: the
                 thread's card holds its controls from its head to its foot, the Tab stops that
                 bring each part into view, and the arrow keys scroll the box from any of them. */}
-            <div className="min-h-0 flex-1 overflow-y-auto px-4" tabIndex={-1}>
+            <div
+              className="min-h-0 flex-1 overflow-y-auto px-4"
+              data-testid="margin-thread-box"
+              tabIndex={-1}
+            >
               <ThreadCard
                 actionFailure={actionFailure?.id === phoneThread.key ? actionFailure : undefined}
                 artifactSlug={visibleArtifact.slug}

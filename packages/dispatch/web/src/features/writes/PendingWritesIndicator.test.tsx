@@ -636,7 +636,7 @@ function scrollAway(away: RegExp): () => void {
     this: Element
   ) {
     // The box the named writes scroll in, under the panel's status line.
-    if (this.matches('[data-testid="pending-writes"] .overflow-y-auto')) {
+    if (this.matches('[data-testid="pending-writes"] [aria-label="Each pending change"]')) {
       return new DOMRect(0, 400, 400, 192);
     }
     if (this.matches("button") && this.textContent === "Elsewhere") {

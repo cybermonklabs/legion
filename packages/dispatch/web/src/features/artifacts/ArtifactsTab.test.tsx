@@ -133,15 +133,14 @@ test("Create and Cancel let go at the document write deadline without making a s
     const user = userOnFakeClock();
     const sent = () => pressesOf([upload]);
     await heldUntilLate(user, button, {
+      alongside: (held) => {
+        expect(cancel.getAttribute("aria-disabled"), "Cancel").toBe(held ? "true" : null);
+      },
       label: "New document Rollout",
       name: "Create",
       queryClient,
-      sent: () => {
-        if (sent() === 1) expect(cancel).toHaveAttribute("aria-disabled", "true");
-        return sent();
-      },
+      sent,
     });
-    expect(cancel).not.toHaveAttribute("aria-disabled");
     await user.keyboard("{Enter}");
     await tick(1_000);
     expect(sent()).toBe(1);

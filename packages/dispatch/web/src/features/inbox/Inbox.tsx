@@ -151,7 +151,7 @@ import {
   UNASSIGNED_FILTER_VALUE,
 } from "./sections";
 import { isSnoozed } from "./snooze";
-import { ThreadRowCard } from "./ThreadRowCard";
+import { INBOX_NOT_LOADED, ThreadRowCard } from "./ThreadRowCard";
 import { ThreadTitle, useThreadLine } from "./ThreadTitle";
 import { answerFailure, clarificationRefusal } from "./useAskAnswerForm";
 import { AskHandOnWritesContext, useAskHandOnWrites } from "./useAskHandOn";
@@ -1365,7 +1365,7 @@ function InboxBody({
     return <LoadingSkeleton label="Loading your inbox" />;
   }
   if (inbox.isError || viewer === undefined || place === undefined) {
-    return <p className={dangerText}>Could not load your inbox.</p>;
+    return <p className={dangerText}>{INBOX_NOT_LOADED}</p>;
   }
 
   // Which row the list holds in place while the server moves the list under it: the row the

@@ -1,6 +1,6 @@
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useContext, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useContext, useId, useRef, useState } from "react";
 
 import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
@@ -8,7 +8,7 @@ import type { Ask, AskRead } from "../../api/types";
 import { heldField, heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
-import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { type SubmitGuard, useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   backdrop40,
   borderDefault,
@@ -265,9 +265,7 @@ function DeclineButton({
   write,
 }: DeclineDrawn & { write: OutstandingAnswerWrite<DeclinePress> }): ReactNode {
   const held = write.isPending && !write.late;
-  useEffect(() => {
-    if (write.late) submitGuard.release();
-  }, [submitGuard, write.late]);
+  useReleaseWhenLate(submitGuard, write.late);
   return (
     <div className="mt-3">
       <button
@@ -276,7 +274,7 @@ function DeclineButton({
         {...heldPress(held, () => setOpen(true))}
         type="button"
       >
-        {write.isPending ? "Declining…" : "Decline to answer"}
+        {held ? "Declining…" : "Decline to answer"}
       </button>
       {/* A decline refused while the dialog was not drawn: the Inbox holds the write, and this
           card was drawn for the ask again after the reader moved away. */}

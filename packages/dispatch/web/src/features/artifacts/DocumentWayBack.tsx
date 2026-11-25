@@ -1,5 +1,5 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useEffect, useState } from "react";
+import { type FormEvent, type ReactNode, useState } from "react";
 
 import {
   type ArtifactOwner,
@@ -12,7 +12,7 @@ import { waitingForPausedReads } from "../../api/query-client";
 import { useReadBound } from "../../api/read-bound";
 import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { dangerText } from "../../theme/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
@@ -124,9 +124,7 @@ export function CorrectTitle({
     },
   });
   const held = rename.isPending && !rename.late;
-  useEffect(() => {
-    if (rename.late) submitGuard.release();
-  }, [rename.late, submitGuard]);
+  useReleaseWhenLate(submitGuard, rename.late);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (held) return;
@@ -259,9 +257,7 @@ export function RemoveDocument({
       return holdThrough(list);
     },
   });
-  useEffect(() => {
-    if (remove.late) submitGuard.release();
-  }, [remove.late, submitGuard]);
+  useReleaseWhenLate(submitGuard, remove.late);
   // A removal the reader stopped may have been made, and Remove is its Retry (`onPress`). A list
   // read that has not settled is said in the words the Artifacts tab says for one that failed.
   const problem = remove.isError

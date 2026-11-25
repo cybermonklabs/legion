@@ -3466,6 +3466,7 @@ test("a turn given back the focus, by Escape from a reply box or by o on a reply
   /** Each focus that moved the focus to a turn or a reply since the last read: the turn's
    *  `data-turn`, else `reply`, and whether it was asked to scroll nothing. */
   let given: { readonly at: string; readonly still: boolean }[] = [];
+  const page = await renderTurns(turnLists(), "comment:comment-1");
   const focus = HTMLElement.prototype.focus;
   const focuses = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
     this: HTMLElement,
@@ -3476,7 +3477,6 @@ test("a turn given back the focus, by Escape from a reply box or by o on a reply
     }
     focus.call(this, options);
   });
-  const page = await renderTurns(turnLists(), "comment:comment-1");
   try {
     const root = page.turn("comment:comment-1");
     act(() => root.focus());

@@ -1009,7 +1009,7 @@ test("a draft with a title queued behind another field's write keeps the reader'
 });
 
 // A status pressed past the deadline of the write out (`late`) is a write of its own, which waits
-// behind that write in the issue's line, as the classic header's Close does then. A title saved
+// behind that write in the issue's line, as today's header's Close does then. A title saved
 // meanwhile still goes beside no write: it waits until both have landed, so one field at most has
 // a value out, and each settle is of its own write.
 test("a status pressed past the deadline of a title write goes, and a title saved meanwhile waits for both to land", () => {

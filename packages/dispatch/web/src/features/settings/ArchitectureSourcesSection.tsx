@@ -55,6 +55,10 @@ function sourceName(source: SourceKey): string {
   return `the architecture source ${source.repo} for ${source.project}`;
 }
 
+/** What the section says when its list failed to load, and before why the list read after a
+ *  removal has not settled. */
+const ARCHITECTURE_SOURCES_NOT_LOADED = "Couldn't load architecture sources.";
+
 /** A project's architecture sources, one row per repository: the branch its architecture
  * documents are imported from, the commit imported and how many components it supplies. Saving
  * runs the server's GitHub App access check, so a listed row has proven access — it shows
@@ -180,7 +184,7 @@ export function ArchitectureSourcesSection(): ReactNode {
       {sources.isError ? (
         <div className="mt-6">
           <QueryError
-            message="Couldn't load architecture sources."
+            message={ARCHITECTURE_SOURCES_NOT_LOADED}
             onRetry={() => void sources.refetch()}
             retrying={sources.isFetching}
           />
@@ -277,7 +281,7 @@ export function ArchitectureSourcesSection(): ReactNode {
           </TableShell>
           {unsettled === undefined ? null : (
             <div className="mt-4">
-              <QueryError message={`Couldn't load architecture sources. ${unsettled}.`} />
+              <QueryError message={`${ARCHITECTURE_SOURCES_NOT_LOADED} ${unsettled}.`} />
             </div>
           )}
 

@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { ApiError, issuePatchRequest } from "../../api/client";
 import { boardMoveMutationKey } from "../../api/queries";
 import type { Issue, IssueSummary, StatusChangeAnswer, UpdateIssueInput } from "../../api/types";
+import { statusRefusalNote } from "../issue/parent-status/IssueStatusNotes";
 import {
   cardHasParentOrOpenChild,
   isParentStatusConflict,
@@ -11,7 +12,7 @@ import {
   useParentStatusMove,
 } from "../issue/parent-status/useParentStatusMove";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { refusedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { type IssueStatus, moveIssue, moveIssueToLane, type PriorityLane } from "./board-model";
 import { projectIssuesQueryKey } from "./issue-filters";
 
@@ -239,7 +240,7 @@ export function useBoardMoves(
   const leftBehind = useCallback((key: string, written: Promise<unknown>) => {
     written.catch((refusal: unknown) => {
       if (!(refusal instanceof SendStoppedError)) {
-        setError(refusedNote(`change the status of ${key}`, refusal));
+        setError(statusRefusalNote(key, refusal));
       }
     });
   }, []);

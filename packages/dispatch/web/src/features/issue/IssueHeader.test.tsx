@@ -10,7 +10,7 @@ import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { pickFromList, pickNamed } from "../../__tests__/list-picks";
+import { listOpen, pickFromList, pickNamed } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError, type WriteBounds } from "../../api/client";
@@ -586,19 +586,22 @@ test("Close in the issue header stops holding at its write's deadline, and a pre
     jest.useFakeTimers();
     const user = userOnFakeClock();
     await heldUntilLate(user, control, {
+      alongside: (held) => {
+        const when = held ? "a second short of the deadline" : "past the deadline";
+        expect(
+          appKeymap.actions().some((action) => action.label === "Close issue"),
+          `the palette's Close issue, ${when}`
+        ).toBe(!held);
+        expect(
+          view.q.getByRole("button", { name: pickNamed("Status") }).getAttribute("aria-disabled"),
+          `the status list, ${when}`
+        ).toBe(held ? "true" : null);
+      },
       label: "CORE-1 set to done",
       name: "Close in the issue header",
       queryClient: client,
       sent: () => pressesOf([patches]),
     });
-    expect(
-      appKeymap.actions().some((action) => action.label === "Close issue"),
-      "the palette's Close issue"
-    ).toBe(true);
-    expect(
-      view.q.getByRole("button", { name: pickNamed("Status") }),
-      "the status list"
-    ).not.toHaveAttribute("aria-disabled");
 
     await user.keyboard("{Enter}");
     await tick(0);
@@ -658,7 +661,10 @@ test("a title save that never answers holds the priority until its deadline, and
       label: "CORE-1: title saved",
       name: "The priority in the issue header",
       queryClient: client,
-      sent: () => pressesOf([patches]),
+      sent: () => {
+        expect(listOpen(), "a list the priority opened").toBe(false);
+        return pressesOf([patches]);
+      },
       start: editor,
     });
 
@@ -773,7 +779,7 @@ test("a read of the state asked while the header's pin is out does not put back 
   }
 });
 
-test("Pin issue lets go at the legacy header write deadline and sends again", async () => {
+test("Pin issue in today's header lets go at its write deadline and sends again", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = renderHeader(client, <Header state={unpinnedState} />);
   view.putIssueState.mockRejectedValue(

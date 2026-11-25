@@ -295,10 +295,8 @@ export function AgentTokensSection(): ReactNode {
   });
   // Each write holds its controls while it is out within its deadline, by `aria-disabled`, so the
   // control the reader pressed keeps the focus and a press of it then sends nothing. A write past
-  // its deadline (`late`) holds them no longer: it is still tried under its key, and the shell's
-  // indicator offers to stop it, but one that never answers - the browser offline - would
-  // otherwise hold them for good. A mint let go that way is still out, so New token then sends no
-  // second token, and the form says so (`oneMint`).
+  // its deadline (`KeyedWriteResult.late`) holds them no longer. A mint let go that way is still
+  // out, so New token then sends no second token, and the form says so (`oneMint`).
   const minting = createToken.isPending && !createToken.late;
   const revoking = revokeToken.isPending && !revokeToken.late;
   const scoping = setTokenScopes.isPending && !setTokenScopes.late;

@@ -1,5 +1,5 @@
 import type { UseQueryResult } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useRef } from "react";
 
 import type { WriteBounds } from "../../api/client";
 import { useReadBound } from "../../api/read-bound";
@@ -15,7 +15,7 @@ import {
   TableRow,
   TableShell,
 } from "../../components/TableShell";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   dangerText,
   hoverToDangerText,
@@ -116,9 +116,7 @@ export function RevocableList<Row>({
     readsLate: true,
     write: revoke,
   });
-  useEffect(() => {
-    if (mutation.late) submitGuard.release();
-  }, [mutation.late, submitGuard]);
+  useReleaseWhenLate(submitGuard, mutation.late);
   const refused = useRefusalOfSubject(
     mutation,
     (row) => query.data?.some((listed) => rowKey(listed) === rowKey(row)) === true

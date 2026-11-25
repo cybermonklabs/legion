@@ -29,7 +29,7 @@ import { heldPress } from "../../components/held-press";
 import { PinButton } from "../../components/PinButton";
 import { useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   borderDefault,
@@ -800,9 +800,7 @@ function CommentTurn({
     write: (delivery, bounds) =>
       api.createCommentDelivery(delivery.comment_id, delivery.target, delivery.delivery, bounds),
   });
-  useEffect(() => {
-    if (retry.late) retryGuard.release();
-  }, [retry.late, retryGuard]);
+  useReleaseWhenLate(retryGuard, retry.late);
   const thread: CommentThread = {
     anchor: item.root.anchor,
     key: item.root.id,

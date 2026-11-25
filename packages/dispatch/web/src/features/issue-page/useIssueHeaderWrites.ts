@@ -1,12 +1,11 @@
 import { useMutationState, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
 
 import { api, apiErrorCodeIn, apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { landIssueWrite, mergeIssue } from "../../api/issue-cache";
 import { userStateQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/types";
-import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { type SubmitGuard, useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   type IssueStatusMove,
   useIssueStatusMove,
@@ -87,11 +86,10 @@ export interface IssueHeaderWrites {
   readonly updateIssue: KeyedWriteResult<Issue, IssueFieldsSave, unknown>;
   /** Whether a write of `updateIssue` holds every control that writes the issue's fields: Close,
    *  Reopen and their palette rows, the editors' Save and Details' Retry of a refused route. It
-   *  holds while the write is out within its deadline. Past it (`late`) it holds none of them:
-   *  the write is still tried under its key, and the shell's indicator offers to stop it, but one
-   *  that never answers - the browser offline - would otherwise hold them for good. A status
-   *  pressed then is a write of its own, which waits behind it in the issue's line, and a draft
-   *  saved then waits for it to land, one write of the fields at a time (`useIssueDrafts`). */
+   *  holds while the write is out within its deadline. Past it (`KeyedWriteResult.late`) it holds
+   *  none of them: a status pressed then is a write of its own, which waits behind it in the
+   *  issue's line, and a draft saved then waits for it to land, one write of the fields at a time
+   *  (`useIssueDrafts`). */
   readonly fieldHeld: boolean;
   /** The labels, which the popover saves as one set when it closes. */
   readonly labels: KeyedWriteResult<Issue, IssueLabelsSave, unknown>;
@@ -107,6 +105,9 @@ export interface IssueHeaderWrites {
   readonly pin: KeyedWriteResult<UserIssueState, IssuePinSave, PinRollback>;
   /** One press at a time on the pin, whose write is optimistic. */
   readonly pinGuard: SubmitGuard;
+  /** Whether the pin's write holds Pin and its Retry: while it is out within its deadline. Past it
+   *  (`late`) it holds them no longer. */
+  readonly pinHeld: boolean;
   /** The release of the claim on the issue a press names, by its key. */
   readonly releaseClaim: KeyedWriteResult<Issue, string, unknown>;
   /** The status a pick is saving right now, which the pill and the closed line show: the newest
@@ -308,9 +309,7 @@ export function useIssueHeaderWrites(
       }));
     },
   });
-  useEffect(() => {
-    if (pin.late) pinGuard.release();
-  }, [pin.late, pinGuard]);
+  useReleaseWhenLate(pinGuard, pin.late);
 
   // Every pending write of this issue's fields on the page - `updateIssue`'s and `statusWrite`'s,
   // which carry one mutation key, of every caller of this hook - in the order they were made, so
@@ -362,6 +361,7 @@ export function useIssueHeaderWrites(
     pickStatus,
     pin,
     pinGuard,
+    pinHeld: pin.isPending && !pin.late,
     releaseClaim,
     requestStatus,
     statusMove,

@@ -367,11 +367,11 @@ test("MarginSheet shows the selected phone thread in a full-height view with a B
   try {
     const thread = screen.getByRole("dialog", { name: "Thread" });
     expect(thread.className).toContain("inset-0");
-    expect(within(thread).getByTestId(`margin-comment-${root.id}`)).not.toBeNull();
+    const box = within(thread).getByTestId("margin-thread-box");
+    expect(within(box).getByTestId(`margin-comment-${root.id}`)).not.toBeNull();
     // The view's box scrolls a long thread, and Firefox makes a box that scrolls a Tab stop of its
     // own, which here would read as nothing: the card's controls are the stops.
-    const box = within(thread).getByTestId(`margin-comment-${root.id}`).closest(".overflow-y-auto");
-    expect(box?.parentElement).toBe(thread);
+    expect(box.parentElement).toBe(thread);
     expect(box).toHaveAttribute("tabindex", "-1");
     await user.keyboard("{Escape}");
     expect(closed).toBe(true);

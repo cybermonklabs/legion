@@ -152,16 +152,16 @@ test.each([
     const user = userOnFakeClock();
     const sent = () => pressesOf([rename, remove]);
     await heldUntilLate(user, button, {
+      alongside: (held) => {
+        if (cancel !== undefined) {
+          expect(cancel.getAttribute("aria-disabled"), "Cancel").toBe(held ? "true" : null);
+        }
+      },
       label,
       name,
       queryClient: view.queryClient,
-      sent: () => {
-        if (cancel !== undefined && sent() === 1)
-          expect(cancel).toHaveAttribute("aria-disabled", "true");
-        return sent();
-      },
+      sent,
     });
-    if (cancel !== undefined) expect(cancel).not.toHaveAttribute("aria-disabled");
     await user.keyboard("{Enter}");
     await tick(1_000);
     expect(sent()).toBe(2);

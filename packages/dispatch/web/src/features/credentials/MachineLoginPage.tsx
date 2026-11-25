@@ -123,10 +123,8 @@ export function MachineLoginPage(): ReactNode {
   // While a lookup is out within its deadline - Look up's own, or the one an approval or a denial
   // Dispatch answered with nothing starts outside the guard - Look up and Enter send no second
   // one; the guard drops a second press made in the same task as the first. A write past its
-  // deadline (`late`) holds them no longer: it is still tried under its key, and the shell's
-  // indicator offers to stop it, but one that never answers - the browser offline - would
-  // otherwise hold the page for good. The guard lets go there too, so a press then is a lookup or
-  // a decision of its own rather than nothing.
+  // deadline (`KeyedWriteResult.late`) holds them no longer, and the guard lets go there too, so a
+  // press then is a lookup or a decision of its own rather than nothing.
   const lookingUp = lookup.isPending && !lookup.late;
   useEffect(() => {
     if (lookup.late || approve.late || deny.late) submitGuard.release();

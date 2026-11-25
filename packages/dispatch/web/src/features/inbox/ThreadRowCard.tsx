@@ -29,6 +29,10 @@ import { RowKindIcon, RowPriorityTag } from "./RowMarks";
 import { ThreadBody } from "./ThreadBody";
 import { ThreadTitle } from "./ThreadTitle";
 
+/** What the Inbox says when its list failed to load, and what a card says before why the read
+ *  after its Mark read has not settled. */
+export const INBOX_NOT_LOADED = "Could not load your inbox.";
+
 /**
  * A Reply or an Agent row as a card: the layout below the reading pane's width, and the one the
  * drawer shows at every width.
@@ -124,7 +128,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
         </div>
       ) : unsettled === undefined ? null : (
         <div className="mt-2">
-          <QueryError message={`Could not load your inbox. ${unsettled}.`} />
+          <QueryError message={`${INBOX_NOT_LOADED} ${unsettled}.`} />
         </div>
       )}
     </div>

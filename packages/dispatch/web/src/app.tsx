@@ -891,10 +891,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         signOutRefused && signOut.error !== null ? signOutFailure(signOut.error) : undefined
       }
       // Sign out is held while the other tabs are asked, and while the sign-out is out within its
-      // deadline. A sign-out past it (`late`) holds it no longer: it is still tried, and the
-      // shell's indicator offers to stop it, but one that never answers - the browser offline -
-      // would otherwise hold Sign out for good. A press then signs out again, which ends the
-      // session or finds it ended (`isNoIdentity`).
+      // deadline. A sign-out past it (`KeyedWriteResult.late`) holds it no longer, and a press then
+      // signs out again, which ends the session or finds it ended (`isNoIdentity`).
       signOutPending={(signOut.isPending && !signOut.late) || askingTabs}
       user={user}
     />

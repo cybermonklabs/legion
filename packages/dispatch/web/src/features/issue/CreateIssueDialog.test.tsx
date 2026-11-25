@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { expect, jest, mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the dialog form's own submit, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -9,7 +9,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { pressHeld } from "../../__tests__/held-press";
-import { heldUntilLate } from "../../__tests__/held-until-late";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -304,16 +304,15 @@ test.each([
  *  how many presses made it: the keys its attempts went out under. The case holds the fake
  *  clock, from before the dialog is drawn. */
 function slowCreateDialog(refusing: () => boolean) {
-  const keys: string[] = [];
-  const view = renderDialog(userOnFakeClock(), (_input, bounds) => {
-    keys.push(bounds.key);
-    return Promise.reject(
+  const create = mock((_input: CreateIssueInput, _bounds: WriteBounds) =>
+    Promise.reject(
       refusing()
         ? new ApiError(403, { code: "FORBIDDEN", error: "not in this project" })
         : new NetworkError("/api/v1/issues", new TypeError("Failed to fetch"))
-    );
-  });
-  return { presses: () => new Set(keys).size, view };
+    )
+  );
+  const view = renderDialog(userOnFakeClock(), create);
+  return { presses: () => pressesOf([create]), view };
 }
 
 /** Files "Slow create" by Enter on Create, and checks Create is held until that create's

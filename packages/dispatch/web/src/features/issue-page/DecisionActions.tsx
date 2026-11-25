@@ -213,8 +213,8 @@ function DecisionControls({
           // and found by its mark: the tree is one tab stop and the row's own key presses this
           // (R9, WCAG 2.1.1, `useTreeKeymap.ts`'s `tree-keep`). Held, not disabled, while its
           // Keep is out within its deadline (`heldPress`): it keeps the focus, and a second press
-          // keeps nothing more. A Keep past its deadline (`late`) holds it no longer: it is still
-          // tried under its key, but one that never answers would otherwise hold it for good.
+          // keeps nothing more. A Keep past its deadline (`KeyedWriteResult.late`) holds it no
+          // longer.
           <button
             className={`${DECISION_BUTTON} bg-page-decision text-page-paper`}
             {...heldPress(keep.isPending && !keep.late, () => {
@@ -329,9 +329,8 @@ function ChangeComposer({
   // Whether the send is reading the decisions document's text, which it does before the comment
   // goes out: Send is held while it does, as it is while the comment is out within its deadline.
   const [reading, setReading] = useState(false);
-  // A comment past its deadline (`late`) holds Send no longer: it is still tried under its key,
-  // but one that never answers would otherwise hold the form for good. A press then would post the
-  // change twice, so it sends nothing while that comment is out, and the form says so
+  // A comment past its deadline (`KeyedWriteResult.late`) holds Send no longer. A press then would
+  // post the change twice, so it sends nothing while that comment is out, and the form says so
   // (`oneChange`).
   const sendHeld = reading || (send.isPending && !send.late);
   const oneChange = useOneCreateOut(send);

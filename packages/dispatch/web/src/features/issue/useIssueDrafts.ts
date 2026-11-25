@@ -292,7 +292,7 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
   const late = useRef(false);
   useLayoutEffect(() => {
     late.current = updateIssue.late === true;
-  });
+  }, [updateIssue.late]);
   const send = (input: IssueUpdateInput) => {
     writesOut.current += 1;
     updateIssue.mutate(input);

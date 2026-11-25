@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 /** A write whose Retry the guard holds: a keyed write (`useKeyedWrite`), whose `retry` makes its
  *  newest press again - under that press's key where the reader stopped it, which a `mutate` of
@@ -50,4 +50,12 @@ export function useSubmitGuard(): SubmitGuard {
     [guard]
   );
   return useMemo(() => ({ guard, held, release, retryLast }), [guard, held, release, retryLast]);
+}
+
+/** Lets `guard` go once the write it guards is late (`KeyedWriteResult.late`): the write is still
+ *  tried under its key, but one that never answers holds the guard no longer than its deadline. */
+export function useReleaseWhenLate(guard: SubmitGuard, late: boolean): void {
+  useEffect(() => {
+    if (late) guard.release();
+  }, [guard, late]);
 }

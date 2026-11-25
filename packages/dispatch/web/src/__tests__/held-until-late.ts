@@ -30,14 +30,16 @@ export function pressesOf(
  *  the hold that follows ends at the write's deadline. A second short of `SEND_DEADLINE_MS` the
  *  write `queryClient`'s store holds under `label` (`Write.label`) is still `sending`, and
  *  `pressed` held, with the focus; past it the write is `late` and still tried, and `pressed` is
- *  let go, with the focus on it. Chromium's focus fixup is on throughout, so a control that turns
- *  disabled drops the focus. The case holds the fake clock (`jest.useFakeTimers()`), which this
- *  moves, and `user` is a user on it (`userOnFakeClock`); the write is left late, for the case to
- *  press again or to put away. */
+ *  let go, with the focus on it. `alongside` checks what the write holds beside `pressed`: it is
+ *  called with `true` a second short of the deadline, and with `false` past it. Chromium's focus
+ *  fixup is on throughout, so a control that turns disabled drops the focus. The case holds the
+ *  fake clock (`jest.useFakeTimers()`), which this moves, and `user` is a user on it
+ *  (`userOnFakeClock`); the write is left late, for the case to press again or to put away. */
 export async function heldUntilLate(
   user: UserEvent,
   pressed: HTMLElement & { readonly disabled: boolean },
   {
+    alongside,
     label,
     name,
     press,
@@ -45,6 +47,7 @@ export async function heldUntilLate(
     sent,
     start,
   }: {
+    alongside?: (held: boolean) => void;
     label: string;
     name: string;
     press?: string;
@@ -65,11 +68,13 @@ export async function heldUntilLate(
     expect(status(), `${label}, a second short of its deadline`).toBe("sending");
     expect(heldNotDisabled(pressed, name), `${name}, a second short of the deadline`).toBe(true);
     expect(pressed, `${name}, a second short of the deadline`).toHaveFocus();
+    alongside?.(true);
 
     await tick(1_000);
     expect(status(), `${label}, past its deadline`).toBe("late");
     expect(heldNotDisabled(pressed, name), `${name}, past the deadline`).toBe(false);
     expect(pressed, `${name}, past the deadline`).toHaveFocus();
+    alongside?.(false);
   } finally {
     stopFocusFixup();
   }
