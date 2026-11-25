@@ -975,14 +975,15 @@ func operatorRoot(broker cipheraddr.Address) (string, bool) {
 
 // operatorRouteRefusal is the refusal of a sign-launcher call to url that is not one of the four
 // operator routes under this helper's broker (operatorRoute). It names the routes the helper
-// signs and which check the call failed - another address than the broker's, or a method and
-// route that are none of the four - and never the method or the url the caller sent: the url ends
-// in the id a person typed to `machine revoke` or `grant revoke`, which is where a credential
-// pasted in the wrong place lands, the caller's AGENT_SECRETS_URL can carry a user, a password or
-// a query, and the CLI prints this text as it is.
+// signs and which check the call failed - another address than the broker's (a url that does not
+// begin with the broker's own URL as a proof names it, Broker.audience), or a method and route
+// that are none of the four - and never the method or the url the caller sent: the url ends in the
+// id a person typed to `machine revoke` or `grant revoke`, which is where a credential pasted in
+// the wrong place lands, the caller's AGENT_SECRETS_URL can carry a user, a password or a query,
+// and the CLI prints this text as it is.
 func (s *Server) operatorRouteRefusal(url string) string {
 	failed := "the call's method and route are none of them"
-	if root, ok := operatorRoot(s.Broker.URL); !ok || !strings.HasPrefix(url, root) {
+	if broker, err := s.Broker.audience(); err != nil || !strings.HasPrefix(url, broker) {
 		failed = "the call is to another address than this helper's broker (AGENT_SECRETS_URL may name another broker than the helper serves)"
 	}
 	return fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; %[2]s (the call's method and URL are not printed: the URL can end in an id a person typed)", s.Broker.URL, failed)
