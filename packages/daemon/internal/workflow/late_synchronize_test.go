@@ -35,6 +35,7 @@ func sentPush(before, after, sender string) intake.Fact {
 // never held - it records the move's push by its sender on the head run and replays the run, which
 // can close it; the head stays where it was.
 func TestALateSynchronizeOnlyNamesTheMoveAWaitingArrivalTook(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	skipped, arrived := lateApplied.Add(time.Minute), lateApplied.Add(2*time.Minute)
 	for _, tc := range []struct {
@@ -98,6 +99,7 @@ func TestALateSynchronizeOnlyNamesTheMoveAWaitingArrivalTook(t *testing.T) {
 // delivered reversed. The pull request is judged from there: at h1, with h1's synchronize naming the
 // move from head the record held, nothing waits.
 func TestTwoMovesInOneSecondDeliveredReversedMoveTheHeadBackAsOnMain(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	second := time.Date(2026, 9, 22, 23, 51, 0, 0, time.UTC)
 	pool := migratedPool(t)
@@ -116,6 +118,7 @@ func TestTwoMovesInOneSecondDeliveredReversedMoveTheHeadBackAsOnMain(t *testing.
 // its webhooks missed and a real head..h1 in h2's second. The pull request moves to the head, as on
 // main.
 func TestNoSynchronizeMainWouldApplyIsDroppedInTheWorkflow(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	second := time.Date(2026, 9, 22, 23, 51, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -145,6 +148,7 @@ func TestNoSynchronizeMainWouldApplyIsDroppedInTheWorkflow(t *testing.T) {
 // missed too - and moves head..h1 again in the second of h2's synchronize. The pull request is at h1,
 // as on main, not left at h2.
 func TestAMoveAfterAMissedResetInTheSameSecondMovesTheHead(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	first, second := time.Date(2026, 9, 22, 23, 50, 0, 0, time.UTC), time.Date(2026, 9, 22, 23, 51, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -173,6 +177,7 @@ func TestAMoveAfterAMissedResetInTheSameSecondMovesTheHead(t *testing.T) {
 // second, and h1's synchronize naming the implementer. The implementer's push is the one the move
 // takes, so the head run closes on it, and neither push is left recorded without its sender.
 func TestASynchronizesSenderPicksItsPushInTheWorkflow(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, "head", "red")
@@ -213,6 +218,7 @@ func probePullRequest(t *testing.T, pool *pgxpool.Pool) record.PullRequest {
 // records its push on the head run (classify.NameMove) and writes the pull request. It writes no
 // base: the record keeps release, and the head the arrival left.
 func TestALateSynchronizeKeepsTheNewerBase(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	skipped, arrived := lateApplied.Add(time.Minute), lateApplied.Add(2*time.Minute)
 	retargeted := intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", Base: "release",

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // connectWithHandler connects a client and subscribes a core handler that signals when a
@@ -36,11 +37,7 @@ func connectWithHandler(t *testing.T, hold time.Duration) (*bus.Client, *atomic.
 	if err := client.Conn.Publish("drain.in-flight", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 	return client, finished
 }
 
@@ -241,7 +238,7 @@ func TestDrainWhileReconnectingClosesAtOnce(t *testing.T) {
 		t.Fatalf("role subscribe: %v", err)
 	}
 	srv.Stop(t)
-	waitFor(t, 15*time.Second, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
+	waitFor(t, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
 
 	began := time.Now()
 	_ = client.Drain(5 * time.Second)
@@ -274,7 +271,7 @@ func TestADrainWhileReconnectingRunsItsHooksOnAnEndedContext(t *testing.T) {
 		}
 	})
 	srv.Stop(t)
-	waitFor(t, 15*time.Second, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
+	waitFor(t, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
 
 	if err := client.Drain(5 * time.Second); !errors.Is(err, natsgo.ErrConnectionReconnecting) {
 		t.Fatalf("Drain while reconnecting = %v, want %v", err, natsgo.ErrConnectionReconnecting)
@@ -325,7 +322,7 @@ func TestDrainDoesNotWaitForABindInFlight(t *testing.T) {
 		t.Fatal("the bind's consumer lookup never reached the link")
 	}
 	proxy.drop()
-	waitFor(t, 15*time.Second, "the connection to reconnect in place", func() bool {
+	waitFor(t, "the connection to reconnect in place", func() bool {
 		return client.Connected() && client.Conn.Stats().Reconnects > 0
 	})
 	select {
@@ -403,13 +400,13 @@ func TestDrainKeepsAConnectionThatReconnectedBeforeIt(t *testing.T) {
 	if err := conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect: %v", err)
 	}
-	waitFor(t, 15*time.Second, "the connection to reconnect in place", func() bool {
+	waitFor(t, "the connection to reconnect in place", func() bool {
 		return conn.Status() == natsgo.CONNECTED && conn.Stats().Reconnects == 1
 	})
 	began := time.Now()
 	drained := make(chan error, 1)
 	go func() { drained <- client.Drain(5 * time.Second) }()
-	waitFor(t, 5*time.Second, "Drain to drain the connection", conn.IsDraining)
+	waitFor(t, "Drain to drain the connection", conn.IsDraining)
 
 	// nats.go's close() sends the CLOSED event synchronously, so a callback that closed the
 	// connection has sent it by the time the callback returns.
@@ -479,7 +476,7 @@ func TestDrainEndsWhenTheConnectionClosesWhileNATSDrainsIt(t *testing.T) {
 		drained := make(chan error, 1)
 		go func() { drained <- client.Drain(5 * time.Second) }()
 		// The delivery in its handler holds nats.go's drain of the connection's subscriptions.
-		waitFor(t, 5*time.Second, "Drain to drain the connection", conn.IsDraining)
+		waitFor(t, "Drain to drain the connection", conn.IsDraining)
 		conn.Close()
 		releaseHandler()
 		select {

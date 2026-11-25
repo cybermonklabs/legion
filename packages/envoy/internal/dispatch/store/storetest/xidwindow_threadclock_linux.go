@@ -4,6 +4,7 @@ package storetest
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -270,7 +271,8 @@ func xidHoldThread() (release func(), held bool) {
 	}, true
 }
 
-// xidHoldMemory holds the process's memory still for a window, in two ways.
+// xidHoldWindowMemory holds the process's memory still for a window, in two ways, and answers why
+// it could not hold it, empty when it did.
 //
 // On a machine NUMA balancing runs on, it keeps NUMA balancing off every page the process has
 // mapped private and writable - its heap, its stacks, its data - by setting each such mapping's
@@ -283,54 +285,202 @@ func xidHoldThread() (release func(), held bool) {
 // 2026-11-20, inside a forced gap.
 //
 // On every machine, it makes every page of the execution tracer's memory present
-// (MADV_POPULATE_WRITE, which faults each page in writable and writes nothing to it): the
-// mappings the runtime names "Go: trace buffer" and "Go: trace arena alloc" (its
-// decoratemappings, on by default since Go 1.25), which hold the trace's buffers and its tables.
-// The tracer writes events from the measured thread inside every gap, and the first write to a
-// page is a page fault, which takes the page table's lock; another thread of the process may hold
-// it, and on a loaded machine one fault waited 11.3 ms for it on the thread's CPU (xidTrace.warm).
-// Only those mappings are made present: all the process's private writable mappings came to
-// 460 MiB for a test process of 66 MiB, its threads' 8 MiB stacks and the heap's reservation, and
-// the tracer's to under 1 MiB.
+// (MADV_POPULATE_WRITE, which faults each page in writable and writes nothing to it): the trace's
+// buffers and the blocks of its tables (xidTracerRanges, through xidFindTracerMemory). The tracer
+// writes events from the measured thread inside every gap, and the first write to a page is a page
+// fault, which takes the page table's lock; another thread of the process may hold it, and on a
+// loaded machine one fault waited 11.3 ms for it on the thread's CPU (xidTrace.warm). Only that
+// memory is made present: all the process's private writable mappings came to 460 MiB for a test
+// process of 66 MiB, its threads' 8 MiB stacks and the heap's reservation, and the tracer's to
+// under 1 MiB.
 //
 // lockTransaction holds the memory at each marked BEGIN, inside that statement, since a mapping
 // the process made since the last window - a trace buffer among them - has no policy of its own
-// and pages not yet present. The thread-clock probe holds it once too, to learn whether it can
-// (xidThreadClocksUnavailable). Nothing puts the old policy back: once a mapping is set to
-// MPOL_LOCAL here, it stays so for the rest of the process's life, which for a test binary is the
-// rest of its tests.
+// and pages not yet present. The thread-clock probe holds it once too, through xidHoldMemory, to
+// learn whether it can (xidThreadClocksUnavailable). Nothing puts the old policy back: once a
+// mapping is set to MPOL_LOCAL here, it stays so for the rest of the process's life, which for a
+// test binary is the rest of its tests.
 //
-// It answers false when NUMA balancing is on and the kernel refuses mbind. A mapping that goes
+// It says why it could not hold the memory when there is memory to hold and /proc/self/maps cannot
+// be read, when NUMA balancing is on and the kernel refuses mbind, and when an execution trace the
+// rig started runs (startXidTrace) and none of the tracer's memory is found: then the tracer's
+// first writes inside a gap can land on pages never touched, which the gap would read as the code's
+// time, so the BEGIN's window is UNKNOWN by that reason (analyzeXidWindows). A mapping that goes
 // away between the read of /proc/self/maps and its mbind or madvise is one there is nothing left
 // to hold. A kernel without MADV_POPULATE_WRITE (before Linux 5.14) leaves the tracer's pages to
-// fault in as the tracer writes them, which can fail a gap the code did not make, never pass one.
-func xidHoldMemory() bool {
+// fault in as the tracer writes them, and so does any other refusal, since this call does not read
+// what madvise answers. Such a fault is not one-sided. Inside a gap it reads as the code's time,
+// and can fail a window the code did not make slow. Inside a statement it lands on the statements'
+// side, which rule 2 weighs the gaps against (XidWindow.StatementTime, XidWindow.Violations), so
+// it can also hide a window that breaks rule 2: a 4 ms gap against 1 ms of statements breaks that
+// rule and not XidMaxGap, and 5 ms of fault time inside those statements takes the breach away.
+// What shows a populate that made nothing present is the burst test, which fails naming the pages
+// this search found (TestTheTracersEventsInAWindowTouchNoFreshPage).
+func xidHoldWindowMemory() (unheld string) {
 	balancing := xidNUMABalancing()
+	tracing := xidMappedBeforeTrace.Load() != nil
 	maps, err := os.ReadFile("/proc/self/maps")
 	if err != nil {
-		return !balancing
+		if !balancing && !tracing {
+			return ""
+		}
+		return fmt.Sprintf("the process's mappings could not be read to hold them: %v", err)
 	}
-	held := true
+	refused := false
+	if balancing {
+		for line := range bytes.Lines(maps) {
+			fields := bytes.Fields(line)
+			if len(fields) < 2 || len(fields[1]) < 4 || fields[1][1] != 'w' || fields[1][3] != 'p' {
+				continue
+			}
+			start, end, ok := xidMappingRange(fields[0])
+			if !ok {
+				continue
+			}
+			_, _, errno := unix.Syscall6(unix.SYS_MBIND, start, end-start, xidMempolicyLocal, 0, 0, 0)
+			if errno == unix.EPERM || errno == unix.ENOSYS {
+				refused = true
+			}
+		}
+	}
+	tracer := xidFindTracerMemory(maps)
+	for _, r := range tracer {
+		// What madvise answers is not read, so a refusal is not reported: what a page left
+		// unmade costs a window is in this function's comment, on both sides of rule 2.
+		unix.Syscall(unix.SYS_MADVISE, r.start, r.end-r.start, unix.MADV_POPULATE_WRITE)
+	}
+	if refused {
+		return "the kernel refused mbind MPOL_LOCAL on the process's mappings, so NUMA balancing may move a page under the window's thread"
+	}
+	if !tracing || len(tracer) > 0 {
+		return ""
+	}
+	searched := "no mapping carries the runtime's names, and no anonymous writable mapping but the Go heap's and threads' stacks was mapped since the rig started the trace"
+	if xidRuntimeNamesMappings(maps) {
+		searched = "no mapping is named the tracer's ([anon: Go: trace buffer] or [anon: Go: trace arena alloc])"
+	}
+	return fmt.Sprintf("none of the execution tracer's memory was found to make present (%s), so the tracer's first writes inside a gap could land on pages never touched, which the gap would read as the code's time", searched)
+}
+
+// xidHoldMemory holds the process's memory as xidHoldWindowMemory does and answers whether it held
+// it. The thread-clock probe asks it before any trace starts, so its answer is of NUMA balancing
+// alone there (xidThreadClocksUnavailable).
+func xidHoldMemory() bool { return xidHoldWindowMemory() == "" }
+
+// xidFindTracerMemory finds the execution tracer's memory in a read of /proc/self/maps for the
+// hold (xidHoldWindowMemory): xidTracerRanges, in a variable so that the test of a BEGIN that finds
+// none can plant that (TestABeginThatFindsNoTracerMemoryIsUnknown).
+var xidFindTracerMemory = xidTracerRanges
+
+// xidTracerRange is an address range of the execution tracer's memory, or, in
+// xidMappedBeforeTrace, of anything the process had mapped.
+type xidTracerRange struct{ start, end uintptr }
+
+// xidMappedBeforeTrace is every address range the process had mapped right before the rig started
+// its execution trace, and nil while no trace the rig started runs (startXidTrace, xidTrace.stop).
+// What the tracer maps once it runs lies outside these ranges (xidUnnamedTracerRanges). A pointer
+// read and swapped whole, since each marked BEGIN of an operation reads it from a goroutine of its
+// own.
+var xidMappedBeforeTrace atomic.Pointer[[]xidTracerRange]
+
+// xidMappedRanges is every address range of a read of /proc/self/maps, in its ascending order.
+func xidMappedRanges(maps []byte) []xidTracerRange {
+	var ranges []xidTracerRange
+	for line := range bytes.Lines(maps) {
+		if fields := bytes.Fields(line); len(fields) > 0 {
+			if start, end, ok := xidMappingRange(fields[0]); ok {
+				ranges = append(ranges, xidTracerRange{start, end})
+			}
+		}
+	}
+	return ranges
+}
+
+// xidTracerRanges is the execution tracer's memory in a read of /proc/self/maps, found as the
+// kernel lets it be. Where the runtime's names are on the process's mappings (its
+// decoratemappings, on by default since Go 1.25, on a kernel that keeps names for anonymous
+// mappings), it is the mappings named the tracer's (xidTracerMapping). A kernel built without
+// CONFIG_ANON_VMA_NAME keeps no name, and the runtime's own GODEBUG=decoratemappings=0 sets none:
+// then no line carries one, and the tracer's memory is what was mapped after the rig started the
+// trace (xidUnnamedTracerRanges), none where no trace the rig started runs.
+func xidTracerRanges(maps []byte) []xidTracerRange {
+	before := xidMappedBeforeTrace.Load()
+	if !xidRuntimeNamesMappings(maps) && before != nil {
+		probe := new([64]byte)
+		xidHeapProbe.Store(probe)
+		return xidUnnamedTracerRanges(maps, *before, uintptr(unsafe.Pointer(probe)))
+	}
+	var named []xidTracerRange
+	for line := range bytes.Lines(maps) {
+		if !xidTracerMapping(line) {
+			continue
+		}
+		if start, end, ok := xidMappingRange(bytes.Fields(line)[0]); ok {
+			named = append(named, xidTracerRange{start, end})
+		}
+	}
+	return named
+}
+
+// xidRuntimeNamesMappings reports whether the runtime's names are on the process's mappings, in a
+// read of /proc/self/maps: the runtime names its heap and its other memory "[anon: Go: ...]".
+func xidRuntimeNamesMappings(maps []byte) bool {
+	return bytes.Contains(maps, []byte("[anon: Go: "))
+}
+
+// xidHeapProbe holds the heap object xidTracerRanges allocates, so that the object is the heap's:
+// its address names the Go heap's mapping.
+var xidHeapProbe atomic.Pointer[[64]byte]
+
+// xidUnnamedTracerRanges is the execution tracer's memory on a kernel that names no anonymous
+// mapping: each part of an anonymous private writable mapping of maps that no range of before
+// (ascending, xidMappedBeforeTrace) covers. The runtime maps each trace buffer, and each block of
+// the trace's tables, as a mapping of its own, and the kernel joins it to a neighbour with the same
+// flags; what else the process mapped since the trace started is left out where it can be told
+// apart: the Go heap's mapping, the one that holds the heap object at heap, which grows as the
+// trace's reader keeps the trace, and each thread's stack, a mapping right above a one-page guard
+// of no access, as pthread_create maps it. Any other memory the process mapped meanwhile, the
+// runtime's own small blocks, is made present with the tracer's.
+func xidUnnamedTracerRanges(maps []byte, before []xidTracerRange, heap uintptr) []xidTracerRange {
+	page := uintptr(os.Getpagesize())
+	var ranges []xidTracerRange
+	var guardEnd uintptr
 	for line := range bytes.Lines(maps) {
 		fields := bytes.Fields(line)
-		if len(fields) < 2 || len(fields[1]) < 4 || fields[1][1] != 'w' || fields[1][3] != 'p' {
+		if len(fields) < 5 {
 			continue
 		}
 		start, end, ok := xidMappingRange(fields[0])
 		if !ok {
 			continue
 		}
-		if xidTracerMapping(line) {
-			unix.Syscall(unix.SYS_MADVISE, start, end-start, unix.MADV_POPULATE_WRITE)
+		aboveGuard := guardEnd == start
+		guardEnd = 0
+		perms := fields[1]
+		if string(perms) == "---p" && end-start == page {
+			guardEnd = end
 		}
-		if balancing {
-			_, _, errno := unix.Syscall6(unix.SYS_MBIND, start, end-start, xidMempolicyLocal, 0, 0, 0)
-			if errno == unix.EPERM || errno == unix.ENOSYS {
-				held = false
+		// An anonymous mapping has no sixth field, the path; private and writable is rw-p.
+		if len(fields) != 5 || len(perms) < 4 || perms[1] != 'w' || perms[3] != 'p' || aboveGuard || (heap >= start && heap < end) {
+			continue
+		}
+		for _, covered := range before {
+			if covered.end <= start || covered.start >= end {
+				continue
+			}
+			if covered.start > start {
+				ranges = append(ranges, xidTracerRange{start, covered.start})
+			}
+			start = max(start, covered.end)
+			if start >= end {
+				break
 			}
 		}
+		if start < end {
+			ranges = append(ranges, xidTracerRange{start, end})
+		}
 	}
-	return held
+	return ranges
 }
 
 // xidTracerMapping reports whether a /proc/self/maps line is the execution tracer's memory, by the

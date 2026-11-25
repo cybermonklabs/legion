@@ -1,4 +1,5 @@
 import type { dispatchToolSpecs } from "@legion/contracts";
+import { apiCommand } from "./api";
 import {
   askCommand,
   editAskCommand,
@@ -38,7 +39,12 @@ import {
 } from "./issues";
 import { plansCommand } from "./plans";
 import { prioritiesCommand } from "./priorities";
-import { architectureSyncCommand, projectCommand, projectsCommand } from "./projects";
+import {
+  architectureSyncCommand,
+  projectCommand,
+  projectsCommand,
+  projectUpdateCommand,
+} from "./projects";
 import { readCommand } from "./read";
 import { reviewCommand } from "./reviews";
 import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
@@ -83,6 +89,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_search: acting(searchCommand),
   dispatch_project: acting(projectCommand),
   dispatch_projects: acting(projectsCommand),
+  dispatch_project_update: acting(projectUpdateCommand),
   dispatch_priorities: acting(prioritiesCommand),
   dispatch_architecture_sync: acting(architectureSyncCommand),
   dispatch_ask: acting(askCommand),
@@ -115,5 +122,6 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_answers: onSession(answersCommand),
   dispatch_whoami: onSession(whoamiCommand),
   dispatch_limits: onSession(limitsCommand),
+  dispatch_api: onSession(apiCommand),
   dispatch_inbox: onSession(inboxCommand),
 };

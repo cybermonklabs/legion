@@ -15,7 +15,7 @@ description: >-
 
   It posts on a merge_group run and nowhere else, so on a pull request's run — a fork's included
   — the script prints what it saw and exits 0 before it makes any GitHub call. A fork's pull
-  request gets its ci-ok from ci.yaml's `ci-ok` job, whose own check run carries the verdict and
+  request gets its ci-ok from `.github/workflows/ci.yaml#ci-ok` job, whose own check run carries the verdict and
   costs no token scope, where a POST under a fork's read-only token could never have landed one.
   This repository takes no fork pull requests in any case: their runs wait for an approval
   nobody gives.

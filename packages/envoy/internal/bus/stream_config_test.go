@@ -157,13 +157,14 @@ func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
 
 func TestConnectWithContextDoesNotPoisonAutomaticReconnect(t *testing.T) {
 	t.Parallel()
-	baseCtx := context.Background()
 	uri := testnats.URL(t)
 
 	// The property under test is that a connect context that is done by the time the server
 	// drops the connection does not poison automatic reconnect; cancel it explicitly instead of
 	// racing a short dial deadline against the freshly started server.
-	connectCtx, cancel := context.WithTimeout(baseCtx, 10*time.Second)
+	// It has no span of its own either: the dial can be answered late on a loaded machine with
+	// nothing wrong.
+	connectCtx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	reconnected := make(chan struct{}, 1)
 	conn, err := connectWithContext(connectCtx, "reconnect-dialer-test", []string{uri}, nil, nil, func(*nats.Conn) {
@@ -350,20 +351,18 @@ func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart
 		return consumer.PushBound, !consumer.PushBound
 	})
 
-	redelivered := make(chan struct{}, 1)
-	restartedSub, err := client.Subscribe("notifications.>", func(*nats.Msg) {
-		redelivered <- struct{}{}
-	}, nats.Durable("legacy-role-replay"), nats.AckExplicit(), nats.ManualAck())
+	restartedSub, err := client.Subscribe("notifications.>", func(*nats.Msg) {}, nats.Durable("legacy-role-replay"), nats.AckExplicit(), nats.ManualAck())
 	if err != nil {
 		t.Fatalf("restart durable consumer: %v", err)
 	}
 	t.Cleanup(func() { _ = restartedSub.Unsubscribe() })
 
-	select {
-	case <-redelivered:
-		t.Fatal("legacy role message was redelivered after the durable consumer restart")
-	case <-time.After(500 * time.Millisecond):
-	}
+	// The row's proof of the purge is the empty stream read above (:335), before the durable comes
+	// back: a redelivery needs the stream's copy. The restart itself shows nothing more. The legacy
+	// message was delivered once and never acknowledged, so the server would send it again only once
+	// its ack wait (30 s by default) had passed, which the 500 ms window this row once watched after
+	// the restart could never see; and the durable's count of messages left to deliver (NumPending)
+	// is 0 whether or not the purge ran, since the message was delivered before it.
 }
 
 func TestStreamConfigExcludesRoleLanes(t *testing.T) {

@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -101,9 +102,9 @@ func seededEvent(issueKey string, seq int, kind, payload string, at time.Time) [
 }
 
 // seededStatusMovePayload is the payload of the `issue.updated` event a status write appends: the
-// status the issue was moved to and a `changed` list naming the field, which is what the parked
+// status the issue was moved to and a `changed` list naming the field, which is what the second
 // fault's lateral reads to say when an issue was moved into `backlog` or `icebox` and by whom
-// (priorityParkedQuery).
+// (priorityBacklogQuery).
 func seededStatusMovePayload(t testing.TB, status string) string {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{"status": status, "changed": []string{"status"}})
@@ -140,6 +141,15 @@ func seededAdvancesTuple(issueKey, priority string, at time.Time) []any {
 		prioritystore.KindIssue, issueKey, prioritystore.RelationAdvances,
 		prioritystore.KindPriority, priority, at, seededWriter, prioritystore.NoEvent, true,
 	}
+}
+
+// retractedAdvancesTuple is the retraction of an `advances` relation, as prioritystore.Retract
+// appends one: the relation's own row with asserted false. Written after the assertion, it is
+// the newer of the pair, so the relation stands retracted.
+func retractedAdvancesTuple(issueKey, priority string, at time.Time) []any {
+	tuple := seededAdvancesTuple(issueKey, priority, at)
+	tuple[slices.Index(seededTupleColumns, "asserted")] = false
+	return tuple
 }
 
 // seededIssueKey is the key an issue of a bulk corpus carries: the project's key and its number,
