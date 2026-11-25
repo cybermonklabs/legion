@@ -411,7 +411,7 @@ var pauseLetOut = podUpdateStart.Add(10 * time.Minute)
 // pacedUntil is a wake pacing that lets every paced launch out at letOut. An operator's resume is
 // not paced (supervise's exemptWake).
 func pacedUntil(letOut time.Time) supervise.WakePace {
-	return supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(time.Time) time.Time { return letOut }}
+	return supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(time.Time) time.Time { return letOut }}
 }
 
 // heldLaunchLetOut is what the round waits for while the wake pacing parks the held launch of

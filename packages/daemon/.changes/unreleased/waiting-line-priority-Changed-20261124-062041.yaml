@@ -1,0 +1,23 @@
+kind: Changed
+body: |-
+  The admission waiting line is ordered by Dispatch priority first: P0, P1, P2, P3, then the
+  issues with no priority. Each issue waits at its own priority, else at its tree root's. Within
+  one priority the line keeps its earlier order: the issues whose work came back first, oldest
+  first, then the issues that have not started, by their tree root's Dispatch rank and then their
+  own. So a P1 whose work came back goes ahead of every other P1, and never ahead of a P0.
+  Priority orders the line and nothing else: it takes no slot back from work that runs, an issue
+  that waits on another issue is passed over while that wait lasts, and an issue that holds its
+  slot resumes whatever the cap says. A priority changed in Dispatch moves the issue at the next
+  admission pass. The members of a re-admitted tree stay out of the line until their root's
+  promotion.
+
+  The daemon keeps each issue's own Dispatch priority, in a column one migration adds. Daemon API
+  contract 250: each issue the workflow records carries `priority`, its own priority (0 for P0 to
+  3 for P3, or null for none), and each member of the line carries `priority` in its
+  `waitingLine`, the priority that placed it (its own, else its tree root's, or null for one that
+  waits after P3). Its `partPlace` and `partLength` count within its priority and part, and its
+  `reason` and `why.reason` say the priority it waits at. A caller below 250 is served neither
+  `priority`.
+time: 2026-11-24T06:20:41Z
+custom:
+    Issue: waiting-line-priority

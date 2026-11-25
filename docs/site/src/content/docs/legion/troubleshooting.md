@@ -378,17 +378,24 @@ Check, in order:
    counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
    is in `blocked`, with each child it waits for.
 
-   Each waiting issue's own `waitingLine` says where it stands and why: `part`, `returned` for
+   Each waiting issue's own `waitingLine` says where it stands and why: `priority`, the priority
+   that placed it, its own, else its tree root's (0 for P0 to 3 for P3, or null for one that waits
+   after P3); `part`, `returned` for
    an issue whose work came back or `starting` for one that has not started; `kind`;
-   `partPlace` and `partLength` within that part; `holdsSlot`, true where it holds its
+   `partPlace` and `partLength` within its priority and part; `holdsSlot`, true where it holds its
    admission slot already and so waits for no free one; `since`, or the `rootRank`, `ownRank`
    and `rootKey` that placed it; and `reason`, the daemon's own sentence. Plain `legion state`
    prints that sentence for the first ten waiting issues under the `admission:` counts, each
    line reading `<KEY> <place> of <N>, <part>: <reason>`, and then `and <N> more`. It prints
    `waiting line: none` while nothing waits, and
    `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
-   this caller no sentence. An issue that has not started stands behind every issue whose work
-   came back, whatever its board rank, so that order is no fault to chase.
+   this caller no sentence. The line is ordered by Dispatch priority first, P0 to P3 and then the
+   issues with no priority; within one priority, an issue that has not started stands behind every
+   issue whose work came back, whatever its board rank, so that order is no fault to chase. An
+   issue waits behind every issue of a higher priority, whatever its part: `waitingLine.priority`
+   is the priority it waits at, and `issues.<KEY>.priority` is its own, so a child whose own is
+   null waits at its tree root's. A priority changed in Dispatch moves the issue at the next
+   admission pass, and priority takes no slot back from work that runs.
 
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
@@ -435,11 +442,11 @@ approval on a deployment that gates no step, or when the last gated step was tak
 issue in `awaiting_person` keeps its admission slot
 ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label));
 once it is answered it stands in `admission.waiting` too,
-among the issues whose work came back, oldest first, until the pass that resumes it. That resume
+within its priority, among the issues whose work came back, oldest first, until the pass that resumes it. That resume
 takes no further slot, so it happens however full the cap is, whether or not the design gate has
 opened. While the root stands in the line, `waitingLine` on the
-issue gives its place in the line and the line's length, its `part` `returned`, its `kind`
-`answered`, its `holdsSlot` true and a `reason` saying a person answered it and that it holds
+issue gives its place in the line and the line's length, its `priority`, its `part` `returned`,
+its `kind` `answered`, its `holdsSlot` true and a `reason` saying a person answered it and that it holds
 its slot already, and its `why.state` is `waiting`. Nothing is sent to its architect about
 the wait, and the daemon resumes the root by itself on that pass, so neither the
 place nor the wait is anything to act on.
@@ -591,10 +598,25 @@ ended this claim's turn: <cause>`, where the cause names that status, and the ho
 architect's to retry or escalate as any held phase is. The claim's own record carries that
 failure under the cause word `provider_error`, with the same sentence as its `detail`.
 
-**After six turns of one claim in a row have ended in a provider error**, the project's controller
-is told once, as `provider-errors on <KEY>`, with the run, the model and the cause
+**A turn that no prompt of the daemon's ran** — a phase reminder the plugin starts itself, an Envoy
+message, a background job's result — has no prompt result, so the daemon judges it from the
+plugin's turn-outcome report, which carries the HTTP status the provider answered and marks the
+turn `unprompted`. The same rule holds: a status that cannot clear fails the claim at once, with
+`why` reading `a provider error that cannot clear ended a turn this claim's agent ran with no
+prompt of the daemon's: <cause>`, holds the issue under the cause word `provider_error`, and so
+ends the plugin's reminders. Any other refusal, or one whose report carries no status, fails
+nothing and logs `supervise: a turn that ran no prompt of the daemon's ended in a provider error`;
+the reminders keep their pace of one every 5 minutes, and the turn counts in the claim's run of
+provider-error turns below. Nothing is sent again for such a turn: it carried no task.
+
+**After six turns of one claim in a row have ended in a provider error**, whether a prompt of the
+daemon's ran them or not, the project's controller is told once, as `provider-errors on <KEY>`,
+with the run, the model where the prompt's result named one, and the cause
 (`supervise: a run of turns that ended in a provider error; the controller is told`). Nothing is
-held and nothing is stopped by that count: the task is still kept and still sent again. The run
+held and nothing is stopped by that count. A prompt's task is still kept and still sent again on
+the ladder, and the notice says so; a turn that no prompt of the daemon's ran carried no task, so
+nothing is sent again for it, the reminders keep their pace, and a notice whose sixth turn was such
+a turn says that the daemon sends no task again for it. The run
 goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
 compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
 Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
@@ -876,8 +898,11 @@ claim launching with no process, and the relaunches of processes the previous da
 back into the pacing in one order, the order their tasks were queued, the oldest first, so among
 those a claim that waited before the restart goes ahead of work owed after it; the stale-plugin
 pass takes its turns as it reaches the gate, and while the project is paused the unfinished
-launches wait for the resume instead. Read what the pacing still holds before you act on anything
-below:
+launches wait for the resume instead. A relaunch that reaches its gate an interval or more after
+the turn the boot gave it — its admission waits behind every other launch's — is reserved a turn
+afresh, at the back of the queue unless the pacing has drained, and the daemon logs `supervise:
+this launch reached the wake gate an interval or more after the turn its caller reserved` with the
+moment it is now `due`. Read what the pacing still holds before you act on anything below:
 
 ```sh
 legion state --config legion.yaml --json | jq '.wakesWaiting'
@@ -1700,10 +1725,11 @@ the tester or the reviewer, is told to stop writing the workspace and not to com
 the old head, and is then told the new head, and `workflow: the merge forward landed`
 names both heads. A completion of the phase the issue stands in that names a head a merge
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
-a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
-made again at the new head; a completion of a phase the issue has already left is recorded as
-before. Where the task's reviewer step already ran, the reviewer is asked to read the merge and
-approve the new head. A red check sends nothing back from anywhere.
+a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD` and moves nothing; the daemon
+keeps the refusal, so the same call again is answered `HANDOFF_ALREADY_RECORDED`, and the
+completion is made again at the new head. A completion of a phase the issue has already left is
+recorded as before. Where the task's reviewer step already ran, the reviewer is asked to read
+the merge and approve the new head. A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
 
@@ -2090,11 +2116,17 @@ notice comes once per handoff commit, from whichever read finds it first.
     again after it applied writes no line.
 
   A published settlement with no new `CI settled` message, no drop line and no give-up line is one
-  of three things:
+  of four things:
   - The daemon applied it, and the line it would tell is the line it already told for that head,
     so it tells nobody again. The earlier `CI settled` message of that head stands for it.
   - The daemon applied it on a tree that lingers after its root left the workflow, where the
     daemon tells nobody.
+  - The daemon applied it and woke the released worker of the issue's open phase with a task that
+    names the settlement: `wake: a released pod is coming back`, kind `checks`, whose `detail`
+    starts with the head's first 12 characters. That task is the worker's `CI settled` message.
+    Each other released role's message ends `outbox role message finished undelivered: its role's
+    pod is released, and the message is not worth a wake`, unless a project pause holds it for the
+    role, when it waits for the role's launch.
   - In every other case, it was lost between the listener and the daemon.
 
   No line at all for a finished head means that no event of that head reached the listener's
