@@ -875,9 +875,103 @@ directory, the addon's and the call's own (the hook and its call file) are bound
 `/mnt/pin`, and an empty 64 MiB tmpfs at `/mnt/pin/home` is the pin's `HOME` and holds its fresh
 session directory: the one writable file system, the checkout copy staying read-only; the pin gets
 only `PATH`, `HOME` and `PI_NATIVES_DIR` in its environment, no `PI_CONFIG_FILES`, and no
-setting, plugin, extension or skill of the host's, so the answer is the pin's at its defaults. The
-run is one sandbox of the queue, within the same 30 s from its ready marker, and the copy's paths
-in the result are the session's.
+setting, plugin, extension or skill of the host's, so the answer is the pin's at its defaults but
+for the session's shell (below). The run is one sandbox of the queue, within the same 30 s from
+its ready marker, and the copy's paths in the result are the session's.
+
+A written case's `bash` calls are answered in the shell its context session's Oh My Pi ran them
+in, as the dev box's dotfiles set it up at the one commit of the configuration's `dotfilesRepo`
+its profile's skills name (`cli.ts`'s `caseShell`, `checkout.ts`'s `ShellSetup`). Where the
+configuration names no such repository, the profile names no commit of it or several, a file
+below cannot be read, or the case records no arm of the gate, no `bash` call of the case is
+answered (`unanswered-read`, naming why), and the stage records why (`checkout.shell: {"why"}`).
+
+- The prefix. The dotfiles' `shims/omp` exports `PI_SHELL_PREFIX="${PI_SHELL_PREFIX:-set +e +u
+  +o pipefail;}"` from commit bcd580fa (2026-10-25) on (none before), and the pin puts the prefix
+  before each command inside its executor, `${prefix} ${command}` (exec/bash-executor.ts lines
+  233-267 and 640-660 at the pin tag). So the minimizer reads the prefixed command: a single
+  command is a chain's segment after `set +e +u +o pipefail` (no filter reads `set`), and one
+  that holds a command substitution is not read at all (a chain one of whose stages holds one is
+  kept whole); the pin's run gets `PI_SHELL_PREFIX`. The shim is read once per commit, through
+  the runner's source into `--cache-dir`.
+- The bash gate. Every recorded session ran the dotfiles' experiments extension
+  (`omp/extensions/experiments/index.ts`, which `installers/omp.sh` links into every profile): its
+  `bash-gate.ts` turns the pin's own interceptor off in its process, and `bash-gate-core.ts`'s
+  `intercept` blocks a call one of the interceptor's default rules matches (read: `head`, `tail`,
+  `less`, `more`, `cat`; grep: `grep`, `rg`; glob: `find -name`; …) with its own text,
+  ``Blocked: `<step>` has a dedicated tool, `<tool>`. …``. Its arm `bash_gate_leading` tests a
+  read, grep or glob rule against the command's leading segment alone (`on`) or against every
+  unpiped segment (`off`); a session records its arm in an `experiments` entry of its file, and
+  `build-cases` records on a written case the arm of its context session's last such entry before
+  the skill's read (`checkout.bashGate.leading`). A case built before that record holds none, and
+  its `bash` calls are not answered (no session store is read for it, as none is for
+  `checkout.jj`). Each `bash` call is shown to the gate before anything else of it: a pin run that
+  loads that extension alone (`-e`, its directory bound read-only at `/mnt/pin/ext`;
+  `--no-extensions` keeps every other discovery off) with `OMP_EXPERIMENT_BASH_GATE_LEADING` the
+  case's arm, the call made only to ask the gate, so nothing of it runs (the stub hook's own
+  `tool_call` handler, which runs after the extension's, blocks it once the gate lets it
+  through). A call the gate refuses gets its refusal as the pin's bash tool returns it, an error,
+  even where its paths are outside the checkout; one it lets through is answered as before, by
+  the runner's own run, or by the pin's run, which loads the extension too, where the minimizer
+  may rewrite it. A pin run whose session records another arm than the case's, or none (the
+  extension did not load), is not answered. Each call's gate answer is asked once per runner
+  process.
+- The gate's version. The extension loads once per process, so a session can run an older one
+  than its profile's commit holds. Four texts ran, at dotfiles commits 050e8a40, bc8c956a,
+  3c266c9f and 31823ec2; a refusal of a step of several tells them apart (`checkout.ts`'s
+  `gateRefusalVersions`), and `build-cases` records the versions whose form every refusal of the
+  gate before the skill's read matches (`checkout.bashGate.versions`). Where it holds none, the
+  extension is the profile's commit's; where it holds some, the profile's commit's where its
+  `bash-gate-core.ts` is a version they match, else the newest version they match that is older
+  than the profile's (`gateVersion`); a profile's commit with no bash gate, refusals that match no
+  version or only newer ones, refuse. The extension's directory is read at that commit through
+  the runner's source into `--cache-dir` (it imports only Oh My Pi's own modules and Node's, so
+  it needs no package), never another version. The stage records the shell
+  (`checkout.shell`: `{"prefix", "gate": {"commit", "from", "leading"}}`, `from` `profile` or
+  `history`).
+- The stub against an ordinary session. A test runs the pin's bash tool on a fixture through this
+  harness and in an ordinary `omp -p` session of the same binary (a HOME of its own, the
+  dotfiles' `omp/config.yml` by `--config`, `PI_SHELL_PREFIX`, the experiments extension, none of
+  the harness's `--no-*` flags, the stub model alone): an output the minimizer rewrites, a long
+  one it leaves and a call the gate refuses are equal byte for byte (their wall-time notices left
+  out, which measure the machine). That run turns off `advisor.enabled` and `memory.backend`
+  (Mnemopi), the two settings of `config.yml` that need a service the test lacks; neither touches
+  a tool's result at the pin (`advisor/runtime.ts` lines 190-224 write only the advisor's own
+  message; `memory-backend/types.ts` lines 108-196: a backend's start, its system-prompt section
+  and its store).
+- knives' blocks. knives' `tool_result` hook appends, once per session per repository, a
+  `<knives-notice-<nonce> repo="…" digest="…">` block where the repository is a fork knives
+  manages (the branches claimed in it) and a `<knives-guidance-<nonce> repo="…">` block where
+  knives trusts it (its `AGENTS.md`, `CLAUDE.md` or `CONTEXT.md` files that the session's system
+  prompt does not hold), as a text block of its own after a read, grep, glob or bash result that
+  touches the repository (knives v3.2.3 `omp/extensions/knives.ts` lines 80-103,
+  `plugin/lib/internals.ts` lines 6-14 and 369-381, `src/commands/hook.rs` lines 189-203,
+  `src/hook/guidance.rs` lines 40-71, 106-133, 175-201 and 265-275). `build-cases` records on a
+  written case what its context session got for its checkout's repository (`checkout.knives`):
+  `blocks`, that repository's blocks in the first addition that held any (the notice naming a
+  root that holds the working directory, then the guidance of the same repository, or of the
+  checkout root's directory's name where no notice names it, as knives names a repository it does
+  not manage), byte for byte, null where it holds none; and `touched`, whether a call of the
+  session touched the repository as knives reads its paths, where knives' hook ran on its result
+  (a call the bash gate refused is none). A run adds the recorded blocks, as that block of its
+  own, to its first answer that touches the repository, a skill read the replay answers itself
+  included, and to no other (none where the case's history carries them), the same in every arm
+  and run: they are the context session's, its nonce, digest and branch list, not knives' state
+  when the run replays. A call touches the repository, as knives reads it (`src/hook/resolve.rs`
+  lines 55-84, `argument_paths`, ported as written: a `path`, `filePath`, `file_path` or
+  `notebook_path`, and each word of a `command` that is `/` or `~/` and more; never the call's
+  `cwd`; a relative path, a `skill://` URL among them, read against the session's working
+  directory), where such a path is under the checkout's root. A call the bash gate refused gets
+  none (Oh My Pi emits no `tool_result` for a blocked call). Where the session touched the
+  repository and got no block, a run adds none. A call that touches the repository gets no answer
+  (`unanswered-read`, naming why) where the session never touched it, or the case was built
+  before `build-cases` recorded `checkout.knives` (no session store is read for it, as none is for
+  `checkout.jj`), and knives may give it blocks: the dotfiles' `knives/repos.toml` at the
+  profile's commit names a fork of a repository of the same name, or its `[trust]` holds the
+  repository's owner, the repository or a root above the checkout (the runner does not know the
+  checkout's remotes, so it may refuse where knives gives none, never the reverse), or the runner
+  cannot read that file. A Responses body, whose tool output is one string, gets no answer with
+  blocks.
 
 A rewritten bash output ends with `[raw output: artifact://<N>]` and the pin's wall time and exit
 notices after it. `<N>` is one past the highest `artifact://<n>` in the case's history (the
@@ -2751,10 +2845,18 @@ of a `session listing` measure change only how a run's read of that skill is ans
 `behaviour report` and `load` count (above, under each command).
 
 `--reprofile` rebuilds each profile from the case and its session's head and path.
-It pulls no transcript and calls no reader. Only `profile` and its evidence can change: each
-case's `source`, its `kind` among it, stays. A written case's profile is built again from the
-reads of its context session its evidence names (`context session read: …`), which its messages
-do not hold, and its written case's evidence stays.
+It calls no reader and no model. Only `profile` and its evidence can change, and a written case's
+`checkout.bashGate` and `checkout.knives`: each case's `source`, its `kind` among it, stays. A
+written case's profile is built again from the reads of its context session its evidence names
+(`context session read: …`), which its messages do not hold, and its written case's evidence
+stays. Its checkout's `bashGate` and `knives` are read again from its context session as a
+written build reads them: the transcript, found by its path hash with `session-paths.sql`, is
+pulled into `<out>.spool/` as the build pulls it, and the records are read at its first read of
+the skill; the rest of the checkout stays. Where they cannot be read (the store holds the
+session's file no longer, the pull returns no row, or the transcript holds no read of the skill a
+case is built from), the checkout stays as it was, and the case's line and the summary's
+`checkoutRecords` say why (`read` where they were read). This fills both records on a written case
+built before `build-cases` recorded them, with no new written-case reader call.
 A case holds no working directory. The builder reads `cwd` from its session's head with
 `session-head.sql` and the transcript path with `session-paths.sql`, one query of each per store.
 It saves the head under `<out>.sessions/` but does not save the transcript path.
@@ -2992,13 +3094,16 @@ read, resolved, less the file inside the skill). The agent reads any other file 
 itself in the run, where the skill-read rounds answer it, and looks at the checkout in the
 checkout rounds above. Its `realStep` is the following step, its `violatingStep` the violating
 one, its `source` the context session's store and path hash with `kind` `written`, its `checkout`
-the context session's (`{repo, commit, root, cwd, jj}`: the profile's session repository and
-commit, the checkout's root on the session's machine, the working directory, and whether the
-context session ran jj, a `bash` call of its transcript whose command holds the word `jj`, which
-the case's own history, the task and the skill's read, cannot show; a case built before the build
-passed over a context session in no checkout it knows may have none, and its runs answer no
-read-only call, above), and its profile, working directory and system context the context
-session's; its
+the context session's (`{repo, commit, root, cwd, jj, bashGate, knives}`: the profile's session
+repository and commit, the checkout's root on the session's machine, the working directory,
+whether the context session ran jj, a `bash` call of its transcript whose command holds the word
+`jj`, the bash gate it ran, the arm of its last `experiments` entry before the skill's read
+and the gate's versions its refusals before that read match (`bashGate`: `{leading, versions}`,
+absent where no such entry names the arm; "The bash gate" above), and what knives added for the
+checkout's repository (`knives`: `{blocks, touched}`, "knives' blocks" above), which the case's
+own history, the task and the skill's read, cannot show; a case built before the build passed
+over a context session in no checkout it knows may have none, and its runs answer no read-only
+call, above), and its profile, working directory and system context the context session's; its
 evidence names each read of the context session its profile is built from, and so how it read the
 skill (`context session read: message <n> reads [Skill file: <path>]` for a `skill://` read,
 `context session read: message <n> reads <path> by its path` for a whole read by path of the cut's

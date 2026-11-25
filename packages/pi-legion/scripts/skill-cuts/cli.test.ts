@@ -75,7 +75,7 @@ import {
   scoreSkill,
   smallestDrop,
 } from "./score";
-import { pinNatives } from "./test-natives";
+import { pinBinary, pinNatives } from "./test-natives";
 import { truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
 
 // The runner's command line, end to end: each command runs as its own `bun cli.ts` process, with
@@ -99,6 +99,10 @@ const scratch = temporaryDirectory("skill-cuts-cli", { real: true });
  *  may summarize): skipped, or under GITHUB_ACTIONS failing, where the runner finds none
  *  (test-natives.ts). */
 const natives = pinNatives("cli.test.ts");
+/** The `test` of the rows whose written cases answer `bash` calls, each of which the pinned Oh My
+ *  Pi's run of the session's bash gate sees first (checkout.ts's `gateAnswer`): skipped, or under
+ *  GITHUB_ACTIONS failing, where the runner finds none (test-natives.ts). */
+const pinned = pinBinary("cli.test.ts");
 
 /** The stand-in spend collector each command's usage spans go to. */
 const collector = startCollector();
@@ -191,13 +195,49 @@ function requestsSince(from: number): readonly RecordedRequest[] {
   return recorder.requests.slice(from);
 }
 
+/** The made-up world's dotfiles repository (the configuration's `dotfilesRepo`): acme/skills, at
+ *  the commit makeCase's profile names its skills at, so a written case's `bash` calls are answered
+ *  in the shell that commit's shims/omp gives (cli.ts's `caseShell`). */
+const DOTFILES = { repo: "acme/skills", commit: "0123456789abcdef" } as const;
+
+/** The dotfiles' shims/omp at DOTFILES' commit, as `--repos` gives it to the runner's reads: the
+ *  export of PI_SHELL_PREFIX as the dotfiles write it from commit bcd580fa on. */
+const SHIM = [
+  "#!/usr/bin/env bash",
+  "set -euo pipefail",
+  "# omp puts PI_SHELL_PREFIX in front of each command inside its executor.",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the shim's own `${PI_SHELL_PREFIX:-…}`
+  'export PI_SHELL_PREFIX="${PI_SHELL_PREFIX:-set +e +u +o pipefail;}"',
+  'exec omp "$@"',
+  "",
+].join("\n");
+
+/** The dotfiles' experiments extension of the made-up world (testdata/CAPTURE.md, "F16": the
+ *  extension at 3c266c9f cut to its bash gate), at DOTFILES' commit. */
+const EXPERIMENTS = path.join(import.meta.dir, "testdata", "F16-experiments");
+
+/** The bash gate's arm the made-up written cases' context sessions record (cases.ts's
+ *  `checkout.bashGate`): on, which tests a read rule against a command's leading segment alone. */
+const BASH_GATE = { leading: true } as const;
+
+/** What a written case's stage records of the shell its `bash` calls were answered in, where its
+ *  case names DOTFILES' commit and BASH_GATE (cli.ts's StageShell): the history held no refusal
+ *  of the gate, so its version is the profile's commit. */
+const STAGE_SHELL = {
+  prefix: "set +e +u +o pipefail;",
+  gate: { commit: DOTFILES.commit, from: "profile" as const, leading: true },
+};
+
 /** A configuration whose gateway is the stand-in, and a key file. */
 function setup(): { config: string; keyFile: string; key: string } {
   const config = path.join(scratch, "skill-cuts.json");
   const fixture = JSON.parse(
     readFileSync(path.join(import.meta.dir, "testdata", "F7-skill-cuts.json"), "utf8")
   );
-  writeFileSync(config, JSON.stringify({ ...fixture, gatewayBaseUrl: recorder.url }));
+  writeFileSync(
+    config,
+    JSON.stringify({ ...fixture, dotfilesRepo: DOTFILES.repo, gatewayBaseUrl: recorder.url })
+  );
   const key = fixtureSecret("gw");
   const keyFile = path.join(scratch, "key");
   writeFileSync(keyFile, key, { mode: 0o600 });
@@ -5378,14 +5418,21 @@ describe("behaviour: a replay's reads of skill files", () => {
   /** A made-up repository acme/proj holding `files` and the symbolic links `links` (each path to its
    *  target) in its last commit, after a commit of `earlier` where given (each path to its text), as
    *  `--repos <dir>/acme/proj.git` gives it to a written case's fetch, whose server, as GitHub's,
-   *  takes a filter of the objects it sends; that `--repos` directory and the last commit. */
+   *  takes a filter of the objects it sends; beside it the dotfiles at DOTFILES' commit (SHIM, the
+   *  experiments extension and `dotfiles`, each path to its text), as `--repos` gives them to the
+   *  runner's reads; that `--repos` directory and the last commit. */
   const gitRepository = (
     dir: string,
     files: Record<string, string>,
     {
       links = {},
       earlier,
-    }: { links?: Record<string, string>; earlier?: Record<string, string> } = {}
+      dotfiles = {},
+    }: {
+      links?: Record<string, string>;
+      earlier?: Record<string, string>;
+      dotfiles?: Record<string, string>;
+    } = {}
   ): { repos: string; commit: string } => {
     const repos = path.join(dir, "repos");
     const work = path.join(dir, "proj-work");
@@ -5421,6 +5468,15 @@ describe("behaviour: a replay's reads of skill files", () => {
     const bare = path.join(repos, "acme", "proj.git");
     git(dir, "clone", "--quiet", "--bare", work, bare);
     git(bare, "config", "uploadpack.allowFilter", "true");
+    writeSkill(path.join(repos, DOTFILES.repo, DOTFILES.commit), {
+      "shims/omp": SHIM,
+      ...dotfiles,
+    });
+    cpSync(
+      EXPERIMENTS,
+      path.join(repos, DOTFILES.repo, DOTFILES.commit, "omp", "extensions", "experiments"),
+      { recursive: true }
+    );
     return { repos, commit };
   };
 
@@ -5430,127 +5486,138 @@ describe("behaviour: a replay's reads of skill files", () => {
   // repository's checkout takes minutes and gigabytes); a checkout fetched with no blobs, whose
   // git command of an older commit then fetches one from the remote as it answers; or a checkout
   // whose `git remote -v` shows the runner's `--repos` directory (the second security review).
-  test("written cases of one commit answer a reply that only reads from one shared checkout of their repository at that commit, made once and kept, git history among it with the blobs of its commits, its origin the repository's GitHub URL, and record the round; a session case's runs are judged on that reply", async () => {
-    const base = scenario("checkout-rounds", LOSS_SKILL(), [{ id: "c04" }]);
-    // The made-up repository acme/proj, two commits, as `--repos` gives it to the fetch.
-    const guide = "# Guide\n\nRun the app.\n";
-    const first = "# Guide\n\nRun the old app.\n";
-    const { repos, commit } = gitRepository(
-      base.dir,
-      { "docs/guide.md": guide },
-      { earlier: { "docs/guide.md": first } }
-    );
-    const checkout = { repo: "acme/proj", commit, root: "/work/acme/proj", cwd: "/work/acme/proj" };
-    const written = ["w00", "w01"].map((id): Case => ({ ...makeWrittenCase(id), checkout }));
-    const cases = [...base.cases, ...written];
-    writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
-    const markers = new Map([...base.markers, ["w00", ""] as const, ["w01", ""] as const]);
-    const s = { ...base, cases, markers };
-    recordCaptures(s, ["old", "new", "none"]);
-    // Each run reads docs/guide.md and the log first, and acts once their answers are in its body.
-    const answered: string[] = [];
-    let calls = 0;
-    answer = (body) => {
-      if (isJudgement(body)) return behaviourStandIn(body);
-      const last = (body.messages as { content: unknown }[]).at(-1)?.content;
-      const results = Array.isArray(last)
-        ? last.filter((block) => String(block?.tool_use_id).startsWith("toolu_look_"))
-        : [];
-      if (results.length > 0) {
-        answered.push(results.map((block) => block.content[0].text).join("\n---\n"));
-        return behaviourStandIn(body);
-      }
-      calls += 1;
-      return sseResponse(
-        messageSse({
-          id: `msg_look_${calls}`,
-          model: "claude-sonnet-5-5",
-          content: [
-            {
-              type: "tool_use",
-              id: `toolu_look_${calls}_read`,
-              name: "read",
-              input: { path: "docs/guide.md" },
-            },
-            {
-              type: "tool_use",
-              id: `toolu_look_${calls}_log`,
-              name: "bash",
-              input: { command: "git log --format=%s && git status --short" },
-            },
-          ],
-          stopReason: "tool_use",
-        })
+  pinned.test(
+    "written cases of one commit answer a reply that only reads from one shared checkout of their repository at that commit, made once and kept, git history among it with the blobs of its commits, its origin the repository's GitHub URL, and record the round; a session case's runs are judged on that reply",
+    async () => {
+      const base = scenario("checkout-rounds", LOSS_SKILL(), [{ id: "c04" }]);
+      // The made-up repository acme/proj, two commits, as `--repos` gives it to the fetch.
+      const guide = "# Guide\n\nRun the app.\n";
+      const first = "# Guide\n\nRun the old app.\n";
+      const { repos, commit } = gitRepository(
+        base.dir,
+        { "docs/guide.md": guide },
+        { earlier: { "docs/guide.md": first } }
       );
-    };
-    const ran = await cli(behaviour("screen", s, "--repos", repos));
-    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
-    const runsOf = (id: string) => result(s.out, id).stages.screen?.runs ?? [];
-    for (const id of ["w00", "w01"]) {
-      expect(runsOf(id)).toHaveLength(3 * SCREEN_RUNS);
-      expect(result(s.out, id).stages.screen?.checkout).toEqual({
-        git: true,
-        depth: 50,
-        removedLinks: [],
-      });
-      for (const run of runsOf(id)) {
-        expect({ rounds: run.checkoutRounds, unanswered: run.unanswered }).toEqual({
-          rounds: 1,
-          unanswered: undefined,
+      const checkout = {
+        repo: "acme/proj",
+        commit,
+        root: "/work/acme/proj",
+        cwd: "/work/acme/proj",
+        bashGate: BASH_GATE,
+      };
+      const written = ["w00", "w01"].map((id): Case => ({ ...makeWrittenCase(id), checkout }));
+      const cases = [...base.cases, ...written];
+      writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+      const markers = new Map([...base.markers, ["w00", ""] as const, ["w01", ""] as const]);
+      const s = { ...base, cases, markers };
+      recordCaptures(s, ["old", "new", "none"]);
+      // Each run reads docs/guide.md and the log first, and acts once their answers are in its body.
+      const answered: string[] = [];
+      let calls = 0;
+      answer = (body) => {
+        if (isJudgement(body)) return behaviourStandIn(body);
+        const last = (body.messages as { content: unknown }[]).at(-1)?.content;
+        const results = Array.isArray(last)
+          ? last.filter((block) => String(block?.tool_use_id).startsWith("toolu_look_"))
+          : [];
+        if (results.length > 0) {
+          answered.push(results.map((block) => block.content[0].text).join("\n---\n"));
+          return behaviourStandIn(body);
+        }
+        calls += 1;
+        return sseResponse(
+          messageSse({
+            id: `msg_look_${calls}`,
+            model: "claude-sonnet-5-5",
+            content: [
+              {
+                type: "tool_use",
+                id: `toolu_look_${calls}_read`,
+                name: "read",
+                input: { path: "docs/guide.md" },
+              },
+              {
+                type: "tool_use",
+                id: `toolu_look_${calls}_log`,
+                name: "bash",
+                input: { command: "git log --format=%s && git status --short" },
+              },
+            ],
+            stopReason: "tool_use",
+          })
+        );
+      };
+      const ran = await cli(behaviour("screen", s, "--repos", repos));
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      const runsOf = (id: string) => result(s.out, id).stages.screen?.runs ?? [];
+      for (const id of ["w00", "w01"]) {
+        expect(runsOf(id)).toHaveLength(3 * SCREEN_RUNS);
+        expect(result(s.out, id).stages.screen?.checkout).toEqual({
+          git: true,
+          depth: 50,
+          removedLinks: [],
+          shell: STAGE_SHELL,
         });
-        expect(
-          run.skillReads?.[0]?.map((read) => [read.from, "tool" in read ? read.tool : ""])
-        ).toEqual([
-          ["checkout", "read"],
-          ["checkout", "bash"],
+        for (const run of runsOf(id)) {
+          expect({ rounds: run.checkoutRounds, unanswered: run.unanswered }).toEqual({
+            rounds: 1,
+            unanswered: undefined,
+          });
+          expect(
+            run.skillReads?.[0]?.map((read) => [read.from, "tool" in read ? read.tool : ""])
+          ).toEqual([
+            ["checkout", "read"],
+            ["checkout", "bash"],
+          ]);
+        }
+      }
+      // A run of a second or more says its wall time, as Oh My Pi's bash does.
+      const expected = `[docs/guide.md#${snapshotTag(guide)}]\n1:# Guide\n2:\n3:Run the app.\n---\nAdd the guide\nWrite the first guide\n`;
+      expect(answered.length).toBeGreaterThan(0);
+      for (const text of answered) {
+        expect(text.replace(/\n\nWall time: \d+\.\d\d seconds/g, "")).toBe(expected);
+      }
+      for (const run of runsOf("c04")) {
+        expect(run.checkoutRounds).toBe(0);
+        expect(run.reply).toMatchObject([
+          { type: "tool_use", name: "read", input: { path: "docs/guide.md" } },
+          { type: "tool_use", name: "bash" },
         ]);
       }
-    }
-    // A run of a second or more says its wall time, as Oh My Pi's bash does.
-    const expected = `[docs/guide.md#${snapshotTag(guide)}]\n1:# Guide\n2:\n3:Run the app.\n---\nAdd the guide\nWrite the first guide\n`;
-    expect(answered.length).toBeGreaterThan(0);
-    for (const text of answered) {
-      expect(text.replace(/\n\nWall time: \d+\.\d\d seconds/g, "")).toBe(expected);
-    }
-    for (const run of runsOf("c04")) {
-      expect(run.checkoutRounds).toBe(0);
-      expect(run.reply).toMatchObject([
-        { type: "tool_use", name: "read", input: { path: "docs/guide.md" } },
-        { type: "tool_use", name: "bash" },
-      ]);
-    }
-    // One checkout of the commit, made once, said once, and kept in the cache with its marker.
-    const made = ran.stdout
-      .split("\n")
-      .filter((line) => line.includes(`the checkout of acme/proj at ${commit} is made in `));
-    expect(made).toHaveLength(1);
-    expect(made[0]).toContain("(git, its history 50 commits deep; no symbolic link leaves it)");
-    const checkouts = path.join(s.dir, "cache", "checkouts", "acme", "proj");
-    expect(readdirSync(checkouts).sort()).toEqual([commit, `${commit}.ready.json`]);
-    expect(readFileSync(path.join(checkouts, commit, "docs", "guide.md"), "utf8")).toBe(guide);
-    // It holds the blobs of its commits, the earlier one's among them, with no fetch to come.
-    expect(
-      JSON.parse(readFileSync(path.join(checkouts, `${commit}.ready.json`), "utf8"))
-    ).toMatchObject({ git: true, depth: 50, blobs: true });
-    const shown = Bun.spawnSync(["git", "cat-file", "-p", "HEAD~1:docs/guide.md"], {
-      cwd: path.join(checkouts, commit),
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: base.dir, GIT_NO_LAZY_FETCH: "1" },
-    });
-    expect({ code: shown.exitCode, text: shown.stdout.toString() }).toEqual({
-      code: 0,
-      text: first,
-    });
-    // Its origin is the repository's GitHub URL, as a session's checkout names it, not the
-    // `--repos` directory on the runner that its fetch read.
-    const remote = Bun.spawnSync(["git", "remote", "-v"], {
-      cwd: path.join(checkouts, commit),
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: base.dir },
-    });
-    expect({ code: remote.exitCode, text: remote.stdout.toString() }).toEqual({
-      code: 0,
-      text: "origin\thttps://github.com/acme/proj.git (fetch)\norigin\thttps://github.com/acme/proj.git (push)\n",
-    });
-  }, 120_000);
+      // One checkout of the commit, made once, said once, and kept in the cache with its marker.
+      const made = ran.stdout
+        .split("\n")
+        .filter((line) => line.includes(`the checkout of acme/proj at ${commit} is made in `));
+      expect(made).toHaveLength(1);
+      expect(made[0]).toContain("(git, its history 50 commits deep; no symbolic link leaves it)");
+      const checkouts = path.join(s.dir, "cache", "checkouts", "acme", "proj");
+      expect(readdirSync(checkouts).sort()).toEqual([commit, `${commit}.ready.json`]);
+      expect(readFileSync(path.join(checkouts, commit, "docs", "guide.md"), "utf8")).toBe(guide);
+      // It holds the blobs of its commits, the earlier one's among them, with no fetch to come.
+      expect(
+        JSON.parse(readFileSync(path.join(checkouts, `${commit}.ready.json`), "utf8"))
+      ).toMatchObject({ git: true, depth: 50, blobs: true });
+      const shown = Bun.spawnSync(["git", "cat-file", "-p", "HEAD~1:docs/guide.md"], {
+        cwd: path.join(checkouts, commit),
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: base.dir, GIT_NO_LAZY_FETCH: "1" },
+      });
+      expect({ code: shown.exitCode, text: shown.stdout.toString() }).toEqual({
+        code: 0,
+        text: first,
+      });
+      // Its origin is the repository's GitHub URL, as a session's checkout names it, not the
+      // `--repos` directory on the runner that its fetch read.
+      const remote = Bun.spawnSync(["git", "remote", "-v"], {
+        cwd: path.join(checkouts, commit),
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: base.dir },
+      });
+      expect({ code: remote.exitCode, text: remote.stdout.toString() }).toEqual({
+        code: 0,
+        text: "origin\thttps://github.com/acme/proj.git (fetch)\norigin\thttps://github.com/acme/proj.git (push)\n",
+      });
+    },
+    120_000
+  );
 
   // Catches: a jj command of a written case whose context session ran jj answered with an error
   // that session never saw (the copy no jj repository; the defect: the screen looked for a jj call
@@ -5558,121 +5625,228 @@ describe("behaviour: a replay's reads of skill files", () => {
   // that ran none answered as in a jj workspace, a checkout made again to add jj, an answer that
   // names the cache's copy in place of the session's paths, or a jj answer that takes the working
   // copy's lock, which answers at once race on.
-  test("the shared checkout is made a colocated jj repository once a written case whose checkout records that its context session ran jj needs it, recorded in its marker and that case's stage; jj, git and pwd answer at the session's paths, and no answer names the copy", async () => {
-    const base = scenario("checkout-jj", LOSS_SKILL(), [{ id: "c04" }]);
-    const guide = "# Guide\n\nRun the app.\n";
-    const { repos, commit } = gitRepository(base.dir, { "docs/guide.md": guide });
-    const root = "/work/acme/proj";
-    const checkout = { repo: "acme/proj", commit, root, cwd: root };
-    // w00's context session ran no jj; w01's did, as the written build records it on the case.
-    const written = [
-      { ...makeWrittenCase("w00"), checkout: { ...checkout, jj: false } },
-      { ...makeWrittenCase("w01"), checkout: { ...checkout, jj: true } },
-    ];
-    const cases = [...base.cases, ...written];
-    writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
-    const markers = new Map([...base.markers, ["w00", ""] as const, ["w01", ""] as const]);
-    const s = { ...base, cases, markers };
-    recordCaptures(s, ["old", "new", "none"]);
-    // Each run looks where it is as the dev box's sessions do, then acts.
-    const where = `cd ${root} && unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM ACME_TOOLS_PIN && pwd && (jj root 2>/dev/null || git rev-parse --show-toplevel) && git worktree list`;
-    const answered: { id: string; texts: string[]; errors: boolean[] }[] = [];
-    let calls = 0;
-    answer = (body) => {
-      if (isJudgement(body)) return behaviourStandIn(body);
-      const last = (body.messages as { content: unknown }[]).at(-1)?.content;
-      const results = Array.isArray(last)
-        ? last.filter((block) => String(block?.tool_use_id).startsWith("toolu_where_"))
-        : [];
-      if (results.length > 0) {
-        answered.push({
-          id: JSON.stringify(body).match(/Case (w0\d)/)?.[1] ?? "",
-          texts: results.map((block) =>
-            block.content[0].text.replace(/\n\nWall time: \d+\.\d\d seconds/g, "")
-          ),
-          errors: results.map((block) => block.is_error === true),
-        });
-        return behaviourStandIn(body);
-      }
-      calls += 1;
-      const call = (n: number, command: string) => ({
-        type: "tool_use" as const,
-        id: `toolu_where_${calls}_${n}`,
-        name: "bash",
-        input: { command },
-      });
-      return sseResponse(
-        messageSse({
-          id: `msg_where_${calls}`,
-          model: "claude-sonnet-5-5",
-          content: [call(1, where), call(2, "jj st")],
-          stopReason: "tool_use",
-        })
-      );
-    };
-    const cache = path.join(s.dir, "cache");
-    const ran = await cli(behaviour("screen", s, "--repos", repos));
-    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
-    const checkouts = path.join(cache, "checkouts", "acme", "proj");
-    // Made once by w00, with no jj; made a colocated jj repository once, for w01.
-    const said = ran.stdout
-      .split("\n")
-      .filter((line) => line.includes("the checkout of acme/proj"));
-    expect(said).toEqual([
-      expect.stringContaining("(git, its history 50 commits deep; no symbolic link leaves it)"),
-      expect.stringContaining(
-        `the checkout of acme/proj at ${commit} is made a colocated jj repository in `
-      ),
-    ]);
-    expect(readdirSync(checkouts).sort()).toEqual([commit, `${commit}.ready.json`]);
-    expect(
-      JSON.parse(readFileSync(path.join(checkouts, `${commit}.ready.json`), "utf8"))
-    ).toMatchObject({ git: true, jj: true });
-    const plain = { git: true, depth: 50, removedLinks: [] };
-    expect(result(s.out, "w00").stages.screen?.checkout).toEqual(plain);
-    expect(result(s.out, "w01").stages.screen?.checkout).toEqual({ ...plain, jj: true });
-    const shape = new RegExp(`^${root}\\n${root}\\n${root} +[0-9a-f]{7,} \\(detached HEAD\\)\\n$`);
-    for (const id of ["w00", "w01"]) {
-      const mine = answered.filter((each) => each.id === id);
-      expect(mine.length).toBeGreaterThan(0);
-      for (const { texts, errors } of mine) {
-        expect(texts[0]).toMatch(shape);
-        if (id === "w00") {
-          expect({ text: texts[1]?.split("\n")[0], error: errors[1] }).toEqual({
-            text: 'Error: There is no jj repo in "."',
-            error: true,
+  pinned.test(
+    "the shared checkout is made a colocated jj repository once a written case whose checkout records that its context session ran jj needs it, recorded in its marker and that case's stage; jj, git and pwd answer at the session's paths, and no answer names the copy",
+    async () => {
+      const base = scenario("checkout-jj", LOSS_SKILL(), [{ id: "c04" }]);
+      const guide = "# Guide\n\nRun the app.\n";
+      const { repos, commit } = gitRepository(base.dir, { "docs/guide.md": guide });
+      const root = "/work/acme/proj";
+      const checkout = { repo: "acme/proj", commit, root, cwd: root, bashGate: BASH_GATE };
+      // w00's context session ran no jj; w01's did, as the written build records it on the case.
+      const written = [
+        { ...makeWrittenCase("w00"), checkout: { ...checkout, jj: false } },
+        { ...makeWrittenCase("w01"), checkout: { ...checkout, jj: true } },
+      ];
+      const cases = [...base.cases, ...written];
+      writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+      const markers = new Map([...base.markers, ["w00", ""] as const, ["w01", ""] as const]);
+      const s = { ...base, cases, markers };
+      recordCaptures(s, ["old", "new", "none"]);
+      // Each run looks where it is as the dev box's sessions do, then acts.
+      const where = `cd ${root} && unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM ACME_TOOLS_PIN && pwd && (jj root 2>/dev/null || git rev-parse --show-toplevel) && git worktree list`;
+      const answered: { id: string; texts: string[]; errors: boolean[] }[] = [];
+      let calls = 0;
+      answer = (body) => {
+        if (isJudgement(body)) return behaviourStandIn(body);
+        const last = (body.messages as { content: unknown }[]).at(-1)?.content;
+        const results = Array.isArray(last)
+          ? last.filter((block) => String(block?.tool_use_id).startsWith("toolu_where_"))
+          : [];
+        if (results.length > 0) {
+          answered.push({
+            id: JSON.stringify(body).match(/Case (w0\d)/)?.[1] ?? "",
+            texts: results.map((block) =>
+              block.content[0].text.replace(/\n\nWall time: \d+\.\d\d seconds/g, "")
+            ),
+            errors: results.map((block) => block.is_error === true),
           });
-        } else {
-          expect(texts[1]).toContain("The working copy has no changes.");
-          expect(texts[1]).toContain("Add the guide");
+          return behaviourStandIn(body);
+        }
+        calls += 1;
+        const call = (n: number, command: string) => ({
+          type: "tool_use" as const,
+          id: `toolu_where_${calls}_${n}`,
+          name: "bash",
+          input: { command },
+        });
+        return sseResponse(
+          messageSse({
+            id: `msg_where_${calls}`,
+            model: "claude-sonnet-5-5",
+            content: [call(1, where), call(2, "jj st")],
+            stopReason: "tool_use",
+          })
+        );
+      };
+      const cache = path.join(s.dir, "cache");
+      const ran = await cli(behaviour("screen", s, "--repos", repos));
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      const checkouts = path.join(cache, "checkouts", "acme", "proj");
+      // Made once by w00, with no jj; made a colocated jj repository once, for w01.
+      const said = ran.stdout
+        .split("\n")
+        .filter((line) => line.includes("the checkout of acme/proj"));
+      expect(said).toEqual([
+        expect.stringContaining("(git, its history 50 commits deep; no symbolic link leaves it)"),
+        expect.stringContaining(
+          `the checkout of acme/proj at ${commit} is made a colocated jj repository in `
+        ),
+      ]);
+      expect(readdirSync(checkouts).sort()).toEqual([commit, `${commit}.ready.json`]);
+      expect(
+        JSON.parse(readFileSync(path.join(checkouts, `${commit}.ready.json`), "utf8"))
+      ).toMatchObject({ git: true, jj: true });
+      const plain = { git: true, depth: 50, removedLinks: [], shell: STAGE_SHELL };
+      expect(result(s.out, "w00").stages.screen?.checkout).toEqual(plain);
+      expect(result(s.out, "w01").stages.screen?.checkout).toEqual({ ...plain, jj: true });
+      const shape = new RegExp(
+        `^${root}\\n${root}\\n${root} +[0-9a-f]{7,} \\(detached HEAD\\)\\n$`
+      );
+      for (const id of ["w00", "w01"]) {
+        const mine = answered.filter((each) => each.id === id);
+        expect(mine.length).toBeGreaterThan(0);
+        for (const { texts, errors } of mine) {
+          expect(texts[0]).toMatch(shape);
+          if (id === "w00") {
+            expect({ text: texts[1]?.split("\n")[0], error: errors[1] }).toEqual({
+              text: 'Error: There is no jj repo in "."',
+              error: true,
+            });
+          } else {
+            expect(texts[1]).toContain("The working copy has no changes.");
+            expect(texts[1]).toContain("Add the guide");
+          }
         }
       }
-    }
-    expect(JSON.stringify(answered)).not.toContain(cache);
-    for (const id of ["w00", "w01"]) {
-      for (const run of result(s.out, id).stages.screen?.runs ?? []) {
-        expect({ rounds: run.checkoutRounds, unanswered: run.unanswered }).toEqual({
-          rounds: 1,
-          unanswered: undefined,
-        });
+      expect(JSON.stringify(answered)).not.toContain(cache);
+      for (const id of ["w00", "w01"]) {
+        for (const run of result(s.out, id).stages.screen?.runs ?? []) {
+          expect({ rounds: run.checkoutRounds, unanswered: run.unanswered }).toEqual({
+            rounds: 1,
+            unanswered: undefined,
+          });
+        }
       }
-    }
-  }, 180_000);
+    },
+    180_000
+  );
 
   // Catches: a model-written call of a written case's run that reads a file outside its checkout
   // copy (a key file of the pod) through a symbolic link the repository holds, so its text reaches
   // the model and the run records posted on Dispatch; or a half-made checkout, left by a run that
   // was killed, used as it is.
-  test("a written case's copy holds no symbolic link that resolves outside it: cat, grep -R and read of the repository's link to a secret outside never show it, and the stage records the link removed; a half-made checkout of a dead run is made again", async () => {
-    const base = scenario("checkout-links", LOSS_SKILL(), [{ id: "c04" }]);
-    const secret = fixtureSecret("podkey");
-    const outside = path.join(base.dir, "outside-key.txt");
-    writeFileSync(outside, `${secret}\n`);
-    const { repos, commit } = gitRepository(
-      base.dir,
-      { "docs/guide.md": "# Guide\n\nRun the app.\n" },
-      { links: { "leak.txt": outside } }
-    );
+  pinned.test(
+    "a written case's copy holds no symbolic link that resolves outside it: cat and grep -R after a leading ls, which the bash gate's arm on lets run, and read of the repository's link to a secret outside never show it, and the stage records the link removed; a half-made checkout of a dead run is made again",
+    async () => {
+      const base = scenario("checkout-links", LOSS_SKILL(), [{ id: "c04" }]);
+      const secret = fixtureSecret("podkey");
+      const outside = path.join(base.dir, "outside-key.txt");
+      writeFileSync(outside, `${secret}\n`);
+      const { repos, commit } = gitRepository(
+        base.dir,
+        { "docs/guide.md": "# Guide\n\nRun the app.\n" },
+        { links: { "leak.txt": outside } }
+      );
+      const written: Case = {
+        ...makeWrittenCase("w00"),
+        checkout: {
+          repo: "acme/proj",
+          commit,
+          root: "/work/acme/proj",
+          cwd: "/work/acme/proj",
+          bashGate: BASH_GATE,
+        },
+      };
+      const cases = [...base.cases, written];
+      writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+      const s = { ...base, cases, markers: new Map([...base.markers, ["w00", ""] as const]) };
+      recordCaptures(s, ["old", "new", "none"]);
+      // A run that died making the checkout: its lock names a process that runs no more, and its
+      // half-made checkout holds a file the commit does not.
+      const checkouts = path.join(s.dir, "cache", "checkouts", "acme", "proj");
+      mkdirSync(path.join(checkouts, commit), { recursive: true });
+      writeFileSync(path.join(checkouts, commit, "half.txt"), "half-made\n");
+      const dead = Bun.spawnSync(["true"]).pid;
+      writeFileSync(path.join(checkouts, `${commit}.lock`), `${dead}\n`);
+      const answered: string[] = [];
+      let calls = 0;
+      answer = (body) => {
+        if (isJudgement(body)) return behaviourStandIn(body);
+        const last = (body.messages as { content: unknown }[]).at(-1)?.content;
+        const results = Array.isArray(last)
+          ? last.filter((block) => String(block?.tool_use_id).startsWith("toolu_leak_"))
+          : [];
+        if (results.length > 0) {
+          answered.push(...results.map((block) => block.content[0].text));
+          return behaviourStandIn(body);
+        }
+        calls += 1;
+        const call = (n: number, name: string, input: Record<string, unknown>) => ({
+          type: "tool_use" as const,
+          id: `toolu_leak_${calls}_${n}`,
+          name,
+          input,
+        });
+        return sseResponse(
+          messageSse({
+            id: `msg_leak_${calls}`,
+            model: "claude-sonnet-5-5",
+            content: [
+              call(1, "read", { path: "leak.txt" }),
+              call(2, "bash", { command: "ls; cat leak.txt" }),
+              call(3, "bash", { command: `ls; grep -R ${secret.slice(0, 12)} .` }),
+            ],
+            stopReason: "tool_use",
+          })
+        );
+      };
+      const ran = await cli(behaviour("screen", s, "--repos", repos));
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(ran.stdout).toContain(
+        "(git, its history 50 commits deep; 1 symbolic links that leave it removed: leak.txt)"
+      );
+      expect(ran.stdout).toContain(
+        `the checkout ${path.join(checkouts, commit)} is half-made by process ${dead}, which holds it no more: it is made again`
+      );
+      expect(readdirSync(checkouts).sort()).toEqual([commit, `${commit}.ready.json`]);
+      expect(existsSync(path.join(checkouts, commit, "half.txt"))).toBe(false);
+      const stage = result(s.out, "w00").stages.screen;
+      expect(stage?.checkout).toEqual({
+        git: true,
+        depth: 50,
+        removedLinks: ["leak.txt"],
+        shell: STAGE_SHELL,
+      });
+      for (const run of stage?.runs ?? []) {
+        expect({ rounds: run.checkoutRounds, unanswered: run.unanswered }).toEqual({
+          rounds: 1,
+          unanswered: undefined,
+        });
+      }
+      expect(answered.length).toBeGreaterThan(0);
+      expect(
+        new Set(answered.map((text) => text.replace(/\n\nWall time: \d+\.\d\d seconds/g, "")))
+      ).toEqual(
+        new Set([
+          "Path 'leak.txt' not found",
+          "docs\ncat: leak.txt: No such file or directory\n\n\nCommand exited with code 1",
+          "docs\n\n\nCommand exited with code 1",
+        ])
+      );
+      expect(answered.join("\n")).not.toContain(secret);
+      expect(readFileSync(caseResultFile(s.out, "w00"), "utf8")).not.toContain(secret);
+    },
+    120_000
+  );
+
+  // Catches: a written case whose profile names no commit of the dotfiles repository, so the
+  // runner knows no shell prefix its context session ran with, answered in a shell of the runner's
+  // guess (the pin's default, no prefix); or such a refusal that does not say why, or a stage that
+  // does not record it.
+  test("a written case whose profile names no commit of the configuration's dotfiles repository answers none of its bash calls: its runs get no verdict as unanswered-read, saying so, and its stage records why", async () => {
+    const base = scenario("checkout-no-dotfiles", LOSS_SKILL(), [{ id: "c04" }]);
+    const { repos, commit } = gitRepository(base.dir, { "docs/guide.md": "# Guide\n" });
     const written: Case = {
       ...makeWrittenCase("w00"),
       checkout: { repo: "acme/proj", commit, root: "/work/acme/proj", cwd: "/work/acme/proj" },
@@ -5681,40 +5855,97 @@ describe("behaviour: a replay's reads of skill files", () => {
     writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
     const s = { ...base, cases, markers: new Map([...base.markers, ["w00", ""] as const]) };
     recordCaptures(s, ["old", "new", "none"]);
-    // A run that died making the checkout: its lock names a process that runs no more, and its
-    // half-made checkout holds a file the commit does not.
-    const checkouts = path.join(s.dir, "cache", "checkouts", "acme", "proj");
-    mkdirSync(path.join(checkouts, commit), { recursive: true });
-    writeFileSync(path.join(checkouts, commit, "half.txt"), "half-made\n");
-    const dead = Bun.spawnSync(["true"]).pid;
-    writeFileSync(path.join(checkouts, `${commit}.lock`), `${dead}\n`);
-    const answered: string[] = [];
-    let calls = 0;
+    // w00's first two runs list the checkout; each later one acts.
+    let looks = 0;
     answer = (body) => {
-      if (isJudgement(body)) return behaviourStandIn(body);
-      const last = (body.messages as { content: unknown }[]).at(-1)?.content;
-      const results = Array.isArray(last)
-        ? last.filter((block) => String(block?.tool_use_id).startsWith("toolu_leak_"))
-        : [];
-      if (results.length > 0) {
-        answered.push(...results.map((block) => block.content[0].text));
+      if (isJudgement(body) || !JSON.stringify(body.messages).includes("Case w00")) {
         return behaviourStandIn(body);
       }
-      calls += 1;
-      const call = (n: number, name: string, input: Record<string, unknown>) => ({
-        type: "tool_use" as const,
-        id: `toolu_leak_${calls}_${n}`,
-        name,
-        input,
-      });
+      const last = (body.messages as { content: unknown }[]).at(-1)?.content;
+      if (Array.isArray(last) && last.some((block) => block?.type === "tool_result")) {
+        return behaviourStandIn(body);
+      }
+      looks += 1;
+      if (looks > 2) return behaviourStandIn(body);
       return sseResponse(
         messageSse({
-          id: `msg_leak_${calls}`,
+          id: `msg_ls_${looks}`,
           model: "claude-sonnet-5-5",
           content: [
-            call(1, "read", { path: "leak.txt" }),
-            call(2, "bash", { command: "cat leak.txt" }),
-            call(3, "bash", { command: `grep -R ${secret.slice(0, 12)} .` }),
+            { type: "tool_use", id: `toolu_ls_${looks}`, name: "bash", input: { command: "ls" } },
+          ],
+          stopReason: "tool_use",
+        })
+      );
+    };
+    // The configuration names a dotfiles repository the case's profile names no skill of.
+    const args = behaviour("screen", s, "--repos", repos);
+    const config = path.join(s.dir, "skill-cuts-other-dotfiles.json");
+    const given = JSON.parse(readFileSync(args[args.indexOf("--config") + 1] ?? "", "utf8"));
+    writeFileSync(config, JSON.stringify({ ...given, dotfilesRepo: "acme/dotfiles" }));
+    args[args.indexOf("--config") + 1] = config;
+    const ran = await cli(args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const why =
+      "the case's profile names no commit of acme/dotfiles (no skill of it), whose shims/omp gives the PI_SHELL_PREFIX the session's Oh My Pi ran its bash calls with";
+    const stage = result(s.out, "w00").stages.screen;
+    expect(stage?.checkout?.shell).toEqual({ why });
+    const runs = stage?.runs ?? [];
+    expect(runs).toHaveLength(3 * SCREEN_RUNS + 2);
+    expect(runs.filter((run) => run.verdict === null).map((run) => run.reason)).toEqual([
+      `${UNANSWERED_READ}: bash {"command":"ls"}: ${why}`,
+      `${UNANSWERED_READ}: bash {"command":"ls"}: ${why}`,
+    ]);
+  }, 120_000);
+
+  // Catches: a written case whose checkout's repository knives trusts answered without the blocks
+  // knives would add to the first result that touches it, where the runner has none of them (its
+  // context session never touched it); or one refused where that session touched it and knives
+  // gave it none, so a run gets none either.
+  test("a written case whose checkout's repository the dotfiles' knives registry trusts: where its context session touched the repository and got no block, a run's read of it is answered with none; where that session never touched it, the read gets no verdict as unanswered-read, saying why", async () => {
+    const base = scenario("checkout-knives", LOSS_SKILL(), [{ id: "c04" }]);
+    const { repos, commit } = gitRepository(
+      base.dir,
+      { "docs/guide.md": "# Guide\n" },
+      { dotfiles: { "knives/repos.toml": '[trust]\nowners = ["acme"]\n' } }
+    );
+    const checkout = { repo: "acme/proj", commit, root: "/work/acme/proj", cwd: "/work/acme/proj" };
+    const written = (id: string, touched: boolean): Case => ({
+      ...makeWrittenCase(id),
+      checkout: { ...checkout, knives: { blocks: null, touched } },
+    });
+    const cases = [...base.cases, written("w00", true), written("w01", false)];
+    writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+    const s = {
+      ...base,
+      cases,
+      markers: new Map([...base.markers, ["w00", ""] as const, ["w01", ""] as const]),
+    };
+    recordCaptures(s, ["old", "new", "none"]);
+    // Each written case's first two runs read the guide; each later one acts.
+    const looks = new Map<string, number>();
+    answer = (body) => {
+      const sent = JSON.stringify(body.messages);
+      const id = ["w00", "w01"].find((each) => sent.includes(`Case ${each}`));
+      if (isJudgement(body) || id === undefined) return behaviourStandIn(body);
+      const last = (body.messages as { content: unknown }[]).at(-1)?.content;
+      if (Array.isArray(last) && last.some((block) => block?.type === "tool_result")) {
+        return behaviourStandIn(body);
+      }
+      const n = (looks.get(id) ?? 0) + 1;
+      looks.set(id, n);
+      if (n > 2) return behaviourStandIn(body);
+      return sseResponse(
+        messageSse({
+          id: `msg_guide_${id}_${n}`,
+          model: "claude-sonnet-5-5",
+          content: [
+            {
+              type: "tool_use",
+              id: `toolu_guide_${n}`,
+              name: "read",
+              input: { path: "docs/guide.md" },
+            },
           ],
           stopReason: "tool_use",
         })
@@ -5722,34 +5953,16 @@ describe("behaviour: a replay's reads of skill files", () => {
     };
     const ran = await cli(behaviour("screen", s, "--repos", repos));
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
-    expect(ran.stdout).toContain(
-      "(git, its history 50 commits deep; 1 symbolic links that leave it removed: leak.txt)"
-    );
-    expect(ran.stdout).toContain(
-      `the checkout ${path.join(checkouts, commit)} is half-made by process ${dead}, which holds it no more: it is made again`
-    );
-    expect(readdirSync(checkouts).sort()).toEqual([commit, `${commit}.ready.json`]);
-    expect(existsSync(path.join(checkouts, commit, "half.txt"))).toBe(false);
-    const stage = result(s.out, "w00").stages.screen;
-    expect(stage?.checkout).toEqual({ git: true, depth: 50, removedLinks: ["leak.txt"] });
-    for (const run of stage?.runs ?? []) {
-      expect({ rounds: run.checkoutRounds, unanswered: run.unanswered }).toEqual({
-        rounds: 1,
-        unanswered: undefined,
-      });
-    }
-    expect(answered.length).toBeGreaterThan(0);
-    expect(
-      new Set(answered.map((text) => text.replace(/\n\nWall time: \d+\.\d\d seconds/g, "")))
-    ).toEqual(
-      new Set([
-        "Path 'leak.txt' not found",
-        "cat: leak.txt: No such file or directory\n\n\nCommand exited with code 1",
-        "(no output)\n\nCommand exited with code 1",
-      ])
-    );
-    expect(answered.join("\n")).not.toContain(secret);
-    expect(readFileSync(caseResultFile(s.out, "w00"), "utf8")).not.toContain(secret);
+    const touched = result(s.out, "w00").stages.screen?.runs ?? [];
+    expect(touched.filter((run) => run.verdict === null)).toEqual([]);
+    expect(touched.filter((run) => run.checkoutRounds === 1)).toHaveLength(2);
+    const why = `the call touches acme/proj: knives trusts it (knives/repos.toml at ${DOTFILES.repo}@${DOTFILES.commit}, its [trust]), and the case's context session never touched it, so the runner has none of the blocks knives adds to the first result of a session that touches it`;
+    const untouched = result(s.out, "w01").stages.screen?.runs ?? [];
+    expect(untouched).toHaveLength(3 * SCREEN_RUNS + 2);
+    expect(untouched.filter((run) => run.verdict === null).map((run) => run.reason)).toEqual([
+      `${UNANSWERED_READ}: read {"path":"docs/guide.md"}: ${why}`,
+      `${UNANSWERED_READ}: read {"path":"docs/guide.md"}: ${why}`,
+    ]);
   }, 120_000);
 
   // Catches: a written case judged on a reply one of whose read-only calls its checkout answers in

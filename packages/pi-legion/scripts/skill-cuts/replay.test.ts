@@ -1814,6 +1814,67 @@ test("a written case's reply whose calls all read, where the case has no checkou
   expect(judged.step.message.content).toEqual([brief, WRITE_ACT]);
 });
 
+/** knives' blocks of the made-up checkout's repository as a context session got them: a notice and
+ *  a guidance block of one addition (shaped as knives v3.2.3 src/hook/guidance.rs gives them). */
+const KNIVES_BLOCKS = `\n\n<knives-notice-cd34 repo="proj" digest="0f0f">\n${SESSION_ROOT} is a fork managed by knives, and another agent may be working in it.\nNo branch is claimed here right now.\n</knives-notice-cd34>\n\n<knives-guidance-cd34 repo="proj">\nRun the tests.\n</knives-guidance-cd34>`;
+
+// Catches: a skill read the replay answers itself left without knives' blocks, though knives reads
+// its `skill://` path against the session's working directory, inside the checkout, and so adds
+// them to it as the first result of the session that touches the repository; the blocks given
+// again to a later answer of the run; or a skill read answered where the runner has no blocks of a
+// repository knives may give some.
+test("in a written case whose checkout's repository knives gives blocks, a reply's skill:// read is the run's first answer that touches it: the blocks the context session got follow its answer as a text block of their own, and a later read of the checkout gets none; where the runner has none, the skill read gets no verdict, as unanswered-read", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const skill = readCall("toolu_skill", "skill://alpha/references/x.md");
+  const guide = INSPECTION[0] as ContentBlock;
+  const copy = { ...checkoutCopy(), knives: { name: "acme/proj", blocks: KNIVES_BLOCKS } };
+  const { gateway, bodies } = scripted([[skill], [guide], [WRITE_ACT]]);
+  const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, { checkout: copy });
+  expect(bodies).toHaveLength(3);
+  expect(bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [
+      {
+        type: "tool_result",
+        tool_use_id: "toolu_skill",
+        content: [
+          {
+            type: "text",
+            text: `[Skill file: ${INSTALLED}/references/x.md]\n${X_MD.replace(/\n$/, "")}`,
+          },
+          { type: "text", text: KNIVES_BLOCKS },
+        ],
+        is_error: false,
+      },
+    ],
+  });
+  expect(bodies[2]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [
+      toolResult(
+        "toolu_read",
+        `[docs/guide.md#${snapshotTag(GUIDE_MD)}]\n1:# Guide\n2:\n3:Run the app.`,
+        false
+      ),
+    ],
+  });
+  expect(replayed.step.message.content).toEqual([skill, guide, WRITE_ACT]);
+  const lacking = {
+    ...checkoutCopy(),
+    knives: { name: "acme/proj", blocks: { why: "its context session never touched it" } },
+  };
+  const failed = await replayOnce({ ...BODY, stream: false }, arm, scripted([[skill]]).gateway, {
+    checkout: lacking,
+  }).then(
+    () => "judged",
+    (error: unknown) => error
+  );
+  if (!(failed instanceof UnansweredRead)) throw new Error(`not refused: ${String(failed)}`);
+  expect(failed.message).toBe(
+    `${UNANSWERED_READ}: read {"path":"skill://alpha/references/x.md"}: the call touches acme/proj: its context session never touched it`
+  );
+});
+
 // Catches: a session case's reply answered from a checkout, which a session case has none of.
 test("a session case's reply whose calls all read files of the project is the judged step: no checkout answers it", async () => {
   const { gateway, bodies } = scripted([INSPECTION, [WRITE_ACT]]);

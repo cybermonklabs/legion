@@ -470,20 +470,28 @@
  * names (capture.ts's `sessionHeads`: session-head.sql through the store command, one query per
  * store, each head saved under `<out>.sessions/`), at the time the profile is read: its root's
  * prompt builds (digest-times.sql, one query per store), with a top-level case's step's message
- * time and digest (TOP_BUILD_RULE). It pulls no transcript and calls no reader. For
+ * time and digest (TOP_BUILD_RULE). It calls no reader, and pulls only a written case's context
+ * session (below). For
  * a case whose session the store no longer holds, the evidence says so (`no session head`), and
  * the session repository is the one the old case's evidence names (`session repository <repo>`,
  * or `no session repository`); a case built before that evidence was written is taken to be in
  * the workspace of the repository whose `AGENTS.md` the old profile holds, and one whose old
  * profile holds none keeps its old evidence of why.
  * The new file's cases differ from the old ones only in `profile` (its skills, plugins and context
- * files; a recorded prompt and its tools stay) and in the profile's part of `evidence`.
+ * files; a recorded prompt and its tools stay), in the profile's part of `evidence`, and in a
+ * written case's `checkout.bashGate` and `checkout.knives`.
  * `<out>.summary.json` lists, per case, the skills added and removed, and the GitHub reads sent
  * again after a transient failure by reason (`githubRetries`). A case whose profile cannot be
  * built, or no longer installs the skill of the repository of its `cut` (a cut or a set of the
  * configuration, `cutOrSet`), is left out and named, and the command exits 1.
  * A written case (`--written`) keeps its `source` (its `kind` among it) and its written case's
  * evidence, and its profile is built again from the context session's reads its evidence names.
+ * Its checkout's `bashGate` and `knives` are read again from its context session as a written
+ * build reads them (`reprofiledRecords`: its transcript, found by its path hash through
+ * session-paths.sql and pulled into `<out>.spool/` as the build pulls it), the rest of its
+ * checkout kept; where they cannot be read (its store holds the session's file no longer, among
+ * other reasons) the checkout is kept as it was, and its line and the summary's `checkoutRecords`
+ * say why (`read` where they were read).
  *
  * **build-cases --written <n>** writes up to n written cases of one skill, each a written task in
  * the context of a recorded session (`buildWrittenCases`, `chooseContext`, `writtenContext`;
@@ -736,7 +744,13 @@ import {
   textLines,
   URL_TARGET,
 } from "./cases";
-import { bashFileReads, messagesRunJj } from "./checkout";
+import {
+  bashFileReads,
+  gateRefusalVersions,
+  KNIVES_TOOLS,
+  knivesTouches,
+  messagesRunJj,
+} from "./checkout";
 import {
   bytesAt,
   commandRetries,
@@ -8503,7 +8517,13 @@ function contextReads(evidence: readonly Evidence[]): ShownRead[] | undefined {
  * of the skill, which its messages do not hold; its evidence names each (CONTEXT_READ), and its
  * profile is built from those. Only `profile` (its skills, plugins and context files) and the
  * profile's part of `evidence` change; `source` (its kind among it) and the written case's own
- * evidence stay.
+ * evidence stay. A written case's checkout also takes its `bashGate` and `knives` read again from
+ * its context session, as a written build reads them (`reprofiledRecords`: its transcript pulled
+ * into `<out>.spool/` as the build pulls it, the records at its first read of the skill), with no
+ * reader and no model call, the rest of its checkout as it was; where they cannot be read (the
+ * store holds the session's file no longer, the pull returns no row, the transcript holds no read
+ * of the skill a case is built from) it keeps its checkout as it was and says why, on its line
+ * and in the summary's `checkoutRecords` (`read` where they were read).
  * A case whose profile cannot be built, or no longer installs its skill, is left out and named,
  * and the command fails; a read of the heads that fails fails it too.
  */
@@ -8534,7 +8554,7 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
   ] as const) {
     if (values[flag] !== undefined) {
       throw new Refused(
-        `--reprofile pulls no session and calls no reader, so it takes no --${flag}`
+        `--reprofile searches no session and calls no reader, so it takes no --${flag}`
       );
     }
   }
@@ -8624,6 +8644,10 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
   const records: Record<string, unknown>[] = [];
   const measures: (ListingMeasure | undefined)[] = [];
   const leftOut: { id: string; why: string }[] = [];
+  // The checkout records of the written cases (`reprofiledRecords`), read again from each context
+  // session once, its transcript pulled into the spool as a written build pulls it.
+  const checkoutReads = new Map<string, Promise<CheckoutRecords | { readonly why: string }>>();
+  let spools: string | undefined;
   for (const c of cases) {
     const leave = (why: string) => {
       leftOut.push({ id: c.id, why });
@@ -8773,7 +8797,48 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
           each.item === EXCLUDED_READS
       ),
     ];
-    const built = Case.parse({ ...c, profile: { ...c.profile, ...profiled.profile }, evidence });
+    // A written case's checkout: its bash gate and knives records read again from its context
+    // session, everything else of it as it was; as it was where they cannot be read.
+    let checkout = c.checkout;
+    let checkoutRecordsRead: string | undefined;
+    if (c.source.kind === "written" && c.checkout !== undefined) {
+      const was = c.checkout;
+      const got =
+        transcriptPath === undefined
+          ? {
+              why: `the store ${store.name} holds no file of its context session now (session-paths.sql)`,
+            }
+          : await readOnce(checkoutReads, `${store.name}\0${c.source.pathHash}`, () => {
+              spools ??= spoolDir(given.out, io);
+              const spool = path.join(spools, `context-${checkoutReads.size}.jsonl`);
+              return reprofiledRecords(
+                config.psqlCommand,
+                placing,
+                store.name,
+                cut.repo,
+                c,
+                was,
+                transcriptPath,
+                spool
+              );
+            });
+      if ("why" in got) {
+        checkoutRecordsRead = got.why;
+        io.out(
+          `build-cases: ${c.id}: its checkout's bash gate and knives records are kept as they were: ${got.why}\n`
+        );
+      } else {
+        // Each record the session gives none of is taken out, as a fresh build writes none.
+        checkout = { ...was, bashGate: undefined, knives: undefined, ...got };
+        checkoutRecordsRead = "read";
+      }
+    }
+    const built = Case.parse({
+      ...c,
+      profile: { ...c.profile, ...profiled.profile },
+      evidence,
+      ...(checkout === undefined ? {} : { checkout }),
+    });
     rebuilt.push(built);
     const names = (profile: Profile) => profile.skills.map((skill) => skill.name);
     const before = names(c.profile);
@@ -8789,6 +8854,7 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
       plugins: built.profile.plugins.map((plugin) => plugin.name),
       contextFiles: built.profile.contextFiles.map((file) => `${file.repo} ${file.path}`),
       listing: measure ?? null,
+      ...(checkoutRecordsRead === undefined ? {} : { checkoutRecords: checkoutRecordsRead }),
     });
     io.out(
       `build-cases: ${c.id}: profile of ${after.length} skills (${before.length} before), each in its repository at its commit\n`
@@ -8915,16 +8981,14 @@ async function writtenContext(
       `the context session ${store.name}:${hash} holds no user message with text, whose kind of work the written tasks take`
     );
   }
-  const all = t.items.map((item) => item.slim);
-  const reads = skillReads(all, run.skill);
-  const ompProfile = sessionProfileName(filePath);
-  const placeRead = (copyPath: string) =>
-    run.placer.place(store.name, copyPath, run.skill, ompProfile);
-  const dirs = sessionDirs(header.cwd, filePath);
-  const chosen = firstSkillRead(
+  const { all, ompProfile, placeRead, dirs, chosen } = contextFirstRead(
+    run.placer,
+    store.name,
     run.skill,
-    reads,
-    pathReads(all, run.skill, placeRead, run.cut.repo, dirs)
+    run.cut.repo,
+    t,
+    filePath,
+    header.cwd
   );
   if ("drop" in chosen) return chosen;
   // The directory a written case's reads of the skill show, and, for a first read by path, the
@@ -9005,6 +9069,7 @@ async function writtenContext(
       item.slim.content?.some((block) => block.type === "toolCall" && block.name === "bash") ===
         true && messagesRunJj([t.message(index)])
   );
+  const records = checkoutRecords(t, firstAt, checkout.root, checkout.cwd, dirs.home);
   return {
     store,
     hash,
@@ -9024,7 +9089,11 @@ async function writtenContext(
     profiled,
     digest,
     read,
-    checkout: { ...checkout, jj },
+    checkout: {
+      ...checkout,
+      jj,
+      ...records,
+    },
     listing: {
       listed: listedNames(profiled),
       recorded: rebuilt.init?.systemPrompt,
@@ -9032,6 +9101,210 @@ async function writtenContext(
       ...(build === undefined ? {} : { build }),
     },
   };
+}
+
+/** The first successful read of `skill` in the session of transcript `t`, the file `filePath` of
+ *  the store `store` whose header names the working directory `cwd` (`firstSkillRead`: a
+ *  `skill://` read, or a whole read by path that `placer` places at the cut repository `cutRepo`'s
+ *  copy), with the session's directories (`sessionDirs`) and how a read's copy is placed: a
+ *  written build takes its context session's so (`writtenContext`), and `--reprofile` again
+ *  (`reprofiledRecords`). */
+function contextFirstRead(
+  placer: Placer,
+  store: string,
+  skill: string,
+  cutRepo: string,
+  t: Transcript,
+  filePath: string,
+  cwd: string | undefined
+) {
+  const all = t.items.map((item) => item.slim);
+  const ompProfile = sessionProfileName(filePath);
+  const placeRead = (copyPath: string) => placer.place(store, copyPath, skill, ompProfile);
+  const dirs = sessionDirs(cwd, filePath);
+  const chosen = firstSkillRead(
+    skill,
+    skillReads(all, skill),
+    pathReads(all, skill, placeRead, cutRepo, dirs)
+  );
+  return { all, ompProfile, placeRead, dirs, chosen };
+}
+
+/** What a written case's checkout records of its context session (cases.ts's `checkout.bashGate`,
+ *  absent where it records none, and `checkout.knives`). */
+type CheckoutRecords = Pick<NonNullable<Case["checkout"]>, "bashGate" | "knives">;
+
+/** The CheckoutRecords of the session of transcript `t` whose first read of the skill is at its
+ *  branch's place `at`, the checkout rooted at `root`, the working directory `cwd` and the
+ *  session's home `home`: the bash gate it ran there (`sessionBashGate`) and what knives added for
+ *  the checkout's repository (`sessionKnives`). A written build records them (`writtenContext`),
+ *  and `--reprofile` again (`reprofiledRecords`). */
+function checkoutRecords(
+  t: Transcript,
+  at: number,
+  root: string,
+  cwd: string,
+  home: string | undefined
+): CheckoutRecords {
+  const bashGate = sessionBashGate(t, at);
+  return {
+    ...(bashGate === undefined ? {} : { bashGate }),
+    knives: sessionKnives(t, root, cwd, home),
+  };
+}
+
+/**
+ * The records of written case `c`'s checkout `checkout` that `--reprofile` reads again from its
+ * context session (`checkoutRecords`), as a written build reads them, with no reader and no model
+ * call: the session, the file `filePath` of the store `store`, pulled into `spool` as the build
+ * pulls it (`writtenContext`; the file is removed after), at its first read of the case's skill
+ * (`contextFirstRead`, its reads by path placed by `placer` at the cut repository `cutRepo`'s
+ * copy). Why not: the pull returns no row, or the transcript names no session start or holds no
+ * read of the skill a case is built from; the case then keeps its checkout as it was. A pull that
+ * fails, or a transcript that does not parse, throws.
+ */
+async function reprofiledRecords(
+  psqlCommand: string,
+  placer: Placer,
+  store: string,
+  cutRepo: string,
+  c: Case,
+  checkout: NonNullable<Case["checkout"]>,
+  filePath: string,
+  spool: string
+): Promise<CheckoutRecords | { readonly why: string }> {
+  try {
+    const pulled = await pullTranscript(psqlCommand, store, filePath, spool);
+    if (pulled.bytes === 0) return { why: "the pull of its context session returned no row" };
+    const t = readTranscript(spool);
+    const header = sessionHeader(t);
+    if ("drop" in header) return { why: `its context session: ${header.drop}: ${header.detail}` };
+    const { dirs, chosen } = contextFirstRead(
+      placer,
+      store,
+      c.skill,
+      cutRepo,
+      t,
+      filePath,
+      header.cwd
+    );
+    if ("drop" in chosen) return { why: `its context session: ${chosen.drop}: ${chosen.detail}` };
+    const first = "url" in chosen ? chosen.url : chosen.path;
+    const at = t.items[first.index]?.at ?? 0;
+    return checkoutRecords(t, at, checkout.root, checkout.cwd, dirs.home);
+  } finally {
+    rmSync(spool, { force: true });
+  }
+}
+
+/**
+ * The bash gate of the dotfiles' experiments extension the session of transcript `t` ran, at its
+ * branch's place `at` (the skill's first read; cases.ts's `checkout.bashGate`): `leading`, the arm
+ * of `bash_gate_leading` its last `experiments` entry before `at` records (the extension appends
+ * one at each session start, switch and branch; gates.ts's `resolve`), read whole from the spool;
+ * and `versions`, the gate's versions whose text form matches every refusal of the gate among its
+ * `bash` results before `at` (checkout.ts's `gateRefusalVersions`; absent where there is none).
+ * Undefined where no such entry names the arm (no experiments extension, or one of before the
+ * gate), so the case records none and its runs answer no `bash` call.
+ */
+function sessionBashGate(
+  t: Transcript,
+  at: number
+): { leading: boolean; versions?: string[] } | undefined {
+  const last = t.branch
+    .slice(0, at)
+    .findLastIndex((entry) => entry.type === "custom" && entry.customType === "experiments");
+  const data = last < 0 ? undefined : t.entry(last)?.data;
+  const leading = Object(Object(Object(data).features).bash_gate_leading).on;
+  if (typeof leading !== "boolean") return undefined;
+  let versions: string[] | undefined;
+  for (const [index, item] of t.items.entries()) {
+    if (item.at >= at) break;
+    const { role, toolName, isError } = item.slim;
+    if (role !== "toolResult" || toolName !== "bash" || isError !== true) continue;
+    const text = (t.message(index).content ?? [])
+      .flatMap((block) => (block.type === "text" ? [block.text ?? ""] : []))
+      .join("");
+    const matched = gateRefusalVersions(text);
+    if (matched === undefined) continue;
+    versions = (versions ?? [...matched]).filter((each) => matched.includes(each));
+  }
+  return { leading, ...(versions === undefined ? {} : { versions }) };
+}
+
+/** A notice block of the knives plugin (knives v3.2.3 src/hook/guidance.rs lines 175-201,
+ *  `format_notice`): its nonce, its repository's name and the fork's root, in groups 1 to 3. */
+const KNIVES_NOTICE =
+  /\n\n<knives-notice-([^ >]+) repo="([^"]*)" digest="[^"]*">\n(.*) is a fork managed by knives[\s\S]*?<\/knives-notice-\1>/g;
+/** A guidance block of the knives plugin (guidance.rs lines 106-133, `format_guidance`): its
+ *  nonce and its repository's name, in groups 1 and 2. */
+const KNIVES_GUIDANCE =
+  /\n\n<knives-guidance-([^ >]+) repo="([^"]*)">[\s\S]*?<\/knives-guidance-\1>/g;
+
+/**
+ * What the knives plugin added to the tool results of the session of transcript `t` for the
+ * repository of its checkout rooted at `root` (cases.ts's `checkout.knives`), the session's
+ * working directory `cwd` inside it and its home `home`. `blocks`: its blocks of that repository
+ * in the first addition that held any, byte for byte, each with the two line ends knives puts
+ * before it: the notice whose fork's root holds `cwd` (knives gives one where the repository is a
+ * fork it manages), then the guidance of the repository the session's notices name, else of the
+ * name knives gives a repository it manages not, its root's directory's name, or its parent's for
+ * a root named `default` (knives v3.2.3 src/hook/resolve.rs lines 40-50 and 147-162); null where
+ * it holds none. `touched`: whether a call of the session touched the repository as knives reads
+ * a call's paths (checkout.ts's `knivesTouches`) where knives' hook ran on its result, a call of
+ * one of KNIVES_TOOLS that the bash gate did not refuse (Oh My Pi emits no `tool_result` for a
+ * blocked call), so knives decided its blocks then. knives adds its addition, once per session
+ * per repository, as a text block of its own after such a result (omp/extensions/knives.ts lines
+ * 80-103).
+ */
+function sessionKnives(
+  t: Transcript,
+  root: string,
+  cwd: string,
+  home: string | undefined
+): { blocks: string | null; touched: boolean } {
+  const additions: string[] = [];
+  const refused = new Set<string>();
+  for (const [index, item] of t.items.entries()) {
+    if (item.slim.role !== "toolResult") continue;
+    const message = t.message(index);
+    const texts = (message.content ?? []).flatMap((block) =>
+      block.type === "text" ? [block.text ?? ""] : []
+    );
+    if (message.toolCallId !== undefined && gateRefusalVersions(texts[0] ?? "") !== undefined) {
+      refused.add(message.toolCallId);
+    }
+    additions.push(...texts.filter((text) => text.startsWith("\n\n<knives-")));
+  }
+  const noticeOf = (text: string) =>
+    [...text.matchAll(KNIVES_NOTICE)].find(
+      (found) => insideRoot(found[3] ?? "", cwd) !== undefined
+    );
+  const named = additions.map(noticeOf).find((found) => found !== undefined)?.[2];
+  const last = path.basename(root);
+  const name = named ?? (last === "default" ? path.basename(path.dirname(root)) : last);
+  for (const text of additions) {
+    const notice = noticeOf(text)?.[0] ?? "";
+    const guidance = [...text.matchAll(KNIVES_GUIDANCE)].find((found) => found[2] === name)?.[0];
+    if (notice !== "" || guidance !== undefined) {
+      return { blocks: `${notice}${guidance ?? ""}`, touched: true };
+    }
+  }
+  const touched = t.items.some(
+    (item, index) =>
+      item.slim.content?.some(
+        (block) => block.type === "toolCall" && Object.hasOwn(KNIVES_TOOLS, block.name ?? "")
+      ) === true &&
+      (t.message(index).content ?? []).some(
+        (block) =>
+          block.type === "toolCall" &&
+          Object.hasOwn(KNIVES_TOOLS, block.name ?? "") &&
+          !refused.has(block.id ?? "") &&
+          isObject(block.arguments) &&
+          knivesTouches({ root, cwd, home }, block.arguments) === true
+      )
+  );
+  return { blocks: null, touched };
 }
 
 /** An absolute path a prompt or a message names: a `/`, not `//`, at the start or after a blank, a

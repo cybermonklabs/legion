@@ -1173,6 +1173,33 @@ export function repositoryTree(
   return checkout(new Builds(cacheDir), source, repo, commit);
 }
 
+/** The text of `file` of `repo` at `commit` from `source`, kept once under `cacheDir`
+ *  (`<cacheDir>/files/<key>`, as a context's file is). cli.ts reads a written case's dotfiles
+ *  shell with it (`caseShell`). Throws NoSuchFile where the commit holds no such file. */
+export async function repositoryFile(
+  source: RepoSource,
+  cacheDir: string,
+  repo: string,
+  commit: string,
+  file: string
+): Promise<string> {
+  return (await fileText(new Builds(cacheDir), source, repo, commit, file)).text;
+}
+
+/** The directory `dir` of `repo` at `commit` from `source`, kept once under `cacheDir`
+ *  (`<cacheDir>/dirs/<key>`, as a context's directory is: an empty one where no try can read a
+ *  file under it), and where it is. cli.ts reads a written case's dotfiles extension with it
+ *  (`caseShell`). */
+export function repositoryDirectory(
+  source: RepoSource,
+  cacheDir: string,
+  repo: string,
+  commit: string,
+  dir: string
+): Promise<string> {
+  return repoDirectory(new Builds(cacheDir), source, repo, commit, dir);
+}
+
 /** A plugin's `package.json`, as far as the build reads it. */
 interface Manifest {
   files?: unknown;

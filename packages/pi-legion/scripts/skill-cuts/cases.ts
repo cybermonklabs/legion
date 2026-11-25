@@ -156,14 +156,28 @@ const AbsoluteDir = z
  * context session's working directory is in a checkout of a repository the build found (build.ts's
  * `sessionRepository`), is that checkout: `repo`, the repository, `commit`, the commit its project
  * was read at (the profile's `sessionRepository`), `root`, the checkout's directory on the
- * session's machine, `cwd`, the session's working directory, inside `root`, and `jj`, whether the
+ * session's machine, `cwd`, the session's working directory, inside `root`, `jj`, whether the
  * context session ran jj (a `bash` call of its transcript whose command holds the word `jj`,
  * checkout.ts's `messagesRunJj`), so its checkout was a jj workspace (absent on a case written
- * before it was recorded). A run of the case answers a reply's read-only calls from a copy of
- * `repo` at `commit` (replay.ts), its paths mapped between `root` and the copy, a colocated jj
- * repository where `jj` (cli.ts). A case with none gets no such answers, and a written case's run
- * with none gets no verdict on a reply whose calls all read, one of them other than a skill read
- * (replay.ts's UnansweredRead, its why cli.ts's NO_CHECKOUT): the run is made again.
+ * before it was recorded), and `bashGate`, the bash gate of the dotfiles' experiments extension
+ * that session ran (build.ts's `sessionBashGate`): `leading`, its arm of `bash_gate_leading` in
+ * its last `experiments` entry before the skill's first read, and `versions`, the versions of the
+ * gate (checkout.ts's BASH_GATE_COMMITS) whose text form matches every refusal of the gate it
+ * got before that read (`gateRefusalVersions`; absent where it got none); `bashGate` is absent
+ * on a case written before it was recorded, or whose session records no such arm, and then no
+ * `bash` call of the case is answered (cli.ts's `caseShell`); and `knives`, what the knives
+ * plugin added to the context session's tool results for its checkout's repository (build.ts's
+ * `sessionKnives`): `blocks`, its blocks of that repository in the first addition that held any
+ * (the notice naming a root that holds the working directory, then the guidance of the same
+ * repository), byte for byte, null where it holds none; `touched`, whether a call of the session
+ * touched the repository as knives reads its paths (checkout.ts's `knivesTouches`), so knives
+ * decided its blocks then; absent on a case written before it was recorded. A run adds the
+ * blocks to its first answer that touches the repository (checkout.ts's `KnivesRepository`). A
+ * run of the case answers a reply's read-only calls from a copy of `repo` at `commit`
+ * (replay.ts), its paths mapped between `root` and the copy, a colocated jj repository where `jj`
+ * (cli.ts). A case with none gets no such answers, and a written case's run with none gets no
+ * verdict on a reply whose calls all read, one of them other than a skill read (replay.ts's
+ * UnansweredRead, its why cli.ts's NO_CHECKOUT): the run is made again.
  * `secretsRemoved` counts what the secret scan took out of the case before it left the pod, and
  * `sessionDigest` is the session's last `system-prompt-digest` before the step, or null.
  * `evidence`, when the case builder wrote it, says where each part of the case came from that the
@@ -218,6 +232,15 @@ export const Case = z.strictObject({
       root: AbsoluteDir,
       cwd: AbsoluteDir,
       jj: z.boolean().optional(),
+      bashGate: z
+        .strictObject({
+          leading: z.boolean(),
+          versions: z.array(z.string().min(1)).optional(),
+        })
+        .optional(),
+      knives: z
+        .strictObject({ blocks: z.string().min(1).nullable(), touched: z.boolean() })
+        .optional(),
     })
     .refine(
       (checkout) => insideRoot(checkout.root, checkout.cwd) !== undefined,

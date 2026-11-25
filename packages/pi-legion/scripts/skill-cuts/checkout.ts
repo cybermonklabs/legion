@@ -175,14 +175,83 @@
  * /mnt/pin/call/hook.ts --model stub/call --session-dir /mnt/pin/home/sessions --no-title
  * --no-extensions --no-skills --no-rules --no-context-files x` in SANDBOX_ENV plus those two
  * variables: no `PI_CONFIG_FILES`, no settings, plugin, extension or skill of the host's, so its
- * answer is the pin's at its defaults. The stub hook registers an in-process provider `stub/call`
- * (pi-ai's `createAssistantMessageEventStream`; a placeholder apiKey, a loopback URL nothing
- * listens on) whose first turn is one tool call with the call's arguments and whose next turn
- * prints PIN_RESULT_MARKER and the JSON of the tool's result content, its `isError` and each file
- * the call wrote to the session's artifacts directory; its `session_start` handler first seeds
- * that directory with the files the call names. The run is queued as any sandbox, counts inside
- * BASH_TIME_LIMIT_MS from SANDBOX_READY (past it the call is not answered), prints at most
- * PIN_OUTPUT_BYTES, and has the copy's paths in the result mapped back to the session's root.
+ * answer is the pin's at its defaults but for the session's shell (below). The stub hook registers
+ * an in-process provider `stub/call` (pi-ai's `createAssistantMessageEventStream`; a placeholder
+ * apiKey, a loopback URL nothing listens on) whose first turn is one tool call with the call's
+ * arguments and whose next turn prints PIN_RESULT_MARKER and the JSON of the tool's result
+ * content, its `isError` and each file the call wrote to the session's artifacts directory; its
+ * `session_start` handler first seeds that directory with the files the call names. The run is
+ * queued as any sandbox, counts inside BASH_TIME_LIMIT_MS from SANDBOX_READY (past it the call is
+ * not answered), prints at most PIN_OUTPUT_BYTES, and has the copy's paths in the result mapped
+ * back to the session's root.
+ *
+ * **The session's shell** (`CheckoutCopy.shell`, `ShellSetup`; cli.ts's `caseShell`): a `bash` call
+ * is answered as the case's context session's Oh My Pi ran it, as the dev box's dotfiles set it up
+ * at the one dotfiles commit the case's profile names (a profile that names none or several, a
+ * shim that cannot be read, a case that records no arm of the gate: no `bash` call is answered).
+ * - The prefix. The dotfiles' `shims/omp` exports `PI_SHELL_PREFIX="${PI_SHELL_PREFIX:-set +e +u
+ *   +o pipefail;}"` from commit bcd580fa (2026-10-25) on (`shellPrefixOf`; none before), and the
+ *   pin puts the prefix before each command inside its executor, `${prefix} ${command}`
+ *   (exec/bash-executor.ts lines 233-267 and 640-660 at the pin tag). So the minimizer reads the
+ *   prefixed command (`minimizerReadings`): a single command is a chain's segment after `set +e +u
+ *   +o pipefail` (whose `set` has no filter, filters/mod.rs `supports`), and one that holds a
+ *   command substitution is not read at all (a chain one of whose stages holds one is
+ *   `Compound`); and the pin's run gets PI_SHELL_PREFIX.
+ * - The bash gate (`BashGate`). Every recorded session ran the dotfiles' experiments extension
+ *   (`omp/extensions/experiments/index.ts`, which installers/omp.sh links into every profile): its
+ *   `bash-gate.ts` turns the pin's own interceptor off in its process, and `bash-gate-core.ts`'s
+ *   `intercept` blocks a call one of the interceptor's default rules matches (read: head, tail,
+ *   less, more, cat; grep: grep, rg; glob: find -name; …) with its own text, ``Blocked: `<step>`
+ *   has a dedicated tool, `<tool>`. …``; its arm `bash_gate_leading` tests a read, grep or glob
+ *   rule against the leading segment alone (`on`) or every unpiped segment (`off`). Each `bash`
+ *   call is shown to the gate first (`gateAnswer`): a pin run that loads that extension alone
+ *   (`-e /mnt/pin/ext/index.ts`, its directory bound read-only; `--no-extensions` keeps every
+ *   other discovery off) with OMP_EXPERIMENT_BASH_GATE_LEADING the case's recorded arm, the call
+ *   made only to ask the gate (pin-hook.ts's `PinCall.gate`), so nothing of it runs. A call the
+ *   gate refuses gets its refusal as the pin's bash tool returns it (an error), whatever else would
+ *   keep the runner from running it; one it lets through is answered as below, by the runner's
+ *   own run or, where the minimizer may rewrite it, by the pin's run with the extension loaded too.
+ *   A run whose session records another arm than the case's, or none, is not answered. The
+ *   extension loads once per process, so a session may have run an older version than its
+ *   profile's commit holds: four texts ran (BASH_GATE_COMMITS: 050e8a40, bc8c956a, 3c266c9f,
+ *   31823ec2), and where the context session's history holds a refusal of the gate the version
+ *   is the one whose form it matches (`gateRefusalVersions`, `gateVersion`), else the profile's
+ *   commit, and the stage records which. The extension's code comes from the dotfiles at that
+ *   commit, read through the runner's source into its cache (it imports Oh My Pi's own modules and
+ *   Node's alone, so it needs no package), never another version.
+ * - The stub against an ordinary session. checkout.test.ts runs the pin's bash tool on a fixture
+ *   both through this harness (the prefix and the gate) and in an ordinary `omp -p` session of the
+ *   same binary with a HOME of its own, the dotfiles' omp/config.yml (`--config`), PI_SHELL_PREFIX,
+ *   the experiments extension and none of the harness's `--no-*` flags: an output the minimizer
+ *   rewrites, a long one it leaves and a call the gate refuses are equal byte for byte. That run
+ *   turns off the two settings of config.yml that need a service the test lacks, `advisor.enabled`
+ *   and `memory.backend` (Mnemopi), neither of which touches a tool's result at the pin
+ *   (advisor/runtime.ts lines 190-224; memory-backend/types.ts lines 108-196).
+ *
+ * **knives' blocks** (`KnivesRepository`, `knivesAdded`; cli.ts's `caseKnives`): knives'
+ * `tool_result` hook (knives v3.2.3 omp/extensions/knives.ts lines 80-103; plugin/lib/internals.ts
+ * lines 6-14 and 369-381; texts from src/hook/guidance.rs lines 106-133 and 175-201) appends,
+ * once per session per repository, a `<knives-notice-<nonce> repo="…" digest="…">` block where the
+ * repository is a fork knives manages (the branches claimed in it) and a `<knives-guidance-<nonce>
+ * repo="…">` block where knives trusts it (its AGENTS.md, CLAUDE.md or CONTEXT.md files the
+ * session's system prompt does not hold), as a text block of its own after a read, grep, glob or
+ * bash result that touches the repository (src/commands/hook.rs lines 189-203; src/hook/guidance.rs
+ * lines 40-71 and 265-275). The runner adds the blocks the case's context session got for its
+ * checkout's repository, in the first addition that held any (build.ts records them, cases.ts's
+ * `checkout.knives`), byte for byte, its nonce, digest and branch list: they are that session's,
+ * not knives' state when a run replays. It adds them to the first answer of a run that touches the
+ * repository and to no other (`RunArtifacts.knivesGiven`; none where the case's history carries
+ * them), the same in every arm and run, as that block of its own, a skill read replay.ts answers
+ * itself included (a Responses body, whose output is one string, is not answered then). A call
+ * touches the repository where a path its arguments name, as knives reads them (`knivesTouches`:
+ * src/hook/resolve.rs lines 55-84, `argument_paths`, ported as written: a `path`, `filePath`,
+ * `file_path` or `notebook_path`, and each word of a `command` that is `/` or `~/` and more;
+ * never the call's `cwd`; a relative path, a `skill://` URL among them, read against the session's
+ * working directory), is under the checkout's root. A call the bash gate refused gets none (Oh My
+ * Pi emits no `tool_result` for a blocked call). Where the context session touched the repository
+ * and got no block for it, a run gets none. Not answered: a call that touches the repository where
+ * the context session never touched it, or the case was built before build-cases recorded its
+ * blocks, and knives' registry the dotfiles hold may give it blocks (cli.ts's `caseKnives`).
  *
  * **The queue.** A sandbox keeps a CPU busy for as long as its command runs, and one runner
  * process makes many calls at once (the gateway's `--concurrency` bounds its model calls, not the
@@ -1903,7 +1972,12 @@ export function readOnlyCall(name: string | undefined, input: unknown): boolean 
  *  (cli.ts); absent, none is kept; `history`, the case's history, its messages before the step as
  *  JSON (cli.ts), from which a call the pinned Oh My Pi answers takes its artifact's number
  *  (`runArtifacts`) and a read of one of its internal URLs whether the history made the item
- *  (`internalRead`); absent, an empty history. */
+ *  (`internalRead`); absent, an empty history; `shell`, how the case's context session's Oh My Pi
+ *  ran a `bash` call (`ShellSetup`, cli.ts's `caseShell`), or why the runner does not know it, and
+ *  then no `bash` call is answered; absent (a copy no case names, as checkout.test.ts's own), no
+ *  shell prefix; `knives`, the blocks knives' plugin gave the case's context session for the
+ *  checkout's repository (`KnivesRepository`, cli.ts's `caseKnives`), absent where a run adds
+ *  none. */
 export interface CheckoutCopy {
   readonly dir: string;
   readonly root: string;
@@ -1914,25 +1988,84 @@ export interface CheckoutCopy {
   readonly madeAt?: number;
   readonly answers?: Map<string, Promise<CheckoutAnswer | Unanswered>>;
   readonly history?: string;
+  readonly shell?: ShellSetup | Unanswered;
+  readonly knives?: KnivesRepository;
 }
 
-/** The artifacts of one run of a written case (replay.ts's checkout rounds) as the pinned Oh My Pi
- *  numbers them: `last`, the highest `artifact://<n>` the run has seen, in the case's history
- *  (`CheckoutCopy.history`) and in its answers, one past which the next is numbered; `saved`, the
- *  raw output the pin saved for each artifact an answer of the run named, by its number. */
+/** How a written case's context session's Oh My Pi ran a `bash` call, as its dev box's dotfiles
+ *  set it up (cli.ts's `caseShell`, from the dotfiles commit the case's profile names): `prefix`,
+ *  the value of PI_SHELL_PREFIX (the dotfiles' `shims/omp` exports it from commit bcd580fa on,
+ *  `shellPrefixOf`), which Oh My Pi puts before each command inside its executor as `${prefix}
+ *  ${command}` (exec/bash-executor.ts lines 233-267 and 640-660 at the pin), so its minimizer
+ *  reads the prefixed command (`minimizerReadings`) and the pin's run is given it (`pinAnswer`);
+ *  absent, none. `gate`, the bash gate of the dotfiles' experiments extension the session ran
+ *  (`BashGate`), which every `bash` call passes through first (`gateAnswer`); absent, none. */
+export interface ShellSetup {
+  readonly prefix?: string;
+  readonly gate?: BashGate;
+}
+
+/** The bash gate of the dotfiles' experiments extension (`omp/extensions/experiments/index.ts`,
+ *  which the dotfiles' installers/omp.sh links into every profile; its `bash-gate.ts` turns Oh My
+ *  Pi's own interceptor off in its process, and `bash-gate-core.ts`'s `intercept` blocks a call
+ *  one of the interceptor's rules matches, with its own text, ``Blocked: `<step>` has a dedicated
+ *  tool, `<tool>`. …``), as a written case's context session ran it: `dir`, that extension's
+ *  directory on this machine at the version the session ran (cli.ts's `caseShell`, from
+ *  `gateVersion`), read-only, the pin's run loads its `index.ts` alone (`pinAnswer`); `leading`,
+ *  the session's arm of `bash_gate_leading` (cases.ts's `checkout.bashGate`): true tests a read,
+ *  grep or glob rule against the command's leading segment alone, false against every unpiped
+ *  segment, which the run is given as OMP_EXPERIMENT_BASH_GATE_LEADING (`on` or `off`), the
+ *  variable that overrides the arm gates.json and the session's draw give (gates.ts). */
+export interface BashGate {
+  readonly dir: string;
+  readonly leading: boolean;
+}
+
+/** The checkout's repository as knives' plugin gives it blocks (cli.ts's `caseKnives`), where a
+ *  run may add some: `name`, the repository; `blocks`, the blocks knives gave the case's context
+ *  session for it in the first addition that held any, byte for byte as that session got them
+ *  (cases.ts's `checkout.knives`: its `<knives-notice-<nonce> …>` block where it is a fork knives
+ *  manages, then its `<knives-guidance-<nonce> …>` block where knives trusts it; knives v3.2.3
+ *  src/commands/hook.rs lines 189-203), or why the runner has none where knives may give some.
+ *  knives' `tool_result` hook (omp/extensions/knives.ts lines 80-103) appends its addition as a
+ *  text block of its own after a read, grep, glob or bash result (plugin/lib/internals.ts lines
+ *  6-14 and 369-381) that touches the repository, once per session per repository
+ *  (`knivesAdded`). The blocks are that session's, not knives' state when a run replays: its
+ *  nonce, its digest and its branch list. */
+export interface KnivesRepository {
+  readonly name: string;
+  readonly blocks: string | Unanswered;
+}
+
+/** The state of one run of a written case (replay.ts's checkout rounds): the pinned Oh My Pi's
+ *  artifacts as it numbers them, `last`, the highest `artifact://<n>` the run has seen, in the
+ *  case's history (`CheckoutCopy.history`) and in its answers, one past which the next is
+ *  numbered, and `saved`, the raw output the pin saved for each artifact an answer of the run
+ *  named, by its number; and `knivesGiven`, whether the run's history or an answer of it carries
+ *  knives' blocks (`KnivesRepository`), which knives gives once per session. */
 export interface RunArtifacts {
   last: number;
   readonly saved: Map<number, string>;
+  knivesGiven: boolean;
 }
 
 /** A run's artifacts before its first call: `last` the highest `artifact://<n>` the case's history
  *  names, 0 where it names none (so the first is 1, as the pin numbers a rewrite's first artifact
- *  in an empty artifacts directory), the same in every arm and every run of a case. */
+ *  in an empty artifacts directory), the same in every arm and every run of a case; and whether
+ *  the case's history already carries knives' blocks of its repository (the session got them
+ *  before the step), so no answer of the run gives them again. */
 export function runArtifacts(copy: CheckoutCopy): RunArtifacts {
   const named = [...(copy.history ?? "").matchAll(/artifact:\/\/(\d+)/g)].map((each) =>
     Number(each[1])
   );
-  return { last: named.reduce((most, each) => Math.max(most, each), 0), saved: new Map() };
+  const blocks = copy.knives?.blocks;
+  const tag =
+    typeof blocks === "string" ? /<knives-(notice|guidance)-[^ >]+/.exec(blocks)?.[0] : undefined;
+  return {
+    last: named.reduce((most, each) => Math.max(most, each), 0),
+    saved: new Map(),
+    knivesGiven: tag !== undefined && (copy.history ?? "").includes(tag),
+  };
 }
 
 /** The session's home directory, which a written case's checkout copy expands `~` and `$HOME` to
@@ -1945,15 +2078,239 @@ export function sessionHome(root: string, recorded: string | undefined): string 
   return recorded ?? /^\/home\/[^/]+(?=\/|$)/.exec(root)?.[0];
 }
 
-/** A call's answer: the text the tool gives, and whether it is an error. */
+/** A line of the dotfiles' `shims/omp` that exports PI_SHELL_PREFIX with a default
+ *  (`shellPrefixOf`): the default, a run of characters with no quote, `$`, backtick or `\` (each
+ *  of which bash would read), in group 1. */
+const PREFIX_EXPORT =
+  /^[ \t]*export[ \t]+PI_SHELL_PREFIX="\$\{PI_SHELL_PREFIX:-([^"$`\\]*)\}"[ \t]*$/;
+
+/** The PI_SHELL_PREFIX a session's Oh My Pi ran its `bash` calls with (`ShellSetup.prefix`), from
+ *  `shim`, the text of the dotfiles' `shims/omp` at the commit the case's profile names: the
+ *  default of its `export PI_SHELL_PREFIX="${PI_SHELL_PREFIX:-<value>}"` (dotfiles commit bcd580fa
+ *  on: `set +e +u +o pipefail;`), which the shim exports to Oh My Pi where the caller set none;
+ *  undefined where no line of it but a comment names PI_SHELL_PREFIX (a commit before bcd580fa: no
+ *  prefix); why not where a line names it in any other form, or more than one does, since the
+ *  runner reads no other. */
+export function shellPrefixOf(shim: string): string | undefined | Unanswered {
+  const named = shim
+    .split("\n")
+    .filter((line) => /\bPI_SHELL_PREFIX\b/.test(line) && !/^[ \t]*#/.test(line));
+  if (named.length === 0) return undefined;
+  const value = named.length === 1 ? PREFIX_EXPORT.exec(named[0] ?? "")?.[1] : undefined;
+  if (value === undefined) {
+    return {
+      why: `shims/omp sets PI_SHELL_PREFIX in a form the runner does not read (${named.map((line) => JSON.stringify(line.trim())).join(", ")}), where it reads one export of a default with no quote, $, backtick or \\ in it`,
+    };
+  }
+  return value;
+}
+
+/** The dotfiles commits at which the experiments extension's bash gate (`BashGate`) took each of
+ *  the four forms of its refusal that ran, oldest first: a refusal of one step reads the same in
+ *  all four, ``Blocked: `<step>` has a dedicated tool, `<tool>`. <message>\n\nOriginal command:
+ *  <command>``; a refusal of a step of several ends its message with GATE_FORMS' text of its
+ *  version (bash-gate-core.ts at each commit, `intercept`). The extension loads once per
+ *  process, so a session may have run an older one than its profile's commit holds
+ *  (`gateVersion`). */
+export const BASH_GATE_COMMITS = [
+  "050e8a40377789e2e11787208e538a3d5fba56dd",
+  "bc8c956a4493965c8d1b5e3b93a4f5f0f3c23b9f",
+  "3c266c9f3f10c776cd11d15ca3e3fd5896390e24",
+  "31823ec27c5526cd19032560aa1ff19f93a4dc32",
+] as const;
+
+/** What the bash gate's refusal of a step of several adds after its rule's message, by version
+ *  (BASH_GATE_COMMITS): 050e8a40 `others`; bc8c956a `noStep` and `others`; 3c266c9f the same, or,
+ *  where it can hand back the rest of the call, `rest` and that rest (its bash-remainder.ts);
+ *  31823ec2 `noStep` alone. */
+const GATE_FORMS = {
+  others: "\n\nRun the command's other steps with bash, without that one.",
+  noStep: "\n\nNo step of this command ran.",
+  rest: "\n\nNothing ran. Re-send the rest as one bash call:\n",
+} as const;
+
+/** The versions of the bash gate (BASH_GATE_COMMITS) whose text `text`, a `bash` result of a
+ *  session, is in the form of, or undefined where it is no refusal of the gate (it does not start
+ *  ``Blocked: `<step>` has a dedicated tool, `…``, or holds no `\n\nOriginal command: `): read
+ *  from what stands between the rule's message and the original command (GATE_FORMS), all four
+ *  for a refusal of one step. build.ts reads a written case's context session's refusals so
+ *  (cases.ts's `checkout.bashGate.versions`). */
+export function gateRefusalVersions(text: string): readonly string[] | undefined {
+  const at = text.indexOf("\n\nOriginal command: ");
+  if (!/^Blocked: `[\s\S]*` has a dedicated tool, `/.test(text) || at < 0) return undefined;
+  const head = text.slice(0, at);
+  const [first, second, third, fourth] = BASH_GATE_COMMITS;
+  if (head.includes(GATE_FORMS.rest)) return [third];
+  if (head.endsWith(`${GATE_FORMS.noStep} ${GATE_FORMS.others.slice(2)}`)) return [second, third];
+  if (head.endsWith(GATE_FORMS.others)) return [first];
+  if (head.endsWith(GATE_FORMS.noStep)) return [fourth];
+  return BASH_GATE_COMMITS;
+}
+
+/**
+ * The dotfiles commit whose experiments extension a written case's context session ran
+ * (`BashGate.dir`, cli.ts's `caseShell`), and where it is taken from: `profile`, the dotfiles
+ * commit the case's profile names, whose bash-gate-core.ts is `profileCore` (undefined where it
+ * holds none); `versions`, the versions whose text form matches every refusal of the gate in the
+ * context session's own history (cases.ts's `checkout.bashGate.versions`, `gateRefusalVersions`;
+ * undefined where it holds none); `cores`, each of BASH_GATE_COMMITS' bash-gate-core.ts. Where
+ * the history holds no refusal, the profile's commit (`from: "profile"`). Where it holds some,
+ * the profile's commit where its bash-gate-core.ts is a version they match, else the newest
+ * version they match that is older than the profile's (the extension loads once per process, so
+ * a session runs its profile's version or an older one; a profile's text of none of the four is
+ * taken as newer than each), `from: "history"`. Why not: the profile's commit holds no bash gate
+ * (its sessions ran another, which the runner does not load), the refusals match no one version,
+ * or only versions newer than the profile's.
+ */
+export function gateVersion({
+  profile,
+  profileCore,
+  versions,
+  cores,
+}: {
+  profile: string;
+  profileCore: string | undefined;
+  versions: readonly string[] | undefined;
+  cores: ReadonlyMap<string, string>;
+}): { readonly commit: string; readonly from: "history" | "profile" } | Unanswered {
+  if (profileCore === undefined) {
+    return {
+      why: `the dotfiles commit ${profile} the case's profile names holds no bash gate (omp/extensions/experiments/bash-gate-core.ts), so its sessions ran another, which the runner does not load`,
+    };
+  }
+  if (versions === undefined) return { commit: profile, from: "profile" };
+  if (versions.length === 0) {
+    return {
+      why: "the refusals of the bash gate in the context session's history match no one of its versions",
+    };
+  }
+  const at = BASH_GATE_COMMITS.findIndex((commit) => cores.get(commit) === profileCore);
+  const own = at < 0 ? undefined : BASH_GATE_COMMITS[at];
+  if (own !== undefined && versions.includes(own)) return { commit: profile, from: "history" };
+  const older = BASH_GATE_COMMITS.slice(0, at < 0 ? BASH_GATE_COMMITS.length : at).filter(
+    (commit) => versions.includes(commit)
+  );
+  const newest = older.at(-1);
+  if (newest === undefined) {
+    return {
+      why: `the refusals of the bash gate in the context session's history match only versions (${versions.join(", ")}) newer than the one the profile's dotfiles commit ${profile} holds`,
+    };
+  }
+  return { commit: newest, from: "history" };
+}
+
+/** A call's answer: the text the tool gives, whether it is an error, and `added`, a text block a
+ *  plugin of the session's put after the tool's own (knives' blocks, `knivesAnswer`). */
 export interface CheckoutAnswer {
   readonly text: string;
   readonly isError: boolean;
+  readonly added?: string;
 }
 
 /** Why a call is not answered. */
 export interface Unanswered {
   readonly why: string;
+}
+
+/** The tools whose results knives' hook adds its blocks to (knives v3.2.3
+ *  plugin/lib/internals.ts lines 6-14, `relevantTools`). */
+export const KNIVES_TOOLS: Readonly<Record<string, true>> = {
+  read: true,
+  grep: true,
+  glob: true,
+  edit: true,
+  write: true,
+  apply_patch: true,
+  bash: true,
+};
+
+/** The arguments knives reads a touched path from (knives v3.2.3 src/hook/resolve.rs lines
+ *  60-84, `argument_paths`), besides a command. */
+const KNIVES_PATH_FIELDS = ["path", "filePath", "file_path", "notebook_path"] as const;
+
+/**
+ * Whether the call `input` touches the repository of the checkout at `place` (its `root`, the
+ * session's working directory `cwd` and home `home`), as knives decides it (knives v3.2.3
+ * src/hook/resolve.rs lines 55-84, `argument_paths`, ported as written; lines 108-145,
+ * `match_checkout`): the paths its arguments name, each of KNIVES_PATH_FIELDS, and each word of a
+ * `command`, split at whitespace and quotes, that is `/` or `~/` and more; a `~` read under the
+ * session's home, and a relative path against the session's working directory, the knives
+ * binary's own (its `canonical_path`, lines 172-180); never the call's `cwd` (its test
+ * `a_working_directory_does_not_count_as_a_named_path`). One of them under the checkout's root
+ * touches it: knives matches a path to the nearest repository above it, the checkout. Why not
+ * known: a path under `~` where the case records no home. build.ts reads a context session's
+ * calls with it.
+ */
+export function knivesTouches(
+  place: { readonly root: string; readonly cwd: string; readonly home?: string | undefined },
+  input: Readonly<Record<string, unknown>>
+): boolean | Unanswered {
+  const named = KNIVES_PATH_FIELDS.flatMap((field) => {
+    const value = input[field];
+    return typeof value === "string" ? [value] : [];
+  });
+  if (typeof input.command === "string") {
+    named.push(
+      ...input.command.split(/[\s'"]/).filter((word) => /^\/./.test(word) || /^~\/./.test(word))
+    );
+  }
+  for (const each of named) {
+    if ((each === "~" || each.startsWith("~/")) && place.home === undefined) {
+      return {
+        why: `knives reads ${each} under the session's home, which the case does not record, so the runner cannot tell whether the call touches the repository it adds its blocks for`,
+      };
+    }
+    const full =
+      each === "~" || each.startsWith("~/")
+        ? path.join(place.home ?? "", each.slice(1))
+        : path.resolve(place.cwd, each);
+    if (insideRoot(place.root, full) !== undefined) return true;
+  }
+  return false;
+}
+
+/**
+ * knives' blocks of the checkout's repository (`KnivesRepository`) for the call `input` of a run
+ * `run`: the blocks where the call touches the repository (`knivesTouches`) and no earlier answer
+ * of the run, nor the case's history, carries them, since knives adds them to the first result of
+ * a session that touches it (its session state; knives v3.2.3 src/commands/hook.rs lines
+ * 154-240); undefined where none go after its answer. Why not: the call touches the repository
+ * where the runner has no blocks of it, or the runner cannot tell whether it touches it. Exported
+ * for replay.ts, which gives the same to a skill read it answers itself, its `path` read as knives
+ * reads any read's (a `skill://` URL is no absolute path, so knives resolves it against the
+ * session's working directory, `canonical_path` in src/hook/resolve.rs lines 172-180).
+ */
+export function knivesAdded(
+  copy: CheckoutCopy,
+  input: Readonly<Record<string, unknown>>,
+  run: RunArtifacts
+): string | undefined | Unanswered {
+  const repository = copy.knives;
+  if (repository === undefined) return undefined;
+  const touches = knivesTouches(copy, input);
+  if (typeof touches !== "boolean") return touches;
+  if (!touches) return undefined;
+  if (typeof repository.blocks !== "string") {
+    return { why: `the call touches ${repository.name}: ${repository.blocks.why}` };
+  }
+  if (run.knivesGiven) return undefined;
+  run.knivesGiven = true;
+  return repository.blocks;
+}
+
+/** `answer`, the answer to the read-only call `input` from `copy`, with knives' blocks after it
+ *  where they go there (`knivesAdded`), or why not. A call the bash gate refused is never given
+ *  here: a blocked call ends before Oh My Pi's `tool_result` event, which knives hooks. */
+function knivesAnswer(
+  copy: CheckoutCopy,
+  input: Readonly<Record<string, unknown>>,
+  answer: CheckoutAnswer | Unanswered,
+  run: RunArtifacts
+): CheckoutAnswer | Unanswered {
+  if ("why" in answer) return answer;
+  const added = knivesAdded(copy, input, run);
+  if (added === undefined) return answer;
+  return typeof added === "string" ? { ...answer, added } : added;
 }
 
 /** Where an answer's sandbox (`runSandboxed`) mounts the copy, read-only: each command an answer
@@ -2129,8 +2486,9 @@ function mountName(target: string): string {
 
 /** Where a sandbox that answers a call through the pinned Oh My Pi (`runSandboxed`'s `pin`) holds
  *  it, each bound read-only: its binary's directory at `bin`, its native addon's at
- *  `natives/<NATIVES_VERSION>` (the PI_NATIVES_DIR `natives`), and the call's own directory, the
- *  hook and its call (`pinAnswer`), at `call`. */
+ *  `natives/<NATIVES_VERSION>` (the PI_NATIVES_DIR `natives`), the call's own directory, the
+ *  hook and its call (`pinAnswer`), at `call`, and the dotfiles' experiments extension, where the
+ *  call's shell has its bash gate (`BashGate.dir`), at `ext`. */
 const PIN_MOUNT = "/mnt/pin";
 /** The pin's HOME in such a sandbox, which holds its session directory: an empty tmpfs of
  *  PIN_HOME_BYTES, the sandbox's one writable file system. */
@@ -2144,9 +2502,10 @@ const PIN_HOME_BYTES = 64 * 1024 * 1024;
  *  under it (`homebind`, its name in the table `homebindname`; the directories to it, or
  *  SESSION_HOME_MOUNT alone, `homedir`, made first), the directory of the runner's jj bound
  *  read-only at /mnt/jj, where the command runs the pinned Oh My Pi (`pinbin`), its binary's
- *  directory, its native addon's (`pinnatives`) and the call's own (`pincall`) bound read-only
- *  under PIN_MOUNT and an empty tmpfs at PIN_HOME, its one writable file system, and an empty,
- *  read-only file system over each hidden directory and
+ *  directory, its native addon's (`pinnatives`), the call's own (`pincall`) and, where given, the
+ *  experiments extension's (`pinext`) bound read-only under PIN_MOUNT and an empty tmpfs at
+ *  PIN_HOME, its one writable file system, and an empty, read-only file system over each hidden
+ *  directory and
  *  /dev/null over each hidden file (`hiddenPaths`, each with its name in the table; one the
  *  sandbox's user can neither enter nor read, as `/root`, needs none, since no command of it can
  *  either); the runner's home made again, empty, in the one that holds it, made read-only after;
@@ -2165,8 +2524,8 @@ const PIN_HOME_BYTES = 64 * 1024 * 1024;
  *  util-linux 2.39.3 (EINVAL): libmount takes its options from the mount table, where a tmpfs
  *  made in this user namespace names its owner by an id the namespace does not map (measured in
  *  a grade Job on Linux 6.8, util-linux 2.39.3; gVisor with util-linux 2.41.5 takes it). */
-const SANDBOX_SETUP = `copyfs=$1 mode=$2 cwd=$3 jjfs=$4 wrapper=$5 jjconfig=$6 home=$7 hometree=$8 command=$9 programs=\${10} sessionhome=\${11} homedir=\${12} homebind=\${13} homebindname=\${14} pinbin=\${15} pinnatives=\${16} pincall=\${17}
-shift 17
+const SANDBOX_SETUP = `copyfs=$1 mode=$2 cwd=$3 jjfs=$4 wrapper=$5 jjconfig=$6 home=$7 hometree=$8 command=$9 programs=\${10} sessionhome=\${11} homedir=\${12} homebind=\${13} homebindname=\${14} pinbin=\${15} pinnatives=\${16} pincall=\${17} pinext=\${18}
+shift 18
 fail() { printf '%s\\n' "$1" >&2; exit 125; }
 command -v setpriv >/dev/null || fail "find setpriv"
 mount -t tmpfs -o mode=0755 checkout-sandbox /mnt || fail "mount a file system of its own at /mnt"
@@ -2174,6 +2533,7 @@ mkdir ${CHECKOUT_MOUNT} ${SANDBOX_HOME} /mnt/bin /mnt/jj || fail "make its direc
 if [ -n "$pinbin" ]; then
   mkdir -p ${PIN_MOUNT}/bin ${PIN_MOUNT}/natives/${NATIVES_VERSION} ${PIN_MOUNT}/call ${PIN_HOME} || fail "make the pin's directories"
 fi
+if [ -n "$pinext" ]; then mkdir -p ${PIN_MOUNT}/ext || fail "make the extension's directory"; fi
 if [ -n "$homedir" ]; then mkdir -p "$homedir" || fail "make the session's home"; fi
 homemounted=
 {
@@ -2190,6 +2550,7 @@ homemounted=
     printf '%s ${PIN_MOUNT}/call none bind,ro 0 0\\n' "$pincall"
     printf 'checkout-sandbox-pin ${PIN_HOME} tmpfs mode=0755,size=${PIN_HOME_BYTES} 0 0\\n'
   fi
+  if [ -n "$pinext" ]; then printf '%s ${PIN_MOUNT}/ext none bind,ro 0 0\\n' "$pinext"; fi
   while [ $# -gt 1 ]; do
     each=$1 target=$2
     shift 2
@@ -2372,6 +2733,7 @@ async function runSandboxed(
     pin === undefined ? "" : mountName(pin.bin),
     pin === undefined ? "" : mountName(pin.natives),
     pin === undefined ? "" : mountName(pin.call),
+    pin?.ext === undefined ? "" : mountName(pin.ext),
     ...hidden.paths.flatMap((each) => [each, mountName(each)]),
   ];
   const outputBytes = pin === undefined ? OUTPUT_BYTES : PIN_OUTPUT_BYTES;
@@ -2380,11 +2742,13 @@ async function runSandboxed(
 
 /** The pinned Oh My Pi a sandbox runs (`runSandboxed`'s `pin`), each a real directory of this
  *  machine: `bin`, its binary's; `natives`, its native addon's; `call`, the call's own (the hook
- *  and its call, `pinAnswer`). */
+ *  and its call, `pinAnswer`); `ext`, where given, the dotfiles' experiments extension's
+ *  (`BashGate.dir`). */
 interface SandboxPin {
   readonly bin: string;
   readonly natives: string;
   readonly call: string;
+  readonly ext?: string;
 }
 
 /** The sandbox `runSandboxed` made `argv` for, spawned and bounded once it holds its place in the
@@ -2546,16 +2910,23 @@ function shellWord(value: string): string {
  * sandbox's one writable file system; no extension, skill, rule or context file discovered, no
  * title; no variable of the runner's beyond SANDBOX_ENV's and PI_NATIVES_DIR, which names the
  * pin's own addon (natives.ts's `pinnedAddon`), bound read-only; its binary the pin's own
- * (natives.ts's `pinnedOmp`, its SHA-256 the release's), bound read-only. The run counts in the
- * sandbox's BASH_TIME_LIMIT_MS from its ready marker, as a command's does, and is not answered
- * past it; nor where `programs` (the call's programs that are no builtin of bash's) are on no
- * directory of the sandbox's PATH. The tool's result and the artifacts it made (pin-hook.ts's
- * PinResult), the sandbox's paths in them as the session's (`rootPaths`); or why none.
+ * (natives.ts's `pinnedOmp`, its SHA-256 the release's), bound read-only. With `shell` (a `bash`
+ * call's, `ShellSetup`), PI_SHELL_PREFIX is its prefix, as the session's Oh My Pi had it; and
+ * where it has the session's bash gate (`BashGate`), the experiments extension's directory is
+ * bound read-only at `ext`, its `index.ts` alone is loaded with `-e` (`--no-extensions` keeps
+ * every other discovery off; an explicit `-e` path still loads, the pin's CLI flags say), and
+ * OMP_EXPERIMENT_BASH_GATE_LEADING is the session's arm; a result whose session records another
+ * arm, or none (the extension did not load), is not answered. The run counts in the sandbox's
+ * BASH_TIME_LIMIT_MS from its ready marker, as a command's does, and is not answered past it;
+ * nor where `programs` (the call's programs that are no builtin of bash's) are on no directory of
+ * the sandbox's PATH. The tool's result and the artifacts it made (pin-hook.ts's PinResult), the
+ * sandbox's paths in them as the session's (`rootPaths`); or why none.
  */
 async function pinAnswer(
   copy: CheckoutCopy,
   call: PinCall,
-  programs: readonly string[]
+  programs: readonly string[],
+  shell: ShellSetup = {}
 ): Promise<PinResult | Unanswered> {
   const omp = pinnedOmp();
   if ("why" in omp) return { why: `the runner has no pinned Oh My Pi binary: ${omp.why}` };
@@ -2572,11 +2943,17 @@ async function pinAnswer(
     writeFileSync(path.join(own, PIN_HOOK), readFileSync(PIN_HOOK_SOURCE));
     writeFileSync(path.join(own, PIN_CALL_FILE), JSON.stringify(call));
     const omped = `${PIN_MOUNT}/bin/${path.basename(omp.file)}`;
+    const gate = shell.gate;
     const command = [
       `HOME=${PIN_HOME}`,
       `PI_NATIVES_DIR=${PIN_MOUNT}/natives`,
+      ...(shell.prefix === undefined ? [] : [`PI_SHELL_PREFIX=${shellWord(shell.prefix)}`]),
+      ...(gate === undefined
+        ? []
+        : [`OMP_EXPERIMENT_BASH_GATE_LEADING=${gate.leading ? "on" : "off"}`]),
       shellWord(omped),
       "-p",
+      ...(gate === undefined ? [] : [`-e ${PIN_MOUNT}/ext/index.ts`]),
       `--hook ${PIN_MOUNT}/call/${PIN_HOOK}`,
       "--model stub/call",
       `--session-dir ${PIN_HOME}/sessions`,
@@ -2589,7 +2966,12 @@ async function pinAnswer(
       writable: false,
       limitMs: BASH_TIME_LIMIT_MS,
       programs,
-      pin: { bin: path.dirname(omp.file), natives: path.dirname(real), call: own },
+      pin: {
+        bin: path.dirname(omp.file),
+        natives: path.dirname(real),
+        call: own,
+        ...(gate === undefined ? {} : { ext: realpathSync(gate.dir) }),
+      },
     });
     if ("why" in ran) return ran;
     const printed = ran.output.toString("utf8");
@@ -2600,11 +2982,18 @@ async function pinAnswer(
       };
     }
     const result = JSON.parse(printed.slice(at + PIN_RESULT_MARKER.length)) as PinResult;
+    // The session the run made records the gate's arm only where the extension loaded and read
+    // the arm it was given.
+    if (gate !== undefined && result.gateLeading !== gate.leading) {
+      return {
+        why: `the pinned Oh My Pi's run of the session's experiments extension drew the bash gate's arm ${result.gateLeading ?? "of no experiments entry (the extension did not load)"}, where the session's was ${gate.leading}`,
+      };
+    }
     return {
+      ...result,
       content: result.content.map((part) =>
         part.text === undefined ? part : { ...part, text: rootPaths(copy, part.text) }
       ),
-      isError: result.isError,
       artifacts: Object.fromEntries(
         Object.entries(result.artifacts).map(([name, text]) => [name, rootPaths(copy, text)])
       ),
@@ -2612,6 +3001,96 @@ async function pinAnswer(
   } finally {
     rmSync(own, { recursive: true, force: true });
   }
+}
+
+/** The `bash` call's arguments `input` as the pin's run is given them: the session's checkout
+ *  root in its command and its `cwd` as the sandbox's (CHECKOUT_MOUNT). */
+function sandboxInput(
+  copy: CheckoutCopy,
+  input: Readonly<Record<string, unknown>>
+): Record<string, unknown> {
+  const toSandbox = (value: unknown) =>
+    typeof value === "string" ? { value: value.split(copy.root).join(CHECKOUT_MOUNT) } : {};
+  const command = toSandbox(input.command);
+  const cwd = toSandbox(input.cwd);
+  return {
+    ...input,
+    ...("value" in command ? { command: command.value } : {}),
+    ...("value" in cwd ? { cwd: cwd.value } : {}),
+  };
+}
+
+/** What the bash gate made of each `bash` call this process asked it of (`gateAnswer`), by the
+ *  gate's directory and arm, the checkout's root and the call's arguments: each asked once, its
+ *  answer depending on those alone; one the pin gave no answer for is dropped, so the next asks
+ *  again. */
+const gateAnswers = new Map<string, Promise<CheckoutAnswer | "passed" | Unanswered>>();
+
+/**
+ * What the bash gate of `shell` (`BashGate`) makes of the `bash` call `input`, as the session's
+ * Oh My Pi ran it before its bash tool: the pin's run with the experiments extension loaded
+ * (`pinAnswer`), the call made only to ask the gate (pin-hook.ts's `PinCall.gate`), so nothing
+ * of it runs. Its refusal, as the pin's bash tool returns it (``Blocked: `<step>` has a dedicated
+ * tool, `<tool>`. …``, an error), or "passed" where the gate let it through; or why neither:
+ * the pin gave no answer, or answered the call before the gate let it through or refused it.
+ */
+function gateAnswer(
+  copy: CheckoutCopy,
+  input: Readonly<Record<string, unknown>>,
+  gate: BashGate,
+  shell: ShellSetup
+): Promise<CheckoutAnswer | "passed" | Unanswered> {
+  const key = JSON.stringify([gate.dir, gate.leading, copy.root, input]);
+  const held = gateAnswers.get(key);
+  if (held !== undefined) return held;
+  const asked = (async (): Promise<CheckoutAnswer | "passed" | Unanswered> => {
+    const pin = await pinAnswer(
+      copy,
+      { tool: "bash", arguments: sandboxInput(copy, input), seed: {}, gate: true },
+      [],
+      shell
+    );
+    if ("why" in pin) {
+      gateAnswers.delete(key);
+      return {
+        why: `the session's bash gate decides whether the call runs, and the pinned Oh My Pi that holds it gave no answer: ${pin.why}`,
+      };
+    }
+    if (pin.passed === true) return "passed";
+    const [part, ...more] = pin.content;
+    const text = part?.type === "text" ? (part.text ?? "") : "";
+    if (pin.isError && more.length === 0 && text.startsWith("Blocked: `")) {
+      return { text, isError: true };
+    }
+    return {
+      why: `the pinned Oh My Pi's bash tool answered the call before the session's bash gate let it through or refused it: ${firstLine(text) || "no text"}`,
+    };
+  })();
+  gateAnswers.set(key, asked);
+  return asked;
+}
+
+/** The pinned Oh My Pi's own bash tool's answer to the `bash` call `input` from `copy` in the
+ *  shell `shell` (`pinAnswer`), whatever answer the runner's rule gives the call: its text and
+ *  whether it is an error, at the session's paths, or why none. Exported for checkout.test.ts,
+ *  which sets the runner's answers against the pin's own. */
+export async function pinBashAnswer(
+  copy: CheckoutCopy,
+  input: Readonly<Record<string, unknown>>,
+  shell: ShellSetup = {}
+): Promise<CheckoutAnswer | Unanswered> {
+  const pin = await pinAnswer(
+    copy,
+    { tool: "bash", arguments: sandboxInput(copy, input), seed: {} },
+    [],
+    shell
+  );
+  if ("why" in pin) return pin;
+  const [part, ...more] = pin.content;
+  if (part?.type !== "text" || part.text === undefined || more.length > 0) {
+    return { why: "the pinned Oh My Pi's answer is not one text" };
+  }
+  return { text: part.text, isError: pin.isError };
 }
 
 /** A word `jj` of a shell command, where a program's name stands. */
@@ -2732,10 +3211,13 @@ const PIN_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MINIMIZE_CHARS = 1_000;
 /** The read-only programs Oh My Pi's minimizer has neither a filter for (filters/mod.rs lines
  *  40-98, `supports`) nor a built-in pipeline of (defs/*.toml, whose `match_command`s name `jj`
- *  and `stat` of the read-only programs): their output is never rewritten. Of the rest, `ls`,
- *  `tree`, `find`, `grep`, `rg`, `wc`, `cat`, `stat` and `jj` have a filter for every subcommand,
- *  and git for those of MINIMIZED_GIT (`minimizerFilters`). */
+ *  and `stat` of the read-only programs): their output is never rewritten; and `set`, the
+ *  builtin of the shell prefix (`ShellSetup.prefix`, `set +e +u +o pipefail;`), the first segment
+ *  of every command the minimizer reads under it, which it has no filter for either. Of the rest,
+ *  `ls`, `tree`, `find`, `grep`, `rg`, `wc`, `cat`, `stat` and `jj` have a filter for every
+ *  subcommand, and git for those of MINIMIZED_GIT (`minimizerFilters`). */
 const UNFILTERED_PROGRAMS: Readonly<Record<string, true>> = {
+  set: true,
   cd: true,
   head: true,
   tail: true,
@@ -4918,6 +5400,19 @@ function minimizerReads(command: string, script: Script): string[] {
   return pipelines.filter(({ commands }) => commands.length === 1).map(({ source }) => source);
 }
 
+/** The texts Oh My Pi's minimizer reads for a filter (`minimizerReads`) of the command its
+ *  executor runs for `command`: `${prefix} ${command}` under the session's shell prefix `prefix`
+ *  (`ShellSetup.prefix`; exec/bash-executor.ts lines 233-267 and 640-660 at the pin), parsed as
+ *  the runner parses a command, else `command` itself. So under `set +e +u +o pipefail;` a single
+ *  command is read as a chain's segment after `set +e +u +o pipefail`, and one that holds a
+ *  command substitution not at all (a chain one of whose stages holds one is `Compound`), where
+ *  with no prefix each is read whole. Exported for checkout.test.ts. */
+export function minimizerReadings(command: string, prefix: string | undefined): string[] {
+  const run = prefix === undefined ? command : `${prefix} ${command}`;
+  const script = parseScript(run);
+  return script === undefined ? [] : minimizerReads(run, script);
+}
+
 /** The words Oh My Pi's minimizer reads in a command's text (detect.rs lines 538-562,
  *  `tokenize`): split at whitespace outside quotes (Rust's, TRAILING_WHITESPACE), each quote taken
  *  off, an unquoted `\` taking the next character as it is, up to the first unquoted `;`, `|` or
@@ -5006,23 +5501,22 @@ function minimizerFilters(text: string): boolean {
 }
 
 /** Whether Oh My Pi's minimizer may rewrite the output `output` of the `bash` call `command`
- *  (parsed as `script`; `hoists`, whether the call gives no `cwd`, so the pin may run its rest
- *  after a leading `cd`, `hoistedCd`): an output of MINIMIZE_CHARS characters or more, a text of
- *  which it reads (`minimizerReads`, of the command and of that rest) with a filter
- *  (`minimizerFilters`). A chain's segments are each read at their own output, which the runner
- *  does not part, so it reads them all at the whole's. */
+ *  (`hoists`, whether the call gives no `cwd`, so the pin may run its rest after a leading `cd`,
+ *  `hoistedCd`; `prefix`, the session's shell prefix, `ShellSetup.prefix`): an output of
+ *  MINIMIZE_CHARS characters or more, a text of which it reads (`minimizerReadings`, of the
+ *  command and of that rest, each with the prefix before it, as the pin's executor runs it) with
+ *  a filter (`minimizerFilters`). A chain's segments are each read at their own output, which the
+ *  runner does not part, so it reads them all at the whole's. */
 function minimizerRewrites(
   command: string,
-  script: Script,
   hoists: boolean,
-  output: string
+  output: string,
+  prefix: string | undefined
 ): boolean {
   if (output.length < MINIMIZE_CHARS || [...output].length < MINIMIZE_CHARS) return false;
   const rest = hoists ? hoistedCd(command) : undefined;
-  const restScript = rest === undefined ? undefined : parseScript(rest);
-  const readings: [string, Script][] = [[command, script]];
-  if (rest !== undefined && restScript !== undefined) readings.push([rest, restScript]);
-  return readings.some(([text, parsed]) => minimizerReads(text, parsed).some(minimizerFilters));
+  const texts = rest === undefined ? [command] : [command, rest];
+  return texts.some((text) => minimizerReadings(text, prefix).some(minimizerFilters));
 }
 
 /** Where a `bash` call Oh My Pi's minimizer may rewrite is not answered, why. */
@@ -5031,13 +5525,13 @@ const MINIMIZED = "Oh My Pi's minimizer may rewrite its output";
 /**
  * The `bash` call `input` (parsed as `script`, run from the session's directory `cwd`) whose
  * output Oh My Pi's minimizer may rewrite (`minimizerRewrites`), answered by the pin's own bash
- * tool (`pinAnswer`), its text and whether it is an error as the pin gives them: where the pin
- * rewrote the output, it ends with `[raw output: artifact://<n>]` and the pin's notices after it,
- * `<n>` the run's next artifact (`RunArtifacts`, one past the highest it has seen), whose raw
- * output `run` keeps for a later read of it (`internalRead`). Not answered: where the pin's answer
- * names an artifact other than that one (a spill of its own output), is not one text, or the pin
- * gives none (`pinAnswer`); nor a command that expands `~` or `$HOME`, which the pin runs with a
- * HOME of its own.
+ * tool (`pinAnswer`, with the session's `shell`), its text and whether it is an error as the pin
+ * gives them: where the pin rewrote the output, it ends with `[raw output: artifact://<n>]` and
+ * the pin's notices after it, `<n>` the run's next artifact (`RunArtifacts`, one past the highest
+ * it has seen), whose raw output `run` keeps for a later read of it (`internalRead`). Not
+ * answered: where the pin's answer names an artifact other than that one (a spill of its own
+ * output), is not one text, or the pin gives none (`pinAnswer`); nor a command that expands `~`
+ * or `$HOME`, which the pin runs with a HOME of its own.
  */
 async function minimizedAnswer(
   copy: CheckoutCopy,
@@ -5047,11 +5541,13 @@ async function minimizedAnswer(
     script,
     cwd,
     programs,
+    shell,
   }: {
     command: string;
     script: Script;
     cwd: string;
     programs: readonly string[];
+    shell: ShellSetup;
   },
   run: RunArtifacts
 ): Promise<CheckoutAnswer | Unanswered> {
@@ -5078,7 +5574,8 @@ async function minimizedAnswer(
       // makes the rewrite's n + 2.
       seed: id >= 2 ? { [`${id - 2}.seed.log`]: "" } : {},
     },
-    programs
+    programs,
+    shell
   );
   if ("why" in pin) return { why: `${MINIMIZED}, so the pinned Oh My Pi answers it: ${pin.why}` };
   const [part, ...more] = pin.content;
@@ -5221,6 +5718,15 @@ async function bashAnswer(
   if (typeof command !== "string" || script === undefined) {
     return { why: "its command is not read-only" };
   }
+  // How the session's Oh My Pi ran its bash calls, or why the runner does not know it.
+  const shell = copy.shell ?? {};
+  if ("why" in shell) return shell;
+  // The session's bash gate saw the call before its bash tool did: a call it refuses gets its
+  // refusal and never runs, whatever else would keep the runner from running it.
+  if (shell.gate !== undefined) {
+    const gated = await gateAnswer(copy, input, shell.gate, shell);
+    if (gated !== "passed") return gated;
+  }
   const programs = simpleCommands(script).map((each) => literal(each.words[0] ?? []) ?? "");
   if (!copy.git && programs.some((program) => program === "git" || program === "jj")) {
     return {
@@ -5272,16 +5778,21 @@ async function bashAnswer(
       why: `a line of its output passes the ${BASH_COLUMNS} bytes Oh My Pi shows, and the notice of its cut names the artifact the session saves the output to, whose id the copy cannot know`,
     };
   }
-  if (minimizerRewrites(command, script, !input.cwd, output)) {
+  if (minimizerRewrites(command, !input.cwd, output, shell.prefix)) {
     const looked = [...new Set(lookedFor)];
-    return minimizedAnswer(copy, input, { command, script, cwd, programs: looked }, run);
+    return knivesAnswer(
+      copy,
+      input,
+      await minimizedAnswer(copy, input, { command, script, cwd, programs: looked, shell }, run),
+      run
+    );
   }
   const lines = [
     output === "" ? (exitCode === 0 ? "(no output, exit code 0)" : "(no output)") : output,
   ];
   if (wallTimeMs >= 1000) lines.push("", `Wall time: ${(wallTimeMs / 1000).toFixed(2)} seconds`);
   if (exitCode !== 0) lines.push("", `Command exited with code ${exitCode}`);
-  return { text: lines.join("\n"), isError: exitCode !== 0 };
+  return knivesAnswer(copy, input, { text: lines.join("\n"), isError: exitCode !== 0 }, run);
 }
 
 /** The answer to the read-only call `name` with `input` from `copy` (see the file's header), its
@@ -5301,19 +5812,21 @@ export async function answerCall(
   }
   const fields = input as Record<string, unknown>;
   if (name === "read" && typeof fields.path === "string" && URL_TARGET.test(fields.path)) {
-    return internalRead(copy, fields, rows, run);
+    return knivesAnswer(copy, fields, await internalRead(copy, fields, rows, run), run);
   }
   if (name === "read" || name === "grep" || name === "glob") {
     const key = `${name}\0${rows}\0${JSON.stringify(fields)}`;
-    const held = copy.answers?.get(key);
-    if (held !== undefined) return held;
-    const answer =
-      name === "read"
-        ? Promise.resolve(readAnswer(copy, fields, rows))
-        : answerInWorker(name, copy, fields, rows);
-    copy.answers?.set(key, answer);
-    answer.catch(() => copy.answers?.delete(key));
-    return answer;
+    let answer = copy.answers?.get(key);
+    if (answer === undefined) {
+      const made =
+        name === "read"
+          ? Promise.resolve(readAnswer(copy, fields, rows))
+          : answerInWorker(name, copy, fields, rows);
+      copy.answers?.set(key, made);
+      made.catch(() => copy.answers?.delete(key));
+      answer = made;
+    }
+    return knivesAnswer(copy, fields, await answer, run);
   }
   if (name === "bash") return bashAnswer(copy, fields, run);
   return { why: `no capture declares a ${name} tool, so the runner rebuilds none of its forms` };

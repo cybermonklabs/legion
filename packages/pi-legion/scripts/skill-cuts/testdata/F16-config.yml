@@ -1,0 +1,203 @@
+modelRoles:
+  default: anthropic/claude-opus-5-5:xhigh
+  plan: anthropic/claude-fable-5-1:max
+  smol: anthropic/claude-sonnet-5-5
+  slow: openai-codex/gpt-5.6-terra:xhigh
+  task: anthropic/claude-opus-5-5
+  vision: google/gemini-3.7-flash:medium
+  review: openai-codex/gpt-5.5:xhigh
+  oracle: openai-codex/gpt-5.5:high
+  deep: openai-codex/gpt-5.6-terra:xhigh
+  advisor: anthropic/claude-sonnet-5-5:medium
+  askgate: anthropic/claude-fable-5-1:high
+  proactiveMemory: anthropic/claude-sonnet-5-5
+  judgeLog: anthropic/claude-sonnet-5-5
+disabledProviders:
+  - openai
+extensionHandlers:
+  toolCallTimeoutMs: 120000
+retry:
+  modelFallback: true
+  usageAwareFallback: true
+  fallbackChains:
+    anthropic/claude-fable-5:
+      - anthropic/claude-opus-5-5
+      - anthropic/claude-opus-5
+      - anthropic/claude-opus-4-8
+      - anthropic/claude-opus-4-7
+      - anthropic/claude-opus-4-6
+    anthropic/claude-fable-5-1:
+      - anthropic/claude-fable-5
+      - anthropic/claude-opus-5-5
+      - anthropic/claude-opus-5
+      - anthropic/claude-opus-4-8
+      - anthropic/claude-opus-4-7
+      - anthropic/claude-opus-4-6
+    anthropic/claude-opus-5-5:
+      - anthropic/claude-opus-5
+      - anthropic/claude-opus-4-8
+      - anthropic/claude-opus-4-7
+      - anthropic/claude-opus-4-6
+    anthropic/claude-opus-5:
+      - anthropic/claude-opus-4-8
+      - anthropic/claude-opus-4-7
+      - anthropic/claude-opus-4-6
+    openai-codex/gpt-6-astra:high:
+      - anthropic/claude-opus-5-5:xhigh
+    openai-codex/gpt-6-astra: []
+    openai/gpt-6-astra: []
+    openai/gpt-5.6-terra: []
+    openai-codex/gpt-5.5:
+      - anthropic/claude-opus-5-5
+      - anthropic/claude-opus-5
+      - anthropic/claude-opus-4-8
+      - anthropic/claude-opus-4-7
+      - anthropic/claude-opus-4-6
+    openai-codex/gpt-5.6-sol:
+      - anthropic/claude-opus-5-5
+      - anthropic/claude-opus-5
+      - anthropic/claude-opus-4-8
+      - anthropic/claude-opus-4-7
+      - anthropic/claude-opus-4-6
+    openai-codex/gpt-5.6-terra:
+      - anthropic/claude-opus-5-5
+      - anthropic/claude-opus-5
+      - anthropic/claude-opus-4-8
+      - anthropic/claude-opus-4-7
+      - anthropic/claude-opus-4-6
+      - anthropic/claude-sonnet-5-5
+    openai-codex/gpt-5.6-luna:
+      - anthropic/claude-sonnet-5-5
+    openai-codex/*:
+      - anthropic/claude-opus-5-5
+      - anthropic/claude-opus-5
+      - anthropic/claude-opus-4-8
+      - anthropic/claude-opus-4-7
+      - anthropic/claude-opus-4-6
+      - opencode-zen/*
+    default:
+      - anthropic/claude-opus-5-5
+      - anthropic/claude-opus-5
+      - anthropic/claude-opus-4-8
+      - anthropic/claude-opus-4-7
+      - anthropic/claude-opus-4-6
+    plan:
+      - anthropic/claude-opus-5-5
+      - anthropic/claude-opus-5
+      - anthropic/claude-opus-4-8
+      - anthropic/claude-opus-4-7
+      - anthropic/claude-opus-4-6
+task:
+  maxRecursionDepth: 3
+  agentModelOverrides:
+    bug-finder: "@review"
+    code-architect: anthropic/claude-opus-5-5
+    code-reviewer: "@review"
+    code-simplifier: anthropic/claude-fable-5-1
+    comment-analyzer: "@review"
+    cybersecurity-expert: anthropic/claude-opus-5-5
+    performance-engineer: "@slow"
+    red-teamer: anthropic/claude-opus-5-5
+    test-analyzer: "@review"
+    type-checker: anthropic/claude-opus-5-5
+    ux-designer: "@vision"
+  isolation:
+    merge: patch
+    enabled: true
+compaction:
+  methodOrder: [shake, remote, snapcompact, handoff, soft]
+advisor:
+  enabled: true
+bashInterceptor:
+  enabled: true
+git:
+  enabled: false
+memory:
+  backend: mnemopi
+mnemopi:
+  scoping: per-project-tagged
+  autoRetain: false
+  polyphonicRecall: true
+  enhancedRecall: true
+  proactiveLinking: true
+theme:
+  dark: titanium
+symbolPreset: unicode
+hideThinkingBlock: true
+doubleEscapeAction: tree
+extendedContext: true
+dev:
+  autoqaConsent: granted
+setupVersion: 2
+startup:
+  checkUpdate: false
+display:
+  smoothStreaming: false
+  hideToolActivity: false
+  shimmer: disabled
+  collapseCompacted: false
+tui:
+  resizeScrollback: preserve
+  rewindScrollback: preserve
+spelling:
+  autocomplete: "off"
+completion:
+  notify: "off"
+ask:
+  notify: "off"
+error:
+  notify: "off"
+skills:
+  ignoredSkills:
+    - ce-commit-push-pr
+    - ce-work
+    - ce-worktree
+    - lfg
+    - ce-noslop
+    - writing-skills
+    - skill-creator
+    - package-usage
+    - pulumi-context-api
+    - pulumi-esc
+    - pulumi-overview
+    - sentry-android-sdk
+    - sentry-browser-sdk
+    - sentry-cocoa-sdk
+    - sentry-code-review
+    - sentry-create-alert
+    - sentry-dotnet-sdk
+    - sentry-feature-setup
+    - sentry-fix-issues
+    - sentry-go-sdk
+    - sentry-nestjs-sdk
+    - sentry-nextjs-sdk
+    - sentry-node-sdk
+    - sentry-otel-exporter-setup
+    - sentry-php-sdk
+    - sentry-pr-code-review
+    - sentry-react-native-sdk
+    - sentry-react-sdk
+    - sentry-ruby-sdk
+    - sentry-sdk-setup
+    - sentry-sdk-skill-creator
+    - sentry-sdk-upgrade
+    - sentry-setup-ai-monitoring
+    - sentry-svelte-sdk
+    - sentry-workflow
+providers:
+  anthropic:
+    serverSideFallback: true
+    serverSideFallbackModels:
+      - claude-opus-5
+      - claude-opus-4-8
+composer:
+  shape: box
+isolation:
+  backend: auto
+codexResets:
+  autoRedeem: "yes"
+eval:
+  envPassthrough:
+    prefixes:
+      - DISPATCH_
+      - ENVOY_

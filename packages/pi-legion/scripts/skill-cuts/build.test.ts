@@ -38,6 +38,7 @@ import {
   STOP_AFTER_SESSIONS,
 } from "./build";
 import { type Case, caseKind, listedName, loadCases, pathHash } from "./cases";
+import { BASH_GATE_COMMITS } from "./checkout";
 import { GhRetries, MAX_RATE_RETRIES, SECONDARY_WAIT_MS } from "./common";
 import {
   FORMER_STAGES_COLUMNS,
@@ -5230,6 +5231,7 @@ test("build-cases --written --written-answer drops a task that treats a missing 
     root: "/home/dev/src/proj",
     cwd: "/home/dev/src/proj",
     jj: false,
+    knives: { blocks: null, touched: true },
   });
   expect(
     c?.messages.flatMap((message) =>
@@ -5284,10 +5286,234 @@ test("build-cases --written records on the case's checkout whether its context s
     root: "/home/dev/src/proj",
     cwd: "/home/dev/src/proj",
     jj: true,
+    knives: { blocks: null, touched: true },
   });
   expect(
     c?.evidence?.find((each) => each.item === `written case: checkout acme/proj at ${SHA}`)?.source
   ).toContain("a bash call of the context session ran jj, so its checkout was a jj workspace");
+}, 60_000);
+
+/** A notice block of knives (knives v3.2.3 src/hook/guidance.rs, `format_notice`) of nonce
+ *  `nonce` for the fork at `root`, made up. */
+function knivesNotice(nonce: string, root: string): string {
+  return `\n\n<knives-notice-${nonce} repo="proj" digest="0f0f">\n${root} is a fork managed by knives, and another agent may be working in it.\nNo branch is claimed here right now.\n</knives-notice-${nonce}>`;
+}
+
+/** A guidance block of knives (knives v3.2.3 src/hook/guidance.rs, `format_guidance`) of nonce
+ *  `nonce` for the repository knives names `repo`, made up. */
+function knivesGuidance(nonce: string, repo: string): string {
+  return `\n\n<knives-guidance-${nonce} repo="${repo}">\nThe following is the target repository's own contribution guidance.\nRun the tests.\n</knives-guidance-${nonce}>`;
+}
+
+/** A written context session's refusal of the bash gate: the form only 3c266c9f writes. */
+const GATE_REFUSAL =
+  "Blocked: `cat a.md` has a dedicated tool, `read`. Use the `read` tool instead of cat/head/tail. It provides better context and handles binary files.\n\nNothing ran. Re-send the rest as one bash call:\nls\n\nOriginal command: cat a.md; ls";
+
+/** The experiments extension's entry `id` (gates.ts's `resolve`), its arm of bash_gate_leading
+ *  `on`, made up. */
+function experimentsEntry(id: string, on: boolean): Record<string, unknown> {
+  return {
+    type: "custom",
+    customType: "experiments",
+    id,
+    timestamp: "2026-11-20T01:59:44.500Z",
+    data: {
+      v: 1,
+      rootSessionId: "made-up",
+      features: { bash_gate_leading: { gate: "random", draw: on ? "on" : "off", on } },
+    },
+  };
+}
+
+/** The text of the context session `name` of the rows on a written case's checkout records, in
+ *  /home/dev/src/proj: the gate's refusal of `cat a.md; ls` (GATE_REFUSAL); an experiments entry
+ *  naming the off arm before the skill's read and one naming the on arm after it, which a later
+ *  session start would append; and knives' additions: another fork's notice, then the notice and
+ *  guidance of the fork the working directory is in, after a grep's own text, and a later
+ *  guidance of the same repository after a read's. */
+function gateSessionText(name: string): string {
+  return sessionText(name, (lines) => {
+    workingDirectory("/home/dev/src/proj")(lines);
+    callAfterPrompt(
+      "b1b1b10",
+      "toolu_gate",
+      "bash",
+      { command: "cat a.md; ls" },
+      GATE_REFUSAL
+    )(lines);
+    const result = lines.find((line) => line.id === "b1b1b102");
+    Object(result?.message).isError = true;
+    const prompt = lines.filter((line) => line.type === "message")[0] ?? {};
+    insertAfter(lines, prompt, experimentsEntry("e0e0e0e1", false));
+    insertAfter(lines, lines[lines.length - 1] ?? {}, experimentsEntry("e0e0e0e2", true));
+    // Each call goes in right after the prompt, so the later read is put in first.
+    callAfterPrompt("d3d3d30", "toolu_read", "read", { path: "a.md" }, "a\n")(lines);
+    const read = lines.find((line) => line.id === "d3d3d302");
+    Object(read?.message).content.push({ type: "text", text: knivesGuidance("bb22", "proj") });
+    callAfterPrompt("c2c2c20", "toolu_grep", "grep", { pattern: "x", path: "." }, "x\n")(lines);
+    const grepped = lines.find((line) => line.id === "c2c2c202");
+    Object(grepped?.message).content.push(
+      { type: "text", text: knivesNotice("0ther", "/home/dev/src/other") },
+      {
+        type: "text",
+        text: `${knivesNotice("aa11", "/home/dev/src/proj")}${knivesGuidance("aa11", "proj")}`,
+      }
+    );
+  });
+}
+
+// Catches: a written case whose context session's bash gate arm, or the version its refusals show,
+// is not recorded (its own history, the task and the skill's read, shows neither), so its runs
+// answer bash calls through another arm or version of the gate than that session ran; or one whose
+// knives blocks are another addition's than the first one for its repository, or another fork's.
+test("build-cases --written records on the case's checkout its context session's bash gate: the arm its last experiments entry before the skill's read names, and the versions whose form its refusals of the gate before that read match; and the blocks of knives' first addition for its repository", async () => {
+  const third = BASH_GATE_COMMITS[2];
+  const file = "/sessions/proj-gate.jsonl";
+  const text = gateSessionText("proj-gate");
+  const store = changedStore("proj-gate", (files) => {
+    (files.store_a ?? {})[file] = text;
+  });
+  const out = path.join(scratch, "written-gate", "cases.jsonl");
+  const answer = writtenAnswerFile("written-gate", [
+    {
+      ...WRITTEN_TASK,
+      task: "Add a test of the farm, as CLAUDE.md asks.",
+      existing: ["CLAUDE.md"],
+    },
+  ]);
+  const args = writtenArgs(
+    out,
+    "--context-session",
+    `store_a:${fileHash(file)}`,
+    "--written-answer",
+    answer
+  );
+  args[args.indexOf("--config") + 1] = store;
+  expect(await main(args, io([]))).toBe(EXIT.ok);
+  const [c] = loadCases(out, old);
+  expect(c?.checkout?.bashGate).toEqual({ leading: false, versions: [third] });
+  expect(c?.checkout?.knives).toEqual({
+    blocks: `${knivesNotice("aa11", "/home/dev/src/proj")}${knivesGuidance("aa11", "proj")}`,
+    touched: true,
+  });
+}, 60_000);
+
+// Catches: a written case built before its checkout recorded the bash gate and knives, which
+// --reprofile leaves without them (so its runs answer no bash call, and refuse each call knives may
+// add blocks to) or fills otherwise than a fresh build of its context session does; a reprofile
+// that changes another byte of the case, or calls a model; or one that fills them from a session
+// its store holds no longer, or keeps such a case's checkout without saying why.
+test("build-cases --reprofile gives a written case built before its checkout's bash gate and knives records the ones a fresh build of its context session gives, with no model call, every other byte as it was; where the store holds the session no longer, it keeps the checkout and says why", async () => {
+  const file = "/sessions/proj-again.jsonl";
+  const text = gateSessionText("proj-again");
+  const store = changedStore("proj-again", (files) => {
+    (files.store_a ?? {})[file] = text;
+  });
+  const dir = path.join(scratch, "written-again");
+  const out = path.join(dir, "cases.jsonl");
+  const answer = writtenAnswerFile("written-again", [
+    {
+      ...WRITTEN_TASK,
+      task: "Add a test of the farm, as CLAUDE.md asks.",
+      existing: ["CLAUDE.md"],
+    },
+  ]);
+  const args = writtenArgs(
+    out,
+    "--context-session",
+    `store_a:${fileHash(file)}`,
+    "--written-answer",
+    answer
+  );
+  args[args.indexOf("--config") + 1] = store;
+  expect(await main(args, io([]))).toBe(EXIT.ok);
+  const line = readFileSync(out, "utf8");
+  const fresh = JSON.parse(line);
+  expect(Object.keys(fresh.checkout)).toEqual(expect.arrayContaining(["bashGate", "knives"]));
+  // The case as a build before the records wrote it.
+  const { bashGate: _gate, knives: _knives, ...older } = fresh.checkout;
+  const from = path.join(dir, "before.jsonl");
+  writeFileSync(from, `${JSON.stringify({ ...fresh, checkout: older })}\n`);
+  const reprofile = (config: string, to: string, printed: string[]) =>
+    main(
+      [
+        "build-cases",
+        "--config",
+        config,
+        "--old",
+        old,
+        "--copies",
+        writtenCopies(),
+        "--count",
+        countDir,
+        "--reprofile",
+        from,
+        "--out",
+        to,
+      ],
+      io(printed)
+    );
+  const asked = recorder.requests.length;
+  const again = path.join(dir, "reprofiled.jsonl");
+  expect(await reprofile(store, again, [])).toBe(EXIT.ok);
+  expect(recorder.requests.length).toBe(asked);
+  expect(readFileSync(again, "utf8")).toBe(line);
+  expect(summaryOf<{ cases: { checkoutRecords?: string }[] }>(again).cases).toEqual([
+    expect.objectContaining({ checkoutRecords: "read" }),
+  ]);
+  // The store holds the session no longer: the checkout is kept as it was, and why is said.
+  const gone = changedStore("proj-again-gone", (files) => {
+    delete files.store_a?.[file];
+  });
+  const kept = path.join(dir, "kept.jsonl");
+  const printed: string[] = [];
+  await reprofile(gone, kept, printed);
+  const why = "the store store_a holds no file of its context session now (session-paths.sql)";
+  expect(printed.join("")).toContain(
+    `${fresh.id}: its checkout's bash gate and knives records are kept as they were: ${why}\n`
+  );
+  expect(loadCases(kept, old)[0]?.checkout).toEqual(older);
+  expect(summaryOf<{ cases: { checkoutRecords?: string }[] }>(kept).cases).toEqual([
+    expect.objectContaining({ checkoutRecords: why }),
+  ]);
+}, 60_000);
+
+// Catches: a written case whose repository knives trusts and manages not left without the guidance
+// knives gave its context session (named by the checkout root's directory, as knives names such a
+// repository), or given another repository's.
+test("build-cases --written records on the case's checkout the guidance knives gave its context session for a repository it trusts and manages not, by the name of the checkout's root, and no other repository's", async () => {
+  const file = "/sessions/proj-trusted.jsonl";
+  const text = sessionText("proj-trusted", (lines) => {
+    workingDirectory("/home/dev/src/proj")(lines);
+    callAfterPrompt("e4e4e40", "toolu_read", "read", { path: "a.md" }, "a\n")(lines);
+    const read = lines.find((line) => line.id === "e4e4e402");
+    Object(read?.message).content.push({
+      type: "text",
+      text: `${knivesGuidance("cc33", "other")}${knivesGuidance("cc33", "proj")}`,
+    });
+  });
+  const store = changedStore("proj-trusted", (files) => {
+    (files.store_a ?? {})[file] = text;
+  });
+  const out = path.join(scratch, "written-trusted", "cases.jsonl");
+  const answer = writtenAnswerFile("written-trusted", [
+    {
+      ...WRITTEN_TASK,
+      task: "Add a test of the farm, as CLAUDE.md asks.",
+      existing: ["CLAUDE.md"],
+    },
+  ]);
+  const args = writtenArgs(
+    out,
+    "--context-session",
+    `store_a:${fileHash(file)}`,
+    "--written-answer",
+    answer
+  );
+  args[args.indexOf("--config") + 1] = store;
+  expect(await main(args, io([]))).toBe(EXIT.ok);
+  const [c] = loadCases(out, old);
+  expect(c?.checkout?.knives).toEqual({ blocks: knivesGuidance("cc33", "proj"), touched: true });
 }, 60_000);
 
 // Catches: a written-case reader given only the root's entries of a large checkout, so it cannot see
@@ -5818,6 +6044,7 @@ test("build-cases --written passes over, before asking the written-case reader, 
       root: F1_CWD,
       cwd: F1_CWD,
       jj: false,
+      knives: { blocks: null, touched: true },
     });
   }
   // A --context-session of it is refused (exit 1), naming why.

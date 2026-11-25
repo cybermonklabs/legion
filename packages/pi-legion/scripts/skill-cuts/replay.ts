@@ -130,6 +130,7 @@ import { pathReadFile, skillReadFile } from "./cases";
 import {
   answerCall,
   type CheckoutCopy,
+  knivesAdded,
   type RunArtifacts,
   readOnlyCall,
   runArtifacts,
@@ -365,6 +366,8 @@ interface AnsweredCall {
   readonly id: string;
   readonly text: string;
   readonly read: RoundRead;
+  /** A text block a plugin adds after the tool's (knives', checkout.ts's `KnivesRepository`). */
+  readonly added?: string;
 }
 
 /** A tool call that reads a skill file, answered. */
@@ -464,18 +467,46 @@ function roundReads(
   return reads;
 }
 
+/** Why a Responses body's run is not answered where knives adds its blocks: they are a text block
+ *  of their own after the tool's (checkout.ts's `KnivesRepository`), which a Responses body's one
+ *  output string has no place for. */
+const RESPONSES_KNIVES =
+  "knives adds its blocks as a text block of their own after the tool's, which the runner does not rebuild in a Responses body's output";
+
+/** `read`, the answer to the skill read `input` of a written case's run, with knives' blocks after
+ *  it where they go there (checkout.ts's `knivesAdded`, which reads its `path` as knives reads a
+ *  read's), from the case's checkout copy `checkout` and the run's `artifacts`; as it is without
+ *  a copy (a session case, or a written case whose copy is why it has none); or why not. */
+function knivesRead(
+  read: SkillRead,
+  input: unknown,
+  checkout: CheckoutCopy | Unanswered | undefined,
+  artifacts: RunArtifacts | undefined,
+  responses: boolean
+): SkillRead | Unanswered {
+  if (checkout === undefined || "why" in checkout || artifacts === undefined) return read;
+  if (!isObject(input)) return read;
+  const added = knivesAdded(checkout, input, artifacts);
+  if (added === undefined) return read;
+  if (typeof added !== "string") return { why: `read ${JSON.stringify(input)}: ${added.why}` };
+  if (responses) return { why: `read ${JSON.stringify(input)}: ${RESPONSES_KNIVES}` };
+  return { ...read, added };
+}
+
 /** The answers to a reply's `content` from the checkout copy `checkout` when every tool call of it
  *  is read-only (checkout.ts's `readOnlyCall`): each read of a skill file as `skillRead` answers
- *  it, each other call from the copy (`answerCall`, the pinned Oh My Pi's artifacts numbered as the
- *  run's `artifacts` hold them), or, where `checkout` is why the case has none, with no answer;
- *  undefined when it holds no tool call or one that is not read-only; `why` a call of it is
- *  answered in no form, when one is (see the file's header). */
+ *  it (with knives' blocks where they go there, `knivesRead`), each other call from the copy
+ *  (`answerCall`, the pinned Oh My Pi's artifacts numbered as the run's `artifacts` hold them),
+ *  or, where `checkout` is why the case has none, with no answer; undefined when it holds no tool
+ *  call or one that is not read-only; `why` a call of it is answered in no form, when one is (see
+ *  the file's header). */
 async function checkoutRound(
   content: readonly ContentBlock[],
   arm: Arm,
   copies: readonly InstalledCopy[],
   checkout: CheckoutCopy | Unanswered,
-  artifacts: RunArtifacts | undefined
+  artifacts: RunArtifacts | undefined,
+  responses: boolean
 ): Promise<AnsweredCall[] | Unanswered | undefined> {
   const calls = toolCalls(content);
   if (calls.length === 0) return undefined;
@@ -488,15 +519,20 @@ async function checkoutRound(
     const target = name === "read" && isObject(input) ? input.path : undefined;
     const skill = typeof target === "string" ? skillRead(id, target, arm, copies) : undefined;
     if (skill !== undefined) {
-      answers.push(skill);
+      const given = knivesRead(skill, input, checkout, artifacts, responses);
+      if ("why" in given) return given;
+      answers.push(given);
       continue;
     }
     const answer =
       "why" in checkout ? checkout : await answerCall(checkout, name, input, rows, artifacts);
     if ("why" in answer) return { why: `${name} ${JSON.stringify(input)}: ${answer.why}` };
-    const { text, isError } = answer;
+    const { text, isError, added } = answer;
+    if (added !== undefined && responses) {
+      return { why: `${name} ${JSON.stringify(input)}: ${RESPONSES_KNIVES}` };
+    }
     const read = { from: "checkout", tool: name ?? "", input, isError } as const;
-    answers.push({ id, text, read });
+    answers.push({ id, text, read, ...(added === undefined ? {} : { added }) });
   }
   return answers;
 }
@@ -516,10 +552,13 @@ function answered(
     }));
     return { ...body, input: [...body.input, ...content, ...outputs] };
   }
-  const results = reads.map(({ id, text, read }) => ({
+  const results = reads.map(({ id, text, read, added }) => ({
     type: "tool_result",
     tool_use_id: id,
-    content: [{ type: "text", text }],
+    content: [
+      { type: "text", text },
+      ...(added === undefined ? [] : [{ type: "text", text: added }]),
+    ],
     is_error: read.isError,
   }));
   return {
@@ -579,12 +618,25 @@ async function replaySent(
         );
       }
       rounds += 1;
-      answers = round;
+      const inputs = toolCalls(content);
+      const given: SkillRead[] = [];
+      for (const [index, read] of round.entries()) {
+        const each = knivesRead(
+          read,
+          inputs[index]?.input,
+          checkout,
+          artifacts,
+          isResponsesBody(body)
+        );
+        if ("why" in each) throw new UnansweredRead(replayed, each.why);
+        given.push(each);
+      }
+      answers = given;
     } else {
       const looked =
         checkout === undefined
           ? undefined
-          : await checkoutRound(content, arm, copies, checkout, artifacts);
+          : await checkoutRound(content, arm, copies, checkout, artifacts, isResponsesBody(body));
       if (looked === undefined) return replayed;
       if ("why" in looked) throw new UnansweredRead(replayed, looked.why);
       if (checkoutRounds >= MAX_CHECKOUT_ROUNDS) {

@@ -451,6 +451,7 @@ import {
 import {
   type Case,
   caseKind,
+  insideRoot,
   loadCases,
   pathReadFile,
   stepSkillFiles,
@@ -458,12 +459,17 @@ import {
   textLines,
 } from "./cases";
 import {
+  BASH_GATE_COMMITS,
   type CheckoutCopy,
   colocateJj,
+  gateVersion,
+  type KnivesRepository,
   messagesRunJj,
   readOnlyCall,
   removeOutsideLinks,
+  type ShellSetup,
   sessionHome,
+  shellPrefixOf,
   type Unanswered,
 } from "./checkout";
 import {
@@ -492,7 +498,10 @@ import {
   ghSource,
   installedCopies,
   localSource,
+  NoSuchFile,
   type RepoSource,
+  repositoryDirectory,
+  repositoryFile,
   repositoryTree,
   UNREADABLE_DIRECTORY,
   UnreadableDirectory,
@@ -2154,6 +2163,26 @@ const SharedCheckout = z.strictObject({
   jj: z.union([z.literal(true), z.strictObject({ why: z.string() })]).optional(),
 });
 
+/** The shell a written case's stage answered its `bash` calls in (`caseShell`, checkout.ts's
+ *  ShellSetup): `prefix`, the PI_SHELL_PREFIX its context session's Oh My Pi ran them with (null
+ *  for none), and `gate`, its experiments extension's bash gate: the dotfiles commit it was loaded
+ *  at, whether that version was taken from the profile's commit (no refusal of the gate in the
+ *  context session's history: `profile`) or from those refusals (`history`; checkout.ts's
+ *  `gateVersion`), and the arm (`leading`); or why the runner does not know it, and no `bash` call
+ *  of the stage is answered. */
+const StageShell = z.union([
+  z.strictObject({
+    prefix: z.string().nullable(),
+    gate: z.strictObject({
+      commit: z.string(),
+      from: z.enum(["history", "profile"]),
+      leading: z.boolean(),
+    }),
+  }),
+  z.strictObject({ why: z.string() }),
+]);
+type StageShell = z.infer<typeof StageShell>;
+
 /** One stage of a case: `running` until score.ts's `stageOutcome` says `counted` or `unscreened`.
  *  `texts` are the digests of `--old` and of `--new` or `--ours` it ran with, `compared` the arm
  *  the old text was compared with (a stage that records none was run with `--new`, before it was
@@ -2173,8 +2202,9 @@ const SharedCheckout = z.strictObject({
  *  GitHub's tarball, whose git commands are not answered), the depth of its history (`git log`
  *  there shows at most that many commits, then the shallow boundary; null for the tarball), each
  *  symbolic link removed from it because it resolved outside it or not at all (checkout.ts's
- *  `removeOutsideLinks`), and whether it is a colocated jj repository (`jj`, where a case whose
- *  session ran jj made it one or failed to); absent otherwise. */
+ *  `removeOutsideLinks`), whether it is a colocated jj repository (`jj`, where a case whose
+ *  session ran jj made it one or failed to), and the shell its `bash` calls were answered in
+ *  (`shell`, StageShell; absent in a stage recorded before it was); absent otherwise. */
 const StageResult = z.strictObject({
   state: StageState,
   sends: z.literal(SENDS),
@@ -2189,7 +2219,7 @@ const StageResult = z.strictObject({
   usd: z.number(),
   runner: z.string().optional(),
   confirmFlagged: z.literal(true).optional(),
-  checkout: SharedCheckout.optional(),
+  checkout: SharedCheckout.extend({ shell: StageShell.optional() }).optional(),
 });
 type StageResult = z.infer<typeof StageResult>;
 
@@ -2424,6 +2454,10 @@ interface Runner extends Behaviour {
    *  `https://github.com/<repo>.git`, or, with `--repos <dir>`, the git repository
    *  `<dir>/<repo>.git`. */
   readonly gitRemote: (repo: string) => string;
+  /** The configuration's `dotfilesRepo`, the dev box's dotfiles repository, whose commit a
+   *  written case's profile names gives the shell its `bash` calls are answered in (`caseShell`);
+   *  undefined where it names none. */
+  readonly dotfilesRepo: string | undefined;
   capture(c: Case, arm: Arm): Promise<Capture>;
   readonly afterCase: string | undefined;
   readonly afterCaseFailures: string[];
@@ -3085,6 +3119,280 @@ const NO_CHECKOUT: Unanswered = {
   why: "the case has no checkout of its context session's repository, so the runner answers none of its read-only calls (build-cases now passes over a context session whose working directory is in no checkout it knows, as no-checkout)",
 };
 
+/** The dotfiles' omp wrapper, which exports PI_SHELL_PREFIX from commit bcd580fa on
+ *  (checkout.ts's `shellPrefixOf`). */
+const DOTFILES_SHIM = "shims/omp";
+
+/** The shell prefix of each dotfiles commit this process has read (`dotfilesPrefix`), by
+ *  `<cacheDir>\0<repo>@<commit>`: each read once (its file kept in the cache too), a read that
+ *  failed for another reason than a missing file dropped, so a later case reads it again. */
+const dotfilesPrefixes = new Map<string, Promise<string | undefined | Unanswered>>();
+
+/** The PI_SHELL_PREFIX the dotfiles' `shims/omp` of `repo` at `commit` exports (checkout.ts's
+ *  `shellPrefixOf`; undefined for none), read through the runner's source and cache as a
+ *  context's file is; or why not: the file is missing or cannot be read, or sets it in a form the
+ *  runner does not read. */
+function dotfilesPrefix(
+  r: Runner,
+  repo: string,
+  commit: string
+): Promise<string | undefined | Unanswered> {
+  const key = `${r.cacheDir}\0${repo}@${commit}`;
+  const held = dotfilesPrefixes.get(key);
+  if (held !== undefined) return held;
+  const read = (async (): Promise<string | undefined | Unanswered> => {
+    let shim: string;
+    try {
+      shim = await repositoryFile(r.source, r.cacheDir, repo, commit, DOTFILES_SHIM);
+    } catch (error) {
+      if (!(error instanceof NoSuchFile)) dotfilesPrefixes.delete(key);
+      return {
+        why: `${DOTFILES_SHIM} of ${repo} at ${commit}, whose PI_SHELL_PREFIX the session's Oh My Pi ran its bash calls with, could not be read: ${messageFor(error)}`,
+      };
+    }
+    const prefix = shellPrefixOf(shim);
+    return typeof prefix === "object"
+      ? { why: `${DOTFILES_SHIM} of ${repo} at ${commit}: ${prefix.why}` }
+      : prefix;
+  })();
+  dotfilesPrefixes.set(key, read);
+  return read;
+}
+
+/** The dotfiles' experiments extension (its entry `index.ts`, which installers/omp.sh links into
+ *  every profile) and its bash gate's core, whose text tells its version (checkout.ts's
+ *  `gateVersion`). */
+const EXPERIMENTS_DIR = "omp/extensions/experiments";
+const GATE_CORE = `${EXPERIMENTS_DIR}/bash-gate-core.ts`;
+
+/** The text of `file` of the dotfiles `repo` at `commit`, through the runner's source and cache;
+ *  undefined where the commit holds no such file. Throws where the read fails. */
+async function dotfilesText(
+  r: Runner,
+  repo: string,
+  commit: string,
+  file: string
+): Promise<string | undefined> {
+  try {
+    return await repositoryFile(r.source, r.cacheDir, repo, commit, file);
+  } catch (error) {
+    if (error instanceof NoSuchFile) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * The shell written case `c`'s context session's Oh My Pi ran its `bash` calls in (checkout.ts's
+ * ShellSetup), from the one commit of the configuration's dotfiles repository (`dotfilesRepo`)
+ * the case's profile's skills name, and what its stage records of it (StageShell): the
+ * PI_SHELL_PREFIX its `shims/omp` exports (`dotfilesPrefix`); and the bash gate of its
+ * experiments extension (BashGate), at the version the session ran (checkout.ts's
+ * `gateVersion`: the profile's commit, or an older one the refusals in the context session's
+ * history name, cases.ts's `checkout.bashGate`), its directory read through the runner's source
+ * into the cache, in the session's arm. Why not, and then none of the case's `bash` calls is
+ * answered, rather than one answered in a shell the session did not have: the configuration
+ * names no dotfiles repository, the profile names no commit of it or more than one, the shim
+ * cannot be read, the case records no arm of the gate (a case built before build-cases recorded
+ * it is not read from the store, as its `checkout.jj` is not either), `gateVersion` refuses, or
+ * the extension cannot be read.
+ */
+async function caseShell(
+  r: Runner,
+  c: Case
+): Promise<{ readonly shell: ShellSetup | Unanswered; readonly record: StageShell }> {
+  const refused = (why: string) => ({ shell: { why }, record: { why } });
+  const dotfiles = profileDotfiles(
+    r,
+    c,
+    DOTFILES_SHIM,
+    "gives the PI_SHELL_PREFIX the session's Oh My Pi ran its bash calls with"
+  );
+  if ("why" in dotfiles) return refused(dotfiles.why);
+  const { repo, commit } = dotfiles;
+  const prefix = await dotfilesPrefix(r, repo, commit);
+  if (typeof prefix === "object") return refused(prefix.why);
+  const recorded = c.checkout?.bashGate;
+  if (recorded === undefined) {
+    return refused(
+      "the case records no arm of its context session's bash gate (checkout.bashGate): it was built before build-cases recorded one, or that session records no experiments entry naming bash_gate_leading before its skill's read; the runner reads no session store for it, as it reads none for checkout.jj"
+    );
+  }
+  try {
+    const profileCore = await dotfilesText(r, repo, commit, GATE_CORE);
+    const cores = new Map<string, string>();
+    for (const version of recorded.versions === undefined ? [] : BASH_GATE_COMMITS) {
+      const text = await dotfilesText(r, repo, version, GATE_CORE);
+      if (text !== undefined) cores.set(version, text);
+    }
+    const version = gateVersion({
+      profile: commit,
+      profileCore,
+      versions: recorded.versions,
+      cores,
+    });
+    if ("why" in version) return refused(version.why);
+    const dir = await repositoryDirectory(
+      r.source,
+      r.cacheDir,
+      repo,
+      version.commit,
+      EXPERIMENTS_DIR
+    );
+    if (!isFile(path.join(dir, "index.ts"))) {
+      return refused(`${repo} at ${version.commit} holds no ${EXPERIMENTS_DIR}/index.ts`);
+    }
+    return {
+      shell: {
+        ...(prefix === undefined ? {} : { prefix }),
+        gate: { dir, leading: recorded.leading },
+      },
+      record: { prefix: prefix ?? null, gate: { ...version, leading: recorded.leading } },
+    };
+  } catch (error) {
+    return refused(
+      `the experiments extension of ${repo}, whose bash gate the session's bash calls passed through, could not be read: ${messageFor(error)}`
+    );
+  }
+}
+
+/** The one commit of the configuration's dotfiles repository (`dotfilesRepo`) case `c`'s profile's
+ *  skills name, whose files set up the session's Oh My Pi (`caseShell`, `caseKnives`), or why none
+ *  is known, for the caller's `file` of it, which `use` says what it is for: the configuration
+ *  names no dotfiles repository, or the profile names no commit of it or several. */
+function profileDotfiles(
+  r: Runner,
+  c: Case,
+  file: string,
+  use: string
+): { repo: string; commit: string } | Unanswered {
+  const repo = r.dotfilesRepo;
+  if (repo === undefined) {
+    return { why: `the configuration names no dotfilesRepo, whose ${file} ${use}` };
+  }
+  const commits = [
+    ...new Set(c.profile.skills.filter((skill) => skill.repo === repo).map((s) => s.commit)),
+  ];
+  const [commit, ...more] = commits;
+  if (commit === undefined || more.length > 0) {
+    return {
+      why:
+        commit === undefined
+          ? `the case's profile names no commit of ${repo} (no skill of it), whose ${file} ${use}`
+          : `the case's profile names ${commits.length} commits of ${repo} (${commits.join(", ")}), and the runner cannot tell which one's ${file} the session's Oh My Pi ran with`,
+    };
+  }
+  return { repo, commit };
+}
+
+/** The dotfiles' knives registry, the `repos.toml` knives reads: its `[repos.<name>]` forks and
+ *  its `[trust]` rules (knives v3.2.3 src/config.rs lines 481-540). */
+const KNIVES_REGISTRY = "knives/repos.toml";
+
+/** The `owner/name` of the GitHub repository a remote URL names, lower-cased, `.git` taken off, as
+ *  knives compares remotes (src/config.rs lines 521-539: case-insensitive, `.git` stripped);
+ *  undefined for any other URL. */
+function remoteSlug(url: unknown): string | undefined {
+  if (typeof url !== "string") return undefined;
+  const match =
+    /^(?:https?:\/\/|ssh:\/\/git@|git@)github\.com[/:]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(
+      url.trim()
+    );
+  return match === null ? undefined : `${match[1]}/${match[2]}`.toLowerCase();
+}
+
+/**
+ * Why knives' plugin may give blocks to the repository of written case `c`'s checkout `checkout`,
+ * by the registry the dotfiles hold at the commit the case's profile names (KNIVES_REGISTRY):
+ * knives gives a notice where it manages the repository as a fork and guidance where it trusts it
+ * (knives v3.2.3 src/hook/resolve.rs lines 108-145; src/commands/hook.rs lines 189-203);
+ * undefined where it gives none, as where that commit holds no registry. knives reads the
+ * checkout's own remotes, which the runner does not know, so a fork is an entry whose `origin` or
+ * `upstream` names a repository of the same name as the case's (a fork whose repository moved, as
+ * sjawhar/oh-my-pi did to cybermonklabs/oh-my-pi, among them), and the repository is trusted where
+ * the registry's `[trust]` `owners` holds its owner, its `repos` the repository, or its `roots` a
+ * directory its root is under, or under `~` where the case records no home (src/config.rs lines
+ * 481-540): this may name a repository knives gives none, never the reverse. Also a reason where
+ * the registry cannot be read (the profile names no one commit of the dotfiles, or the file is no
+ * TOML).
+ */
+async function knivesMayGive(
+  r: Runner,
+  c: Case,
+  checkout: NonNullable<Case["checkout"]>
+): Promise<string | undefined> {
+  const cannot = (why: string) =>
+    `the runner cannot read knives' registry ${KNIVES_REGISTRY}, which says whether knives gives it blocks: ${why}`;
+  const dotfiles = profileDotfiles(
+    r,
+    c,
+    KNIVES_REGISTRY,
+    "says whether knives gives the checkout's repository blocks"
+  );
+  if ("why" in dotfiles) return dotfiles.why;
+  const at = `${KNIVES_REGISTRY} at ${dotfiles.repo}@${dotfiles.commit}`;
+  let registry: Record<string, unknown>;
+  try {
+    const text = await dotfilesText(r, dotfiles.repo, dotfiles.commit, KNIVES_REGISTRY);
+    if (text === undefined) return undefined;
+    registry = Object(Bun.TOML.parse(text));
+  } catch (error) {
+    return cannot(messageFor(error));
+  }
+  const slug = checkout.repo.toLowerCase();
+  const nameOf = (each: string) => each.slice(each.indexOf("/") + 1);
+  const fork = Object.entries(Object(registry.repos)).find(([, entry]) =>
+    [Object(entry).origin, Object(entry).upstream].some((url) => {
+      const remote = remoteSlug(url);
+      return remote !== undefined && nameOf(remote) === nameOf(slug);
+    })
+  )?.[0];
+  if (fork !== undefined) return `knives may manage it as its fork ${fork} (${at})`;
+  const trust = Object(registry.trust);
+  const listed = (key: string): string[] =>
+    Array.isArray(trust[key])
+      ? trust[key].filter((each: unknown): each is string => typeof each === "string")
+      : [];
+  const home = sessionHome(checkout.root, c.pathCopy?.home);
+  const owner = slug.slice(0, slug.indexOf("/"));
+  const trusted =
+    listed("owners").some((each) => each.toLowerCase() === owner) ||
+    listed("repos").some((each) => each.toLowerCase().replace(/\.git$/, "") === slug) ||
+    listed("roots").some((root) => {
+      if (root !== "~" && !root.startsWith("~/"))
+        return insideRoot(root, checkout.root) !== undefined;
+      return (
+        home === undefined ||
+        insideRoot(path.join(home, root.slice(1)), checkout.root) !== undefined
+      );
+    });
+  return trusted ? `knives trusts it (${at}, its [trust])` : undefined;
+}
+
+/**
+ * The blocks knives' plugin gave written case `c`'s context session for its checkout's
+ * repository (checkout.ts's KnivesRepository, cases.ts's `checkout.knives`), which a run adds to
+ * its first answer that touches the repository; undefined where a run adds none: the case has no
+ * checkout, the session touched the repository and got no block of it, or knives gives it none
+ * (`knivesMayGive`). Why the runner has none where knives may give some: the session never
+ * touched the repository, or the case was built before build-cases recorded the blocks (the
+ * runner reads no session store for them, as it reads none for `checkout.jj`).
+ */
+async function caseKnives(r: Runner, c: Case): Promise<KnivesRepository | undefined> {
+  const checkout = c.checkout;
+  if (checkout === undefined) return undefined;
+  const name = checkout.repo;
+  const recorded = checkout.knives;
+  if (recorded !== undefined && recorded.blocks !== null) return { name, blocks: recorded.blocks };
+  if (recorded?.touched === true) return undefined;
+  const gives = await knivesMayGive(r, c, checkout);
+  if (gives === undefined) return undefined;
+  const lacks =
+    recorded === undefined
+      ? "the case was built before build-cases recorded the blocks its context session got (checkout.knives), and the runner reads no session store for them, as it reads none for checkout.jj"
+      : "the case's context session never touched it, so the runner has none of the blocks knives adds to the first result of a session that touches it";
+  return { name, blocks: { why: `${gives}, and ${lacks}` } };
+}
+
 /**
  * Runs `stage` of case `c` until score.ts's `stageOutcome` says its runs are counted or
  * unscreened, round by round, from the runs `result` holds already (which each caller's
@@ -3223,8 +3531,11 @@ async function runStage(
       // The session's home, which its `~` and `$HOME` stand for (checkout.ts's `sessionHome`),
       // and when the copy was made, from which a listing measures each entry's age; the case's
       // history, from which a call the pinned Oh My Pi answers numbers its artifact and a read of
-      // one of its internal URLs learns whether the history made the item.
+      // one of its internal URLs learns whether the history made the item; and the shell its
+      // context session's Oh My Pi ran its bash calls in.
       const home = sessionHome(root, c.pathCopy?.home);
+      const { shell, record } = await caseShell(r, c);
+      const knives = await caseKnives(r, c);
       checkout = {
         dir: shared.dir,
         root,
@@ -3235,10 +3546,18 @@ async function runStage(
         madeAt,
         answers: new Map(),
         history: JSON.stringify(c.messages),
+        shell,
+        ...(knives === undefined ? {} : { knives }),
       };
       save({
         ...state,
-        checkout: { git, depth, removedLinks, ...(jj === undefined ? {} : { jj }) },
+        checkout: {
+          git,
+          depth,
+          removedLinks,
+          ...(jj === undefined ? {} : { jj }),
+          shell: record,
+        },
       });
     } catch (error) {
       if (!(error instanceof UnreadableDirectory)) throw error;
@@ -5529,6 +5848,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     source,
     gitRemote: (repo) =>
       values.repos === undefined ? githubRemote(repo) : path.join(values.repos, `${repo}.git`),
+    dotfilesRepo: config.dotfilesRepo,
     capture: async (c, arm) => {
       const outDir = armCaptureDir(given.out, arm, texts);
       const saved = await restoredCapture(c, arm, capturePaths(outDir, c.id, arm.name), {

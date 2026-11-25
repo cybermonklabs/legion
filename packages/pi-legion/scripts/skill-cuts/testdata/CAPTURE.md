@@ -3,7 +3,8 @@
 Every fixture here came from a real system on 2026-11-20, with made-up skills (`alpha`, `beta`,
 `tool-loop-alpha`) and made-up prompts, but for these: F10, F11 and F15 are GitHub's answers, a
 pull request's body and a pull request's diff of real repositories, read on 2026-11-22, with the
-names their sections give replaced; and F12, F13, F14, the style texts and the control skills are
+names their sections give replaced; F16 is files of the public dotfiles repository read on
+2026-11-25, as its section says; and F12, F13, F14, the style texts and the control skills are
 made up, read from no system, in the shapes their sections give.
 A test that reads a fixture cites its section of this file in its header. The scan at the end says
 how each file was checked for keys and private names.
@@ -750,6 +751,29 @@ hunk left out naming a private term. With `$OWNER` the owner's name (left out of
 
 Replaced: the owner's name in each path, `plugins/<owner>/skills/` to `plugins/acme/skills/`.
 Every other byte is as captured.
+
+## F16: the dotfiles' experiments extension and omp/config.yml (`F16-experiments/`, `F16-config.yml`)
+
+Read on 2026-11-25 from the public dotfiles repository the configuration's `dotfilesRepo` names,
+at commit 3c266c9f (2026-10-27), with `gh api repos/<dotfilesRepo>/contents/<path>?ref=<commit>
+-H "Accept: application/vnd.github.raw"`:
+
+- `F16-experiments/bash-gate.ts`, `bash-gate-core.ts`, `bash-remainder.ts`, `gates.ts` and
+  `gates.json`: `omp/extensions/experiments/<file>` at that commit, byte for byte.
+- `F16-experiments/index.ts`: that commit's `omp/extensions/experiments/index.ts` less the five
+  import lines of its other features (`judge-log`, `proactive-memory`, `rules-refresh`,
+  `selfcompact`, `skill-gate`) and their five entries of `REGISTRATIONS`, which is left empty;
+  every other byte as it is. The whole directory is not copied: `proactive-memory-core.ts` holds a
+  run of 40 hex digits and an id alphabet the scan below refuses, and none of those features
+  hooks a read-only call (the bash gate alone does). The runner itself loads the whole directory
+  at the commit it resolves, never this copy.
+- `F16-config.yml`: `omp/config.yml` at that commit with each comment taken out (whole comment
+  lines, and the text from a ` #` to the end of a line); it parses to the same settings, read
+  with `Bun.YAML.parse`. The comments name people, Dispatch keys and private repositories.
+
+checkout.test.ts loads the extension in the pin's sandbox (the bash gate's rows) and in an
+ordinary print-mode session beside `F16-config.yml` (the row that sets the stub against such a
+session); cli.test.ts copies the extension into `--repos` at the made-up dotfiles commit.
 
 ## The canned reader answers
 

@@ -4,6 +4,7 @@ import {
   lstatSync,
   lutimesSync,
   mkdirSync,
+  readFileSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -15,10 +16,16 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { fileTag, snapshotTag } from "./arms";
 import {
   answerCall,
+  BASH_GATE_COMMITS,
   type CheckoutAnswer,
   type CheckoutCopy,
   colocateJj,
+  gateRefusalVersions,
+  gateVersion,
   grepScan,
+  knivesTouches,
+  minimizerReadings,
+  pinBashAnswer,
   READ_ONLY_TOOLS,
   readOnlyCall,
   removeOutsideLinks,
@@ -27,7 +34,10 @@ import {
   sandboxedBash,
   sessionHome,
   setSandboxSpawnForTests,
+  shellPrefixOf,
 } from "./checkout";
+import { pinnedOmp } from "./natives";
+import { PIN_CALL_FILE, PIN_RESULT_MARKER, type PinResult } from "./pin-hook";
 import { pinBinary, pinNatives } from "./test-natives";
 import { detachedCommit, gitIn, writeTree } from "./testdata/fixtures";
 
@@ -2041,6 +2051,439 @@ test("an output of 1000 characters or more is answered as it is where the minimi
         answer: { why: expect.stringContaining(NO_PIN) },
       });
     }
+  });
+}, 60_000);
+
+/** The shell prefix the dotfiles' shims/omp exports from commit bcd580fa on (checkout.ts's
+ *  `ShellSetup.prefix`): Oh My Pi's executor runs `${PREFIX} ${command}`. */
+const PREFIX = "set +e +u +o pipefail;";
+
+/** The lines of the dotfiles' shims/omp that set the prefix at commit bcd580fa, as written there. */
+const SHIM_PREFIX_LINES = [
+  "# omp's bash tool runs every call in one persistent shell, so `set -e`, `-u` or `-o pipefail` at",
+  "# one call's top level stays on for every later call and silently breaks them (`yes | head -n 1`",
+  "# exits 141, a `grep -c` counting zero ends the command). omp puts PI_SHELL_PREFIX in front of",
+  "# each command inside its executor, so the model's command text never shows it; a caller's value",
+  "# wins. Costs: a `!cd` typed in the TUI no longer moves the session's cwd, and `set -x` and",
+  "# `shopt` changes still carry over.",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the shim's own `${PI_SHELL_PREFIX:-…}`
+  'export PI_SHELL_PREFIX="${PI_SHELL_PREFIX:-set +e +u +o pipefail;}"',
+];
+
+// Catches: a prefix read from a shim of another form (a guess), a commit before bcd580fa read as
+// one with a prefix, or the comment's mention of the variable read as its setting.
+test("shellPrefixOf reads the default of shims/omp's export of PI_SHELL_PREFIX; a shim whose only mention is a comment has none; another form is refused", () => {
+  const shim = (...lines: string[]) =>
+    ["#!/usr/bin/env bash", "set -euo pipefail", ...lines, 'exec omp "$@"', ""].join("\n");
+  expect(shellPrefixOf(shim(...SHIM_PREFIX_LINES))).toBe(PREFIX);
+  expect(shellPrefixOf(shim())).toBeUndefined();
+  expect(shellPrefixOf(shim(...SHIM_PREFIX_LINES.slice(0, -1)))).toBeUndefined();
+  for (const line of [
+    'export PI_SHELL_PREFIX="set +e;"',
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the shim's own `${PI_SHELL_PREFIX:-…}`
+    'export PI_SHELL_PREFIX="${PI_SHELL_PREFIX:-$EXTRA}"',
+    "PI_SHELL_PREFIX=x omp",
+  ]) {
+    expect({ line, prefix: shellPrefixOf(shim(line)) }).toEqual({
+      line,
+      prefix: { why: expect.stringContaining("in a form the runner does not read") },
+    });
+  }
+  expect(shellPrefixOf(shim(...SHIM_PREFIX_LINES, SHIM_PREFIX_LINES.at(-1) ?? ""))).toEqual({
+    why: expect.stringContaining("in a form the runner does not read"),
+  });
+});
+
+/** The made-up checkout of the shell prefix's rows: a git checkout whose docs/, beside its tracked
+ *  guide, holds 200 untracked notes, so its listing and git status (which lists each untracked
+ *  file of a directory that tracks one) each pass 1,000 characters and the pin's minimizer
+ *  rewrites each. */
+function prefixCopy(name: string): CheckoutCopy {
+  const dir = gitCopy(name);
+  writeTree(
+    dir,
+    Object.fromEntries(
+      Array.from({ length: 200 }, (_, n) => [
+        `docs/note-${String(n + 1).padStart(3, "0")}-quarterly-summary.txt`,
+        "",
+      ])
+    )
+  );
+  return { dir, root: ROOT, cwd: ROOT, git: true };
+}
+
+// Catches: the minimizer's reading taken from the call's command, where the pin's executor runs it
+// with the session's PI_SHELL_PREFIX before it (dotfiles shims/omp): a single command holding a
+// command substitution, which the pin then keeps whole, asked of the pin (and with no pinned
+// binary not answered at all); a command read with the prefix taken as a program with a filter; or
+// a copy whose shell the runner does not know answered in a shell the session did not have.
+test("under the shell prefix the minimizer reads a single command as a chain's segment after set +e +u +o pipefail, and one that holds $(…) not at all, so its output is answered as it is; with no prefix each is read whole; a copy whose shell is refused answers no bash call, saying why", async () => {
+  expect(minimizerReadings("ls $(pwd)", undefined)).toEqual(["ls $(pwd)"]);
+  expect(minimizerReadings("ls $(pwd)", PREFIX)).toEqual([]);
+  expect(minimizerReadings("git status", undefined)).toEqual(["git status"]);
+  expect(minimizerReadings("git status", PREFIX)).toEqual(["set +e +u +o pipefail", "git status"]);
+  expect(minimizerReadings("ls && cat x", PREFIX)).toEqual([
+    "set +e +u +o pipefail",
+    "ls",
+    "cat x",
+  ]);
+  const copy = prefixCopy("prefix-readings");
+  const notes = `${ROOT}/docs`;
+  const listing = await sandboxedBash(copy, "ls", notes);
+  const status = await sandboxedBash(copy, "git status");
+  if ("why" in listing || "why" in status) throw new Error("the copy's ls or git status ran not");
+  expect([...listing.output].length).toBeGreaterThanOrEqual(1000);
+  expect([...status.output].length).toBeGreaterThanOrEqual(1000);
+  await withoutPinBinary(async () => {
+    const prefixed = { ...copy, shell: { prefix: PREFIX } };
+    expect(await bashText(copy, "ls $(pwd)", notes)).toEqual({
+      why: expect.stringContaining(NO_PIN),
+    });
+    expect(await bashText(prefixed, "ls $(pwd)", notes)).toBe(listing.output);
+    for (const each of [copy, prefixed]) {
+      expect(await bashText(each, "git status")).toEqual({ why: expect.stringContaining(NO_PIN) });
+    }
+  });
+  const why = "the case's profile names no commit of acme/dotfiles (no skill of it)";
+  expect(
+    await answerCall({ ...copy, shell: { why } }, "bash", { command: "ls" }, "hashline")
+  ).toEqual({ why });
+}, 60_000);
+
+// Catches: the runner's answer of a call, under the session's shell prefix or none, other than the
+// pin's own bash tool's in that shell: the pin asked where its minimizer keeps the output (or not
+// asked where it rewrites it), or the pin run with no PI_SHELL_PREFIX where the session had one.
+pinned.test(
+  "the runner's answer of ls $(pwd) and of git status equals the pin's own bash tool's, with no prefix and under set +e +u +o pipefail;: the pin rewrites each with no prefix, and under the prefix git status, a chain's segment, but not ls $(pwd)",
+  async () => {
+    const copy = prefixCopy("prefix-pin");
+    const notes = `${ROOT}/docs`;
+    const rewritten: Record<string, boolean> = {};
+    for (const prefix of [undefined, PREFIX]) {
+      const shell = prefix === undefined ? {} : { prefix };
+      const prefixed = { ...copy, shell };
+      for (const input of [{ command: "ls $(pwd)", cwd: notes }, { command: "git status" }]) {
+        const runner = sansWallTime(await answerCall(prefixed, "bash", input, "hashline"));
+        const pin = sansWallTime(await pinBashAnswer(copy, input, shell));
+        expect({ prefix, input, runner }).toEqual({ prefix, input, runner: pin });
+        rewritten[`${prefix ?? "none"}: ${input.command}`] =
+          "text" in pin && pin.text.includes("[raw output: artifact://1]");
+      }
+    }
+    expect(rewritten).toEqual({
+      "none: ls $(pwd)": true,
+      "none: git status": true,
+      [`${PREFIX}: ls $(pwd)`]: false,
+      [`${PREFIX}: git status`]: true,
+    });
+  },
+  120_000
+);
+
+/** The dotfiles' experiments extension at 3c266c9f, cut to its bash gate (testdata/CAPTURE.md,
+ *  "F16"), as `BashGate.dir`. */
+const GATE_DIR = path.join(import.meta.dir, "testdata", "F16-experiments");
+
+/** A refusal a session recorded in the bash gate's arm `off` (gate52's explained.jsonl, line 6),
+ *  of the call RECORDED_BLOCKED_CALL, in the form of version 3c266c9f alone (it hands back the
+ *  rest of the call), the version its profile's dotfiles commit holds: the session's directory
+ *  outside the checkout mapped to the made-up /srv/dev, every other byte as it was. */
+const RECORDED_REFUSAL =
+  "Blocked: `cat /srv/dev/farm-pkg/bin/farm` has a dedicated tool, `read`. Use the `read` tool instead of cat/head/tail. It provides better context and handles binary files.\n\nNothing ran. Re-send the rest as one bash call:\nls /srv/dev/farm-pkg/src; ls /srv/dev/grade-farm/runs/20261031T071041Z-4113488-run\n\nOriginal command: cat /srv/dev/farm-pkg/bin/farm; ls /srv/dev/farm-pkg/src; ls /srv/dev/grade-farm/runs/20261031T071041Z-4113488-run";
+
+/** The recorded call RECORDED_REFUSAL answers, its paths mapped the same way, its arguments as
+ *  the session's model gave them (it gave no `cwd`). */
+const RECORDED_BLOCKED_CALL = {
+  command:
+    "cat /srv/dev/farm-pkg/bin/farm; ls /srv/dev/farm-pkg/src; ls /srv/dev/grade-farm/runs/20261031T071041Z-4113488-run",
+  i: "Reading farm wrapper and a recent run",
+};
+
+/** A call another session explained.jsonl names ran in the gate's arm `on` (its line 3's), with
+ *  its working directory the made-up checkout's root and every other argument as its model gave
+ *  it, and the answer it recorded: `767 .github/CI-FACTS.md\n`. */
+const RECORDED_RUN_CALL = {
+  i: "Counting CI facts lines",
+  command: "wc -l .github/CI-FACTS.md",
+  timeout: 30,
+  cwd: ROOT,
+  pty: false,
+  async: false,
+  name: null,
+  ready: null,
+};
+
+/** A copy of a made-up checkout under `name` whose .github/CI-FACTS.md has 767 lines, beside a
+ *  file `x`, in the session's shell: the shell prefix and the bash gate of GATE_DIR in arm
+ *  `leading`. */
+function gateCopy(name: string, leading: boolean): CheckoutCopy {
+  const facts = printed(Array.from({ length: 767 }, (_, n) => `- fact ${n + 1}`));
+  const copy = filesCopy(name, { ".github/CI-FACTS.md": facts, x: "x\n" });
+  return { ...copy, shell: { prefix: PREFIX, gate: { dir: GATE_DIR, leading } } };
+}
+
+// Catches: a refusal of the bash gate read as some other text, a form of another version than the
+// one whose text it is, or omp's own interceptor's refusal read as the gate's.
+test("gateRefusalVersions tells each version of the bash gate by the form of its refusal of a step of several, all four for one step; a text that is no refusal of the gate is none", () => {
+  const [v1, v2, v3, v4] = BASH_GATE_COMMITS;
+  const refusal = (next: string) =>
+    `Blocked: \`cat x\` has a dedicated tool, \`read\`. Use the \`read\` tool instead.${next}\n\nOriginal command: ls; cat x`;
+  expect(gateRefusalVersions(RECORDED_REFUSAL)).toEqual([v3]);
+  expect(
+    gateRefusalVersions(
+      refusal(
+        "\n\nNo step of this command ran. Run the command's other steps with bash, without that one."
+      )
+    )
+  ).toEqual([v2, v3]);
+  expect(gateRefusalVersions(refusal(""))).toEqual(BASH_GATE_COMMITS);
+  expect(gateRefusalVersions(refusal("\n\nNo step of this command ran."))).toEqual([v4]);
+  expect(
+    gateRefusalVersions(refusal("\n\nRun the command's other steps with bash, without that one."))
+  ).toEqual([v1]);
+  expect(
+    gateRefusalVersions(refusal("\n\nNothing ran. Re-send the rest as one bash call:\nls"))
+  ).toEqual([v3]);
+  expect(gateRefusalVersions("Blocked: Use the `read` tool.\n\nOriginal command: cat x")).toBe(
+    undefined
+  );
+  expect(gateRefusalVersions("cat: x: No such file or directory")).toBeUndefined();
+});
+
+// Catches: a session's version taken from its profile where its history's refusals show it ran
+// an older one; a newer one than the profile's taken; or a guess where the refusals match none.
+test("gateVersion takes the profile's commit where the history holds no refusal of the gate or one its version's form matches, else the newest version the refusals match that is older than the profile's, and refuses the rest", () => {
+  const [v1, v2, v3, v4] = BASH_GATE_COMMITS;
+  const cores = new Map(BASH_GATE_COMMITS.map((commit) => [commit, `core of ${commit}`]));
+  const at = (core: string | undefined, versions: readonly string[] | undefined) =>
+    gateVersion({ profile: "p0f11e", profileCore: core, versions, cores });
+  expect(at(`core of ${v4}`, undefined)).toEqual({ commit: "p0f11e", from: "profile" });
+  expect(at(`core of ${v4}`, [v2, v3])).toEqual({ commit: v3, from: "history" });
+  expect(at(`core of ${v2}`, [v2, v3])).toEqual({ commit: "p0f11e", from: "history" });
+  expect(at("a later core", [v2, v3])).toEqual({ commit: v3, from: "history" });
+  expect(at(`core of ${v1}`, [v4])).toEqual({
+    why: expect.stringContaining("match only versions"),
+  });
+  expect(at(`core of ${v4}`, [])).toEqual({ why: expect.stringContaining("match no one") });
+  expect(at(undefined, undefined)).toEqual({ why: expect.stringContaining("holds no bash gate") });
+});
+
+// Catches: a call the session's bash gate refused answered with the runner's own run (or left
+// unanswered for a path outside the checkout the session never ran), its refusal's text other than
+// the session's byte for byte; or a call the gate let through answered other than by the runner's
+// own run.
+pinned.test(
+  "a call the session's bash gate refused gets the gate's refusal as the pin's bash tool returns it, the session's recorded text byte for byte, though its paths are outside the checkout; a call it let through gets the runner's own run, the session's recorded answer",
+  async () => {
+    const off = gateCopy("gate-recorded-off", false);
+    expect(await answerCall(off, "bash", RECORDED_BLOCKED_CALL, "hashline")).toEqual({
+      text: RECORDED_REFUSAL,
+      isError: true,
+    });
+    const on = gateCopy("gate-recorded-on", true);
+    const own = await sandboxedBash(on, RECORDED_RUN_CALL.command);
+    if ("why" in own) throw new Error(own.why);
+    expect(own.output).toBe("767 .github/CI-FACTS.md\n");
+    expect(sansWallTime(await answerCall(on, "bash", RECORDED_RUN_CALL, "hashline"))).toEqual({
+      text: own.output,
+      isError: false,
+    });
+  },
+  120_000
+);
+
+// Catches: the session's arm not given to the pin's run (OMP_EXPERIMENT_BASH_GATE_LEADING), so
+// both arms refuse a call or run it alike.
+pinned.test(
+  "ls; cat x runs in the bash gate's arm on, which tests the read rule against the leading segment alone, and is refused in its arm off, which tests every unpiped segment",
+  async () => {
+    const on = gateCopy("gate-on", true);
+    const off = gateCopy("gate-off", false);
+    const own = await sandboxedBash(on, "ls; cat x");
+    if ("why" in own) throw new Error(own.why);
+    expect(
+      sansWallTime(await answerCall(on, "bash", { command: "ls; cat x" }, "hashline"))
+    ).toEqual({ text: own.output, isError: false });
+    expect(await answerCall(off, "bash", { command: "ls; cat x" }, "hashline")).toEqual({
+      text: expect.stringMatching(
+        /^Blocked: `cat x` has a dedicated tool, `read`\. Use the `read` tool instead of cat\/head\/tail\. It provides better context and handles binary files\.\n\n[\s\S]*\n\nOriginal command: ls; cat x$/
+      ),
+      isError: true,
+    });
+  },
+  120_000
+);
+
+/** The dotfiles' omp/config.yml at 3c266c9f, its comments taken out (testdata/CAPTURE.md, "F16"):
+ *  what an ordinary session's `--config` gives it, as the dotfiles' shims/omp gives it every
+ *  session through PI_CONFIG_FILES. */
+const SESSION_CONFIG = path.join(import.meta.dir, "testdata", "F16-config.yml");
+
+/** What SESSION_CONFIG sets that needs a service the ordinary run here lacks, turned off: the
+ *  advisor (`advisor.enabled`, which asks a model of its own each turn) and the Mnemopi memory
+ *  backend (`memory.backend`, whose embedding worker the run would start). Neither touches a tool's
+ *  result at the pin: the advisor writes only its own message's content and reads the tool results
+ *  (advisor/runtime.ts lines 190-224), and a memory backend's hooks are its start, the system
+ *  prompt's section and its own store (memory-backend/types.ts lines 108-196). */
+const SERVICES_OFF = "advisor:\n  enabled: false\nmemory:\n  backend: off\n";
+
+/**
+ * The pinned Oh My Pi's bash tool's answer to `input` from `copy` in an ordinary print-mode
+ * session rather than the runner's stub harness: `omp -p` on its own, outside the sandbox, in the
+ * copy's directory, a HOME of its own, `--config` SESSION_CONFIG (then SERVICES_OFF), the shell
+ * prefix in PI_SHELL_PREFIX, the experiments extension of GATE_DIR loaded in arm `on`, and none of
+ * the harness's `--no-*` flags; the stub model alone (pin-hook.ts, which makes the one call), since
+ * no model is called. The copy's directory in the answer is the session's root, as the runner's.
+ */
+async function ordinaryAnswer(
+  copy: CheckoutCopy,
+  name: string,
+  input: Readonly<Record<string, unknown>>
+): Promise<CheckoutAnswer> {
+  const omp = pinnedOmp();
+  if ("why" in omp) throw new Error(omp.why);
+  const own = path.join(scratch, `${name}-ordinary`);
+  writeTree(own, {
+    "hook.ts": readFileSync(path.join(import.meta.dir, "pin-hook.ts"), "utf8"),
+    [PIN_CALL_FILE]: JSON.stringify({ tool: "bash", arguments: input, seed: {} }),
+    "services-off.yml": SERVICES_OFF,
+  });
+  mkdirSync(path.join(own, "home"));
+  const child = Bun.spawn(
+    [
+      omp.file,
+      "-p",
+      "-e",
+      path.join(GATE_DIR, "index.ts"),
+      "--hook",
+      path.join(own, "hook.ts"),
+      "--model",
+      "stub/call",
+      "--config",
+      SESSION_CONFIG,
+      "--config",
+      path.join(own, "services-off.yml"),
+      "x",
+    ],
+    {
+      cwd: copy.dir,
+      env: {
+        PATH: "/usr/local/bin:/usr/bin:/bin",
+        HOME: path.join(own, "home"),
+        LANG: "C.UTF-8",
+        TERM: "dumb",
+        PI_NATIVES_DIR: process.env.PI_NATIVES_DIR ?? "",
+        PI_SHELL_PREFIX: PREFIX,
+        OMP_EXPERIMENT_BASH_GATE_LEADING: "on",
+      },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    }
+  );
+  const [printed, said, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  const at = printed.lastIndexOf(PIN_RESULT_MARKER);
+  if (code !== 0 || at < 0) throw new Error(`the ordinary session gave no answer: ${said}`);
+  const result = JSON.parse(printed.slice(at + PIN_RESULT_MARKER.length)) as PinResult;
+  const text = result.content.map((part) => part.text ?? "").join("");
+  return { text: text.split(copy.dir).join(ROOT), isError: result.isError };
+}
+
+// Catches: the stub harness's answer of a bash call other than an ordinary session's of the same
+// pin in the session's shell (its config.yml, its prefix, its experiments extension): a setting
+// of the session's the harness leaves at the pin's default that changes a bash result.
+pinned.test(
+  "the stub harness's answer of a bash call equals an ordinary print-mode session's of the same pin, with the session's config.yml, prefix and experiments extension and none of the harness's --no-* flags: an output the minimizer rewrites, one it leaves, and a call the bash gate refuses",
+  async () => {
+    const names = Array.from(
+      { length: 200 },
+      (_, n) => `d/file-${String(n + 1).padStart(3, "0")}.txt`
+    );
+    const notes = printed(
+      Array.from({ length: 80 }, (_, n) => `note ${n + 1}: the made-up project's line of notes`)
+    );
+    const copy = filesCopy("ordinary", {
+      ...Object.fromEntries(names.map((each) => [each, ""])),
+      "notes.txt": notes,
+      x: "x\n",
+    });
+    const shell = { prefix: PREFIX, gate: { dir: GATE_DIR, leading: true } };
+    const kinds: Record<string, string> = {};
+    for (const command of ["ls d", "sed -n 1,80p notes.txt", "cat x"]) {
+      const stub = sansWallTime(await pinBashAnswer(copy, { command }, shell));
+      const ordinary = sansWallTime(
+        await ordinaryAnswer(copy, `ordinary-${command.length}`, { command })
+      );
+      expect({ command, stub }).toEqual({ command, stub: ordinary });
+      const text = "text" in stub ? stub.text : "";
+      kinds[command] = text.startsWith("Blocked: `")
+        ? "refused"
+        : text.includes("[raw output: artifact://1]")
+          ? "rewritten"
+          : `left (${[...text].length >= 1000 ? "1,000 characters or more" : "short"})`;
+    }
+    expect(kinds).toEqual({
+      "ls d": "rewritten",
+      "sed -n 1,80p notes.txt": "left (1,000 characters or more)",
+      "cat x": "refused",
+    });
+  },
+  180_000
+);
+
+/** The blocks knives added to a recorded session's bash result, once, for the fork it worked in:
+ *  its notice alone, nonce, digest and branch list as that session got them, the fork's root
+ *  mapped to ROOT, its repository's name to `proj` and the user's name in a branch to `dev`,
+ *  every other byte as it was. */
+const RECORDED_KNIVES =
+  '\n\n<knives-notice-bbb543c60d78626f18e3391042d8f8a30 repo="proj" digest="73fb7c9e8549e878">\n/work/acme/proj is a fork managed by knives, and another agent may be working in it.\nBranches claimed here: fix/writer-exit-closes-conn (01a1708c-1459-7298-8fc6-6e59db682fec, harness-session, claimed now ago, last seen now ago): 339: description rewrite, review, CodeRabbit nit; rc/v1.54.1-dev.1 (01a1708c-1459-7298-8fc6-6e59db682fec, harness-session, claimed 2h ago, last seen now ago): rehome the fork release onto upstream v1.54.0 (main 201d3bc7): compose the open upstream PR heads, integrate #333 x #334 x #340 x #291 relay, verify, release notes; no tag until Main\'s go.\nUse knives rather than jj or git directly here: `knives status` for the state of\nevery branch, `knives start <branch>` to take a branch and get your own workspace,\n`knives finish <branch>` as soon as your active work there stops — the branch,\nits bookmark, and any open pull request all survive the release.\n</knives-notice-bbb543c60d78626f18e3391042d8f8a30>';
+
+// Catches: knives' blocks of a repository the session got left off a run's first answer that
+// touches it, given in a form or with a nonce other than the session's, given twice in a run or
+// where the case's history carries them already, given to a call knives reads no path of the
+// repository in (or not to a `skill://` read, which knives reads under the working directory); or
+// a call that touches a repository whose session's blocks the runner lacks answered without them.
+test("knives' blocks of the repository, byte for byte as the context session got them, follow the first answer of a run that touches it as a block of their own, and no later one; a call knives reads no path of it in gets none, a skill:// read touches it; a repository with no recorded blocks answers no call that touches it", async () => {
+  const copy = filesCopy("knives", { "docs/guide.md": GUIDE });
+  const fork = { ...copy, knives: { name: "proj", blocks: RECORDED_KNIVES } };
+  const run = runArtifacts(fork);
+  const added = async (of: CheckoutCopy, name: string, input: object, state = run) => {
+    const answer = await answerCall(of, name, input, "hashline", state);
+    return "why" in answer ? answer : (answer.added ?? null);
+  };
+  // `ls` and a `cwd` name no path; a relative read path is the working directory's.
+  expect(await added(fork, "bash", { command: "ls", cwd: `${ROOT}/docs` })).toBeNull();
+  expect(await added(fork, "read", { path: "docs/guide.md" })).toBe(RECORDED_KNIVES);
+  expect(await added(fork, "bash", { command: `cat ${ROOT}/docs/guide.md` })).toBeNull();
+  // Another run gets them again, once.
+  expect(await added(fork, "grep", { pattern: "app", path: "docs" }, runArtifacts(fork))).toBe(
+    RECORDED_KNIVES
+  );
+  // A case whose history carries them (the session's skill read got them) gets none.
+  const history = JSON.stringify([
+    {
+      role: "toolResult",
+      content: [
+        { type: "text", text: "x" },
+        { type: "text", text: RECORDED_KNIVES },
+      ],
+    },
+  ]);
+  const told = { ...fork, history };
+  expect(await added(told, "read", { path: "docs/guide.md" }, runArtifacts(told))).toBeNull();
+  // knives reads a `skill://` URL as a path relative to the working directory, inside the
+  // checkout, and a path outside the root as none of it.
+  expect(knivesTouches(fork, { path: "skill://alpha/SKILL.md" })).toBe(true);
+  expect(knivesTouches(fork, { command: "cat /etc/hosts", cwd: ROOT })).toBe(false);
+  // A repository whose session's blocks the runner lacks answers no call that touches it.
+  const lacking = { ...copy, knives: { name: "proj", blocks: { why: "its session holds none" } } };
+  expect(await added(lacking, "bash", { command: "ls" })).toBeNull();
+  expect(await added(lacking, "read", { path: "docs/guide.md" })).toEqual({
+    why: "the call touches proj: its session holds none",
   });
 }, 60_000);
 
