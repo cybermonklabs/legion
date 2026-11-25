@@ -471,11 +471,11 @@ describe("the pod shape's reservation rule", () => {
     ]);
     expect(reservationProblems(reserving("roles", reservation("2", "8Gi")))).toEqual([]);
     // A request under the limit at other than the run's values is held to the run's.
-    expect(
-      reservationProblems(reserving("roles", reservation("2", "8Gi", "80Gi", "7Gi")))
-    ).toEqual([
-      "container roles reserves cpu 2, memory 8Gi, ephemeral-storage 7Gi of 80Gi, not the run's cpu 2, memory 8Gi, ephemeral-storage 6Gi of 80Gi for the issue pod",
-    ]);
+    expect(reservationProblems(reserving("roles", reservation("2", "8Gi", "80Gi", "7Gi")))).toEqual(
+      [
+        "container roles reserves cpu 2, memory 8Gi, ephemeral-storage 7Gi of 80Gi, not the run's cpu 2, memory 8Gi, ephemeral-storage 6Gi of 80Gi for the issue pod",
+      ]
+    );
   });
 
   test("a container reserving no cpu, memory or ephemeral-storage departs", () => {
