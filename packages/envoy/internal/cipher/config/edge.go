@@ -67,9 +67,13 @@ func loadEdge(cfg *Config) error {
 			}
 		}
 	}
+	// The edge serves its routes under this URL as the broker's own serve theirs under
+	// BROKER_PUBLIC_URL (api.RegisterEdge gives its Deps this URL as PublicURL), so it is held to
+	// that URL's form, and its refusal names the setting alone: the URL as written is where a
+	// credential would be.
 	edgeURL, err := url.Parse(cfg.EdgeURL)
-	if err != nil || (edgeURL.Scheme != "http" && edgeURL.Scheme != "https") || edgeURL.Host == "" || edgeURL.Path != "" {
-		return fmt.Errorf("BROKER_EDGE_URL must be an absolute http or https URL with no path: %q", redact.URL(cfg.EdgeURL))
+	if err != nil || (edgeURL.Scheme != "http" && edgeURL.Scheme != "https") || !originAlone(edgeURL) {
+		return fmt.Errorf("BROKER_EDGE_URL must be an absolute http or https URL with no user information, path, query or fragment")
 	}
 	// One origin for both would let a DPoP proof made for one listener be spent at the other,
 	// which naming each its own address is there to prevent. The origins are compared as the
