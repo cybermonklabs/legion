@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -2397,7 +2398,9 @@ func checkPodReachable(cfg Config) error {
 		default:
 			continue
 		}
-		return fmt.Errorf("%s %s %s; name the host pods reach it at when runtime is kubernetes", address.key, address.value, why)
+		// The URL is named through the URL rule (redact.URLCredentials): a nats_urls entry carries
+		// its credential in its user information.
+		return fmt.Errorf("%s %s %s; name the host pods reach it at when runtime is kubernetes", address.key, redact.URLCredentials(address.value), why)
 	}
 	return nil
 }
