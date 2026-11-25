@@ -95,8 +95,8 @@ type issueWriteCall struct {
 	// fields are the fields the write writes, as the PATCH's body decodes them. writeIssue
 	// parses and checks them as the PATCH does.
 	fields updateIssueInput
-	// callerProject is the one project the request's credential may write, or empty for a
-	// credential that names none (callerProject).
+	// callerProject is the project the request's credential names, or empty for a credential
+	// that names none (callerProject).
 	callerProject string
 	// outliving is a context that does not end when the client goes away (outlivingTheClient):
 	// the close's settlement before the transaction, and its ask sweep after the commit, run on

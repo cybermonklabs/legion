@@ -8,7 +8,9 @@ body: |-
   `DISPATCH_TOKEN_BROKER=1`. It sends each GET under `/api/` and each comment POST to
   `/api/v1/issues/<key>/comments` that carries an `Idempotency-Key`, and refuses every other
   request with its own code: `405 PROXY_METHOD_REFUSED`, `400 PROXY_TARGET_REFUSED`,
-  `502 PROXY_TRADE_REFUSED` or `502 PROXY_DISPATCH_UNREACHABLE`. It gives back Dispatch's status,
+  `502 PROXY_TRADE_REFUSED` or `502 PROXY_DISPATCH_UNREACHABLE`. The error of a `405` names the
+  `dispatch` command to use, where one exists. For a write that no `dispatch` command sends, the
+  error says so. It gives back Dispatch's status,
   headers and body as Dispatch sent them (an answer that carries `Transfer-Encoding` as well as
   `Content-Length` comes back without that `Content-Length`, per RFC 9112, section 6.3, with its
   body chunked), follows no redirect,

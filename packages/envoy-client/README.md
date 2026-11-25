@@ -1359,9 +1359,10 @@ could not be read or used, each exiting 2. `DISPATCH_HOST` unset with
 `CLAUDE_CODE_CHILD_SESSION=1` is host `claude`. stdout carries what
 the model reads: the result, one `- picture: <path>` line per image (written under the session
 directory), the follow notice the first time a call follows an ask, and every refusal. It exits 0
-on success, 1 when Dispatch or AskGate refused the call or Dispatch failed, the command could not
-reach Dispatch, or Dispatch kept no answer for a call that writes nothing, and 2 on a usage error or
-on a session or configuration it cannot use (above). A usage error
+on success. It exits 1 when Dispatch or AskGate refused the call, Dispatch failed, the command could
+not reach Dispatch, its trade for a token at the secrets broker failed, or Dispatch kept no answer
+for a call that writes nothing. It exits 2 on a usage error or on a session or configuration it
+cannot use (above). A usage error
 includes every refusal of the flags or arguments before any request, and a corrupted `state.json`.
 Under Claude Code the whole output stays under 25,000 characters: the result text is cut to fit,
 the full text written to a file the output names, and the picture lines and follow notice kept.
@@ -1442,9 +1443,11 @@ The proxy sends two kinds of request, and refuses every other one:
 - a GET whose path starts with `/api/`
 - a POST to `/api/v1/issues/<key>/comments` that carries an `Idempotency-Key` header
 
-It sends no other write. A tool reads much and writes little. Each other write goes through the
-`dispatch` command named for it, so AskGate reviews it wherever AskGate gates that command. The
-comment is the one write that a tool needs, such as a report that it posts at the end of a run.
+It sends no other write. A tool reads much and writes little. Where a `dispatch` command sends a
+write, the write goes through that command, so AskGate reviews it wherever AskGate gates that
+command. The proxy's refusal of the write names that command. Where no `dispatch` command sends
+the write, the refusal says so. The comment is the one write that a tool needs, such as a report
+that it posts at the end of a run.
 The `Idempotency-Key` lets the tool send the comment again after a lost answer, and Dispatch posts
 it once. The proxy sends a request once, and once more only after `401 BROKER_TOKEN_NOT_ACTIVE`.
 So the tool sends the comment again itself, with the same key.
@@ -1510,7 +1513,7 @@ Dispatch's.
 | Answer | When |
 | --- | --- |
 | `400 PROXY_TARGET_REFUSED` | The request target names a host: `http://…` or `//…`. |
-| `405 PROXY_METHOD_REFUSED` | Each other method or path, and a comment POST with no `Idempotency-Key`. The error names the `dispatch` command to use. |
+| `405 PROXY_METHOD_REFUSED` | Each other method or path, and a comment POST with no `Idempotency-Key`. The error names the `dispatch` command to use, where one exists. For a write that no `dispatch` command sends, the error says so. |
 | `502 PROXY_TRADE_REFUSED` | The token has ended and the broker refused a new one. The error is in the broker's words, and the proxy sends nothing to Dispatch. |
 | `502 PROXY_DISPATCH_UNREACHABLE` | Dispatch did not answer. |
 

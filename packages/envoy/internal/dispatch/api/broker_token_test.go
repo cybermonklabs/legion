@@ -42,7 +42,7 @@ const (
 	// brokerTestReader is the service a read-only token names: the one a read entry of the
 	// broker's configuration names for the account its token is exchanged from.
 	brokerTestReader = "example-reader"
-	// brokerTestProject is the one project a named-scope token may write.
+	// brokerTestProject is the project a named-scope token names.
 	brokerTestProject = "BRK"
 	// brokerTestAddress is the source address the verifier's per-address bucket is keyed on.
 	brokerTestAddress = "203.0.113.9:40001"

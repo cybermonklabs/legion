@@ -358,6 +358,7 @@ func (read statusChangeRead) steps(change statusChange) []statusChangeStep {
 // what the second read found, as lockPatchOwnersAndParent does, and a plan that moves at every
 // attempt is 409 PARENT_CONTENDED with nothing applied. The transaction rolls back before the
 // first step, and each step takes its own locks in its own transaction.
+//
 // resumed is the recovery point of an earlier attempt that this attempt resumes, nil for a first
 // attempt: it changes the fence, the gate and the plan as planStatusChangeUnderLocks says.
 func (s *server) planStatusChange(

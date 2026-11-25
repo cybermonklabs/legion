@@ -108,10 +108,11 @@ Bulk parent changes are ordinary independent keyed writes, at most eight in flig
 New epic waits for the create's answer before registering parent changes. Start next waits for each predecessor rank write and stops at a refusal, reporting which issues did not move up; a selection already at the head of the queue is reported, not rewritten.
 
 A command that a Dispatch spec defines, given several problems, is refused once with every problem
-listed, so the next run can fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or
-AskGate refused it or Dispatch failed, the command could not reach Dispatch, or Dispatch kept no
-answer for a call that writes nothing. It exits 2 on a usage error, such as flags it refused before
-any request, and on a session or configuration it cannot use. An unknown command exits 2 too.
+listed, so the next run can fix them all. It exits 0 when it wrote or read. It exits 1 when Dispatch
+or AskGate refused it, Dispatch failed, the command could not reach Dispatch, its trade for a token
+at the secrets broker failed, or Dispatch kept no answer for a call that writes nothing. It exits 2
+on a usage error, such as flags it refused before any request, and on a session or configuration it
+cannot use. An unknown command exits 2 too.
 The commands that no spec defines exit by rules of their own,
 which each one's help gives. `dispatch proxy` exits with the status of the command it runs. It
 exits 127 for a command that does not exist, 126 for a command that cannot run, 128 plus the
@@ -479,9 +480,11 @@ The proxy sends two kinds of request, and refuses every other one:
 - a GET whose path starts with `/api/`
 - a POST to `/api/v1/issues/<key>/comments` that carries an `Idempotency-Key` header
 
-It sends no other write. A tool reads much and writes little. Each other write goes through the
-`dispatch` command named for it, so AskGate reviews it wherever AskGate gates that command. The
-comment is the one write that a tool needs, such as a report that it posts at the end of a run.
+It sends no other write. A tool reads much and writes little. Where a `dispatch` command sends a
+write, the write goes through that command, so AskGate reviews it wherever AskGate gates that
+command. The proxy's refusal of the write names that command. Where no `dispatch` command sends
+the write, the refusal says so. The comment is the one write that a tool needs, such as a report
+that it posts at the end of a run.
 The `Idempotency-Key` lets the tool send the comment again after a lost answer, and Dispatch posts
 it once. The proxy sends a request once, and once more only after `401 BROKER_TOKEN_NOT_ACTIVE`.
 So the tool sends the comment again itself, with the same key.
@@ -545,7 +548,7 @@ answers 403 or 404 itself, so each 403 and 404 is Dispatch's answer.
 | Answer | When |
 | --- | --- |
 | `400 PROXY_TARGET_REFUSED` | The request target names a host: `http://…` or `//…`. |
-| `405 PROXY_METHOD_REFUSED` | Each other method or path, and a comment POST with no `Idempotency-Key`. The error names the `dispatch` command to use. |
+| `405 PROXY_METHOD_REFUSED` | Each other method or path, and a comment POST with no `Idempotency-Key`. The error names the `dispatch` command to use, where one exists. For a write that no `dispatch` command sends, the error says so. |
 | `502 PROXY_TRADE_REFUSED` | The token has ended and the broker refused a new one. The error is in the broker's words, and the proxy sends nothing to Dispatch. |
 | `502 PROXY_DISPATCH_UNREACHABLE` | Dispatch did not answer. |
 

@@ -9869,7 +9869,7 @@ A deployment that sets it also gives the daemon these:
 
 - **The secrets broker** lists the daemon's ServiceAccount in `BROKER_EXCHANGE_ACCOUNTS` with an entry that names the daemon's project, a person and the fixed session `legion-daemon:<PROJECT>`:
   `<the daemon's ServiceAccount>=<PROJECT>=<person>=legion-daemon:<PROJECT>`.
-  Dispatch refuses every write of a machine's token that names no person (`SIGN_IN_REQUIRED`), a write to a target that resolves to no project or to nothing (`403 PROJECT_SCOPE`), and every write the daemon makes as `legion-daemon:<PROJECT>` with a token of another session (`403 ACTOR_SESSION_MISMATCH`).
+  Dispatch refuses a write to a target that resolves to no project or to nothing (`403 PROJECT_SCOPE`), and every write the daemon makes as `legion-daemon:<PROJECT>` with a token of another session (`403 ACTOR_SESSION_MISMATCH`).
   The project that the entry names does not limit the token's writes to that project.
   An entry that fixes its session needs no pod-session registration.
 
@@ -9901,8 +9901,9 @@ The boot refuses, in words that name the cause:
   The boot logs any other failed trade and tries it again;
 
 - a `whoami` answer whose session is not `legion-daemon:<PROJECT>`, whose project is not the daemon's, or whose owner is `null`.
-  The session and the owner refusals each name the `403` or the `SIGN_IN_REQUIRED` that Dispatch would answer every write of the daemon's with.
+  The session refusal names the `403 ACTOR_SESSION_MISMATCH` that Dispatch would answer every write of the daemon's with.
   The project refusal says that the token's project is not the daemon's, which is a fault of the exchange entry.
+  The owner refusal says that an exchange entry that names a project names the person it acts for.
   Each refusal says to fix the daemon's `BROKER_EXCHANGE_ACCOUNTS` entry.
 
 The boot logs one line that names the credential, and never a token: `legion daemon's Dispatch credential`, with `credential=broker`, the `session` and, where one is named, `transitionFile`.

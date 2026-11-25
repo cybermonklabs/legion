@@ -75,8 +75,9 @@ export interface DispatchCliIo {
 
 /** Exit codes: written or read, a call that did not do what it asks, and a usage error. REFUSED
  *  is a refusal or failure of Dispatch, or a refusal of AskGate (a near copy, an AskGate block, a
- *  server refusal, a 5xx that Dispatch answers: DispatchServiceError), a Dispatch the command
- *  cannot reach (DispatchUnreachableError), and Dispatch keeping no answer for a call that writes
+ *  server refusal, a 5xx that Dispatch answers: DispatchServiceError). It is also a Dispatch the
+ *  command cannot reach (DispatchUnreachableError), a trade at the secrets broker that fails and
+ *  leaves the call no token to present, and Dispatch keeping no answer for a call that writes
  *  nothing (DispatchAnswerNotKeptError). USAGE is an argument this CLI refuses before any request,
  *  whether the argv named a command or not, and a session or a configuration the command cannot
  *  use: a refusal of callSession (DISPATCH_HOST or the session id unset) or of callDispatch
@@ -798,8 +799,9 @@ export async function runDispatchCli(
       // schema, cross-field and picture checks. Those exit 2 from the dry run and from its call,
       // so the two stay one answer. A refusal the executor makes during the call, such as an id
       // of the wrong shape or an ask id prefix matching no ask, only the call reaches.
-      // Everything else here exits 1: Dispatch's own refusal or failure, a Dispatch the command
-      // cannot reach, and a call that writes nothing whose answer Dispatch kept no copy of.
+      // Everything else here exits 1. That is Dispatch's own refusal or failure, a Dispatch the
+      // command cannot reach, a trade at the secrets broker that fails, and a call that writes
+      // nothing whose answer Dispatch kept no copy of.
       code = error instanceof ToolInputError ? USAGE : REFUSED;
     }
   }
