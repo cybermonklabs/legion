@@ -59,13 +59,13 @@ func startStopRow(t *testing.T, key func(*natsgo.Msg) (string, *contracts.Envelo
 		}
 		return nil
 	})
-	wanted := deliveryConsumerConfig()
+	wanted := deliveryConsumerConfig(tuningFor(t))
 	if createDurable {
 		if _, err := client.JS().AddConsumer(bus.Stream, &wanted); err != nil {
 			t.Fatalf("create the delivery durable: %v", err)
 		}
 	}
-	durable := newHeldDurable(client, nil, func() natsgo.ConsumerConfig { return wanted }, key, handle)
+	durable := newHeldDurable(tuningFor(t), client, nil, func(*intakeTuning) natsgo.ConsumerConfig { return wanted }, key, handle)
 	sub, err := durable.subscribe(wanted.DeliverSubject)
 	if err != nil {
 		t.Fatalf("subscribe at %s: %v", wanted.DeliverSubject, err)
@@ -262,10 +262,10 @@ func (r *stopRow) reconnect(t *testing.T) {
 //   - a drain the lock holds: the stop drained on a moving link and waits for its drain to end, with
 //     a message still buffered, under a context that never ends; a write then holds nats.go's lock,
 //     under which nats.go ends no drain, and the stop and a second StopDelivering return while it is
-//     held. The drain's own wait (intakeDrainWait) is kept from ending it;
+//     held. The drain's own wait (intakeTuning.drainWait) is kept from ending it;
 //   - a given-up handler woken as the give-up is armed: as the second, with one stop, whose
 //     give-up runs at once under its ended context; the stop waits, once its give-up is armed
-//     (stopGiveUpArmed), for the handler it woke to decide its hand-back, and the server is sent
+//     (intakeTuning.stopArmed), for the handler it woke to decide its hand-back, and the server is sent
 //     no hand-back of either message.
 //
 // The negative control is the stop as it was (DrainSubscription, the hand-backs and Unsubscribe
@@ -277,6 +277,7 @@ func (r *stopRow) reconnect(t *testing.T) {
 // that sets stopping only after its give-up is armed, in the eleventh, whose woken handler publishes
 // the hand-back the stop withholds.
 func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
+	t.Parallel()
 	t.Run("a drain NATS has not taken", func(t *testing.T) {
 		row := startStopRow(t, intakeKey, func(*intakeDelivery, intakeMessage) {}, false)
 		row.hold.HoldReconnect(t, row.conn)
@@ -415,8 +416,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 	})
 
 	t.Run("a drain the lock holds", func(t *testing.T) {
-		wait := intakeDrainWait.Swap(int64(time.Hour))
-		t.Cleanup(func() { intakeDrainWait.Store(wait) })
+		tuningFor(t).drainWait.Store(int64(time.Hour))
 		row, release := startBufferedDrainRow(t)
 		defer release()
 		stopped := row.stopUnder(context.Background())
@@ -452,8 +452,8 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 			case <-ended:
 			}
 		}
-		stopGiveUpArmed.Store(&armed)
-		t.Cleanup(func() { stopGiveUpArmed.Store(nil) })
+		tuning := tuningFor(t)
+		tuning.stopArmed.Store(&armed)
 		row.hold.HoldReconnect(t, row.conn)
 		stopped := row.stopUnder(cancelled())
 		select {
@@ -468,7 +468,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		}
 		close(proceed)
 		row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", stopped)
-		stopGiveUpArmed.Store(nil)
+		tuning.stopArmed.Store(nil)
 		row.reconnect(t)
 		row.requireNoHandBack(t, delivery, naks)
 	})
@@ -528,7 +528,8 @@ func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing
 // outstanding for its ack wait. The negative control is a callNATS without the INFO case for
 // ErrReconnectBufExceeded.
 func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureIntakeLogs(t)
 	handlerReady := make(chan struct{}, 1)
 	linkCut := make(chan struct{})
 	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
@@ -593,11 +594,12 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 // A hand-back's publish count returns to zero even when every callNATS outlives its wait. A
 // callNATS that runs its call inside bus.Bounded skips the call when its context has already
 // ended; the decrement inside the call never runs, handBacksLanded never closes, and the
-// finalizer waits forever. With callNATSWait set to 0, callNATS's timer is ready at once, so a call
+// finalizer waits forever. With the intake's callWait set to 0, callNATS's timer is ready at once, so a call
 // may outlive its wait (select picks between the timer and a fast answer), and the row checks that
 // handBacksLanded closes either way. The negative control is such a callNATS (bus.Bounded
-// with a context.WithTimeout of callNATSWait).
+// with a context.WithTimeout of the intake's callWait).
 func TestACallNATSThatOutlivesItsWaitStillCompletesItsBookkeeping(t *testing.T) {
+	t.Parallel()
 	var first sync.Once
 	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
 		// Only the first delivery is handed back: a hand-back with no delay is redelivered at once,
@@ -605,8 +607,9 @@ func TestACallNATSThatOutlivesItsWaitStillCompletesItsBookkeeping(t *testing.T) 
 		first.Do(func() { delivery.handBack(message.msg) })
 	}, true)
 	// Registered after startStopRow, so the wait is restored before the row's teardown runs.
-	saved := callNATSWait.Swap(0)
-	t.Cleanup(func() { callNATSWait.Store(saved) })
+	tuning := tuningFor(t)
+	saved := tuning.callWait.Swap(0)
+	t.Cleanup(func() { tuning.callWait.Store(saved) })
 	publishPullRequestEnvelope(t, row.client, "acme", "widgets", 7, map[string]string{
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
 	})

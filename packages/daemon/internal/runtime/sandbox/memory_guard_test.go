@@ -319,8 +319,8 @@ func nextMemoryKillCall(t *testing.T, calls <-chan memoryKillCall) memoryKillCal
 func TestMemoryGuardServeLauncherHandsAKillToTheReceiverWithTheSessionsOwnIssueRoleAndPod(t *testing.T) {
 	var logs lockedLog
 	killed, calls := recordedMemoryKills()
-	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, killed, nil, nil, slogTo(&logs))
-	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
+	launchers := newLaunchers(testLeakCheck, nil, nil, killed, nil, nil, slogTo(&logs))
+	session := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 	w, done := serveLauncherPipe(t, session)
 
 	noGuard := memoryKillReport(1)
@@ -363,8 +363,8 @@ func TestMemoryGuardServeLauncherHandsAControllerKillToTheControllerReceiverWith
 	var logs lockedLog
 	issueKilled, issueCalls := recordedMemoryKills()
 	controllerKilled, controllerCalls := recordedControllerMemoryKills()
-	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, issueKilled, controllerKilled, nil, slogTo(&logs))
-	session := launchers.accept(controllerToken, "", rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-c", LauncherID: "l-c"})
+	launchers := newLaunchers(testLeakCheck, nil, nil, issueKilled, controllerKilled, nil, slogTo(&logs))
+	session := launchers.accept(controllerToken, "", time.Time{}, shimwire.LauncherHello{PodUID: "pod-c", LauncherID: "l-c"})
 	w, done := serveLauncherPipe(t, session)
 
 	report := memoryKillReport(1)
@@ -399,8 +399,8 @@ func TestMemoryGuardServeLauncherHandsAControllerKillToTheControllerReceiverWith
 func TestKernelKillServeLauncherHandsTheReceiverTheReportWithItsCause(t *testing.T) {
 	var logs lockedLog
 	killed, calls := recordedMemoryKills()
-	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, killed, nil, nil, slogTo(&logs))
-	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
+	launchers := newLaunchers(testLeakCheck, nil, nil, killed, nil, nil, slogTo(&logs))
+	session := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 	w, done := serveLauncherPipe(t, session)
 
 	unknown := memoryKillReport(1)
@@ -453,8 +453,8 @@ func TestMemoryGuardServeLauncherDropsAKillNoReceiverCanTake(t *testing.T) {
 			} else {
 				controllerKilled, controllerCalls = recordedControllerMemoryKills()
 			}
-			launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, issueKilled, controllerKilled, nil, slogTo(&logs))
-			session := launchers.accept(tc.token, tc.issue, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
+			launchers := newLaunchers(testLeakCheck, nil, nil, issueKilled, controllerKilled, nil, slogTo(&logs))
+			session := launchers.accept(tc.token, tc.issue, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 			w, done := serveLauncherPipe(t, session)
 
 			sendFrame(t, w, memoryKillReport(1))

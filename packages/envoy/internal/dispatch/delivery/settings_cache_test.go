@@ -89,7 +89,6 @@ func countedDeliveryPool(t *testing.T, pool *store.Pool) (*store.Pool, *settings
 // all -- at the cache's start and on the hub's signal after its LISTEN -- and then not once over
 // three seconds: no timer reads it.
 func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
-	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	counted, counter := countedDeliveryPool(t, pool)
@@ -134,7 +133,7 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 	seedRunningDeployRun(t, ctx, pool)
 	counted, counter := countedDeliveryPool(t, pool)
 	clock := newFakeJobClock()
-	jobs := newJobIntake(nil, counted, nil, newJobsFake(t).newTestClient(), clock, loadedSettingsCache(t, ctx, counted))
+	jobs := newJobIntake(tuningFor(t), nil, counted, nil, newJobsFake(t).newTestClient(), clock, loadedSettingsCache(t, ctx, counted))
 
 	before := counter.reads.Load()
 	for range 10 {
@@ -154,7 +153,7 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 func TestTheSettingsCacheKeepsTheLastValidSettings(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	cache := newSettingsCache(pool, nil)
+	cache := newSettingsCache(pool, nil, nil)
 	changed := cache.Changed()
 	if !cache.reload(ctx) || cache.Load() != nil {
 		t.Fatalf("a read with no row = %+v, want nothing held", cache.Load())

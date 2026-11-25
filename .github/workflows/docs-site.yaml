@@ -7,7 +7,7 @@ name: Docs site
 # built.
 #
 # Three inputs carry the only difference between the callers. Two booleans each add one trailing
-# step that only docs-pages.yaml needs, and ci.yaml's `ci-ok-changes` adds the ci-ok report its own
+# step that only docs-pages.yaml needs, and `.github/workflows/ci.yaml#ci-ok-changes` adds the ci-ok report its own
 # jobs end with. Every other step is the same for both.
 #
 # A reusable workflow, not a composite action, for two reasons. A composite action's step keys do
@@ -44,7 +44,7 @@ on:
         default: false
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends, for its docs job. Empty for
           docs-pages.yaml, which reports nothing.
         type: string
@@ -112,6 +112,7 @@ jobs:
       # docs/solutions/github/join-a-job-to-the-ci-router.md gives: off main by the prefix too, on
       # main by the exact key alone. The save-cache input names the one caller that writes the
       # entry, and that caller is docs-pages.yaml.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -137,7 +138,8 @@ jobs:
         # .github/ci-notes/dispatch-browser.md records against its step of this name, that
         # was `0 upgraded, 9 newly installed`, `Need to get 21.1 MB of archives`, plus 12.8 MB of
         # package indexes in `apt-get update`. The shots want none of it: they are taken in a
-        # headless Chromium (docs/site/media/shots.ts:51 and walkthrough.ts:266 call
+        # headless Chromium (`docs/site/media/shots.ts#chromium.launch()` and
+        # `docs/site/media/walkthrough.ts#chromium.launch()` call
         # `chromium.launch()` with no options) and compared against no committed baseline
         # (docs/site/media/README.md), and fonts-liberation and fonts-noto-color-emoji are on
         # the image already. With the apt call goes this step's removal of the runner image's
@@ -242,7 +244,7 @@ jobs:
           key: ${{ steps.go-cache.outputs.cache-primary-key }}
       # ci.yaml's call only: on a merge-group run whose group this job's own result decides it
       # posts the failing ci-ok at once, and on every other run it posts nothing, the verdict
-      # being ci.yaml's `ci-ok` job's own check run (.github/actions/ci-ok-report says how).
+      # being `.github/workflows/ci.yaml#ci-ok` job's own check run (.github/actions/ci-ok-report says how).
       # ci.yaml's docs job runs on a pull request and on a merge group alike, so the step is live
       # here; docs-pages.yaml's call passes no `ci-ok-changes`, and the step skips.
       - name: Report ci-ok when this job decides a merge-group run

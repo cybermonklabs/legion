@@ -1564,6 +1564,53 @@ describe("A long body parsed in the worker", () => {
     }
   });
 
+  // A body wholly above the top of the page that fills while the reader reads below it is put
+  // back for by how far the content under it moved, not by how far its own foot moved. The
+  // bottom margin of a body's last block collapses through the element's foot, so the first
+  // batch moves that foot against the content under it: here 18px, while the browser's own
+  // scroll anchoring has held the content under it where it was, so the page must not move.
+  test("puts the reader back by what the content under a body above them moved, not by its own foot", async () => {
+    const worker = installFakeParseWorker();
+    const box = (top: number, bottom: number) =>
+      ({
+        bottom,
+        height: bottom - top,
+        left: 0,
+        right: 600,
+        top,
+        width: 600,
+        x: 0,
+        y: top,
+      }) as DOMRect;
+    const rects = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element
+    ) {
+      if (this.classList.contains("dispatch-markdown")) {
+        return box(-900, this.querySelector("p") === null ? -800 : -782);
+      }
+      return this.getAttribute("data-testid") === "under" ? box(-790, -770) : box(0, 0);
+    });
+    const scrollBy = spyOn(window, "scrollBy").mockImplementation(() => undefined);
+    const view = render(
+      <>
+        <MarkdownBody markdown={paragraphBody("A long body above the reader")} />
+        <p data-testid="under">The turn the reader is reading.</p>
+      </>
+    );
+
+    try {
+      await waitFor(() => expect(pendingMark(view.container)).toBe("true"));
+      await act(() => worker.answer(0));
+      await waitFor(() => expect(topParagraphs(view.container)).toHaveLength(paragraphs + 1));
+      await waitFor(() => expect(pendingMark(view.container)).toBeNull());
+      expect(scrollBy).not.toHaveBeenCalled();
+    } finally {
+      rects.mockRestore();
+      scrollBy.mockRestore();
+      view.unmount();
+    }
+  });
+
   // The live view hands each streamed delta to the same body as a longer `markdown`. Between the
   // delta and the worker's answer the reader keeps the paint they were reading: a turn that
   // flipped back to its source text on every delta would be unreadable while it streamed.

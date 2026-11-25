@@ -8,6 +8,7 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
 import type { AskRead, CommentRead, IssueReferenceSummary, MessageRead } from "../../api/types";
 import { MarkdownBody } from "./MarkdownBody";
+import { warmMarkdownRenderer } from "./markdown-engine";
 
 const ASK_ID = "2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b";
 
@@ -124,6 +125,9 @@ test("a message reference reads as the headline of its body, as a comment's does
 // author edited marks it as edited (INFRA-1523, R2 and R3). A deleted post's body is empty, and a
 // headline cut from it is an empty title, which drew the link as an anchor with no text and no
 // size: the reader could not see that the post cited anything, nor hover or click the link.
+// The body, and so the link, draws only once the lazily loaded Markdown engine has, so each row
+// loads the engine before it renders: its own 2 s wait is for the link alone, and the web-cold
+// lane holds the engine's loads 2 to 3 s.
 const DELETED_COMMENT = "5b0e2c41-7d3a-4f6e-8a1b-2c3d4e5f6a7b";
 const DELETED_MESSAGE = "6c1f3d52-8e4b-4a7f-9b2c-3d4e5f6a7b8c";
 const EDITED_MESSAGE = "7d2a4e63-9f5c-4b8a-8c3d-4e5f6a7b8c9d";
@@ -149,6 +153,7 @@ function messageRead(id: string, fields: Record<string, unknown>): MessageRead {
 }
 
 test("a reference to a deleted comment says it is deleted and never reads as an empty link", async () => {
+  await warmMarkdownRenderer();
   spies.push(
     spyOn(api, "getComment").mockResolvedValue({
       comment: {
@@ -191,6 +196,7 @@ test("a reference to a deleted comment says it is deleted and never reads as an 
 });
 
 test("a reference to a deleted message says it is deleted and never reads as an empty link", async () => {
+  await warmMarkdownRenderer();
   spies.push(
     spyOn(api, "getMessage").mockResolvedValue(
       messageRead(DELETED_MESSAGE, {
