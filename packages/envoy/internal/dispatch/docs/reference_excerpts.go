@@ -293,8 +293,8 @@ func planBlockIndex(ctx context.Context, tx pgx.Tx, rule int, version refs.Versi
 }
 
 // indexedVersionOf is what version's own row says of its block index (refs.IndexedVersion): the
-// document's ref_key, from its address as this transaction leaves it (addressOfDocument), and the
-// version's writer (versionWriterOf).
+// document's ref_key and scope, from its address as this transaction leaves it
+// (addressOfDocument), and the version's writer (versionWriterOf).
 func indexedVersionOf(ctx context.Context, tx pgx.Tx, artifactID string, version int) (refs.IndexedVersion, error) {
 	address, err := addressOfDocument(ctx, tx, artifactID)
 	if err != nil {
@@ -304,7 +304,9 @@ func indexedVersionOf(ctx context.Context, tx pgx.Tx, artifactID string, version
 	if err != nil {
 		return refs.IndexedVersion{}, err
 	}
-	return refs.IndexedVersion{RefKey: address.RefKey, Writer: writer}, nil
+	record := refs.IndexedVersion{RefKey: address.RefKey, Writer: writer}
+	record.Project, record.Parties = graphstore.SessionScope(address.Project, address.Session)
+	return record, nil
 }
 
 // versionWriterOf is the writer version's own row records, its first author: from the version

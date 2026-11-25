@@ -552,6 +552,9 @@ type rig struct {
 	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
 	// built before it could.
 	resumesBySession bool
+	// heldStops, when set, holds every fake launcher's answer to a stop until it is closed
+	// (withHeldStops), as a launcher whose child takes its grace to exit holds it.
+	heldStops <-chan struct{}
 }
 
 type rigOption func(*rig, *Options)
@@ -587,6 +590,12 @@ func withCauselessLeakCheck() rigOption {
 // withResumesBySession has every fake launcher's hello say it can look a session up by its id and
 // resume the file it finds, as a launcher of this release says.
 func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
+
+// withHeldStops has every fake launcher of this rig receive a stop and answer it only once release
+// is closed.
+func withHeldStops(release <-chan struct{}) rigOption {
+	return func(g *rig, _ *Options) { g.heldStops = release }
+}
 
 // testLaunchers is a launchers of its own, outside any rig, with no receiver for a memory guard's
 // reports and no volume seam behind it: the tests that build one drive the launcher protocol
@@ -1354,6 +1363,9 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			g.commandsMu.Unlock()
 			switch command := frame.(type) {
 			case shimwire.LauncherStart, shimwire.LauncherStop:
+				if _, stop := frame.(shimwire.LauncherStop); stop && g.heldStops != nil {
+					<-g.heldStops
+				}
 				answers, _ := answerGeneration(frame, &running)
 				for _, answer := range answers {
 					_ = writer.WriteFrame(answer)
