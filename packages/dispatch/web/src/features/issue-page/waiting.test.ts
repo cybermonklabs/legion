@@ -10,8 +10,9 @@ import type {
   IssueDecisions,
   IssueDetails,
 } from "../../api/types";
+import { anchorQuote, changeAnchor } from "../decision-card/change-anchor";
 import { wordsOf } from "../refs/tree-fragment";
-import { anchorQuote, changeAnchor, decisionChangeComments } from "./decision-review";
+import { decisionChangeComments } from "./decision-review";
 import { buildIssueTree, type DocumentBlocks, isStatement, type TreeNode } from "./issue-tree";
 import { coverageStatements } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";

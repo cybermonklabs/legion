@@ -24,6 +24,7 @@ import {
   pageWaitingBg,
   pageWaitingChip,
 } from "../../theme/classes";
+import { decisionsDocumentId } from "../decision-card/change-anchor";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
@@ -37,7 +38,6 @@ import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-
 import { EVENT_FRESH } from "../refs/reference-target";
 import { wordsOf } from "../refs/tree-fragment";
 import { APPROVAL_CHIP } from "./approval-chip-box";
-import { decisionsDocumentId } from "./decision-review";
 import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";

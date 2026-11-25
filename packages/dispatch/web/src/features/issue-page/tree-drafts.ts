@@ -15,6 +15,8 @@ import type {
   ReferenceTarget,
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
+import { decisionsDocumentId } from "../decision-card/change-anchor";
+import { storedReading } from "../decision-card/stored-reading";
 import { type AgentText, actorLabelText } from "../refs/AgentName";
 import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
 import { referenceSpans } from "../refs/reference-spans";
@@ -32,7 +34,6 @@ import {
   type ChangeComment,
   decisionChangeComments,
   decisionChanges,
-  decisionsDocumentId,
   inReviewList,
 } from "./decision-review";
 import { artifactsBySlug } from "./issue-artifacts";
@@ -59,7 +60,6 @@ import {
   type NodeType,
   PRESET_NAMES,
 } from "./page-words";
-import { storedReading } from "./stored-reading";
 
 /**
  * One draft node per read of the issue page, for `buildIssueTree` to place.

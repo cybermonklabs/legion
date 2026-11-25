@@ -15,10 +15,10 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { anchorQuote, type ChangeAnchor, changeAnchor } from "../decision-card/change-anchor";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 

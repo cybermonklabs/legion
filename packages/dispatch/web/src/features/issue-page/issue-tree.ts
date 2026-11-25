@@ -14,11 +14,11 @@ import type {
   MessageRead,
   ReferenceTarget,
 } from "../../api/types";
+import { storedReading } from "../decision-card/stored-reading";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import type { GapKind, NodeState, NodeType } from "./page-words";
-import { storedReading } from "./stored-reading";
 import {
   type Draft,
   type TreeContext,

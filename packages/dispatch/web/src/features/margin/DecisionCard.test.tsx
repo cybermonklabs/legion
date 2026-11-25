@@ -1,14 +1,18 @@
-import { beforeAll, expect, test } from "bun:test";
-import { screen } from "@testing-library/react";
+import { beforeAll, expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
-import type { Decision } from "../../api/types";
+import { api } from "../../api/client";
+import type { Decision, DecisionKeep, IssueDecisions, IssueDetails } from "../../api/types";
+import { issueDecisionsQuery } from "../doc/spec-marks";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { DecisionCard } from "./DecisionCard";
-import type { DecisionMarginItem } from "./useMarginItems";
+import { DecisionCard, DecisionList } from "./DecisionCard";
+import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
@@ -46,7 +50,7 @@ function item(decision: Partial<Decision>): DecisionMarginItem {
 function renderCard(decision: Partial<Decision>, onSelect: (id: string) => void = () => {}) {
   return render(
     <MemoryRouter>
-      <DecisionCard item={item(decision)} onSelect={onSelect} selected={false} />
+      <DecisionCard issueKey="CORE-1" item={item(decision)} onSelect={onSelect} selected={false} />
     </MemoryRouter>
   );
 }
@@ -87,5 +91,84 @@ test("selecting a decision card selects its margin item", async () => {
     expect(selected).toEqual(["decision:d-1:p-plan"]);
   } finally {
     view.unmount();
+  }
+});
+
+const DOCUMENT_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const NO_PLACEMENTS: ReadonlyMap<string, MarkPlacement> = new Map();
+
+/** The margin's decisions as `useMarginItems` makes them, from the decisions read the page
+ *  holds: one decision beside two blocks of the spec is two cards. */
+function TwoCopies(): ReactNode {
+  const read = useQuery(issueDecisionsQuery("CORE-1", false));
+  const items = (read.data?.decisions ?? []).flatMap((decision) =>
+    ["p-plan", "p-test"].map((blockId) => ({
+      blockId,
+      decision,
+      id: `decision:${decision.block_id}:${blockId}`,
+      kind: "decision" as const,
+    }))
+  );
+  return (
+    <DecisionList
+      blockPlacements={NO_PLACEMENTS}
+      decisions={items}
+      hoveredItemId={undefined}
+      isClosed={false}
+      issueKey="CORE-1"
+      onSelect={() => {}}
+      selectedItemId={undefined}
+    />
+  );
+}
+
+// R21: a decision beside two statements draws two cards, each with Keep and Change. Both read
+// the one decisions read, so a Keep pressed on one is drawn on both. The document the Keep names
+// comes from the issue read and the decisions read the page holds, and the margin reads neither.
+test("Keep on one copy settles the other", async () => {
+  const user = userEvent.setup();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  client.setQueryData(["issue", "CORE-1"], {
+    artifacts: [{ id: DOCUMENT_ID, kind: "doc", primary: false, slug: "decisions-md" }],
+    key: "CORE-1",
+  } as unknown as IssueDetails);
+  client.setQueryData<IssueDecisions>(["decisions", "CORE-1"], {
+    decisions: [item({}).decision],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  });
+  const keep = spyOn(api, "keepDecision").mockResolvedValue({
+    artifact_id: DOCUMENT_ID,
+    block_id: "d-1",
+    changed_version: 2,
+    kept_at: "2026-10-03T00:00:00Z",
+    kept_by: "alice",
+  } satisfies DecisionKeep);
+  const view = render(
+    <MemoryRouter>
+      <TwoCopies />
+    </MemoryRouter>,
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  try {
+    const copies = screen.getAllByRole("article", { name: "Decision: Store notices in a table" });
+    expect(copies).toHaveLength(2);
+    const keeps = screen.getAllByRole("button", { name: "Keep" });
+    expect(keeps).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Change" })).toHaveLength(2);
+    await user.click(keeps[0] as HTMLElement);
+    await waitFor(() => expect(screen.queryAllByRole("button", { name: "Keep" })).toHaveLength(0));
+    expect(keep).toHaveBeenCalledTimes(1);
+    expect(keep.mock.calls[0]?.slice(0, 3)).toEqual([DOCUMENT_ID, "d-1", "sum-d-1"]);
+    expect(screen.getAllByText("Kept by alice")).toHaveLength(2);
+  } finally {
+    view.unmount();
+    keep.mockRestore();
+    client.clear();
   }
 });

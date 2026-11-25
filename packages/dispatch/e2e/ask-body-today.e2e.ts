@@ -226,6 +226,7 @@ async function expectRow(body: Locator, question: string, authorName: string): P
   const first = await firstWords(words);
   let right = first.right;
   for (const part of [kind, author, time]) {
+    // The part is visible above, so its layout box is settled and this one read is its place.
     const box = await part.boundingBox();
     if (box === null) throw new Error("The first line has a part with no layout box");
     expect(box.y, "first-line metadata sits under the words").toBeLessThan(first.bottom);
@@ -535,7 +536,9 @@ async function expectDecision(
   await expect(card.getByRole("link", { name: /^Block / })).toHaveCount(0);
   for (const line of entry.ties) {
     await expect(
-      card.getByRole("link", { name: new RegExp(`^${escapeRegex(line)}`) })
+      card
+        .locator("[data-decision-statements]")
+        .getByRole("link", { name: new RegExp(`^${escapeRegex(line)}`) })
     ).toHaveAttribute("href", /#b-/);
   }
   await expect(card.getByText(/^Changed since/)).toHaveCount(unsure ? 1 : 0);
@@ -578,6 +581,7 @@ test("today's Decisions tab and the margin draw every decision with the one card
   for (const entry of data.decisionCases) {
     const roots = decisionRoots(page, entry, true);
     await expect(roots).toHaveCount(entry.case === "replaced" ? 0 : entry.ties.length);
+    // The count above has settled on this many roots, so one read of all of them lists them.
     for (const root of await roots.all()) await expectDecision(markedCard(root), entry, data);
   }
 });

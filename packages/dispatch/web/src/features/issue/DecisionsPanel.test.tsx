@@ -13,6 +13,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError } from "../../api/client";
 import type {
   Artifact,
+  ArtifactText,
   AskRead,
   Comment,
   Decision,
@@ -145,6 +146,32 @@ function renderPanel(
 
 function list(name: string): HTMLElement {
   return screen.getByRole("region", { name });
+}
+
+/** The decisions document `issueView` is the read of, which a Change's send reads to count
+ *  which place of its quote is the decision's own (`changeAnchor`). */
+const DECISIONS_TEXT = [
+  "## Store notices in a table",
+  "A table keeps them queryable.",
+  "Unsure: the index may be slow.",
+  "## Name them notices",
+  "The person chose the name.",
+  "## Replaced",
+  "### Keep them in a file",
+  "A file was simpler.",
+].join("\n\n");
+
+/** Answers the decisions document's text read with `DECISIONS_TEXT` and the reading the server
+ *  sends of it. */
+function spyDecisionsText() {
+  return spyOn(api, "getArtifactText").mockImplementation(
+    async (): Promise<ArtifactText> => ({
+      markdown: DECISIONS_TEXT,
+      markdown_tree: displayTree(DECISIONS_TEXT),
+      token: "token",
+      version: 1,
+    })
+  );
 }
 
 test("the panel sorts the view into its four lists, in order", async () => {
@@ -295,6 +322,7 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
   const user = userEvent.setup();
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
   const comment = spyOn(api, "createComment").mockResolvedValue({} as Comment);
+  const text = spyDecisionsText();
   try {
     renderPanel();
     const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
@@ -306,19 +334,20 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
     );
     await user.click(within(composer).getByLabelText("Your change"));
     await user.paste("Use a queue instead.");
-    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await user.click(within(composer).getByRole("button", { name: "Send change" }));
 
     await waitFor(() => expect(comment).toHaveBeenCalled());
     expect(comment.mock.calls[0]?.slice(0, 2)).toEqual([
       "CORE-1",
       {
-        anchor: { artifact: documentId, quote: "A table keeps them queryable." },
+        anchor: { artifact: documentId, occurrence: 0, quote: "A table keeps them queryable." },
         body: "Use a queue instead.",
       },
     ]);
   } finally {
     read.mockRestore();
     comment.mockRestore();
+    text.mockRestore();
   }
 });
 
@@ -355,6 +384,7 @@ test("a change the reader stopped says it may have been posted, not a message's 
   const comment = spyOn(api, "createComment").mockRejectedValue(
     new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
   );
+  const text = spyDecisionsText();
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
     renderPanel(queryClient);
@@ -365,7 +395,7 @@ test("a change the reader stopped says it may have been posted, not a message's 
     const composer = within(waiting).getByRole("form", { name: "Change Store notices in a table" });
     await user.click(within(composer).getByLabelText("Your change"));
     await user.paste("Use a queue instead.");
-    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await user.click(within(composer).getByRole("button", { name: "Send change" }));
     await stopTheLateWrite(queryClient);
     expect(within(composer).getByRole("alert").textContent).toBe(
       stoppedWriteNote("your change", "posted", { anew: "Send posts it again as a new comment." })
@@ -375,6 +405,7 @@ test("a change the reader stopped says it may have been posted, not a message's 
     queryClient.clear();
     read.mockRestore();
     comment.mockRestore();
+    text.mockRestore();
   }
 });
 

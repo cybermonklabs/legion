@@ -1,8 +1,13 @@
 import { expect, test } from "bun:test";
 
+import {
+  isPlainText,
+  parsedReading,
+  plainReading,
+  storedReading,
+} from "../decision-card/stored-reading";
 import { wordsOf } from "../refs/tree-fragment";
 import { lineWordsRaw } from "./issue-tree";
-import { isPlainText, parsedReading, plainReading, storedReading } from "./stored-reading";
 import { plainWords, plainWordsRaw, withShortAddresses } from "./tree-drafts";
 
 /** A wall-clock budget for one stored text read to words, not one of the machine-sensitive waits
