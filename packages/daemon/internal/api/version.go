@@ -3676,7 +3676,8 @@ package api
 // outbox payload is decoded strictly, so no daemon of an earlier release decodes such a row, and the
 // rollback deletes those rows first (docs/kubernetes.md, "Rolling back the release that keeps no
 // saved workspace"). R6 adds one migration, 20261125023041_idle_release_declines_told_pod
-// (`idle_release_declines.told_pod`, whether the architect was told of a pod), beside R7's
+// (`idle_release_declines.told_pod`, the uid of the pod the architect's workspace-kept notice named:
+// the empty string where it named none, and null where the row queued no such notice), beside R7's
 // 20261125023100 below. No shape of `GET /legion/v1/state` moves.
 //
 // R7 of the same issue rides this entry and moves no wire of its own: an update round reads the

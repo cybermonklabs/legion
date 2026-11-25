@@ -6,22 +6,31 @@ package daemon
 // target stand, each reads as made, and each is finished with a notice of its own: the issue's
 // architect is told twice of one replacement, and the late notice, built once the round is over,
 // can say what is false of a kept volume or of the disk. One target is taken once, so the finish
-// of an act that took it finishes every record of that target, with one notice. The cases are the
-// reviewer's three traces:
+// of an act that took it finishes every record of that target, with one notice. The file holds six
+// tests, the reviewer's three traces at 7da847c0 and its Importants 1 to 3 at acda4d1e:
 //
-//   - a: a replacement by issue has written its record and waits for the pod's launch turn, which
-//     a launch holds. The launch replaces the round's pod as the round's own replacement, with a
+//   - a (TestAReplacementByIssueThatALaunchsReplacementOvertookTellsTheArchitectOnce): a
+//     replacement by issue has written its record and waits for the pod's launch turn, which a
+//     launch holds. The launch replaces the round's pod as the round's own replacement, with a
 //     record of its own, and the replacement by issue then finds another pod and asks no last
 //     word. Its own record is forgotten, and the round ends as the launch's, told once, from the
 //     read the launcher made at the launch.
-//   - b: a launch whose reading of the round answered that the round's pod is replaced fails
-//     before its suspension lands. Its record stands while the daemon remembers the launch. The
-//     round's replacement by issue then takes the pod under a record of its own, and its notice is
-//     the one notice.
-//   - c: a launch that deletes the issue's Sandbox and the kept volume it owns stops between its
-//     suspension and the delete, so its record stands uncertain. The next launch records its own
-//     delete of the same Sandbox, deletes it and tells the architect, and the first record tells
-//     nobody again.
+//   - b (TestALaunchThatFailedBeforeItsSuspensionLeavesOneNoticeOfTheReplacement): a launch whose
+//     reading of the round answered that the round's pod is replaced fails before its suspension
+//     lands. Its record stands while the daemon remembers the launch. The round's replacement by
+//     issue then takes the pod under a record of its own, and its notice is the one notice.
+//   - c (TestTwoLaunchesThatDeleteOneKeptVolumeTellTheArchitectOnce): a launch that deletes the
+//     issue's Sandbox and the kept volume it owns stops between its suspension and the delete, so
+//     its record stands uncertain. The next launch records its own delete of the same Sandbox,
+//     deletes it and tells the architect, and the first record tells nobody again.
+//   - Important 1 (TestALaunchsVolumeActOverTheLivePodOfARoundsRecordTellsTheArchitectOnce): a
+//     launch's delete of the issue's Sandbox over the live pod that a replacement by issue waits to
+//     take tells the architect once, and the round's record of the pod tells nothing more.
+//   - Important 2 (TestAReplacementThroughAProcessThatALaunchOvertookTellsTheLaunchsRead): the
+//     replacement through a process that a launch overtook forgets its own record, and the round
+//     is told once, from the launch's read.
+//   - Important 3 (TestTwoRecordsOfOneTargetAtOneSweepEndTheRoundOnceFromTheNewerRead): two
+//     records of one target at one sweep end the round once, and tell the architect once.
 
 import (
 	"strings"
@@ -230,7 +239,8 @@ func TestAReplacementThroughAProcessThatALaunchOvertookTellsTheLaunchsRead(t *te
 // The Legion reviewer's Important 3 on #5285 at acda4d1e: two records of one target stand at one
 // sweep, each written over a read of its own before the act that took the pod. The sweep finishes
 // the target once: the round ends once, on one "the round is over" line, and the architect is told
-// once, from the newer read, the last one recorded before the pod was taken.
+// once, from the newer read: both reads found work, and of reads that weigh the same the newest
+// tells (tellingRead).
 func TestTwoRecordsOfOneTargetAtOneSweepEndTheRoundOnceFromTheNewerRead(t *testing.T) {
 	t.Parallel()
 	rig := podlessBreakingRound(t)

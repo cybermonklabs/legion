@@ -1869,8 +1869,9 @@ func (s *supervision) issuePodKept(group []supervise.Claim, round string, clock 
 // decides it (roundKeeps, keepPodForRound), and the last word refuses it where a claim of the
 // issue started a turn after the read began (issueReplacementDue). What may go with the pod is
 // named as every member of the round that had not answered it, with a session or with none
-// (lostClaims), read unmasked from the same read that the pod's keep is decided from masked
-// (masked says why), as a gone pod's end reads them (endRoundOverAGonePod). The replacement's line
+// (lostClaims), read unmasked from the same read of the issue's claims that issuePodKept reads
+// masked (masked says why), and that the keep reads unmasked too (roundKeeps, keepPodForRound), as
+// a gone pod's end reads them (endRoundOverAGonePod). The replacement's line
 // names them as the members that had not answered (unansweredMembers), says that the replacement
 // was by issue and what the launcher's read found, and where that read found work or failed the
 // issue's architect is told what the replacement took (roundReplaced, finishReplacement). A

@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    The daemon API fixtures are at contract 265, whose answers are shaped as at 246.
+    The daemon API fixtures are at contract 265, whose answers are shaped as at 256.
 time: 2026-11-23T20:00:03Z
 custom:
     Issue: pr5285

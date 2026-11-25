@@ -398,11 +398,12 @@ func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.
 // launchTakenMessage is the issue's architect's workspace-taken notice for a launch's own
 // replacement of an issue pod (runtime.TakenPod): what its act took and why the launch made it —
 // the pod and its disk, or, for an act that takes the volume (runtime.TakesVolume), the issue's
-// Sandbox, named by its uid, and the kept volume it owned, with the last pod known to have used
-// the volume where there is one — what the read of its workspace through the pod's launcher found
-// before the replacement, or why no read could be made, and, once, that work no branch at origin
-// holds is lost (the Legion reviewer's Minor on #5285 at 7da847c0). The architect reads it in its
-// session and people read it in its history, so it follows ASD-STE100.
+// Sandbox, named by its uid, and the kept volume it owned, with the live pod of that Sandbox that
+// went with them, for an act that took that pod too (runtime.TakenPod.WithPod), or else the last
+// pod known to have used the volume where there is one — what the read of its workspace through
+// the pod's launcher found before the replacement, or why no read could be made, and, once, that
+// work no branch at origin holds is lost (the Legion reviewer's Minor on #5285 at 7da847c0). The
+// architect reads it in its session and people read it in its history, so it follows ASD-STE100.
 func launchTakenMessage(taken runtime.TakenPod) string {
 	role := string(taken.Claim)
 	if named, ok := taken.Claim.Role(); ok {
